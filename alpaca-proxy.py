@@ -152,7 +152,27 @@ async def chat(request: Request):
                 await asyncio.sleep(2)
             await task
             
-            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json={"messages": body.get("messages"), "stream": True}) as resp:
+            # Extract relevant fields from original body to forward
+            llama_payload = {
+                "messages": body.get("messages"),
+                "stream": True,
+                "temperature": body.get("temperature", 0.7),
+                "top_p": body.get("top_p", 0.9),
+                "max_tokens": body.get("max_tokens", 2048),
+                "stop": body.get("stop", [])
+            }
+            # Handle Ollama-style 'options'
+            options = body.get("options", {})
+            if isinstance(options, dict):
+                for k, v in options.items():
+                    # Map common Ollama options to llama.cpp/OpenAI equivalents
+                    if k == "num_predict": llama_payload["max_tokens"] = v
+                    elif k == "stop": llama_payload["stop"] = v
+                    elif k == "temperature": llama_payload["temperature"] = v
+                    elif k == "top_p": llama_payload["top_p"] = v
+                    else: llama_payload[k] = v # Pass through others (like grammar!)
+
+            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=llama_payload) as resp:
                 async for line in resp.aiter_lines():
                     if not line or "[DONE]" in line: continue
                     if line.startswith("data: "): line = line[6:]
