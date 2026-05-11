@@ -1,0 +1,40 @@
+services:
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-server
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - /usr/share/ollama/.ollama/models:/models:ro
+    environment:
+      - MODEL_PATH=/models/blobs/sha256-a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f
+    command: >
+      -m /models/blobs/sha256-a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f
+      --host 0.0.0.0
+      --port 8080
+      --n-gpu-layers 999
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  alpaca-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    container_name: alpaca-proxy
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/config
+      - /usr/share/ollama/.ollama/models:/models:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - llama-server

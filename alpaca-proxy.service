@@ -1,0 +1,13 @@
+[Unit]
+Description=Alpaca Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jeremiah/Summers Drive/Code/alpaca
+ExecStart=/usr/bin/python3 "/home/jeremiah/Summers Drive/Code/alpaca/alpaca-proxy.py"
+Restart=always
+User=jeremiah
+
+[Install]
+WantedBy=multi-user.target

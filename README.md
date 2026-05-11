@@ -23,7 +23,6 @@ Alpaca is a high-performance LLM inference stack designed to provide Ollama-comp
 ### 2. Deployment
 Bring up the entire stack using Docker Compose:
 ```bash
-cd ~/llama-test
 sudo docker compose up -d --build
 ```
 

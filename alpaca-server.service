@@ -1,0 +1,15 @@
+[Unit]
+Description=Llama Server Docker Container
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jeremiah/Summers Drive/Code/alpaca
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+Restart=always
+User=jeremiah
+
+[Install]
+WantedBy=multi-user.target
