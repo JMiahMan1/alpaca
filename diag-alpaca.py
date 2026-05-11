@@ -1,6 +1,7 @@
-import requests
-import time
 import json
+import time
+
+import requests
 
 BASE_URL = "http://localhost:11434"
 
@@ -55,7 +56,7 @@ def test_chat_stream(model_name):
                         buffer = ""
             
             elapsed = time.time() - start_time
-            print(f"\n\n--- Switch Stats ---")
+            print("\n\n--- Switch Stats ---")
             print(f"Total time for switch + load: {elapsed:.2f}s")
             print(f"Heartbeat spaces (Client kept alive): {dots_count}")
             print(f"Response received from {model_name}.")

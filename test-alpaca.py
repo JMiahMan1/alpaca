@@ -1,8 +1,8 @@
-import os
 import json
+import os
 import subprocess
+
 import requests
-import time
 
 TEST_MODEL = "tinyllama:latest"
 MODELS_DIR = "/usr/share/ollama/.ollama/models"

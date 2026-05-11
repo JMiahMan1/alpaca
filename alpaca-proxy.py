@@ -1,14 +1,15 @@
-import os
-import json
-import httpx
 import asyncio
-import re
+import json
 import logging
-import docker
-from datetime import datetime
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse
+import os
+import re
+import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # Precise logging setup
 logger = logging.getLogger("alpaca-proxy")
@@ -20,78 +21,658 @@ if not logger.handlers:
     logger.addHandler(handler)
 
 client_httpx = None
-current_model = None
+model_expires_at = {}
+model_unload_tasks = {}
 
 # Configuration
-LLAMA_SERVER_URL = "http://llama-server:8080"
-OLLAMA_BASE = "/models"
-COMPOSE_FILE = "/config/docker-compose.yml"
+LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://llama-server:8080")
+OLLAMA_BASE = os.getenv("OLLAMA_BASE", "/models")
+MODEL_NAMESPACE = os.getenv("MODEL_NAMESPACE", "registry.ollama.ai")
+ENGINE_STARTUP_TIMEOUT_SECONDS = int(os.getenv("ENGINE_STARTUP_TIMEOUT_SECONDS", "120"))
+API_VERSION = os.getenv("API_VERSION", "0.3.1")
+DEFAULT_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
+MAX_LOADED_MODELS = int(os.getenv("MAX_LOADED_MODELS", "1"))
+ROUTER_MODELS_URL = f"{LLAMA_SERVER_URL}/models"
+FOREVER_EXPIRES_AT = "9999-12-31T23:59:59Z"
+
+def model_manifest_base():
+    return os.path.join(OLLAMA_BASE, "manifests", MODEL_NAMESPACE)
+
+def with_default_tag(model_name):
+    if ":" not in model_name:
+        return f"{model_name}:latest"
+    return model_name
+
+def public_model_name(model_name):
+    resolved = with_default_tag(model_name)
+    if resolved.endswith(":latest"):
+        return resolved[:-7]
+    return resolved
+
+def model_manifest_paths(model_name):
+    repo_tag = with_default_tag(model_name).replace(":", os.sep)
+    return [
+        os.path.join(model_manifest_base(), "library", repo_tag),
+        os.path.join(model_manifest_base(), repo_tag),
+    ]
+
+def blob_path_for_digest(digest):
+    return os.path.join(OLLAMA_BASE, "blobs", digest.replace(":", "-"))
+
+def normalize_digest(digest):
+    return digest.split(":", 1)[1] if ":" in digest else digest
+
+def modified_at_for_path(path):
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path)).astimezone().isoformat()
+    except OSError:
+        return utc_now()
+
+def is_model_complete(manifest):
+    """Verifies that all blobs in the manifest exist and are the correct size."""
+    try:
+        layers = manifest.get('layers', [])
+        config = manifest.get('config', {})
+        for layer in layers + [config]:
+            digest = layer.get('digest')
+            if not digest: continue
+            blob_path = blob_path_for_digest(digest)
+            if not os.path.exists(blob_path):
+                return False
+            if os.path.getsize(blob_path) != layer.get('size', 0):
+                return False
+        return True
+    except:
+        return False
+
+def read_manifest(path):
+    """Load a manifest file, returning None for partial or malformed files."""
+    try:
+        with open(path, 'r') as f:
+            manifest = json.load(f)
+        if isinstance(manifest, dict):
+            return manifest
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+def iter_local_manifests():
+    manifest_base = model_manifest_base()
+    if not os.path.exists(manifest_base):
+        return
+    for root, dirs, files in os.walk(manifest_base):
+        for file in files:
+            if "sha256" in file:
+                continue
+            path = os.path.join(root, file)
+            manifest = read_manifest(path)
+            if manifest is None or not is_model_complete(manifest):
+                continue
+            yield manifest_base, path, manifest
+
+def manifest_model_name(manifest_base, path):
+    rel_path = os.path.relpath(path, manifest_base)
+    parts = rel_path.split("/")
+    if len(parts) < 2:
+        return None
+    tag = parts[-1]
+    name = "/".join(parts[:-1])
+    if name.startswith("library/"):
+        name = name[8:]
+    return public_model_name(f"{name}:{tag}")
+
+def read_config_blob(manifest):
+    config = manifest.get("config") or {}
+    digest = config.get("digest")
+    if not digest:
+        return {}
+    blob_path = blob_path_for_digest(digest)
+    blob = read_manifest(blob_path)
+    return blob or {}
+
+def model_info_from_config(config_blob):
+    if isinstance(config_blob.get("model_info"), dict):
+        return config_blob["model_info"]
+
+    model_info = {}
+    for key, value in config_blob.items():
+        if "." in key:
+            model_info[key] = value
+    return model_info
+
+def context_length_from_config(config_blob):
+    model_info = model_info_from_config(config_blob)
+    if isinstance(model_info.get("general.context_length"), int):
+        return model_info["general.context_length"]
+    for key, value in model_info.items():
+        if key.endswith(".context_length") and isinstance(value, int):
+            return value
+    if isinstance(config_blob.get("context_length"), int):
+        return config_blob["context_length"]
+    return None
+
+def model_capabilities_from_manifest(manifest):
+    config_blob = read_config_blob(manifest)
+    capabilities = ["completion"]
+    model_info = model_info_from_config(config_blob)
+    if any(".vision." in key or key.endswith(".mm.tokens_per_image") for key in model_info):
+        capabilities.append("vision")
+    return capabilities
+
+def model_details_from_manifest(manifest):
+    config_blob = read_config_blob(manifest)
+    details = {}
+
+    for source_key, detail_key in (
+        ("model_format", "format"),
+        ("model_family", "family"),
+        ("families", "families"),
+        ("parameter_size", "parameter_size"),
+        ("quantization_level", "quantization_level"),
+        ("parent_model", "parent_model"),
+    ):
+        value = config_blob.get(source_key)
+        if value not in (None, "", []):
+            details[detail_key] = value
+
+    if "format" not in details:
+        media_types = [layer.get("mediaType", "") for layer in manifest.get("layers", [])]
+        if any("gguf" in media_type for media_type in media_types):
+            details["format"] = "gguf"
+
+    return details
+
+def manifest_layer(manifest, prefix):
+    for layer in manifest.get("layers", []):
+        if layer.get("mediaType", "").startswith(prefix):
+            return layer
+    return {}
+
+def manifest_stats(manifest_path, manifest):
+    model_layer = manifest_layer(manifest, "application/vnd.ollama.image.model")
+    config_blob = read_config_blob(manifest)
+    return {
+        "size": model_layer.get("size", 0),
+        "digest": normalize_digest(model_layer.get("digest", "")),
+        "details": model_details_from_manifest(manifest),
+        "modified_at": modified_at_for_path(manifest_path),
+        "context_length": context_length_from_config(config_blob),
+        "capabilities": model_capabilities_from_manifest(manifest),
+        "model_info": model_info_from_config(config_blob),
+        "template": config_blob.get("template", ""),
+        "system": config_blob.get("system", ""),
+        "license": config_blob.get("license", ""),
+        "parameters": config_blob.get("parameters", ""),
+    }
+
+def manifest_path_for_model(model_name):
+    for candidate in model_manifest_paths(model_name):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+def load_local_manifest(model_name, require_complete=True):
+    manifest_path = manifest_path_for_model(model_name)
+    if not manifest_path:
+        return None, None
+    manifest = read_manifest(manifest_path)
+    if manifest is None:
+        return manifest_path, None
+    if require_complete and not is_model_complete(manifest):
+        return manifest_path, None
+    return manifest_path, manifest
+
+def router_model_candidates(model_name, manifest):
+    candidates = []
+    model_layer = manifest_layer(manifest, "application/vnd.ollama.image.model")
+    digest = model_layer.get("digest", "")
+    if digest:
+        blob_path = blob_path_for_digest(digest)
+        candidates.extend([
+            os.path.basename(blob_path),
+            blob_path,
+            digest,
+            normalize_digest(digest),
+        ])
+    candidates.extend([
+        public_model_name(model_name),
+        with_default_tag(model_name),
+    ])
+    return [candidate for i, candidate in enumerate(candidates) if candidate and candidate not in candidates[:i]]
+
+def router_entry_status(entry):
+    return ((entry.get("status") or {}).get("value") or "").lower()
+
+def router_entry_values(entry):
+    values = []
+    model_id = entry.get("id")
+    path = entry.get("path")
+    if model_id:
+        values.append(model_id)
+        values.append(os.path.basename(model_id))
+    if path:
+        values.append(path)
+        values.append(os.path.basename(path))
+    return {value for value in values if value}
+
+def router_entry_matches(entry, candidates):
+    entry_values = router_entry_values(entry)
+    for candidate in candidates:
+        if candidate in entry_values:
+            return True
+    return False
+
+OLLAMA_OPTION_MAP = {
+    "num_predict": "n_predict",
+    "stop": "stop",
+    "temperature": "temperature",
+    "top_k": "top_k",
+    "top_p": "top_p",
+    "min_p": "min_p",
+    "typical_p": "typical_p",
+    "repeat_last_n": "repeat_last_n",
+    "repeat_penalty": "repeat_penalty",
+    "presence_penalty": "presence_penalty",
+    "frequency_penalty": "frequency_penalty",
+    "mirostat": "mirostat",
+    "mirostat_tau": "mirostat_tau",
+    "mirostat_eta": "mirostat_eta",
+    "seed": "seed",
+    "num_ctx": "n_ctx",
+    "num_keep": "n_keep",
+    "tfs_z": "tfs_z",
+    "grammar": "grammar",
+    "json_schema": "json_schema",
+    "grammar_lazy": "grammar_lazy",
+    "cache_prompt": "cache_prompt",
+    "image_data": "image_data",
+}
+
+DIRECT_LLAMA_FIELDS = {
+    "grammar",
+    "json_schema",
+    "grammar_lazy",
+    "response_format",
+    "temperature",
+    "top_k",
+    "top_p",
+    "min_p",
+    "typical_p",
+    "repeat_last_n",
+    "repeat_penalty",
+    "presence_penalty",
+    "frequency_penalty",
+    "mirostat",
+    "mirostat_tau",
+    "mirostat_eta",
+    "seed",
+    "n_predict",
+    "n_ctx",
+    "n_keep",
+    "tfs_z",
+    "cache_prompt",
+    "image_data",
+    "stop",
+    "logprobs",
+    "top_logprobs",
+    "thinking",
+    "reasoning_format",
+}
+
+def utc_now():
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+def now_ns():
+    return time.perf_counter_ns()
+
+def should_stream(body):
+    return body.get("stream", True) is not False
+
+def parse_keep_alive(keep_alive):
+    if keep_alive in (None, ""):
+        return None
+    if isinstance(keep_alive, (int, float)):
+        return float(keep_alive)
+    text = str(keep_alive).strip().lower()
+    if text == "0":
+        return 0
+    if re.fullmatch(r"-?\d+(\.\d+)?", text):
+        return float(text)
+    match = re.fullmatch(r"(-?\d+)(ms|s|m|h|d)", text)
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2)
+    return value * {
+        "ms": 0.001,
+        "s": 1,
+        "m": 60,
+        "h": 3600,
+        "d": 86400,
+    }[unit]
+
+def expires_at_from_keep_alive(keep_alive):
+    seconds = parse_keep_alive(keep_alive)
+    if seconds is None:
+        return "0001-01-01T00:00:00Z"
+    if seconds <= 0:
+        return utc_now()
+    return datetime.fromtimestamp(time.time() + seconds).astimezone().isoformat()
+
+def apply_format_parameter(payload, body):
+    fmt = body.get("format")
+    if fmt is None:
+        return payload
+    if isinstance(fmt, dict):
+        payload.setdefault("json_schema", fmt)
+        payload.setdefault("response_format", {"type": "json_object", "schema": fmt})
+    elif fmt == "json":
+        payload.setdefault("response_format", {"type": "json_object"})
+    else:
+        payload["format"] = fmt
+    return payload
+
+def apply_ollama_options(payload, options):
+    if not isinstance(options, dict):
+        return payload
+    for key, value in options.items():
+        mapped = OLLAMA_OPTION_MAP.get(key)
+        if mapped:
+            payload[mapped] = value
+        else:
+            payload[key] = value
+    return payload
+
+def apply_direct_llama_fields(payload, body):
+    for key in DIRECT_LLAMA_FIELDS:
+        if key in body:
+            payload[key] = body[key]
+    return payload
+
+def build_chat_message(prompt, images=None):
+    message = {"role": "user", "content": prompt}
+    if images is not None:
+        message["images"] = images
+    return message
+
+def should_generate_via_chat(body):
+    return any(body.get(key) is not None for key in ("system", "think"))
+
+def render_template_prompt(body):
+    template = body.get("template")
+    if not isinstance(template, str) or not template:
+        return body.get("prompt", "")
+    rendered = template
+    rendered = rendered.replace("{{ .System }}", body.get("system", "") or "")
+    rendered = rendered.replace("{{ .Prompt }}", body.get("prompt", "") or "")
+    rendered = rendered.replace("{{ .Response }}", "")
+    return rendered
+
+def build_generate_chat_payload(body, backend_model):
+    prompt = body.get("prompt", "")
+    payload = {
+        "model": backend_model,
+        "messages": [build_chat_message(prompt, body.get("images"))],
+        "stream": should_stream(body),
+    }
+    if body.get("system"):
+        payload["messages"].insert(0, {"role": "system", "content": body["system"]})
+    apply_ollama_options(payload, body.get("options"))
+    apply_direct_llama_fields(payload, body)
+    apply_format_parameter(payload, body)
+    if body.get("think") is not None:
+        payload["thinking"] = body["think"]
+    return payload
+
+def build_chat_payload(body, backend_model):
+    payload = {
+        "model": backend_model,
+        "messages": body.get("messages", []),
+        "stream": should_stream(body),
+    }
+    if body.get("tools") is not None:
+        payload["tools"] = body["tools"]
+    if body.get("tool_choice") is not None:
+        payload["tool_choice"] = body["tool_choice"]
+    apply_ollama_options(payload, body.get("options"))
+    apply_direct_llama_fields(payload, body)
+    apply_format_parameter(payload, body)
+    if body.get("think") is not None:
+        payload["thinking"] = body["think"]
+    return payload
+
+def build_generate_payload(body, backend_model):
+    payload = {
+        "model": backend_model,
+        "prompt": render_template_prompt(body),
+        "stream": should_stream(body),
+    }
+    if body.get("images") is not None:
+        payload["image_data"] = body["images"]
+    if body.get("stop") is not None:
+        payload["stop"] = body["stop"]
+    if body.get("raw"):
+        payload["raw"] = True
+    apply_ollama_options(payload, body.get("options"))
+    apply_direct_llama_fields(payload, body)
+    apply_format_parameter(payload, body)
+    if "num_predict" in body:
+        payload["n_predict"] = body["num_predict"]
+    if body.get("suffix") is not None:
+        payload["input_suffix"] = body["suffix"]
+    if isinstance(body.get("context"), list) and body["context"]:
+        payload["prompt"] = list(body["context"]) + [payload["prompt"]]
+    return payload
+
+async def fetch_router_models(reload=False):
+    params = {"reload": "1"} if reload else None
+    resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("data") or []
+
+async def resolve_router_model(model_name, reload=True):
+    resolved_name = with_default_tag(model_name)
+    manifest_path, manifest = load_local_manifest(resolved_name, require_complete=True)
+    if not manifest_path:
+        raise HTTPException(status_code=404, detail=f"Model {resolved_name} not found")
+    if manifest is None:
+        raise HTTPException(status_code=409, detail=f"Model {resolved_name} is still downloading or incomplete.")
+
+    candidates = router_model_candidates(resolved_name, manifest)
+    router_models = await fetch_router_models(reload=reload)
+    for entry in router_models:
+        if router_entry_matches(entry, candidates):
+            return {
+                "model_name": resolved_name,
+                "backend_model": entry.get("id") or candidates[0],
+                "entry": entry,
+                "manifest_path": manifest_path,
+                "manifest": manifest,
+                "router_models": router_models,
+            }
+    raise HTTPException(status_code=404, detail=f"Router could not discover backend model for {resolved_name}")
+
+def effective_keep_alive(keep_alive):
+    return DEFAULT_KEEP_ALIVE if keep_alive in (None, "") else keep_alive
+
+def is_resident_status(status):
+    return status in {"loaded", "loading"}
+
+async def post_router_model_action(action, backend_model):
+    resp = await client_httpx.post(f"{ROUTER_MODELS_URL}/{action}", json={"model": backend_model})
+    resp.raise_for_status()
+    return resp.json()
+
+async def unload_model(model_name):
+    try:
+        resolved = await resolve_router_model(model_name, reload=False)
+    except HTTPException:
+        return
+    await post_router_model_action("unload", resolved["backend_model"])
+    model_expires_at.pop(public_model_name(model_name), None)
+
+def cancel_model_unload(model_name):
+    task = model_unload_tasks.pop(public_model_name(model_name), None)
+    if task:
+        task.cancel()
+
+async def unload_model_later(model_name, delay_seconds):
+    try:
+        await asyncio.sleep(delay_seconds)
+        await unload_model(model_name)
+    except asyncio.CancelledError:
+        raise
+    finally:
+        model_unload_tasks.pop(public_model_name(model_name), None)
+
+async def apply_keep_alive_policy(model_name, keep_alive):
+    model_name = with_default_tag(model_name)
+    public_name = public_model_name(model_name)
+    keep_alive = effective_keep_alive(keep_alive)
+    seconds = parse_keep_alive(keep_alive)
+
+    cancel_model_unload(model_name)
+
+    if seconds is None:
+        model_expires_at[public_name] = "0001-01-01T00:00:00Z"
+        return
+    if seconds < 0:
+        model_expires_at[public_name] = FOREVER_EXPIRES_AT
+        return
+    if seconds == 0:
+        model_expires_at[public_name] = utc_now()
+        await unload_model(model_name)
+        return
+
+    model_expires_at[public_name] = datetime.fromtimestamp(time.time() + seconds).astimezone().isoformat()
+    model_unload_tasks[public_name] = asyncio.create_task(unload_model_later(model_name, seconds))
+
+def usage_stats(data):
+    usage = data.get("usage") or {}
+    prompt_eval_count = usage.get("prompt_tokens", data.get("tokens_evaluated"))
+    eval_count = usage.get("completion_tokens", data.get("tokens_predicted"))
+    if prompt_eval_count is None:
+        prompt_eval_count = data.get("prompt_eval_count")
+    if eval_count is None:
+        eval_count = data.get("eval_count")
+    return prompt_eval_count, eval_count
+
+def timing_stats(data, fallback_total_duration=None, fallback_load_duration=0):
+    total_duration = data.get("total_duration", fallback_total_duration)
+    load_duration = data.get("load_duration", fallback_load_duration)
+    prompt_eval_duration = data.get("prompt_eval_duration")
+    eval_duration = data.get("eval_duration")
+
+    timings = data.get("timings") or {}
+    total_duration = total_duration if total_duration is not None else fallback_total_duration
+    prompt_eval_duration = prompt_eval_duration if prompt_eval_duration is not None else timings.get("prompt_ms")
+    eval_duration = eval_duration if eval_duration is not None else timings.get("predicted_ms")
+
+    if isinstance(prompt_eval_duration, (int, float)) and prompt_eval_duration < 10_000_000:
+        prompt_eval_duration = int(prompt_eval_duration * 1_000_000)
+    if isinstance(eval_duration, (int, float)) and eval_duration < 10_000_000:
+        eval_duration = int(eval_duration * 1_000_000)
+
+    return total_duration, load_duration, prompt_eval_duration, eval_duration
+
+def logprobs_from_choice(choice):
+    logprobs = choice.get("logprobs")
+    if not isinstance(logprobs, dict):
+        return None
+
+    tokens = logprobs.get("tokens") or []
+    token_logprobs = logprobs.get("token_logprobs") or []
+    top_logprobs = logprobs.get("top_logprobs") or []
+    result = []
+    for index, token in enumerate(tokens):
+        entry = {
+            "token": token,
+            "logprob": token_logprobs[index] if index < len(token_logprobs) else None,
+        }
+        top_entries = []
+        raw_top = top_logprobs[index] if index < len(top_logprobs) else {}
+        if isinstance(raw_top, dict):
+            for top_token, top_logprob in raw_top.items():
+                top_entries.append({"token": top_token, "logprob": top_logprob})
+        if top_entries:
+            entry["top_logprobs"] = top_entries
+        result.append(entry)
+    return result or None
+
+def chat_message_from_choice(choice):
+    delta = choice.get("delta") or {}
+    message = choice.get("message") or {}
+    payload = {
+        "role": message.get("role") or "assistant",
+        "content": delta.get("content") or message.get("content") or "",
+    }
+    thinking = delta.get("reasoning_content") or delta.get("thinking") or message.get("reasoning_content") or message.get("thinking")
+    if thinking:
+        payload["thinking"] = thinking
+    tool_calls = delta.get("tool_calls") or message.get("tool_calls")
+    if tool_calls:
+        payload["tool_calls"] = tool_calls
+    images = message.get("images")
+    if images:
+        payload["images"] = images
+    return payload
+
+def apply_metrics(chunk, data, total_duration=None, load_duration=0):
+    prompt_eval_count, eval_count = usage_stats(data)
+    td, ld, ped, ed = timing_stats(data, total_duration, load_duration)
+    if td is not None:
+        chunk["total_duration"] = int(td)
+    if ld is not None:
+        chunk["load_duration"] = int(ld)
+    if prompt_eval_count is not None:
+        chunk["prompt_eval_count"] = int(prompt_eval_count)
+    if ped is not None:
+        chunk["prompt_eval_duration"] = int(ped)
+    if eval_count is not None:
+        chunk["eval_count"] = int(eval_count)
+    if ed is not None:
+        chunk["eval_duration"] = int(ed)
+    return chunk
+
+def ollama_chat_chunk(model_name, message=None, done=False, done_reason=None):
+    chunk = {
+        "model": public_model_name(model_name),
+        "created_at": utc_now(),
+        "message": message or {"role": "assistant", "content": ""},
+        "done": done,
+    }
+    if done_reason is not None:
+        chunk["done_reason"] = done_reason
+    return chunk
+
+def ollama_generate_chunk(model_name, content="", done=False, done_reason=None):
+    chunk = {
+        "model": public_model_name(model_name),
+        "created_at": utc_now(),
+        "response": content,
+        "done": done,
+    }
+    if done_reason is not None:
+        chunk["done_reason"] = done_reason
+    return chunk
 
 def get_model_info(model_name):
-    if ":" not in model_name: model_name += ":latest"
-    parts = model_name.split(":")
-    name, tag = parts[0], parts[1]
-    manifest_path = f"{OLLAMA_BASE}/manifests/registry.ollama.ai/library/{name}/{tag}"
-    if not os.path.exists(manifest_path):
-        manifest_path = f"{OLLAMA_BASE}/manifests/registry.ollama.ai/{name}/{tag}"
-    
-    if not os.path.exists(manifest_path): return None
-    
-    try:
-        with open(manifest_path, 'r') as f: manifest = json.load(f)
-        size = 0
-        digest = ""
-        for layer in manifest.get('layers', []):
-            if layer.get('mediaType', '').startswith('application/vnd.ollama.image.model'):
-                size = layer.get('size', 0)
-                digest = layer.get('digest', "")
-                break
-        return {
-            "size": size,
-            "digest": digest,
-            "details": {"format": "gguf", "family": "llama"}
-        }
-    except: return None
-
-def detect_current_model():
-    try:
-        if not os.path.exists(COMPOSE_FILE): return None
-        with open(COMPOSE_FILE, 'r') as f: content = f.read()
-        match = re.search(r'sha256-([a-f0-9]+)', content)
-        if not match: return None
-        target_hash = "sha256:" + match.group(1)
-        
-        manifest_base = f"{OLLAMA_BASE}/manifests/registry.ollama.ai"
-        for root, dirs, files in os.walk(manifest_base):
-            for file in files:
-                if "sha256" not in file:
-                    path = os.path.join(root, file)
-                    with open(path, 'r') as f:
-                        manifest = json.load(f)
-                        for layer in manifest.get('layers', []):
-                            if layer.get('digest') == target_hash:
-                                rel_path = os.path.relpath(path, manifest_base)
-                                parts = rel_path.split("/")
-                                tag = parts[-1]
-                                name = "/".join(parts[:-1])
-                                if name.startswith("library/"): name = name[8:]
-                                return f"{name}:{tag}"
-    except Exception as e:
-        logger.warning(f"Could not detect current model: {e}")
-    return None
+    manifest_path, manifest = load_local_manifest(model_name, require_complete=True)
+    if not manifest_path or manifest is None:
+        return None
+    return manifest_stats(manifest_path, manifest)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global client_httpx, current_model
+    global client_httpx
     client_httpx = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=60.0))
-    current_model = detect_current_model()
-    if current_model:
-        logger.info(f"Detected running model: {current_model}")
     yield
+    for task in list(model_unload_tasks.values()):
+        task.cancel()
     await client_httpx.aclose()
 
 app = FastAPI(lifespan=lifespan)
-client_docker = docker.from_env()
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -100,178 +681,287 @@ async def log_requests(request: Request, call_next):
     return response
 
 async def ensure_model(model_name: str):
-    global current_model
-    if current_model != model_name:
-        # Resolve to the actual tag name if it was passed as just the model name
-        if ":" not in model_name: model_name += ":latest"
-        
-        # Get hash from manifest
-        blob_hash = None
-        manifest_path = f"{OLLAMA_BASE}/manifests/registry.ollama.ai/library/{model_name.replace(':', '/')}"
-        if not os.path.exists(manifest_path):
-            manifest_path = f"{OLLAMA_BASE}/manifests/registry.ollama.ai/{model_name.replace(':', '/')}"
-        
-        if os.path.exists(manifest_path):
-            with open(manifest_path, 'r') as f: manifest = json.load(f)
-            for layer in manifest.get('layers', []):
-                if layer.get('mediaType', '').startswith('application/vnd.ollama.image.model'):
-                    blob_hash = layer.get('digest')
-                    break
-        
-        if not blob_hash: raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
-        
-        logger.info(f"Switching model to {model_name} (blob: {blob_hash})")
-        with open(COMPOSE_FILE, 'r') as f: content = f.read()
-        new_content = re.sub(r'sha256-[a-f0-9]+', blob_hash.replace(':', '-'), content)
-        with open(COMPOSE_FILE, 'w') as f: f.write(new_content)
+    model_name = with_default_tag(model_name)
+    resolved = await resolve_router_model(model_name, reload=True)
+    backend_model = resolved["backend_model"]
+    router_models = resolved["router_models"]
+    entry = resolved["entry"]
 
-        logger.info("Restarting llama-server container...")
-        client_docker.containers.get("llama-server").restart()
-        
-        for _ in range(120):
-            try:
-                resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/health")
-                if resp.status_code == 200:
-                    current_model = model_name
-                    logger.info(f"Model {model_name} ready.")
-                    return
-            except: pass
-            await asyncio.sleep(1)
-        raise HTTPException(status_code=504, detail="Engine startup timeout")
+    if MAX_LOADED_MODELS == 1:
+        for other in router_models:
+            if (other.get("id") != backend_model) and is_resident_status(router_entry_status(other)):
+                logger.info(f"Unloading backend model {other.get('id')} before loading {backend_model}")
+                await post_router_model_action("unload", other.get("id"))
+
+    if router_entry_status(entry) != "loaded":
+        logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
+        await post_router_model_action("load", backend_model)
+
+    for _ in range(ENGINE_STARTUP_TIMEOUT_SECONDS):
+        router_models = await fetch_router_models(reload=False)
+        for current in router_models:
+            if current.get("id") == backend_model:
+                status = router_entry_status(current)
+                if status == "loaded":
+                    return {
+                        "model_name": model_name,
+                        "backend_model": backend_model,
+                        "manifest_path": resolved["manifest_path"],
+                        "manifest": resolved["manifest"],
+                    }
+                if status == "unloaded" and (current.get("status") or {}).get("failed"):
+                    raise HTTPException(status_code=500, detail=f"Failed to load backend model {backend_model}")
+        await asyncio.sleep(1)
+    raise HTTPException(status_code=504, detail="Engine startup timeout")
 
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model")
+    keep_alive = effective_keep_alive(body.get("keep_alive"))
 
     async def stream_proxy():
         try:
+            started_ns = now_ns()
+            load_started_ns = now_ns()
             task = asyncio.create_task(ensure_model(model_name))
             while not task.done():
                 yield " " 
                 await asyncio.sleep(2)
-            await task
+            resolved = await task
+            load_duration = now_ns() - load_started_ns
+            payload = build_chat_payload(body, resolved["backend_model"])
             
-            # Extract relevant fields from original body to forward
-            llama_payload = {
-                "messages": body.get("messages"),
-                "stream": True,
-                "temperature": body.get("temperature", 0.7),
-                "top_p": body.get("top_p", 0.9),
-                "max_tokens": body.get("max_tokens", 2048),
-                "stop": body.get("stop", [])
-            }
-            # Handle Ollama-style 'options'
-            options = body.get("options", {})
-            if isinstance(options, dict):
-                for k, v in options.items():
-                    # Map common Ollama options to llama.cpp/OpenAI equivalents
-                    if k == "num_predict": llama_payload["max_tokens"] = v
-                    elif k == "stop": llama_payload["stop"] = v
-                    elif k == "temperature": llama_payload["temperature"] = v
-                    elif k == "top_p": llama_payload["top_p"] = v
-                    else: llama_payload[k] = v # Pass through others (like grammar!)
-
-            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=llama_payload) as resp:
+            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload) as resp:
+                resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line or "[DONE]" in line: continue
                     if line.startswith("data: "): line = line[6:]
                     try:
                         data = json.loads(line)
-                        choice = data["choices"][0]
-                        content = choice["delta"].get("content") or choice["message"].get("content") or ""
+                        choice = (data.get("choices") or [{}])[0]
+                        message = chat_message_from_choice(choice)
                         done = choice.get("finish_reason") is not None
-                        yield json.dumps({
-                            "model": model_name,
-                            "created_at": datetime.utcnow().isoformat() + "Z",
-                            "message": {"role": "assistant", "content": content},
-                            "done": done
-                        }) + "\n"
+                        chunk = ollama_chat_chunk(model_name, message, done, choice.get("finish_reason"))
+                        if done:
+                            apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                            logprobs = logprobs_from_choice(choice)
+                            if logprobs is not None:
+                                chunk["logprobs"] = logprobs
+                        yield json.dumps(chunk) + "\n"
                     except: continue
+            await apply_keep_alive_policy(model_name, keep_alive)
         except Exception as e:
             logger.error(f"Chat error: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
-    return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
+    if should_stream(body):
+        return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
+
+    try:
+        started_ns = now_ns()
+        load_started_ns = now_ns()
+        resolved = await ensure_model(model_name)
+        load_duration = now_ns() - load_started_ns
+        payload = build_chat_payload(body, resolved["backend_model"])
+        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        choice = (data.get("choices") or [{}])[0]
+        chunk = ollama_chat_chunk(model_name, chat_message_from_choice(choice), True, choice.get("finish_reason"))
+        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+        logprobs = logprobs_from_choice(choice)
+        if logprobs is not None:
+            chunk["logprobs"] = logprobs
+        await apply_keep_alive_policy(model_name, keep_alive)
+        return JSONResponse(chunk)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 @app.post("/api/generate")
 async def generate(request: Request):
     body = await request.json()
     model_name = body.get("model")
+    use_chat_backend = should_generate_via_chat(body)
+    endpoint = "/v1/chat/completions" if use_chat_backend else "/completion"
+    keep_alive = effective_keep_alive(body.get("keep_alive"))
 
     async def stream_proxy():
         try:
+            started_ns = now_ns()
+            load_started_ns = now_ns()
             task = asyncio.create_task(ensure_model(model_name))
             while not task.done():
                 yield " "
                 await asyncio.sleep(2)
-            await task
+            resolved = await task
+            load_duration = now_ns() - load_started_ns
+            payload = build_generate_chat_payload(body, resolved["backend_model"]) if use_chat_backend else build_generate_payload(body, resolved["backend_model"])
             
-            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/completion", json={"prompt": body.get("prompt"), "stream": True}) as resp:
+            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}{endpoint}", json=payload) as resp:
+                resp.raise_for_status()
                 async for line in resp.aiter_lines():
-                    if not line: continue
+                    if not line or "[DONE]" in line: continue
+                    if line.startswith("data: "): line = line[6:]
                     try:
                         data = json.loads(line)
-                        yield json.dumps({
-                            "model": model_name,
-                            "created_at": datetime.utcnow().isoformat() + "Z",
-                            "response": data.get("content") or "",
-                            "done": data.get("stop", False)
-                        }) + "\n"
+                        if use_chat_backend:
+                            choice = (data.get("choices") or [{}])[0]
+                            message = chat_message_from_choice(choice)
+                            done = choice.get("finish_reason") is not None
+                            chunk = ollama_generate_chunk(model_name, message.get("content", ""), done, choice.get("finish_reason"))
+                            if "thinking" in message:
+                                chunk["thinking"] = message["thinking"]
+                            if done:
+                                apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                logprobs = logprobs_from_choice(choice)
+                                if logprobs is not None:
+                                    chunk["logprobs"] = logprobs
+                        else:
+                            done = data.get("stop", False)
+                            done_reason = data.get("finish_reason") or ("stop" if done else None)
+                            chunk = ollama_generate_chunk(model_name, data.get("content") or "", done, done_reason)
+                            if data.get("thinking") is not None:
+                                chunk["thinking"] = data.get("thinking")
+                            if done:
+                                apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                if data.get("logprobs") is not None:
+                                    chunk["logprobs"] = data["logprobs"]
+                        yield json.dumps(chunk) + "\n"
                     except: continue
+            await apply_keep_alive_policy(model_name, keep_alive)
         except Exception as e:
             logger.error(f"Generate error: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
-    return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
+    if should_stream(body):
+        return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
+
+    try:
+        started_ns = now_ns()
+        load_started_ns = now_ns()
+        resolved = await ensure_model(model_name)
+        load_duration = now_ns() - load_started_ns
+        payload = build_generate_chat_payload(body, resolved["backend_model"]) if use_chat_backend else build_generate_payload(body, resolved["backend_model"])
+        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}{endpoint}", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        if use_chat_backend:
+            choice = (data.get("choices") or [{}])[0]
+            message = chat_message_from_choice(choice)
+            chunk = ollama_generate_chunk(model_name, message.get("content", ""), True, choice.get("finish_reason"))
+            if "thinking" in message:
+                chunk["thinking"] = message["thinking"]
+            logprobs = logprobs_from_choice(choice)
+            if logprobs is not None:
+                chunk["logprobs"] = logprobs
+        else:
+            done = data.get("stop", True)
+            done_reason = data.get("finish_reason") or ("stop" if done else None)
+            chunk = ollama_generate_chunk(model_name, data.get("content") or "", done, done_reason)
+            if data.get("thinking") is not None:
+                chunk["thinking"] = data.get("thinking")
+            if data.get("logprobs") is not None:
+                chunk["logprobs"] = data["logprobs"]
+        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+        await apply_keep_alive_policy(model_name, keep_alive)
+        return JSONResponse(chunk)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Generate error: {e}")
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 @app.get("/api/tags")
 async def tags():
     models = []
-    manifest_base = f"{OLLAMA_BASE}/manifests/registry.ollama.ai"
-    if os.path.exists(manifest_base):
-        for root, dirs, files in os.walk(manifest_base):
-            for file in files:
-                if "sha256" not in file:
-                    rel_path = os.path.relpath(os.path.join(root, file), manifest_base)
-                    parts = rel_path.split("/")
-                    if len(parts) >= 2:
-                        tag = parts[-1]
-                        name = "/".join(parts[:-1])
-                        if name.startswith("library/"): name = name[8:]
-                        models.append({
-                            "name": f"{name}:{tag}",
-                            "model": f"{name}:{tag}",
-                            "details": {"format": "gguf", "family": "llama"}
-                        })
+    for manifest_base, path, manifest in iter_local_manifests():
+        model_name = manifest_model_name(manifest_base, path)
+        if model_name:
+            info = manifest_stats(path, manifest)
+            models.append({
+                "name": model_name,
+                "model": model_name,
+                "modified_at": info["modified_at"],
+                "size": info["size"],
+                "digest": info["digest"],
+                "details": info["details"]
+            })
     return {"models": models}
+
+async def loaded_models_from_router():
+    router_models = await fetch_router_models(reload=False)
+    loaded = []
+    local_records = []
+    for manifest_base, path, manifest in iter_local_manifests():
+        model_name = manifest_model_name(manifest_base, path)
+        if model_name:
+            local_records.append({
+                "name": model_name,
+                "info": manifest_stats(path, manifest),
+                "candidates": router_model_candidates(model_name, manifest),
+            })
+
+    for entry in router_models:
+        if router_entry_status(entry) != "loaded":
+            continue
+        for record in local_records:
+            if router_entry_matches(entry, record["candidates"]):
+                loaded.append(record)
+                break
+    return loaded
 
 @app.get("/api/ps")
 async def ps():
-    global current_model
-    if not current_model: return {"models": []}
-    info = get_model_info(current_model)
-    if not info:
-        return {"models": [{
-            "name": current_model,
-            "model": current_model,
-            "size": 0,
-            "digest": "",
-            "details": {"format": "gguf", "family": "llama"},
-            "expires_at": "0001-01-01T00:00:00Z"
-        }]}
-    
-    return {"models": [{
-        "name": current_model,
-        "model": current_model,
-        "size": info["size"],
-        "digest": info["digest"],
+    models = []
+    for record in await loaded_models_from_router():
+        info = record["info"]
+        public_name = public_model_name(record["name"])
+        models.append({
+            "name": public_name,
+            "model": public_name,
+            "size": info["size"],
+            "digest": info["digest"],
+            "details": info["details"],
+            "expires_at": model_expires_at.get(public_name, "0001-01-01T00:00:00Z"),
+            "size_vram": info["size"],
+            "context_length": info["context_length"],
+        })
+    return {"models": models}
+
+@app.post("/api/show")
+async def show(request: Request):
+    body = await request.json()
+    model_name = body.get("model")
+    verbose = body.get("verbose", False)
+    if not model_name:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    manifest_path = None
+    for candidate in model_manifest_paths(model_name):
+        if os.path.exists(candidate):
+            manifest_path = candidate
+            break
+    if not manifest_path:
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
+
+    manifest = read_manifest(manifest_path)
+    if manifest is None or not is_model_complete(manifest):
+        raise HTTPException(status_code=409, detail=f"Model {model_name} is still downloading or incomplete.")
+
+    info = manifest_stats(manifest_path, manifest)
+    response = {
+        "parameters": info["parameters"],
+        "license": info["license"],
+        "template": info["template"],
+        "system": info["system"],
+        "capabilities": info["capabilities"],
+        "modified_at": info["modified_at"],
         "details": info["details"],
-        "expires_at": "0001-01-01T00:00:00Z",
-        "size_vram": info["size"]
-    }]}
+        "model_info": info["model_info"] if verbose else info["model_info"],
+    }
+    return JSONResponse(response)
 
 @app.get("/api/version")
 async def version():
-    return {"version": "0.3.1"}
+    return {"version": API_VERSION}
 
 if __name__ == "__main__":
     import uvicorn

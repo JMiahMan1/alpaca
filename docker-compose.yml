@@ -7,13 +7,12 @@ services:
       - "8080:8080"
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
-    environment:
-      - MODEL_PATH=/models/blobs/sha256-60e05f2100071479f596b964f89f510f057ce397ea22f2833a0cfe029bfc2463
     command: >
-      -m /models/blobs/sha256-60e05f2100071479f596b964f89f510f057ce397ea22f2833a0cfe029bfc2463
       --host 0.0.0.0
       --port 8080
+      --models-dir /models/blobs
       --n-gpu-layers 999
+      --sleep-idle-seconds 300
     deploy:
       resources:
         reservations:
@@ -31,8 +30,6 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/config
       - /usr/share/ollama/.ollama/models:/models:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
