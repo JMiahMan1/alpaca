@@ -8,9 +8,9 @@ services:
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
     environment:
-      - MODEL_PATH=/models/blobs/sha256-a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f
+      - MODEL_PATH=/models/blobs/sha256-60e05f2100071479f596b964f89f510f057ce397ea22f2833a0cfe029bfc2463
     command: >
-      -m /models/blobs/sha256-a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f
+      -m /models/blobs/sha256-60e05f2100071479f596b964f89f510f057ce397ea22f2833a0cfe029bfc2463
       --host 0.0.0.0
       --port 8080
       --n-gpu-layers 999
