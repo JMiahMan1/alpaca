@@ -30,7 +30,7 @@ router_model_lock = asyncio.Lock()
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://llama-server:8080")
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "/models")
 MODEL_NAMESPACE = os.getenv("MODEL_NAMESPACE", "registry.ollama.ai")
-ENGINE_STARTUP_TIMEOUT_SECONDS = int(os.getenv("ENGINE_STARTUP_TIMEOUT_SECONDS", "120"))
+ENGINE_STARTUP_TIMEOUT_SECONDS = int(os.getenv("ENGINE_STARTUP_TIMEOUT_SECONDS", "300"))
 API_VERSION = os.getenv("API_VERSION", "0.3.1")
 DEFAULT_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
 MAX_LOADED_MODELS = int(os.getenv("MAX_LOADED_MODELS", "1"))
@@ -78,7 +78,8 @@ def router_filename_for_model_name(model_name):
 
 
 def router_model_id_for_name(model_name):
-    return os.path.splitext(router_filename_for_model_name(model_name))[0]
+    # llama-server requires the exact filename (including .gguf) for lazy loading from --models-dir
+    return router_filename_for_model_name(model_name)
 
 
 def router_path_for_model_name(model_name):
@@ -808,35 +809,57 @@ async def ensure_model(model_name: str):
                             continue
                         raise
 
-        if router_entry_status(entry) != "loaded":
-            logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
-            try:
-                await post_router_model_action("load", backend_model)
-            except RouterManagementUnsupported:
-                logger.warning("Router load endpoint unavailable; relying on request-time model autoload.")
-                return {
-                    "model_name": model_name,
-                    "backend_model": backend_model,
-                    "manifest_path": resolved["manifest_path"],
-                    "manifest": resolved["manifest"],
-                }
+        # If already loaded, skip load entirely
+        if router_entry_status(entry) == "loaded":
+            logger.info(f"Model {backend_model} already loaded (status=loaded), proceeding.")
+            return {
+                "model_name": model_name,
+                "backend_model": backend_model,
+                "manifest_path": resolved["manifest_path"],
+                "manifest": resolved["manifest"],
+            }
 
-        for _ in range(ENGINE_STARTUP_TIMEOUT_SECONDS):
-            router_models = await fetch_router_models(reload=False)
-            for current in router_models:
-                if current.get("id") == backend_model:
-                    status = router_entry_status(current)
-                    if status == "loaded":
-                        return {
-                            "model_name": model_name,
-                            "backend_model": backend_model,
-                            "manifest_path": resolved["manifest_path"],
-                            "manifest": resolved["manifest"],
-                        }
-                    if status == "unloaded" and (current.get("status") or {}).get("failed"):
-                        raise HTTPException(status_code=500, detail=f"Failed to load backend model {backend_model}")
-            await asyncio.sleep(1)
-        raise HTTPException(status_code=504, detail="Engine startup timeout")
+        # Need to load — attempt load
+        logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
+        try:
+            await post_router_model_action("load", backend_model)
+        except RouterManagementUnsupported:
+            logger.warning("Router load endpoint unavailable; relying on request-time model autoload.")
+            return {
+                "model_name": model_name,
+                "backend_model": backend_model,
+                "manifest_path": resolved["manifest_path"],
+                "manifest": resolved["manifest"],
+            }
+        except httpx.HTTPStatusError as exc:
+            # 400 "model is already running" is harmless — another instance loaded it concurrently
+            if exc.response.status_code == 400:
+                try:
+                    payload = exc.response.json()
+                    msg = str(payload.get("error", {}).get("message", "")) if isinstance(payload, dict) else ""
+                except Exception:
+                    msg = exc.response.text
+                if "already running" in msg.lower() or "model is already running" in msg.lower():
+                    logger.info(f"Model {backend_model} already loaded (detected via 400), proceeding.")
+                    return {
+                        "model_name": model_name,
+                        "backend_model": backend_model,
+                        "manifest_path": resolved["manifest_path"],
+                        "manifest": resolved["manifest"],
+                    }
+                else:
+                    raise
+            else:
+                raise
+
+        # Load succeeded — model is ready (llama-server's /models/load is synchronous)
+        logger.info(f"Model {backend_model} loaded successfully.")
+        return {
+            "model_name": model_name,
+            "backend_model": backend_model,
+            "manifest_path": resolved["manifest_path"],
+            "manifest": resolved["manifest"],
+        }
 
 @app.post("/api/chat")
 async def chat(request: Request):
@@ -875,8 +898,12 @@ async def chat(request: Request):
                         yield json.dumps(chunk) + "\n"
                     except: continue
             await apply_keep_alive_policy(model_name, keep_alive)
+        except httpx.HTTPStatusError as e:
+            error_msg = f"Upstream error {e.response.status_code}: {e.response.text}"
+            logger.error(error_msg)
+            yield json.dumps({"error": error_msg}) + "\n"
         except Exception as e:
-            logger.error(f"Chat error: {e}")
+            logger.error(f"Stream error: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
@@ -960,8 +987,12 @@ async def generate(request: Request):
                         yield json.dumps(chunk) + "\n"
                     except: continue
             await apply_keep_alive_policy(model_name, keep_alive)
+        except httpx.HTTPStatusError as e:
+            error_msg = f"Upstream error {e.response.status_code}: {e.response.text}"
+            logger.error(error_msg)
+            yield json.dumps({"error": error_msg}) + "\n"
         except Exception as e:
-            logger.error(f"Generate error: {e}")
+            logger.error(f"Generate stream error: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
