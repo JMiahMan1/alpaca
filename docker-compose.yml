@@ -1,18 +1,43 @@
 services:
+  alpaca-indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    container_name: alpaca-indexer
+    restart: always
+    command: >
+      sh -lc "while true; do
+        python /app/alpaca-puller.py reindex;
+        sleep 15;
+      done"
+    volumes:
+      - /usr/share/ollama/.ollama/models:/models:ro
+      - ./.alpaca-router:/router-models
+    environment:
+      MODELS_DIR: /models
+      ROUTER_MODELS_DIR: /router-models
+
   llama-server:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    image: ghcr.io/thetom/llama-cpp-turboquant@sha256:fe33d9ca6d2331e1af4cde907475b3d3040eb7498e807165ff89db3770dacb04
     container_name: llama-server
     restart: always
     ports:
       - "8080:8080"
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
+      - ./.alpaca-router:/router-models
     command: >
       --host 0.0.0.0
       --port 8080
-      --models-dir /models/blobs
+      --models-dir /router-models
       --n-gpu-layers 999
+      --n-cpu-moe 41
+      --no-mmap
+      --cache-type-k turbo4
+      --cache-type-v turbo3
       --sleep-idle-seconds 300
+    depends_on:
+      - alpaca-indexer
     deploy:
       resources:
         reservations:
@@ -31,7 +56,11 @@ services:
       - "11434:11434"
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
+      - ./.alpaca-router:/router-models
+    environment:
+      ROUTER_MODELS_DIR: /router-models
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      - alpaca-indexer
       - llama-server

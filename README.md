@@ -22,6 +22,7 @@ This means Alpaca can behave like Ollama from the client perspective while still
 - `alpaca-proxy.py`: FastAPI proxy on port `11434`
 - `alpaca-puller.py`: standalone pull/remove utility for Ollama-format model storage
 - `docker-compose.yml`: router-mode `llama-server` plus proxy wiring
+- `alpaca-indexer`: sidecar scanner that mirrors local Ollama-discovered models into Alpaca's router index
 - `test_proxy_unit.py`: unit coverage for router resolution and keep-alive lifecycle
 
 ## Model Lifecycle
@@ -171,17 +172,85 @@ http://localhost:11434
 
 The bundled Compose file starts `llama-server` in router mode with:
 
-- `--models-dir /models/blobs`
+- `--models-dir /router-models`
 - `--sleep-idle-seconds 300`
+
+Alpaca keeps a separate router index in `./.alpaca-router`. It does not require creating extra directories inside the Ollama model store.
+The `alpaca-indexer` sidecar scans the existing local Ollama manifests and blobs and keeps that router index refreshed automatically.
 
 ## Pulling Models
 
 ```bash
 sudo python3 alpaca-puller.py pull llama3:8b
+sudo python3 alpaca-puller.py pull --source huggingface \
+  'Qwen/Qwen3.6-35B-A3B-GGUF:Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf' \
+  --name qwen3.6-35b-a3b:q4_k_m
 sudo python3 alpaca-puller.py remove llama3:8b
+sudo python3 alpaca-puller.py remove qwen3.6-35b-a3b:q4_k_m
 ```
 
-The puller only writes manifests after all required blobs are present, which keeps proxy discovery stable.
+The puller currently supports:
+
+- `pull <model>` from the Ollama registry with resumable layer downloads
+- `pull --source huggingface <repo:file.gguf>` to import a Hugging Face GGUF into the local Ollama manifest/blob store with resumable downloads
+- Hugging Face references in `hf://repo/file.gguf`, `repo:file.gguf`, or `https://huggingface.co/.../resolve/main/file.gguf` form
+- `--name <local-model>` to control the local Ollama model name created for Hugging Face imports
+- `reindex` to rebuild the named llama-server router index on demand, though the `alpaca-indexer` sidecar normally handles this automatically
+- atomic manifest writes after all required blobs are present
+- `remove <model>` with shared-blob protection so blobs used by other local models are not deleted
+- `--insecure` for HTTP access to a non-TLS Ollama registry endpoint
+
+The puller writes manifests only after all required blobs are present, which keeps proxy discovery stable.
+Each successful pull/import also creates a stable router-visible `.gguf` symlink under `./.alpaca-router`, so `llama-server` router mode can discover local Ollama and Hugging Face models by name without modifying the Ollama model directory layout.
+
+### Puller Usage Notes
+
+Ollama registry pull:
+
+```bash
+python3 alpaca-puller.py pull llama3:8b
+```
+
+Hugging Face GGUF import with an explicit local name:
+
+```bash
+python3 alpaca-puller.py pull --source huggingface \
+  'Qwen/Qwen3.6-35B-A3B-GGUF:Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf' \
+  --name qwen3.6-35b-a3b:q4_k_m
+```
+
+Hugging Face GGUF import with auto-detected source from a URL:
+
+```bash
+python3 alpaca-puller.py pull \
+  'https://huggingface.co/Qwen/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf' \
+  --name qwen3.6-35b-a3b:q4_k_m
+```
+
+If you omit `--name` for a Hugging Face import, Alpaca derives one from the repository and GGUF filename. Hugging Face downloads resume from the existing partial file if the transfer is interrupted. For private or gated repositories, set `HF_TOKEN` or `HUGGING_FACE_TOKEN` before running the puller.
+
+After switching `docker-compose.yml` to `--models-dir /router-models`, restart the stack. Existing Ollama models should be indexed automatically within a few seconds by `alpaca-indexer`:
+
+```bash
+docker compose up -d --build
+```
+
+## Verification
+
+To verify that a model is visible to both native Ollama and Alpaca, run:
+
+```bash
+python3 test-alpaca.py qwen3:8b
+```
+
+Use the local model name such as `qwen3:8b`. Do not use internal router filenames such as `qwen3--8b.gguf`; those are only implementation details for `llama-server` discovery.
+
+The verifier checks:
+
+- the Ollama manifest/blob files exist on disk
+- `ollama list` includes the model
+- `ollama show <model>` succeeds
+- Alpaca `/api/tags` includes the model
 
 ## Testing
 
@@ -196,7 +265,7 @@ Local unit tests:
 ```bash
 pip install -r requirements-dev.txt
 pip install fastapi uvicorn httpx
-pytest -q test_proxy_unit.py
+pytest -q test_proxy_unit.py test_puller_unit.py
 ```
 
 ## GitHub Actions
@@ -204,7 +273,7 @@ pytest -q test_proxy_unit.py
 GitHub Actions runs:
 
 - Python `3.11`
-- `pytest -q test_proxy_unit.py`
+- `pytest -q test_proxy_unit.py test_puller_unit.py`
 
 The workflow file is:
 
@@ -220,6 +289,8 @@ The CI coverage is focused on:
 - loaded-model filtering for `/api/ps`
 - non-stream `/api/chat` request mapping and Ollama-shaped responses
 - non-stream `/api/generate` request mapping, chat-backend routing, and `keep_alive` handling
+- puller model-name normalization
+- safe removal of shared versus unshared blobs
 
 ## Current Limits
 

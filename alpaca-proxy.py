@@ -23,6 +23,8 @@ if not logger.handlers:
 client_httpx = None
 model_expires_at = {}
 model_unload_tasks = {}
+router_management_supported = None
+router_model_lock = asyncio.Lock()
 
 # Configuration
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://llama-server:8080")
@@ -33,7 +35,14 @@ API_VERSION = os.getenv("API_VERSION", "0.3.1")
 DEFAULT_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
 MAX_LOADED_MODELS = int(os.getenv("MAX_LOADED_MODELS", "1"))
 ROUTER_MODELS_URL = f"{LLAMA_SERVER_URL}/models"
+ROUTER_MODELS_DIR = os.getenv("ROUTER_MODELS_DIR", "/router-models")
+LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS = float(os.getenv("LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS", "60"))
+LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv("LLAMA_SERVER_READ_TIMEOUT_SECONDS", "").strip()
 FOREVER_EXPIRES_AT = "9999-12-31T23:59:59Z"
+
+
+class RouterManagementUnsupported(RuntimeError):
+    pass
 
 def model_manifest_base():
     return os.path.join(OLLAMA_BASE, "manifests", MODEL_NAMESPACE)
@@ -58,6 +67,22 @@ def model_manifest_paths(model_name):
 
 def blob_path_for_digest(digest):
     return os.path.join(OLLAMA_BASE, "blobs", digest.replace(":", "-"))
+
+
+def router_filename_for_model_name(model_name):
+    normalized = with_default_tag(model_name)
+    name, tag = normalized.rsplit(":", 1)
+    flattened = f"{name}--{tag}".replace("/", "--")
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", flattened).strip("-.") or "model"
+    return f"{sanitized}.gguf"
+
+
+def router_model_id_for_name(model_name):
+    return os.path.splitext(router_filename_for_model_name(model_name))[0]
+
+
+def router_path_for_model_name(model_name):
+    return os.path.join(ROUTER_MODELS_DIR, router_filename_for_model_name(model_name))
 
 def normalize_digest(digest):
     return digest.split(":", 1)[1] if ":" in digest else digest
@@ -224,6 +249,12 @@ def load_local_manifest(model_name, require_complete=True):
 
 def router_model_candidates(model_name, manifest):
     candidates = []
+    router_path = router_path_for_model_name(model_name)
+    candidates.extend([
+        router_path,
+        os.path.basename(router_path),
+        os.path.splitext(os.path.basename(router_path))[0],
+    ])
     model_layer = manifest_layer(manifest, "application/vnd.ollama.image.model")
     digest = model_layer.get("digest", "")
     if digest:
@@ -491,6 +522,19 @@ async def resolve_router_model(model_name, reload=True):
                 "manifest": manifest,
                 "router_models": router_models,
             }
+            
+    fallback_id = router_model_id_for_name(resolved_name)
+    fallback_path = router_path_for_model_name(resolved_name)
+    if os.path.exists(fallback_path):
+        return {
+            "model_name": resolved_name,
+            "backend_model": fallback_id,
+            "entry": {"id": fallback_id, "path": fallback_path, "status": {"value": "unloaded"}},
+            "manifest_path": manifest_path,
+            "manifest": manifest,
+            "router_models": router_models,
+        }
+
     raise HTTPException(status_code=404, detail=f"Router could not discover backend model for {resolved_name}")
 
 def effective_keep_alive(keep_alive):
@@ -499,17 +543,62 @@ def effective_keep_alive(keep_alive):
 def is_resident_status(status):
     return status in {"loaded", "loading"}
 
+
+def upstream_timeout():
+    read_timeout = None
+    if LLAMA_SERVER_READ_TIMEOUT_SECONDS not in ("", "none", "None", "0", "0.0"):
+        read_timeout = float(LLAMA_SERVER_READ_TIMEOUT_SECONDS)
+    return httpx.Timeout(120.0, connect=LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS, read=read_timeout)
+
 async def post_router_model_action(action, backend_model):
-    resp = await client_httpx.post(f"{ROUTER_MODELS_URL}/{action}", json={"model": backend_model})
+    global router_management_supported
+    url = f"{ROUTER_MODELS_URL}/{action}"
+    resp = await client_httpx.post(url, json={"model": backend_model})
+    if resp.status_code == 404:
+        router_management_supported = False
+        raise RouterManagementUnsupported(url)
+    router_management_supported = True
     resp.raise_for_status()
     return resp.json()
+
+
+def is_ignorable_router_unload_error(exc):
+    response = exc.response
+    if response is None or response.status_code != 400:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    message = ""
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message", ""))
+        elif error is not None:
+            message = str(error)
+    if not message:
+        message = response.text
+    message = message.lower()
+    return "model is not found" in message or "model not found" in message
 
 async def unload_model(model_name):
     try:
         resolved = await resolve_router_model(model_name, reload=False)
     except HTTPException:
         return
-    await post_router_model_action("unload", resolved["backend_model"])
+    async with router_model_lock:
+        backend_model = resolved["backend_model"]
+        try:
+            await post_router_model_action("unload", backend_model)
+        except RouterManagementUnsupported:
+            logger.warning("Router model unload endpoint unavailable; skipping explicit unload.")
+            return
+        except httpx.HTTPStatusError as exc:
+            if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(backend_model):
+                logger.info(f"Router ignored unload for {backend_model}: {exc}")
+                return
+            raise
     model_expires_at.pop(public_model_name(model_name), None)
 
 def cancel_model_unload(model_name):
@@ -517,12 +606,27 @@ def cancel_model_unload(model_name):
     if task:
         task.cancel()
 
+def begin_model_request(model_name):
+    cancel_model_unload(model_name)
+    model_expires_at[public_model_name(model_name)] = "0001-01-01T00:00:00Z"
+
+async def router_model_is_still_resident(backend_model):
+    try:
+        for entry in await fetch_router_models(reload=False):
+            if entry.get("id") == backend_model:
+                return is_resident_status(router_entry_status(entry))
+    except Exception:
+        return True
+    return False
+
 async def unload_model_later(model_name, delay_seconds):
     try:
         await asyncio.sleep(delay_seconds)
         await unload_model(model_name)
     except asyncio.CancelledError:
         raise
+    except Exception as exc:
+        logger.warning(f"Deferred unload failed for {public_model_name(model_name)}: {exc}")
     finally:
         model_unload_tasks.pop(public_model_name(model_name), None)
 
@@ -666,7 +770,7 @@ def get_model_info(model_name):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global client_httpx
-    client_httpx = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=60.0))
+    client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
     yield
     for task in list(model_unload_tasks.values()):
         task.cancel()
@@ -682,37 +786,57 @@ async def log_requests(request: Request, call_next):
 
 async def ensure_model(model_name: str):
     model_name = with_default_tag(model_name)
-    resolved = await resolve_router_model(model_name, reload=True)
-    backend_model = resolved["backend_model"]
-    router_models = resolved["router_models"]
-    entry = resolved["entry"]
+    begin_model_request(model_name)
+    async with router_model_lock:
+        resolved = await resolve_router_model(model_name, reload=True)
+        backend_model = resolved["backend_model"]
+        router_models = resolved["router_models"]
+        entry = resolved["entry"]
 
-    if MAX_LOADED_MODELS == 1:
-        for other in router_models:
-            if (other.get("id") != backend_model) and is_resident_status(router_entry_status(other)):
-                logger.info(f"Unloading backend model {other.get('id')} before loading {backend_model}")
-                await post_router_model_action("unload", other.get("id"))
+        if MAX_LOADED_MODELS == 1:
+            for other in router_models:
+                if (other.get("id") != backend_model) and is_resident_status(router_entry_status(other)):
+                    logger.info(f"Unloading backend model {other.get('id')} before loading {backend_model}")
+                    try:
+                        await post_router_model_action("unload", other.get("id"))
+                    except RouterManagementUnsupported:
+                        logger.warning("Router unload endpoint unavailable; relying on router autoload behavior.")
+                        break
+                    except httpx.HTTPStatusError as exc:
+                        if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(other.get("id")):
+                            logger.info(f"Router ignored unload for {other.get('id')}: {exc}")
+                            continue
+                        raise
 
-    if router_entry_status(entry) != "loaded":
-        logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
-        await post_router_model_action("load", backend_model)
+        if router_entry_status(entry) != "loaded":
+            logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
+            try:
+                await post_router_model_action("load", backend_model)
+            except RouterManagementUnsupported:
+                logger.warning("Router load endpoint unavailable; relying on request-time model autoload.")
+                return {
+                    "model_name": model_name,
+                    "backend_model": backend_model,
+                    "manifest_path": resolved["manifest_path"],
+                    "manifest": resolved["manifest"],
+                }
 
-    for _ in range(ENGINE_STARTUP_TIMEOUT_SECONDS):
-        router_models = await fetch_router_models(reload=False)
-        for current in router_models:
-            if current.get("id") == backend_model:
-                status = router_entry_status(current)
-                if status == "loaded":
-                    return {
-                        "model_name": model_name,
-                        "backend_model": backend_model,
-                        "manifest_path": resolved["manifest_path"],
-                        "manifest": resolved["manifest"],
-                    }
-                if status == "unloaded" and (current.get("status") or {}).get("failed"):
-                    raise HTTPException(status_code=500, detail=f"Failed to load backend model {backend_model}")
-        await asyncio.sleep(1)
-    raise HTTPException(status_code=504, detail="Engine startup timeout")
+        for _ in range(ENGINE_STARTUP_TIMEOUT_SECONDS):
+            router_models = await fetch_router_models(reload=False)
+            for current in router_models:
+                if current.get("id") == backend_model:
+                    status = router_entry_status(current)
+                    if status == "loaded":
+                        return {
+                            "model_name": model_name,
+                            "backend_model": backend_model,
+                            "manifest_path": resolved["manifest_path"],
+                            "manifest": resolved["manifest"],
+                        }
+                    if status == "unloaded" and (current.get("status") or {}).get("failed"):
+                        raise HTTPException(status_code=500, detail=f"Failed to load backend model {backend_model}")
+            await asyncio.sleep(1)
+        raise HTTPException(status_code=504, detail="Engine startup timeout")
 
 @app.post("/api/chat")
 async def chat(request: Request):
@@ -777,6 +901,12 @@ async def chat(request: Request):
     except httpx.HTTPStatusError as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except httpx.TimeoutException as e:
+        logger.error(f"Chat upstream timeout: {e}")
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+    except httpx.RequestError as e:
+        logger.error(f"Chat upstream request error: {e}")
+        raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}")
 
 @app.post("/api/generate")
 async def generate(request: Request):
@@ -868,6 +998,12 @@ async def generate(request: Request):
     except httpx.HTTPStatusError as e:
         logger.error(f"Generate error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except httpx.TimeoutException as e:
+        logger.error(f"Generate upstream timeout: {e}")
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+    except httpx.RequestError as e:
+        logger.error(f"Generate upstream request error: {e}")
+        raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}")
 
 @app.get("/api/tags")
 async def tags():

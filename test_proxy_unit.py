@@ -4,13 +4,16 @@ import pathlib
 import tempfile
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 MODULE_PATH = pathlib.Path(__file__).with_name("alpaca-proxy.py")
 SPEC = importlib.util.spec_from_file_location("alpaca_proxy", MODULE_PATH)
 alpaca_proxy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(alpaca_proxy)
+REAL_POST_ROUTER_MODEL_ACTION = alpaca_proxy.post_router_model_action
+REAL_RESOLVE_ROUTER_MODEL = alpaca_proxy.resolve_router_model
 
 
 def make_manifest(digest="sha256:abcd", size=4):
@@ -81,6 +84,9 @@ def test_parse_keep_alive_variants():
 def test_router_model_candidates_include_blob_and_public_names():
     manifest = make_manifest(digest="sha256:deadbeef", size=1)
     candidates = alpaca_proxy.router_model_candidates("tinyllama:latest", manifest)
+    assert "/router-models/tinyllama--latest.gguf" in candidates
+    assert "tinyllama--latest.gguf" in candidates
+    assert "tinyllama--latest" in candidates
     assert "sha256-deadbeef" in candidates
     assert "sha256:deadbeef" in candidates
     assert "deadbeef" in candidates
@@ -136,6 +142,27 @@ async def test_apply_keep_alive_policy_negative_keeps_forever():
     assert alpaca_proxy.model_expires_at["tinyllama"] == alpaca_proxy.FOREVER_EXPIRES_AT
 
 
+def test_begin_model_request_cancels_pending_unload_and_clears_expiry():
+    class DummyTask:
+        def __init__(self):
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    task = DummyTask()
+    alpaca_proxy.model_unload_tasks.clear()
+    alpaca_proxy.model_expires_at.clear()
+    alpaca_proxy.model_unload_tasks["tinyllama"] = task
+    alpaca_proxy.model_expires_at["tinyllama"] = "2026-05-13T00:00:00Z"
+
+    alpaca_proxy.begin_model_request("tinyllama")
+
+    assert task.cancelled is True
+    assert "tinyllama" not in alpaca_proxy.model_unload_tasks
+    assert alpaca_proxy.model_expires_at["tinyllama"] == "0001-01-01T00:00:00Z"
+
+
 @pytest.mark.asyncio
 async def test_ensure_model_unloads_other_loaded_model_before_load():
     alpaca_proxy.fetch_router_models = AsyncMock(side_effect=[
@@ -166,6 +193,103 @@ async def test_ensure_model_unloads_other_loaded_model_before_load():
     assert resolved["backend_model"] == "sha256-deadbeef"
     alpaca_proxy.post_router_model_action.assert_any_await("unload", "other-model")
     alpaca_proxy.post_router_model_action.assert_any_await("load", "sha256-deadbeef")
+
+
+@pytest.mark.asyncio
+async def test_post_router_model_action_marks_management_unsupported_when_router_endpoint_missing():
+    response = httpx.Response(404, request=httpx.Request("POST", "http://llama-server:8080/models/load"))
+
+    alpaca_proxy.post_router_model_action = REAL_POST_ROUTER_MODEL_ACTION
+    alpaca_proxy.router_management_supported = None
+    alpaca_proxy.client_httpx = AsyncMock()
+    alpaca_proxy.client_httpx.post = AsyncMock(return_value=response)
+
+    with pytest.raises(alpaca_proxy.RouterManagementUnsupported):
+        await alpaca_proxy.post_router_model_action("load", "sha256-deadbeef")
+
+    assert alpaca_proxy.router_management_supported is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_falls_back_to_router_autoload_when_load_endpoint_missing():
+    alpaca_proxy.post_router_model_action = AsyncMock(
+        side_effect=alpaca_proxy.RouterManagementUnsupported("http://llama-server:8080/models/load")
+    )
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "model_name": "tinyllama:latest",
+        "backend_model": "sha256-deadbeef",
+        "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+        "manifest_path": "/tmp/manifest",
+        "manifest": make_manifest(digest="sha256:deadbeef"),
+        "router_models": [
+            {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+        ],
+    })
+    resolved = await alpaca_proxy.ensure_model("tinyllama")
+
+    assert resolved["backend_model"] == "sha256-deadbeef"
+    alpaca_proxy.post_router_model_action.assert_awaited_once_with("load", "sha256-deadbeef")
+
+
+@pytest.mark.asyncio
+async def test_resolve_router_model_falls_back_to_router_alias_when_symlink_exists(tmp_path):
+    alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
+    alpaca_proxy.OLLAMA_BASE = str(tmp_path / "models")
+    alpaca_proxy.ROUTER_MODELS_DIR = str(tmp_path / "router-models")
+    manifest_path = tmp_path / "models" / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(make_manifest(digest="sha256:deadbeef", size=4)))
+    blob_path = tmp_path / "models" / "blobs" / "sha256-deadbeef"
+    blob_path.parent.mkdir(parents=True)
+    blob_path.write_bytes(b"gguf")
+    config_path = tmp_path / "models" / "blobs" / "sha256-cfg"
+    config_path.write_bytes(b"{}")
+    router_path = tmp_path / "router-models" / "tinyllama--latest.gguf"
+    router_path.parent.mkdir(parents=True)
+    router_path.write_text("stub")
+    alpaca_proxy.fetch_router_models = AsyncMock(return_value=[])
+
+    resolved = await alpaca_proxy.resolve_router_model("tinyllama", reload=False)
+
+    assert resolved["backend_model"] == "tinyllama--latest"
+    assert resolved["entry"]["path"] == str(router_path)
+
+
+@pytest.mark.asyncio
+async def test_unload_model_ignores_router_400_model_not_found():
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "http://llama-server:8080/models/unload"),
+        json={"error": {"message": "model is not found"}},
+    )
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "backend_model": "tinyllama--latest",
+    })
+    alpaca_proxy.post_router_model_action = AsyncMock(
+        side_effect=httpx.HTTPStatusError("bad request", request=response.request, response=response)
+    )
+
+    await alpaca_proxy.unload_model("tinyllama")
+
+
+@pytest.mark.asyncio
+async def test_unload_model_ignores_router_400_when_backend_is_already_not_resident():
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "http://llama-server:8080/models/unload"),
+        json={"error": {"message": "cannot unload model"}},
+    )
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "backend_model": "tinyllama--latest",
+    })
+    alpaca_proxy.post_router_model_action = AsyncMock(
+        side_effect=httpx.HTTPStatusError("bad request", request=response.request, response=response)
+    )
+    alpaca_proxy.fetch_router_models = AsyncMock(return_value=[
+        {"id": "tinyllama--latest", "status": {"value": "unloaded"}},
+    ])
+
+    await alpaca_proxy.unload_model("tinyllama")
 
 
 @pytest.mark.asyncio
@@ -222,6 +346,23 @@ async def test_chat_endpoint_maps_request_and_returns_ollama_shape():
 
 
 @pytest.mark.asyncio
+async def test_chat_endpoint_returns_504_on_upstream_timeout():
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.client_httpx = AsyncMock()
+    alpaca_proxy.client_httpx.post = AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await alpaca_proxy.chat(make_request("/api/chat", {
+            "model": "tinyllama",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }))
+
+    assert excinfo.value.status_code == 504
+    assert "timed out" in excinfo.value.detail.lower()
+
+
+@pytest.mark.asyncio
 async def test_generate_endpoint_uses_chat_backend_for_system_and_respects_keep_alive_zero():
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
@@ -254,6 +395,23 @@ async def test_generate_endpoint_uses_chat_backend_for_system_and_respects_keep_
     assert mock_http.calls[0]["json"]["model"] == "router-backend"
     assert mock_http.calls[0]["json"]["thinking"] is True
     alpaca_proxy.apply_keep_alive_policy.assert_awaited_once_with("tinyllama", 0)
+
+
+@pytest.mark.asyncio
+async def test_generate_endpoint_returns_504_on_upstream_timeout():
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.client_httpx = AsyncMock()
+    alpaca_proxy.client_httpx.post = AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await alpaca_proxy.generate(make_request("/api/generate", {
+            "model": "tinyllama",
+            "prompt": "hi",
+            "stream": False,
+        }))
+
+    assert excinfo.value.status_code == 504
+    assert "timed out" in excinfo.value.detail.lower()
 
 
 @pytest.mark.asyncio

@@ -20,4 +20,4 @@ jobs:
       - name: Run lint
         run: ruff check .
       - name: Run tests
-        run: pytest -q test_proxy_unit.py
+        run: pytest -q test_proxy_unit.py test_puller_unit.py
