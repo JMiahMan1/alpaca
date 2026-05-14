@@ -318,6 +318,7 @@ OLLAMA_OPTION_MAP = {
     "grammar_lazy": "grammar_lazy",
     "cache_prompt": "cache_prompt",
     "image_data": "image_data",
+    "enable_thinking": "thinking",  # qwen3-style: enable_thinking=False disables reasoning phase
 }
 
 DIRECT_LLAMA_FIELDS = {
@@ -349,6 +350,7 @@ DIRECT_LLAMA_FIELDS = {
     "top_logprobs",
     "thinking",
     "reasoning_format",
+    "enable_thinking",  # qwen3-style thinking control; mapped → thinking by OLLAMA_OPTION_MAP
 }
 
 def utc_now():
