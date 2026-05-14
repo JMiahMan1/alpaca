@@ -456,6 +456,8 @@ def build_generate_chat_payload(body, backend_model):
     apply_format_parameter(payload, body)
     if body.get("think") is not None:
         payload["thinking"] = body["think"]
+    if body.get("enable_thinking") is not None:
+        payload["thinking"] = body["enable_thinking"]
     return payload
 
 def build_chat_payload(body, backend_model):
@@ -473,6 +475,8 @@ def build_chat_payload(body, backend_model):
     apply_format_parameter(payload, body)
     if body.get("think") is not None:
         payload["thinking"] = body["think"]
+    if body.get("enable_thinking") is not None:
+        payload["thinking"] = body["enable_thinking"]
     return payload
 
 def build_generate_payload(body, backend_model):
