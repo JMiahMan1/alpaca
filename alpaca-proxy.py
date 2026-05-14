@@ -871,11 +871,10 @@ async def chat(request: Request):
             try:
                 started_ns = now_ns()
                 load_started_ns = now_ns()
-                task = asyncio.create_task(ensure_model(model_name))
-                while not task.done():
-                    yield " "
-                    await asyncio.sleep(2)
-                resolved = await task
+                # Await directly — do NOT use create_task here.
+                # create_task lets concurrent requests race past router_model_lock,
+                # causing two models to load simultaneously and OOM the GPU.
+                resolved = await ensure_model(model_name)
                 load_duration = now_ns() - load_started_ns
                 payload = build_chat_payload(body, resolved["backend_model"])
                 
@@ -913,19 +912,18 @@ async def chat(request: Request):
                     
                     logger.info(f"[CHAT] Streaming completed after {chunk_count} lines")
                 await apply_keep_alive_policy(model_name, keep_alive)
-            await apply_keep_alive_policy(model_name, keep_alive)
-        except httpx.HTTPStatusError as e:
-            try:
-                await e.response.aread()
-                body_text = e.response.text
-            except Exception:
-                body_text = "<unreadable>"
-            error_msg = f"Upstream error {e.response.status_code}: {body_text}"
-            logger.error(error_msg)
-            yield json.dumps({"error": error_msg}) + "\n"
-        except Exception as e:
-            logger.error(f"Stream error: {e}")
-            yield json.dumps({"error": str(e)}) + "\n"
+            except httpx.HTTPStatusError as e:
+                try:
+                    await e.response.aread()
+                    body_text = e.response.text
+                except Exception:
+                    body_text = "<unreadable>"
+                error_msg = f"Upstream error {e.response.status_code}: {body_text}"
+                logger.error(error_msg)
+                yield json.dumps({"error": error_msg}) + "\n"
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+                yield json.dumps({"error": str(e)}) + "\n"
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
 
@@ -968,11 +966,10 @@ async def generate(request: Request):
         try:
             started_ns = now_ns()
             load_started_ns = now_ns()
-            task = asyncio.create_task(ensure_model(model_name))
-            while not task.done():
-                yield " "
-                await asyncio.sleep(2)
-            resolved = await task
+            # Await directly — do NOT use create_task here.
+            # create_task lets concurrent requests race past router_model_lock,
+            # causing two models to load simultaneously and OOM the GPU.
+            resolved = await ensure_model(model_name)
             load_duration = now_ns() - load_started_ns
             payload = build_generate_chat_payload(body, resolved["backend_model"]) if use_chat_backend else build_generate_payload(body, resolved["backend_model"])
             
@@ -1009,7 +1006,12 @@ async def generate(request: Request):
                     except: continue
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:
-            error_msg = f"Upstream error {e.response.status_code}: {e.response.text}"
+            try:
+                await e.response.aread()
+                body_text = e.response.text
+            except Exception:
+                body_text = "<unreadable>"
+            error_msg = f"Upstream error {e.response.status_code}: {body_text}"
             logger.error(error_msg)
             yield json.dumps({"error": error_msg}) + "\n"
         except Exception as e:
