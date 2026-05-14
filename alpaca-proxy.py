@@ -867,39 +867,60 @@ async def chat(request: Request):
     model_name = body.get("model")
     keep_alive = effective_keep_alive(body.get("keep_alive"))
 
-    async def stream_proxy():
-        try:
-            started_ns = now_ns()
-            load_started_ns = now_ns()
-            task = asyncio.create_task(ensure_model(model_name))
-            while not task.done():
-                yield " " 
-                await asyncio.sleep(2)
-            resolved = await task
-            load_duration = now_ns() - load_started_ns
-            payload = build_chat_payload(body, resolved["backend_model"])
-            
-            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or "[DONE]" in line: continue
-                    if line.startswith("data: "): line = line[6:]
-                    try:
-                        data = json.loads(line)
-                        choice = (data.get("choices") or [{}])[0]
-                        message = chat_message_from_choice(choice)
-                        done = choice.get("finish_reason") is not None
-                        chunk = ollama_chat_chunk(model_name, message, done, choice.get("finish_reason"))
-                        if done:
-                            apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
-                            logprobs = logprobs_from_choice(choice)
-                            if logprobs is not None:
-                                chunk["logprobs"] = logprobs
-                        yield json.dumps(chunk) + "\n"
-                    except: continue
+        async def stream_proxy():
+            try:
+                started_ns = now_ns()
+                load_started_ns = now_ns()
+                task = asyncio.create_task(ensure_model(model_name))
+                while not task.done():
+                    yield " "
+                    await asyncio.sleep(2)
+                resolved = await task
+                load_duration = now_ns() - load_started_ns
+                payload = build_chat_payload(body, resolved["backend_model"])
+                
+                logger.info(f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')}, has_messages={len(payload.get('messages', [])) > 0}")
+                
+                async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload) as resp:
+                    logger.info(f"[CHAT] Upstream response status: {resp.status_code}")
+                    logger.info(f"[CHAT] Upstream response headers: {dict(resp.headers)}")
+                    resp.raise_for_status()
+                    
+                    chunk_count = 0
+                    async for line in resp.aiter_lines():
+                        chunk_count += 1
+                        logger.info(f"[CHAT] Raw line #{chunk_count}: {line!r}")
+                        if not line or "[DONE]" in line: continue
+                        if line.startswith("data: "): line = line[6:]
+                        try:
+                            data = json.loads(line)
+                            choice = (data.get("choices") or [{}])[0]
+                            message = chat_message_from_choice(choice)
+                            done = choice.get("finish_reason") is not None
+                            chunk = ollama_chat_chunk(model_name, message, done, choice.get("finish_reason"))
+                            if done:
+                                apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                logprobs = logprobs_from_choice(choice)
+                                if logprobs is not None:
+                                    chunk["logprobs"] = logprobs
+                            yield json.dumps(chunk) + "\n"
+                        except json.JSONDecodeError as e:
+                            logger.error(f"[CHAT] JSON parse error: {e} | line: {line!r}")
+                            raise
+                        except Exception as e:
+                            logger.warning(f"[CHAT] Error processing line: {e} | line: {line!r}")
+                            continue
+                    
+                    logger.info(f"[CHAT] Streaming completed after {chunk_count} lines")
+                await apply_keep_alive_policy(model_name, keep_alive)
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:
-            error_msg = f"Upstream error {e.response.status_code}: {e.response.text}"
+            try:
+                await e.response.aread()
+                body_text = e.response.text
+            except Exception:
+                body_text = "<unreadable>"
+            error_msg = f"Upstream error {e.response.status_code}: {body_text}"
             logger.error(error_msg)
             yield json.dumps({"error": error_msg}) + "\n"
         except Exception as e:
