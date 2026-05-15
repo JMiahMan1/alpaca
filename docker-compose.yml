@@ -31,11 +31,10 @@ services:
       --port 8080
       --models-dir /router-models
       --n-gpu-layers 999
-      --n-cpu-moe 41
+      --n-cpu-moe 48
       --no-mmap
       --cache-type-k turbo4
       --cache-type-v turbo3
-      --sleep-idle-seconds 300
     depends_on:
       - alpaca-indexer
     deploy:
