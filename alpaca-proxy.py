@@ -60,8 +60,12 @@ MAX_LOADED_MODELS = int(os.getenv("MAX_LOADED_MODELS", "1"))
 ROUTER_MODELS_URL = f"{LLAMA_SERVER_URL}/models"
 ROUTER_MODELS_DIR = os.getenv("ROUTER_MODELS_DIR", "/router-models")
 LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS = float(os.getenv("LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS", "60"))
-LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv("LLAMA_SERVER_READ_TIMEOUT_SECONDS", "").strip()
+LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv("LLAMA_SERVER_READ_TIMEOUT_SECONDS", "600").strip() # Default to 600s
 FOREVER_EXPIRES_AT = "9999-12-31T23:59:59Z"
+
+# Reference counting for active requests to prevent unloading in-use models
+active_requests = {}
+active_requests_lock = asyncio.Condition()
 
 
 class RouterManagementUnsupported(RuntimeError):
@@ -578,12 +582,20 @@ def upstream_timeout():
     read_timeout = None
     if LLAMA_SERVER_READ_TIMEOUT_SECONDS not in ("", "none", "None", "0", "0.0"):
         read_timeout = float(LLAMA_SERVER_READ_TIMEOUT_SECONDS)
-    return httpx.Timeout(120.0, connect=LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS, read=read_timeout)
+    # Increase base timeout to 600s to match Raven expectations
+    return httpx.Timeout(600.0, connect=LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS, read=read_timeout)
 
-async def post_router_model_action(action, backend_model):
+async def post_router_model_action(action, payload):
     global router_management_supported
     url = f"{ROUTER_MODELS_URL}/{action}"
-    resp = await client_httpx.post(url, json={"model": backend_model})
+    
+    # If payload is just a string, wrap it. If it's a dict, use it as is.
+    if isinstance(payload, str):
+        json_body = {"model": payload}
+    else:
+        json_body = payload
+
+    resp = await client_httpx.post(url, json=json_body)
     if resp.status_code == 404:
         router_management_supported = False
         raise RouterManagementUnsupported(url)
@@ -825,9 +837,10 @@ async def get_logs(limit: int = 100):
     logs = list(LOG_BUFFER)
     return {"logs": logs[-limit:]}
 
-async def ensure_model(model_name: str):
+async def ensure_model(model_name: str, options: dict = None):
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
+    
     async with router_model_lock:
         resolved = await resolve_router_model(model_name, reload=True)
         backend_model = resolved["backend_model"]
@@ -836,16 +849,23 @@ async def ensure_model(model_name: str):
 
         if MAX_LOADED_MODELS == 1:
             for other in router_models:
-                if (other.get("id") != backend_model) and is_resident_status(router_entry_status(other)):
-                    logger.info(f"Unloading backend model {other.get('id')} before loading {backend_model}")
+                other_id = other.get("id")
+                if (other_id != backend_model) and is_resident_status(router_entry_status(other)):
+                    # Wait for active requests on the model we are about to unload
+                    async with active_requests_lock:
+                        while active_requests.get(other_id, 0) > 0:
+                            logger.info(f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading.")
+                            await active_requests_lock.wait()
+                    
+                    logger.info(f"Unloading backend model {other_id} before loading {backend_model}")
                     try:
-                        await post_router_model_action("unload", other.get("id"))
+                        await post_router_model_action("unload", other_id)
                     except RouterManagementUnsupported:
                         logger.warning("Router unload endpoint unavailable; relying on router autoload behavior.")
                         break
                     except httpx.HTTPStatusError as exc:
-                        if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(other.get("id")):
-                            logger.info(f"Router ignored unload for {other.get('id')}: {exc}")
+                        if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(other_id):
+                            logger.info(f"Router ignored unload for {other_id}: {exc}")
                             continue
                         raise
 
@@ -859,10 +879,24 @@ async def ensure_model(model_name: str):
                 "manifest": resolved["manifest"],
             }
 
-        # Need to load — attempt load
+        # Need to load — attempt load with optimized parameters
         logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
+        
+        # Optimization: Pass n_ctx and other flags to the load call if provided in options
+        load_payload = {"model": backend_model}
+        if options:
+            n_ctx = options.get("num_ctx") or options.get("n_ctx")
+            if n_ctx:
+                load_payload["n_ctx"] = int(n_ctx)
+                logger.info(f"Setting n_ctx={n_ctx} for model load.")
+        
+        # Always use acceleration flags
+        load_payload["n_gpu_layers"] = -1
+        load_payload["use_mmap"] = True
+        load_payload["flash_attn"] = True
+
         try:
-            await post_router_model_action("load", backend_model)
+            await post_router_model_action("load", load_payload)
         except RouterManagementUnsupported:
             logger.warning("Router load endpoint unavailable; relying on request-time model autoload.")
             return {
@@ -872,7 +906,7 @@ async def ensure_model(model_name: str):
                 "manifest": resolved["manifest"],
             }
         except httpx.HTTPStatusError as exc:
-            # 400 "model is already running" is harmless — another instance loaded it concurrently
+            # 400 "model is already running" is harmless
             if exc.response.status_code == 400:
                 try:
                     payload = exc.response.json()
@@ -892,7 +926,7 @@ async def ensure_model(model_name: str):
             else:
                 raise
 
-        # Load succeeded — model is ready (llama-server's /models/load is synchronous)
+        # Load succeeded
         logger.info(f"Model {backend_model} loaded successfully.")
         return {
             "model_name": model_name,
@@ -908,28 +942,27 @@ async def chat(request: Request):
     keep_alive = effective_keep_alive(body.get("keep_alive"))
 
     async def stream_proxy():
+        resolved_backend = None
         try:
             started_ns = now_ns()
             load_started_ns = now_ns()
-            # Await directly — do NOT use create_task here.
-            # create_task lets concurrent requests race past router_model_lock,
-            # causing two models to load simultaneously and OOM the GPU.
-            resolved = await ensure_model(model_name)
+            resolved = await ensure_model(model_name, options=body.get("options"))
+            resolved_backend = resolved["backend_model"]
+            
+            # Increment reference count
+            async with active_requests_lock:
+                active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
+                logger.info(f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+
             load_duration = now_ns() - load_started_ns
-            payload = build_chat_payload(body, resolved["backend_model"])
+            payload = build_chat_payload(body, resolved_backend)
             
             request_id = getattr(request.state, "request_id", "N/A")
-            logger.info(f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')}, has_messages={len(payload.get('messages', [])) > 0}", extra={"request_id": request_id})
+            logger.info(f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')}", extra={"request_id": request_id})
             
             async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload) as resp:
-                logger.info(f"[CHAT] Upstream response status: {resp.status_code}", extra={"request_id": request_id})
-                logger.info(f"[CHAT] Upstream response headers: {dict(resp.headers)}", extra={"request_id": request_id})
                 resp.raise_for_status()
-                
-                chunk_count = 0
                 async for line in resp.aiter_lines():
-                    chunk_count += 1
-                    logger.info(f"[CHAT] Raw line #{chunk_count}: {line!r}")
                     if not line or "[DONE]" in line: continue
                     if line.startswith("data: "): line = line[6:]
                     try:
@@ -940,18 +973,8 @@ async def chat(request: Request):
                         chunk = ollama_chat_chunk(model_name, message, done, choice.get("finish_reason"))
                         if done:
                             apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
-                            logprobs = logprobs_from_choice(choice)
-                            if logprobs is not None:
-                                chunk["logprobs"] = logprobs
                         yield json.dumps(chunk) + "\n"
-                    except json.JSONDecodeError as e:
-                        logger.error(f"[CHAT] JSON parse error: {e} | line: {line!r}")
-                        raise
-                    except Exception as e:
-                        logger.warning(f"[CHAT] Error processing line: {e} | line: {line!r}")
-                        continue
-                
-                logger.info(f"[CHAT] Streaming completed after {chunk_count} lines")
+                    except: continue
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:
             try:
@@ -965,15 +988,28 @@ async def chat(request: Request):
         except Exception as e:
             logger.error(f"Stream error: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
+        finally:
+            if resolved_backend:
+                async with active_requests_lock:
+                    active_requests[resolved_backend] -= 1
+                    logger.info(f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+                    active_requests_lock.notify_all()
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
 
+    resolved_backend = None
     try:
         started_ns = now_ns()
         load_started_ns = now_ns()
-        resolved = await ensure_model(model_name)
+        resolved = await ensure_model(model_name, options=body.get("options"))
+        resolved_backend = resolved["backend_model"]
+
+        async with active_requests_lock:
+            active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
+            logger.info(f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+
         load_duration = now_ns() - load_started_ns
-        payload = build_chat_payload(body, resolved["backend_model"])
+        payload = build_chat_payload(body, resolved_backend)
         resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -994,6 +1030,12 @@ async def chat(request: Request):
     except httpx.RequestError as e:
         logger.error(f"Chat upstream request error: {e}")
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}")
+    finally:
+        if resolved_backend:
+            async with active_requests_lock:
+                active_requests[resolved_backend] -= 1
+                logger.info(f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+                active_requests_lock.notify_all()
 
 @app.post("/api/generate")
 async def generate(request: Request):
@@ -1004,15 +1046,20 @@ async def generate(request: Request):
     keep_alive = effective_keep_alive(body.get("keep_alive"))
 
     async def stream_proxy():
+        resolved_backend = None
         try:
             started_ns = now_ns()
             load_started_ns = now_ns()
-            # Await directly — do NOT use create_task here.
-            # create_task lets concurrent requests race past router_model_lock,
-            # causing two models to load simultaneously and OOM the GPU.
-            resolved = await ensure_model(model_name)
+            resolved = await ensure_model(model_name, options=body.get("options"))
+            resolved_backend = resolved["backend_model"]
+
+            # Increment reference count
+            async with active_requests_lock:
+                active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
+                logger.info(f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+
             load_duration = now_ns() - load_started_ns
-            payload = build_generate_chat_payload(body, resolved["backend_model"]) if use_chat_backend else build_generate_payload(body, resolved["backend_model"])
+            payload = build_generate_chat_payload(body, resolved_backend) if use_chat_backend else build_generate_payload(body, resolved_backend)
             
             async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}{endpoint}", json=payload) as resp:
                 resp.raise_for_status()
@@ -1030,9 +1077,6 @@ async def generate(request: Request):
                                 chunk["thinking"] = message["thinking"]
                             if done:
                                 apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
-                                logprobs = logprobs_from_choice(choice)
-                                if logprobs is not None:
-                                    chunk["logprobs"] = logprobs
                         else:
                             done = data.get("stop", False)
                             done_reason = data.get("finish_reason") or ("stop" if done else None)
@@ -1041,8 +1085,6 @@ async def generate(request: Request):
                                 chunk["thinking"] = data.get("thinking")
                             if done:
                                 apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
-                                if data.get("logprobs") is not None:
-                                    chunk["logprobs"] = data["logprobs"]
                         yield json.dumps(chunk) + "\n"
                     except: continue
             await apply_keep_alive_policy(model_name, keep_alive)
@@ -1058,15 +1100,28 @@ async def generate(request: Request):
         except Exception as e:
             logger.error(f"Generate stream error: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
+        finally:
+            if resolved_backend:
+                async with active_requests_lock:
+                    active_requests[resolved_backend] -= 1
+                    logger.info(f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+                    active_requests_lock.notify_all()
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
 
+    resolved_backend = None
     try:
         started_ns = now_ns()
         load_started_ns = now_ns()
-        resolved = await ensure_model(model_name)
+        resolved = await ensure_model(model_name, options=body.get("options"))
+        resolved_backend = resolved["backend_model"]
+
+        async with active_requests_lock:
+            active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
+            logger.info(f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+
         load_duration = now_ns() - load_started_ns
-        payload = build_generate_chat_payload(body, resolved["backend_model"]) if use_chat_backend else build_generate_payload(body, resolved["backend_model"])
+        payload = build_generate_chat_payload(body, resolved_backend) if use_chat_backend else build_generate_payload(body, resolved_backend)
         resp = await client_httpx.post(f"{LLAMA_SERVER_URL}{endpoint}", json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -1076,17 +1131,12 @@ async def generate(request: Request):
             chunk = ollama_generate_chunk(model_name, message.get("content", ""), True, choice.get("finish_reason"))
             if "thinking" in message:
                 chunk["thinking"] = message["thinking"]
-            logprobs = logprobs_from_choice(choice)
-            if logprobs is not None:
-                chunk["logprobs"] = logprobs
         else:
             done = data.get("stop", True)
             done_reason = data.get("finish_reason") or ("stop" if done else None)
             chunk = ollama_generate_chunk(model_name, data.get("content") or "", done, done_reason)
             if data.get("thinking") is not None:
                 chunk["thinking"] = data.get("thinking")
-            if data.get("logprobs") is not None:
-                chunk["logprobs"] = data["logprobs"]
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
         await apply_keep_alive_policy(model_name, keep_alive)
         return JSONResponse(chunk)
@@ -1099,6 +1149,12 @@ async def generate(request: Request):
     except httpx.RequestError as e:
         logger.error(f"Generate upstream request error: {e}")
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}")
+    finally:
+        if resolved_backend:
+            async with active_requests_lock:
+                active_requests[resolved_backend] -= 1
+                logger.info(f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}")
+                active_requests_lock.notify_all()
 
 @app.get("/api/tags")
 async def tags():
