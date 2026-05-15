@@ -11,14 +11,37 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-# Precise logging setup
+from collections import deque
+import uuid
+
+# Precise logging setup with memory buffer
+LOG_BUFFER = deque(maxlen=1000)
+
+class DequeHandler(logging.Handler):
+    def emit(self, record):
+        LOG_BUFFER.append(self.format(record))
+
 logger = logging.getLogger("alpaca-proxy")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    stream_handler = logging.StreamHandler()
+    deque_handler = DequeHandler()
+    formatter = logging.Formatter('%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - [%(request_id)s] %(message)s', datefmt='%Y-%m-%dT%H:%M:%S')
+    
+    stream_handler.setFormatter(formatter)
+    deque_handler.setFormatter(formatter)
+    
+    logger.addHandler(stream_handler)
+    logger.addHandler(deque_handler)
+
+# Custom filter to ensure request_id is always present
+class RequestIDFilter(logging.Filter):
+    def filter(self, record):
+        if not hasattr(record, 'request_id'):
+            record.request_id = 'N/A'
+        return True
+
+logger.addFilter(RequestIDFilter())
 
 client_httpx = None
 model_expires_at = {}
@@ -787,9 +810,20 @@ app = FastAPI(lifespan=lifespan)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    logger.info(f"Hit: {request.method} {request.url.path}")
+    request_id = str(uuid.uuid4())[:8]
+    request.state.request_id = request_id
+    logger.info(f"Hit: {request.method} {request.url.path}", extra={"request_id": request_id})
+    start_time = time.time()
     response = await call_next(request)
+    duration = time.time() - start_time
+    logger.info(f"Finished: {request.method} {request.url.path} in {duration:.3f}s", extra={"request_id": request_id})
     return response
+
+@app.get("/api/logs")
+async def get_logs(limit: int = 100):
+    """Returns the last N lines from the in-memory log buffer."""
+    logs = list(LOG_BUFFER)
+    return {"logs": logs[-limit:]}
 
 async def ensure_model(model_name: str):
     model_name = with_default_tag(model_name)
@@ -884,11 +918,12 @@ async def chat(request: Request):
             load_duration = now_ns() - load_started_ns
             payload = build_chat_payload(body, resolved["backend_model"])
             
-            logger.info(f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')}, has_messages={len(payload.get('messages', [])) > 0}")
+            request_id = getattr(request.state, "request_id", "N/A")
+            logger.info(f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')}, has_messages={len(payload.get('messages', [])) > 0}", extra={"request_id": request_id})
             
             async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload) as resp:
-                logger.info(f"[CHAT] Upstream response status: {resp.status_code}")
-                logger.info(f"[CHAT] Upstream response headers: {dict(resp.headers)}")
+                logger.info(f"[CHAT] Upstream response status: {resp.status_code}", extra={"request_id": request_id})
+                logger.info(f"[CHAT] Upstream response headers: {dict(resp.headers)}", extra={"request_id": request_id})
                 resp.raise_for_status()
                 
                 chunk_count = 0
