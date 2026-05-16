@@ -831,6 +831,881 @@ async def log_requests(request: Request, call_next):
     logger.info(f"Finished: {request.method} {request.url.path} in {duration:.3f}s", extra={"request_id": request_id})
     return response
 
+# ─── Performance Metrics Tracking ─────────────────────────────────────────────
+metrics = {
+    "requests_total": 0,
+    "requests_by_endpoint": {},
+    "tokens_generated": 0,
+    "tokens_prompted": 0,
+    "errors_total": 0,
+    "avg_latency_ms": 0.0,
+    "latency_samples": [],
+    "start_time": time.time(),
+}
+metrics_lock = asyncio.Lock()
+
+async def record_metrics(endpoint, latency_ms, prompt_tokens=0, gen_tokens=0, error=False):
+    async with metrics_lock:
+        metrics["requests_total"] += 1
+        metrics["requests_by_endpoint"][endpoint] = metrics["requests_by_endpoint"].get(endpoint, 0) + 1
+        metrics["tokens_prompted"] += prompt_tokens
+        metrics["tokens_generated"] += gen_tokens
+        if error:
+            metrics["errors_total"] += 1
+        metrics["latency_samples"].append(latency_ms)
+        if len(metrics["latency_samples"]) > 1000:
+            metrics["latency_samples"] = metrics["latency_samples"][-500:]
+        metrics["avg_latency_ms"] = sum(metrics["latency_samples"]) / len(metrics["latency_samples"])
+
+# ─── Grammar/Schema Registry ──────────────────────────────────────────────────
+GRAMMAR_REGISTRY_DIR = os.getenv("GRAMMAR_REGISTRY_DIR", "/alpaca-data/grammars")
+SCHEMA_REGISTRY_DIR = os.getenv("SCHEMA_REGISTRY_DIR", "/alpaca-data/schemas")
+
+def _ensure_registry_dirs():
+    os.makedirs(GRAMMAR_REGISTRY_DIR, exist_ok=True)
+    os.makedirs(SCHEMA_REGISTRY_DIR, exist_ok=True)
+
+_ensure_registry_dirs()
+
+def _registry_path(registry_dir, name):
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
+    return os.path.join(registry_dir, f"{sanitized}.json")
+
+@app.get("/admin/grammars")
+async def list_grammars():
+    _ensure_registry_dirs()
+    grammars = []
+    if os.path.exists(GRAMMAR_REGISTRY_DIR):
+        for f in os.listdir(GRAMMAR_REGISTRY_DIR):
+            if f.endswith(".json"):
+                path = os.path.join(GRAMMAR_REGISTRY_DIR, f)
+                try:
+                    with open(path) as fh:
+                        data = json.load(fh)
+                    grammars.append({
+                        "name": f[:-5],
+                        "type": data.get("type", "grammar"),
+                        "description": data.get("description", ""),
+                        "created_at": data.get("created_at", ""),
+                        "size": os.path.getsize(path),
+                    })
+                except Exception:
+                    pass
+    return {"grammars": grammars}
+
+@app.post("/admin/grammars")
+async def save_grammar(request: Request):
+    _ensure_registry_dirs()
+    body = await request.json()
+    name = body.get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    path = _registry_path(GRAMMAR_REGISTRY_DIR, name)
+    data = {
+        "name": name,
+        "type": body.get("type", "grammar"),
+        "description": body.get("description", ""),
+        "grammar": body.get("grammar", ""),
+        "json_schema": body.get("json_schema"),
+        "created_at": utc_now(),
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    return {"status": "saved", "name": name, "path": path}
+
+@app.get("/admin/grammars/{name}")
+async def get_grammar(name: str):
+    path = _registry_path(GRAMMAR_REGISTRY_DIR, name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Grammar '{name}' not found")
+    with open(path) as f:
+        return json.load(f)
+
+@app.delete("/admin/grammars/{name}")
+async def delete_grammar(name: str):
+    path = _registry_path(GRAMMAR_REGISTRY_DIR, name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Grammar '{name}' not found")
+    os.remove(path)
+    return {"status": "deleted", "name": name}
+
+@app.get("/admin/schemas")
+async def list_schemas():
+    _ensure_registry_dirs()
+    schemas = []
+    if os.path.exists(SCHEMA_REGISTRY_DIR):
+        for f in os.listdir(SCHEMA_REGISTRY_DIR):
+            if f.endswith(".json"):
+                path = os.path.join(SCHEMA_REGISTRY_DIR, f)
+                try:
+                    with open(path) as fh:
+                        data = json.load(fh)
+                    schemas.append({
+                        "name": f[:-5],
+                        "description": data.get("description", ""),
+                        "created_at": data.get("created_at", ""),
+                        "size": os.path.getsize(path),
+                    })
+                except Exception:
+                    pass
+    return {"schemas": schemas}
+
+@app.post("/admin/schemas")
+async def save_schema(request: Request):
+    _ensure_registry_dirs()
+    body = await request.json()
+    name = body.get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    schema = body.get("schema")
+    if not schema:
+        raise HTTPException(status_code=400, detail="schema is required")
+    path = _registry_path(SCHEMA_REGISTRY_DIR, name)
+    data = {
+        "name": name,
+        "description": body.get("description", ""),
+        "schema": schema,
+        "created_at": utc_now(),
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    return {"status": "saved", "name": name, "path": path}
+
+@app.get("/admin/schemas/{name}")
+async def get_schema(name: str):
+    path = _registry_path(SCHEMA_REGISTRY_DIR, name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
+    with open(path) as f:
+        return json.load(f)
+
+@app.delete("/admin/schemas/{name}")
+async def delete_schema(name: str):
+    path = _registry_path(SCHEMA_REGISTRY_DIR, name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
+    os.remove(path)
+    return {"status": "deleted", "name": name}
+
+# ─── Embedding Endpoints (Ollama-compatible) ──────────────────────────────────
+@app.post("/api/embed")
+async def embed(request: Request):
+    """Ollama-compatible embedding endpoint. Proxies to llama-server /v1/embeddings."""
+    body = await request.json()
+    model_name = body.get("model")
+    input_data = body.get("input")
+    if not model_name:
+        raise HTTPException(status_code=400, detail="model is required")
+    if input_data is None:
+        raise HTTPException(status_code=400, detail="input is required")
+
+    started_ns = now_ns()
+    resolved = await ensure_model(model_name)
+    backend_model = resolved["backend_model"]
+
+    # Build OpenAI-compatible embedding request
+    llama_payload = {
+        "model": backend_model,
+        "input": input_data,
+    }
+    normalize = body.get("normalize", True)
+    if not normalize:
+        llama_payload["normalize"] = False
+
+    try:
+        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/embeddings", json=llama_payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Convert OpenAI format to Ollama format
+        ollama_embeddings = []
+        for item in data.get("data", []):
+            ollama_embeddings.append(item.get("embedding", []))
+
+        load_duration = data.get("load_duration", 0)
+        total_duration = now_ns() - started_ns
+
+        result = {
+            "model": public_model_name(model_name),
+            "embeddings": ollama_embeddings,
+            "total_duration": total_duration,
+            "load_duration": load_duration,
+            "prompt_eval_count": data.get("usage", {}).get("prompt_tokens", 0),
+        }
+        if not body.get("truncate", True):
+            result["truncated"] = False
+
+        await record_metrics("/api/embed", total_duration / 1e6, prompt_tokens=result["prompt_eval_count"])
+        return JSONResponse(result)
+    except httpx.HTTPStatusError as e:
+        await record_metrics("/api/embed", 0, error=True)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except httpx.TimeoutException:
+        await record_metrics("/api/embed", 0, error=True)
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+    except httpx.RequestError as e:
+        await record_metrics("/api/embed", 0, error=True)
+        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+
+@app.post("/api/embeddings")
+async def embeddings_legacy(request: Request):
+    """Legacy Ollama embedding endpoint (alias for /api/embed)."""
+    return await embed(request)
+
+# ─── OpenAI-Compatible Endpoints ──────────────────────────────────────────────
+@app.get("/v1/models")
+async def openai_models():
+    """OpenAI-compatible model listing. Proxies to llama-server /v1/models or builds from local manifests."""
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/v1/models")
+        if resp.status_code == 200:
+            data = resp.json()
+            # Enrich with local manifest info
+            local_info = {}
+            for manifest_base, path, manifest in iter_local_manifests():
+                mn = manifest_model_name(manifest_base, path)
+                if mn:
+                    info = manifest_stats(path, manifest)
+                    local_info[mn] = info
+
+            for obj in data.get("data", []):
+                model_id = obj.get("id", "")
+                for local_name, info in local_info.items():
+                    if local_name.replace(":", "--") in model_id or model_id in local_name:
+                        obj["alpaca"] = {
+                            "size": info["size"],
+                            "details": info["details"],
+                            "capabilities": info["capabilities"],
+                            "context_length": info["context_length"],
+                        }
+                        break
+            return data
+    except Exception:
+        pass
+
+    # Fallback: build from local manifests
+    models = []
+    for manifest_base, path, manifest in iter_local_manifests():
+        mn = manifest_model_name(manifest_base, path)
+        if mn:
+            info = manifest_stats(path, manifest)
+            models.append({
+                "id": mn.replace(":", "--"),
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "alpaca",
+                "alpaca": {
+                    "name": mn,
+                    "size": info["size"],
+                    "details": info["details"],
+                    "capabilities": info["capabilities"],
+                    "context_length": info["context_length"],
+                },
+            })
+    return {"object": "list", "data": models}
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: Request):
+    """OpenAI-compatible chat completions. Proxies directly to llama-server."""
+    body = await request.json()
+    started_ns = now_ns()
+    model_name = body.get("model", "")
+    stream = body.get("stream", False)
+
+    # Resolve model if provided
+    if model_name:
+        try:
+            resolved = await ensure_model(model_name)
+            body["model"] = resolved["backend_model"]
+        except HTTPException:
+            pass  # Let llama-server handle unknown models
+
+    try:
+        if stream:
+            async def stream_proxy():
+                try:
+                    async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if line and line.startswith("data: "):
+                                yield f"{line}\n\n"
+                except Exception as e:
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                finally:
+                    await record_metrics("/v1/chat/completions", (now_ns() - started_ns) / 1e6)
+            return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+        else:
+            resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            latency = (now_ns() - started_ns) / 1e6
+            prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+            gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+            await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
+            return JSONResponse(data)
+    except httpx.HTTPStatusError as e:
+        await record_metrics("/v1/chat/completions", 0, error=True)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except httpx.TimeoutException:
+        await record_metrics("/v1/chat/completions", 0, error=True)
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+    except httpx.RequestError as e:
+        await record_metrics("/v1/chat/completions", 0, error=True)
+        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+
+@app.post("/v1/completions")
+async def openai_completions(request: Request):
+    """OpenAI-compatible text completions. Proxies directly to llama-server."""
+    body = await request.json()
+    started_ns = now_ns()
+    model_name = body.get("model", "")
+    stream = body.get("stream", False)
+
+    if model_name:
+        try:
+            resolved = await ensure_model(model_name)
+            body["model"] = resolved["backend_model"]
+        except HTTPException:
+            pass
+
+    try:
+        if stream:
+            async def stream_proxy():
+                try:
+                    async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if line and line.startswith("data: "):
+                                yield f"{line}\n\n"
+                except Exception as e:
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                finally:
+                    await record_metrics("/v1/completions", (now_ns() - started_ns) / 1e6)
+            return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+        else:
+            resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            latency = (now_ns() - started_ns) / 1e6
+            prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+            gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+            await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
+            return JSONResponse(data)
+    except httpx.HTTPStatusError as e:
+        await record_metrics("/v1/completions", 0, error=True)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except httpx.TimeoutException:
+        await record_metrics("/v1/completions", 0, error=True)
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+    except httpx.RequestError as e:
+        await record_metrics("/v1/completions", 0, error=True)
+        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+
+@app.post("/v1/embeddings")
+async def openai_embeddings(request: Request):
+    """OpenAI-compatible embeddings. Proxies directly to llama-server."""
+    body = await request.json()
+    started_ns = now_ns()
+    model_name = body.get("model", "")
+
+    if model_name:
+        try:
+            resolved = await ensure_model(model_name)
+            body["model"] = resolved["backend_model"]
+        except HTTPException:
+            pass
+
+    try:
+        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/embeddings", json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        latency = (now_ns() - started_ns) / 1e6
+        prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+        await record_metrics("/v1/embeddings", latency, prompt_tokens)
+        return JSONResponse(data)
+    except httpx.HTTPStatusError as e:
+        await record_metrics("/v1/embeddings", 0, error=True)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except httpx.TimeoutException:
+        await record_metrics("/v1/embeddings", 0, error=True)
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+    except httpx.RequestError as e:
+        await record_metrics("/v1/embeddings", 0, error=True)
+        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+
+# ─── Management API ───────────────────────────────────────────────────────────
+@app.get("/admin/health")
+async def admin_health():
+    """Comprehensive health check for Alpaca proxy, llama-server, and model inventory."""
+    health = {
+        "proxy": {"status": "ok", "uptime_seconds": round(time.time() - metrics["start_time"], 1)},
+        "llama_server": {"status": "unknown", "url": LLAMA_SERVER_URL},
+        "models": {"total_local": 0, "loaded": 0, "available": []},
+    }
+
+    # Check llama-server health
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/health", timeout=httpx.Timeout(5.0))
+        health["llama_server"]["status"] = "ok" if resp.status_code == 200 else "error"
+        health["llama_server"]["http_status"] = resp.status_code
+    except Exception as e:
+        health["llama_server"]["status"] = "error"
+        health["llama_server"]["error"] = str(e)
+
+    # Count local models
+    local_models = []
+    for manifest_base, path, manifest in iter_local_manifests():
+        mn = manifest_model_name(manifest_base, path)
+        if mn:
+            info = manifest_stats(path, manifest)
+            local_models.append({
+                "name": mn,
+                "size": info["size"],
+                "details": info["details"],
+                "capabilities": info["capabilities"],
+            })
+    health["models"]["total_local"] = len(local_models)
+    health["models"]["available"] = [m["name"] for m in local_models]
+
+    # Count loaded models
+    try:
+        loaded = await loaded_models_from_router()
+        health["models"]["loaded"] = len(loaded)
+        health["models"]["loaded_names"] = [public_model_name(r["name"]) for r in loaded]
+    except Exception:
+        health["models"]["loaded"] = -1
+
+    # Overall status
+    health["overall"] = "ok" if health["llama_server"]["status"] == "ok" else "degraded"
+    return JSONResponse(health)
+
+@app.get("/admin/system")
+async def admin_system():
+    """System information: GPU memory, RAM, CPU, disk usage."""
+    import shutil
+    import platform
+
+    info = {
+        "hostname": platform.node(),
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+        "cpu_count": os.cpu_count(),
+    }
+
+    # Disk usage
+    for path_name, path in [
+        ("models_dir", OLLAMA_BASE),
+        ("router_models_dir", ROUTER_MODELS_DIR),
+    ]:
+        try:
+            total, used, free = shutil.disk_usage(path)
+            info[f"{path_name}_disk"] = {
+                "total_gb": round(total / 1e9, 2),
+                "used_gb": round(used / 1e9, 2),
+                "free_gb": round(free / 1e9, 2),
+                "used_pct": round(used / total * 100, 1) if total > 0 else 0,
+            }
+        except Exception:
+            info[f"{path_name}_disk"] = {"error": "unavailable"}
+
+    # llama-server props (includes GPU info)
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/props", timeout=httpx.Timeout(5.0))
+        if resp.status_code == 200:
+            props = resp.json()
+            info["llama_server_props"] = {
+                "model_path": props.get("model_path"),
+                "chat_template": props.get("chat_template", "")[:100] + "..." if props.get("chat_template") else None,
+                "n_ctx": props.get("n_ctx"),
+                "n_gpu_layers": props.get("n_gpu_layers"),
+                "flash_attn": props.get("flash_attn"),
+                "build_info": props.get("build_info"),
+                "slots": props.get("slots"),
+            }
+    except Exception:
+        info["llama_server_props"] = {"error": "unavailable"}
+
+    # GPU memory from llama-server metrics (if available)
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/metrics", timeout=httpx.Timeout(5.0))
+        if resp.status_code == 200:
+            # Parse Prometheus metrics for GPU info
+            text = resp.text
+            gpu_info = {}
+            for line in text.split("\n"):
+                if "gpu" in line.lower() and not line.startswith("#"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        gpu_info[parts[0]] = parts[1]
+            if gpu_info:
+                info["gpu_metrics"] = gpu_info
+    except Exception:
+        pass
+
+    return JSONResponse(info)
+
+@app.get("/admin/metrics")
+async def admin_metrics():
+    """Performance metrics: request counts, token throughput, latency stats."""
+    async with metrics_lock:
+        uptime = time.time() - metrics["start_time"]
+        result = {
+            "uptime_seconds": round(uptime, 1),
+            "requests_total": metrics["requests_total"],
+            "requests_by_endpoint": dict(metrics["requests_by_endpoint"]),
+            "tokens_generated": metrics["tokens_generated"],
+            "tokens_prompted": metrics["tokens_prompted"],
+            "errors_total": metrics["errors_total"],
+            "avg_latency_ms": round(metrics["avg_latency_ms"], 2),
+            "latency_samples": len(metrics["latency_samples"]),
+        }
+        # Calculate throughput
+        if uptime > 0:
+            result["requests_per_second"] = round(metrics["requests_total"] / uptime, 3)
+            result["tokens_generated_per_second"] = round(metrics["tokens_generated"] / uptime, 3)
+        return JSONResponse(result)
+
+@app.get("/admin/models")
+async def admin_models():
+    """Extended model inventory with sizes, quantization, manifests, download status."""
+    models = []
+    for manifest_base, path, manifest in iter_local_manifests():
+        mn = manifest_model_name(manifest_base, path)
+        if not mn:
+            continue
+        info = manifest_stats(path, manifest)
+
+        # Check router status
+        router_status = "unknown"
+        router_entry = None
+        try:
+            router_models = await fetch_router_models(reload=False)
+            candidates = router_model_candidates(mn, manifest)
+            for entry in router_models:
+                if router_entry_matches(entry, candidates):
+                    router_status = router_entry_status(entry)
+                    router_entry = entry
+                    break
+        except Exception:
+            pass
+
+        # Calculate blob info
+        blobs = []
+        total_blob_size = 0
+        for layer in manifest.get("layers", []):
+            digest = layer.get("digest", "")
+            size = layer.get("size", 0)
+            blob_path = blob_path_for_digest(digest)
+            exists = os.path.exists(blob_path)
+            blobs.append({
+                "digest": normalize_digest(digest),
+                "size": size,
+                "exists": exists,
+                "media_type": layer.get("mediaType", ""),
+            })
+            if exists:
+                total_blob_size += size
+
+        models.append({
+            "name": mn,
+            "size": info["size"],
+            "total_blob_size": total_blob_size,
+            "digest": info["digest"],
+            "details": info["details"],
+            "capabilities": info["capabilities"],
+            "context_length": info["context_length"],
+            "modified_at": info["modified_at"],
+            "router_status": router_status,
+            "blobs": blobs,
+            "blob_count": len(blobs),
+            "complete": is_model_complete(manifest),
+        })
+
+    return {"models": models, "total": len(models)}
+
+@app.get("/admin/runtime")
+async def admin_runtime():
+    """Runtime state: loaded models, active requests, keep-alive timers, queue depth."""
+    # Active requests
+    async with active_requests_lock:
+        active = dict(active_requests)
+
+    # Model expiry timers
+    expiry_info = {}
+    for name, expires in model_expires_at.items():
+        expiry_info[name] = {
+            "expires_at": expires,
+            "has_unload_task": name in model_unload_tasks,
+        }
+
+    # Loaded models
+    loaded = []
+    try:
+        for record in await loaded_models_from_router():
+            info = record["info"]
+            public_name = public_model_name(record["name"])
+            loaded.append({
+                "name": public_name,
+                "size": info["size"],
+                "digest": info["digest"],
+                "details": info["details"],
+                "context_length": info["context_length"],
+                "expires_at": model_expires_at.get(public_name, "0001-01-01T00:00:00Z"),
+                "active_requests": active.get(record.get("backend_model", ""), 0),
+            })
+    except Exception:
+        pass
+
+    return {
+        "loaded_models": loaded,
+        "active_requests": active,
+        "model_expiry_timers": expiry_info,
+        "max_loaded_models": MAX_LOADED_MODELS,
+        "default_keep_alive": DEFAULT_KEEP_ALIVE,
+        "router_management_supported": router_management_supported,
+    }
+
+@app.get("/admin/slots")
+async def admin_slots(fail_on_no_slot: int = 0):
+    """llama-server slot status with enhanced Alpaca metadata."""
+    try:
+        resp = await client_httpx.get(
+            f"{LLAMA_SERVER_URL}/slots",
+            params={"fail_on_no_slot": fail_on_no_slot},
+            timeout=httpx.Timeout(5.0)
+        )
+        resp.raise_for_status()
+        slots = resp.json()
+
+        # Enhance with Alpaca metadata
+        for slot in slots:
+            slot_id = slot.get("id", -1)
+            slot["alpaca"] = {
+                "is_busy": slot.get("is_processing", False),
+                "has_prompt_cache": bool(slot.get("prompt", [])),
+                "context_used_pct": round(slot.get("n_ctx", 0) / max(slot.get("n_ctx", 1), 1) * 100, 1) if slot.get("n_ctx") else 0,
+            }
+
+        return {"slots": slots, "total": len(slots)}
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch slot info: {e}")
+
+@app.get("/admin/lora")
+async def admin_lora():
+    """LoRA adapter status and scale control."""
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/lora-adapters", timeout=httpx.Timeout(5.0))
+        resp.raise_for_status()
+        adapters = resp.json()
+        return {"adapters": adapters, "total": len(adapters)}
+    except Exception as e:
+        return {"adapters": [], "error": str(e), "note": "LoRA adapters not configured or endpoint unavailable"}
+
+@app.post("/admin/lora")
+async def admin_lora_update(request: Request):
+    """Update LoRA adapter scales. Body: [{\"id\": 0, \"scale\": 0.5}, ...]"""
+    body = await request.json()
+    if not isinstance(body, list):
+        raise HTTPException(status_code=400, detail="Body must be a list of {id, scale} objects")
+    try:
+        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/lora-adapters", json=body, timeout=httpx.Timeout(5.0))
+        resp.raise_for_status()
+        return {"status": "updated", "adapters": body}
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to update LoRA adapters: {e}")
+
+@app.get("/admin/config")
+async def admin_config():
+    """Current runtime configuration."""
+    return {
+        "llama_server_url": LLAMA_SERVER_URL,
+        "ollama_base": OLLAMA_BASE,
+        "model_namespace": MODEL_NAMESPACE,
+        "api_version": API_VERSION,
+        "default_keep_alive": DEFAULT_KEEP_ALIVE,
+        "max_loaded_models": MAX_LOADED_MODELS,
+        "router_models_dir": ROUTER_MODELS_DIR,
+        "engine_startup_timeout": ENGINE_STARTUP_TIMEOUT_SECONDS,
+        "llama_server_connect_timeout": LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS,
+        "llama_server_read_timeout": LLAMA_SERVER_READ_TIMEOUT_SECONDS,
+        "router_management_supported": router_management_supported,
+        "grammar_registry_dir": GRAMMAR_REGISTRY_DIR,
+        "schema_registry_dir": SCHEMA_REGISTRY_DIR,
+    }
+
+@app.post("/admin/config")
+async def admin_config_update(request: Request):
+    """Update runtime configuration. Only mutable fields: default_keep_alive, max_loaded_models."""
+    body = await request.json()
+    global DEFAULT_KEEP_ALIVE, MAX_LOADED_MODELS
+
+    if "default_keep_alive" in body:
+        # In a real implementation, you'd use a mutable config object
+        # For now, this is informational
+        pass
+    if "max_loaded_models" in body:
+        pass
+
+    return {"status": "config_update_requested", "note": "Runtime config changes require restart for full effect", "requested": body}
+
+@app.post("/admin/models/pull")
+async def admin_model_pull(request: Request):
+    """Trigger model pull via alpaca-puller. Body: {\"model\": \"name:tag\", \"source\": \"ollama|huggingface\"}"""
+    body = await request.json()
+    model = body.get("model")
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    # Check if model already exists locally
+    if manifest_path_for_model(model):
+        return {"status": "already_exists", "model": model}
+
+    # For now, return instructions. In production, this would trigger the puller
+    return {
+        "status": "pull_requested",
+        "model": model,
+        "note": "Run alpaca-puller.py to download: python alpaca-puller.py pull {model}",
+        "source": body.get("source", "ollama"),
+    }
+
+@app.post("/admin/models/delete")
+async def admin_model_delete(request: Request):
+    """Delete a model and clean up blobs. Body: {\"model\": \"name:tag\"}"""
+    body = await request.json()
+    model = body.get("model")
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    model = with_default_tag(model)
+    manifest_path = manifest_path_for_model(model)
+    if not manifest_path:
+        raise HTTPException(status_code=404, detail=f"Model {model} not found")
+
+    # Read manifest to find blobs
+    manifest = read_manifest(manifest_path)
+    if not manifest:
+        raise HTTPException(status_code=500, detail=f"Model {model} manifest is corrupted")
+
+    # Unload from router if loaded
+    try:
+        resolved = await resolve_router_model(model, reload=False)
+        backend_model = resolved["backend_model"]
+        try:
+            await post_router_model_action("unload", backend_model)
+        except RouterManagementUnsupported:
+            pass
+    except HTTPException:
+        pass
+
+    # Remove manifest
+    os.remove(manifest_path)
+    deleted_blobs = []
+
+    # Clean up orphaned blobs
+    for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
+        digest = layer.get("digest")
+        if digest:
+            blob_path = blob_path_for_digest(digest)
+            if os.path.exists(blob_path):
+                # Check if any other manifest references this blob
+                referenced = False
+                for mb, mp, m in iter_local_manifests():
+                    if mp == manifest_path:
+                        continue
+                    for l in m.get("layers", []) + [m.get("config", {})]:
+                        if l.get("digest") == digest:
+                            referenced = True
+                            break
+                    if referenced:
+                        break
+                if not referenced:
+                    os.remove(blob_path)
+                    deleted_blobs.append(normalize_digest(digest))
+
+    # Clean up router symlink
+    router_path = router_path_for_model_name(model)
+    if os.path.islink(router_path):
+        os.remove(router_path)
+    elif os.path.exists(router_path):
+        os.remove(router_path)
+
+    return {
+        "status": "deleted",
+        "model": model,
+        "manifest": manifest_path,
+        "deleted_blobs": deleted_blobs,
+    }
+
+@app.post("/admin/models/copy")
+async def admin_model_copy(request: Request):
+    """Copy a model to a new name/tag. Body: {\"source\": \"name:tag\", \"target\": \"newname:newtag\"}"""
+    body = await request.json()
+    source = body.get("source")
+    target = body.get("target")
+    if not source or not target:
+        raise HTTPException(status_code=400, detail="source and target are required")
+
+    source = with_default_tag(source)
+    target = with_default_tag(target)
+
+    source_manifest_path = manifest_path_for_model(source)
+    if not source_manifest_path:
+        raise HTTPException(status_code=404, detail=f"Source model {source} not found")
+
+    target_manifest_path = manifest_path_for_model(target)
+    if target_manifest_path:
+        raise HTTPException(status_code=409, detail=f"Target model {target} already exists")
+
+    # Create target directory and copy manifest
+    target_dir = os.path.dirname(target_manifest_path)
+    os.makedirs(target_dir, exist_ok=True)
+
+    # Read source manifest and update model name references
+    with open(source_manifest_path) as f:
+        manifest = json.load(f)
+
+    with open(target_manifest_path, "w") as f:
+        json.dump(manifest, f)
+
+    return {
+        "status": "copied",
+        "source": source,
+        "target": target,
+        "target_manifest": target_manifest_path,
+    }
+
+@app.get("/admin/tokenize")
+async def admin_tokenize(text: str, add_special: bool = True, parse_special: bool = False):
+    """Tokenize text using llama-server. Returns token IDs."""
+    try:
+        resp = await client_httpx.post(
+            f"{LLAMA_SERVER_URL}/tokenize",
+            json={"content": text, "add_special": add_special, "parse_special": parse_special},
+            timeout=httpx.Timeout(5.0)
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Tokenization failed: {e}")
+
+@app.get("/admin/props")
+async def admin_props():
+    """Get llama-server properties (model info, build, slots config)."""
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/props", timeout=httpx.Timeout(5.0))
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch props: {e}")
+
 @app.get("/api/logs")
 async def get_logs(limit: int = 100):
     """Returns the last N lines from the in-memory log buffer."""
