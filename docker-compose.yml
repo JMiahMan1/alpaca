@@ -42,7 +42,7 @@ services:
       --cache-type-v q8_0
       --spec-type draft-mtp
       --spec-draft-n-max 3
-      -c 32768
+      -c 65536
       -t 8
     depends_on:
       - alpaca-indexer

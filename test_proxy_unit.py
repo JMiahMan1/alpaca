@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,14 +9,16 @@ import httpx
 import pytest
 from fastapi import HTTPException, Request
 
-MODULE_PATH = pathlib.Path(__file__).with_name("alpaca-proxy.py")
-SPEC = importlib.util.spec_from_file_location("alpaca_proxy", MODULE_PATH)
-alpaca_proxy = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(alpaca_proxy)
+with tempfile.TemporaryDirectory() as tmpdir:
+    os.environ["GRAMMAR_REGISTRY_DIR"] = os.path.join(tmpdir, "grammars")
+    os.environ["SCHEMA_REGISTRY_DIR"] = os.path.join(tmpdir, "schemas")
+    MODULE_PATH = pathlib.Path(__file__).with_name("alpaca-proxy.py")
+    SPEC = importlib.util.spec_from_file_location("alpaca_proxy", MODULE_PATH)
+    alpaca_proxy = importlib.util.module_from_spec(SPEC)
+    SPEC.loader.exec_module(alpaca_proxy)
 REAL_POST_ROUTER_MODEL_ACTION = alpaca_proxy.post_router_model_action
 REAL_RESOLVE_ROUTER_MODEL = alpaca_proxy.resolve_router_model
 REAL_ENSURE_MODEL = alpaca_proxy.ensure_model
-
 
 def make_manifest(digest="sha256:abcd", size=4):
     return {
