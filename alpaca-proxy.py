@@ -2041,12 +2041,11 @@ async def ensure_model(model_name: str, options: dict = None):
 
         if backend_model in SAFE_SETTINGS_MODELS:
             load_payload["flash_attn"] = False
-            if "n_ctx" in load_payload and load_payload["n_ctx"] > 8192:
-                logger.info(f"Model {backend_model} is in safe settings mode. Capping n_ctx to 8192.")
+            if "n_ctx" not in load_payload:
                 load_payload["n_ctx"] = 8192
-            elif "n_ctx" not in load_payload:
-                load_payload["n_ctx"] = 8192
-            logger.info(f"Model {backend_model} is marked for safe settings. Disabling flash attention and enforcing n_ctx limit.")
+                logger.info(f"Model {backend_model} is marked for safe settings. Disabling flash attention, defaulting n_ctx to 8192.")
+            else:
+                logger.info(f"Model {backend_model} is marked for safe settings. Disabling flash attention, keeping requested n_ctx={load_payload['n_ctx']}.")
 
         try:
             await post_router_model_action("load", load_payload)
@@ -2090,9 +2089,7 @@ async def ensure_model(model_name: str, options: dict = None):
 
                     if backend_model in SAFE_SETTINGS_MODELS:
                         load_payload["flash_attn"] = False
-                        if "n_ctx" in load_payload and load_payload["n_ctx"] > 8192:
-                            load_payload["n_ctx"] = 8192
-                        elif "n_ctx" not in load_payload:
+                        if "n_ctx" not in load_payload:
                             load_payload["n_ctx"] = 8192
 
                     logger.info(f"Retrying load of {backend_model} with spec_type='none'...")
@@ -2123,10 +2120,15 @@ async def ensure_model(model_name: str, options: dict = None):
                                 backend_model = resolved["backend_model"]
 
                                 load_payload = {"model": backend_model}
+                                if options:
+                                    n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                                    if n_ctx:
+                                        load_payload["n_ctx"] = int(n_ctx)
                                 load_payload["n_gpu_layers"] = -1
                                 load_payload["use_mmap"] = True
                                 load_payload["flash_attn"] = False
-                                load_payload["n_ctx"] = 8192
+                                if "n_ctx" not in load_payload:
+                                    load_payload["n_ctx"] = 8192
                                 load_payload["spec_type"] = "none"
                                 load_payload["spec_draft_n_max"] = 0
 
@@ -2165,10 +2167,15 @@ async def ensure_model(model_name: str, options: dict = None):
                     backend_model = resolved["backend_model"]
 
                     load_payload = {"model": backend_model}
+                    if options:
+                        n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                        if n_ctx:
+                            load_payload["n_ctx"] = int(n_ctx)
                     load_payload["n_gpu_layers"] = -1
                     load_payload["use_mmap"] = True
                     load_payload["flash_attn"] = False
-                    load_payload["n_ctx"] = 8192
+                    if "n_ctx" not in load_payload:
+                        load_payload["n_ctx"] = 8192
                     load_payload["spec_type"] = "none"
                     load_payload["spec_draft_n_max"] = 0
 
