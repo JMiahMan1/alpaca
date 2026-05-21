@@ -1116,41 +1116,91 @@ async def openai_chat_completions(request: Request):
         try:
             resolved = await ensure_model(model_name)
             body["model"] = resolved["backend_model"]
-        except HTTPException:
-            pass  # Let llama-server handle unknown models
+        except HTTPException as e:
+            # Return proper OpenAI error if model resolution fails
+            return JSONResponse(
+                status_code=e.status_code,
+                content={
+                    "error": {
+                        "message": f"Model resolution failed: {e.detail}",
+                        "type": "invalid_request_error",
+                        "param": "model",
+                        "code": "model_not_found"
+                    }
+                }
+            )
 
     try:
         if stream:
             async def stream_proxy():
                 try:
                     async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body) as resp:
-                        resp.raise_for_status()
+                        if resp.status_code != 200:
+                            # Read raw error body
+                            err_body = await resp.aread()
+                            err_msg = err_body.decode(errors="ignore")
+                            yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
+                            return
                         async for line in resp.aiter_lines():
                             if line and line.startswith("data: "):
                                 yield f"{line}\n\n"
                 except Exception as e:
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'api_error', 'code': None}})}\n\n"
                 finally:
                     await record_metrics("/v1/chat/completions", (now_ns() - started_ns) / 1e6)
             return StreamingResponse(stream_proxy(), media_type="text/event-stream")
         else:
             resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                err_msg = resp.text
+                try:
+                    # Attempt to parse upstream structured error if any
+                    upstream_err = resp.json()
+                    if "error" in upstream_err:
+                        err_msg = upstream_err["error"].get("message", err_msg)
+                except Exception:
+                    pass
+                await record_metrics("/v1/chat/completions", 0, error=True)
+                return JSONResponse(
+                    status_code=resp.status_code,
+                    content={
+                        "error": {
+                            "message": err_msg,
+                            "type": "invalid_request_error",
+                            "code": resp.status_code
+                        }
+                    }
+                )
             data = resp.json()
             latency = (now_ns() - started_ns) / 1e6
             prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
             gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
             await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
             return JSONResponse(data)
-    except httpx.HTTPStatusError as e:
-        await record_metrics("/v1/chat/completions", 0, error=True)
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except httpx.TimeoutException:
         await record_metrics("/v1/chat/completions", 0, error=True)
-        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": {
+                    "message": "Upstream llama-server timed out",
+                    "type": "api_error",
+                    "code": "timeout"
+                }
+            }
+        )
     except httpx.RequestError as e:
         await record_metrics("/v1/chat/completions", 0, error=True)
-        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "message": f"Upstream request failed: {e}",
+                    "type": "api_error",
+                    "code": "bad_gateway"
+                }
+            }
+        )
 
 @app.post("/v1/completions")
 async def openai_completions(request: Request):
@@ -1164,41 +1214,88 @@ async def openai_completions(request: Request):
         try:
             resolved = await ensure_model(model_name)
             body["model"] = resolved["backend_model"]
-        except HTTPException:
-            pass
+        except HTTPException as e:
+            return JSONResponse(
+                status_code=e.status_code,
+                content={
+                    "error": {
+                        "message": f"Model resolution failed: {e.detail}",
+                        "type": "invalid_request_error",
+                        "param": "model",
+                        "code": "model_not_found"
+                    }
+                }
+            )
 
     try:
         if stream:
             async def stream_proxy():
                 try:
                     async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
-                        resp.raise_for_status()
+                        if resp.status_code != 200:
+                            err_body = await resp.aread()
+                            err_msg = err_body.decode(errors="ignore")
+                            yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
+                            return
                         async for line in resp.aiter_lines():
                             if line and line.startswith("data: "):
                                 yield f"{line}\n\n"
                 except Exception as e:
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'api_error', 'code': None}})}\n\n"
                 finally:
                     await record_metrics("/v1/completions", (now_ns() - started_ns) / 1e6)
             return StreamingResponse(stream_proxy(), media_type="text/event-stream")
         else:
             resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                err_msg = resp.text
+                try:
+                    upstream_err = resp.json()
+                    if "error" in upstream_err:
+                        err_msg = upstream_err["error"].get("message", err_msg)
+                except Exception:
+                    pass
+                await record_metrics("/v1/completions", 0, error=True)
+                return JSONResponse(
+                    status_code=resp.status_code,
+                    content={
+                        "error": {
+                            "message": err_msg,
+                            "type": "invalid_request_error",
+                            "code": resp.status_code
+                        }
+                    }
+                )
             data = resp.json()
             latency = (now_ns() - started_ns) / 1e6
             prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
             gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
             await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
             return JSONResponse(data)
-    except httpx.HTTPStatusError as e:
-        await record_metrics("/v1/completions", 0, error=True)
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except httpx.TimeoutException:
         await record_metrics("/v1/completions", 0, error=True)
-        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": {
+                    "message": "Upstream llama-server timed out",
+                    "type": "api_error",
+                    "code": "timeout"
+                }
+            }
+        )
     except httpx.RequestError as e:
         await record_metrics("/v1/completions", 0, error=True)
-        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "message": f"Upstream request failed: {e}",
+                    "type": "api_error",
+                    "code": "bad_gateway"
+                }
+            }
+        )
 
 @app.post("/v1/embeddings")
 async def openai_embeddings(request: Request):
@@ -1211,26 +1308,69 @@ async def openai_embeddings(request: Request):
         try:
             resolved = await ensure_model(model_name)
             body["model"] = resolved["backend_model"]
-        except HTTPException:
-            pass
+        except HTTPException as e:
+            return JSONResponse(
+                status_code=e.status_code,
+                content={
+                    "error": {
+                        "message": f"Model resolution failed: {e.detail}",
+                        "type": "invalid_request_error",
+                        "param": "model",
+                        "code": "model_not_found"
+                    }
+                }
+            )
 
     try:
         resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/embeddings", json=body)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            err_msg = resp.text
+            try:
+                upstream_err = resp.json()
+                if "error" in upstream_err:
+                    err_msg = upstream_err["error"].get("message", err_msg)
+            except Exception:
+                pass
+            await record_metrics("/v1/embeddings", 0, error=True)
+            return JSONResponse(
+                status_code=resp.status_code,
+                content={
+                    "error": {
+                        "message": err_msg,
+                        "type": "invalid_request_error",
+                        "code": resp.status_code
+                    }
+                }
+            )
         data = resp.json()
         latency = (now_ns() - started_ns) / 1e6
         prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
         await record_metrics("/v1/embeddings", latency, prompt_tokens)
         return JSONResponse(data)
-    except httpx.HTTPStatusError as e:
-        await record_metrics("/v1/embeddings", 0, error=True)
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except httpx.TimeoutException:
         await record_metrics("/v1/embeddings", 0, error=True)
-        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": {
+                    "message": "Upstream llama-server timed out",
+                    "type": "api_error",
+                    "code": "timeout"
+                }
+            }
+        )
     except httpx.RequestError as e:
         await record_metrics("/v1/embeddings", 0, error=True)
-        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "message": f"Upstream request failed: {e}",
+                    "type": "api_error",
+                    "code": "bad_gateway"
+                }
+            }
+        )
 
 # ─── Management API ───────────────────────────────────────────────────────────
 @app.get("/admin/health")
