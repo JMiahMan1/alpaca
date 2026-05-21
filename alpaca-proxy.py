@@ -98,7 +98,7 @@ def blob_path_for_digest(digest):
 def router_filename_for_model_name(model_name):
     normalized = with_default_tag(model_name)
     name, tag = normalized.rsplit(":", 1)
-    flattened = f"{name}--{tag}".replace("/", "--")
+    flattened = f"{name}-{tag}".replace("/", "-")
     sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", flattened).strip("-.") or "model"
     return f"{sanitized}.gguf"
 
