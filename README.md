@@ -48,18 +48,51 @@ Supported `keep_alive` behavior:
 To guarantee high availability and eliminate manual troubleshooting when loading diverse models (such as large context base models vs. speculative draft models), Alpaca features a two-tiered progressive dynamic self-healing pipeline:
 
 ```mermaid
-flowchart TD
-    Start([Client Request]) --> Default{Default Optimized Load}
-    Default -->|Success| Serve[<b>Serve Request</b>]
-    Default -->|MTP Mismatch| T1[Tier 1: Remove Speculative Flags]
-    T1 --> Restart1[Wait for Server Restart]
-    Restart1 --> NoSpec{Load w/o Speculative Decoding}
-    NoSpec -->|Success| Serve
-    NoSpec -->|OOM / Crash| T2[Tier 2: Safe Settings]
-    T2 --> Restart2[Wait for Server Restart]
-    Restart2 --> Safe{Load with Safe Settings}
-    Safe -->|Success| Serve
-    Safe -->|Failure| Fail([Raise Exception])
+flowchart LR
+    subgraph Request ["📡 Request"]
+        Start([Client Request])
+    end
+
+    subgraph L0 ["⚡ Layer 0 — Default Optimized"]
+        L0Check{MTP<br/>Compatible?}
+        L0Ok{Load<br/>Success?}
+    end
+
+    subgraph L1 ["🔄 Layer 1 — Speculative Off"]
+        L1Check{Load<br/>Success?}
+    end
+
+    subgraph L2 ["🛡️ Layer 2 — Safe Settings"]
+        L2Check{Load<br/>Success?}
+    end
+
+    subgraph Done ["✅ Serve"]
+        Served([Stream Response])
+    end
+
+    subgraph Fail ["💥 Fail"]
+        Error([Raise Exception])
+    end
+
+    Start --> L0Check
+    L0Check -->|Yes| L0Ok
+    L0Check -->|No| L0Ok
+    L0Ok -->|Yes| Served
+    L0Ok -->|No| L1Check
+    L1Check -->|Yes| Served
+    L1Check -->|No| L2Check
+    L2Check -->|Yes| Served
+    L2Check -->|No| Error
+
+    classDef success fill:#2ecc71,color:#fff,stroke:#27ae60,stroke-width:2px
+    classDef fail fill:#e74c3c,color:#fff,stroke:#c0392b,stroke-width:2px
+    classDef layer fill:#3498db,color:#fff,stroke:#2980b9,stroke-width:1px
+    classDef startend fill:#9b59b6,color:#fff,stroke:#8e44ad,stroke-width:2px,rx:5,ry:5
+
+    class Served success
+    class Error fail
+    class L0Check,L0Ok,L1Check,L2Check layer
+    class Start startend
 ```
 
 ### Self-Healing Tiers
