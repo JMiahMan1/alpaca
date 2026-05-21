@@ -48,18 +48,18 @@ Supported `keep_alive` behavior:
 To guarantee high availability and eliminate manual troubleshooting when loading diverse models (such as large context base models vs. speculative draft models), Alpaca features a two-tiered progressive dynamic self-healing pipeline:
 
 ```mermaid
-graph TD
-    A[Client Request] --> B{Default Optimized Load}
-    B -->|Success| C[Serve Request]
-    B -->|Crash / MTP Mismatch| D[Tier 1: Remove MTP/Speculative Flags]
-    D --> E[Wait for Llama-Server Restart]
-    E --> F{Load without speculative decoding}
-    F -->|Success| C
-    F -->|Crash / OOM / Attention Failure| G[Tier 2: Escalation to Safe Settings]
-    G --> H[Wait for Llama-Server Restart]
-    H --> I[Load with Safe Settings: flash_attn=False, n_ctx=default-or-requested]
-    I -->|Success| C
-    I -->|Failure| J[Raise Exception]
+flowchart TD
+    Start([Client Request]) --> Default{Default Optimized Load}
+    Default -->|Success| Serve[<b>Serve Request</b>]
+    Default -->|MTP Mismatch| T1[Tier 1: Remove Speculative Flags]
+    T1 --> Restart1[Wait for Server Restart]
+    Restart1 --> NoSpec{Load w/o Speculative Decoding}
+    NoSpec -->|Success| Serve
+    NoSpec -->|OOM / Crash| T2[Tier 2: Safe Settings]
+    T2 --> Restart2[Wait for Server Restart]
+    Restart2 --> Safe{Load with Safe Settings}
+    Safe -->|Success| Serve
+    Safe -->|Failure| Fail([Raise Exception])
 ```
 
 ### Self-Healing Tiers
