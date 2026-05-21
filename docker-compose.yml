@@ -8,7 +8,7 @@ services:
     command: >
       sh -lc "while true; do
         python /app/alpaca-puller.py reindex;
-        sleep 15;
+        sleep 300;
       done"
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
