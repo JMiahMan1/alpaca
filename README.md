@@ -57,7 +57,7 @@ graph TD
     F -->|Success| C
     F -->|Crash / OOM / Attention Failure| G[Tier 2: Escalation to Safe Settings]
     G --> H[Wait for Llama-Server Restart]
-    H --> I[Load with Safe Settings: flash_attn=False, n_ctx=8192]
+    H --> I[Load with Safe Settings: flash_attn=False, n_ctx=default-or-requested]
     I -->|Success| C
     I -->|Failure| J[Raise Exception]
 ```
@@ -68,7 +68,7 @@ graph TD
    - The proxy intercepts the request crash, registers the model's backend filename in `.mtp_incompatible_models.json` (saved in the shared router folder), waits for the server container to auto-restart healthy, and retries loading with `spec_type="none"`.
 2. **Tier-2: Safe Settings Escalation (Flash Attention & Context Capping)**:
    - For models like `qwen3.5:9b` which feature extremely large native context lengths (e.g., `262144`), loading them with high context settings or active flash attention can trigger a CUDA Out of Memory (OOM) error or kernel-level attention mismatch crashes.
-   - If the Tier-1 retry fails or if loading crashes under `spec_type="none"`, the proxy intercepts this failure, escalates the model to `.safe_settings_models.json`, waits for a container restart, and automatically retries with **Safe Settings** (`flash_attn=False` and a capped context allocation of `8192` tokens).
+   - If the Tier-1 retry fails or if loading crashes under `spec_type="none"`, the proxy intercepts this failure, escalates the model to `.safe_settings_models.json`, waits for a container restart, and automatically retries with **Safe Settings** (`flash_attn=False` and a default context allocation of `8192` tokens, or the client-requested value if higher).
 
 Once indexed, any future requests for mapped models bypass initial crash attempts entirely and execute using the cached healthy profile.
 
@@ -203,6 +203,7 @@ The bundled Compose file starts `llama-server` in router mode with:
 
 - `--models-dir /router-models`
 - `--sleep-idle-seconds 300`
+- `-c 32768` (context size, client-requested values above 8192 are accepted)
 
 Alpaca keeps a separate router index in `./.alpaca-router`. It does not require creating extra directories inside the Ollama model store.
 The `alpaca-indexer` sidecar scans the existing local Ollama manifests and blobs and keeps that router index refreshed automatically.
