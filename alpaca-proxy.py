@@ -1992,9 +1992,19 @@ async def ensure_model(model_name: str, options: dict = None):
                 if (other_id != backend_model) and is_resident_status(router_entry_status(other)):
                     # Wait for active requests on the model we are about to unload
                     async with active_requests_lock:
+                        deadline = asyncio.get_event_loop().time() + 30.0  # 30s max wait
                         while active_requests.get(other_id, 0) > 0:
-                            logger.info(f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading.")
-                            await active_requests_lock.wait()
+                            remaining = deadline - asyncio.get_event_loop().time()
+                            if remaining <= 0:
+                                logger.warning(f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload.")
+                                break
+                            logger.info(f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading ({remaining:.0f}s remaining).")
+                            try:
+                                await asyncio.wait_for(active_requests_lock.wait(), timeout=remaining)
+                            except asyncio.TimeoutError:
+                                if active_requests.get(other_id, 0) > 0:
+                                    logger.warning(f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload.")
+                                break
                     
                     logger.info(f"Unloading backend model {other_id} before loading {backend_model}")
                     try:
