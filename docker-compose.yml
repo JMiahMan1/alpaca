@@ -18,9 +18,13 @@ services:
       ROUTER_MODELS_DIR: /router-models
 
   llama-server:
-    image: ghcr.io/thetom/llama-cpp-turboquant@sha256:fe33d9ca6d2331e1af4cde907475b3d3040eb7498e807165ff89db3770dacb04
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda12-b9191
     container_name: llama-server
     restart: always
+    cap_add:
+      - IPC_LOCK
+    ulimits:
+      memlock: -1
     ports:
       - "8080:8080"
     volumes:
@@ -30,21 +34,27 @@ services:
       --host 0.0.0.0
       --port 8080
       --models-dir /router-models
-      --n-gpu-layers 999
-      --n-cpu-moe 48
+      -ngl 99
+      --n-cpu-moe 38
       --no-mmap
-      --cache-type-k turbo4
-      --cache-type-v turbo3
+      --mlock
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --spec-type draft-mtp
+      --spec-draft-n-max 3
+      -c 8192
+      -t 8
     depends_on:
       - alpaca-indexer
     deploy:
       resources:
+        limits:
+          memory: 26G
         reservations:
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-
   alpaca-proxy:
     build:
       context: .

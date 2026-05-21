@@ -4,15 +4,14 @@ import logging
 import os
 import re
 import time
+import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-
-from collections import deque
-import uuid
 
 # Precise logging setup with memory buffer
 LOG_BUFFER = deque(maxlen=1000)
@@ -1282,8 +1281,13 @@ async def admin_health():
 @app.get("/admin/system")
 async def admin_system():
     """System information: GPU memory, RAM, CPU, disk usage."""
-    import shutil
     import platform
+    import shutil
+    import subprocess
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
 
     info = {
         "hostname": platform.node(),
@@ -1291,6 +1295,46 @@ async def admin_system():
         "python_version": platform.python_version(),
         "cpu_count": os.cpu_count(),
     }
+
+    # RAM and CPU usage via psutil
+    if psutil:
+        try:
+            vm = psutil.virtual_memory()
+            info["ram_usage"] = {
+                "total_gb": round(vm.total / 1e9, 2),
+                "available_gb": round(vm.available / 1e9, 2),
+                "used_gb": round(vm.used / 1e9, 2),
+                "used_pct": vm.percent
+            }
+            info["cpu_usage"] = {
+                "percent": psutil.cpu_percent(interval=None),
+                "load_avg": [round(x, 2) for x in os.getloadavg()] if hasattr(os, "getloadavg") else []
+            }
+        except Exception as e:
+            logger.warning(f"Failed to fetch psutil system metrics: {e}")
+
+    # GPU information via nvidia-smi (VRAM + Name)
+    try:
+        res = subprocess.check_output([
+            "nvidia-smi",
+            "--query-gpu=gpu_name,memory.total,memory.used,memory.free",
+            "--format=csv,noheader,nounits"
+        ], text=True)
+        gpus = []
+        for line in res.strip().split("\n"):
+            if line:
+                name, total, used, free = line.split(",")
+                gpus.append({
+                    "name": name.strip(),
+                    "total_mb": int(total.strip()),
+                    "used_mb": int(used.strip()),
+                    "free_mb": int(free.strip()),
+                    "used_pct": round(int(used.strip()) / int(total.strip()) * 100, 1) if int(total.strip()) > 0 else 0
+                })
+        info["gpu_info"] = gpus
+    except Exception as e:
+        logger.debug(f"nvidia-smi not available or failed: {e}")
+        info["gpu_info"] = {"error": "unavailable or no nvidia-smi"}
 
     # Disk usage
     for path_name, path in [
@@ -1344,6 +1388,23 @@ async def admin_system():
 
     return JSONResponse(info)
 
+@app.get("/admin/logs/llama-server")
+async def get_llama_server_logs(limit: int = 150):
+    """Fetches the last N lines from the llama-server container logs using docker logs."""
+    import subprocess
+    try:
+        res = subprocess.check_output([
+            "docker", "logs", "--tail", str(limit), "llama-server"
+        ], stderr=subprocess.STDOUT, text=True)
+        return {"logs": res.split("\n")}
+    except Exception as e:
+        logger.warning(f"Failed to fetch llama-server container logs: {e}")
+        return {
+            "error": "Failed to fetch llama-server container logs.",
+            "detail": str(e),
+            "logs": ["Container logs unavailable. Verify that the docker socket/daemon is accessible or permission is granted."]
+        }
+
 @app.get("/admin/metrics")
 async def admin_metrics():
     """Performance metrics: request counts, token throughput, latency stats."""
@@ -1377,14 +1438,13 @@ async def admin_models():
 
         # Check router status
         router_status = "unknown"
-        router_entry = None
         try:
             router_models = await fetch_router_models(reload=False)
             candidates = router_model_candidates(mn, manifest)
             for entry in router_models:
                 if router_entry_matches(entry, candidates):
                     router_status = router_entry_status(entry)
-                    router_entry = entry
+                    
                     break
         except Exception:
             pass
@@ -1479,7 +1539,6 @@ async def admin_slots(fail_on_no_slot: int = 0):
 
         # Enhance with Alpaca metadata
         for slot in slots:
-            slot_id = slot.get("id", -1)
             slot["alpaca"] = {
                 "is_busy": slot.get("is_processing", False),
                 "has_prompt_cache": bool(slot.get("prompt", [])),
@@ -1712,6 +1771,71 @@ async def get_logs(limit: int = 100):
     logs = list(LOG_BUFFER)
     return {"logs": logs[-limit:]}
 
+MTP_INCOMPATIBLE_FILE = os.path.join(ROUTER_MODELS_DIR, ".mtp_incompatible_models.json")
+MTP_INCOMPATIBLE_MODELS = set()
+
+SAFE_SETTINGS_FILE = os.path.join(ROUTER_MODELS_DIR, ".safe_settings_models.json")
+SAFE_SETTINGS_MODELS = set()
+
+def load_mtp_incompatible_models():
+    global MTP_INCOMPATIBLE_MODELS
+    try:
+        if os.path.exists(MTP_INCOMPATIBLE_FILE):
+            with open(MTP_INCOMPATIBLE_FILE, "r") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    MTP_INCOMPATIBLE_MODELS = set(data)
+                    logger.info(f"Loaded MTP incompatible models: {MTP_INCOMPATIBLE_MODELS}")
+    except Exception as e:
+        logger.warning(f"Failed to load MTP incompatible models file: {e}")
+
+def save_mtp_incompatible_models():
+    try:
+        with open(MTP_INCOMPATIBLE_FILE, "w") as f:
+            json.dump(list(MTP_INCOMPATIBLE_MODELS), f, indent=2)
+            logger.info("Saved MTP incompatible models list.")
+    except Exception as e:
+        logger.warning(f"Failed to save MTP incompatible models file: {e}")
+
+def load_safe_settings_models():
+    global SAFE_SETTINGS_MODELS
+    try:
+        if os.path.exists(SAFE_SETTINGS_FILE):
+            with open(SAFE_SETTINGS_FILE, "r") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    SAFE_SETTINGS_MODELS = set(data)
+                    logger.info(f"Loaded safe settings models: {SAFE_SETTINGS_MODELS}")
+    except Exception as e:
+        logger.warning(f"Failed to load safe settings models file: {e}")
+
+def save_safe_settings_models():
+    try:
+        with open(SAFE_SETTINGS_FILE, "w") as f:
+            json.dump(list(SAFE_SETTINGS_MODELS), f, indent=2)
+            logger.info("Saved safe settings models list.")
+    except Exception as e:
+        logger.warning(f"Failed to save safe settings models file: {e}")
+
+# Load initially on import
+load_mtp_incompatible_models()
+load_safe_settings_models()
+
+async def wait_for_llama_server(timeout=30.0):
+    start_time = time.time()
+    logger.info("Waiting for llama-server to become responsive...")
+    while time.time() - start_time < timeout:
+        try:
+            resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/health", timeout=httpx.Timeout(2.0))
+            if resp.status_code == 200:
+                logger.info("llama-server is responsive and healthy.")
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+    logger.error(f"llama-server failed to become responsive within {timeout} seconds.")
+    return False
+
 async def ensure_model(model_name: str, options: dict = None):
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
@@ -1770,6 +1894,20 @@ async def ensure_model(model_name: str, options: dict = None):
         load_payload["use_mmap"] = True
         load_payload["flash_attn"] = True
 
+        if backend_model in MTP_INCOMPATIBLE_MODELS:
+            load_payload["spec_type"] = "none"
+            load_payload["spec_draft_n_max"] = 0
+            logger.info(f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding.")
+
+        if backend_model in SAFE_SETTINGS_MODELS:
+            load_payload["flash_attn"] = False
+            if "n_ctx" in load_payload and load_payload["n_ctx"] > 8192:
+                logger.info(f"Model {backend_model} is in safe settings mode. Capping n_ctx to 8192.")
+                load_payload["n_ctx"] = 8192
+            elif "n_ctx" not in load_payload:
+                load_payload["n_ctx"] = 8192
+            logger.info(f"Model {backend_model} is marked for safe settings. Disabling flash attention and enforcing n_ctx limit.")
+
         try:
             await post_router_model_action("load", load_payload)
         except RouterManagementUnsupported:
@@ -1780,9 +1918,136 @@ async def ensure_model(model_name: str, options: dict = None):
                 "manifest_path": resolved["manifest_path"],
                 "manifest": resolved["manifest"],
             }
-        except httpx.HTTPStatusError as exc:
-            # 400 "model is already running" is harmless
-            if exc.response.status_code == 400:
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            # Tier 1: Check if speculative decoding (MTP) was enabled and caused the crash
+            if load_payload.get("spec_type") != "none":
+                logger.warning(
+                    f"Failed to load model {backend_model} with default options: {exc}. "
+                    "Retrying without speculative decoding (MTP)..."
+                )
+                MTP_INCOMPATIBLE_MODELS.add(backend_model)
+                save_mtp_incompatible_models()
+
+                # Wait for llama-server to recover/restart
+                logger.info("Waiting for llama-server to restart...")
+                await asyncio.sleep(2.0)
+                if await wait_for_llama_server(timeout=30.0):
+                    # Re-resolve router model to get updated status and entry
+                    resolved = await resolve_router_model(model_name, reload=True)
+                    backend_model = resolved["backend_model"]
+
+                    # Re-construct payload with MTP disabled (applying safe settings if registered)
+                    load_payload = {"model": backend_model}
+                    if options:
+                        n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                        if n_ctx:
+                            load_payload["n_ctx"] = int(n_ctx)
+                    load_payload["n_gpu_layers"] = -1
+                    load_payload["use_mmap"] = True
+                    load_payload["flash_attn"] = True
+                    load_payload["spec_type"] = "none"
+                    load_payload["spec_draft_n_max"] = 0
+
+                    if backend_model in SAFE_SETTINGS_MODELS:
+                        load_payload["flash_attn"] = False
+                        if "n_ctx" in load_payload and load_payload["n_ctx"] > 8192:
+                            load_payload["n_ctx"] = 8192
+                        elif "n_ctx" not in load_payload:
+                            load_payload["n_ctx"] = 8192
+
+                    logger.info(f"Retrying load of {backend_model} with spec_type='none'...")
+                    try:
+                        await post_router_model_action("load", load_payload)
+                        logger.info(f"Model {backend_model} loaded successfully after disabling speculative decoding.")
+                        return {
+                            "model_name": model_name,
+                            "backend_model": backend_model,
+                            "manifest_path": resolved["manifest_path"],
+                            "manifest": resolved["manifest"],
+                        }
+                    except (httpx.RequestError, httpx.HTTPStatusError) as retry_exc:
+                        # Escalation Tier 2: Failed even without MTP -> Apply Safe Settings!
+                        if backend_model not in SAFE_SETTINGS_MODELS:
+                            logger.warning(
+                                f"Failed to load model {backend_model} even without speculative decoding: {retry_exc}. "
+                                "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
+                            )
+                            SAFE_SETTINGS_MODELS.add(backend_model)
+                            save_safe_settings_models()
+
+                            # Wait for llama-server to recover/restart
+                            logger.info("Waiting for llama-server to restart...")
+                            await asyncio.sleep(2.0)
+                            if await wait_for_llama_server(timeout=30.0):
+                                resolved = await resolve_router_model(model_name, reload=True)
+                                backend_model = resolved["backend_model"]
+
+                                load_payload = {"model": backend_model}
+                                load_payload["n_gpu_layers"] = -1
+                                load_payload["use_mmap"] = True
+                                load_payload["flash_attn"] = False
+                                load_payload["n_ctx"] = 8192
+                                load_payload["spec_type"] = "none"
+                                load_payload["spec_draft_n_max"] = 0
+
+                                logger.info(f"Retrying load of {backend_model} with Safe Settings...")
+                                try:
+                                    await post_router_model_action("load", load_payload)
+                                    logger.info(f"Model {backend_model} loaded successfully with Safe Settings.")
+                                    return {
+                                        "model_name": model_name,
+                                        "backend_model": backend_model,
+                                        "manifest_path": resolved["manifest_path"],
+                                        "manifest": resolved["manifest"],
+                                    }
+                                except Exception as safe_exc:
+                                    logger.error(f"Failed to load model even with Safe Settings: {safe_exc}")
+                                    raise
+                        raise
+                else:
+                    logger.error("llama-server did not recover/restart in time.")
+                    raise
+
+            # Tier 2: If we already disabled MTP but load failed, escalate directly to Safe Settings
+            elif backend_model not in SAFE_SETTINGS_MODELS:
+                logger.warning(
+                    f"Failed to load model {backend_model} under spec_type='none': {exc}. "
+                    "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
+                )
+                SAFE_SETTINGS_MODELS.add(backend_model)
+                save_safe_settings_models()
+
+                # Wait for llama-server to recover/restart
+                logger.info("Waiting for llama-server to restart...")
+                await asyncio.sleep(2.0)
+                if await wait_for_llama_server(timeout=30.0):
+                    resolved = await resolve_router_model(model_name, reload=True)
+                    backend_model = resolved["backend_model"]
+
+                    load_payload = {"model": backend_model}
+                    load_payload["n_gpu_layers"] = -1
+                    load_payload["use_mmap"] = True
+                    load_payload["flash_attn"] = False
+                    load_payload["n_ctx"] = 8192
+                    load_payload["spec_type"] = "none"
+                    load_payload["spec_draft_n_max"] = 0
+
+                    logger.info(f"Retrying load of {backend_model} with Safe Settings...")
+                    try:
+                        await post_router_model_action("load", load_payload)
+                        logger.info(f"Model {backend_model} loaded successfully with Safe Settings.")
+                        return {
+                            "model_name": model_name,
+                            "backend_model": backend_model,
+                            "manifest_path": resolved["manifest_path"],
+                            "manifest": resolved["manifest"],
+                        }
+                    except Exception as safe_exc:
+                        logger.error(f"Failed to load model even with Safe Settings: {safe_exc}")
+                        raise
+
+            # Harmful errors: if it's HTTPStatusError 400 "already running", ignore it
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
                 try:
                     payload = exc.response.json()
                     msg = str(payload.get("error", {}).get("message", "")) if isinstance(payload, dict) else ""
@@ -1796,10 +2061,7 @@ async def ensure_model(model_name: str, options: dict = None):
                         "manifest_path": resolved["manifest_path"],
                         "manifest": resolved["manifest"],
                     }
-                else:
-                    raise
-            else:
-                raise
+            raise
 
         # Load succeeded
         logger.info(f"Model {backend_model} loaded successfully.")
