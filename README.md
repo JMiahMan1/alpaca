@@ -43,6 +43,35 @@ Supported `keep_alive` behavior:
 - `0` to unload immediately after the response
 - negative values such as `-1` to keep the model loaded indefinitely
 
+## Self-Healing & Safe Settings Workflow
+
+To guarantee high availability and eliminate manual troubleshooting when loading diverse models (such as large context base models vs. speculative draft models), Alpaca features a two-tiered progressive dynamic self-healing pipeline:
+
+```mermaid
+graph TD
+    A[Client Request] --> B{Default Optimized Load}
+    B -->|Success| C[Serve Request]
+    B -->|Crash / MTP Mismatch| D[Tier 1: Remove MTP/Speculative Flags]
+    D --> E[Wait for Llama-Server Restart]
+    E --> F{Load without speculative decoding}
+    F -->|Success| C
+    F -->|Crash / OOM / Attention Failure| G[Tier 2: Escalation to Safe Settings]
+    G --> H[Wait for Llama-Server Restart]
+    H --> I[Load with Safe Settings: flash_attn=False, n_ctx=8192]
+    I -->|Success| C
+    I -->|Failure| J[Raise Exception]
+```
+
+### Self-Healing Tiers
+1. **Tier-1: Speculative Decoding (MTP) Bypass**:
+   - If a model (like `qwen3.6-35b-a3b` or `qwen3.5:9b`) is loaded while `llama-server` has speculative decoding enabled globally, loading will immediately crash the server if the model lacks matching MTP layers.
+   - The proxy intercepts the request crash, registers the model's backend filename in `.mtp_incompatible_models.json` (saved in the shared router folder), waits for the server container to auto-restart healthy, and retries loading with `spec_type="none"`.
+2. **Tier-2: Safe Settings Escalation (Flash Attention & Context Capping)**:
+   - For models like `qwen3.5:9b` which feature extremely large native context lengths (e.g., `262144`), loading them with high context settings or active flash attention can trigger a CUDA Out of Memory (OOM) error or kernel-level attention mismatch crashes.
+   - If the Tier-1 retry fails or if loading crashes under `spec_type="none"`, the proxy intercepts this failure, escalates the model to `.safe_settings_models.json`, waits for a container restart, and automatically retries with **Safe Settings** (`flash_attn=False` and a capped context allocation of `8192` tokens).
+
+Once indexed, any future requests for mapped models bypass initial crash attempts entirely and execute using the cached healthy profile.
+
 ## Supported API Surface
 
 The proxy currently implements:

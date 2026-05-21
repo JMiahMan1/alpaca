@@ -2,7 +2,7 @@ import importlib.util
 import json
 import pathlib
 import tempfile
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -14,6 +14,7 @@ alpaca_proxy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(alpaca_proxy)
 REAL_POST_ROUTER_MODEL_ACTION = alpaca_proxy.post_router_model_action
 REAL_RESOLVE_ROUTER_MODEL = alpaca_proxy.resolve_router_model
+REAL_ENSURE_MODEL = alpaca_proxy.ensure_model
 
 
 def make_manifest(digest="sha256:abcd", size=4):
@@ -192,7 +193,12 @@ async def test_ensure_model_unloads_other_loaded_model_before_load():
 
     assert resolved["backend_model"] == "sha256-deadbeef"
     alpaca_proxy.post_router_model_action.assert_any_await("unload", "other-model")
-    alpaca_proxy.post_router_model_action.assert_any_await("load", "sha256-deadbeef")
+    alpaca_proxy.post_router_model_action.assert_any_await("load", {
+        "model": "sha256-deadbeef",
+        "n_gpu_layers": -1,
+        "use_mmap": True,
+        "flash_attn": True,
+    })
 
 
 @pytest.mark.asyncio
@@ -228,7 +234,12 @@ async def test_ensure_model_falls_back_to_router_autoload_when_load_endpoint_mis
     resolved = await alpaca_proxy.ensure_model("tinyllama")
 
     assert resolved["backend_model"] == "sha256-deadbeef"
-    alpaca_proxy.post_router_model_action.assert_awaited_once_with("load", "sha256-deadbeef")
+    alpaca_proxy.post_router_model_action.assert_awaited_once_with("load", {
+        "model": "sha256-deadbeef",
+        "n_gpu_layers": -1,
+        "use_mmap": True,
+        "flash_attn": True,
+    })
 
 
 @pytest.mark.asyncio
@@ -251,7 +262,7 @@ async def test_resolve_router_model_falls_back_to_router_alias_when_symlink_exis
 
     resolved = await alpaca_proxy.resolve_router_model("tinyllama", reload=False)
 
-    assert resolved["backend_model"] == "tinyllama--latest"
+    assert resolved["backend_model"] == "tinyllama--latest.gguf"
     assert resolved["entry"]["path"] == str(router_path)
 
 
@@ -434,3 +445,134 @@ async def test_ps_endpoint_returns_loaded_router_models():
     assert body["models"][0]["name"] == "tinyllama"
     assert body["models"][0]["expires_at"] == "2026-05-11T00:00:00Z"
     assert body["models"][0]["context_length"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_escalates_to_safe_settings_when_load_fails_completely():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+    
+    alpaca_proxy.wait_for_llama_server = AsyncMock(return_value=True)
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "model_name": "qwen3.5:9b",
+        "backend_model": "qwen3.5--9b.gguf",
+        "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+        "manifest_path": "/tmp/manifest",
+        "manifest": make_manifest(digest="sha256:qwen35"),
+        "router_models": [
+            {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+        ],
+    })
+    
+    alpaca_proxy.post_router_model_action = AsyncMock(side_effect=[
+        httpx.RequestError("Default load crashed"),
+        httpx.RequestError("Retry without MTP crashed"),
+        None,
+    ])
+
+    resolved = await alpaca_proxy.ensure_model("qwen3.5:9b")
+    
+    assert resolved["backend_model"] == "qwen3.5--9b.gguf"
+    assert "qwen3.5--9b.gguf" in alpaca_proxy.MTP_INCOMPATIBLE_MODELS
+    assert "qwen3.5--9b.gguf" in alpaca_proxy.SAFE_SETTINGS_MODELS
+
+    # Verify calls
+    assert alpaca_proxy.post_router_model_action.await_count == 3
+    
+    # 1st call: default optimization
+    first_call = alpaca_proxy.post_router_model_action.await_args_list[0]
+    assert first_call[0][0] == "load"
+    assert first_call[0][1]["model"] == "qwen3.5--9b.gguf"
+    assert first_call[0][1].get("spec_type") is None
+    assert first_call[0][1]["flash_attn"] is True
+
+    # 2nd call: disabled MTP
+    second_call = alpaca_proxy.post_router_model_action.await_args_list[1]
+    assert second_call[0][0] == "load"
+    assert second_call[0][1]["spec_type"] == "none"
+    assert second_call[0][1]["flash_attn"] is True
+
+    # 3rd call: Safe Settings (flash_attn=False, n_ctx=8192)
+    third_call = alpaca_proxy.post_router_model_action.await_args_list[2]
+    assert third_call[0][0] == "load"
+    assert third_call[0][1]["spec_type"] == "none"
+    assert third_call[0][1]["flash_attn"] is False
+    assert third_call[0][1]["n_ctx"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_uses_saved_safe_settings_immediately():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+    
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.add("qwen3.5--9b.gguf")
+    alpaca_proxy.SAFE_SETTINGS_MODELS.add("qwen3.5--9b.gguf")
+    
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "model_name": "qwen3.5:9b",
+        "backend_model": "qwen3.5--9b.gguf",
+        "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+        "manifest_path": "/tmp/manifest",
+        "manifest": make_manifest(digest="sha256:qwen35"),
+        "router_models": [
+            {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+        ],
+    })
+    
+    alpaca_proxy.post_router_model_action = AsyncMock()
+
+    resolved = await alpaca_proxy.ensure_model("qwen3.5:9b")
+    
+    assert resolved["backend_model"] == "qwen3.5--9b.gguf"
+    
+    # Must immediately load with MTP off and Safe Settings applied
+    alpaca_proxy.post_router_model_action.assert_awaited_once_with("load", {
+        "model": "qwen3.5--9b.gguf",
+        "n_gpu_layers": -1,
+        "use_mmap": True,
+        "flash_attn": False,
+        "n_ctx": 8192,
+        "spec_type": "none",
+        "spec_draft_n_max": 0,
+    })
+
+
+@pytest.mark.asyncio
+async def test_admin_system_endpoint_returns_metrics():
+    # Mock psutil
+    mock_psutil = MagicMock()
+    mock_psutil.virtual_memory.return_value = MagicMock(
+        total=32000000000,
+        available=16000000000,
+        used=16000000000,
+        percent=50.0
+    )
+    mock_psutil.cpu_percent.return_value = 25.0
+    
+    # Mock subprocess.check_output
+    mock_subprocess = MagicMock()
+    mock_subprocess.check_output.return_value = "NVIDIA GeForce RTX 4060, 8188, 1241, 6557\n"
+    
+    with patch.dict("sys.modules", {"psutil": mock_psutil}), patch("subprocess.check_output", mock_subprocess.check_output):
+        response = await alpaca_proxy.admin_system()
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        assert body["ram_usage"]["total_gb"] == 32.0
+        assert body["ram_usage"]["used_pct"] == 50.0
+        assert body["cpu_usage"]["percent"] == 25.0
+        assert body["gpu_info"][0]["name"] == "NVIDIA GeForce RTX 4060"
+        assert body["gpu_info"][0]["total_mb"] == 8188
+        assert body["gpu_info"][0]["used_pct"] == 15.2
+
+
+@pytest.mark.asyncio
+async def test_get_llama_server_logs_endpoint():
+    mock_subprocess = MagicMock()
+    mock_subprocess.check_output.return_value = "line 1\nline 2\n"
+    with patch("subprocess.check_output", mock_subprocess.check_output):
+        response = await alpaca_proxy.get_llama_server_logs(limit=2)
+        assert response["logs"] == ["line 1", "line 2", ""]
+
+
