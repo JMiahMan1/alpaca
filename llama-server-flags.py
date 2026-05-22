@@ -31,7 +31,7 @@ def _read_gguf_metadata(path: str) -> dict:
         kv_count = struct.unpack("<Q", f.read(8))[0]
 
         for _ in range(kv_count):
-            key_len = struct.unpack("<I", f.read(4))[0]
+            key_len = struct.unpack("<Q", f.read(8))[0]  # uint64, not uint32
             key = f.read(key_len).decode("utf-8", errors="replace")
             val_type = struct.unpack("<I", f.read(4))[0]
 
@@ -72,10 +72,11 @@ def _read_gguf_metadata(path: str) -> dict:
 
 def _model_size_params(meta: dict) -> int:
     """Return total parameter count from GGUF metadata, or 0 if unknown."""
+    # Some models have general.parameter_count as an integer
     pc = meta.get("general.parameter_count", 0)
-    if isinstance(pc, (int, float)):
-        return int(pc)
-    # Fallback: try size_label like "8B", "70B"
+    if isinstance(pc, int) and pc > 0:
+        return pc
+    # Others use general.size_label like "8B", "35B-A3B"
     label = meta.get("general.size_label", "")
     if isinstance(label, str):
         import re
@@ -86,12 +87,12 @@ def _model_size_params(meta: dict) -> int:
 
 
 def _is_moe(meta: dict) -> bool:
-    expert_count = meta.get("llm.expert_count", 0)
-    expert_used = meta.get("llm.expert_used_count", 0)
-    if isinstance(expert_count, (int, float)) and int(expert_count) > 0:
-        return True
-    if isinstance(expert_used, (int, float)) and int(expert_used) > 0:
-        return True
+    # Check all keys for expert_count/expert_used_count (architecture-prefixed)
+    for key, val in meta.items():
+        if key.endswith(".expert_count") and isinstance(val, int) and val > 0:
+            return True
+        if key.endswith(".expert_used_count") and isinstance(val, int) and val > 0:
+            return True
     arch = meta.get("general.architecture", "")
     if "moe" in arch.lower():
         return True
