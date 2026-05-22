@@ -30,9 +30,9 @@ services:
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
-      - ./llama-server-flags.py:/app/llama-server-flags.py:ro
-      - ./llama-server-entrypoint.sh:/app/llama-server-entrypoint.sh:ro
-    entrypoint: ["/bin/sh", "/app/llama-server-entrypoint.sh"]
+      - ./llama-server-flags.py:/scripts/llama-server-flags.py:ro
+      - ./llama-server-entrypoint.sh:/scripts/llama-server-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/llama-server-entrypoint.sh"]
     depends_on:
       - alpaca-indexer
     deploy:

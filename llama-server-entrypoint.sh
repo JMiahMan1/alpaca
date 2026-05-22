@@ -7,7 +7,7 @@ if ! command -v python3 &> /dev/null; then
     apt-get update -qq && apt-get install -y -qq python3 > /dev/null 2>&1
 fi
 
-FLAGS=$(python3 /app/llama-server-flags.py)
+FLAGS=$(python3 /scripts/llama-server-flags.py)
 echo "[entrypoint] llama-server flags: $FLAGS"
 
-exec llama-server $FLAGS
+exec /app/llama-server $FLAGS
