@@ -30,20 +30,9 @@ services:
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
-    command: >
-      --host 0.0.0.0
-      --port 8080
-      --models-dir /router-models
-      -ngl 99
-      --n-cpu-moe 38
-      --no-mmap
-      --mlock
-      --cache-type-k q8_0
-      --cache-type-v q8_0
-      --spec-type draft-mtp
-      --spec-draft-n-max 3
-      -c 65536
-      -t 8
+      - ./llama-server-flags.py:/app/llama-server-flags.py:ro
+      - ./llama-server-entrypoint.sh:/app/llama-server-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/app/llama-server-entrypoint.sh"]
     depends_on:
       - alpaca-indexer
     deploy:
