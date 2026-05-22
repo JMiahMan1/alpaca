@@ -4,12 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile.proxy
     container_name: alpaca-indexer
-    restart: always
-    command: >
-      sh -lc "while true; do
-        python /app/alpaca-puller.py reindex;
-        sleep 300;
-      done"
+    restart: "no"
+    command: python /app/alpaca-puller.py reindex
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
@@ -34,7 +30,8 @@ services:
       - ./llama-server-entrypoint.sh:/scripts/llama-server-entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/scripts/llama-server-entrypoint.sh"]
     depends_on:
-      - alpaca-indexer
+      alpaca-indexer:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:
@@ -60,5 +57,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - alpaca-indexer
-      - llama-server
+      alpaca-indexer:
+        condition: service_completed_successfully
+      llama-server:
+        condition: service_started
