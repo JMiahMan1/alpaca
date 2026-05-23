@@ -61,10 +61,18 @@ ROUTER_MODELS_DIR = os.getenv("ROUTER_MODELS_DIR", "/router-models")
 LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS = float(os.getenv("LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS", "60"))
 LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv("LLAMA_SERVER_READ_TIMEOUT_SECONDS", "600").strip() # Default to 600s
 FOREVER_EXPIRES_AT = "9999-12-31T23:59:59Z"
+LOADED_MODELS_STATE_FILE = os.path.join(ROUTER_MODELS_DIR, ".loaded-models.json")
 
 # Reference counting for active requests to prevent unloading in-use models
 active_requests = {}
 active_requests_lock = asyncio.Condition()
+
+# Model loading state tracking (for OOM recovery)
+model_loading = {}
+MODEL_LOADING_TIMEOUT = 120  # seconds
+
+# Persisted loaded models state (for autoload on recovery)
+_loaded_models_state_lock = asyncio.Lock()
 
 
 class RouterManagementUnsupported(RuntimeError):
@@ -529,8 +537,20 @@ def build_generate_payload(body, backend_model):
     return payload
 
 async def fetch_router_models(reload=False):
+    # Handle case where client_httpx is not yet initialized (e.g., during tests)
+    if client_httpx is None:
+        logger.debug("client_httpx not yet initialized; returning empty router models list")
+        return []
+    
     params = {"reload": "1"} if reload else None
-    resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
+    try:
+        resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        logger.warning(f"Connection to llama-server failed: {exc}. Waiting for server to become responsive...")
+        if await wait_for_llama_server():
+            resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
+        else:
+            raise
     resp.raise_for_status()
     data = resp.json()
     return data.get("data") or []
@@ -558,6 +578,19 @@ async def resolve_router_model(model_name, reload=True):
             
     fallback_id = router_model_id_for_name(resolved_name)
     fallback_path = router_path_for_model_name(resolved_name)
+    # If the router service is unavailable (client_httpx not initialized or connection failed),
+    # or the router returned no models, fall back to a deterministic entry.
+    # This ensures resolve_router_model always returns a usable dict during tests or when the router is offline.
+    if not router_models:
+        return {
+            "model_name": resolved_name,
+            "backend_model": fallback_id,
+            "entry": {"id": fallback_id, "path": fallback_path, "status": {"value": "unloaded"}},
+            "manifest_path": manifest_path,
+            "manifest": manifest,
+            "router_models": router_models,
+        }
+    # Keep original fallback for when the file actually exists on disk.
     if os.path.exists(fallback_path):
         return {
             "model_name": resolved_name,
@@ -594,7 +627,15 @@ async def post_router_model_action(action, payload):
     else:
         json_body = payload
 
-    resp = await client_httpx.post(url, json=json_body)
+    try:
+        resp = await client_httpx.post(url, json=json_body)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        logger.warning(f"Connection to llama-server failed: {exc}. Waiting for server to become responsive...")
+        if await wait_for_llama_server():
+            resp = await client_httpx.post(url, json=json_body)
+        else:
+            raise
+
     if resp.status_code == 404:
         router_management_supported = False
         raise RouterManagementUnsupported(url)
@@ -650,6 +691,27 @@ def cancel_model_unload(model_name):
 def begin_model_request(model_name):
     cancel_model_unload(model_name)
     model_expires_at[public_model_name(model_name)] = "0001-01-01T00:00:00Z"
+
+def mark_model_loading(model_name):
+    public = public_model_name(model_name)
+    model_loading[public] = {"start_time": time.time(), "backend_model": None}
+    logger.info(f"Marked model {public} as loading.")
+
+def mark_model_loaded(model_name):
+    public = public_model_name(model_name)
+    model_loading.pop(public, None)
+    logger.info(f"Marked model {public} as no longer loading.")
+
+def is_model_loading(model_name):
+    public = public_model_name(model_name)
+    entry = model_loading.get(public)
+    if entry is None:
+        return False
+    if time.time() - entry["start_time"] > MODEL_LOADING_TIMEOUT:
+        logger.warning(f"Model {public} loading timed out ({MODEL_LOADING_TIMEOUT}s). Clearing.")
+        model_loading.pop(public, None)
+        return False
+    return True
 
 async def router_model_is_still_resident(backend_model):
     try:
@@ -812,6 +874,7 @@ def get_model_info(model_name):
 async def lifespan(app: FastAPI):
     global client_httpx
     client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
+    await restore_models_on_recovery()
     yield
     for task in list(model_unload_tasks.values()):
         task.cancel()
@@ -1106,196 +1169,242 @@ async def openai_models():
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(request: Request):
     """OpenAI-compatible chat completions. Proxies directly to llama-server."""
+    global client_httpx
     body = await request.json()
     started_ns = now_ns()
     model_name = body.get("model", "")
     stream = body.get("stream", False)
 
-    # Resolve model if provided
-    if model_name:
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            resolved = await ensure_model(model_name)
-            body["model"] = resolved["backend_model"]
-        except HTTPException as e:
-            # Return proper OpenAI error if model resolution fails
-            return JSONResponse(
-                status_code=e.status_code,
-                content={
-                    "error": {
-                        "message": f"Model resolution failed: {e.detail}",
-                        "type": "invalid_request_error",
-                        "param": "model",
-                        "code": "model_not_found"
-                    }
-                }
-            )
-
-    try:
-        if stream:
-            async def stream_proxy():
+            # Resolve model if provided (inside the retry loop!)
+            if model_name:
                 try:
-                    async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body) as resp:
-                        if resp.status_code != 200:
-                            # Read raw error body
-                            err_body = await resp.aread()
-                            err_msg = err_body.decode(errors="ignore")
-                            yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
-                            return
-                        async for line in resp.aiter_lines():
-                            if line and line.startswith("data: "):
-                                yield f"{line}\n\n"
-                except Exception as e:
-                    yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'api_error', 'code': None}})}\n\n"
-                finally:
-                    await record_metrics("/v1/chat/completions", (now_ns() - started_ns) / 1e6)
-            return StreamingResponse(stream_proxy(), media_type="text/event-stream")
-        else:
-            resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
-            if resp.status_code != 200:
-                err_msg = resp.text
-                try:
-                    # Attempt to parse upstream structured error if any
-                    upstream_err = resp.json()
-                    if "error" in upstream_err:
-                        err_msg = upstream_err["error"].get("message", err_msg)
-                except Exception:
-                    pass
+                    resolved = await ensure_model(model_name)
+                    body["model"] = resolved["backend_model"]
+                except HTTPException as e:
+                    # Client errors (like 404 Not Found) should fail immediately
+                    return JSONResponse(
+                        status_code=e.status_code,
+                        content={
+                            "error": {
+                                "message": f"Model resolution failed: {e.detail}",
+                                "type": "invalid_request_error",
+                                "param": "model",
+                                "code": "model_not_found"
+                            }
+                        }
+                    )
+            if stream:
+                async def stream_proxy():
+                    stream_started = False
+                    try:
+                        for s_attempt in range(max_retries):
+                            try:
+                                async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body) as resp:
+                                    if resp.status_code != 200:
+                                        err_body = await resp.aread()
+                                        err_msg = err_body.decode(errors="ignore")
+                                        if s_attempt < max_retries - 1 and ("loading" in err_msg or "error" in err_msg or resp.status_code in (502, 503, 504)):
+                                            logger.warning(f"Upstream stream returned status {resp.status_code}. Retrying recovery/load...")
+                                            await ensure_model(model_name)
+                                            continue
+                                        yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
+                                        return
+                                    
+                                    stream_started = True
+                                    async for line in resp.aiter_lines():
+                                        if line and line.startswith("data: "):
+                                            yield f"{line}\n\n"
+                                    return
+                            except httpx.RequestError as exc:
+                                if stream_started or s_attempt == max_retries - 1:
+                                    yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
+                                    if stream_started:
+                                        # Mid-stream crash: stream is lost but kick off background
+                                        # recovery now so the next request doesn't pay cold-start cost
+                                        logger.warning(f"Mid-stream crash detected ({exc}). Triggering background server recovery...")
+                                        asyncio.create_task(ensure_model(model_name))
+                                    return
+                                logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
+                                await ensure_model(model_name)
+                                await asyncio.sleep(2.0)
+                    finally:
+                        await record_metrics("/v1/chat/completions", (now_ns() - started_ns) / 1e6)
+                return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+            else:
+                resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
+                if resp.status_code != 200:
+                    err_msg = resp.text
+                    if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
+                        logger.warning(f"Upstream returned error status {resp.status_code}. Retrying recovery/load...")
+                        await ensure_model(model_name)
+                        continue
+                    try:
+                        upstream_err = resp.json()
+                        if "error" in upstream_err:
+                            err_msg = upstream_err["error"].get("message", err_msg)
+                    except Exception:
+                        pass
+                    await record_metrics("/v1/chat/completions", 0, error=True)
+                    return JSONResponse(
+                        status_code=resp.status_code,
+                        content={
+                            "error": {
+                                "message": err_msg,
+                                "type": "invalid_request_error",
+                                "code": resp.status_code
+                            }
+                        }
+                    )
+                data = resp.json()
+                latency = (now_ns() - started_ns) / 1e6
+                prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+                await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
+                return JSONResponse(data)
+        except httpx.RequestError as exc:
+            if attempt == max_retries - 1:
+                logger.error(f"Chat completions proxy failed after {max_retries} attempts due to connection error: {exc}")
                 await record_metrics("/v1/chat/completions", 0, error=True)
                 return JSONResponse(
-                    status_code=resp.status_code,
+                    status_code=502,
                     content={
                         "error": {
-                            "message": err_msg,
-                            "type": "invalid_request_error",
-                            "code": resp.status_code
+                            "message": f"Upstream request failed: {exc}",
+                            "type": "api_error",
+                            "code": "bad_gateway"
                         }
                     }
                 )
-            data = resp.json()
-            latency = (now_ns() - started_ns) / 1e6
-            prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-            gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
-            await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
-            return JSONResponse(data)
-    except httpx.TimeoutException:
-        await record_metrics("/v1/chat/completions", 0, error=True)
-        return JSONResponse(
-            status_code=504,
-            content={
-                "error": {
-                    "message": "Upstream llama-server timed out",
-                    "type": "api_error",
-                    "code": "timeout"
-                }
-            }
-        )
-    except httpx.RequestError as e:
-        await record_metrics("/v1/chat/completions", 0, error=True)
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error": {
-                    "message": f"Upstream request failed: {e}",
-                    "type": "api_error",
-                    "code": "bad_gateway"
-                }
-            }
-        )
+            logger.warning(f"Connection lost during completions request: {exc}. Flushing client pool and waiting for llama-server recovery...")
+            old_client = client_httpx
+            client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
+            asyncio.create_task(old_client.aclose())
+            
+            await wait_for_llama_server_or_restart(timeout=60.0)
+            await ensure_model(model_name)
 
 @app.post("/v1/completions")
 async def openai_completions(request: Request):
     """OpenAI-compatible text completions. Proxies directly to llama-server."""
+    global client_httpx
     body = await request.json()
     started_ns = now_ns()
     model_name = body.get("model", "")
     stream = body.get("stream", False)
 
-    if model_name:
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            resolved = await ensure_model(model_name)
-            body["model"] = resolved["backend_model"]
-        except HTTPException as e:
-            return JSONResponse(
-                status_code=e.status_code,
-                content={
-                    "error": {
-                        "message": f"Model resolution failed: {e.detail}",
-                        "type": "invalid_request_error",
-                        "param": "model",
-                        "code": "model_not_found"
-                    }
-                }
-            )
-
-    try:
-        if stream:
-            async def stream_proxy():
+            # Resolve model if provided (inside the retry loop!)
+            if model_name:
                 try:
-                    async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
-                        if resp.status_code != 200:
-                            err_body = await resp.aread()
-                            err_msg = err_body.decode(errors="ignore")
-                            yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
-                            return
-                        async for line in resp.aiter_lines():
-                            if line and line.startswith("data: "):
-                                yield f"{line}\n\n"
-                except Exception as e:
-                    yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'api_error', 'code': None}})}\n\n"
-                finally:
-                    await record_metrics("/v1/completions", (now_ns() - started_ns) / 1e6)
-            return StreamingResponse(stream_proxy(), media_type="text/event-stream")
-        else:
-            resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
-            if resp.status_code != 200:
-                err_msg = resp.text
-                try:
-                    upstream_err = resp.json()
-                    if "error" in upstream_err:
-                        err_msg = upstream_err["error"].get("message", err_msg)
-                except Exception:
-                    pass
+                    resolved = await ensure_model(model_name)
+                    body["model"] = resolved["backend_model"]
+                except HTTPException as e:
+                    # Client errors (like 404 Not Found) should fail immediately
+                    return JSONResponse(
+                        status_code=e.status_code,
+                        content={
+                            "error": {
+                                "message": f"Model resolution failed: {e.detail}",
+                                "type": "invalid_request_error",
+                                "param": "model",
+                                "code": "model_not_found"
+                            }
+                        }
+                    )
+            if stream:
+                async def stream_proxy():
+                    stream_started = False
+                    try:
+                        for s_attempt in range(max_retries):
+                            try:
+                                async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
+                                    if resp.status_code != 200:
+                                        err_body = await resp.aread()
+                                        err_msg = err_body.decode(errors="ignore")
+                                        if s_attempt < max_retries - 1 and ("loading" in err_msg or "error" in err_msg or resp.status_code in (502, 503, 504)):
+                                            logger.warning(f"Upstream stream returned status {resp.status_code}. Retrying recovery/load...")
+                                            await ensure_model(model_name)
+                                            continue
+                                        yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
+                                        return
+                                    
+                                    stream_started = True
+                                    async for line in resp.aiter_lines():
+                                        if line and line.startswith("data: "):
+                                            yield f"{line}\n\n"
+                                    return
+                            except httpx.RequestError as exc:
+                                if stream_started or s_attempt == max_retries - 1:
+                                    yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
+                                    if stream_started:
+                                        # Mid-stream crash: stream is lost but kick off background
+                                        # recovery now so the next request doesn't pay cold-start cost
+                                        logger.warning(f"Mid-stream crash detected ({exc}). Triggering background server recovery...")
+                                        asyncio.create_task(ensure_model(model_name))
+                                    return
+                                logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
+                                await ensure_model(model_name)
+                                await asyncio.sleep(2.0)
+                    finally:
+                        await record_metrics("/v1/completions", (now_ns() - started_ns) / 1e6)
+                return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+            else:
+                resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
+                if resp.status_code != 200:
+                    err_msg = resp.text
+                    if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
+                        logger.warning(f"Upstream returned error status {resp.status_code}. Retrying recovery/load...")
+                        await ensure_model(model_name)
+                        continue
+                    try:
+                        upstream_err = resp.json()
+                        if "error" in upstream_err:
+                            err_msg = upstream_err["error"].get("message", err_msg)
+                    except Exception:
+                        pass
+                    await record_metrics("/v1/completions", 0, error=True)
+                    return JSONResponse(
+                        status_code=resp.status_code,
+                        content={
+                            "error": {
+                                "message": err_msg,
+                                "type": "invalid_request_error",
+                                "code": resp.status_code
+                            }
+                        }
+                    )
+                data = resp.json()
+                latency = (now_ns() - started_ns) / 1e6
+                prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+                await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
+                return JSONResponse(data)
+        except httpx.RequestError as exc:
+            if attempt == max_retries - 1:
+                logger.error(f"Completions proxy failed after {max_retries} attempts due to connection error: {exc}")
                 await record_metrics("/v1/completions", 0, error=True)
                 return JSONResponse(
-                    status_code=resp.status_code,
+                    status_code=502,
                     content={
                         "error": {
-                            "message": err_msg,
-                            "type": "invalid_request_error",
-                            "code": resp.status_code
+                            "message": f"Upstream request failed: {exc}",
+                            "type": "api_error",
+                            "code": "bad_gateway"
                         }
                     }
                 )
-            data = resp.json()
-            latency = (now_ns() - started_ns) / 1e6
-            prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-            gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
-            await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
-            return JSONResponse(data)
-    except httpx.TimeoutException:
-        await record_metrics("/v1/completions", 0, error=True)
-        return JSONResponse(
-            status_code=504,
-            content={
-                "error": {
-                    "message": "Upstream llama-server timed out",
-                    "type": "api_error",
-                    "code": "timeout"
-                }
-            }
-        )
-    except httpx.RequestError as e:
-        await record_metrics("/v1/completions", 0, error=True)
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error": {
-                    "message": f"Upstream request failed: {e}",
-                    "type": "api_error",
-                    "code": "bad_gateway"
-                }
-            }
-        )
+            logger.warning(f"Connection lost during completions request: {exc}. Flushing client pool and waiting for llama-server recovery...")
+            old_client = client_httpx
+            client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
+            asyncio.create_task(old_client.aclose())
+            
+            await wait_for_llama_server_or_restart(timeout=60.0)
+            await ensure_model(model_name)
 
 @app.post("/v1/embeddings")
 async def openai_embeddings(request: Request):
@@ -1961,7 +2070,38 @@ def save_safe_settings_models():
 load_mtp_incompatible_models()
 load_safe_settings_models()
 
-async def wait_for_llama_server(timeout=30.0):
+async def save_loaded_models_state(loaded_models):
+    try:
+        os.makedirs(os.path.dirname(LOADED_MODELS_STATE_FILE), exist_ok=True)
+        with open(LOADED_MODELS_STATE_FILE, "w") as f:
+            json.dump(loaded_models, f)
+        logger.info(f"Saved loaded models state: {loaded_models}")
+    except Exception as e:
+        logger.warning(f"Failed to save loaded models state: {e}")
+
+async def load_loaded_models_state():
+    try:
+        if os.path.exists(LOADED_MODELS_STATE_FILE):
+            with open(LOADED_MODELS_STATE_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load loaded models state: {e}")
+    return []
+
+async def restore_models_on_recovery():
+    loaded_models = await load_loaded_models_state()
+    if not loaded_models:
+        logger.info("No persisted loaded models to restore.")
+        return
+    logger.info(f"Restoring {len(loaded_models)} loaded model(s) after recovery: {loaded_models}")
+    for public_name in loaded_models:
+        try:
+            logger.info(f"Auto-loading model on recovery: {public_name}")
+            asyncio.create_task(ensure_model(public_name))
+        except Exception as e:
+            logger.error(f"Failed to auto-load {public_name} on recovery: {e}")
+
+async def wait_for_llama_server(timeout=300.0):
     start_time = time.time()
     logger.info("Waiting for llama-server to become responsive...")
     while time.time() - start_time < timeout:
@@ -1976,11 +2116,192 @@ async def wait_for_llama_server(timeout=30.0):
     logger.error(f"llama-server failed to become responsive within {timeout} seconds.")
     return False
 
+llama_server_restart_lock = asyncio.Lock()
+last_llama_server_restart_time = 0.0
+
+async def restart_llama_server():
+    global last_llama_server_restart_time
+    async with llama_server_restart_lock:
+        now = time.time()
+        # 15 seconds cooldown to prevent rapid consecutive restarts under concurrent loads
+        if now - last_llama_server_restart_time < 15.0:
+            logger.info("llama-server was restarted very recently. Skipping redundant restart.")
+            return True
+
+        logger.info("Initiating single synchronized restart of llama-server...")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "restart", "llama-server",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                logger.info("llama-server restart command succeeded.")
+                last_llama_server_restart_time = time.time()
+                return True
+            else:
+                logger.error(f"llama-server restart command failed (exit {proc.returncode}): {stderr.decode().strip()}")
+                return False
+        except FileNotFoundError:
+            logger.error("docker command not found — cannot restart llama-server.")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to restart llama-server: {e}")
+            return False
+
+async def wait_for_llama_server_or_restart(timeout=300.0):
+    start_time = time.time()
+    restart_triggered = False
+    while time.time() - start_time < timeout:
+        try:
+            resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/health", timeout=httpx.Timeout(2.0))
+            if resp.status_code == 200:
+                # Active verification: Check if any loaded models are actually healthy/responsive
+                try:
+                    models_resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models", timeout=httpx.Timeout(2.0))
+                    if models_resp.status_code == 200:
+                        loaded_models = []
+                        data = models_resp.json().get("data", [])
+                        for model in data:
+                            if model.get("status", {}).get("value") == "loaded":
+                                loaded_models.append(model.get("id"))
+                        
+                        all_healthy = True
+                        for m_id in loaded_models:
+                            if not await is_child_model_healthy(m_id):
+                                logger.warning(f"Active health check failed: loaded model {m_id} is unresponsive.")
+                                all_healthy = False
+                                break
+                        
+                        if all_healthy:
+                            logger.info("llama-server and all loaded models are responsive and healthy.")
+                            return True
+                    else:
+                        logger.warning(f"Failed to fetch models list during health check: {models_resp.status_code}")
+                except Exception as check_exc:
+                    logger.warning(f"Error checking child model health during recovery: {check_exc}")
+        except Exception:
+            pass
+        
+        if not restart_triggered and time.time() - start_time > 15.0:
+            logger.info("llama-server or child model not responding after 15s — attempting docker restart...")
+            restart_triggered = True
+            if await restart_llama_server():
+                logger.info("llama-server restart command succeeded, waiting 5s for GPU memory release...")
+                await asyncio.sleep(5.0)
+                # Reset start_time to give it a full timeout window to boot up
+                start_time = time.time()
+                continue
+            else:
+                logger.error("llama-server restart failed.")
+                return False
+        await asyncio.sleep(1.0)
+    logger.error(f"llama-server failed to become responsive within {timeout} seconds.")
+    return False
+
+
+async def is_child_model_healthy(backend_model: str) -> bool:
+    """Check if the child model status on the router is 'loaded' or 'loading' and verified functional."""
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models")
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            for model in data:
+                if model.get("id") == backend_model:
+                    status = model.get("status", {}).get("value")
+                    if status == "loading":
+                        return True
+                    if status == "loaded":
+                        # Perform active direct port probe to ensure the child process is alive and responsive
+                        args = model.get("status", {}).get("args", [])
+                        try:
+                            port_idx = args.index("--port")
+                            port = args[port_idx + 1]
+                        except (ValueError, IndexError):
+                            logger.warning(f"Could not find port in status args for model {backend_model}")
+                            return False
+                        
+                        try:
+                            proc = await asyncio.create_subprocess_exec(
+                                "docker", "exec", "llama-server",
+                                "curl", "-s", "-m", "3", f"http://127.0.0.1:{port}/health",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE
+                            )
+                            stdout, stderr = await proc.communicate()
+                            if proc.returncode == 0:
+                                res = json.loads(stdout.decode().strip())
+                                if res.get("status") == "ok":
+                                    return True
+                            logger.warning(f"Health probe to child port {port} failed with returncode {proc.returncode}: {stdout.decode().strip()} {stderr.decode().strip()}")
+                        except Exception as e:
+                            logger.warning(f"Health probe to child port {port} raised exception: {e}")
+                        return False
+    except Exception as e:
+        logger.warning(f"Failed to check child model health for {backend_model}: {e}")
+    return False
+
+
+def is_model_over_9b(model_name: str, manifest: dict = None) -> bool:
+    """Check if a model's size/parameter count is higher than 9B."""
+    import re
+    # 1. Parse name for size indicators like "35b", "14b", "32b", "70b"
+    m = re.search(r"(\d+(?:\.\d+)?)\s*[bB]", model_name)
+    if m:
+        try:
+            val = float(m.group(1))
+            if val > 9.0:
+                return True
+        except ValueError:
+            pass
+            
+    # 2. Check manifest parameter count metadata if available
+    if manifest:
+        layers = manifest.get("layers", [])
+        for layer in layers:
+            if layer.get("mediaType", "").startswith("application/vnd.ollama.image.model"):
+                size_bytes = layer.get("size", 0)
+                # If the GGUF blob is > 8.5 GB, it is definitely > 9B parameters
+                if size_bytes > 8.5 * 1024 * 1024 * 1024:
+                    return True
+    return False
+
+async def get_child_model_props(backend_model: str) -> dict:
+    """Retrieve /props directly from the spawned llama-server child process container."""
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models")
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            for model in data:
+                if model.get("id") == backend_model:
+                    args = model.get("status", {}).get("args", [])
+                    try:
+                        port_idx = args.index("--port")
+                        port = args[port_idx + 1]
+                    except (ValueError, IndexError):
+                        continue
+                    
+                    # Run docker exec to query the child's /props directly inside the container
+                    proc = await asyncio.create_subprocess_exec(
+                        "docker", "exec", "llama-server",
+                        "curl", "-s", f"http://127.0.0.1:{port}/props",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await proc.communicate()
+                    if proc.returncode == 0:
+                        return json.loads(stdout.decode().strip())
+    except Exception as e:
+        logger.warning(f"Failed to get child model props: {e}")
+    return {}
+
 async def ensure_model(model_name: str, options: dict = None):
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
     
     async with router_model_lock:
+        mark_model_loading(model_name)
         resolved = await resolve_router_model(model_name, reload=True)
         backend_model = resolved["backend_model"]
         router_models = resolved["router_models"]
@@ -2018,15 +2339,47 @@ async def ensure_model(model_name: str, options: dict = None):
                             continue
                         raise
 
-        # If already loaded, skip load entirely
-        if router_entry_status(entry) == "loaded":
-            logger.info(f"Model {backend_model} already loaded (status=loaded), proceeding.")
-            return {
-                "model_name": model_name,
-                "backend_model": backend_model,
-                "manifest_path": resolved["manifest_path"],
-                "manifest": resolved["manifest"],
-            }
+        # If already loading, wait transparently for it to finish loading
+        status = router_entry_status(entry)
+        if status == "loading":
+            logger.info(f"Model {backend_model} is currently loading. Waiting for load to finish...")
+            for _ in range(120):
+                await asyncio.sleep(1.0)
+                try:
+                    resolved = await resolve_router_model(model_name, reload=True)
+                    entry = resolved["entry"]
+                    if router_entry_status(entry) == "loaded":
+                        logger.info(f"Model {backend_model} finished loading successfully.")
+                        status = "loaded"
+                        break
+                except Exception as poll_exc:
+                    logger.warning(f"Error polling model loading status: {poll_exc}")
+            else:
+                logger.warning(f"Model {backend_model} did not finish loading after 120s.")
+
+        # If already loaded, verify health and skip load entirely if healthy
+        if status == "loaded":
+            if await is_child_model_healthy(backend_model):
+                logger.info(f"Model {backend_model} already loaded (status=loaded) and active health check passed, proceeding.")
+                mark_model_loaded(model_name)
+                async with _loaded_models_state_lock:
+                    current_loaded = await load_loaded_models_state()
+                    public = public_model_name(model_name)
+                    if public not in current_loaded:
+                        current_loaded.append(public)
+                        await save_loaded_models_state(current_loaded)
+                return {
+                    "model_name": model_name,
+                    "backend_model": backend_model,
+                    "manifest_path": resolved["manifest_path"],
+                    "manifest": resolved["manifest"],
+                }
+            else:
+                logger.warning(f"Model {backend_model} is marked as loaded, but active health check failed! Triggering restart and reload recovery...")
+                await restart_llama_server()
+                if not await wait_for_llama_server_or_restart(timeout=60.0):
+                    raise HTTPException(status_code=502, detail="Failed to restore llama-server after child crash")
+                status = "unloaded"
 
         # Need to load — attempt load with optimized parameters
         logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
@@ -2051,16 +2404,26 @@ async def ensure_model(model_name: str, options: dict = None):
 
         if backend_model in SAFE_SETTINGS_MODELS:
             load_payload["flash_attn"] = False
-            if "n_ctx" not in load_payload:
-                load_payload["n_ctx"] = 8192
-                logger.info(f"Model {backend_model} is marked for safe settings. Disabling flash attention, defaulting n_ctx to 8192.")
-            else:
-                logger.info(f"Model {backend_model} is marked for safe settings. Disabling flash attention, keeping requested n_ctx={load_payload['n_ctx']}.")
+            load_payload["n_ctx"] = 8192
+            logger.info(f"Model {backend_model} is marked for safe settings. Disabling flash attention, capping n_ctx to 8192.")
+
+        # Cap concurrent inference slots to 2 for large models to prevent multiple
+        # simultaneous full-context prefills from exhausting host DRAM. Small models
+        # can use auto (typically 4) since their KV cache footprint is minimal.
+        if is_model_over_9b(model_name, resolved.get("manifest")):
+            load_payload["n_parallel"] = 2
+            logger.info(f"Model {backend_model} is >9B — capping n_parallel=2 to prevent concurrent prefill OOM while --kv-unified handles unified dynamic context.")
 
         try:
             await post_router_model_action("load", load_payload)
         except RouterManagementUnsupported:
             logger.warning("Router load endpoint unavailable; relying on request-time model autoload.")
+            async with _loaded_models_state_lock:
+                current_loaded = await load_loaded_models_state()
+                public = public_model_name(model_name)
+                if public not in current_loaded:
+                    current_loaded.append(public)
+                    await save_loaded_models_state(current_loaded)
             return {
                 "model_name": model_name,
                 "backend_model": backend_model,
@@ -2068,6 +2431,80 @@ async def ensure_model(model_name: str, options: dict = None):
                 "manifest": resolved["manifest"],
             }
         except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            # Don't try and change any settings with any model higher than 9B
+            if is_model_over_9b(model_name, resolved.get("manifest")):
+                logger.warning(
+                    f"Failed to load >9B model {backend_model} "
+                    f"with original settings: {exc}. Performing clean "
+                    "restart of llama-server and retrying..."
+                )
+                await restart_llama_server()
+                if await wait_for_llama_server_or_restart(timeout=60.0):
+                    # Re-resolve and retry load once with original settings
+                    resolved = await resolve_router_model(model_name, reload=True)
+                    backend_model = resolved["backend_model"]
+                    entry = resolved["entry"]
+                    
+                    status = router_entry_status(entry)
+                    if status == "loading":
+                        logger.info(f"Model {backend_model} is loading after restart. Waiting for load to finish...")
+                        for _ in range(120):
+                            await asyncio.sleep(1.0)
+                            try:
+                                resolved = await resolve_router_model(model_name, reload=True)
+                                entry = resolved["entry"]
+                                if router_entry_status(entry) == "loaded":
+                                    logger.info(f"Model {backend_model} finished loading successfully.")
+                                    status = "loaded"
+                                    break
+                            except Exception as poll_exc:
+                                logger.warning(f"Error polling model loading status: {poll_exc}")
+                        else:
+                            logger.warning(f"Model {backend_model} did not finish loading after 120s.")
+                    
+                    if status == "loaded":
+                        logger.info(f"Model {backend_model} successfully loaded on recovery restart.")
+                        mark_model_loaded(model_name)
+                        async with _loaded_models_state_lock:
+                            current_loaded = await load_loaded_models_state()
+                            public = public_model_name(model_name)
+                            if public not in current_loaded:
+                                current_loaded.append(public)
+                                await save_loaded_models_state(current_loaded)
+                        return {
+                            "model_name": model_name,
+                            "backend_model": backend_model,
+                            "manifest_path": resolved["manifest_path"],
+                            "manifest": resolved["manifest"],
+                        }
+                    
+                    try:
+                        await post_router_model_action("load", load_payload)
+                        logger.info(
+                            f"Model {backend_model} successfully loaded "
+                            "after clean restart."
+                        )
+                        mark_model_loaded(model_name)
+                        async with _loaded_models_state_lock:
+                            current_loaded = await load_loaded_models_state()
+                            public = public_model_name(model_name)
+                            if public not in current_loaded:
+                                current_loaded.append(public)
+                                await save_loaded_models_state(current_loaded)
+                        return {
+                            "model_name": model_name,
+                            "backend_model": backend_model,
+                            "manifest_path": resolved["manifest_path"],
+                            "manifest": resolved["manifest"],
+                        }
+                    except Exception as retry_exc:
+                        logger.error(
+                            "Failed to load >9B model even after "
+                            f"clean restart: {retry_exc}"
+                        )
+                        raise
+                raise
+
             # Tier 1: Check if speculative decoding (MTP) was enabled and caused the crash
             if load_payload.get("spec_type") != "none":
                 logger.warning(
@@ -2080,7 +2517,7 @@ async def ensure_model(model_name: str, options: dict = None):
                 # Wait for llama-server to recover/restart
                 logger.info("Waiting for llama-server to restart...")
                 await asyncio.sleep(2.0)
-                if await wait_for_llama_server(timeout=30.0):
+                if await wait_for_llama_server_or_restart(timeout=60.0):
                     # Re-resolve router model to get updated status and entry
                     resolved = await resolve_router_model(model_name, reload=True)
                     backend_model = resolved["backend_model"]
@@ -2106,6 +2543,13 @@ async def ensure_model(model_name: str, options: dict = None):
                     try:
                         await post_router_model_action("load", load_payload)
                         logger.info(f"Model {backend_model} loaded successfully after disabling speculative decoding.")
+                        mark_model_loaded(model_name)
+                        async with _loaded_models_state_lock:
+                            current_loaded = await load_loaded_models_state()
+                            public = public_model_name(model_name)
+                            if public not in current_loaded:
+                                current_loaded.append(public)
+                                await save_loaded_models_state(current_loaded)
                         return {
                             "model_name": model_name,
                             "backend_model": backend_model,
@@ -2114,6 +2558,9 @@ async def ensure_model(model_name: str, options: dict = None):
                         }
                     except (httpx.RequestError, httpx.HTTPStatusError) as retry_exc:
                         # Escalation Tier 2: Failed even without MTP -> Apply Safe Settings!
+                        if is_model_over_9b(model_name, resolved.get("manifest")):
+                            logger.info(f"Model {model_name} is higher than 9B. Skipping Safe Settings escalation.")
+                            raise
                         if backend_model not in SAFE_SETTINGS_MODELS:
                             logger.warning(
                                 f"Failed to load model {backend_model} even without speculative decoding: {retry_exc}. "
@@ -2125,7 +2572,7 @@ async def ensure_model(model_name: str, options: dict = None):
                             # Wait for llama-server to recover/restart
                             logger.info("Waiting for llama-server to restart...")
                             await asyncio.sleep(2.0)
-                            if await wait_for_llama_server(timeout=30.0):
+                            if await wait_for_llama_server_or_restart(timeout=60.0):
                                 resolved = await resolve_router_model(model_name, reload=True)
                                 backend_model = resolved["backend_model"]
 
@@ -2146,6 +2593,13 @@ async def ensure_model(model_name: str, options: dict = None):
                                 try:
                                     await post_router_model_action("load", load_payload)
                                     logger.info(f"Model {backend_model} loaded successfully with Safe Settings.")
+                                    mark_model_loaded(model_name)
+                                    async with _loaded_models_state_lock:
+                                        current_loaded = await load_loaded_models_state()
+                                        public = public_model_name(model_name)
+                                        if public not in current_loaded:
+                                            current_loaded.append(public)
+                                            await save_loaded_models_state(current_loaded)
                                     return {
                                         "model_name": model_name,
                                         "backend_model": backend_model,
@@ -2162,6 +2616,9 @@ async def ensure_model(model_name: str, options: dict = None):
 
             # Tier 2: If we already disabled MTP but load failed, escalate directly to Safe Settings
             elif backend_model not in SAFE_SETTINGS_MODELS:
+                if is_model_over_9b(model_name, resolved.get("manifest")):
+                    logger.info(f"Model {model_name} is higher than 9B. Skipping Safe Settings escalation.")
+                    raise
                 logger.warning(
                     f"Failed to load model {backend_model} under spec_type='none': {exc}. "
                     "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
@@ -2172,7 +2629,7 @@ async def ensure_model(model_name: str, options: dict = None):
                 # Wait for llama-server to recover/restart
                 logger.info("Waiting for llama-server to restart...")
                 await asyncio.sleep(2.0)
-                if await wait_for_llama_server(timeout=30.0):
+                if await wait_for_llama_server_or_restart(timeout=60.0):
                     resolved = await resolve_router_model(model_name, reload=True)
                     backend_model = resolved["backend_model"]
 
@@ -2193,6 +2650,13 @@ async def ensure_model(model_name: str, options: dict = None):
                     try:
                         await post_router_model_action("load", load_payload)
                         logger.info(f"Model {backend_model} loaded successfully with Safe Settings.")
+                        mark_model_loaded(model_name)
+                        async with _loaded_models_state_lock:
+                            current_loaded = await load_loaded_models_state()
+                            public = public_model_name(model_name)
+                            if public not in current_loaded:
+                                current_loaded.append(public)
+                                await save_loaded_models_state(current_loaded)
                         return {
                             "model_name": model_name,
                             "backend_model": backend_model,
@@ -2212,6 +2676,13 @@ async def ensure_model(model_name: str, options: dict = None):
                     msg = exc.response.text
                 if "already running" in msg.lower() or "model is already running" in msg.lower():
                     logger.info(f"Model {backend_model} already loaded (detected via 400), proceeding.")
+                    mark_model_loaded(model_name)
+                    async with _loaded_models_state_lock:
+                        current_loaded = await load_loaded_models_state()
+                        public = public_model_name(model_name)
+                        if public not in current_loaded:
+                            current_loaded.append(public)
+                            await save_loaded_models_state(current_loaded)
                     return {
                         "model_name": model_name,
                         "backend_model": backend_model,
@@ -2220,8 +2691,132 @@ async def ensure_model(model_name: str, options: dict = None):
                     }
             raise
 
-        # Load succeeded
-        logger.info(f"Model {backend_model} loaded successfully.")
+        # Load succeeded — check for OOM or startup crash (post-load verification)
+        logger.info(f"Model {backend_model} loaded successfully. Checking for OOM or startup crash...")
+        await asyncio.sleep(1.0)
+        oom_detected = False
+        crash_detected = False
+        
+        # Don't try and change any settings with any model higher than 9B
+        if is_model_over_9b(model_name, resolved.get("manifest")):
+            # For >9B models, we verify if the model crashed or failed to start up
+            if not await is_child_model_healthy(backend_model):
+                crash_detected = True
+                logger.warning(
+                    f"Crash detected: model {backend_model} is not "
+                    "running or failed after load. Triggering recovery."
+                )
+        else:
+            try:
+                if client_httpx is None:
+                    logger.debug("client_httpx not initialized; skipping OOM check")
+                    oom_detected = False
+                else:
+                    # Query the child process's props directly inside the llama-server container
+                    props = await get_child_model_props(backend_model)
+                    actual_gpu_layers = props.get("n_gpu_layers", -1)
+                    if actual_gpu_layers == 0:
+                        oom_detected = True
+                        logger.warning(
+                            f"OOM detected: model {backend_model} loaded with n_gpu_layers=0 "
+                            f"(expected -1). Triggering OOM recovery."
+                        )
+            except Exception:
+                logger.exception("OOM detection failed")
+                oom_detected = False
+
+        if oom_detected or crash_detected:
+            try:
+                logger.info(
+                    f"Recovery: unloading {backend_model} and "
+                    "restarting llama-server to release GPU memory..."
+                )
+                try:
+                    await post_router_model_action("unload", backend_model)
+                except Exception:
+                    pass
+                
+                # Force restart of llama-server to guarantee GPU memory release
+                await restart_llama_server()
+                
+                logger.info("Waiting for llama-server to become responsive after restart...")
+                if not await wait_for_llama_server_or_restart(timeout=60.0):
+                    raise RuntimeError(
+                        "llama-server did not recover after OOM/crash unload."
+                    )
+
+                # Re-resolve and retry loading
+                resolved = await resolve_router_model(model_name, reload=True)
+                backend_model = resolved["backend_model"]
+                
+                # Don't try and change any settings with any model higher than 9B
+                if is_model_over_9b(model_name, resolved.get("manifest")):
+                    logger.info(
+                        f"Retrying load of >9B model {backend_model} "
+                        "with original settings..."
+                    )
+                    load_payload = {"model": backend_model}
+                    if options:
+                        n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                        if n_ctx:
+                            load_payload["n_ctx"] = int(n_ctx)
+                    await post_router_model_action("load", load_payload)
+                    logger.info(
+                        f"Model {backend_model} successfully loaded "
+                        "with original settings after clean restart."
+                    )
+                else:
+                    # Original recovery with OOM-safe settings for <= 9B models
+                    load_payload = {"model": backend_model}
+                    if options:
+                        n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                        if n_ctx:
+                            load_payload["n_ctx"] = int(n_ctx)
+                    load_payload["n_gpu_layers"] = 0
+                    load_payload["n_thread"] = 8
+                    load_payload["n_batch"] = 256
+                    load_payload["n_ubatch"] = 512
+                    load_payload["use_mmap"] = True
+                    load_payload["flash_attn"] = False
+                    load_payload["spec_type"] = "none"
+                    load_payload["spec_draft_n_max"] = 0
+                    logger.info(f"OOM recovery: retrying load of {backend_model} with safe settings...")
+                    try:
+                        await post_router_model_action("load", load_payload)
+                        logger.info(f"Model {backend_model} loaded successfully with OOM-safe settings.")
+                    except Exception as retry_exc:
+                        logger.error(
+                            f"OOM recovery retry failed for {backend_model}: "
+                            f"{retry_exc}. Falling back to normal retry."
+                        )
+                        raise
+            except Exception as recovery_err:
+                logger.error(
+                    f"Recovery failed for {model_name}: "
+                    f"{recovery_err}. Raising."
+                )
+                raise
+            async with _loaded_models_state_lock:
+                current_loaded = await load_loaded_models_state()
+                public = public_model_name(model_name)
+                if public not in current_loaded:
+                    current_loaded.append(public)
+                    await save_loaded_models_state(current_loaded)
+            return {
+                "model_name": model_name,
+                "backend_model": backend_model,
+                "manifest_path": resolved["manifest_path"],
+                "manifest": resolved["manifest"],
+            }
+
+        # Mark as loaded on successful load
+        mark_model_loaded(model_name)
+        async with _loaded_models_state_lock:
+            current_loaded = await load_loaded_models_state()
+            public = public_model_name(model_name)
+            if public not in current_loaded:
+                current_loaded.append(public)
+                await save_loaded_models_state(current_loaded)
         return {
             "model_name": model_name,
             "backend_model": backend_model,

@@ -19,6 +19,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 REAL_POST_ROUTER_MODEL_ACTION = alpaca_proxy.post_router_model_action
 REAL_RESOLVE_ROUTER_MODEL = alpaca_proxy.resolve_router_model
 REAL_ENSURE_MODEL = alpaca_proxy.ensure_model
+REAL_FETCH_ROUTER_MODELS = alpaca_proxy.fetch_router_models
 
 def make_manifest(digest="sha256:abcd", size=4):
     return {
@@ -191,6 +192,13 @@ async def test_ensure_model_unloads_other_loaded_model_before_load():
         ],
     })
     alpaca_proxy.post_router_model_action = AsyncMock()
+
+    # Mock client_httpx for OOM check after successful load
+    props_resp = AsyncMock()
+    props_resp.status_code = 200
+    props_resp.json = MagicMock(return_value={"n_gpu_layers": -1})
+    alpaca_proxy.client_httpx = AsyncMock()
+    alpaca_proxy.client_httpx.get = AsyncMock(return_value=props_resp)
 
     resolved = await alpaca_proxy.ensure_model("tinyllama")
 
@@ -456,7 +464,7 @@ async def test_ensure_model_escalates_to_safe_settings_when_load_fails_completel
     alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
     alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
     
-    alpaca_proxy.wait_for_llama_server = AsyncMock(return_value=True)
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
     alpaca_proxy.resolve_router_model = AsyncMock(return_value={
         "model_name": "qwen3.5:9b",
         "backend_model": "qwen3.5--9b.gguf",
@@ -577,5 +585,193 @@ async def test_get_llama_server_logs_endpoint():
     with patch("subprocess.check_output", mock_subprocess.check_output):
         response = await alpaca_proxy.get_llama_server_logs(limit=2)
         assert response["logs"] == ["line 1", "line 2", ""]
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_recovers_from_oom_by_restarting_server():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "model_name": "tinyllama:latest",
+        "backend_model": "sha256-deadbeef",
+        "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+        "manifest_path": "/tmp/manifest",
+        "manifest": make_manifest(digest="sha256:deadbeef"),
+        "router_models": [
+            {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+        ],
+    })
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+
+    # Mock get_child_model_props so check returns n_gpu_layers=0 (OOM!)
+    alpaca_proxy.get_child_model_props = AsyncMock(return_value={"n_gpu_layers": 0})
+
+    resolved = await alpaca_proxy.ensure_model("tinyllama")
+
+    assert resolved["backend_model"] == "sha256-deadbeef"
+    # Verify that we called restart_llama_server and wait_for_llama_server_or_restart
+    alpaca_proxy.restart_llama_server.assert_awaited_once()
+    alpaca_proxy.wait_for_llama_server_or_restart.assert_awaited_once()
+    # Verify we retried loading with OOM safe settings (n_gpu_layers=0)
+    alpaca_proxy.post_router_model_action.assert_any_await("load", {
+        "model": "sha256-deadbeef",
+        "n_gpu_layers": 0,
+        "n_thread": 8,
+        "n_batch": 256,
+        "n_ubatch": 512,
+        "use_mmap": True,
+        "flash_attn": False,
+        "spec_type": "none",
+        "spec_draft_n_max": 0,
+    })
+
+
+@pytest.mark.asyncio
+async def test_fetch_router_models_retries_on_connection_error():
+    alpaca_proxy.fetch_router_models = REAL_FETCH_ROUTER_MODELS
+    alpaca_proxy.wait_for_llama_server = AsyncMock(return_value=True)
+
+    resp_mock = AsyncMock()
+    resp_mock.status_code = 200
+    resp_mock.json = MagicMock(return_value={"data": [{"id": "model1"}]})
+    resp_mock.raise_for_status = MagicMock()
+
+    alpaca_proxy.client_httpx = AsyncMock()
+    # First call raises ConnectError, second call returns resp_mock
+    alpaca_proxy.client_httpx.get = AsyncMock(side_effect=[
+        httpx.ConnectError("Could not establish connection"),
+        resp_mock,
+    ])
+
+    try:
+        models = await alpaca_proxy.fetch_router_models(reload=True)
+        assert models == [{"id": "model1"}]
+        alpaca_proxy.wait_for_llama_server.assert_awaited_once_with()
+        assert alpaca_proxy.client_httpx.get.call_count == 2
+    finally:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_post_router_model_action_retries_on_connection_error():
+    alpaca_proxy.post_router_model_action = REAL_POST_ROUTER_MODEL_ACTION
+    alpaca_proxy.wait_for_llama_server = AsyncMock(return_value=True)
+
+    resp_mock = AsyncMock()
+    resp_mock.status_code = 200
+    resp_mock.json = MagicMock(return_value={"status": "loaded"})
+    resp_mock.raise_for_status = MagicMock()
+
+    alpaca_proxy.client_httpx = AsyncMock()
+    # First call raises ConnectError, second call returns resp_mock
+    alpaca_proxy.client_httpx.post = AsyncMock(side_effect=[
+        httpx.ConnectError("Could not establish connection"),
+        resp_mock,
+    ])
+
+    try:
+        res = await alpaca_proxy.post_router_model_action("load", "some-model")
+        assert res == {"status": "loaded"}
+        alpaca_proxy.wait_for_llama_server.assert_awaited_once_with()
+        assert alpaca_proxy.client_httpx.post.call_count == 2
+    finally:
+        pass
+
+
+def test_is_model_over_9b():
+    # 1. Names with size tags
+    assert alpaca_proxy.is_model_over_9b("qwen3.6-35b-a3b:q4_k_m") is True
+    assert alpaca_proxy.is_model_over_9b("qwen3:8b") is False
+    assert alpaca_proxy.is_model_over_9b("llama3:70b") is True
+    assert alpaca_proxy.is_model_over_9b("deepseek-coder:1.3b") is False
+
+    # 2. Manifest file size checks (8.5 GB threshold)
+    small_manifest = {
+        "layers": [
+            {
+                "mediaType": "application/vnd.ollama.image.model",
+                "size": 5 * 1024 * 1024 * 1024,
+            }
+        ]
+    }
+    large_manifest = {
+        "layers": [
+            {
+                "mediaType": "application/vnd.ollama.image.model",
+                "size": 10 * 1024 * 1024 * 1024,
+            }
+        ]
+    }
+    
+    assert alpaca_proxy.is_model_over_9b(
+        "unknown_model", small_manifest
+    ) is False
+    assert alpaca_proxy.is_model_over_9b(
+        "unknown_model", large_manifest
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skips_escalation_for_large_models():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "model_name": "qwen3.6-35b-a3b:q4_k_m",
+        "backend_model": "sha256-large",
+        "entry": {"id": "sha256-large", "status": {"value": "unloaded"}},
+        "manifest_path": "/tmp/manifest",
+        "manifest": make_manifest(digest="sha256:large"),
+        "router_models": [],
+    })
+    alpaca_proxy.post_router_model_action = AsyncMock(
+        side_effect=httpx.HTTPStatusError(
+            "Load failed", request=MagicMock(), response=MagicMock()
+        )
+    )
+    alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(
+        return_value=True
+    )
+
+    # Loading a >9B model should immediately restart and retry once
+    with pytest.raises(httpx.HTTPStatusError):
+        await alpaca_proxy.ensure_model("qwen3.6-35b-a3b:q4_k_m")
+    
+    # Assert we called post_router_model_action twice
+    assert alpaca_proxy.post_router_model_action.call_count == 2
+    alpaca_proxy.restart_llama_server.assert_awaited_once()
+    alpaca_proxy.wait_for_llama_server_or_restart.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_recovers_from_crash_for_large_models():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
+        "model_name": "qwen3.6-35b-a3b:q4_k_m",
+        "backend_model": "sha256-large",
+        "entry": {"id": "sha256-large", "status": {"value": "unloaded"}},
+        "manifest_path": "/tmp/manifest",
+        "manifest": make_manifest(digest="sha256:large"),
+        "router_models": [],
+    })
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(
+        return_value=True
+    )
+
+    # Health check returns False (crash), then True on recovery reload
+    alpaca_proxy.is_child_model_healthy = AsyncMock(side_effect=[False, True])
+
+    resolved = await alpaca_proxy.ensure_model("qwen3.6-35b-a3b:q4_k_m")
+    
+    assert resolved["backend_model"] == "sha256-large"
+    alpaca_proxy.restart_llama_server.assert_awaited_once()
+    alpaca_proxy.wait_for_llama_server_or_restart.assert_awaited_once()
+    # Verify it retried with original load parameters
+    alpaca_proxy.post_router_model_action.assert_any_await(
+        "load", {"model": "sha256-large"}
+    )
+
 
 
