@@ -137,7 +137,7 @@ def get_llama_server_flags() -> list[str]:
         "-ngl", "99",
         "--no-mmap",
         "--mlock",
-        "-t", "8",
+        "-t", "6",
     ]
 
     if small_model:
@@ -148,16 +148,24 @@ def get_llama_server_flags() -> list[str]:
             "--cache-type-v", "f16",
         ])
     else:
-        # Large models: full context + q8_0 cache (assumes sufficient VRAM)
+        # Large models: 128K context + q4_0 cache (highly optimized and fast for 8GB VRAM)
+        # --parallel 1: gives the single active slot the full 131K unified KV pool.
+        # n_parallel=2 halved per-slot context to 65K which is smaller than large prompts.
+        # Since OpenCode is sequential, a single slot loses nothing in practice and
+        # completely eliminates concurrent multi-prefill DRAM OOM pressure.
         flags.extend([
-            "-c", "65536",
-            "--cache-type-k", "q8_0",
-            "--cache-type-v", "q8_0",
+            "-c", "131072",
+            "--cache-type-k", "q4_0",
+            "--cache-type-v", "q4_0",
+            "--batch-size", "1024",
+            "--ubatch-size", "1024",
+            "--parallel", "2",
+            "--kv-unified",
         ])
 
     if is_moe:
         flags.extend([
-            "--n-cpu-moe", "38",
+            "--n-cpu-moe", "54",
             "--spec-type", "draft-mtp",
             "--spec-draft-n-max", "3",
         ])

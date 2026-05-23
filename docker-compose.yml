@@ -35,7 +35,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 26G
+          memory: 31G
         reservations:
           devices:
             - driver: nvidia
@@ -52,6 +52,7 @@ services:
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       ROUTER_MODELS_DIR: /router-models
     extra_hosts:

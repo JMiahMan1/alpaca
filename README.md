@@ -43,9 +43,7 @@ Supported `keep_alive` behavior:
 - `0` to unload immediately after the response
 - negative values such as `-1` to keep the model loaded indefinitely
 
-## Self-Healing & Safe Settings Workflow
-
-To guarantee high availability and eliminate manual troubleshooting when loading diverse models (such as large context base models vs. speculative draft models), Alpaca features a two-tiered progressive dynamic self-healing pipeline:
+To guarantee high availability and eliminate manual troubleshooting when loading diverse models (such as large context base models vs. speculative draft models), Alpaca features a three-tiered progressive dynamic self-healing pipeline:
 
 ```mermaid
 flowchart LR
@@ -99,9 +97,19 @@ flowchart LR
 1. **Tier-1: Speculative Decoding (MTP) Bypass**:
    - If a model (like `qwen3.6-35b-a3b` or `qwen3.5:9b`) is loaded while `llama-server` has speculative decoding enabled globally, loading will immediately crash the server if the model lacks matching MTP layers.
    - The proxy intercepts the request crash, registers the model's backend filename in `.mtp_incompatible_models.json` (saved in the shared router folder), waits for the server container to auto-restart healthy, and retries loading with `spec_type="none"`.
-2. **Tier-2: Safe Settings Escalation (Flash Attention & Context Capping)**:
+2. **Tier-2: Safe Settings Escalation (Flash Attention & Strict Context Capping)**:
    - For models like `qwen3.5:9b` which feature extremely large native context lengths (e.g., `262144`), loading them with high context settings or active flash attention can trigger a CUDA Out of Memory (OOM) error or kernel-level attention mismatch crashes.
-   - If the Tier-1 retry fails or if loading crashes under `spec_type="none"`, the proxy intercepts this failure, escalates the model to `.safe_settings_models.json`, waits for a container restart, and automatically retries with **Safe Settings** (`flash_attn=False` and a default context allocation of `8192` tokens, or the client-requested value if higher).
+   - If the Tier-1 retry fails or if loading crashes under `spec_type="none"`, the proxy intercepts this failure, escalates the model to `.safe_settings_models.json`, waits for a container restart, and automatically retries with **Safe Settings** (`flash_attn=False`).
+   - **Strict Context Capping:** To prevent sub-9B models from accidentally inheriting large context values (like 128K) and crashing the GPU, the proxy strictly caps `n_ctx` for all escalated safe-settings models to **`8192`** tokens, completely overriding client-requested high-context values.
+
+### Memory Infrastructure & Hardware Optimization
+* **Dedicated GPU MoE Offloading:** The system balances Host DRAM vs RTX 4060 VRAM by configuring `"--n-cpu-moe", "54"` inside `llama-server-flags.py`. This forces exactly **10 MoE experts** directly onto the GPU VRAM (~5.6 GB VRAM allocated), moving **~2.2 GB of weight data completely out of system RAM** to protect the host against iGPU and Brave browser memory pressure.
+* **Unified KV Cache (`--kv-unified`):** Large models share a single global dynamic KV pool across concurrent slots (`--parallel 2`), completely eliminating static VRAM/DRAM partitioning overhead.
+
+### Fail-Fast Model Mapping (SharedLLM Gateway)
+* **Zero Silent Auto-Resolution:** The system-wide default settings in the Identity DB have all model keys (`ollama_assistant_model`, `ollama_coding_model`, etc.) unseeded. There is no automated pattern-matching that silently picks random models from Ollama's alphabetic list on startup.
+* **Explicit Configuration Mandate:** If no model is explicitly set, the Gateway raises a clean `RuntimeError` immediately to fail fast. 
+* **API Validation:** Both single-update (`PATCH`) and bulk-update (`POST`) endpoints in the Identity Service strictly reject any attempt to write blank strings or empty fields to model settings, returning a clear `HTTP 400` error to enforce clean, manual dropdown-driven configuration.
 
 Once indexed, any future requests for mapped models bypass initial crash attempts entirely and execute using the cached healthy profile.
 
