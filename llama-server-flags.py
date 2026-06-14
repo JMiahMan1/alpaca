@@ -86,6 +86,19 @@ def _model_size_params(meta: dict) -> int:
     return 0
 
 
+# Architectures that do NOT support Flash Attention in llama.cpp (non-transformer / state-space)
+_FA_UNSUPPORTED_ARCHS = {
+    "mamba", "rwkv", "rwkv6", "wavtokenizer",
+}
+
+
+def _supports_flash_attn(meta: dict) -> bool:
+    arch = meta.get("general.architecture", "").lower()
+    if not arch:
+        return False  # unknown arch — don't risk it
+    return arch not in _FA_UNSUPPORTED_ARCHS
+
+
 def _is_moe(meta: dict) -> bool:
     # Check all keys for expert_count/expert_used_count (architecture-prefixed)
     for key, val in meta.items():
@@ -117,12 +130,14 @@ def get_llama_server_flags() -> list[str]:
     model_path = _find_active_model()
     is_moe = False
     param_count = 0
+    flash_attn = False
 
     if model_path:
         try:
             meta = _read_gguf_metadata(model_path)
             is_moe = _is_moe(meta)
             param_count = _model_size_params(meta)
+            flash_attn = _supports_flash_attn(meta)
         except Exception as e:
             print(f"[llama-flags] Warning: could not read model metadata: {e}", file=sys.stderr)
             print("[llama-flags] Falling back to dense (safe) config", file=sys.stderr)
@@ -140,6 +155,9 @@ def get_llama_server_flags() -> list[str]:
         "-t", "6",
     ]
 
+    if flash_attn:
+        flags.extend(["-fa", "on"])
+
     if small_model:
         # Small models on 8GB VRAM: reduce context + use f16 cache to avoid OOM
         flags.extend([
@@ -154,7 +172,7 @@ def get_llama_server_flags() -> list[str]:
         # Since OpenCode is sequential, a single slot loses nothing in practice and
         # completely eliminates concurrent multi-prefill DRAM OOM pressure.
         flags.extend([
-            "-c", "131072",
+            "-c", "98304",
             "--cache-type-k", "q4_0",
             "--cache-type-v", "q4_0",
             "--batch-size", "1024",
@@ -165,7 +183,7 @@ def get_llama_server_flags() -> list[str]:
 
     if is_moe:
         flags.extend([
-            "--n-cpu-moe", "54",
+            "--n-cpu-moe", "40",
             "--spec-type", "draft-mtp",
             "--spec-draft-n-max", "3",
         ])
@@ -175,6 +193,11 @@ def get_llama_server_flags() -> list[str]:
 
     if small_model:
         print(f"[llama-flags] Model < 9B ({param_count/1e9:.1f}B) — using 8K context + f16 cache for 8GB VRAM", file=sys.stderr)
+
+    if flash_attn:
+        print("[llama-flags] Flash Attention enabled (-fa)", file=sys.stderr)
+    else:
+        print("[llama-flags] Flash Attention disabled (unsupported or unknown architecture)", file=sys.stderr)
 
     if model_path:
         print(f"[llama-flags] Model: {os.path.basename(model_path)} (MoE={is_moe}, params={param_count/1e9:.1f}B)", file=sys.stderr)
