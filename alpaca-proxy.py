@@ -886,11 +886,39 @@ app = FastAPI(lifespan=lifespan)
 async def log_requests(request: Request, call_next):
     request_id = str(uuid.uuid4())[:8]
     request.state.request_id = request_id
-    logger.info(f"Hit: {request.method} {request.url.path}", extra={"request_id": request_id})
+    
+    # Extract client IP and User-Agent
+    client_ip = request.client.host if request.client else "unknown-ip"
+    user_agent = request.headers.get("user-agent", "unknown-ua")
+    
+    # Extract explicit origin tracking header (case-insensitive)
+    request_source = request.headers.get("x-request-source")
+    if not request_source:
+        # Fallback detection based on User-Agent patterns
+        if "playwright" in user_agent.lower() or "python-httpx" in user_agent.lower():
+            request_source = "agent/script"
+        elif "mozilla" in user_agent.lower() or "chrome" in user_agent.lower():
+            request_source = "browser/ui"
+        else:
+            request_source = "unknown-origin"
+            
+    request.state.request_source = request_source
+    
+    logger.info(
+        f"Hit: {request.method} {request.url.path} | "
+        f"Origin: {request_source} | IP: {client_ip} | UA: {user_agent}",
+        extra={"request_id": request_id, "request_source": request_source}
+    )
+    
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
-    logger.info(f"Finished: {request.method} {request.url.path} in {duration:.3f}s", extra={"request_id": request_id})
+    
+    logger.info(
+        f"Finished: {request.method} {request.url.path} in {duration:.3f}s | "
+        f"Origin: {request_source}",
+        extra={"request_id": request_id, "request_source": request_source}
+    )
     return response
 
 # ─── Performance Metrics Tracking ─────────────────────────────────────────────
@@ -2824,11 +2852,37 @@ async def ensure_model(model_name: str, options: dict = None):
             "manifest": resolved["manifest"],
         }
 
+
+async def wait_for_slot(timeout: float = 120.0) -> bool:
+    """Wait for a llama-server slot to become available.
+    
+    Returns True if a slot opened, False on timeout.
+    """
+    start = asyncio.get_event_loop().time()
+    while True:
+        slot_info = await get_llama_server_slots()
+        if slot_info and slot_info["available"] > 0:
+            return True
+        elapsed = asyncio.get_event_loop().time() - start
+        if elapsed >= timeout:
+            logger.warning(f"Timeout waiting for slot after {elapsed:.0f}s")
+            return False
+        await asyncio.sleep(0.5)
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model")
     keep_alive = effective_keep_alive(body.get("keep_alive"))
+    # Queue-and-wait: if all llama-server slots are busy, wait for one to open
+    wait_timeout = body.get("queue_timeout", 120.0)
+    slot_available = await wait_for_slot(timeout=wait_timeout)
+    if not slot_available:
+        return JSONResponse(
+            {"error": "No llama-server slots available within timeout", "status": "queue_timeout"},
+            status_code=503
+        )
 
     async def stream_proxy():
         resolved_backend = None
@@ -2847,7 +2901,12 @@ async def chat(request: Request):
             payload = build_chat_payload(body, resolved_backend)
             
             request_id = getattr(request.state, "request_id", "N/A")
-            logger.info(f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')}", extra={"request_id": request_id})
+            request_source = getattr(request.state, "request_source", "unknown")
+            logger.info(
+                f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')} | "
+                f"Origin: {request_source}",
+                extra={"request_id": request_id, "request_source": request_source}
+            )
             
             async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload) as resp:
                 resp.raise_for_status()
@@ -2899,6 +2958,15 @@ async def chat(request: Request):
 
         load_duration = now_ns() - load_started_ns
         payload = build_chat_payload(body, resolved_backend)
+        
+        request_id = getattr(request.state, "request_id", "N/A")
+        request_source = getattr(request.state, "request_source", "unknown")
+        logger.info(
+            f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')} | "
+            f"Origin: {request_source}",
+            extra={"request_id": request_id, "request_source": request_source}
+        )
+        
         resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -2949,6 +3017,14 @@ async def generate(request: Request):
 
             load_duration = now_ns() - load_started_ns
             payload = build_generate_chat_payload(body, resolved_backend) if use_chat_backend else build_generate_payload(body, resolved_backend)
+            
+            request_id = getattr(request.state, "request_id", "N/A")
+            request_source = getattr(request.state, "request_source", "unknown")
+            logger.info(
+                f"[GENERATE] Sending payload to llama-server: model={payload.get('model')} | "
+                f"Origin: {request_source}",
+                extra={"request_id": request_id, "request_source": request_source}
+            )
             
             async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}{endpoint}", json=payload) as resp:
                 resp.raise_for_status()
@@ -3011,6 +3087,15 @@ async def generate(request: Request):
 
         load_duration = now_ns() - load_started_ns
         payload = build_generate_chat_payload(body, resolved_backend) if use_chat_backend else build_generate_payload(body, resolved_backend)
+        
+        request_id = getattr(request.state, "request_id", "N/A")
+        request_source = getattr(request.state, "request_source", "unknown")
+        logger.info(
+            f"[GENERATE] Sending payload to llama-server: model={payload.get('model')} | "
+            f"Origin: {request_source}",
+            extra={"request_id": request_id, "request_source": request_source}
+        )
+        
         resp = await client_httpx.post(f"{LLAMA_SERVER_URL}{endpoint}", json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -3084,6 +3169,21 @@ async def loaded_models_from_router():
                 break
     return loaded
 
+async def get_llama_server_slots():
+    """Fetch slot status from llama-server /slots endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{LLAMA_SERVER_URL}/slots", timeout=3.0)
+            if resp.status_code == 200:
+                slots_data = resp.json()
+                total = len(slots_data) if isinstance(slots_data, list) else 0
+                busy = sum(1 for s in (slots_data or []) if s.get("is_processing", False))
+                return {"total": total, "busy": busy, "available": total - busy}
+    except Exception:
+        pass
+    return None
+
+
 @app.get("/api/ps")
 async def ps():
     models = []
@@ -3100,7 +3200,47 @@ async def ps():
             "size_vram": info["size"],
             "context_length": info["context_length"],
         })
-    return {"models": models}
+    
+    # Add slot/busy info from llama-server
+    slot_info = await get_llama_server_slots()
+    
+    # Add active request counts per model
+    async with active_requests_lock:
+        current_active = dict(active_requests)
+    
+    result = {"models": models}
+    if slot_info:
+        result["slots"] = slot_info
+    if current_active:
+        result["active_requests"] = current_active
+    return result
+
+
+@app.post("/api/queue/wait")
+async def queue_wait(request: Request):
+    """Wait for a llama-server slot to become available.
+    
+    Body: {"timeout": 300.0} — max seconds to wait (default 300)
+    Returns: {"status": "ready", "slots": {...}} when a slot opens
+    Or: {"status": "timeout"} if no slot available within timeout
+    """
+    body = await request.json()
+    timeout = body.get("timeout", 300.0)
+    
+    start = asyncio.get_event_loop().time()
+    poll_interval = 0.5
+    
+    while True:
+        slot_info = await get_llama_server_slots()
+        if slot_info and slot_info["available"] > 0:
+            return {"status": "ready", "slots": slot_info, "wait_time": round(asyncio.get_event_loop().time() - start, 2)}
+        
+        elapsed = asyncio.get_event_loop().time() - start
+        if elapsed >= timeout:
+            return {"status": "timeout", "slots": slot_info, "waited": round(elapsed, 2)}
+        
+        await asyncio.sleep(poll_interval)
+
 
 @app.post("/api/show")
 async def show(request: Request):
