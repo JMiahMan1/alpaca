@@ -2870,11 +2870,158 @@ async def wait_for_slot(timeout: float = 120.0) -> bool:
         await asyncio.sleep(0.5)
 
 
+SLOTS_CACHE_DIR = os.getenv("SLOTS_CACHE_DIR", "/slots-cache")
+
+def get_prefix_hash(model_name: str, messages: list, options: dict = None) -> str:
+    import hashlib
+    if not messages:
+        return ""
+    payload = {
+        "model": model_name,
+        "messages": messages,
+    }
+    if options:
+        payload["options"] = options
+    serialized = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+
+async def find_idle_slot(backend_model: str) -> int:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{LLAMA_SERVER_URL}/slots", params={"model": backend_model}, timeout=3.0)
+            if resp.status_code == 200:
+                slots = resp.json()
+                for slot in slots:
+                    if not slot.get("is_processing", False):
+                        return slot.get("id") or slot.get("id_slot", 0)
+    except Exception as e:
+        logger.warning(f"Failed to find idle slot: {e}")
+    return 0
+
+async def restore_slot_cache(backend_model: str, prefix_hash: str) -> bool:
+    if not prefix_hash:
+        return False
+    filename = f"conv_{prefix_hash}.bin"
+    filepath = os.path.join(SLOTS_CACHE_DIR, filename)
+    if not os.path.exists(filepath):
+        return False
+        
+    try:
+        target_slot_id = await find_idle_slot(backend_model)
+        logger.info(f"Restoring KV Cache checkpoint {filename} into slot {target_slot_id}...")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{LLAMA_SERVER_URL}/slots/{target_slot_id}",
+                params={"action": "restore"},
+                json={"filename": filename},
+                timeout=10.0
+            )
+            if resp.status_code == 200:
+                logger.info(f"Successfully restored KV Cache {filename} into slot {target_slot_id}")
+                return True
+            else:
+                logger.warning(f"Failed to restore slot {target_slot_id}: status {resp.status_code} {resp.text}")
+    except Exception as e:
+        logger.warning(f"Error during slot restore: {e}")
+    return False
+
+async def find_slot_for_request(backend_model: str, messages: list) -> int:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{LLAMA_SERVER_URL}/slots", params={"model": backend_model}, timeout=3.0)
+            if resp.status_code == 200:
+                slots = resp.json()
+                best_slot_id = None
+                max_matches = -1
+                
+                check_texts = [m.get("content", "") for m in messages if m.get("content")]
+                check_texts = check_texts[-3:]
+                
+                for slot in slots:
+                    slot_id = slot.get("id") or slot.get("id_slot", 0)
+                    slot_prompt = slot.get("prompt", "")
+                    if not slot_prompt:
+                        continue
+                    
+                    matches = 0
+                    for text in check_texts:
+                        if text in slot_prompt:
+                            matches += 1
+                    
+                    if matches > max_matches and matches > 0:
+                        max_matches = matches
+                        best_slot_id = slot_id
+                
+                if best_slot_id is not None:
+                    return best_slot_id
+    except Exception as e:
+        logger.warning(f"Error finding slot for request: {e}")
+    return 0
+
+async def save_slot_cache(backend_model: str, new_prefix_hash: str, slot_id: int) -> bool:
+    if not new_prefix_hash:
+        return False
+    filename = f"conv_{new_prefix_hash}.bin"
+    try:
+        os.makedirs(SLOTS_CACHE_DIR, exist_ok=True)
+        logger.info(f"Saving KV Cache checkpoint {filename} from slot {slot_id}...")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{LLAMA_SERVER_URL}/slots/{slot_id}",
+                params={"action": "save"},
+                json={"filename": filename},
+                timeout=10.0
+            )
+            if resp.status_code == 200:
+                logger.info(f"Successfully saved KV Cache {filename} from slot {slot_id}")
+                prune_slots_cache()
+                return True
+            else:
+                logger.warning(f"Failed to save slot {slot_id}: status {resp.status_code} {resp.text}")
+    except Exception as e:
+        logger.warning(f"Error during slot save: {e}")
+    return False
+
+def prune_slots_cache(max_files: int = 15):
+    try:
+        if not os.path.exists(SLOTS_CACHE_DIR):
+            return
+        files = [
+            os.path.join(SLOTS_CACHE_DIR, f)
+            for f in os.listdir(SLOTS_CACHE_DIR)
+            if f.startswith("conv_") and f.endswith(".bin")
+        ]
+        if len(files) <= max_files:
+            return
+        files.sort(key=os.path.getmtime)
+        to_delete = files[:len(files) - max_files]
+        for f in to_delete:
+            try:
+                os.remove(f)
+                logger.info(f"Deleted old slot cache file: {f}")
+            except Exception as e:
+                logger.warning(f"Failed to delete {f}: {e}")
+    except Exception as e:
+        logger.warning(f"Error pruning slots cache: {e}")
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model")
     keep_alive = effective_keep_alive(body.get("keep_alive"))
+    
+    # Ensure model is loaded and healthy (triggers recovery if crashed/dead)
+    resolved = await ensure_model(model_name, options=body.get("options"))
+    resolved_backend = resolved["backend_model"]
+
+    # Restore slot cache if available (Turn K prefix is up to Turn K-1 assistant response)
+    prefix_hash = None
+    messages = body.get("messages", [])
+    if len(messages) > 1:
+        prefix_hash = get_prefix_hash(model_name, messages[:-1], options=body.get("options"))
+        await restore_slot_cache(resolved_backend, prefix_hash)
+
     # Queue-and-wait: if all llama-server slots are busy, wait for one to open
     wait_timeout = body.get("queue_timeout", 120.0)
     slot_available = await wait_for_slot(timeout=wait_timeout)
@@ -2898,31 +3045,70 @@ async def chat(request: Request):
                 logger.info(f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}")
 
             load_duration = now_ns() - load_started_ns
-            payload = build_chat_payload(body, resolved_backend)
             
-            request_id = getattr(request.state, "request_id", "N/A")
-            request_source = getattr(request.state, "request_source", "unknown")
-            logger.info(
-                f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')} | "
-                f"Origin: {request_source}",
-                extra={"request_id": request_id, "request_source": request_source}
-            )
+            full_response_content = ""
+            current_payload = build_chat_payload(body, resolved_backend)
+            attempt = 0
+            max_attempts = 2
             
-            async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or "[DONE]" in line: continue
-                    if line.startswith("data: "): line = line[6:]
-                    try:
-                        data = json.loads(line)
-                        choice = (data.get("choices") or [{}])[0]
-                        message = chat_message_from_choice(choice)
-                        done = choice.get("finish_reason") is not None
-                        chunk = ollama_chat_chunk(model_name, message, done, choice.get("finish_reason"))
-                        if done:
-                            apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
-                        yield json.dumps(chunk) + "\n"
-                    except: continue
+            while attempt < max_attempts:
+                try:
+                    request_id = getattr(request.state, "request_id", "N/A")
+                    request_source = getattr(request.state, "request_source", "unknown")
+                    logger.info(
+                        f"[CHAT] Sending payload to llama-server (attempt {attempt}): model={current_payload.get('model')}, stream=True | "
+                        f"Origin: {request_source}",
+                        extra={"request_id": request_id, "request_source": request_source}
+                    )
+                    
+                    async with client_httpx.stream("POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=current_payload) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line or "[DONE]" in line: continue
+                            if line.startswith("data: "): line = line[6:]
+                            try:
+                                data = json.loads(line)
+                                choice = (data.get("choices") or [{}])[0]
+                                message = chat_message_from_choice(choice)
+                                if message and message.get("content"):
+                                    full_response_content += message["content"]
+                                done = choice.get("finish_reason") is not None
+                                chunk = ollama_chat_chunk(model_name, message, done, choice.get("finish_reason"))
+                                if done:
+                                    apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                yield json.dumps(chunk) + "\n"
+                            except: continue
+                    break
+                except (httpx.RemoteProtocolError, httpx.ReadError, httpx.HTTPStatusError, httpx.RequestError) as e:
+                    attempt += 1
+                    if attempt >= max_attempts:
+                        logger.error(f"Stream failed after {attempt} attempts: {e}")
+                        raise
+                        
+                    logger.warning(f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery...")
+                    await restart_llama_server()
+                    if not await wait_for_llama_server_or_restart(timeout=60.0):
+                        raise HTTPException(status_code=502, detail="Failed to restore llama-server after mid-stream crash")
+                        
+                    resolved = await ensure_model(model_name, options=body.get("options"))
+                    resolved_backend = resolved["backend_model"]
+                    if prefix_hash:
+                        await restore_slot_cache(resolved_backend, prefix_hash)
+                        
+                    if full_response_content:
+                        current_payload["messages"] = body.get("messages", []) + [
+                            {"role": "assistant", "content": full_response_content}
+                        ]
+                    else:
+                        current_payload["messages"] = body.get("messages", [])
+
+            # Save the new slot cache checkpoint
+            if full_response_content:
+                new_messages = list(messages) + [{"role": "assistant", "content": full_response_content}]
+                new_prefix_hash = get_prefix_hash(model_name, new_messages, options=body.get("options"))
+                slot_id = await find_slot_for_request(resolved_backend, new_messages)
+                await save_slot_cache(resolved_backend, new_prefix_hash, slot_id)
+
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:
             try:
@@ -2959,23 +3145,49 @@ async def chat(request: Request):
         load_duration = now_ns() - load_started_ns
         payload = build_chat_payload(body, resolved_backend)
         
-        request_id = getattr(request.state, "request_id", "N/A")
-        request_source = getattr(request.state, "request_source", "unknown")
-        logger.info(
-            f"[CHAT] Sending payload to llama-server: model={payload.get('model')}, stream={payload.get('stream')} | "
-            f"Origin: {request_source}",
-            extra={"request_id": request_id, "request_source": request_source}
-        )
+        attempt = 0
+        max_attempts = 2
+        resp = None
+        while attempt < max_attempts:
+            try:
+                request_id = getattr(request.state, "request_id", "N/A")
+                request_source = getattr(request.state, "request_source", "unknown")
+                logger.info(
+                    f"[CHAT] Sending payload to llama-server (attempt {attempt}): model={payload.get('model')}, stream=False | "
+                    f"Origin: {request_source}",
+                    extra={"request_id": request_id, "request_source": request_source}
+                )
+                resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload)
+                resp.raise_for_status()
+                break
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                attempt += 1
+                if attempt >= max_attempts:
+                    raise
+                logger.warning(f"Upstream request failed (attempt {attempt}): {e}. Retrying recovery...")
+                await restart_llama_server()
+                await wait_for_llama_server_or_restart()
+                resolved = await ensure_model(model_name, options=body.get("options"))
+                resolved_backend = resolved["backend_model"]
+                if prefix_hash:
+                    await restore_slot_cache(resolved_backend, prefix_hash)
         
-        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload)
-        resp.raise_for_status()
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
-        chunk = ollama_chat_chunk(model_name, chat_message_from_choice(choice), True, choice.get("finish_reason"))
+        message = chat_message_from_choice(choice)
+        chunk = ollama_chat_chunk(model_name, message, True, choice.get("finish_reason"))
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
         logprobs = logprobs_from_choice(choice)
         if logprobs is not None:
             chunk["logprobs"] = logprobs
+            
+        # Save the new slot cache checkpoint
+        if message and message.get("content"):
+            new_messages = list(messages) + [message]
+            new_prefix_hash = get_prefix_hash(model_name, new_messages, options=body.get("options"))
+            slot_id = await find_slot_for_request(resolved_backend, new_messages)
+            await save_slot_cache(resolved_backend, new_prefix_hash, slot_id)
+
         await apply_keep_alive_policy(model_name, keep_alive)
         return JSONResponse(chunk)
     except httpx.HTTPStatusError as e:
@@ -3172,13 +3384,20 @@ async def loaded_models_from_router():
 async def get_llama_server_slots():
     """Fetch slot status from llama-server /slots endpoint."""
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{LLAMA_SERVER_URL}/slots", timeout=3.0)
-            if resp.status_code == 200:
-                slots_data = resp.json()
-                total = len(slots_data) if isinstance(slots_data, list) else 0
-                busy = sum(1 for s in (slots_data or []) if s.get("is_processing", False))
-                return {"total": total, "busy": busy, "available": total - busy}
+        # Get router model ID for loaded models - /slots requires the router model ID (with -- separators)
+        router_models = await fetch_router_models(reload=False)
+        for entry in router_models:
+            if router_entry_status(entry) != "loaded":
+                continue
+            model_id = entry.get("id")
+            if model_id:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(f"{LLAMA_SERVER_URL}/slots", params={"model": model_id}, timeout=3.0)
+                    if resp.status_code == 200:
+                        slots_data = resp.json()
+                        total = len(slots_data) if isinstance(slots_data, list) else 0
+                        busy = sum(1 for s in (slots_data or []) if s.get("is_processing", False))
+                        return {"total": total, "busy": busy, "available": total - busy}
     except Exception:
         pass
     return None

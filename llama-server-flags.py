@@ -149,6 +149,7 @@ def get_llama_server_flags() -> list[str]:
         "--host", "0.0.0.0",
         "--port", "8080",
         "--models-dir", "/router-models",
+        "--slot-save-path", "/slots-cache",
         "-ngl", "99",
         "--no-mmap",
         "--mlock",
