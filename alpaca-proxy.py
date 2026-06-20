@@ -86,8 +86,18 @@ MODEL_LOADING_TIMEOUT = 120  # seconds
 _loaded_models_state_lock = asyncio.Lock()
 
 
+def handle_background_task_result(task: asyncio.Task):
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Background task '{task.get_name()}' failed: {e}", exc_info=True)
+
+
 class RouterManagementUnsupported(RuntimeError):
     pass
+
 
 
 def model_manifest_base():
@@ -1403,7 +1413,9 @@ async def openai_chat_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        asyncio.create_task(ensure_model(model_name))
+                                        task = asyncio.create_task(ensure_model(model_name))
+                                        task.set_name(f"midstream-recovery-chat-{model_name}")
+                                        task.add_done_callback(handle_background_task_result)
                                     return
                                 logger.warning(
                                     f"Connection lost during stream init: {exc}. Retrying recovery/load..."
@@ -1468,7 +1480,9 @@ async def openai_chat_completions(request: Request):
             )
             old_client = client_httpx
             client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
-            asyncio.create_task(old_client.aclose())
+            task = asyncio.create_task(old_client.aclose())
+            task.set_name("close-old-client-chat")
+            task.add_done_callback(handle_background_task_result)
 
             await wait_for_llama_server_or_restart(timeout=60.0)
             await ensure_model(model_name)
@@ -1544,7 +1558,9 @@ async def openai_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        asyncio.create_task(ensure_model(model_name))
+                                        task = asyncio.create_task(ensure_model(model_name))
+                                        task.set_name(f"midstream-recovery-completions-{model_name}")
+                                        task.add_done_callback(handle_background_task_result)
                                     return
                                 logger.warning(
                                     f"Connection lost during stream init: {exc}. Retrying recovery/load..."
@@ -1609,7 +1625,9 @@ async def openai_completions(request: Request):
             )
             old_client = client_httpx
             client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
-            asyncio.create_task(old_client.aclose())
+            task = asyncio.create_task(old_client.aclose())
+            task.set_name("close-old-client-completions")
+            task.add_done_callback(handle_background_task_result)
 
             await wait_for_llama_server_or_restart(timeout=60.0)
             await ensure_model(model_name)
@@ -2408,9 +2426,12 @@ async def restore_models_on_recovery():
     )
     try:
         logger.info(f"Auto-loading model on recovery: {last_model}")
-        asyncio.create_task(ensure_model(last_model))
+        task = asyncio.create_task(ensure_model(last_model))
+        task.set_name(f"restore-model-{last_model}")
+        task.add_done_callback(handle_background_task_result)
     except Exception as e:
         logger.error(f"Failed to auto-load {last_model} on recovery: {e}")
+
 
 
 async def wait_for_llama_server(timeout=300.0):

@@ -1,0 +1,3 @@
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda12
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*

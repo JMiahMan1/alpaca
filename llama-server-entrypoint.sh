@@ -3,7 +3,7 @@
 set -e
 
 # Install python3 if not present (minimal image doesn't include it)
-if ! command -v python3 &> /dev/null; then
+if ! command -v python3 >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq python3 > /dev/null 2>&1
 fi
 

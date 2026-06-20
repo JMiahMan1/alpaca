@@ -14,7 +14,9 @@ services:
       ROUTER_MODELS_DIR: /router-models
 
   llama-server:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda12
+    build:
+      context: .
+      dockerfile: Dockerfile.llama-server
     container_name: llama-server
     restart: always
     cap_add:
