@@ -99,7 +99,6 @@ class RouterManagementUnsupported(RuntimeError):
     pass
 
 
-
 def model_manifest_base():
     return os.path.join(OLLAMA_BASE, "manifests", MODEL_NAMESPACE)
 
@@ -1559,7 +1558,9 @@ async def openai_completions(request: Request):
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
                                         task = asyncio.create_task(ensure_model(model_name))
-                                        task.set_name(f"midstream-recovery-completions-{model_name}")
+                                        task.set_name(
+                                            f"midstream-recovery-completions-{model_name}"
+                                        )
                                         task.add_done_callback(handle_background_task_result)
                                     return
                                 logger.warning(
@@ -2431,7 +2432,6 @@ async def restore_models_on_recovery():
         task.add_done_callback(handle_background_task_result)
     except Exception as e:
         logger.error(f"Failed to auto-load {last_model} on recovery: {e}")
-
 
 
 async def wait_for_llama_server(timeout=300.0):
