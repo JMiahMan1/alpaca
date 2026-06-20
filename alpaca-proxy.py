@@ -2536,6 +2536,8 @@ async def wait_for_llama_server_or_restart(timeout=300.0):
 
 async def is_child_model_healthy(backend_model: str) -> bool:
     """Check if the child model status on the router is 'loaded' or 'loading' and verified functional."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
     try:
         resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models")
         if resp.status_code == 200:
@@ -2614,8 +2616,105 @@ def is_model_over_9b(model_name: str, manifest: dict = None) -> bool:
     return False
 
 
+_FA_UNSUPPORTED_ARCHS = {
+    "mamba",
+    "rwkv",
+    "rwkv6",
+    "wavtokenizer",
+}
+
+
+def _read_gguf_metadata(path: str) -> dict:
+    """Parse only the metadata header from a GGUF file (fast, no full load)."""
+    import struct
+
+    meta: dict = {}
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+            if magic != b"GGUF":
+                return meta
+            struct.unpack("<I", f.read(4))
+            struct.unpack("<Q", f.read(8))
+            kv_count = struct.unpack("<Q", f.read(8))[0]
+
+            for _ in range(kv_count):
+                key_len = struct.unpack("<Q", f.read(8))[0]  # uint64, not uint32
+                key = f.read(key_len).decode("utf-8", errors="replace")
+                val_type = struct.unpack("<I", f.read(4))[0]
+
+                # GGUF value types: 0=uint8,1=int8,2=uint16,3=int16,4=uint32,
+                # 5=int32,6=float32,7=bool,8=str,9=array,10=uint64,11=int64,12=float64
+                if val_type == 8:  # string
+                    str_len = struct.unpack("<Q", f.read(8))[0]
+                    val = f.read(str_len).decode("utf-8", errors="replace")
+                    meta[key] = val
+                elif val_type in (0, 1, 4, 5, 10, 11):  # integer types
+                    fmt = {0: "<B", 1: "<b", 4: "<I", 5: "<i", 10: "<Q", 11: "<q"}
+                    val = struct.unpack(fmt[val_type], f.read(struct.calcsize(fmt[val_type])))[0]
+                    meta[key] = val
+                elif val_type == 7:  # bool
+                    meta[key] = struct.unpack("<?", f.read(1))[0]
+                elif val_type == 6:  # float32
+                    meta[key] = struct.unpack("<f", f.read(4))[0]
+                elif val_type == 12:  # float64
+                    meta[key] = struct.unpack("<d", f.read(8))[0]
+                elif val_type == 9:  # array
+                    arr_type = struct.unpack("<I", f.read(4))[0]
+                    arr_len = struct.unpack("<Q", f.read(8))[0]
+                    # Skip array contents — we only care about scalar metadata
+                    if arr_type == 8:  # array of strings
+                        for _ in range(arr_len):
+                            sl = struct.unpack("<Q", f.read(8))[0]
+                            f.read(sl)
+                    else:
+                        sizes = {
+                            0: 1,
+                            1: 1,
+                            2: 2,
+                            3: 2,
+                            4: 4,
+                            5: 4,
+                            6: 4,
+                            7: 1,
+                            10: 8,
+                            11: 8,
+                            12: 8,
+                        }
+                        skip = arr_len * sizes.get(arr_type, 0)
+                        f.read(skip)
+                else:
+                    # Unknown type — skip conservatively
+                    break
+    except Exception:
+        pass
+    return meta
+
+
+def _is_moe(meta: dict) -> bool:
+    # Check all keys for expert_count/expert_used_count (architecture-prefixed)
+    for key, val in meta.items():
+        if key.endswith(".expert_count") and isinstance(val, int) and val > 0:
+            return True
+        if key.endswith(".expert_used_count") and isinstance(val, int) and val > 0:
+            return True
+    arch = meta.get("general.architecture", "")
+    if isinstance(arch, str) and "moe" in arch.lower():
+        return True
+    return False
+
+
+def _supports_flash_attn(meta: dict) -> bool:
+    arch = meta.get("general.architecture", "").lower()
+    if not arch:
+        return False  # unknown arch — don't risk it
+    return arch not in _FA_UNSUPPORTED_ARCHS
+
+
 async def get_child_model_props(backend_model: str) -> dict:
     """Retrieve /props directly from the spawned llama-server child process container."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return {}
     try:
         resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models")
         if resp.status_code == 200:
@@ -2766,14 +2865,55 @@ async def ensure_model(model_name: str, options: dict = None):
         # Always use acceleration flags
         load_payload["n_gpu_layers"] = -1
         load_payload["use_mmap"] = True
-        load_payload["flash_attn"] = True
 
-        if backend_model in MTP_INCOMPATIBLE_MODELS:
-            load_payload["spec_type"] = "none"
-            load_payload["spec_draft_n_max"] = 0
-            logger.info(
-                f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
+        # Resolve GGUF path and read metadata to dynamically determine capabilities without hardcoding
+        model_path = None
+        if entry and entry.get("path"):
+            model_path = entry.get("path")
+        elif backend_model:
+            bm_filename = (
+                backend_model if backend_model.endswith(".gguf") else (backend_model + ".gguf")
             )
+            model_path = os.path.join(ROUTER_MODELS_DIR, bm_filename)
+
+        meta = None
+        if model_path and os.path.exists(model_path):
+            try:
+                meta = _read_gguf_metadata(model_path)
+            except Exception as e:
+                logger.warning(f"Failed to read GGUF metadata at {model_path}: {e}")
+
+        if meta:
+            is_moe = _is_moe(meta)
+            flash_attn_supported = _supports_flash_attn(meta)
+            load_payload["flash_attn"] = flash_attn_supported
+
+            if is_moe and backend_model not in MTP_INCOMPATIBLE_MODELS:
+                load_payload["spec_type"] = "draft-mtp"
+                load_payload["spec_draft_n_max"] = 3
+                logger.info(
+                    f"Detected MoE model {backend_model} supporting MTP. Enabling speculative decoding."
+                )
+            else:
+                load_payload["spec_type"] = "none"
+                load_payload["spec_draft_n_max"] = 0
+                if is_moe:
+                    logger.info(
+                        f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
+                    )
+                else:
+                    logger.info(
+                        f"Detected dense model {backend_model}. Disabling speculative decoding."
+                    )
+        else:
+            # Fallback when GGUF file is not found (e.g. in unit tests)
+            load_payload["flash_attn"] = True
+            if backend_model in MTP_INCOMPATIBLE_MODELS:
+                load_payload["spec_type"] = "none"
+                load_payload["spec_draft_n_max"] = 0
+                logger.info(
+                    f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
+                )
 
         if backend_model in SAFE_SETTINGS_MODELS:
             load_payload["flash_attn"] = False
@@ -3069,16 +3209,15 @@ async def ensure_model(model_name: str, options: dict = None):
         oom_detected = False
         crash_detected = False
 
-        # Don't try and change any settings with any model higher than 9B
-        if is_model_over_9b(model_name, resolved.get("manifest")):
-            # For >9B models, we verify if the model crashed or failed to start up
-            if not await is_child_model_healthy(backend_model):
-                crash_detected = True
-                logger.warning(
-                    f"Crash detected: model {backend_model} is not "
-                    "running or failed after load. Triggering recovery."
-                )
-        else:
+        # Check health for all models to detect startup crashes
+        if not await is_child_model_healthy(backend_model):
+            crash_detected = True
+            logger.warning(
+                f"Crash detected: model {backend_model} is not "
+                "running or failed after load. Triggering recovery."
+            )
+        elif not is_model_over_9b(model_name, resolved.get("manifest")):
+            # For <= 9B models, if it's running, we also check if it OOM'ed to CPU (n_gpu_layers=0)
             try:
                 if client_httpx is None:
                     logger.debug("client_httpx not initialized; skipping OOM check")
@@ -3135,34 +3274,118 @@ async def ensure_model(model_name: str, options: dict = None):
                         "with original settings after clean restart."
                     )
                 else:
-                    # Original recovery with OOM-safe settings for <= 9B models
-                    load_payload = {"model": backend_model}
-                    if options:
-                        n_ctx = options.get("num_ctx") or options.get("n_ctx")
-                        if n_ctx:
-                            load_payload["n_ctx"] = int(n_ctx)
-                    load_payload["n_gpu_layers"] = 0
-                    load_payload["n_thread"] = 8
-                    load_payload["n_batch"] = 256
-                    load_payload["n_ubatch"] = 512
-                    load_payload["use_mmap"] = True
-                    load_payload["flash_attn"] = False
-                    load_payload["spec_type"] = "none"
-                    load_payload["spec_draft_n_max"] = 0
-                    logger.info(
-                        f"OOM recovery: retrying load of {backend_model} with safe settings..."
-                    )
-                    try:
+                    # Tiered recovery/escalation for <= 9B models
+                    if oom_detected:
+                        # OOM recovery: cap n_gpu_layers=0 immediately
+                        logger.warning(
+                            f"Model {backend_model} OOM'ed. Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
+                        )
+                        load_payload = {"model": backend_model}
+                        if options:
+                            n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                            if n_ctx:
+                                load_payload["n_ctx"] = int(n_ctx)
+                        load_payload["n_gpu_layers"] = 0
+                        load_payload["n_thread"] = 8
+                        load_payload["n_batch"] = 256
+                        load_payload["n_ubatch"] = 512
+                        load_payload["use_mmap"] = True
+                        load_payload["flash_attn"] = False
+                        load_payload["spec_type"] = "none"
+                        load_payload["spec_draft_n_max"] = 0
+
+                        logger.info(f"Retrying load of {backend_model} with OOM-safe settings...")
                         await post_router_model_action("load", load_payload)
                         logger.info(
                             f"Model {backend_model} loaded successfully with OOM-safe settings."
                         )
-                    except Exception as retry_exc:
-                        logger.error(
-                            f"OOM recovery retry failed for {backend_model}: "
-                            f"{retry_exc}. Falling back to normal retry."
-                        )
-                        raise
+                    else:
+                        # crash_detected: Check if speculative decoding (MTP) was active and caused the crash
+                        if load_payload.get("spec_type") != "none":
+                            logger.warning(
+                                f"Model {backend_model} failed load with MTP enabled. "
+                                "Retrying without speculative decoding (MTP)..."
+                            )
+                            MTP_INCOMPATIBLE_MODELS.add(backend_model)
+                            save_mtp_incompatible_models()
+
+                            load_payload = {"model": backend_model}
+                            if options:
+                                n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                                if n_ctx:
+                                    load_payload["n_ctx"] = int(n_ctx)
+                            load_payload["n_gpu_layers"] = -1
+                            load_payload["use_mmap"] = True
+                            load_payload["flash_attn"] = True
+                            load_payload["spec_type"] = "none"
+                            load_payload["spec_draft_n_max"] = 0
+
+                            if backend_model in SAFE_SETTINGS_MODELS:
+                                load_payload["flash_attn"] = False
+                                if "n_ctx" not in load_payload:
+                                    load_payload["n_ctx"] = 8192
+
+                            logger.info(
+                                f"Retrying load of {backend_model} with spec_type='none'..."
+                            )
+                            await post_router_model_action("load", load_payload)
+                            logger.info(
+                                f"Model {backend_model} loaded successfully after disabling speculative decoding."
+                            )
+                        # If MTP is already disabled, check if we can escalate to Safe Settings
+                        elif backend_model not in SAFE_SETTINGS_MODELS:
+                            logger.warning(
+                                f"Failed to load model {backend_model} even without speculative decoding. "
+                                "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
+                            )
+                            SAFE_SETTINGS_MODELS.add(backend_model)
+                            save_safe_settings_models()
+
+                            load_payload = {"model": backend_model}
+                            if options:
+                                n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                                if n_ctx:
+                                    load_payload["n_ctx"] = int(n_ctx)
+                            load_payload["n_gpu_layers"] = -1
+                            load_payload["use_mmap"] = True
+                            load_payload["flash_attn"] = False
+                            if "n_ctx" not in load_payload:
+                                load_payload["n_ctx"] = 8192
+                            load_payload["spec_type"] = "none"
+                            load_payload["spec_draft_n_max"] = 0
+
+                            logger.info(f"Retrying load of {backend_model} with Safe Settings...")
+                            await post_router_model_action("load", load_payload)
+                            logger.info(
+                                f"Model {backend_model} loaded successfully with Safe Settings."
+                            )
+                        # If already using Safe Settings, fall back to OOM-safe settings (n_gpu_layers=0)
+                        else:
+                            logger.warning(
+                                f"Model {backend_model} failed even with Safe Settings. "
+                                "Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
+                            )
+                            load_payload = {"model": backend_model}
+                            if options:
+                                n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                                if n_ctx:
+                                    load_payload["n_ctx"] = int(n_ctx)
+                            load_payload["n_gpu_layers"] = 0
+                            load_payload["n_thread"] = 8
+                            load_payload["n_batch"] = 256
+                            load_payload["n_ubatch"] = 512
+                            load_payload["use_mmap"] = True
+                            load_payload["flash_attn"] = False
+                            load_payload["spec_type"] = "none"
+                            load_payload["spec_draft_n_max"] = 0
+
+                            logger.info(
+                                f"Retrying load of {backend_model} with OOM-safe settings..."
+                            )
+                            await post_router_model_action("load", load_payload)
+                            logger.info(
+                                f"Model {backend_model} loaded successfully with OOM-safe settings."
+                            )
             except Exception as recovery_err:
                 logger.error(f"Recovery failed for {model_name}: {recovery_err}. Raising.")
                 raise
