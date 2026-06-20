@@ -10,7 +10,6 @@ MoE indicators (any match → MoE):
 
 Dense models get a stripped flag set (no MoE / speculative flags).
 """
-import json
 import os
 import struct
 import sys
@@ -26,8 +25,8 @@ def _read_gguf_metadata(path: str) -> dict:
         magic = f.read(4)
         if magic != b"GGUF":
             return meta
-        version = struct.unpack("<I", f.read(4))[0]
-        tensor_count = struct.unpack("<Q", f.read(8))[0]
+        struct.unpack("<I", f.read(4))
+        struct.unpack("<Q", f.read(8))
         kv_count = struct.unpack("<Q", f.read(8))[0]
 
         for _ in range(kv_count):
