@@ -29,6 +29,7 @@ alpaca_proxy.restore_slot_cache = AsyncMock(return_value=True)
 alpaca_proxy.save_slot_cache = AsyncMock(return_value=True)
 alpaca_proxy.find_slot_for_request = AsyncMock(return_value=0)
 
+
 def make_manifest(digest="sha256:abcd", size=4):
     return {
         "schemaVersion": 2,
@@ -122,9 +123,13 @@ def test_load_local_manifest_rejects_incomplete_model():
         base = pathlib.Path(tmpdir)
         alpaca_proxy.OLLAMA_BASE = str(base)
 
-        manifest_path = base / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
+        manifest_path = (
+            base / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
+        )
         manifest_path.parent.mkdir(parents=True)
-        manifest_path.write_text('{"layers":[{"digest":"sha256:deadbeef","size":4}],"config":{"digest":"sha256:cfg","size":2}}')
+        manifest_path.write_text(
+            '{"layers":[{"digest":"sha256:deadbeef","size":4}],"config":{"digest":"sha256:cfg","size":2}}'
+        )
 
         found_path, manifest = alpaca_proxy.load_local_manifest("tinyllama", require_complete=True)
         assert str(manifest_path) == found_path
@@ -178,27 +183,31 @@ def test_begin_model_request_cancels_pending_unload_and_clears_expiry():
 
 @pytest.mark.asyncio
 async def test_ensure_model_unloads_other_loaded_model_before_load():
-    alpaca_proxy.fetch_router_models = AsyncMock(side_effect=[
-        [
-            {"id": "other-model", "status": {"value": "loaded"}},
-            {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
-        ],
-        [
-            {"id": "other-model", "status": {"value": "unloaded"}},
-            {"id": "sha256-deadbeef", "status": {"value": "loaded"}},
-        ],
-    ])
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "model_name": "tinyllama:latest",
-        "backend_model": "sha256-deadbeef",
-        "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
-        "manifest_path": "/tmp/manifest",
-        "manifest": make_manifest(digest="sha256:deadbeef"),
-        "router_models": [
-            {"id": "other-model", "status": {"value": "loaded"}},
-            {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
-        ],
-    })
+    alpaca_proxy.fetch_router_models = AsyncMock(
+        side_effect=[
+            [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+            [
+                {"id": "other-model", "status": {"value": "unloaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "loaded"}},
+            ],
+        ]
+    )
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
     alpaca_proxy.post_router_model_action = AsyncMock()
 
     # Mock client_httpx for OOM check after successful load
@@ -212,17 +221,22 @@ async def test_ensure_model_unloads_other_loaded_model_before_load():
 
     assert resolved["backend_model"] == "sha256-deadbeef"
     alpaca_proxy.post_router_model_action.assert_any_await("unload", "other-model")
-    alpaca_proxy.post_router_model_action.assert_any_await("load", {
-        "model": "sha256-deadbeef",
-        "n_gpu_layers": -1,
-        "use_mmap": True,
-        "flash_attn": True,
-    })
+    alpaca_proxy.post_router_model_action.assert_any_await(
+        "load",
+        {
+            "model": "sha256-deadbeef",
+            "n_gpu_layers": -1,
+            "use_mmap": True,
+            "flash_attn": True,
+        },
+    )
 
 
 @pytest.mark.asyncio
 async def test_post_router_model_action_marks_management_unsupported_when_router_endpoint_missing():
-    response = httpx.Response(404, request=httpx.Request("POST", "http://llama-server:8080/models/load"))
+    response = httpx.Response(
+        404, request=httpx.Request("POST", "http://llama-server:8080/models/load")
+    )
 
     alpaca_proxy.post_router_model_action = REAL_POST_ROUTER_MODEL_ACTION
     alpaca_proxy.router_management_supported = None
@@ -240,25 +254,30 @@ async def test_ensure_model_falls_back_to_router_autoload_when_load_endpoint_mis
     alpaca_proxy.post_router_model_action = AsyncMock(
         side_effect=alpaca_proxy.RouterManagementUnsupported("http://llama-server:8080/models/load")
     )
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "model_name": "tinyllama:latest",
-        "backend_model": "sha256-deadbeef",
-        "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
-        "manifest_path": "/tmp/manifest",
-        "manifest": make_manifest(digest="sha256:deadbeef"),
-        "router_models": [
-            {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
-        ],
-    })
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
     resolved = await alpaca_proxy.ensure_model("tinyllama")
 
     assert resolved["backend_model"] == "sha256-deadbeef"
-    alpaca_proxy.post_router_model_action.assert_awaited_once_with("load", {
-        "model": "sha256-deadbeef",
-        "n_gpu_layers": -1,
-        "use_mmap": True,
-        "flash_attn": True,
-    })
+    alpaca_proxy.post_router_model_action.assert_awaited_once_with(
+        "load",
+        {
+            "model": "sha256-deadbeef",
+            "n_gpu_layers": -1,
+            "use_mmap": True,
+            "flash_attn": True,
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -266,7 +285,15 @@ async def test_resolve_router_model_falls_back_to_router_alias_when_symlink_exis
     alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
     alpaca_proxy.OLLAMA_BASE = str(tmp_path / "models")
     alpaca_proxy.ROUTER_MODELS_DIR = str(tmp_path / "router-models")
-    manifest_path = tmp_path / "models" / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
+    manifest_path = (
+        tmp_path
+        / "models"
+        / "manifests"
+        / "registry.ollama.ai"
+        / "library"
+        / "tinyllama"
+        / "latest"
+    )
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(json.dumps(make_manifest(digest="sha256:deadbeef", size=4)))
     blob_path = tmp_path / "models" / "blobs" / "sha256-deadbeef"
@@ -292,11 +319,15 @@ async def test_unload_model_ignores_router_400_model_not_found():
         request=httpx.Request("POST", "http://llama-server:8080/models/unload"),
         json={"error": {"message": "model is not found"}},
     )
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "backend_model": "tinyllama--latest",
-    })
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "backend_model": "tinyllama--latest",
+        }
+    )
     alpaca_proxy.post_router_model_action = AsyncMock(
-        side_effect=httpx.HTTPStatusError("bad request", request=response.request, response=response)
+        side_effect=httpx.HTTPStatusError(
+            "bad request", request=response.request, response=response
+        )
     )
 
     await alpaca_proxy.unload_model("tinyllama")
@@ -309,31 +340,56 @@ async def test_unload_model_ignores_router_400_when_backend_is_already_not_resid
         request=httpx.Request("POST", "http://llama-server:8080/models/unload"),
         json={"error": {"message": "cannot unload model"}},
     )
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "backend_model": "tinyllama--latest",
-    })
-    alpaca_proxy.post_router_model_action = AsyncMock(
-        side_effect=httpx.HTTPStatusError("bad request", request=response.request, response=response)
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "backend_model": "tinyllama--latest",
+        }
     )
-    alpaca_proxy.fetch_router_models = AsyncMock(return_value=[
-        {"id": "tinyllama--latest", "status": {"value": "unloaded"}},
-    ])
+    alpaca_proxy.post_router_model_action = AsyncMock(
+        side_effect=httpx.HTTPStatusError(
+            "bad request", request=response.request, response=response
+        )
+    )
+    alpaca_proxy.fetch_router_models = AsyncMock(
+        return_value=[
+            {"id": "tinyllama--latest", "status": {"value": "unloaded"}},
+        ]
+    )
 
     await alpaca_proxy.unload_model("tinyllama")
 
 
 @pytest.mark.asyncio
 async def test_loaded_models_from_router_returns_only_loaded_models():
-    alpaca_proxy.fetch_router_models = AsyncMock(return_value=[
-        {"id": "sha256-deadbeef", "path": "/models/blobs/sha256-deadbeef", "status": {"value": "loaded"}},
-        {"id": "sha256-other", "path": "/models/blobs/sha256-other", "status": {"value": "unloaded"}},
-    ])
-    alpaca_proxy.iter_local_manifests = lambda: iter([
-        ("base", "/tmp/tinyllama", make_manifest(digest="sha256:deadbeef")),
-        ("base", "/tmp/other", make_manifest(digest="sha256:other")),
-    ])
-    alpaca_proxy.manifest_model_name = lambda base, path: "tinyllama" if "tinyllama" in path else "other"
-    alpaca_proxy.manifest_stats = lambda path, manifest: {"size": 1, "digest": "d", "details": {}, "context_length": 4096}
+    alpaca_proxy.fetch_router_models = AsyncMock(
+        return_value=[
+            {
+                "id": "sha256-deadbeef",
+                "path": "/models/blobs/sha256-deadbeef",
+                "status": {"value": "loaded"},
+            },
+            {
+                "id": "sha256-other",
+                "path": "/models/blobs/sha256-other",
+                "status": {"value": "unloaded"},
+            },
+        ]
+    )
+    alpaca_proxy.iter_local_manifests = lambda: iter(
+        [
+            ("base", "/tmp/tinyllama", make_manifest(digest="sha256:deadbeef")),
+            ("base", "/tmp/other", make_manifest(digest="sha256:other")),
+        ]
+    )
+    alpaca_proxy.manifest_model_name = lambda base, path: (
+        "tinyllama" if "tinyllama" in path else "other"
+    )
+    alpaca_proxy.manifest_stats = lambda path, manifest: {
+        "size": 1,
+        "digest": "d",
+        "details": {},
+        "context_length": 4096,
+    }
 
     loaded = await alpaca_proxy.loaded_models_from_router()
 
@@ -345,24 +401,31 @@ async def test_chat_endpoint_maps_request_and_returns_ollama_shape():
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.wait_for_slot = AsyncMock(return_value=True)
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
-    mock_http = MockHTTPClient({
-        "choices": [
-            {
-                "message": {"role": "assistant", "content": "hello"},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {"prompt_tokens": 3, "completion_tokens": 1},
-    })
+    mock_http = MockHTTPClient(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "hello"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        }
+    )
     alpaca_proxy.client_httpx = mock_http
 
-    response = await alpaca_proxy.chat(make_request("/api/chat", {
-        "model": "tinyllama",
-        "messages": [{"role": "user", "content": "hi"}],
-        "format": "json",
-        "options": {"num_predict": 12},
-        "stream": False,
-    }))
+    response = await alpaca_proxy.chat(
+        make_request(
+            "/api/chat",
+            {
+                "model": "tinyllama",
+                "messages": [{"role": "user", "content": "hi"}],
+                "format": "json",
+                "options": {"num_predict": 12},
+                "stream": False,
+            },
+        )
+    )
 
     assert response.status_code == 200
     body = json.loads(response.body)
@@ -384,11 +447,16 @@ async def test_chat_endpoint_returns_504_on_upstream_timeout():
     alpaca_proxy.client_httpx.post = AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
 
     with pytest.raises(HTTPException) as excinfo:
-        await alpaca_proxy.chat(make_request("/api/chat", {
-            "model": "tinyllama",
-            "messages": [{"role": "user", "content": "hi"}],
-            "stream": False,
-        }))
+        await alpaca_proxy.chat(
+            make_request(
+                "/api/chat",
+                {
+                    "model": "tinyllama",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                },
+            )
+        )
 
     assert excinfo.value.status_code == 504
     assert "timed out" in excinfo.value.detail.lower()
@@ -398,25 +466,32 @@ async def test_chat_endpoint_returns_504_on_upstream_timeout():
 async def test_generate_endpoint_uses_chat_backend_for_system_and_respects_keep_alive_zero():
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
-    mock_http = MockHTTPClient({
-        "choices": [
-            {
-                "message": {"role": "assistant", "content": "done", "thinking": "trace"},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {"prompt_tokens": 4, "completion_tokens": 2},
-    })
+    mock_http = MockHTTPClient(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done", "thinking": "trace"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        }
+    )
     alpaca_proxy.client_httpx = mock_http
 
-    response = await alpaca_proxy.generate(make_request("/api/generate", {
-        "model": "tinyllama",
-        "prompt": "hi",
-        "system": "be terse",
-        "think": True,
-        "keep_alive": 0,
-        "stream": False,
-    }))
+    response = await alpaca_proxy.generate(
+        make_request(
+            "/api/generate",
+            {
+                "model": "tinyllama",
+                "prompt": "hi",
+                "system": "be terse",
+                "think": True,
+                "keep_alive": 0,
+                "stream": False,
+            },
+        )
+    )
 
     assert response.status_code == 200
     body = json.loads(response.body)
@@ -436,11 +511,16 @@ async def test_generate_endpoint_returns_504_on_upstream_timeout():
     alpaca_proxy.client_httpx.post = AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
 
     with pytest.raises(HTTPException) as excinfo:
-        await alpaca_proxy.generate(make_request("/api/generate", {
-            "model": "tinyllama",
-            "prompt": "hi",
-            "stream": False,
-        }))
+        await alpaca_proxy.generate(
+            make_request(
+                "/api/generate",
+                {
+                    "model": "tinyllama",
+                    "prompt": "hi",
+                    "stream": False,
+                },
+            )
+        )
 
     assert excinfo.value.status_code == 504
     assert "timed out" in excinfo.value.detail.lower()
@@ -450,17 +530,19 @@ async def test_generate_endpoint_returns_504_on_upstream_timeout():
 async def test_ps_endpoint_returns_loaded_router_models():
     alpaca_proxy.model_expires_at.clear()
     alpaca_proxy.model_expires_at["tinyllama"] = "2026-05-11T00:00:00Z"
-    alpaca_proxy.loaded_models_from_router = AsyncMock(return_value=[
-        {
-            "name": "tinyllama",
-            "info": {
-                "size": 1,
-                "digest": "deadbeef",
-                "details": {"format": "gguf"},
-                "context_length": 4096,
-            },
-        }
-    ])
+    alpaca_proxy.loaded_models_from_router = AsyncMock(
+        return_value=[
+            {
+                "name": "tinyllama",
+                "info": {
+                    "size": 1,
+                    "digest": "deadbeef",
+                    "details": {"format": "gguf"},
+                    "context_length": 4096,
+                },
+            }
+        ]
+    )
 
     body = await alpaca_proxy.ps()
     assert body["models"][0]["name"] == "tinyllama"
@@ -473,34 +555,38 @@ async def test_ensure_model_escalates_to_safe_settings_when_load_fails_completel
     alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
     alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
     alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
-    
+
     alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "model_name": "qwen3.5:9b",
-        "backend_model": "qwen3.5--9b.gguf",
-        "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
-        "manifest_path": "/tmp/manifest",
-        "manifest": make_manifest(digest="sha256:qwen35"),
-        "router_models": [
-            {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
-        ],
-    })
-    
-    alpaca_proxy.post_router_model_action = AsyncMock(side_effect=[
-        httpx.RequestError("Default load crashed"),
-        httpx.RequestError("Retry without MTP crashed"),
-        None,
-    ])
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen3.5:9b",
+            "backend_model": "qwen3.5--9b.gguf",
+            "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:qwen35"),
+            "router_models": [
+                {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+
+    alpaca_proxy.post_router_model_action = AsyncMock(
+        side_effect=[
+            httpx.RequestError("Default load crashed"),
+            httpx.RequestError("Retry without MTP crashed"),
+            None,
+        ]
+    )
 
     resolved = await alpaca_proxy.ensure_model("qwen3.5:9b")
-    
+
     assert resolved["backend_model"] == "qwen3.5--9b.gguf"
     assert "qwen3.5--9b.gguf" in alpaca_proxy.MTP_INCOMPATIBLE_MODELS
     assert "qwen3.5--9b.gguf" in alpaca_proxy.SAFE_SETTINGS_MODELS
 
     # Verify calls
     assert alpaca_proxy.post_router_model_action.await_count == 3
-    
+
     # 1st call: default optimization
     first_call = alpaca_proxy.post_router_model_action.await_args_list[0]
     assert first_call[0][0] == "load"
@@ -527,37 +613,42 @@ async def test_ensure_model_uses_saved_safe_settings_immediately():
     alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
     alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
     alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
-    
+
     alpaca_proxy.MTP_INCOMPATIBLE_MODELS.add("qwen3.5--9b.gguf")
     alpaca_proxy.SAFE_SETTINGS_MODELS.add("qwen3.5--9b.gguf")
-    
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "model_name": "qwen3.5:9b",
-        "backend_model": "qwen3.5--9b.gguf",
-        "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
-        "manifest_path": "/tmp/manifest",
-        "manifest": make_manifest(digest="sha256:qwen35"),
-        "router_models": [
-            {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
-        ],
-    })
-    
+
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen3.5:9b",
+            "backend_model": "qwen3.5--9b.gguf",
+            "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:qwen35"),
+            "router_models": [
+                {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+
     alpaca_proxy.post_router_model_action = AsyncMock()
 
     resolved = await alpaca_proxy.ensure_model("qwen3.5:9b")
-    
+
     assert resolved["backend_model"] == "qwen3.5--9b.gguf"
-    
+
     # Must immediately load with MTP off and Safe Settings applied
-    alpaca_proxy.post_router_model_action.assert_awaited_once_with("load", {
-        "model": "qwen3.5--9b.gguf",
-        "n_gpu_layers": -1,
-        "use_mmap": True,
-        "flash_attn": False,
-        "n_ctx": 8192,
-        "spec_type": "none",
-        "spec_draft_n_max": 0,
-    })
+    alpaca_proxy.post_router_model_action.assert_awaited_once_with(
+        "load",
+        {
+            "model": "qwen3.5--9b.gguf",
+            "n_gpu_layers": -1,
+            "use_mmap": True,
+            "flash_attn": False,
+            "n_ctx": 8192,
+            "spec_type": "none",
+            "spec_draft_n_max": 0,
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -565,18 +656,18 @@ async def test_admin_system_endpoint_returns_metrics():
     # Mock psutil
     mock_psutil = MagicMock()
     mock_psutil.virtual_memory.return_value = MagicMock(
-        total=32000000000,
-        available=16000000000,
-        used=16000000000,
-        percent=50.0
+        total=32000000000, available=16000000000, used=16000000000, percent=50.0
     )
     mock_psutil.cpu_percent.return_value = 25.0
-    
+
     # Mock subprocess.check_output
     mock_subprocess = MagicMock()
     mock_subprocess.check_output.return_value = "NVIDIA GeForce RTX 4060, 8188, 1241, 6557\n"
-    
-    with patch.dict("sys.modules", {"psutil": mock_psutil}), patch("subprocess.check_output", mock_subprocess.check_output):
+
+    with (
+        patch.dict("sys.modules", {"psutil": mock_psutil}),
+        patch("subprocess.check_output", mock_subprocess.check_output),
+    ):
         response = await alpaca_proxy.admin_system()
         assert response.status_code == 200
         body = json.loads(response.body)
@@ -600,16 +691,18 @@ async def test_get_llama_server_logs_endpoint():
 @pytest.mark.asyncio
 async def test_ensure_model_recovers_from_oom_by_restarting_server():
     alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "model_name": "tinyllama:latest",
-        "backend_model": "sha256-deadbeef",
-        "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
-        "manifest_path": "/tmp/manifest",
-        "manifest": make_manifest(digest="sha256:deadbeef"),
-        "router_models": [
-            {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
-        ],
-    })
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
     alpaca_proxy.post_router_model_action = AsyncMock()
     alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
     alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
@@ -624,17 +717,20 @@ async def test_ensure_model_recovers_from_oom_by_restarting_server():
     alpaca_proxy.restart_llama_server.assert_awaited_once()
     alpaca_proxy.wait_for_llama_server_or_restart.assert_awaited_once()
     # Verify we retried loading with OOM safe settings (n_gpu_layers=0)
-    alpaca_proxy.post_router_model_action.assert_any_await("load", {
-        "model": "sha256-deadbeef",
-        "n_gpu_layers": 0,
-        "n_thread": 8,
-        "n_batch": 256,
-        "n_ubatch": 512,
-        "use_mmap": True,
-        "flash_attn": False,
-        "spec_type": "none",
-        "spec_draft_n_max": 0,
-    })
+    alpaca_proxy.post_router_model_action.assert_any_await(
+        "load",
+        {
+            "model": "sha256-deadbeef",
+            "n_gpu_layers": 0,
+            "n_thread": 8,
+            "n_batch": 256,
+            "n_ubatch": 512,
+            "use_mmap": True,
+            "flash_attn": False,
+            "spec_type": "none",
+            "spec_draft_n_max": 0,
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -649,10 +745,12 @@ async def test_fetch_router_models_retries_on_connection_error():
 
     alpaca_proxy.client_httpx = AsyncMock()
     # First call raises ConnectError, second call returns resp_mock
-    alpaca_proxy.client_httpx.get = AsyncMock(side_effect=[
-        httpx.ConnectError("Could not establish connection"),
-        resp_mock,
-    ])
+    alpaca_proxy.client_httpx.get = AsyncMock(
+        side_effect=[
+            httpx.ConnectError("Could not establish connection"),
+            resp_mock,
+        ]
+    )
 
     try:
         models = await alpaca_proxy.fetch_router_models(reload=True)
@@ -675,10 +773,12 @@ async def test_post_router_model_action_retries_on_connection_error():
 
     alpaca_proxy.client_httpx = AsyncMock()
     # First call raises ConnectError, second call returns resp_mock
-    alpaca_proxy.client_httpx.post = AsyncMock(side_effect=[
-        httpx.ConnectError("Could not establish connection"),
-        resp_mock,
-    ])
+    alpaca_proxy.client_httpx.post = AsyncMock(
+        side_effect=[
+            httpx.ConnectError("Could not establish connection"),
+            resp_mock,
+        ]
+    )
 
     try:
         res = await alpaca_proxy.post_router_model_action("load", "some-model")
@@ -713,40 +813,34 @@ def test_is_model_over_9b():
             }
         ]
     }
-    
-    assert alpaca_proxy.is_model_over_9b(
-        "unknown_model", small_manifest
-    ) is False
-    assert alpaca_proxy.is_model_over_9b(
-        "unknown_model", large_manifest
-    ) is True
+
+    assert alpaca_proxy.is_model_over_9b("unknown_model", small_manifest) is False
+    assert alpaca_proxy.is_model_over_9b("unknown_model", large_manifest) is True
 
 
 @pytest.mark.asyncio
 async def test_ensure_model_skips_escalation_for_large_models():
     alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "model_name": "qwen3.6-35b-a3b:q4_k_m",
-        "backend_model": "sha256-large",
-        "entry": {"id": "sha256-large", "status": {"value": "unloaded"}},
-        "manifest_path": "/tmp/manifest",
-        "manifest": make_manifest(digest="sha256:large"),
-        "router_models": [],
-    })
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen3.6-35b-a3b:q4_k_m",
+            "backend_model": "sha256-large",
+            "entry": {"id": "sha256-large", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:large"),
+            "router_models": [],
+        }
+    )
     alpaca_proxy.post_router_model_action = AsyncMock(
-        side_effect=httpx.HTTPStatusError(
-            "Load failed", request=MagicMock(), response=MagicMock()
-        )
+        side_effect=httpx.HTTPStatusError("Load failed", request=MagicMock(), response=MagicMock())
     )
     alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
-    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(
-        return_value=True
-    )
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
 
     # Loading a >9B model should immediately restart and retry once
     with pytest.raises(httpx.HTTPStatusError):
         await alpaca_proxy.ensure_model("qwen3.6-35b-a3b:q4_k_m")
-    
+
     # Assert we called post_router_model_action twice
     assert alpaca_proxy.post_router_model_action.call_count == 2
     alpaca_proxy.restart_llama_server.assert_awaited_once()
@@ -756,32 +850,39 @@ async def test_ensure_model_skips_escalation_for_large_models():
 @pytest.mark.asyncio
 async def test_ensure_model_recovers_from_crash_for_large_models():
     alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
-    alpaca_proxy.resolve_router_model = AsyncMock(return_value={
-        "model_name": "qwen3.6-35b-a3b:q4_k_m",
-        "backend_model": "sha256-large",
-        "entry": {"id": "sha256-large", "status": {"value": "unloaded"}},
-        "manifest_path": "/tmp/manifest",
-        "manifest": make_manifest(digest="sha256:large"),
-        "router_models": [],
-    })
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen3.6-35b-a3b:q4_k_m",
+            "backend_model": "sha256-large",
+            "entry": {"id": "sha256-large", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:large"),
+            "router_models": [],
+        }
+    )
     alpaca_proxy.post_router_model_action = AsyncMock()
     alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
-    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(
-        return_value=True
-    )
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
 
     # Health check returns False (crash), then True on recovery reload
     alpaca_proxy.is_child_model_healthy = AsyncMock(side_effect=[False, True])
 
     resolved = await alpaca_proxy.ensure_model("qwen3.6-35b-a3b:q4_k_m")
-    
+
     assert resolved["backend_model"] == "sha256-large"
     alpaca_proxy.restart_llama_server.assert_awaited_once()
     alpaca_proxy.wait_for_llama_server_or_restart.assert_awaited_once()
     # Verify it retried with original load parameters
-    alpaca_proxy.post_router_model_action.assert_any_await(
-        "load", {"model": "sha256-large"}
+    alpaca_proxy.post_router_model_action.assert_any_await("load", {"model": "sha256-large"})
+
+
+@pytest.mark.asyncio
+async def test_restore_models_on_recovery_only_preloads_last():
+    alpaca_proxy.load_loaded_models_state = AsyncMock(
+        return_value=["model-A:latest", "model-B:latest", "model-C:latest"]
     )
+    alpaca_proxy.ensure_model = AsyncMock()
 
+    await alpaca_proxy.restore_models_on_recovery()
 
-
+    alpaca_proxy.ensure_model.assert_called_once_with("model-C:latest")
