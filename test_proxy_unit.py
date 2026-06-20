@@ -21,6 +21,14 @@ REAL_RESOLVE_ROUTER_MODEL = alpaca_proxy.resolve_router_model
 REAL_ENSURE_MODEL = alpaca_proxy.ensure_model
 REAL_FETCH_ROUTER_MODELS = alpaca_proxy.fetch_router_models
 
+# Globally mock network/docker boundary endpoints to protect unit tests
+alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
+alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+alpaca_proxy.wait_for_llama_server = AsyncMock(return_value=True)
+alpaca_proxy.restore_slot_cache = AsyncMock(return_value=True)
+alpaca_proxy.save_slot_cache = AsyncMock(return_value=True)
+alpaca_proxy.find_slot_for_request = AsyncMock(return_value=0)
+
 def make_manifest(digest="sha256:abcd", size=4):
     return {
         "schemaVersion": 2,
@@ -335,6 +343,7 @@ async def test_loaded_models_from_router_returns_only_loaded_models():
 @pytest.mark.asyncio
 async def test_chat_endpoint_maps_request_and_returns_ollama_shape():
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.wait_for_slot = AsyncMock(return_value=True)
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
     mock_http = MockHTTPClient({
         "choices": [
@@ -370,6 +379,7 @@ async def test_chat_endpoint_maps_request_and_returns_ollama_shape():
 @pytest.mark.asyncio
 async def test_chat_endpoint_returns_504_on_upstream_timeout():
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.wait_for_slot = AsyncMock(return_value=True)
     alpaca_proxy.client_httpx = AsyncMock()
     alpaca_proxy.client_httpx.post = AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
 

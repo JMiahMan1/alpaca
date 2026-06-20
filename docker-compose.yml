@@ -26,6 +26,7 @@ services:
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
+      - ./.slots-cache:/slots-cache
       - ./llama-server-flags.py:/scripts/llama-server-flags.py:ro
       - ./llama-server-entrypoint.sh:/scripts/llama-server-entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/scripts/llama-server-entrypoint.sh"]
@@ -52,9 +53,11 @@ services:
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
+      - ./.slots-cache:/slots-cache
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       ROUTER_MODELS_DIR: /router-models
+      SLOTS_CACHE_DIR: /slots-cache
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
