@@ -1,0 +1,167 @@
+{
+  "model": "Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M",
+  "benchmarked_at": "2026-06-20T21:39:42.048020",
+  "host": "http://localhost:11434",
+  "summary": {
+    "tests_run": 12,
+    "tests_passed": 12,
+    "tests_failed": 0,
+    "avg_tokens_per_sec": 31.46,
+    "max_tokens_per_sec": 41.3,
+    "min_tokens_per_sec": 25.41,
+    "avg_ttft_ms": 1184.0,
+    "min_ttft_ms": 420.3,
+    "max_ttft_ms": 1809.0
+  },
+  "by_category": {
+    "performance": {
+      "avg_tokens_per_sec": 35.51
+    },
+    "coding": {
+      "avg_tokens_per_sec": 32.8
+    },
+    "reasoning": {
+      "avg_tokens_per_sec": 28.17
+    },
+    "instruction": {
+      "avg_tokens_per_sec": 30.65
+    },
+    "creative": {
+      "avg_tokens_per_sec": 29.16
+    }
+  },
+  "tests": [
+    {
+      "id": "ttft_short",
+      "label": "TTFT - Short prompt",
+      "category": "performance",
+      "tokens_per_sec": 41.3,
+      "ttft_ms": 420.3,
+      "tokens_generated": 20,
+      "total_time_s": 1.22,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "ttft_medium",
+      "label": "TTFT - Medium prompt",
+      "category": "performance",
+      "tokens_per_sec": 29.71,
+      "ttft_ms": 458.6,
+      "tokens_generated": 150,
+      "total_time_s": 5.81,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "coding_python",
+      "label": "Coding - Python (memoized fibonacci)",
+      "category": "coding",
+      "tokens_per_sec": 31.57,
+      "ttft_ms": 1204.0,
+      "tokens_generated": 300,
+      "total_time_s": 11.02,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "coding_sql",
+      "label": "Coding - SQL (CTE query)",
+      "category": "coding",
+      "tokens_per_sec": 30.8,
+      "ttft_ms": 1486.9,
+      "tokens_generated": 200,
+      "total_time_s": 8.31,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "coding_debug",
+      "label": "Coding - Debug (find the bug)",
+      "category": "coding",
+      "tokens_per_sec": 36.04,
+      "ttft_ms": 1502.7,
+      "tokens_generated": 150,
+      "total_time_s": 5.98,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "reasoning_logic",
+      "label": "Reasoning - Logic puzzle (3 boxes)",
+      "category": "reasoning",
+      "tokens_per_sec": 28.71,
+      "ttft_ms": 1482.7,
+      "tokens_generated": 300,
+      "total_time_s": 12.21,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "reasoning_math",
+      "label": "Reasoning - Math word problem",
+      "category": "reasoning",
+      "tokens_per_sec": 27.63,
+      "ttft_ms": 1398.2,
+      "tokens_generated": 200,
+      "total_time_s": 9.04,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "instruction_json",
+      "label": "Instruction - JSON extraction",
+      "category": "instruction",
+      "tokens_per_sec": 35.39,
+      "ttft_ms": 1591.7,
+      "tokens_generated": 80,
+      "total_time_s": 4.25,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "instruction_rewrite",
+      "label": "Instruction - Formal rewrite",
+      "category": "instruction",
+      "tokens_per_sec": 25.79,
+      "ttft_ms": 1369.0,
+      "tokens_generated": 120,
+      "total_time_s": 6.45,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "instruction_system",
+      "label": "Instruction - System prompt adherence",
+      "category": "instruction",
+      "tokens_per_sec": 25.41,
+      "ttft_ms": 797.9,
+      "tokens_generated": 100,
+      "total_time_s": 5.27,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "creative_story",
+      "label": "Creative - Sci-fi story opening",
+      "category": "creative",
+      "tokens_per_sec": 29.16,
+      "ttft_ms": 686.8,
+      "tokens_generated": 150,
+      "total_time_s": 6.32,
+      "response_preview": "",
+      "error": null
+    },
+    {
+      "id": "summarization",
+      "label": "Instruction - Summarization",
+      "category": "instruction",
+      "tokens_per_sec": 36.0,
+      "ttft_ms": 1809.0,
+      "tokens_generated": 100,
+      "total_time_s": 5.05,
+      "response_preview": "",
+      "error": null
+    }
+  ]
+}
