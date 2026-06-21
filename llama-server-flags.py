@@ -125,85 +125,13 @@ def _find_active_model() -> str | None:
 
 
 def get_llama_server_flags() -> list[str]:
-    """Return the full llama-server flag list appropriate for the active model."""
-    model_path = _find_active_model()
-    is_moe = False
-    param_count = 0
-    flash_attn = False
-
-    if model_path:
-        try:
-            meta = _read_gguf_metadata(model_path)
-            is_moe = _is_moe(meta)
-            param_count = _model_size_params(meta)
-            flash_attn = _supports_flash_attn(meta)
-        except Exception as e:
-            print(f"[llama-flags] Warning: could not read model metadata: {e}", file=sys.stderr)
-            print("[llama-flags] Falling back to dense (safe) config", file=sys.stderr)
-
-    small_model = param_count > 0 and param_count < 9_000_000_000
-
-    # Base flags — safe for both dense and MoE
+    """Return the llama-server flag list appropriate for router mode with models preset."""
     flags = [
         "--host", "0.0.0.0",
         "--port", "8080",
-        "--models-dir", "/router-models",
-        "--slot-save-path", "/slots-cache",
-        "-ngl", "99",
-        "--no-mmap",
-        "--mlock",
-        "-t", "6",
+        "--models-preset", "/router-models/models.ini",
     ]
-
-    if flash_attn:
-        flags.extend(["-fa", "on"])
-
-    if small_model:
-        # Small models on 8GB VRAM: reduce context + use f16 cache to avoid OOM
-        flags.extend([
-            "-c", "8192",
-            "--cache-type-k", "f16",
-            "--cache-type-v", "f16",
-        ])
-    else:
-        # Large models: 128K context + q4_0 cache (highly optimized and fast for 8GB VRAM)
-        # --parallel 1: gives the single active slot the full 131K unified KV pool.
-        # n_parallel=2 halved per-slot context to 65K which is smaller than large prompts.
-        # Since OpenCode is sequential, a single slot loses nothing in practice and
-        # completely eliminates concurrent multi-prefill DRAM OOM pressure.
-        flags.extend([
-            "-c", "98304",
-            "--cache-type-k", "q4_0",
-            "--cache-type-v", "q4_0",
-            "--batch-size", "1024",
-            "--ubatch-size", "1024",
-            "--parallel", "2",
-            "--kv-unified",
-        ])
-
-    if is_moe:
-        flags.extend([
-            "--n-cpu-moe", "40",
-            "--spec-type", "draft-mtp",
-            "--spec-draft-n-max", "3",
-        ])
-        print("[llama-flags] Detected MoE model — enabling MoE + speculative flags", file=sys.stderr)
-    else:
-        print("[llama-flags] Detected dense model — using safe config (no MoE/speculative flags)", file=sys.stderr)
-
-    if small_model:
-        print(f"[llama-flags] Model < 9B ({param_count/1e9:.1f}B) — using 8K context + f16 cache for 8GB VRAM", file=sys.stderr)
-
-    if flash_attn:
-        print("[llama-flags] Flash Attention enabled (-fa)", file=sys.stderr)
-    else:
-        print("[llama-flags] Flash Attention disabled (unsupported or unknown architecture)", file=sys.stderr)
-
-    if model_path:
-        print(f"[llama-flags] Model: {os.path.basename(model_path)} (MoE={is_moe}, params={param_count/1e9:.1f}B)", file=sys.stderr)
-    else:
-        print("[llama-flags] No model found — using safe dense config", file=sys.stderr)
-
+    print("[llama-flags] Configured llama-server router mode using models.ini preset file", file=sys.stderr)
     return flags
 
 

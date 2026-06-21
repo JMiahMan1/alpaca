@@ -726,6 +726,17 @@ async def post_router_model_action(action, payload):
         router_management_supported = False
         raise RouterManagementUnsupported(url)
     router_management_supported = True
+
+    if resp.status_code == 400 and action == "load":
+        try:
+            body = resp.json()
+            msg = str(body.get("error", {}).get("message", ""))
+            if "already running" in msg.lower() or "model is already running" in msg.lower():
+                logger.info(f"Model already running on load action, treating as success.")
+                return {"success": True}
+        except Exception:
+            pass
+
     resp.raise_for_status()
     return resp.json()
 
@@ -2333,6 +2344,11 @@ def save_mtp_incompatible_models():
         with open(MTP_INCOMPATIBLE_FILE, "w") as f:
             json.dump(list(MTP_INCOMPATIBLE_MODELS), f, indent=2)
             logger.info("Saved MTP incompatible models list.")
+        try:
+            from alpaca_puller import update_models_ini
+            update_models_ini()
+        except Exception as e:
+            logger.warning(f"Failed to regenerate models.ini: {e}")
     except Exception as e:
         logger.warning(f"Failed to save MTP incompatible models file: {e}")
 
@@ -2355,6 +2371,11 @@ def save_safe_settings_models():
         with open(SAFE_SETTINGS_FILE, "w") as f:
             json.dump(list(SAFE_SETTINGS_MODELS), f, indent=2)
             logger.info("Saved safe settings models list.")
+        try:
+            from alpaca_puller import update_models_ini
+            update_models_ini()
+        except Exception as e:
+            logger.warning(f"Failed to regenerate models.ini: {e}")
     except Exception as e:
         logger.warning(f"Failed to save safe settings models file: {e}")
 
@@ -2637,6 +2658,14 @@ def is_model_over_9b(model_name: str, manifest: dict = None) -> bool:
     return False
 
 
+def is_model_moe(model_name: str, meta: dict = None) -> bool:
+    """Check if the model is a Mixture of Experts (MoE) model."""
+    if meta:
+        return _is_moe(meta)
+    return "moe" in model_name.lower() or "mixtral" in model_name.lower()
+
+
+
 _FA_UNSUPPORTED_ARCHS = {
     "mamba",
     "rwkv",
@@ -2768,16 +2797,110 @@ async def get_child_model_props(backend_model: str) -> dict:
     return {}
 
 
+def get_model_preset_info(backend_model: str) -> str:
+    ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+    if not os.path.exists(ini_path):
+        return ""
+    import configparser
+    try:
+        config = configparser.ConfigParser()
+        config.read(ini_path)
+        if config.has_section(backend_model):
+            sec = config[backend_model]
+            ctx = sec.get("ctx-size", "unknown")
+            cache_k = sec.get("cache-type-k", "unknown")
+            cache_v = sec.get("cache-type-v", "unknown")
+            fa = sec.get("flash-attn", "unknown")
+            return f" (n_ctx={ctx}, cache={cache_k}/{cache_v}, flash_attn={fa})"
+    except Exception as e:
+        logger.warning(f"Failed to read preset info for {backend_model}: {e}")
+    return ""
+
+
 async def ensure_model(model_name: str, options: dict = None):
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
+
+    # Lock-free check for loaded/healthy or loading models to prevent lock starvation
+    try:
+        resolved = await resolve_router_model(model_name, reload=True)
+        backend_model = resolved["backend_model"]
+        entry = resolved["entry"]
+        status = router_entry_status(entry)
+
+        if status == "loaded":
+            if await is_child_model_healthy(backend_model):
+                mark_model_loaded(model_name)
+                await record_model_loaded(model_name)
+                return {
+                    "model_name": model_name,
+                    "backend_model": backend_model,
+                    "manifest_path": resolved["manifest_path"],
+                    "manifest": resolved["manifest"],
+                }
+
+        if status == "loading":
+            logger.info(
+                f"Model {backend_model} is currently loading. Waiting for load to finish..."
+            )
+            for _ in range(120):
+                await asyncio.sleep(1.0)
+                try:
+                    resolved = await resolve_router_model(model_name, reload=True)
+                    backend_model = resolved["backend_model"]
+                    entry = resolved["entry"]
+                    if router_entry_status(entry) == "loaded":
+                        if await is_child_model_healthy(backend_model):
+                            logger.info(f"Model {backend_model} finished loading successfully.")
+                            mark_model_loaded(model_name)
+                            await record_model_loaded(model_name)
+                            return {
+                                "model_name": model_name,
+                                "backend_model": backend_model,
+                                "manifest_path": resolved["manifest_path"],
+                                "manifest": resolved["manifest"],
+                            }
+                except Exception as poll_exc:
+                    logger.warning(f"Error polling model loading status: {poll_exc}")
+    except Exception as e:
+        logger.warning(f"Lock-free status check failed: {e}")
 
     async with router_model_lock:
         mark_model_loading(model_name)
         resolved = await resolve_router_model(model_name, reload=True)
         backend_model = resolved["backend_model"]
-        router_models = resolved["router_models"]
-        entry = resolved["entry"]
+        
+        async with active_requests_lock:
+            active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
+        try:
+            return await _ensure_model_impl(model_name, options, resolved)
+        finally:
+            async with active_requests_lock:
+                active_requests[backend_model] -= 1
+                active_requests_lock.notify_all()
+
+
+async def _ensure_model_impl(model_name: str, options: dict = None, resolved: dict = None):
+    if resolved is None:
+        resolved = await resolve_router_model(model_name, reload=True)
+    backend_model = resolved["backend_model"]
+    router_models = resolved["router_models"]
+    entry = resolved["entry"]
+
+    # Read n-gpu-layers preset from models.ini if available, otherwise default to -1
+    n_gpu_layers_preset = -1
+    ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+    if os.path.exists(ini_path):
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read(ini_path)
+            if config.has_section(backend_model):
+                sec = config[backend_model]
+                if "n-gpu-layers" in sec:
+                    n_gpu_layers_preset = int(sec["n-gpu-layers"])
+        except Exception as e:
+            logger.warning(f"Failed to read n-gpu-layers preset from models.ini: {e}")
 
         if MAX_LOADED_MODELS == 1:
             for other in router_models:
@@ -2785,7 +2908,7 @@ async def ensure_model(model_name: str, options: dict = None):
                 if (other_id != backend_model) and is_resident_status(router_entry_status(other)):
                     # Wait for active requests on the model we are about to unload
                     async with active_requests_lock:
-                        deadline = asyncio.get_event_loop().time() + 30.0  # 30s max wait
+                        deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
                         while active_requests.get(other_id, 0) > 0:
                             remaining = deadline - asyncio.get_event_loop().time()
                             if remaining <= 0:
@@ -2883,8 +3006,8 @@ async def ensure_model(model_name: str, options: dict = None):
                 load_payload["n_ctx"] = int(n_ctx)
                 logger.info(f"Setting n_ctx={n_ctx} for model load.")
 
-        # Always use acceleration flags
-        load_payload["n_gpu_layers"] = -1
+        # Use configured n-gpu-layers preset
+        load_payload["n_gpu_layers"] = n_gpu_layers_preset
         load_payload["use_mmap"] = True
 
         # Resolve GGUF path and read metadata to dynamically determine capabilities without hardcoding
@@ -2966,10 +3089,11 @@ async def ensure_model(model_name: str, options: dict = None):
                 "manifest": resolved["manifest"],
             }
         except (httpx.RequestError, httpx.HTTPStatusError) as exc:
-            # Don't try and change any settings with any model higher than 9B
-            if is_model_over_9b(model_name, resolved.get("manifest")):
+            # Skip changing settings for MoE models, but allow for dense models
+            is_moe = is_model_moe(backend_model, meta)
+            if is_moe:
                 logger.warning(
-                    f"Failed to load >9B model {backend_model} "
+                    f"Failed to load MoE model {backend_model} "
                     f"with original settings: {exc}. Performing clean "
                     "restart of llama-server and retrying..."
                 )
@@ -3031,7 +3155,7 @@ async def ensure_model(model_name: str, options: dict = None):
                         }
                     except Exception as retry_exc:
                         logger.error(
-                            f"Failed to load >9B model even after clean restart: {retry_exc}"
+                            f"Failed to load MoE model even after clean restart: {retry_exc}"
                         )
                         raise
                 raise
@@ -3059,7 +3183,7 @@ async def ensure_model(model_name: str, options: dict = None):
                         n_ctx = options.get("num_ctx") or options.get("n_ctx")
                         if n_ctx:
                             load_payload["n_ctx"] = int(n_ctx)
-                    load_payload["n_gpu_layers"] = -1
+                    load_payload["n_gpu_layers"] = n_gpu_layers_preset
                     load_payload["use_mmap"] = True
                     load_payload["flash_attn"] = True
                     load_payload["spec_type"] = "none"
@@ -3086,9 +3210,10 @@ async def ensure_model(model_name: str, options: dict = None):
                         }
                     except (httpx.RequestError, httpx.HTTPStatusError) as retry_exc:
                         # Escalation Tier 2: Failed even without MTP -> Apply Safe Settings!
-                        if is_model_over_9b(model_name, resolved.get("manifest")):
+                        is_moe = is_model_moe(backend_model, meta)
+                        if is_moe:
                             logger.info(
-                                f"Model {model_name} is higher than 9B. Skipping Safe Settings escalation."
+                                f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
                             )
                             raise
                         if backend_model not in SAFE_SETTINGS_MODELS:
@@ -3111,7 +3236,7 @@ async def ensure_model(model_name: str, options: dict = None):
                                     n_ctx = options.get("num_ctx") or options.get("n_ctx")
                                     if n_ctx:
                                         load_payload["n_ctx"] = int(n_ctx)
-                                load_payload["n_gpu_layers"] = -1
+                                load_payload["n_gpu_layers"] = n_gpu_layers_preset
                                 load_payload["use_mmap"] = True
                                 load_payload["flash_attn"] = False
                                 if "n_ctx" not in load_payload:
@@ -3147,9 +3272,10 @@ async def ensure_model(model_name: str, options: dict = None):
 
             # Tier 2: If we already disabled MTP but load failed, escalate directly to Safe Settings
             elif backend_model not in SAFE_SETTINGS_MODELS:
-                if is_model_over_9b(model_name, resolved.get("manifest")):
+                is_moe = is_model_moe(backend_model, meta)
+                if is_moe:
                     logger.info(
-                        f"Model {model_name} is higher than 9B. Skipping Safe Settings escalation."
+                        f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
                     )
                     raise
                 logger.warning(
@@ -3171,7 +3297,7 @@ async def ensure_model(model_name: str, options: dict = None):
                         n_ctx = options.get("num_ctx") or options.get("n_ctx")
                         if n_ctx:
                             load_payload["n_ctx"] = int(n_ctx)
-                    load_payload["n_gpu_layers"] = -1
+                    load_payload["n_gpu_layers"] = n_gpu_layers_preset
                     load_payload["use_mmap"] = True
                     load_payload["flash_attn"] = False
                     if "n_ctx" not in load_payload:
@@ -3223,8 +3349,9 @@ async def ensure_model(model_name: str, options: dict = None):
             raise
 
         # Load succeeded — check for OOM or startup crash (post-load verification)
+        preset_info = get_model_preset_info(backend_model)
         logger.info(
-            f"Model {backend_model} loaded successfully. Checking for OOM or startup crash..."
+            f"Model {backend_model} loaded successfully{preset_info}. Checking for OOM or startup crash..."
         )
         await asyncio.sleep(1.0)
         oom_detected = False
@@ -3237,7 +3364,7 @@ async def ensure_model(model_name: str, options: dict = None):
                 f"Crash detected: model {backend_model} is not "
                 "running or failed after load. Triggering recovery."
             )
-        elif not is_model_over_9b(model_name, resolved.get("manifest")):
+        elif not is_model_moe(backend_model, meta):
             # For <= 9B models, if it's running, we also check if it OOM'ed to CPU (n_gpu_layers=0)
             try:
                 if client_httpx is None:
@@ -3279,10 +3406,11 @@ async def ensure_model(model_name: str, options: dict = None):
                 resolved = await resolve_router_model(model_name, reload=True)
                 backend_model = resolved["backend_model"]
 
-                # Don't try and change any settings with any model higher than 9B
-                if is_model_over_9b(model_name, resolved.get("manifest")):
+                # Skip changing settings for MoE models, but allow for dense models
+                is_moe = is_model_moe(backend_model, meta)
+                if is_moe:
                     logger.info(
-                        f"Retrying load of >9B model {backend_model} with original settings..."
+                        f"Retrying load of MoE model {backend_model} with original settings..."
                     )
                     load_payload = {"model": backend_model}
                     if options:
@@ -3335,7 +3463,7 @@ async def ensure_model(model_name: str, options: dict = None):
                                 n_ctx = options.get("num_ctx") or options.get("n_ctx")
                                 if n_ctx:
                                     load_payload["n_ctx"] = int(n_ctx)
-                            load_payload["n_gpu_layers"] = -1
+                            load_payload["n_gpu_layers"] = n_gpu_layers_preset
                             load_payload["use_mmap"] = True
                             load_payload["flash_attn"] = True
                             load_payload["spec_type"] = "none"
@@ -3367,7 +3495,7 @@ async def ensure_model(model_name: str, options: dict = None):
                                 n_ctx = options.get("num_ctx") or options.get("n_ctx")
                                 if n_ctx:
                                     load_payload["n_ctx"] = int(n_ctx)
-                            load_payload["n_gpu_layers"] = -1
+                            load_payload["n_gpu_layers"] = n_gpu_layers_preset
                             load_payload["use_mmap"] = True
                             load_payload["flash_attn"] = False
                             if "n_ctx" not in load_payload:
@@ -3676,7 +3804,8 @@ async def chat(request: Request):
                                 if done:
                                     apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
                                 yield json.dumps(chunk) + "\n"
-                            except:
+                            except Exception as e:
+                                logger.exception(f"Error processing chat stream line: {e}")
                                 continue
                     break
                 except (
@@ -3906,7 +4035,8 @@ async def generate(request: Request):
                             if done:
                                 apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
                         yield json.dumps(chunk) + "\n"
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Error processing generate stream line: {e}")
                         continue
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:

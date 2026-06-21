@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import struct
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -41,6 +42,219 @@ def sanitize_model_component(value):
     value = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
     value = value.strip("-.")
     return value or "model"
+
+
+def _read_gguf_metadata(path: str) -> dict:
+    """Parse only the metadata header from a GGUF file (fast, no full load)."""
+    meta: dict = {}
+    with open(path, "rb") as f:
+        magic = f.read(4)
+        if magic != b"GGUF":
+            return meta
+        struct.unpack("<I", f.read(4))
+        struct.unpack("<Q", f.read(8))
+        kv_count = struct.unpack("<Q", f.read(8))[0]
+
+        for _ in range(kv_count):
+            key_len = struct.unpack("<Q", f.read(8))[0]  # uint64, not uint32
+            key = f.read(key_len).decode("utf-8", errors="replace")
+            val_type = struct.unpack("<I", f.read(4))[0]
+
+            # GGUF value types: 0=uint8,1=int8,2=uint16,3=int16,4=uint32,
+            # 5=int32,6=float32,7=bool,8=str,9=array,10=uint64,11=int64,12=float64
+            if val_type == 8:  # string
+                str_len = struct.unpack("<Q", f.read(8))[0]
+                val = f.read(str_len).decode("utf-8", errors="replace")
+                meta[key] = val
+            elif val_type in (0, 1, 4, 5, 10, 11):  # integer types
+                fmt = {0: "<B", 1: "<b", 4: "<I", 5: "<i", 10: "<Q", 11: "<q"}
+                val = struct.unpack(fmt[val_type], f.read(struct.calcsize(fmt[val_type])))[0]
+                meta[key] = val
+            elif val_type == 7:  # bool
+                meta[key] = struct.unpack("<?", f.read(1))[0]
+            elif val_type == 6:  # float32
+                meta[key] = struct.unpack("<f", f.read(4))[0]
+            elif val_type == 12:  # float64
+                meta[key] = struct.unpack("<d", f.read(8))[0]
+            elif val_type == 9:  # array
+                arr_type = struct.unpack("<I", f.read(4))[0]
+                arr_len = struct.unpack("<Q", f.read(8))[0]
+                # Skip array contents — we only care about scalar metadata
+                if arr_type == 8:  # array of strings
+                    for _ in range(arr_len):
+                        sl = struct.unpack("<Q", f.read(8))[0]
+                        f.read(sl)
+                else:
+                    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+                    skip = arr_len * sizes.get(arr_type, 0)
+                    f.read(skip)
+            else:
+                # Unknown type — skip conservatively
+                break
+
+    return meta
+
+
+def _model_size_params(meta: dict) -> int:
+    """Return total parameter count from GGUF metadata, or 0 if unknown."""
+    pc = meta.get("general.parameter_count", 0)
+    if isinstance(pc, int) and pc > 0:
+        return pc
+    label = meta.get("general.size_label", "")
+    if isinstance(label, str):
+        m = re.match(r"(\d+(?:\.\d+)?)\s*[Bb]", label)
+        if m:
+            return int(float(m.group(1)) * 1_000_000_000)
+    return 0
+
+
+_FA_UNSUPPORTED_ARCHS = {
+    "mamba", "rwkv", "rwkv6", "wavtokenizer",
+}
+
+
+def _supports_flash_attn(meta: dict) -> bool:
+    arch = meta.get("general.architecture", "").lower()
+    if not arch:
+        return False
+    return arch not in _FA_UNSUPPORTED_ARCHS
+
+
+def _is_moe(meta: dict) -> bool:
+    for key, val in meta.items():
+        if key.endswith(".expert_count") and isinstance(val, int) and val > 0:
+            return True
+        if key.endswith(".expert_used_count") and isinstance(val, int) and val > 0:
+            return True
+    arch = meta.get("general.architecture", "")
+    if "moe" in arch.lower():
+        return True
+    return False
+
+
+def update_models_ini():
+    """Scan all GGUF models in the router directory and regenerate models.ini."""
+    router_dir = Path(ROUTER_MODELS_DIR)
+    ini_path = router_dir / "models.ini"
+
+    # Load runtime exclusions
+    mtp_incompatible = set()
+    mtp_inc_file = router_dir / ".mtp_incompatible_models.json"
+    if mtp_inc_file.exists():
+        try:
+            with open(mtp_inc_file, "r") as f:
+                mtp_incompatible = set(json.load(f))
+        except Exception:
+            pass
+
+    safe_settings = set()
+    safe_file = router_dir / ".safe_settings_models.json"
+    if safe_file.exists():
+        try:
+            with open(safe_file, "r") as f:
+                safe_settings = set(json.load(f))
+        except Exception:
+            pass
+
+    content = [
+        "# models.ini - Per-model presets for llama-server router mode",
+        "",
+        "[*]",
+        "mlock = true",
+        "no-mmap = true",
+        "slot-save-path = /slots-cache",
+        "batch-size = 1024",
+        "ubatch-size = 1024",
+        "parallel = 2",
+        "kv-unified = true",
+        "n-gpu-layers = 99",
+        ""
+    ]
+
+    if router_dir.exists():
+        for entry in sorted(router_dir.iterdir()):
+            if entry.suffix == ".gguf":
+                resolved = entry.resolve()
+                if not resolved.exists():
+                    continue
+
+                alias = entry.stem
+                is_moe = False
+                param_count = 0
+                flash_attn = False
+
+                try:
+                    meta = _read_gguf_metadata(str(resolved))
+                    is_moe = _is_moe(meta)
+                    param_count = _model_size_params(meta)
+                    flash_attn = _supports_flash_attn(meta)
+                except Exception as e:
+                    print(f"Warning: could not read model metadata for {entry.name}: {e}", file=sys.stderr)
+
+                small_model = param_count > 0 and param_count < 9_000_000_000
+                is_mtp_capable = ("mtp" in entry.name.lower() or "mtp" in alias.lower()) and (entry.name not in mtp_incompatible and alias not in mtp_incompatible)
+                is_safe = alias in safe_settings or entry.name in safe_settings
+
+                profile_file = router_dir / f"{alias}.profile.json"
+                profile = {}
+                if profile_file.exists():
+                    try:
+                        with open(profile_file, "r") as pf:
+                            profile = json.load(pf)
+                    except Exception as e:
+                        print(f"Warning: could not read model profile for {alias}: {e}", file=sys.stderr)
+
+                content.append(f"[{alias}]")
+                content.append(f"model = /router-models/{entry.name}")
+
+                if profile:
+                    for k, v in profile.items():
+                        if k == "model":
+                            continue
+                        content.append(f"{k} = {v}")
+                else:
+                    if is_safe:
+                        content.append("ctx-size = 8192")
+                        content.append("cache-type-k = f16")
+                        content.append("cache-type-v = f16")
+                    elif small_model:
+                        content.append("ctx-size = 8192")
+                        content.append("cache-type-k = f16")
+                        content.append("cache-type-v = f16")
+                    else:
+                        if not is_moe:
+                            content.append("ctx-size = 32768")
+                        else:
+                            content.append("ctx-size = 98304")
+                        content.append("cache-type-k = q4_0")
+                        content.append("cache-type-v = q4_0")
+
+                    if is_safe:
+                        content.append("flash-attn = off")
+                    elif flash_attn:
+                        content.append("flash-attn = on")
+                    else:
+                        content.append("flash-attn = off")
+
+                    if is_moe:
+                        content.append("n-cpu-moe = 40")
+                        if is_mtp_capable:
+                            content.append("spec-type = draft-mtp")
+                            content.append("spec-draft-n-max = 3")
+                        else:
+                            content.append("spec-type = none")
+                            content.append("spec-draft-n-max = 0")
+                    else:
+                        content.append("spec-type = none")
+                        content.append("spec-draft-n-max = 0")
+
+                content.append("")
+
+    temp_ini = ini_path.with_suffix(".ini.tmp")
+    with open(temp_ini, "w", encoding="utf-8") as f:
+        f.write("\n".join(content))
+    os.replace(temp_ini, ini_path)
+    print(f"Updated models preset configuration at {ini_path}")
 
 
 def get_model_info(model_name):
@@ -466,6 +680,7 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False):
         }
         write_manifest_atomic(manifest_path, manifest)
         router_path = ensure_router_symlink(local_name, manifest)
+        update_models_ini()
         print(f"Registered router model: {router_path.name}")
         print(f"\nSuccessfully imported {normalize_model_name(local_name)}")
         return 0
@@ -488,6 +703,7 @@ def pull_ollama_model(model_name, insecure=False):
             download_blob(client, repo, digest, layer.get("size", 0), headers)
         write_manifest_atomic(manifest_path, manifest)
         router_path = ensure_router_symlink(model_name, manifest)
+        update_models_ini()
         print(f"Registered router model: {router_path.name}")
         print(f"\nSuccessfully pulled {normalize_model_name(model_name)}")
         return 0
@@ -539,6 +755,7 @@ def reindex_models():
     if count == 0:
         print("No complete local models found to index.")
         return 0
+    update_models_ini()
     print(f"Indexed {count} model(s) for llama-server router discovery.")
     return 0
 
@@ -563,6 +780,7 @@ def remove_model(model_name):
     if router_path.exists() or router_path.is_symlink():
         router_path.unlink()
         print(f"Deleted router index: {router_path}")
+        update_models_ini()
 
     for digest in model_blobs(manifest):
         blob_path = blob_path_for_digest(digest)
