@@ -265,6 +265,7 @@ def print_comparison(all_profiles):
 
 
 def main():
+    global BASE
     parser = argparse.ArgumentParser(description="Multi-model alpaca benchmark")
     parser.add_argument("models", nargs="*", help="Model names to benchmark (default: all)")
     parser.add_argument("--list", action="store_true", help="List available models and exit")
@@ -272,7 +273,6 @@ def main():
     parser.add_argument("--base", default=BASE, help="Ollama base URL")
     args = parser.parse_args()
 
-    global BASE
     BASE = args.base
 
     if args.list:

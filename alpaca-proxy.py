@@ -732,7 +732,7 @@ async def post_router_model_action(action, payload):
             body = resp.json()
             msg = str(body.get("error", {}).get("message", ""))
             if "already running" in msg.lower() or "model is already running" in msg.lower():
-                logger.info(f"Model already running on load action, treating as success.")
+                logger.info("Model already running on load action, treating as success.")
                 return {"success": True}
         except Exception:
             pass
@@ -2761,6 +2761,135 @@ def _supports_flash_attn(meta: dict) -> bool:
     return arch not in _FA_UNSUPPORTED_ARCHS
 
 
+# ---------------------------------------------------------------------------
+# VRAM-aware n_gpu_layers computation (metadata-driven, no hardcoded model names)
+#
+# The llama.cpp router reads n_gpu_layers ONLY from models.ini at startup,
+# ignoring the /models/load payload. So to override a bad preset we write the
+# corrected value to the INI, then restart llama-server (which the recovery
+# path already does). After restart the router picks up the new value.
+# ---------------------------------------------------------------------------
+
+_KV_CACHE_BYTES = {"f16": 2, "q8_0": 1, "q4_0": 0.5, "bf16": 2}
+_VRAM_OVERHEAD_MIB = 256
+
+
+def _get_model_arch_meta(meta: dict) -> tuple:
+    """Extract (arch, n_layers, n_embd) from GGUF metadata."""
+    arch = meta.get("general.architecture", "")
+    n_layers = meta.get(f"{arch}.block_count", 0) or 0
+    n_embd = meta.get(f"{arch}.embedding_length", 0) or 0
+    return arch, n_layers, n_embd
+
+
+async def _get_available_vram_mib() -> int | None:
+    """Query free GPU VRAM in MiB via nvidia-smi in the llama-server container."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", "llama-server", "nvidia-smi",
+            "--query-gpu=memory.free", "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            lines = stdout.decode().strip().split("\n")
+            if lines:
+                return int(lines[0].strip())
+    except Exception as e:
+        logger.debug(f"nvidia-smi failed: {e}")
+    return None
+
+
+def _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, n_gpu_layers):
+    """Estimate GPU VRAM usage in MiB for the given parameters.
+
+    Only layers on GPU (n_gpu_layers) consume VRAM for weights, KV cache,
+    and compute buffers. Layers on CPU don't contribute to VRAM usage.
+    """
+    _, n_layers, n_embd = _get_model_arch_meta(meta)
+    file_size_mib = os.path.getsize(model_path) / (1024 * 1024)
+    if n_gpu_layers <= 0:
+        return _VRAM_OVERHEAD_MIB
+    # Weights: proportional to n_gpu_layers / n_layers
+    weights_mib = file_size_mib * (n_gpu_layers / n_layers) if n_layers > 0 and n_gpu_layers < n_layers else file_size_mib
+    # KV cache: only for layers on GPU (proportional to n_gpu_layers / n_layers)
+    kv_cache_mib = 0
+    if n_layers and n_embd:
+        kv_bytes = _KV_CACHE_BYTES.get(cache_type, 2)
+        kv_cache_mib = (2 * n_gpu_layers * n_ctx * n_embd * kv_bytes * n_parallel) / (1024 * 1024)
+    # Compute buffers: proportional to weights on GPU
+    compute_mib = max(weights_mib * 0.12, 128)
+    return int(weights_mib + kv_cache_mib + compute_mib + _VRAM_OVERHEAD_MIB)
+
+
+def _compute_safe_n_gpu_layers(model_path, meta, n_ctx, cache_type, n_parallel, available_vram_mib, requested_n_gpu_layers):
+    """Binary-search for the max n_gpu_layers that fits in available VRAM (90% margin)."""
+    _, n_layers, _ = _get_model_arch_meta(meta)
+    if n_layers == 0:
+        return requested_n_gpu_layers
+    target_vram = int(available_vram_mib * 0.90)
+    if requested_n_gpu_layers < 0:
+        candidate = n_layers
+    elif requested_n_gpu_layers == 0:
+        candidate = 0
+    else:
+        candidate = min(requested_n_gpu_layers, n_layers)
+    estimated = _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, candidate)
+    if estimated <= target_vram:
+        logger.info(f"VRAM check passed: ~{estimated}MiB needed, ~{available_vram_mib}MiB available (n_gpu_layers={candidate})")
+        return requested_n_gpu_layers
+    lo, hi, best = 0, candidate, 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, mid) <= target_vram:
+            best, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    logger.warning(f"VRAM budgeting: n_gpu_layers={requested_n_gpu_layers}→{best} (~{estimated}MiB needed, ~{available_vram_mib}MiB available)")
+    return best
+
+
+def _write_ini_model_setting(backend_model, key, value):
+    """Write a setting to a model section in models.ini. No-op if already correct."""
+    ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+    if not os.path.exists(ini_path):
+        return
+    try:
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(ini_path)
+        if config.has_section(backend_model) and config[backend_model].get(key) == str(value):
+            return
+        if not config.has_section(backend_model):
+            config.add_section(backend_model)
+        config[backend_model][key] = str(value)
+        with open(ini_path, "w") as f:
+            config.write(f)
+        logger.info(f"Updated models.ini: [{backend_model}] {key} = {value}")
+    except Exception as e:
+        logger.warning(f"Failed to write {key}={value} to models.ini: {e}")
+
+
+def _read_ini_model_setting(backend_model, key, default=""):
+    """Read a setting for a model from models.ini, checking [model] then [*] defaults."""
+    ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+    if not os.path.exists(ini_path):
+        return default
+    try:
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(ini_path)
+        if config.has_section(backend_model) and key in config[backend_model]:
+            return config[backend_model][key]
+        if config.has_section("*") and key in config["*"]:
+            return config["*"][key]
+    except Exception as e:
+        logger.warning(f"Failed to read {key} from models.ini: {e}")
+    return default
+
+
 async def get_child_model_props(backend_model: str) -> dict:
     """Retrieve /props directly from the spawned llama-server child process container."""
     if os.getenv("PYTEST_CURRENT_TEST"):
@@ -2902,185 +3031,93 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
         except Exception as e:
             logger.warning(f"Failed to read n-gpu-layers preset from models.ini: {e}")
 
-        if MAX_LOADED_MODELS == 1:
-            for other in router_models:
-                other_id = other.get("id")
-                if (other_id != backend_model) and is_resident_status(router_entry_status(other)):
-                    # Wait for active requests on the model we are about to unload
-                    async with active_requests_lock:
-                        deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
-                        while active_requests.get(other_id, 0) > 0:
-                            remaining = deadline - asyncio.get_event_loop().time()
-                            if remaining <= 0:
+    if MAX_LOADED_MODELS == 1:
+        for other in router_models:
+            other_id = other.get("id")
+            if (other_id != backend_model) and is_resident_status(router_entry_status(other)):
+                # Wait for active requests on the model we are about to unload
+                async with active_requests_lock:
+                    deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
+                    while active_requests.get(other_id, 0) > 0:
+                        remaining = deadline - asyncio.get_event_loop().time()
+                        if remaining <= 0:
+                            logger.warning(
+                                f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
+                            )
+                            break
+                        logger.info(
+                            f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
+                        )
+                        try:
+                            await asyncio.wait_for(
+                                active_requests_lock.wait(), timeout=remaining
+                            )
+                        except asyncio.TimeoutError:
+                            if active_requests.get(other_id, 0) > 0:
                                 logger.warning(
                                     f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
                                 )
-                                break
-                            logger.info(
-                                f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
-                            )
-                            try:
-                                await asyncio.wait_for(
-                                    active_requests_lock.wait(), timeout=remaining
-                                )
-                            except asyncio.TimeoutError:
-                                if active_requests.get(other_id, 0) > 0:
-                                    logger.warning(
-                                        f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
-                                    )
-                                break
+                            break
 
-                    logger.info(
-                        f"Unloading backend model {other_id} before loading {backend_model}"
-                    )
-                    try:
-                        await post_router_model_action("unload", other_id)
-                        await record_model_unloaded_by_backend_id(other_id)
-                    except RouterManagementUnsupported:
-                        logger.warning(
-                            "Router unload endpoint unavailable; relying on router autoload behavior."
-                        )
-                        break
-                    except httpx.HTTPStatusError as exc:
-                        if is_ignorable_router_unload_error(
-                            exc
-                        ) or not await router_model_is_still_resident(other_id):
-                            logger.info(f"Router ignored unload for {other_id}: {exc}")
-                            await record_model_unloaded_by_backend_id(other_id)
-                            continue
-                        raise
-
-        # If already loading, wait transparently for it to finish loading
-        status = router_entry_status(entry)
-        if status == "loading":
-            logger.info(
-                f"Model {backend_model} is currently loading. Waiting for load to finish..."
-            )
-            for _ in range(120):
-                await asyncio.sleep(1.0)
+                logger.info(
+                    f"Unloading backend model {other_id} before loading {backend_model}"
+                )
                 try:
-                    resolved = await resolve_router_model(model_name, reload=True)
-                    entry = resolved["entry"]
-                    if router_entry_status(entry) == "loaded":
-                        logger.info(f"Model {backend_model} finished loading successfully.")
-                        status = "loaded"
-                        break
-                except Exception as poll_exc:
-                    logger.warning(f"Error polling model loading status: {poll_exc}")
-            else:
-                logger.warning(f"Model {backend_model} did not finish loading after 120s.")
-
-        # If already loaded, verify health and skip load entirely if healthy
-        if status == "loaded":
-            if await is_child_model_healthy(backend_model):
-                logger.info(
-                    f"Model {backend_model} already loaded (status=loaded) and active health check passed, proceeding."
-                )
-                mark_model_loaded(model_name)
-                await record_model_loaded(model_name)
-                return {
-                    "model_name": model_name,
-                    "backend_model": backend_model,
-                    "manifest_path": resolved["manifest_path"],
-                    "manifest": resolved["manifest"],
-                }
-            else:
-                logger.warning(
-                    f"Model {backend_model} is marked as loaded, but active health check failed! Triggering restart and reload recovery..."
-                )
-                await restart_llama_server()
-                if not await wait_for_llama_server_or_restart(timeout=60.0):
-                    raise HTTPException(
-                        status_code=502, detail="Failed to restore llama-server after child crash"
+                    await post_router_model_action("unload", other_id)
+                    await record_model_unloaded_by_backend_id(other_id)
+                except RouterManagementUnsupported:
+                    logger.warning(
+                        "Router unload endpoint unavailable; relying on router autoload behavior."
                     )
-                status = "unloaded"
+                    break
+                except httpx.HTTPStatusError as exc:
+                    if is_ignorable_router_unload_error(
+                        exc
+                    ) or not await router_model_is_still_resident(other_id):
+                        logger.info(f"Router ignored unload for {other_id}: {exc}")
+                        await record_model_unloaded_by_backend_id(other_id)
+                        continue
+                    raise
 
-        # Need to load — attempt load with optimized parameters
-        logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
-
-        # Optimization: Pass n_ctx and other flags to the load call if provided in options
-        load_payload = {"model": backend_model}
-        if options:
-            n_ctx = options.get("num_ctx") or options.get("n_ctx")
-            if n_ctx:
-                load_payload["n_ctx"] = int(n_ctx)
-                logger.info(f"Setting n_ctx={n_ctx} for model load.")
-
-        # Use configured n-gpu-layers preset
-        load_payload["n_gpu_layers"] = n_gpu_layers_preset
-        load_payload["use_mmap"] = True
-
-        # Resolve GGUF path and read metadata to dynamically determine capabilities without hardcoding
-        model_path = None
-        if entry and entry.get("path"):
-            model_path = entry.get("path")
-        elif backend_model:
-            bm_filename = (
-                backend_model if backend_model.endswith(".gguf") else (backend_model + ".gguf")
-            )
-            model_path = os.path.join(ROUTER_MODELS_DIR, bm_filename)
-
-        meta = None
-        if model_path and os.path.exists(model_path):
+    # If already loading, wait transparently for it to finish loading
+    status = router_entry_status(entry)
+    if status == "loading":
+        logger.info(
+            f"Model {backend_model} is currently loading. Waiting for load to finish..."
+        )
+        for _ in range(120):
+            await asyncio.sleep(1.0)
             try:
-                meta = _read_gguf_metadata(model_path)
-            except Exception as e:
-                logger.warning(f"Failed to read GGUF metadata at {model_path}: {e}")
-
-        if meta:
-            is_moe = _is_moe(meta)
-            flash_attn_supported = _supports_flash_attn(meta)
-            load_payload["flash_attn"] = flash_attn_supported
-
-            if is_moe and backend_model not in MTP_INCOMPATIBLE_MODELS:
-                load_payload["spec_type"] = "draft-mtp"
-                load_payload["spec_draft_n_max"] = 3
-                logger.info(
-                    f"Detected MoE model {backend_model} supporting MTP. Enabling speculative decoding."
-                )
-            else:
-                load_payload["spec_type"] = "none"
-                load_payload["spec_draft_n_max"] = 0
-                if is_moe:
-                    logger.info(
-                        f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
-                    )
-                else:
-                    logger.info(
-                        f"Detected dense model {backend_model}. Disabling speculative decoding."
-                    )
+                resolved = await resolve_router_model(model_name, reload=True)
+                entry = resolved["entry"]
+                if router_entry_status(entry) == "loaded":
+                    logger.info(f"Model {backend_model} finished loading successfully.")
+                    status = "loaded"
+                    break
+            except Exception as poll_exc:
+                logger.warning(f"Error polling model loading status: {poll_exc}")
         else:
-            # Fallback when GGUF file is not found (e.g. in unit tests)
-            load_payload["flash_attn"] = True
-            if backend_model in MTP_INCOMPATIBLE_MODELS:
-                load_payload["spec_type"] = "none"
-                load_payload["spec_draft_n_max"] = 0
-                logger.info(
-                    f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
-                )
-
-        if backend_model in SAFE_SETTINGS_MODELS:
-            load_payload["flash_attn"] = False
-            load_payload["n_ctx"] = 8192
-            logger.info(
-                f"Model {backend_model} is marked for safe settings. Disabling flash attention, capping n_ctx to 8192."
-            )
-
-        # Cap concurrent inference slots to 2 for large models to prevent multiple
-        # simultaneous full-context prefills from exhausting host DRAM. Small models
-        # can use auto (typically 4) since their KV cache footprint is minimal.
-        if is_model_over_9b(model_name, resolved.get("manifest")):
-            load_payload["n_parallel"] = 2
-            logger.info(
-                f"Model {backend_model} is >9B — capping n_parallel=2 to prevent concurrent prefill OOM while --kv-unified handles unified dynamic context."
-            )
-
-        try:
-            await post_router_model_action("load", load_payload)
-        except RouterManagementUnsupported:
             logger.warning(
-                "Router load endpoint unavailable; relying on request-time model autoload."
+                f"Model {backend_model} did not finish loading after 120s. "
+                "Force-unloading and retrying..."
             )
+            try:
+                await post_router_model_action("unload", backend_model)
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+            resolved = await resolve_router_model(model_name, reload=True)
+            entry = resolved["entry"]
+            backend_model = resolved["backend_model"]
+            status = router_entry_status(entry)
+
+    # If already loaded, verify health and skip load entirely if healthy
+    if status == "loaded":
+        if await is_child_model_healthy(backend_model):
+            logger.info(
+                f"Model {backend_model} already loaded (status=loaded) and active health check passed, proceeding."
+            )
+            mark_model_loaded(model_name)
             await record_model_loaded(model_name)
             return {
                 "model_name": model_name,
@@ -3088,255 +3125,173 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                 "manifest_path": resolved["manifest_path"],
                 "manifest": resolved["manifest"],
             }
-        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
-            # Skip changing settings for MoE models, but allow for dense models
-            is_moe = is_model_moe(backend_model, meta)
+        else:
+            logger.warning(
+                f"Model {backend_model} is marked as loaded, but active health check failed! Triggering restart and reload recovery..."
+            )
+            await restart_llama_server()
+            if not await wait_for_llama_server_or_restart(timeout=60.0):
+                raise HTTPException(
+                    status_code=502, detail="Failed to restore llama-server after child crash"
+                )
+            status = "unloaded"
+
+    # Need to load — attempt load with optimized parameters
+    logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
+
+    # Optimization: Pass n_ctx and other flags to the load call if provided in options
+    load_payload = {"model": backend_model}
+    if options:
+        n_ctx = options.get("num_ctx") or options.get("n_ctx")
+        if n_ctx:
+            load_payload["n_ctx"] = int(n_ctx)
+            logger.info(f"Setting n_ctx={n_ctx} for model load.")
+
+    # Use configured n-gpu-layers preset
+    load_payload["n_gpu_layers"] = n_gpu_layers_preset
+    load_payload["use_mmap"] = True
+
+    # Resolve GGUF path and read metadata to dynamically determine capabilities without hardcoding
+    model_path = None
+    if entry and entry.get("path"):
+        model_path = entry.get("path")
+    elif backend_model:
+        bm_filename = (
+            backend_model if backend_model.endswith(".gguf") else (backend_model + ".gguf")
+        )
+        model_path = os.path.join(ROUTER_MODELS_DIR, bm_filename)
+
+    meta = None
+    if model_path and os.path.exists(model_path):
+        try:
+            meta = _read_gguf_metadata(model_path)
+        except Exception as e:
+            logger.warning(f"Failed to read GGUF metadata at {model_path}: {e}")
+
+    if meta:
+        is_moe = _is_moe(meta)
+        flash_attn_supported = _supports_flash_attn(meta)
+        load_payload["flash_attn"] = flash_attn_supported
+
+        if is_moe and backend_model not in MTP_INCOMPATIBLE_MODELS:
+            load_payload["spec_type"] = "draft-mtp"
+            load_payload["spec_draft_n_max"] = 3
+            logger.info(
+                f"Detected MoE model {backend_model} supporting MTP. Enabling speculative decoding."
+            )
+        else:
+            load_payload["spec_type"] = "none"
+            load_payload["spec_draft_n_max"] = 0
             if is_moe:
-                logger.warning(
-                    f"Failed to load MoE model {backend_model} "
-                    f"with original settings: {exc}. Performing clean "
-                    "restart of llama-server and retrying..."
+                logger.info(
+                    f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
                 )
+            else:
+                logger.info(
+                    f"Detected dense model {backend_model}. Disabling speculative decoding."
+                )
+    else:
+        # Fallback when GGUF file is not found (e.g. in unit tests)
+        load_payload["flash_attn"] = True
+        if backend_model in MTP_INCOMPATIBLE_MODELS:
+            load_payload["spec_type"] = "none"
+            load_payload["spec_draft_n_max"] = 0
+            logger.info(
+                f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
+            )
+
+    if backend_model in SAFE_SETTINGS_MODELS:
+        load_payload["flash_attn"] = False
+        load_payload["n_ctx"] = 8192
+        logger.info(
+            f"Model {backend_model} is marked for safe settings. Disabling flash attention, capping n_ctx to 8192."
+        )
+
+    # Cap concurrent inference slots to 2 for large models to prevent multiple
+    # simultaneous full-context prefills from exhausting host DRAM. Small models
+    # can use auto (typically 4) since their KV cache footprint is minimal.
+    if is_model_over_9b(model_name, resolved.get("manifest")):
+        load_payload["n_parallel"] = 2
+        logger.info(
+            f"Model {backend_model} is >9B — capping n_parallel=2 to prevent concurrent prefill OOM while --kv-unified handles unified dynamic context."
+        )
+
+    # Proactive VRAM budgeting for dense models: if the model won't fit in GPU
+    # VRAM with the current preset, write a safe n_gpu_layers to models.ini and
+    # restart llama-server BEFORE attempting the load. This avoids the OOM crash
+    # + recovery cycle entirely. Metadata-driven (no hardcoded model names).
+    is_dense = meta is not None and not _is_moe(meta)
+    if is_dense and model_path and os.path.exists(model_path):
+        available_vram = await _get_available_vram_mib()
+        if available_vram is not None:
+            eff_ctx = int(load_payload.get("n_ctx") or _read_ini_model_setting(backend_model, "ctx-size", "32768"))
+            eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
+            safe_ngl = _compute_safe_n_gpu_layers(
+                model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
+            )
+            if safe_ngl != n_gpu_layers_preset:
+                _write_ini_model_setting(backend_model, "n-gpu-layers", str(safe_ngl))
+                logger.info("Restarting llama-server to pick up VRAM-safe n_gpu_layers preset...")
                 await restart_llama_server()
-                if await wait_for_llama_server_or_restart(timeout=60.0):
-                    # Re-resolve and retry load once with original settings
-                    resolved = await resolve_router_model(model_name, reload=True)
-                    backend_model = resolved["backend_model"]
-                    entry = resolved["entry"]
+                if not await wait_for_llama_server_or_restart(timeout=60.0):
+                    raise HTTPException(status_code=502, detail="Failed to restart llama-server for VRAM budgeting")
+                n_gpu_layers_preset = safe_ngl
 
-                    status = router_entry_status(entry)
-                    if status == "loading":
-                        logger.info(
-                            f"Model {backend_model} is loading after restart. Waiting for load to finish..."
-                        )
-                        for _ in range(120):
-                            await asyncio.sleep(1.0)
-                            try:
-                                resolved = await resolve_router_model(model_name, reload=True)
-                                entry = resolved["entry"]
-                                if router_entry_status(entry) == "loaded":
-                                    logger.info(
-                                        f"Model {backend_model} finished loading successfully."
-                                    )
-                                    status = "loaded"
-                                    break
-                            except Exception as poll_exc:
-                                logger.warning(f"Error polling model loading status: {poll_exc}")
-                        else:
-                            logger.warning(
-                                f"Model {backend_model} did not finish loading after 120s."
-                            )
+    try:
+        await post_router_model_action("load", load_payload)
+    except RouterManagementUnsupported:
+        logger.warning(
+            "Router load endpoint unavailable; relying on request-time model autoload."
+        )
+        await record_model_loaded(model_name)
+        return {
+            "model_name": model_name,
+            "backend_model": backend_model,
+            "manifest_path": resolved["manifest_path"],
+            "manifest": resolved["manifest"],
+        }
+    except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+        # Skip changing settings for MoE models, but allow for dense models
+        is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+        if is_moe:
+            logger.warning(
+                f"Failed to load MoE model {backend_model} "
+                f"with original settings: {exc}. Performing clean "
+                "restart of llama-server and retrying..."
+            )
+            await restart_llama_server()
+            if await wait_for_llama_server_or_restart(timeout=60.0):
+                # Re-resolve and retry load once with original settings
+                resolved = await resolve_router_model(model_name, reload=True)
+                backend_model = resolved["backend_model"]
+                entry = resolved["entry"]
 
-                    if status == "loaded":
-                        logger.info(
-                            f"Model {backend_model} successfully loaded on recovery restart."
-                        )
-                        mark_model_loaded(model_name)
-                        await record_model_loaded(model_name)
-                        return {
-                            "model_name": model_name,
-                            "backend_model": backend_model,
-                            "manifest_path": resolved["manifest_path"],
-                            "manifest": resolved["manifest"],
-                        }
-
-                    try:
-                        await post_router_model_action("load", load_payload)
-                        logger.info(
-                            f"Model {backend_model} successfully loaded after clean restart."
-                        )
-                        mark_model_loaded(model_name)
-                        await record_model_loaded(model_name)
-                        return {
-                            "model_name": model_name,
-                            "backend_model": backend_model,
-                            "manifest_path": resolved["manifest_path"],
-                            "manifest": resolved["manifest"],
-                        }
-                    except Exception as retry_exc:
-                        logger.error(
-                            f"Failed to load MoE model even after clean restart: {retry_exc}"
-                        )
-                        raise
-                raise
-
-            # Tier 1: Check if speculative decoding (MTP) was enabled and caused the crash
-            if load_payload.get("spec_type") != "none":
-                logger.warning(
-                    f"Failed to load model {backend_model} with default options: {exc}. "
-                    "Retrying without speculative decoding (MTP)..."
-                )
-                MTP_INCOMPATIBLE_MODELS.add(backend_model)
-                save_mtp_incompatible_models()
-
-                # Wait for llama-server to recover/restart
-                logger.info("Waiting for llama-server to restart...")
-                await asyncio.sleep(2.0)
-                if await wait_for_llama_server_or_restart(timeout=60.0):
-                    # Re-resolve router model to get updated status and entry
-                    resolved = await resolve_router_model(model_name, reload=True)
-                    backend_model = resolved["backend_model"]
-
-                    # Re-construct payload with MTP disabled (applying safe settings if registered)
-                    load_payload = {"model": backend_model}
-                    if options:
-                        n_ctx = options.get("num_ctx") or options.get("n_ctx")
-                        if n_ctx:
-                            load_payload["n_ctx"] = int(n_ctx)
-                    load_payload["n_gpu_layers"] = n_gpu_layers_preset
-                    load_payload["use_mmap"] = True
-                    load_payload["flash_attn"] = True
-                    load_payload["spec_type"] = "none"
-                    load_payload["spec_draft_n_max"] = 0
-
-                    if backend_model in SAFE_SETTINGS_MODELS:
-                        load_payload["flash_attn"] = False
-                        if "n_ctx" not in load_payload:
-                            load_payload["n_ctx"] = 8192
-
-                    logger.info(f"Retrying load of {backend_model} with spec_type='none'...")
-                    try:
-                        await post_router_model_action("load", load_payload)
-                        logger.info(
-                            f"Model {backend_model} loaded successfully after disabling speculative decoding."
-                        )
-                        mark_model_loaded(model_name)
-                        await record_model_loaded(model_name)
-                        return {
-                            "model_name": model_name,
-                            "backend_model": backend_model,
-                            "manifest_path": resolved["manifest_path"],
-                            "manifest": resolved["manifest"],
-                        }
-                    except (httpx.RequestError, httpx.HTTPStatusError) as retry_exc:
-                        # Escalation Tier 2: Failed even without MTP -> Apply Safe Settings!
-                        is_moe = is_model_moe(backend_model, meta)
-                        if is_moe:
-                            logger.info(
-                                f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
-                            )
-                            raise
-                        if backend_model not in SAFE_SETTINGS_MODELS:
-                            logger.warning(
-                                f"Failed to load model {backend_model} even without speculative decoding: {retry_exc}. "
-                                "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
-                            )
-                            SAFE_SETTINGS_MODELS.add(backend_model)
-                            save_safe_settings_models()
-
-                            # Wait for llama-server to recover/restart
-                            logger.info("Waiting for llama-server to restart...")
-                            await asyncio.sleep(2.0)
-                            if await wait_for_llama_server_or_restart(timeout=60.0):
-                                resolved = await resolve_router_model(model_name, reload=True)
-                                backend_model = resolved["backend_model"]
-
-                                load_payload = {"model": backend_model}
-                                if options:
-                                    n_ctx = options.get("num_ctx") or options.get("n_ctx")
-                                    if n_ctx:
-                                        load_payload["n_ctx"] = int(n_ctx)
-                                load_payload["n_gpu_layers"] = n_gpu_layers_preset
-                                load_payload["use_mmap"] = True
-                                load_payload["flash_attn"] = False
-                                if "n_ctx" not in load_payload:
-                                    load_payload["n_ctx"] = 8192
-                                load_payload["spec_type"] = "none"
-                                load_payload["spec_draft_n_max"] = 0
-
+                status = router_entry_status(entry)
+                if status == "loading":
+                    logger.info(
+                        f"Model {backend_model} is loading after restart. Waiting for load to finish..."
+                    )
+                    for _ in range(120):
+                        await asyncio.sleep(1.0)
+                        try:
+                            resolved = await resolve_router_model(model_name, reload=True)
+                            entry = resolved["entry"]
+                            if router_entry_status(entry) == "loaded":
                                 logger.info(
-                                    f"Retrying load of {backend_model} with Safe Settings..."
+                                    f"Model {backend_model} finished loading successfully."
                                 )
-                                try:
-                                    await post_router_model_action("load", load_payload)
-                                    logger.info(
-                                        f"Model {backend_model} loaded successfully with Safe Settings."
-                                    )
-                                    mark_model_loaded(model_name)
-                                    await record_model_loaded(model_name)
-                                    return {
-                                        "model_name": model_name,
-                                        "backend_model": backend_model,
-                                        "manifest_path": resolved["manifest_path"],
-                                        "manifest": resolved["manifest"],
-                                    }
-                                except Exception as safe_exc:
-                                    logger.error(
-                                        f"Failed to load model even with Safe Settings: {safe_exc}"
-                                    )
-                                    raise
-                        raise
-                else:
-                    logger.error("llama-server did not recover/restart in time.")
-                    raise
-
-            # Tier 2: If we already disabled MTP but load failed, escalate directly to Safe Settings
-            elif backend_model not in SAFE_SETTINGS_MODELS:
-                is_moe = is_model_moe(backend_model, meta)
-                if is_moe:
-                    logger.info(
-                        f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
-                    )
-                    raise
-                logger.warning(
-                    f"Failed to load model {backend_model} under spec_type='none': {exc}. "
-                    "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
-                )
-                SAFE_SETTINGS_MODELS.add(backend_model)
-                save_safe_settings_models()
-
-                # Wait for llama-server to recover/restart
-                logger.info("Waiting for llama-server to restart...")
-                await asyncio.sleep(2.0)
-                if await wait_for_llama_server_or_restart(timeout=60.0):
-                    resolved = await resolve_router_model(model_name, reload=True)
-                    backend_model = resolved["backend_model"]
-
-                    load_payload = {"model": backend_model}
-                    if options:
-                        n_ctx = options.get("num_ctx") or options.get("n_ctx")
-                        if n_ctx:
-                            load_payload["n_ctx"] = int(n_ctx)
-                    load_payload["n_gpu_layers"] = n_gpu_layers_preset
-                    load_payload["use_mmap"] = True
-                    load_payload["flash_attn"] = False
-                    if "n_ctx" not in load_payload:
-                        load_payload["n_ctx"] = 8192
-                    load_payload["spec_type"] = "none"
-                    load_payload["spec_draft_n_max"] = 0
-
-                    logger.info(f"Retrying load of {backend_model} with Safe Settings...")
-                    try:
-                        await post_router_model_action("load", load_payload)
-                        logger.info(
-                            f"Model {backend_model} loaded successfully with Safe Settings."
+                                status = "loaded"
+                                break
+                        except Exception as poll_exc:
+                            logger.warning(f"Error polling model loading status: {poll_exc}")
+                    else:
+                        logger.warning(
+                            f"Model {backend_model} did not finish loading after 120s."
                         )
-                        mark_model_loaded(model_name)
-                        await record_model_loaded(model_name)
-                        return {
-                            "model_name": model_name,
-                            "backend_model": backend_model,
-                            "manifest_path": resolved["manifest_path"],
-                            "manifest": resolved["manifest"],
-                        }
-                    except Exception as safe_exc:
-                        logger.error(f"Failed to load model even with Safe Settings: {safe_exc}")
-                        raise
 
-            # Harmful errors: if it's HTTPStatusError 400 "already running", ignore it
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
-                try:
-                    payload = exc.response.json()
-                    msg = (
-                        str(payload.get("error", {}).get("message", ""))
-                        if isinstance(payload, dict)
-                        else ""
-                    )
-                except Exception:
-                    msg = exc.response.text
-                if "already running" in msg.lower() or "model is already running" in msg.lower():
+                if status == "loaded":
                     logger.info(
-                        f"Model {backend_model} already loaded (detected via 400), proceeding."
+                        f"Model {backend_model} successfully loaded on recovery restart."
                     )
                     mark_model_loaded(model_name)
                     await record_model_loaded(model_name)
@@ -3346,88 +3301,397 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                         "manifest_path": resolved["manifest_path"],
                         "manifest": resolved["manifest"],
                     }
+
+                try:
+                    await post_router_model_action("load", load_payload)
+                    logger.info(
+                        f"Model {backend_model} successfully loaded after clean restart."
+                    )
+                    mark_model_loaded(model_name)
+                    await record_model_loaded(model_name)
+                    return {
+                        "model_name": model_name,
+                        "backend_model": backend_model,
+                        "manifest_path": resolved["manifest_path"],
+                        "manifest": resolved["manifest"],
+                    }
+                except Exception as retry_exc:
+                    logger.error(
+                        f"Failed to load MoE model even after clean restart: {retry_exc}"
+                    )
+                    raise
             raise
 
-        # Load succeeded — check for OOM or startup crash (post-load verification)
-        preset_info = get_model_preset_info(backend_model)
-        logger.info(
-            f"Model {backend_model} loaded successfully{preset_info}. Checking for OOM or startup crash..."
-        )
-        await asyncio.sleep(1.0)
-        oom_detected = False
-        crash_detected = False
-
-        # Check health for all models to detect startup crashes
-        if not await is_child_model_healthy(backend_model):
-            crash_detected = True
+        # Tier 1: Check if speculative decoding (MTP) was enabled and caused the crash
+        if load_payload.get("spec_type") != "none":
             logger.warning(
-                f"Crash detected: model {backend_model} is not "
-                "running or failed after load. Triggering recovery."
+                f"Failed to load model {backend_model} with default options: {exc}. "
+                "Retrying without speculative decoding (MTP)..."
             )
-        elif not is_model_moe(backend_model, meta):
-            # For <= 9B models, if it's running, we also check if it OOM'ed to CPU (n_gpu_layers=0)
-            try:
-                if client_httpx is None:
-                    logger.debug("client_httpx not initialized; skipping OOM check")
-                    oom_detected = False
-                else:
-                    # Query the child process's props directly inside the llama-server container
-                    props = await get_child_model_props(backend_model)
-                    actual_gpu_layers = props.get("n_gpu_layers", -1)
-                    if actual_gpu_layers == 0:
-                        oom_detected = True
-                        logger.warning(
-                            f"OOM detected: model {backend_model} loaded with n_gpu_layers=0 "
-                            f"(expected -1). Triggering OOM recovery."
-                        )
-            except Exception:
-                logger.exception("OOM detection failed")
-                oom_detected = False
+            MTP_INCOMPATIBLE_MODELS.add(backend_model)
+            save_mtp_incompatible_models()
 
-        if oom_detected or crash_detected:
-            try:
-                logger.info(
-                    f"Recovery: unloading {backend_model} and "
-                    "restarting llama-server to release GPU memory..."
-                )
-                try:
-                    await post_router_model_action("unload", backend_model)
-                except Exception:
-                    pass
-
-                # Force restart of llama-server to guarantee GPU memory release
-                await restart_llama_server()
-
-                logger.info("Waiting for llama-server to become responsive after restart...")
-                if not await wait_for_llama_server_or_restart(timeout=60.0):
-                    raise RuntimeError("llama-server did not recover after OOM/crash unload.")
-
-                # Re-resolve and retry loading
+            # Wait for llama-server to recover/restart
+            logger.info("Waiting for llama-server to restart...")
+            await asyncio.sleep(2.0)
+            if await wait_for_llama_server_or_restart(timeout=60.0):
+                # Re-resolve router model to get updated status and entry
                 resolved = await resolve_router_model(model_name, reload=True)
                 backend_model = resolved["backend_model"]
 
-                # Skip changing settings for MoE models, but allow for dense models
-                is_moe = is_model_moe(backend_model, meta)
-                if is_moe:
+                # Re-construct payload with MTP disabled (applying safe settings if registered)
+                load_payload = {"model": backend_model}
+                if options:
+                    n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                    if n_ctx:
+                        load_payload["n_ctx"] = int(n_ctx)
+                load_payload["n_gpu_layers"] = n_gpu_layers_preset
+                load_payload["use_mmap"] = True
+                load_payload["flash_attn"] = True
+                load_payload["spec_type"] = "none"
+                load_payload["spec_draft_n_max"] = 0
+
+                if backend_model in SAFE_SETTINGS_MODELS:
+                    load_payload["flash_attn"] = False
+                    if "n_ctx" not in load_payload:
+                        load_payload["n_ctx"] = 8192
+
+                logger.info(f"Retrying load of {backend_model} with spec_type='none'...")
+                try:
+                    await post_router_model_action("load", load_payload)
                     logger.info(
-                        f"Retrying load of MoE model {backend_model} with original settings..."
+                        f"Model {backend_model} loaded successfully after disabling speculative decoding."
+                    )
+                    mark_model_loaded(model_name)
+                    await record_model_loaded(model_name)
+                    return {
+                        "model_name": model_name,
+                        "backend_model": backend_model,
+                        "manifest_path": resolved["manifest_path"],
+                        "manifest": resolved["manifest"],
+                    }
+                except (httpx.RequestError, httpx.HTTPStatusError) as retry_exc:
+                    # Escalation Tier 2: Failed even without MTP -> Apply Safe Settings!
+                    is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+                    if is_moe:
+                        logger.info(
+                            f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
+                        )
+                        raise
+                    if backend_model not in SAFE_SETTINGS_MODELS:
+                        logger.warning(
+                            f"Failed to load model {backend_model} even without speculative decoding: {retry_exc}. "
+                            "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
+                        )
+                        SAFE_SETTINGS_MODELS.add(backend_model)
+                        save_safe_settings_models()
+
+                        # Wait for llama-server to recover/restart
+                        logger.info("Waiting for llama-server to restart...")
+                        await asyncio.sleep(2.0)
+                        if await wait_for_llama_server_or_restart(timeout=60.0):
+                            resolved = await resolve_router_model(model_name, reload=True)
+                            backend_model = resolved["backend_model"]
+
+                            load_payload = {"model": backend_model}
+                            if options:
+                                n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                                if n_ctx:
+                                    load_payload["n_ctx"] = int(n_ctx)
+                            load_payload["n_gpu_layers"] = n_gpu_layers_preset
+                            load_payload["use_mmap"] = True
+                            load_payload["flash_attn"] = False
+                            if "n_ctx" not in load_payload:
+                                load_payload["n_ctx"] = 8192
+                            load_payload["spec_type"] = "none"
+                            load_payload["spec_draft_n_max"] = 0
+
+                            logger.info(
+                                f"Retrying load of {backend_model} with Safe Settings..."
+                            )
+                            try:
+                                await post_router_model_action("load", load_payload)
+                                logger.info(
+                                    f"Model {backend_model} loaded successfully with Safe Settings."
+                                )
+                                mark_model_loaded(model_name)
+                                await record_model_loaded(model_name)
+                                return {
+                                    "model_name": model_name,
+                                    "backend_model": backend_model,
+                                    "manifest_path": resolved["manifest_path"],
+                                    "manifest": resolved["manifest"],
+                                }
+                            except Exception as safe_exc:
+                                logger.error(
+                                    f"Failed to load model even with Safe Settings: {safe_exc}"
+                                )
+                                raise
+                    raise
+            else:
+                logger.error("llama-server did not recover/restart in time.")
+                raise
+
+        # Tier 2: If we already disabled MTP but load failed, escalate directly to Safe Settings
+        elif backend_model not in SAFE_SETTINGS_MODELS:
+            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+            if is_moe:
+                logger.info(
+                    f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
+                )
+                raise
+            logger.warning(
+                f"Failed to load model {backend_model} under spec_type='none': {exc}. "
+                "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
+            )
+            SAFE_SETTINGS_MODELS.add(backend_model)
+            save_safe_settings_models()
+
+            # Wait for llama-server to recover/restart
+            logger.info("Waiting for llama-server to restart...")
+            await asyncio.sleep(2.0)
+            if await wait_for_llama_server_or_restart(timeout=60.0):
+                resolved = await resolve_router_model(model_name, reload=True)
+                backend_model = resolved["backend_model"]
+
+                load_payload = {"model": backend_model}
+                if options:
+                    n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                    if n_ctx:
+                        load_payload["n_ctx"] = int(n_ctx)
+                load_payload["n_gpu_layers"] = n_gpu_layers_preset
+                load_payload["use_mmap"] = True
+                load_payload["flash_attn"] = False
+                if "n_ctx" not in load_payload:
+                    load_payload["n_ctx"] = 8192
+                load_payload["spec_type"] = "none"
+                load_payload["spec_draft_n_max"] = 0
+
+                logger.info(f"Retrying load of {backend_model} with Safe Settings...")
+                try:
+                    await post_router_model_action("load", load_payload)
+                    logger.info(
+                        f"Model {backend_model} loaded successfully with Safe Settings."
+                    )
+                    mark_model_loaded(model_name)
+                    await record_model_loaded(model_name)
+                    return {
+                        "model_name": model_name,
+                        "backend_model": backend_model,
+                        "manifest_path": resolved["manifest_path"],
+                        "manifest": resolved["manifest"],
+                    }
+                except Exception as safe_exc:
+                    logger.error(f"Failed to load model even with Safe Settings: {safe_exc}")
+                    raise
+
+        # Harmful errors: if it's HTTPStatusError 400 "already running", ignore it
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
+            try:
+                payload = exc.response.json()
+                msg = (
+                    str(payload.get("error", {}).get("message", ""))
+                    if isinstance(payload, dict)
+                    else ""
+                )
+            except Exception:
+                msg = exc.response.text
+            if "already running" in msg.lower() or "model is already running" in msg.lower():
+                logger.info(
+                    f"Model {backend_model} already loaded (detected via 400), proceeding."
+                )
+                mark_model_loaded(model_name)
+                await record_model_loaded(model_name)
+                return {
+                    "model_name": model_name,
+                    "backend_model": backend_model,
+                    "manifest_path": resolved["manifest_path"],
+                    "manifest": resolved["manifest"],
+                }
+        raise
+
+    # Load succeeded — check for OOM or startup crash (post-load verification)
+    preset_info = get_model_preset_info(backend_model)
+    logger.info(
+        f"Model {backend_model} loaded successfully{preset_info}. Checking for OOM or startup crash..."
+    )
+    await asyncio.sleep(1.0)
+    oom_detected = False
+    crash_detected = False
+
+    # Check health for all models to detect startup crashes
+    if not await is_child_model_healthy(backend_model):
+        crash_detected = True
+        logger.warning(
+            f"Crash detected: model {backend_model} is not "
+            "running or failed after load. Triggering recovery."
+        )
+    elif not is_model_moe(backend_model, meta):
+        # For <= 9B models, if it's running, we also check if it OOM'ed to CPU (n_gpu_layers=0)
+        try:
+            if client_httpx is None:
+                logger.debug("client_httpx not initialized; skipping OOM check")
+                oom_detected = False
+            else:
+                # Query the child process's props directly inside the llama-server container
+                props = await get_child_model_props(backend_model)
+                actual_gpu_layers = props.get("n_gpu_layers", -1)
+                if actual_gpu_layers == 0:
+                    oom_detected = True
+                    logger.warning(
+                        f"OOM detected: model {backend_model} loaded with n_gpu_layers=0 "
+                        f"(expected -1). Triggering OOM recovery."
+                    )
+        except Exception:
+            logger.exception("OOM detection failed")
+            oom_detected = False
+
+    if oom_detected or crash_detected:
+        try:
+            logger.info(
+                f"Recovery: unloading {backend_model} and "
+                "restarting llama-server to release GPU memory..."
+            )
+            try:
+                await post_router_model_action("unload", backend_model)
+            except Exception:
+                pass
+
+            # Before restarting, write VRAM-safe n_gpu_layers to models.ini.
+            # The router only reads n_gpu_layers from the INI at startup, so
+            # we must write the corrected value BEFORE the restart for it to
+            # take effect. Use metadata-driven VRAM budgeting (no hardcoding).
+            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+            if not is_moe and model_path and os.path.exists(model_path) and meta:
+                available_vram = await _get_available_vram_mib()
+                if available_vram is not None:
+                    eff_ctx = int(_read_ini_model_setting(backend_model, "ctx-size", "32768"))
+                    eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
+                    safe_ngl = _compute_safe_n_gpu_layers(
+                        model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
+                    )
+                    if safe_ngl != n_gpu_layers_preset:
+                        _write_ini_model_setting(backend_model, "n-gpu-layers", str(safe_ngl))
+
+            # Force restart of llama-server to guarantee GPU memory release
+            # and pick up any INI overrides written above
+            await restart_llama_server()
+
+            logger.info("Waiting for llama-server to become responsive after restart...")
+            if not await wait_for_llama_server_or_restart(timeout=60.0):
+                raise RuntimeError("llama-server did not recover after OOM/crash unload.")
+
+            # Re-resolve and retry loading
+            resolved = await resolve_router_model(model_name, reload=True)
+            backend_model = resolved["backend_model"]
+
+            # Skip changing settings for MoE models, but allow for dense models
+            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+            if is_moe:
+                logger.info(
+                    f"Retrying load of MoE model {backend_model} with original settings..."
+                )
+                load_payload = {"model": backend_model}
+                if options:
+                    n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                    if n_ctx:
+                        load_payload["n_ctx"] = int(n_ctx)
+                await post_router_model_action("load", load_payload)
+                logger.info(
+                    f"Model {backend_model} successfully loaded "
+                    "with original settings after clean restart."
+                )
+            else:
+                # Tiered recovery/escalation for <= 9B models
+                if oom_detected:
+                    # OOM recovery: cap n_gpu_layers=0 immediately
+                    logger.warning(
+                        f"Model {backend_model} OOM'ed. Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
                     )
                     load_payload = {"model": backend_model}
                     if options:
                         n_ctx = options.get("num_ctx") or options.get("n_ctx")
                         if n_ctx:
                             load_payload["n_ctx"] = int(n_ctx)
+                    load_payload["n_gpu_layers"] = 0
+                    load_payload["n_thread"] = 8
+                    load_payload["n_batch"] = 256
+                    load_payload["n_ubatch"] = 512
+                    load_payload["use_mmap"] = True
+                    load_payload["flash_attn"] = False
+                    load_payload["spec_type"] = "none"
+                    load_payload["spec_draft_n_max"] = 0
+
+                    logger.info(f"Retrying load of {backend_model} with OOM-safe settings...")
                     await post_router_model_action("load", load_payload)
                     logger.info(
-                        f"Model {backend_model} successfully loaded "
-                        "with original settings after clean restart."
+                        f"Model {backend_model} loaded successfully with OOM-safe settings."
                     )
                 else:
-                    # Tiered recovery/escalation for <= 9B models
-                    if oom_detected:
-                        # OOM recovery: cap n_gpu_layers=0 immediately
+                    # crash_detected: Check if speculative decoding (MTP) was active and caused the crash
+                    if load_payload.get("spec_type") != "none":
                         logger.warning(
-                            f"Model {backend_model} OOM'ed. Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
+                            f"Model {backend_model} failed load with MTP enabled. "
+                            "Retrying without speculative decoding (MTP)..."
+                        )
+                        MTP_INCOMPATIBLE_MODELS.add(backend_model)
+                        save_mtp_incompatible_models()
+
+                        load_payload = {"model": backend_model}
+                        if options:
+                            n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                            if n_ctx:
+                                load_payload["n_ctx"] = int(n_ctx)
+                        load_payload["n_gpu_layers"] = n_gpu_layers_preset
+                        load_payload["use_mmap"] = True
+                        load_payload["flash_attn"] = True
+                        load_payload["spec_type"] = "none"
+                        load_payload["spec_draft_n_max"] = 0
+
+                        if backend_model in SAFE_SETTINGS_MODELS:
+                            load_payload["flash_attn"] = False
+                            if "n_ctx" not in load_payload:
+                                load_payload["n_ctx"] = 8192
+
+                        logger.info(
+                            f"Retrying load of {backend_model} with spec_type='none'..."
+                        )
+                        await post_router_model_action("load", load_payload)
+                        logger.info(
+                            f"Model {backend_model} loaded successfully after disabling speculative decoding."
+                        )
+                    # If MTP is already disabled, check if we can escalate to Safe Settings
+                    elif backend_model not in SAFE_SETTINGS_MODELS:
+                        logger.warning(
+                            f"Failed to load model {backend_model} even without speculative decoding. "
+                            "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
+                        )
+                        SAFE_SETTINGS_MODELS.add(backend_model)
+                        save_safe_settings_models()
+
+                        load_payload = {"model": backend_model}
+                        if options:
+                            n_ctx = options.get("num_ctx") or options.get("n_ctx")
+                            if n_ctx:
+                                load_payload["n_ctx"] = int(n_ctx)
+                        load_payload["n_gpu_layers"] = n_gpu_layers_preset
+                        load_payload["use_mmap"] = True
+                        load_payload["flash_attn"] = False
+                        if "n_ctx" not in load_payload:
+                            load_payload["n_ctx"] = 8192
+                        load_payload["spec_type"] = "none"
+                        load_payload["spec_draft_n_max"] = 0
+
+                        logger.info(f"Retrying load of {backend_model} with Safe Settings...")
+                        await post_router_model_action("load", load_payload)
+                        logger.info(
+                            f"Model {backend_model} loaded successfully with Safe Settings."
+                        )
+                    # If already using Safe Settings, fall back to OOM-safe settings (n_gpu_layers=0)
+                    else:
+                        logger.warning(
+                            f"Model {backend_model} failed even with Safe Settings. "
+                            "Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
                         )
                         load_payload = {"model": backend_model}
                         if options:
@@ -3443,111 +3707,16 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                         load_payload["spec_type"] = "none"
                         load_payload["spec_draft_n_max"] = 0
 
-                        logger.info(f"Retrying load of {backend_model} with OOM-safe settings...")
+                        logger.info(
+                            f"Retrying load of {backend_model} with OOM-safe settings..."
+                        )
                         await post_router_model_action("load", load_payload)
                         logger.info(
                             f"Model {backend_model} loaded successfully with OOM-safe settings."
                         )
-                    else:
-                        # crash_detected: Check if speculative decoding (MTP) was active and caused the crash
-                        if load_payload.get("spec_type") != "none":
-                            logger.warning(
-                                f"Model {backend_model} failed load with MTP enabled. "
-                                "Retrying without speculative decoding (MTP)..."
-                            )
-                            MTP_INCOMPATIBLE_MODELS.add(backend_model)
-                            save_mtp_incompatible_models()
-
-                            load_payload = {"model": backend_model}
-                            if options:
-                                n_ctx = options.get("num_ctx") or options.get("n_ctx")
-                                if n_ctx:
-                                    load_payload["n_ctx"] = int(n_ctx)
-                            load_payload["n_gpu_layers"] = n_gpu_layers_preset
-                            load_payload["use_mmap"] = True
-                            load_payload["flash_attn"] = True
-                            load_payload["spec_type"] = "none"
-                            load_payload["spec_draft_n_max"] = 0
-
-                            if backend_model in SAFE_SETTINGS_MODELS:
-                                load_payload["flash_attn"] = False
-                                if "n_ctx" not in load_payload:
-                                    load_payload["n_ctx"] = 8192
-
-                            logger.info(
-                                f"Retrying load of {backend_model} with spec_type='none'..."
-                            )
-                            await post_router_model_action("load", load_payload)
-                            logger.info(
-                                f"Model {backend_model} loaded successfully after disabling speculative decoding."
-                            )
-                        # If MTP is already disabled, check if we can escalate to Safe Settings
-                        elif backend_model not in SAFE_SETTINGS_MODELS:
-                            logger.warning(
-                                f"Failed to load model {backend_model} even without speculative decoding. "
-                                "Escalating to Safe Settings (disabling flash attention, capping n_ctx to 8192)..."
-                            )
-                            SAFE_SETTINGS_MODELS.add(backend_model)
-                            save_safe_settings_models()
-
-                            load_payload = {"model": backend_model}
-                            if options:
-                                n_ctx = options.get("num_ctx") or options.get("n_ctx")
-                                if n_ctx:
-                                    load_payload["n_ctx"] = int(n_ctx)
-                            load_payload["n_gpu_layers"] = n_gpu_layers_preset
-                            load_payload["use_mmap"] = True
-                            load_payload["flash_attn"] = False
-                            if "n_ctx" not in load_payload:
-                                load_payload["n_ctx"] = 8192
-                            load_payload["spec_type"] = "none"
-                            load_payload["spec_draft_n_max"] = 0
-
-                            logger.info(f"Retrying load of {backend_model} with Safe Settings...")
-                            await post_router_model_action("load", load_payload)
-                            logger.info(
-                                f"Model {backend_model} loaded successfully with Safe Settings."
-                            )
-                        # If already using Safe Settings, fall back to OOM-safe settings (n_gpu_layers=0)
-                        else:
-                            logger.warning(
-                                f"Model {backend_model} failed even with Safe Settings. "
-                                "Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
-                            )
-                            load_payload = {"model": backend_model}
-                            if options:
-                                n_ctx = options.get("num_ctx") or options.get("n_ctx")
-                                if n_ctx:
-                                    load_payload["n_ctx"] = int(n_ctx)
-                            load_payload["n_gpu_layers"] = 0
-                            load_payload["n_thread"] = 8
-                            load_payload["n_batch"] = 256
-                            load_payload["n_ubatch"] = 512
-                            load_payload["use_mmap"] = True
-                            load_payload["flash_attn"] = False
-                            load_payload["spec_type"] = "none"
-                            load_payload["spec_draft_n_max"] = 0
-
-                            logger.info(
-                                f"Retrying load of {backend_model} with OOM-safe settings..."
-                            )
-                            await post_router_model_action("load", load_payload)
-                            logger.info(
-                                f"Model {backend_model} loaded successfully with OOM-safe settings."
-                            )
-            except Exception as recovery_err:
-                logger.error(f"Recovery failed for {model_name}: {recovery_err}. Raising.")
-                raise
-            await record_model_loaded(model_name)
-            return {
-                "model_name": model_name,
-                "backend_model": backend_model,
-                "manifest_path": resolved["manifest_path"],
-                "manifest": resolved["manifest"],
-            }
-
-        # Mark as loaded on successful load
-        mark_model_loaded(model_name)
+        except Exception as recovery_err:
+            logger.error(f"Recovery failed for {model_name}: {recovery_err}. Raising.")
+            raise
         await record_model_loaded(model_name)
         return {
             "model_name": model_name,
@@ -3555,6 +3724,16 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
             "manifest_path": resolved["manifest_path"],
             "manifest": resolved["manifest"],
         }
+
+    # Mark as loaded on successful load
+    mark_model_loaded(model_name)
+    await record_model_loaded(model_name)
+    return {
+        "model_name": model_name,
+        "backend_model": backend_model,
+        "manifest_path": resolved["manifest_path"],
+        "manifest": resolved["manifest"],
+    }
 
 
 async def wait_for_slot(timeout: float = 120.0) -> bool:
