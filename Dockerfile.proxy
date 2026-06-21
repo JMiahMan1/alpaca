@@ -4,4 +4,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends docker-cli curl
 RUN pip install fastapi uvicorn httpx
 COPY alpaca-proxy.py .
 COPY alpaca-puller.py .
+COPY benchmark-configs.py .
 CMD ["python", "alpaca-proxy.py"]

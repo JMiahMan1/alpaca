@@ -57,7 +57,11 @@ services:
       - ./.alpaca-router:/router-models
       - ./.slots-cache:/slots-cache
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./alpaca-proxy.py:/app/alpaca-proxy.py:ro
+      - ./alpaca-puller.py:/app/alpaca-puller.py:ro
+      - ./benchmark-configs.py:/app/benchmark-configs.py:ro
     environment:
+      MODELS_DIR: /models
       ROUTER_MODELS_DIR: /router-models
       SLOTS_CACHE_DIR: /slots-cache
     extra_hosts:
