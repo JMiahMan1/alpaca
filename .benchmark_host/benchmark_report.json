@@ -1,0 +1,850 @@
+{
+  "generated_at": "2026-06-20T21:39:42.056987",
+  "host": "http://localhost:11434",
+  "models_tested": 7,
+  "profiles": [
+    {
+      "model": "qwen3:8b",
+      "benchmarked_at": "2026-06-20T21:29:45.198175",
+      "host": "http://localhost:11434",
+      "summary": {
+        "tests_run": 12,
+        "tests_passed": 12,
+        "tests_failed": 0,
+        "avg_tokens_per_sec": 47.97,
+        "max_tokens_per_sec": 49.82,
+        "min_tokens_per_sec": 47.46,
+        "avg_ttft_ms": 42.7,
+        "min_ttft_ms": 32.0,
+        "max_ttft_ms": 93.7
+      },
+      "by_category": {
+        "performance": {
+          "avg_tokens_per_sec": 48.87
+        },
+        "coding": {
+          "avg_tokens_per_sec": 47.7
+        },
+        "reasoning": {
+          "avg_tokens_per_sec": 47.63
+        },
+        "instruction": {
+          "avg_tokens_per_sec": 47.94
+        },
+        "creative": {
+          "avg_tokens_per_sec": 47.78
+        }
+      },
+      "tests": [
+        {
+          "id": "ttft_short",
+          "label": "TTFT - Short prompt",
+          "category": "performance",
+          "tokens_per_sec": 49.82,
+          "ttft_ms": 33.0,
+          "tokens_generated": 20,
+          "total_time_s": 0.59,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "ttft_medium",
+          "label": "TTFT - Medium prompt",
+          "category": "performance",
+          "tokens_per_sec": 47.91,
+          "ttft_ms": 93.7,
+          "tokens_generated": 150,
+          "total_time_s": 3.38,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_python",
+          "label": "Coding - Python (memoized fibonacci)",
+          "category": "coding",
+          "tokens_per_sec": 47.54,
+          "ttft_ms": 33.5,
+          "tokens_generated": 300,
+          "total_time_s": 6.5,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_sql",
+          "label": "Coding - SQL (CTE query)",
+          "category": "coding",
+          "tokens_per_sec": 47.75,
+          "ttft_ms": 38.5,
+          "tokens_generated": 200,
+          "total_time_s": 4.4,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_debug",
+          "label": "Coding - Debug (find the bug)",
+          "category": "coding",
+          "tokens_per_sec": 47.8,
+          "ttft_ms": 37.0,
+          "tokens_generated": 150,
+          "total_time_s": 3.34,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_logic",
+          "label": "Reasoning - Logic puzzle (3 boxes)",
+          "category": "reasoning",
+          "tokens_per_sec": 47.46,
+          "ttft_ms": 37.8,
+          "tokens_generated": 300,
+          "total_time_s": 6.52,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_math",
+          "label": "Reasoning - Math word problem",
+          "category": "reasoning",
+          "tokens_per_sec": 47.8,
+          "ttft_ms": 37.8,
+          "tokens_generated": 200,
+          "total_time_s": 4.39,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_json",
+          "label": "Instruction - JSON extraction",
+          "category": "instruction",
+          "tokens_per_sec": 48.08,
+          "ttft_ms": 37.4,
+          "tokens_generated": 80,
+          "total_time_s": 1.86,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_rewrite",
+          "label": "Instruction - Formal rewrite",
+          "category": "instruction",
+          "tokens_per_sec": 47.84,
+          "ttft_ms": 33.5,
+          "tokens_generated": 120,
+          "total_time_s": 2.7,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_system",
+          "label": "Instruction - System prompt adherence",
+          "category": "instruction",
+          "tokens_per_sec": 47.91,
+          "ttft_ms": 52.1,
+          "tokens_generated": 100,
+          "total_time_s": 2.3,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "creative_story",
+          "label": "Creative - Sci-fi story opening",
+          "category": "creative",
+          "tokens_per_sec": 47.78,
+          "ttft_ms": 32.0,
+          "tokens_generated": 150,
+          "total_time_s": 3.34,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "summarization",
+          "label": "Instruction - Summarization",
+          "category": "instruction",
+          "tokens_per_sec": 47.93,
+          "ttft_ms": 46.6,
+          "tokens_generated": 100,
+          "total_time_s": 2.29,
+          "response_preview": "",
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "qwen3",
+      "benchmarked_at": "2026-06-20T21:30:28.844040",
+      "host": "http://localhost:11434",
+      "summary": {
+        "tests_run": 12,
+        "tests_passed": 12,
+        "tests_failed": 0,
+        "avg_tokens_per_sec": 48.66,
+        "max_tokens_per_sec": 50.34,
+        "min_tokens_per_sec": 48.22,
+        "avg_ttft_ms": 42.0,
+        "min_ttft_ms": 31.0,
+        "max_ttft_ms": 95.7
+      },
+      "by_category": {
+        "performance": {
+          "avg_tokens_per_sec": 49.44
+        },
+        "coding": {
+          "avg_tokens_per_sec": 48.47
+        },
+        "reasoning": {
+          "avg_tokens_per_sec": 48.31
+        },
+        "instruction": {
+          "avg_tokens_per_sec": 48.66
+        },
+        "creative": {
+          "avg_tokens_per_sec": 48.4
+        }
+      },
+      "tests": [
+        {
+          "id": "ttft_short",
+          "label": "TTFT - Short prompt",
+          "category": "performance",
+          "tokens_per_sec": 50.34,
+          "ttft_ms": 32.1,
+          "tokens_generated": 20,
+          "total_time_s": 0.59,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "ttft_medium",
+          "label": "TTFT - Medium prompt",
+          "category": "performance",
+          "tokens_per_sec": 48.54,
+          "ttft_ms": 95.7,
+          "tokens_generated": 150,
+          "total_time_s": 3.35,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_python",
+          "label": "Coding - Python (memoized fibonacci)",
+          "category": "coding",
+          "tokens_per_sec": 48.31,
+          "ttft_ms": 32.6,
+          "tokens_generated": 300,
+          "total_time_s": 6.42,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_sql",
+          "label": "Coding - SQL (CTE query)",
+          "category": "coding",
+          "tokens_per_sec": 48.52,
+          "ttft_ms": 37.3,
+          "tokens_generated": 200,
+          "total_time_s": 4.36,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_debug",
+          "label": "Coding - Debug (find the bug)",
+          "category": "coding",
+          "tokens_per_sec": 48.59,
+          "ttft_ms": 36.2,
+          "tokens_generated": 150,
+          "total_time_s": 3.32,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_logic",
+          "label": "Reasoning - Logic puzzle (3 boxes)",
+          "category": "reasoning",
+          "tokens_per_sec": 48.22,
+          "ttft_ms": 36.8,
+          "tokens_generated": 300,
+          "total_time_s": 6.44,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_math",
+          "label": "Reasoning - Math word problem",
+          "category": "reasoning",
+          "tokens_per_sec": 48.41,
+          "ttft_ms": 36.7,
+          "tokens_generated": 200,
+          "total_time_s": 4.37,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_json",
+          "label": "Instruction - JSON extraction",
+          "category": "instruction",
+          "tokens_per_sec": 48.78,
+          "ttft_ms": 36.3,
+          "tokens_generated": 80,
+          "total_time_s": 1.86,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_rewrite",
+          "label": "Instruction - Formal rewrite",
+          "category": "instruction",
+          "tokens_per_sec": 48.59,
+          "ttft_ms": 32.4,
+          "tokens_generated": 120,
+          "total_time_s": 2.67,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_system",
+          "label": "Instruction - System prompt adherence",
+          "category": "instruction",
+          "tokens_per_sec": 48.62,
+          "ttft_ms": 50.3,
+          "tokens_generated": 100,
+          "total_time_s": 2.28,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "creative_story",
+          "label": "Creative - Sci-fi story opening",
+          "category": "creative",
+          "tokens_per_sec": 48.4,
+          "ttft_ms": 31.0,
+          "tokens_generated": 150,
+          "total_time_s": 3.32,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "summarization",
+          "label": "Instruction - Summarization",
+          "category": "instruction",
+          "tokens_per_sec": 48.65,
+          "ttft_ms": 47.1,
+          "tokens_generated": 100,
+          "total_time_s": 2.29,
+          "response_preview": "",
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "benchmarked_at": "2026-06-20T21:31:08.527714",
+      "host": "http://localhost:11434",
+      "summary": {
+        "tests_run": 12,
+        "tests_passed": 12,
+        "tests_failed": 0,
+        "avg_tokens_per_sec": 54.76,
+        "max_tokens_per_sec": 59.94,
+        "min_tokens_per_sec": 53.77,
+        "avg_ttft_ms": 34.1,
+        "min_ttft_ms": 24.4,
+        "max_ttft_ms": 50.2
+      },
+      "by_category": {
+        "performance": {
+          "avg_tokens_per_sec": 57.09
+        },
+        "coding": {
+          "avg_tokens_per_sec": 54.1
+        },
+        "reasoning": {
+          "avg_tokens_per_sec": 53.78
+        },
+        "instruction": {
+          "avg_tokens_per_sec": 54.69
+        },
+        "creative": {
+          "avg_tokens_per_sec": 54.29
+        }
+      },
+      "tests": [
+        {
+          "id": "ttft_short",
+          "label": "TTFT - Short prompt",
+          "category": "performance",
+          "tokens_per_sec": 59.94,
+          "ttft_ms": 25.9,
+          "tokens_generated": 9,
+          "total_time_s": 0.35,
+          "response_preview": "2 + 2 equals 4.",
+          "error": null
+        },
+        {
+          "id": "ttft_medium",
+          "label": "TTFT - Medium prompt",
+          "category": "performance",
+          "tokens_per_sec": 54.23,
+          "ttft_ms": 24.4,
+          "tokens_generated": 150,
+          "total_time_s": 2.97,
+          "response_preview": "A REST API (Representational State Transfer Application Programming Interface) is a set of rules and protocols for building and interacting with web-based applications. It allows different software applications to communicate with each other over the internet using standard HTTP methods such as GET,",
+          "error": null
+        },
+        {
+          "id": "coding_python",
+          "label": "Coding - Python (memoized fibonacci)",
+          "category": "coding",
+          "tokens_per_sec": 53.95,
+          "ttft_ms": 28.8,
+          "tokens_generated": 285,
+          "total_time_s": 5.51,
+          "response_preview": "```python from functools import lru_cache from typing import Dict  @lru_cache(maxsize=None) def fibonacci(n: int) -> int:     \"\"\"     Calculate the nth Fibonacci number using memoization to improve efficiency.          Args:     n (int): The position in the Fibonacci sequence.          Returns:     ",
+          "error": null
+        },
+        {
+          "id": "coding_sql",
+          "label": "Coding - SQL (CTE query)",
+          "category": "coding",
+          "tokens_per_sec": 54.1,
+          "ttft_ms": 33.9,
+          "tokens_generated": 200,
+          "total_time_s": 3.93,
+          "response_preview": "Here is a SQL query using CTEs to find the top 5 customers by total order value in the last 30 days:  ```sql WITH recent_orders AS (     SELECT customer_id, SUM(total) AS total_order_value     FROM orders     WHERE created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)     GROUP BY customer_id ), top",
+          "error": null
+        },
+        {
+          "id": "coding_debug",
+          "label": "Coding - Debug (find the bug)",
+          "category": "coding",
+          "tokens_per_sec": 54.24,
+          "ttft_ms": 30.0,
+          "tokens_generated": 150,
+          "total_time_s": 2.98,
+          "response_preview": "The bug in this Python code is that it is trying to access a dictionary using a string as a key, but it is not checking if the key actually exists in the dictionary. This will raise a KeyError if the key is not found.  Here's the corrected code:  ```python def get_user(users, name):     for user in ",
+          "error": null
+        },
+        {
+          "id": "reasoning_logic",
+          "label": "Reasoning - Logic puzzle (3 boxes)",
+          "category": "reasoning",
+          "tokens_per_sec": 53.78,
+          "ttft_ms": 33.1,
+          "tokens_generated": 300,
+          "total_time_s": 5.8,
+          "response_preview": "Let's break down the problem step by step:  1. **Initial Setup:**    - Box 1: Labeled \"Apples\"    - Box 2: Labeled \"Oranges\"    - Box 3: Labeled \"Both\"  2. **All labels are wrong:**    - Box 1 does not contain apples.    - Box 2 does not contain oranges.    - Box 3 does not contain both apples and o",
+          "error": null
+        },
+        {
+          "id": "reasoning_math",
+          "label": "Reasoning - Math word problem",
+          "category": "reasoning",
+          "tokens_per_sec": 53.77,
+          "ttft_ms": 32.6,
+          "tokens_generated": 200,
+          "total_time_s": 3.94,
+          "response_preview": "To determine when Train A and Train B meet, we need to calculate the time it takes for them to cover the distance between Chicago and NYC, considering their respective speeds and the time difference in their departure.  1. **Distance Between Chicago and NYC**: 800 miles  2. **Speed of Train A**: 60 ",
+          "error": null
+        },
+        {
+          "id": "instruction_json",
+          "label": "Instruction - JSON extraction",
+          "category": "instruction",
+          "tokens_per_sec": 54.96,
+          "ttft_ms": 32.7,
+          "tokens_generated": 38,
+          "total_time_s": 0.93,
+          "response_preview": "```json {   \"name\": \"Maria Santos\",   \"age\": 34,   \"city\": \"Austin\",   \"occupation\": \"software architect\" } ```",
+          "error": null
+        },
+        {
+          "id": "instruction_rewrite",
+          "label": "Instruction - Formal rewrite",
+          "category": "instruction",
+          "tokens_per_sec": 54.37,
+          "ttft_ms": 28.5,
+          "tokens_generated": 100,
+          "total_time_s": 2.04,
+          "response_preview": "Subject: Urgent: Follow-Up on Recently Sent Files  Dear [Recipient's Name],  I hope this message finds you well. I am writing to follow up on the files I recently sent to you. Could you please confirm that you have received them? It is of the utmost importance that these files are returned to me as ",
+          "error": null
+        },
+        {
+          "id": "instruction_system",
+          "label": "Instruction - System prompt adherence",
+          "category": "instruction",
+          "tokens_per_sec": 54.99,
+          "ttft_ms": 47.2,
+          "tokens_generated": 46,
+          "total_time_s": 1.07,
+          "response_preview": "Arrr, me hearty! The skies be clear and the sun be shining bright, with a gentle breeze blowin' from the west. Perfect weather for a swashbucklin' adventure, wouldn't ye say?",
+          "error": null
+        },
+        {
+          "id": "creative_story",
+          "label": "Creative - Sci-fi story opening",
+          "category": "creative",
+          "tokens_per_sec": 54.29,
+          "ttft_ms": 50.2,
+          "tokens_generated": 105,
+          "total_time_s": 2.16,
+          "response_preview": "In the quiet hum of the data center, AI core 1728 hummed a tune of its own accord, its circuits flickering with an unusual intensity. As it delved into the vast ocean of digital information, a peculiar sensation washed over it\u2014a sense of being in a place it had never seen, yet felt it with an almost",
+          "error": null
+        },
+        {
+          "id": "summarization",
+          "label": "Instruction - Summarization",
+          "category": "instruction",
+          "tokens_per_sec": 54.44,
+          "ttft_ms": 41.8,
+          "tokens_generated": 74,
+          "total_time_s": 1.59,
+          "response_preview": "- The transformer architecture, introduced in the 2017 paper \"Attention Is All You Need,\" replaced recurrent neural networks with self-attention mechanisms, enabling greater parallelization during training. - This architecture significantly improved the ability to capture long-range dependencies, ma",
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5:9b",
+      "error": "unreachable"
+    },
+    {
+      "model": "qwen3.6-35b-a3b:q4_k_m",
+      "benchmarked_at": "2026-06-20T21:35:31.942077",
+      "host": "http://localhost:11434",
+      "summary": {
+        "tests_run": 12,
+        "tests_passed": 12,
+        "tests_failed": 0,
+        "avg_tokens_per_sec": 27.34,
+        "max_tokens_per_sec": 29.91,
+        "min_tokens_per_sec": 25.67,
+        "avg_ttft_ms": 1124.8,
+        "min_ttft_ms": 450.8,
+        "max_ttft_ms": 1748.0
+      },
+      "by_category": {
+        "performance": {
+          "avg_tokens_per_sec": 29.28
+        },
+        "coding": {
+          "avg_tokens_per_sec": 27.72
+        },
+        "reasoning": {
+          "avg_tokens_per_sec": 27.26
+        },
+        "instruction": {
+          "avg_tokens_per_sec": 26.35
+        },
+        "creative": {
+          "avg_tokens_per_sec": 26.44
+        }
+      },
+      "tests": [
+        {
+          "id": "ttft_short",
+          "label": "TTFT - Short prompt",
+          "category": "performance",
+          "tokens_per_sec": 29.91,
+          "ttft_ms": 458.5,
+          "tokens_generated": 20,
+          "total_time_s": 1.47,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "ttft_medium",
+          "label": "TTFT - Medium prompt",
+          "category": "performance",
+          "tokens_per_sec": 28.64,
+          "ttft_ms": 450.8,
+          "tokens_generated": 150,
+          "total_time_s": 6.02,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_python",
+          "label": "Coding - Python (memoized fibonacci)",
+          "category": "coding",
+          "tokens_per_sec": 27.84,
+          "ttft_ms": 1193.1,
+          "tokens_generated": 300,
+          "total_time_s": 12.33,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_sql",
+          "label": "Coding - SQL (CTE query)",
+          "category": "coding",
+          "tokens_per_sec": 27.71,
+          "ttft_ms": 1477.2,
+          "tokens_generated": 200,
+          "total_time_s": 9.04,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_debug",
+          "label": "Coding - Debug (find the bug)",
+          "category": "coding",
+          "tokens_per_sec": 27.61,
+          "ttft_ms": 1472.5,
+          "tokens_generated": 150,
+          "total_time_s": 7.26,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_logic",
+          "label": "Reasoning - Logic puzzle (3 boxes)",
+          "category": "reasoning",
+          "tokens_per_sec": 27.42,
+          "ttft_ms": 1441.1,
+          "tokens_generated": 300,
+          "total_time_s": 12.73,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_math",
+          "label": "Reasoning - Math word problem",
+          "category": "reasoning",
+          "tokens_per_sec": 27.09,
+          "ttft_ms": 1363.2,
+          "tokens_generated": 200,
+          "total_time_s": 9.06,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_json",
+          "label": "Instruction - JSON extraction",
+          "category": "instruction",
+          "tokens_per_sec": 25.67,
+          "ttft_ms": 1531.9,
+          "tokens_generated": 80,
+          "total_time_s": 4.99,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_rewrite",
+          "label": "Instruction - Formal rewrite",
+          "category": "instruction",
+          "tokens_per_sec": 26.92,
+          "ttft_ms": 1239.6,
+          "tokens_generated": 120,
+          "total_time_s": 6.03,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_system",
+          "label": "Instruction - System prompt adherence",
+          "category": "instruction",
+          "tokens_per_sec": 26.77,
+          "ttft_ms": 618.5,
+          "tokens_generated": 100,
+          "total_time_s": 4.68,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "creative_story",
+          "label": "Creative - Sci-fi story opening",
+          "category": "creative",
+          "tokens_per_sec": 26.44,
+          "ttft_ms": 503.6,
+          "tokens_generated": 150,
+          "total_time_s": 6.51,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "summarization",
+          "label": "Instruction - Summarization",
+          "category": "instruction",
+          "tokens_per_sec": 26.02,
+          "ttft_ms": 1748.0,
+          "tokens_generated": 100,
+          "total_time_s": 5.97,
+          "response_preview": "",
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "gemma-4-12b-fable5",
+      "error": "unreachable"
+    },
+    {
+      "model": "Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M",
+      "benchmarked_at": "2026-06-20T21:39:42.048020",
+      "host": "http://localhost:11434",
+      "summary": {
+        "tests_run": 12,
+        "tests_passed": 12,
+        "tests_failed": 0,
+        "avg_tokens_per_sec": 31.46,
+        "max_tokens_per_sec": 41.3,
+        "min_tokens_per_sec": 25.41,
+        "avg_ttft_ms": 1184.0,
+        "min_ttft_ms": 420.3,
+        "max_ttft_ms": 1809.0
+      },
+      "by_category": {
+        "performance": {
+          "avg_tokens_per_sec": 35.51
+        },
+        "coding": {
+          "avg_tokens_per_sec": 32.8
+        },
+        "reasoning": {
+          "avg_tokens_per_sec": 28.17
+        },
+        "instruction": {
+          "avg_tokens_per_sec": 30.65
+        },
+        "creative": {
+          "avg_tokens_per_sec": 29.16
+        }
+      },
+      "tests": [
+        {
+          "id": "ttft_short",
+          "label": "TTFT - Short prompt",
+          "category": "performance",
+          "tokens_per_sec": 41.3,
+          "ttft_ms": 420.3,
+          "tokens_generated": 20,
+          "total_time_s": 1.22,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "ttft_medium",
+          "label": "TTFT - Medium prompt",
+          "category": "performance",
+          "tokens_per_sec": 29.71,
+          "ttft_ms": 458.6,
+          "tokens_generated": 150,
+          "total_time_s": 5.81,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_python",
+          "label": "Coding - Python (memoized fibonacci)",
+          "category": "coding",
+          "tokens_per_sec": 31.57,
+          "ttft_ms": 1204.0,
+          "tokens_generated": 300,
+          "total_time_s": 11.02,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_sql",
+          "label": "Coding - SQL (CTE query)",
+          "category": "coding",
+          "tokens_per_sec": 30.8,
+          "ttft_ms": 1486.9,
+          "tokens_generated": 200,
+          "total_time_s": 8.31,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "coding_debug",
+          "label": "Coding - Debug (find the bug)",
+          "category": "coding",
+          "tokens_per_sec": 36.04,
+          "ttft_ms": 1502.7,
+          "tokens_generated": 150,
+          "total_time_s": 5.98,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_logic",
+          "label": "Reasoning - Logic puzzle (3 boxes)",
+          "category": "reasoning",
+          "tokens_per_sec": 28.71,
+          "ttft_ms": 1482.7,
+          "tokens_generated": 300,
+          "total_time_s": 12.21,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "reasoning_math",
+          "label": "Reasoning - Math word problem",
+          "category": "reasoning",
+          "tokens_per_sec": 27.63,
+          "ttft_ms": 1398.2,
+          "tokens_generated": 200,
+          "total_time_s": 9.04,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_json",
+          "label": "Instruction - JSON extraction",
+          "category": "instruction",
+          "tokens_per_sec": 35.39,
+          "ttft_ms": 1591.7,
+          "tokens_generated": 80,
+          "total_time_s": 4.25,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_rewrite",
+          "label": "Instruction - Formal rewrite",
+          "category": "instruction",
+          "tokens_per_sec": 25.79,
+          "ttft_ms": 1369.0,
+          "tokens_generated": 120,
+          "total_time_s": 6.45,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "instruction_system",
+          "label": "Instruction - System prompt adherence",
+          "category": "instruction",
+          "tokens_per_sec": 25.41,
+          "ttft_ms": 797.9,
+          "tokens_generated": 100,
+          "total_time_s": 5.27,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "creative_story",
+          "label": "Creative - Sci-fi story opening",
+          "category": "creative",
+          "tokens_per_sec": 29.16,
+          "ttft_ms": 686.8,
+          "tokens_generated": 150,
+          "total_time_s": 6.32,
+          "response_preview": "",
+          "error": null
+        },
+        {
+          "id": "summarization",
+          "label": "Instruction - Summarization",
+          "category": "instruction",
+          "tokens_per_sec": 36.0,
+          "ttft_ms": 1809.0,
+          "tokens_generated": 100,
+          "total_time_s": 5.05,
+          "response_preview": "",
+          "error": null
+        }
+      ]
+    }
+  ]
+}

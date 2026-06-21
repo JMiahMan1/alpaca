@@ -3,8 +3,10 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import struct
 import sys
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -27,6 +29,41 @@ ROUTER_MODELS_DIR = os.getenv(
     str(Path(__file__).resolve().parent / ".alpaca-router"),
 )
 HUGGING_FACE_BASE = os.getenv("HUGGING_FACE_BASE", "https://huggingface.co")
+def _load_dotenv(env_path):
+    if not env_path.exists():
+        return
+    with open(env_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("\"'")
+                os.environ.setdefault(key, value)
+
+
+def _find_dotenv():
+    for candidate in [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent / ".env",
+    ]:
+        if candidate.exists():
+            return candidate
+    parent = Path(__file__).resolve().parent
+    for _ in range(5):
+        parent = parent.parent
+        candidate = parent / ".env"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+dotenv_path = _find_dotenv()
+if dotenv_path:
+    _load_dotenv(dotenv_path)
+
 HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_TOKEN") or os.getenv("HF_TOKEN")
 MODEL_LAYER_MEDIA_TYPE = "application/vnd.ollama.image.model"
 MODEL_GGUF_MEDIA_TYPE = "application/vnd.ollama.image.model+gguf"
@@ -474,6 +511,9 @@ def choose_source(model_name, source):
         return source
     if model_name.startswith(("hf://", "https://huggingface.co/", "https://hf.co/")):
         return "huggingface"
+    name = model_name.split(":")[0] if ":" in model_name else model_name
+    if "/" in name and "gguf" in name.lower():
+        return "huggingface"
     return "ollama"
 
 
@@ -509,9 +549,111 @@ def parse_huggingface_ref(model_name):
 
 
 def huggingface_headers():
-    if not HUGGING_FACE_TOKEN:
-        return {}
-    return {"Authorization": f"Bearer {HUGGING_FACE_TOKEN}"}
+    headers = {"User-Agent": "alpaca-puller/1.0"}
+    if HUGGING_FACE_TOKEN:
+        headers["Authorization"] = f"Bearer {HUGGING_FACE_TOKEN}"
+    return headers
+
+
+def download_with_progress(client, url, headers, label, output_path, expected_total=None):
+    current_size = output_path.stat().st_size if output_path.exists() else 0
+    if current_size > 0:
+        headers["Range"] = f"bytes={current_size}-"
+        print(f"Resuming {label} from {current_size // 1024 // 1024} MB...")
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with client.stream("GET", url, headers=headers) as response:
+                if response.status_code == 416:
+                    print(f"{label} already complete according to server.")
+                    return output_path
+
+                mode = "ab" if response.status_code == 206 else "wb"
+                if response.status_code == 200 and current_size > 0:
+                    print("Server does not support resume. Restarting download...")
+                    current_size = 0
+
+                if response.status_code >= 400:
+                    raise httpx.HTTPStatusError(
+                        f"{response.status_code}: {response.text}",
+                        request=response.request,
+                        response=response,
+                    )
+
+                total = int(response.headers.get("Content-Length", 0)) + current_size
+                if tqdm:
+                    with open(output_path, mode) as handle, tqdm(
+                        total=total if total > 0 else None,
+                        initial=current_size,
+                        unit_divisor=1024,
+                        unit="B",
+                        unit_scale=True,
+                        desc=label,
+                    ) as bar:
+                        for chunk in response.iter_bytes():
+                            handle.write(chunk)
+                            bar.update(len(chunk))
+                else:
+                    downloaded = current_size
+                    with open(output_path, mode) as handle:
+                        for chunk in response.iter_bytes():
+                            handle.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                sys.stdout.write(f"\rProgress {label}: {downloaded / total * 100:.1f}%")
+                                sys.stdout.flush()
+                    if total > 0:
+                        print()
+
+                return output_path
+        except (httpx.ReadError, httpx.RemoteProtocolError, ssl.SSLError) as exc:
+            if attempt == max_retries - 1:
+                raise
+            print(f"\nDownload interrupted ({exc}). Retrying {attempt + 1}/{max_retries}...")
+            time.sleep(2 * (attempt + 1))
+
+
+def list_huggingface_files(repo):
+    url = f"{HUGGING_FACE_BASE}/api/models/{repo}"
+    try:
+        resp = httpx.get(url, headers=huggingface_headers(), timeout=30.0)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return []
+
+
+def resolve_huggingface_filename(repo, requested_filename):
+    if requested_filename.endswith(".gguf"):
+        return requested_filename
+    model_info = list_huggingface_files(repo)
+    if not model_info or not isinstance(model_info, dict):
+        return requested_filename
+    siblings = model_info.get("siblings", [])
+    gguf_files = [s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(".gguf")]
+    if not gguf_files:
+        return requested_filename
+    target_stem = requested_filename.replace(" ", "").replace("_", "").lower()
+    exact_match = None
+    best_match = None
+    for fname in gguf_files:
+        stem = Path(fname).stem.replace(" ", "").replace("_", "").lower()
+        if stem == target_stem:
+            exact_match = fname
+            break
+        if target_stem in stem:
+            if best_match is None:
+                best_match = fname
+    if exact_match:
+        return exact_match
+    if best_match:
+        return best_match
+    fallback = f"{repo.rsplit('/', 1)[-1]}-{requested_filename}.gguf"
+    for fname in gguf_files:
+        if fname == fallback:
+            return fname
+    return gguf_files[0]
 
 
 def huggingface_blob_url(repo, filename):
@@ -614,6 +756,7 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False):
         raise RuntimeError("--insecure is only supported for Ollama registry pulls.")
 
     repo, filename = parse_huggingface_ref(model_name)
+    filename = resolve_huggingface_filename(repo, filename)
     local_name = local_name or infer_local_name_from_huggingface(repo, filename)
     manifest_path = manifest_path_for_local_name(local_name)
     url = huggingface_blob_url(repo, filename)
@@ -622,10 +765,13 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False):
 
     print(f"Importing Hugging Face GGUF: {repo}/{filename}")
     print(f"Local Ollama model name: {normalize_model_name(local_name)}")
-    client = httpx.Client(timeout=httpx.Timeout(60.0, read=None), follow_redirects=True)
+    client = httpx.Client(
+        timeout=httpx.Timeout(300.0, connect=30.0, read=300.0),
+        follow_redirects=True,
+    )
 
     try:
-        download_to_partial_file(client, url, headers, f"Importing {Path(filename).name}", partial_path)
+        download_with_progress(client, url, headers, f"Importing {Path(filename).name}", partial_path)
         digest = hash_file(partial_path)
         blob_path = blob_path_for_digest(digest)
         blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -715,8 +861,12 @@ def pull_model(model_name, source="auto", local_name=None, insecure=False):
     resolved_source = choose_source(model_name, source)
     try:
         if resolved_source == "huggingface":
-            return import_huggingface_gguf(model_name, local_name=local_name, insecure=insecure)
-        return pull_ollama_model(model_name, insecure=insecure)
+            result = import_huggingface_gguf(model_name, local_name=local_name, insecure=insecure)
+        else:
+            result = pull_ollama_model(model_name, insecure=insecure)
+        if result == 0:
+            reindex_models()
+        return result
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response is not None else "unknown"
         print(f"Error: request failed ({status})")
