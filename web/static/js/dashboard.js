@@ -324,19 +324,40 @@ document.addEventListener('DOMContentLoaded', () => {
     function openModal(prompt, rawResponse) {
         modalPrompt.textContent = prompt || 'No prompt recorded.';
 
-        // Parse out <think>...</think> block if present
-        const thinkMatch = rawResponse && rawResponse.match(/<think>([\s\S]*?)<\/think>/i);
-        if (thinkMatch) {
-            const thinkContent = thinkMatch[1].trim();
-            // Actual response is everything after the closing </think>
-            const actualResponse = rawResponse.replace(/<think>[\s\S]*?<\/think>/i, '').trim();
-            modalThinking.textContent = thinkContent || '(empty thinking block)';
+        // Parse out <think>...</think> block if present with error handling
+        let thinkingContent = '';
+        let actualResponse = '';
+        let thinkingBlockFound = false;
+        
+        if (rawResponse) {
+            try {
+                const thinkMatch = rawResponse.match(/<think>([\s\S]*?)<\/think>/i);
+                if (thinkMatch) {
+                    thinkingBlockFound = true;
+                    thinkingContent = thinkMatch[1].trim();
+                    // Actual response is everything after the closing </think>
+                    const remainingContent = rawResponse.replace(/<think>[\s\S]*?<\/think>/i, '');
+                    actualResponse = remainingContent.trim();
+                } else {
+                    // No thinking block, use entire response
+                    actualResponse = rawResponse.trim();
+                }
+            } catch (error) {
+                // If parsing fails, use the raw response as-is
+                actualResponse = rawResponse ? rawResponse.trim() : '';
+                console.warn('Error parsing thinking block:', error);
+            }
+        }
+
+        // Fallback for thinking block
+        if (thinkingBlockFound) {
+            modalThinking.textContent = thinkingContent || '(empty thinking block)';
             modalThinkingSection.style.display = '';
-            modalResponse.textContent = actualResponse || '(No response after thinking)';
         } else {
             modalThinkingSection.style.display = 'none';
-            modalResponse.textContent = rawResponse || 'No response content.';
         }
+
+        modalResponse.textContent = actualResponse || '(No response content.)';
         modalOverlay.classList.add('open');
     }
 
