@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies
+RUN pip install --no-cache-dir flask flask-cors flask-socketio simple-websocket httpx requests psutil
+
+# Copy required files into container
+COPY llm_benchmark_suite.py /app/
+COPY web/ /app/web/
+
+# Expose Dashboard Port
+EXPOSE 5000
+
+ENV PYTHONUNBUFFERED=1
+
+# Run the flask application
+CMD ["python", "web/app.py"]

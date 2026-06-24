@@ -78,6 +78,75 @@ LOADED_MODELS_STATE_FILE = os.path.join(ROUTER_MODELS_DIR, ".loaded-models.json"
 active_requests = {}
 active_requests_lock = asyncio.Condition()
 
+# Thread-safe detailed request tracking (for user query/summary)
+import threading
+active_request_details = {}
+completed_requests = []
+active_request_details_lock = threading.Lock()
+
+def sanitize_prompt(text: str) -> str:
+    if not text:
+        return ""
+    # Redact common patterns for passwords, tokens, API keys
+    # 1. API Keys (e.g. sk-..., gpt-..., AIzaSy...)
+    text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', text)
+    text = re.sub(r'(AIzaSy[a-zA-Z0-9_-]{33})', '[REDACTED_API_KEY]', text)
+    # 2. Key-value pairs for passwords/tokens/secrets in JSON or text
+    text = re.sub(
+        r'(?i)\b(pass|password|passwd|secret|key|token|auth|credentials)\s*[:=]\s*["\']([^"\']{4,})["\']',
+        r'\1 = "[REDACTED]"',
+        text
+    )
+    return text
+
+def register_active_request(request_id, model, req_type, payload):
+    prompt_str = ""
+    if "messages" in payload:
+        msgs = payload["messages"]
+        formatted_msgs = []
+        for m in msgs:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            formatted_msgs.append(f"{role.upper()}: {content}")
+        prompt_str = "\n".join(formatted_msgs)
+    elif "prompt" in payload:
+        prompt_str = str(payload["prompt"])
+        
+    prompt_str = sanitize_prompt(prompt_str)
+    
+    with active_request_details_lock:
+        active_request_details[request_id] = {
+            "request_id": request_id,
+            "model": model,
+            "type": req_type,
+            "started_at": time.time(),
+            "prompt": prompt_str,
+            "thinking": "",
+            "response": ""
+        }
+
+def update_active_request_progress(request_id, response_chunk=None, thinking_chunk=None):
+    with active_request_details_lock:
+        if request_id in active_request_details:
+            if thinking_chunk:
+                active_request_details[request_id]["thinking"] += thinking_chunk
+            if response_chunk:
+                active_request_details[request_id]["response"] += response_chunk
+
+def complete_active_request(request_id, final_response=None, final_thinking=None):
+    with active_request_details_lock:
+        if request_id in active_request_details:
+            req = active_request_details.pop(request_id)
+            if final_response:
+                req["response"] = final_response
+            if final_thinking:
+                req["thinking"] = final_thinking
+            req["completed_at"] = time.time()
+            req["duration_seconds"] = round(req["completed_at"] - req["started_at"], 2)
+            completed_requests.append(req)
+            if len(completed_requests) > 10:
+                completed_requests.pop(0)
+
 # Model loading state tracking (for OOM recovery)
 model_loading = {}
 MODEL_LOADING_TIMEOUT = 120  # seconds
@@ -1361,7 +1430,11 @@ async def openai_chat_completions(request: Request):
     started_ns = now_ns()
     model_name = body.get("model", "")
     stream = body.get("stream", False)
-
+    request_id = getattr(request.state, "request_id", None)
+    if not request_id or request_id == "N/A":
+        import uuid
+        request_id = str(uuid.uuid4())[:8]
+    register_active_request(request_id, model_name, "openai_chat", body)
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -1412,6 +1485,21 @@ async def openai_chat_completions(request: Request):
                                     stream_started = True
                                     async for line in resp.aiter_lines():
                                         if line and line.startswith("data: "):
+                                            try:
+                                                payload_str = line[6:].strip()
+                                                if payload_str and payload_str != "[DONE]":
+                                                    payload_json = json.loads(payload_str)
+                                                    choices = payload_json.get("choices")
+                                                    if choices and isinstance(choices, list) and len(choices) > 0:
+                                                        delta = choices[0].get("delta")
+                                                        if delta:
+                                                            update_active_request_progress(
+                                                                request_id,
+                                                                response_chunk=delta.get("content"),
+                                                                thinking_chunk=delta.get("reasoning_content") or delta.get("thinking")
+                                                            )
+                                            except Exception:
+                                                pass
                                             yield f"{line}\n\n"
                                     return
                             except httpx.RequestError as exc:
@@ -1434,41 +1522,58 @@ async def openai_chat_completions(request: Request):
                                 await asyncio.sleep(2.0)
                     finally:
                         await record_metrics("/v1/chat/completions", (now_ns() - started_ns) / 1e6)
+                        complete_active_request(request_id)
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
-                resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
-                if resp.status_code != 200:
-                    err_msg = resp.text
-                    if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
-                        logger.warning(
-                            f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
+                try:
+                    resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
+                    if resp.status_code != 200:
+                        err_msg = resp.text
+                        if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
+                            logger.warning(
+                                f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
+                            )
+                            await ensure_model(model_name)
+                            continue
+                        try:
+                            upstream_err = resp.json()
+                            if "error" in upstream_err:
+                                err_msg = upstream_err["error"].get("message", err_msg)
+                        except Exception:
+                            pass
+                        await record_metrics("/v1/chat/completions", 0, error=True)
+                        return JSONResponse(
+                            status_code=resp.status_code,
+                            content={
+                                "error": {
+                                    "message": err_msg,
+                                    "type": "invalid_request_error",
+                                    "code": resp.status_code,
+                                }
+                            },
                         )
-                        await ensure_model(model_name)
-                        continue
+                    data = resp.json()
                     try:
-                        upstream_err = resp.json()
-                        if "error" in upstream_err:
-                            err_msg = upstream_err["error"].get("message", err_msg)
+                        choices = data.get("choices", [])
+                        if choices and len(choices) > 0:
+                            message_obj = choices[0].get("message", {})
+                            content_val = message_obj.get("content")
+                            thinking_val = message_obj.get("reasoning_content") or message_obj.get("thinking")
+                            complete_active_request(
+                                request_id,
+                                final_response=content_val,
+                                final_thinking=thinking_val
+                            )
                     except Exception:
                         pass
-                    await record_metrics("/v1/chat/completions", 0, error=True)
-                    return JSONResponse(
-                        status_code=resp.status_code,
-                        content={
-                            "error": {
-                                "message": err_msg,
-                                "type": "invalid_request_error",
-                                "code": resp.status_code,
-                            }
-                        },
-                    )
-                data = resp.json()
-                latency = (now_ns() - started_ns) / 1e6
-                prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-                gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
-                await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
-                return JSONResponse(data)
+                    latency = (now_ns() - started_ns) / 1e6
+                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+                    await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
+                    return JSONResponse(data)
+                finally:
+                    complete_active_request(request_id)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
                 logger.error(
@@ -1498,6 +1603,8 @@ async def openai_chat_completions(request: Request):
             await ensure_model(model_name)
 
 
+
+
 @app.post("/v1/completions")
 async def openai_completions(request: Request):
     """OpenAI-compatible text completions. Proxies directly to llama-server."""
@@ -1506,7 +1613,11 @@ async def openai_completions(request: Request):
     started_ns = now_ns()
     model_name = body.get("model", "")
     stream = body.get("stream", False)
-
+    request_id = getattr(request.state, "request_id", None)
+    if not request_id or request_id == "N/A":
+        import uuid
+        request_id = str(uuid.uuid4())[:8]
+    register_active_request(request_id, model_name, "openai_generate", body)
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -1557,6 +1668,21 @@ async def openai_completions(request: Request):
                                     stream_started = True
                                     async for line in resp.aiter_lines():
                                         if line and line.startswith("data: "):
+                                            try:
+                                                payload_str = line[6:].strip()
+                                                if payload_str and payload_str != "[DONE]":
+                                                    payload_json = json.loads(payload_str)
+                                                    choices = payload_json.get("choices")
+                                                    if choices and isinstance(choices, list) and len(choices) > 0:
+                                                        text_val = choices[0].get("text")
+                                                        thinking_val = choices[0].get("thinking") or choices[0].get("reasoning_content")
+                                                        update_active_request_progress(
+                                                            request_id,
+                                                            response_chunk=text_val,
+                                                            thinking_chunk=thinking_val
+                                                        )
+                                            except Exception:
+                                                pass
                                             yield f"{line}\n\n"
                                     return
                             except httpx.RequestError as exc:
@@ -1581,41 +1707,57 @@ async def openai_completions(request: Request):
                                 await asyncio.sleep(2.0)
                     finally:
                         await record_metrics("/v1/completions", (now_ns() - started_ns) / 1e6)
+                        complete_active_request(request_id)
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
-                resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
-                if resp.status_code != 200:
-                    err_msg = resp.text
-                    if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
-                        logger.warning(
-                            f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
+                try:
+                    resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
+                    if resp.status_code != 200:
+                        err_msg = resp.text
+                        if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
+                            logger.warning(
+                                f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
+                            )
+                            await ensure_model(model_name)
+                            continue
+                        try:
+                            upstream_err = resp.json()
+                            if "error" in upstream_err:
+                                err_msg = upstream_err["error"].get("message", err_msg)
+                        except Exception:
+                            pass
+                        await record_metrics("/v1/completions", 0, error=True)
+                        return JSONResponse(
+                            status_code=resp.status_code,
+                            content={
+                                "error": {
+                                    "message": err_msg,
+                                    "type": "invalid_request_error",
+                                    "code": resp.status_code,
+                                }
+                            },
                         )
-                        await ensure_model(model_name)
-                        continue
+                    data = resp.json()
                     try:
-                        upstream_err = resp.json()
-                        if "error" in upstream_err:
-                            err_msg = upstream_err["error"].get("message", err_msg)
+                        choices = data.get("choices", [])
+                        if choices and len(choices) > 0:
+                            content_val = choices[0].get("text")
+                            thinking_val = choices[0].get("thinking") or choices[0].get("reasoning_content")
+                            complete_active_request(
+                                request_id,
+                                final_response=content_val,
+                                final_thinking=thinking_val
+                            )
                     except Exception:
                         pass
-                    await record_metrics("/v1/completions", 0, error=True)
-                    return JSONResponse(
-                        status_code=resp.status_code,
-                        content={
-                            "error": {
-                                "message": err_msg,
-                                "type": "invalid_request_error",
-                                "code": resp.status_code,
-                            }
-                        },
-                    )
-                data = resp.json()
-                latency = (now_ns() - started_ns) / 1e6
-                prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-                gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
-                await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
-                return JSONResponse(data)
+                    latency = (now_ns() - started_ns) / 1e6
+                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+                    await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
+                    return JSONResponse(data)
+                finally:
+                    complete_active_request(request_id)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
                 logger.error(
@@ -1643,6 +1785,8 @@ async def openai_completions(request: Request):
 
             await wait_for_llama_server_or_restart(timeout=60.0)
             await ensure_model(model_name)
+
+
 
 
 @app.post("/v1/embeddings")
@@ -1775,7 +1919,6 @@ async def admin_system():
     """System information: GPU memory, RAM, CPU, disk usage."""
     import platform
     import shutil
-    import subprocess
 
     try:
         import psutil
@@ -1808,35 +1951,39 @@ async def admin_system():
         except Exception as e:
             logger.warning(f"Failed to fetch psutil system metrics: {e}")
 
-    # GPU information via nvidia-smi (VRAM + Name)
+    # GPU information via docker exec into llama-server (which holds the GPU reservation).
+    # The proxy has no GPU device access itself — it uses the Docker socket it already mounts.
     try:
-        res = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=gpu_name,memory.total,memory.used,memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", "llama-server",
+            "nvidia-smi",
+            "--query-gpu=gpu_name,memory.total,memory.used,memory.free",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        stdout, _ = await proc.communicate()
         gpus = []
-        for line in res.strip().split("\n"):
-            if line:
-                name, total, used, free = line.split(",")
-                gpus.append(
-                    {
-                        "name": name.strip(),
-                        "total_mb": int(total.strip()),
-                        "used_mb": int(used.strip()),
-                        "free_mb": int(free.strip()),
-                        "used_pct": round(int(used.strip()) / int(total.strip()) * 100, 1)
-                        if int(total.strip()) > 0
-                        else 0,
-                    }
-                )
-        info["gpu_info"] = gpus
+        if proc.returncode == 0:
+            for line in stdout.decode().strip().split("\n"):
+                if line:
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) == 4:
+                        name, total, used, free = parts
+                        total_i, used_i, free_i = int(total), int(used), int(free)
+                        gpus.append(
+                            {
+                                "name": name,
+                                "total_mb": total_i,
+                                "used_mb": used_i,
+                                "free_mb": free_i,
+                                "used_pct": round(used_i / total_i * 100, 1) if total_i > 0 else 0,
+                            }
+                        )
+        info["gpu_info"] = gpus if gpus else {"error": "no GPU data from llama-server"}
     except Exception as e:
-        logger.debug(f"nvidia-smi not available or failed: {e}")
-        info["gpu_info"] = {"error": "unavailable or no nvidia-smi"}
+        logger.debug(f"GPU query via docker exec failed: {e}")
+        info["gpu_info"] = {"error": "unavailable"}
 
     # Disk usage
     for path_name, path in [
@@ -2000,6 +2147,26 @@ async def admin_models():
     return {"models": models, "total": len(models)}
 
 
+@app.get("/admin/requests")
+async def admin_requests():
+    """Retrieve detailed state of currently active and recently completed requests."""
+    with active_request_details_lock:
+        active = list(active_request_details.values())
+        completed = list(completed_requests)
+    return {
+        "active_requests": active,
+        "completed_requests": completed
+    }
+
+
+@app.post("/admin/requests/clear")
+async def admin_requests_clear():
+    """Clear recently completed requests buffer."""
+    with active_request_details_lock:
+        completed_requests.clear()
+    return {"status": "success", "message": "Completed requests history cleared."}
+
+
 @app.get("/admin/runtime")
 async def admin_runtime():
     """Runtime state: loaded models, active requests, keep-alive timers, queue depth."""
@@ -2015,25 +2182,84 @@ async def admin_runtime():
             "has_unload_task": name in model_unload_tasks,
         }
 
-    # Loaded models
+    # Fetch live llama-server props once (n_ctx, n_gpu_layers, flash_attn etc.)
+    live_props = {}
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/props", timeout=httpx.Timeout(3.0))
+        if resp.status_code == 200:
+            live_props = resp.json()
+    except Exception:
+        pass
+
+    # Loaded models — enriched with running_settings from .profile.json + live props
     loaded = []
     try:
-        for record in await loaded_models_from_router():
-            info = record["info"]
-            public_name = public_model_name(record["name"])
+        router_models = await fetch_router_models(reload=False)
+        for manifest_base, path, manifest in iter_local_manifests():
+            model_name = manifest_model_name(manifest_base, path)
+            if not model_name:
+                continue
+            candidates = router_model_candidates(model_name, manifest)
+            matched_entry = None
+            for entry in router_models:
+                if router_entry_status(entry) == "loaded" and router_entry_matches(entry, candidates):
+                    matched_entry = entry
+                    break
+            if not matched_entry:
+                continue
+
+            info = manifest_stats(path, manifest)
+            public_name = public_model_name(model_name)
+            backend_model = matched_entry.get("id", "")
+
+            # Load running settings: try .profile.json first, fall back to models.ini section
+            running_settings = {}
+            try:
+                profile_path = os.path.join(ROUTER_MODELS_DIR, f"{backend_model}.profile.json")
+                if os.path.exists(profile_path):
+                    with open(profile_path) as f:
+                        running_settings = json.load(f)
+                else:
+                    # Fall back to models.ini section matching the backend model id
+                    import configparser
+                    ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+                    if os.path.exists(ini_path):
+                        cfg = configparser.ConfigParser(delimiters=("=",))
+                        cfg.read(ini_path)
+                        # Try exact backend_model id first, then the public model name
+                        for section_key in [backend_model, public_name]:
+                            if cfg.has_section(section_key):
+                                running_settings = dict(cfg[section_key])
+                                break
+            except Exception:
+                pass
+
+            # Overlay live llama-server values (authoritative for current run)
+            if live_props.get("n_ctx"):
+                running_settings["ctx-size"] = str(live_props["n_ctx"])
+            if live_props.get("n_gpu_layers") is not None:
+                running_settings["n-gpu-layers"] = str(live_props["n_gpu_layers"])
+            if live_props.get("flash_attn") is not None:
+                running_settings["flash-attn"] = "on" if live_props["flash_attn"] else "off"
+
             loaded.append(
                 {
                     "name": public_name,
+                    "backend_model": backend_model,
                     "size": info["size"],
                     "digest": info["digest"],
                     "details": info["details"],
                     "context_length": info["context_length"],
                     "expires_at": model_expires_at.get(public_name, "0001-01-01T00:00:00Z"),
-                    "active_requests": active.get(record.get("backend_model", ""), 0),
+                    "active_requests": active.get(backend_model, 0),
+                    "running_settings": running_settings,
+                    "peak_active_requests": 0,
+                    "total_requests_processed": 0,
                 }
             )
     except Exception:
         pass
+
 
     return {
         "loaded_models": loaded,
@@ -3909,6 +4135,12 @@ async def chat(request: Request):
     model_name = body.get("model")
     keep_alive = effective_keep_alive(body.get("keep_alive"))
 
+    request_id = getattr(request.state, "request_id", None)
+    if not request_id or request_id == "N/A":
+        import uuid
+        request_id = str(uuid.uuid4())[:8]
+    register_active_request(request_id, model_name, "ollama_chat", body)
+
     # Ensure model is loaded and healthy (triggers recovery if crashed/dead)
     resolved = await ensure_model(model_name, options=body.get("options"))
     resolved_backend = resolved["backend_model"]
@@ -3974,8 +4206,16 @@ async def chat(request: Request):
                                 data = json.loads(line)
                                 choice = (data.get("choices") or [{}])[0]
                                 message = chat_message_from_choice(choice)
-                                if message and message.get("content"):
-                                    full_response_content += message["content"]
+                                if message:
+                                    content_chunk = message.get("content")
+                                    thinking_chunk = message.get("thinking")
+                                    if content_chunk:
+                                        full_response_content += content_chunk
+                                    update_active_request_progress(
+                                        request_id,
+                                        response_chunk=content_chunk,
+                                        thinking_chunk=thinking_chunk
+                                    )
                                 done = choice.get("finish_reason") is not None
                                 chunk = ollama_chat_chunk(
                                     model_name, message, done, choice.get("finish_reason")
@@ -4052,6 +4292,7 @@ async def chat(request: Request):
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
                     active_requests_lock.notify_all()
+            complete_active_request(request_id)
 
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
@@ -4112,6 +4353,15 @@ async def chat(request: Request):
         if logprobs is not None:
             chunk["logprobs"] = logprobs
 
+        # Complete request with final content and thinking
+        final_content = message.get("content") if message else ""
+        final_thinking = message.get("thinking") if message else None
+        complete_active_request(
+            request_id,
+            final_response=final_content,
+            final_thinking=final_thinking
+        )
+
         # Save the new slot cache checkpoint
         if message and message.get("content"):
             new_messages = list(messages) + [message]
@@ -4138,6 +4388,7 @@ async def chat(request: Request):
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
                 active_requests_lock.notify_all()
+        complete_active_request(request_id)
 
 
 @app.post("/api/generate")
@@ -4147,6 +4398,12 @@ async def generate(request: Request):
     use_chat_backend = should_generate_via_chat(body)
     endpoint = "/v1/chat/completions" if use_chat_backend else "/completion"
     keep_alive = effective_keep_alive(body.get("keep_alive"))
+
+    request_id = getattr(request.state, "request_id", None)
+    if not request_id or request_id == "N/A":
+        import uuid
+        request_id = str(uuid.uuid4())[:8]
+    register_active_request(request_id, model_name, "ollama_generate", body)
 
     async def stream_proxy():
         resolved_backend = None
@@ -4164,59 +4421,116 @@ async def generate(request: Request):
                 )
 
             load_duration = now_ns() - load_started_ns
-            payload = (
+            full_response_content = ""
+            current_payload = (
                 build_generate_chat_payload(body, resolved_backend)
                 if use_chat_backend
                 else build_generate_payload(body, resolved_backend)
             )
 
-            request_id = getattr(request.state, "request_id", "N/A")
-            request_source = getattr(request.state, "request_source", "unknown")
-            logger.info(
-                f"[GENERATE] Sending payload to llama-server: model={payload.get('model')} | "
-                f"Origin: {request_source}",
-                extra={"request_id": request_id, "request_source": request_source},
-            )
+            attempt = 0
+            max_attempts = 2
 
-            async with client_httpx.stream(
-                "POST", f"{LLAMA_SERVER_URL}{endpoint}", json=payload
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or "[DONE]" in line:
-                        continue
-                    if line.startswith("data: "):
-                        line = line[6:]
-                    try:
-                        data = json.loads(line)
-                        if use_chat_backend:
-                            choice = (data.get("choices") or [{}])[0]
-                            message = chat_message_from_choice(choice)
-                            done = choice.get("finish_reason") is not None
-                            chunk = ollama_generate_chunk(
-                                model_name,
-                                message.get("content", ""),
-                                done,
-                                choice.get("finish_reason"),
-                            )
-                            if "thinking" in message:
-                                chunk["thinking"] = message["thinking"]
-                            if done:
-                                apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+            while attempt < max_attempts:
+                try:
+                    request_id = getattr(request.state, "request_id", "N/A")
+                    request_source = getattr(request.state, "request_source", "unknown")
+                    logger.info(
+                        f"[GENERATE] Sending payload to llama-server (attempt {attempt}): model={current_payload.get('model')} | "
+                        f"Origin: {request_source}",
+                        extra={"request_id": request_id, "request_source": request_source},
+                    )
+
+                    async with client_httpx.stream(
+                        "POST", f"{LLAMA_SERVER_URL}{endpoint}", json=current_payload
+                    ) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line or "[DONE]" in line:
+                                continue
+                            if line.startswith("data: "):
+                                line = line[6:]
+                            try:
+                                data = json.loads(line)
+                                response_chunk = ""
+                                thinking_chunk = None
+                                if use_chat_backend:
+                                    choice = (data.get("choices") or [{}])[0]
+                                    message = chat_message_from_choice(choice)
+                                    response_chunk = message.get("content", "") if message else ""
+                                    thinking_chunk = message.get("thinking") if message else None
+                                    done = choice.get("finish_reason") is not None
+                                    chunk = ollama_generate_chunk(
+                                        model_name,
+                                        response_chunk,
+                                        done,
+                                        choice.get("finish_reason"),
+                                    )
+                                    if "thinking" in message:
+                                        chunk["thinking"] = message["thinking"]
+                                    if done:
+                                        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                else:
+                                    done = data.get("stop", False)
+                                    done_reason = data.get("finish_reason") or ("stop" if done else None)
+                                    response_chunk = data.get("content") or ""
+                                    thinking_chunk = data.get("thinking")
+                                    chunk = ollama_generate_chunk(
+                                        model_name, response_chunk, done, done_reason
+                                    )
+                                    if thinking_chunk is not None:
+                                        chunk["thinking"] = thinking_chunk
+                                    if done:
+                                        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                if response_chunk:
+                                    full_response_content += response_chunk
+                                update_active_request_progress(
+                                    request_id,
+                                    response_chunk=response_chunk,
+                                    thinking_chunk=thinking_chunk
+                                )
+                                yield json.dumps(chunk) + "\n"
+                            except Exception as e:
+                                logger.exception(f"Error processing generate stream line: {e}")
+                                continue
+                    break
+                except (
+                    httpx.RemoteProtocolError,
+                    httpx.ReadError,
+                    httpx.HTTPStatusError,
+                    httpx.RequestError,
+                ) as e:
+                    attempt += 1
+                    if attempt >= max_attempts:
+                        logger.error(f"Stream failed after {attempt} attempts: {e}")
+                        raise
+
+                    logger.warning(
+                        f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery..."
+                    )
+                    await restart_llama_server()
+                    if not await wait_for_llama_server_or_restart(timeout=60.0):
+                        raise HTTPException(
+                            status_code=502,
+                            detail="Failed to restore llama-server after mid-stream crash",
+                        )
+
+                    resolved = await ensure_model(model_name, options=body.get("options"))
+                    resolved_backend = resolved["backend_model"]
+
+                    if use_chat_backend:
+                        if full_response_content:
+                            current_payload["messages"] = build_generate_chat_payload(body, resolved_backend)["messages"] + [
+                                {"role": "assistant", "content": full_response_content}
+                            ]
                         else:
-                            done = data.get("stop", False)
-                            done_reason = data.get("finish_reason") or ("stop" if done else None)
-                            chunk = ollama_generate_chunk(
-                                model_name, data.get("content") or "", done, done_reason
-                            )
-                            if data.get("thinking") is not None:
-                                chunk["thinking"] = data.get("thinking")
-                            if done:
-                                apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
-                        yield json.dumps(chunk) + "\n"
-                    except Exception as e:
-                        logger.exception(f"Error processing generate stream line: {e}")
-                        continue
+                            current_payload["messages"] = build_generate_chat_payload(body, resolved_backend)["messages"]
+                    else:
+                        if full_response_content:
+                            current_payload["prompt"] = build_generate_payload(body, resolved_backend)["prompt"] + full_response_content
+                        else:
+                            current_payload["prompt"] = build_generate_payload(body, resolved_backend)["prompt"]
+
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:
             try:
@@ -4238,6 +4552,7 @@ async def generate(request: Request):
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
                     active_requests_lock.notify_all()
+            complete_active_request(request_id)
 
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
@@ -4262,17 +4577,37 @@ async def generate(request: Request):
             else build_generate_payload(body, resolved_backend)
         )
 
-        request_id = getattr(request.state, "request_id", "N/A")
-        request_source = getattr(request.state, "request_source", "unknown")
-        logger.info(
-            f"[GENERATE] Sending payload to llama-server: model={payload.get('model')} | "
-            f"Origin: {request_source}",
-            extra={"request_id": request_id, "request_source": request_source},
-        )
+        attempt = 0
+        max_attempts = 2
+        resp = None
+        while attempt < max_attempts:
+            try:
+                request_id = getattr(request.state, "request_id", "N/A")
+                request_source = getattr(request.state, "request_source", "unknown")
+                logger.info(
+                    f"[GENERATE] Sending payload to llama-server (attempt {attempt}): model={payload.get('model')} | "
+                    f"Origin: {request_source}",
+                    extra={"request_id": request_id, "request_source": request_source},
+                )
+                resp = await client_httpx.post(f"{LLAMA_SERVER_URL}{endpoint}", json=payload)
+                resp.raise_for_status()
+                break
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                attempt += 1
+                if attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    f"Upstream request failed (attempt {attempt}): {e}. Retrying recovery..."
+                )
+                await restart_llama_server()
+                await wait_for_llama_server_or_restart()
+                resolved = await ensure_model(model_name, options=body.get("options"))
+                resolved_backend = resolved["backend_model"]
+                payload["model"] = resolved_backend
 
-        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}{endpoint}", json=payload)
-        resp.raise_for_status()
         data = resp.json()
+        final_response = ""
+        final_thinking = None
         if use_chat_backend:
             choice = (data.get("choices") or [{}])[0]
             message = chat_message_from_choice(choice)
@@ -4281,13 +4616,25 @@ async def generate(request: Request):
             )
             if "thinking" in message:
                 chunk["thinking"] = message["thinking"]
+            final_response = message.get("content", "")
+            final_thinking = message.get("thinking")
         else:
             done = data.get("stop", True)
             done_reason = data.get("finish_reason") or ("stop" if done else None)
             chunk = ollama_generate_chunk(model_name, data.get("content") or "", done, done_reason)
             if data.get("thinking") is not None:
                 chunk["thinking"] = data.get("thinking")
+            final_response = data.get("content") or ""
+            final_thinking = data.get("thinking")
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+
+        # Complete active request details
+        complete_active_request(
+            request_id,
+            final_response=final_response,
+            final_thinking=final_thinking
+        )
+
         await apply_keep_alive_policy(model_name, keep_alive)
         return JSONResponse(chunk)
     except httpx.HTTPStatusError as e:
@@ -4307,6 +4654,7 @@ async def generate(request: Request):
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
                 active_requests_lock.notify_all()
+        complete_active_request(request_id)
 
 
 @app.get("/api/tags")

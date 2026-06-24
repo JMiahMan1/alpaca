@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=device-width, initial-scale=1.0">
+    <title>Alpaca LLM Benchmark Suite</title>
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Dashboard Header -->
+        <header>
+            <div class="brand-section">
+                <div class="brand-logo">🦙</div>
+                <div class="brand-title">
+                    <h1>Alpaca Benchmarks v2</h1>
+                    <p>Real-time multi-container LLM evaluation suite</p>
+                </div>
+            </div>
+            <div class="status-badge-container">
+                <div id="connection-status-badge" class="badge badge-danger">
+                    <span class="badge-dot"></span> Socket Offline
+                </div>
+                <div id="runner-status-badge" class="badge badge-success">
+                    <span class="badge-dot"></span> IDLE
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Navigation Tabs -->
+        <div class="main-tabs">
+            <button id="tab-btn-monitor" class="nav-tab active">⚡ System Monitor</button>
+            <button id="tab-btn-general" class="nav-tab">🎯 General Benchmarks</button>
+            <button id="tab-btn-shared" class="nav-tab">⚙️ SharedLLM Benchmarks</button>
+            <button id="tab-btn-profiles" class="nav-tab">🔧 Model Profiles</button>
+            <button id="tab-btn-requests" class="nav-tab">🔍 Request Monitor</button>
+            <button id="tab-btn-docs" class="nav-tab">📖 API Docs</button>
+        </div>
+
+        <!-- Main Dashboard Grid -->
+        <div class="dashboard-grid">
+            
+            <!-- Left Sidebar Controls -->
+            <div class="sidebar">
+                
+                <!-- Configuration Card -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>Pipeline Controls</span>
+                        <span class="card-title-icon">⚙️</span>
+                    </div>
+                    
+                    <div class="control-group">
+                        <span class="control-label">Endpoint Mode</span>
+                        <div class="toggle-group">
+                            <button id="mode-proxy-btn" class="toggle-btn active">Proxy (11434)</button>
+                            <button id="mode-direct-btn" class="toggle-btn">Direct (Ollama)</button>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <div class="flex-space" style="margin-bottom: 0.5rem;">
+                            <span class="control-label">Target Models</span>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <span id="btn-select-all" style="font-size:0.7rem; color:var(--color-primary); cursor:pointer; font-weight:600;">All</span>
+                                <span id="btn-deselect-all" style="font-size:0.7rem; color:var(--text-muted); cursor:pointer; font-weight:600;">None</span>
+                            </div>
+                        </div>
+                        <div id="model-checkboxes" class="model-list-container">
+                            <div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Loading models...</div>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group grid-2" style="margin-bottom: 0.5rem;">
+                        <button id="btn-run" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.5rem 0.25rem;">Run General</button>
+                        <button id="btn-run-shared" class="btn btn-primary" style="background: linear-gradient(135deg, var(--color-secondary), #0891b2); font-size: 0.75rem; padding: 0.5rem 0.25rem;">Run SharedLLM</button>
+                    </div>
+                    <div class="control-group">
+                        <button id="btn-cancel" class="btn btn-danger" disabled>Cancel Run</button>
+                    </div>
+                </div>
+
+                <!-- Historical Runs Sidebar -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>Past Benchmarks</span>
+                        <span class="card-title-icon">📊</span>
+                    </div>
+                    <div id="history-list" class="history-list">
+                        <div style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding:1rem;">Loading reports...</div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Right Main Area -->
+            <div class="main-content">
+                
+                <!-- Live Progress Card (Visible only when benchmarking) -->
+                <div id="progress-card" class="card progress-card d-none">
+                    <div class="progress-info">
+                        <span id="progress-text" style="font-weight: 500;">Benchmarking model...</span>
+                        <span id="progress-percent" style="font-weight: 600; color: var(--color-secondary);">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div id="progress-bar-fill" class="progress-bar-fill"></div>
+                    </div>
+                    <div class="grid-2">
+                        <div class="current-status-detail">
+                            <span><strong>Active Model:</strong> <span id="status-model">-</span></span>
+                            <span><strong>Current Test:</strong> <span id="status-test">-</span></span>
+                        </div>
+                        <div class="current-status-detail" style="text-align: right;">
+                            <span><strong>Category:</strong> <span id="status-category" style="text-transform: capitalize;">-</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- VIEW 1: SYSTEM MONITOR VIEW -->
+                <div id="view-monitor" class="tab-view">
+                    
+                    <!-- Server Offline/Online Banner -->
+                    <div id="proxy-status-card" class="card" style="border-left: 4px solid var(--color-danger); margin-bottom: 1.5rem;">
+                        <div class="flex-space">
+                            <div>
+                                <h3 id="proxy-connection-title" style="color: white; font-size: 1.1rem; margin-bottom:0.25rem;">Server Monitor Offline</h3>
+                                <p id="proxy-connection-subtitle" style="font-size: 0.75rem; color: var(--text-muted);">Attempting connection to Alpaca Proxy...</p>
+                            </div>
+                            <div style="display:flex; gap:0.5rem; align-items:center;">
+                                <a href="/api/logs/download" id="btn-download-logs" class="btn btn-secondary" style="font-size:0.75rem; padding:0.3rem 0.6rem; display:none; text-decoration:none; color:white;">📥 Download Logs</a>
+                                <div id="proxy-uptime-badge" class="badge badge-danger">Offline</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="monitor-grid">
+                        
+                        <!-- Hardware load gauges -->
+                        <div class="card">
+                            <div class="card-title">Hardware Utilization</div>
+                            <div id="hardware-gauges">
+                                <div class="gauge-container">
+                                    <div class="gauge-label">
+                                        <span>CPU Usage</span>
+                                        <span id="cpu-percent">0%</span>
+                                    </div>
+                                    <div class="gauge-bar-bg">
+                                        <div id="cpu-bar" class="gauge-bar-fill purple"></div>
+                                    </div>
+                                </div>
+                                <div class="gauge-container">
+                                    <div class="gauge-label">
+                                        <span>System RAM</span>
+                                        <span id="ram-usage-text">0GB / 0GB (0%)</span>
+                                    </div>
+                                    <div class="gauge-bar-bg">
+                                        <div id="ram-bar" class="gauge-bar-fill cyan"></div>
+                                    </div>
+                                </div>
+                                <div class="gauge-container">
+                                    <div class="gauge-label">
+                                        <span>GPU VRAM</span>
+                                        <span id="vram-usage-text">0MB / 0MB (0%)</span>
+                                    </div>
+                                    <div class="gauge-bar-bg">
+                                        <div id="vram-bar" class="gauge-bar-fill green"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Active Model Details -->
+                        <div class="card">
+                            <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
+                                <span>Currently Loaded Model</span>
+                                <span id="loaded-model-sync-badge" class="badge badge-warning d-none" style="font-size:0.65rem; background-color: var(--color-warning); color: black;">Out of Sync</span>
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:0.5rem; justify-content:center; min-height:100px;">
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Model Name</span>
+                                    <strong id="loaded-model-name" style="font-size:0.9rem; color:white;">None</strong>
+                                </div>
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Active Requests</span>
+                                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                                        <span id="loaded-model-requests" class="monitor-list-item-badge">0</span>
+                                        <span style="font-size:0.7rem; color:var(--text-muted);">Peak: <strong id="loaded-model-peak-requests" style="color:white;">0</strong></span>
+                                    </div>
+                                </div>
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Total Requests (Session)</span>
+                                    <span id="loaded-model-total-requests" style="font-size:0.8rem; color:white;">0</span>
+                                </div>
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Context Limit</span>
+                                    <span id="loaded-model-context" style="font-size:0.8rem; color:white;">-</span>
+                                </div>
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Cache TTL / Expiry</span>
+                                    <span id="loaded-model-ttl" style="font-size:0.8rem; color:var(--color-warning);">-</span>
+                                </div>
+                                <div id="loaded-model-running-settings" style="display:flex; flex-direction:column; gap:0.5rem; border-top: 1px dashed var(--border-color); padding-top: 0.5rem; margin-top: 0.25rem;">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Performance Metrics -->
+                        <div class="card">
+                            <div class="card-title">Endpoint Stats (All-time)</div>
+                            <div style="display:flex; flex-direction:column; gap:0.5rem; justify-content:center; min-height:100px;">
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Total Requests</span>
+                                    <strong id="proxy-total-requests" style="font-size:0.85rem; color:white;">0</strong>
+                                </div>
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Average Latency</span>
+                                    <span id="proxy-avg-latency" style="font-size:0.85rem; color:white;">0 ms</span>
+                                </div>
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Tokens Prompted</span>
+                                    <span id="proxy-prompt-tokens" style="font-size:0.85rem; color:white;">0</span>
+                                </div>
+                                <div class="flex-space">
+                                    <span style="font-size:0.75rem; color:var(--text-muted);">Tokens Generated</span>
+                                    <span id="proxy-gen-tokens" style="font-size:0.85rem; color:white;">0</span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Client Connections Section -->
+                    <div class="monitor-grid" style="margin-top: 1.5rem;">
+                        <div class="card">
+                            <div class="card-title">Connected Clients</div>
+                            <div id="monitor-clients" class="monitor-list">
+                                <div style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding:1rem;">Waiting for client requests...</div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">Endpoint Request Types</div>
+                            <div id="monitor-endpoints" class="monitor-list">
+                                <div style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding:1rem;">Waiting for client requests...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Llama Slots Grid -->
+                    <div class="card" style="margin-top: 1.5rem;">
+                        <div class="card-title">llama-server Server Slots (llama.cpp)</div>
+                        <div id="slots-grid-container" class="slots-grid">
+                            <div style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding:2rem;width:100%;">No server slots detected</div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- VIEW 2: GENERAL BENCHMARKS VIEW -->
+                <div id="view-general" class="tab-view d-none">
+                    
+                    <!-- Performance Summary Overhead Cards -->
+                    <div class="metrics-summary-grid">
+                        <div class="metric-card primary">
+                            <span class="metric-label">Average Throughput</span>
+                            <span id="metric-tps" class="metric-value">0 tok/s</span>
+                            <span class="metric-sub">Across all task categories</span>
+                        </div>
+                        <div class="metric-card secondary">
+                            <span class="metric-label">Average TTFT</span>
+                            <span id="metric-ttft" class="metric-value">0 ms</span>
+                            <span class="metric-sub">Time to First Token</span>
+                        </div>
+                        <div class="metric-card success">
+                            <span class="metric-label">Success Rate</span>
+                            <span id="metric-success" class="metric-value">0%</span>
+                            <span class="metric-sub">Instruction compliance</span>
+                        </div>
+                        <div class="metric-card info">
+                            <span class="metric-label">Scope</span>
+                            <span id="metric-count" class="metric-value">0 Models</span>
+                            <span class="metric-sub">Currently loaded file</span>
+                        </div>
+                    </div>
+
+                    <!-- Interactive Charts -->
+                    <div class="charts-grid" style="margin-top: 1.5rem;">
+                        <div class="card">
+                            <div class="card-title">Throughput Speed (Higher is better)</div>
+                            <div class="chart-wrapper">
+                                <canvas id="tps-chart"></canvas>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">First Token Latency (Lower is better)</div>
+                            <div class="chart-wrapper">
+                                <canvas id="ttft-chart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card" style="margin-top: 1.5rem;">
+                        <div class="card-title">Category Success Rate (%)</div>
+                        <div class="chart-wrapper" style="height: 300px;">
+                            <canvas id="category-chart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Logging Console Panel -->
+                    <div class="card console-card" style="margin-top: 1.5rem;">
+                        <div class="card-title">
+                            <span>Stdout Pipeline Stream</span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-dark);">console.log</span>
+                        </div>
+                        <div id="console-terminal" class="console-terminal">
+                            <div class="console-line info"><span class="console-line timestamp">[System]</span>Console stream initialized. Choose a model and press "Run General" to begin...</div>
+                        </div>
+                    </div>
+
+                    <!-- Audits and Details Table -->
+                    <div class="card" style="margin-top: 1.5rem;">
+                        <div class="card-title">Detailed Evaluation Results</div>
+                        <div class="results-details-section">
+                            <!-- Model selector tabs -->
+                            <div id="model-tabs" class="model-tabs">
+                                <!-- Populated via javascript -->
+                            </div>
+                            <!-- Detailed Results Table -->
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Category</th>
+                                            <th>Test Scenario</th>
+                                            <th>Status</th>
+                                            <th>Latency (s)</th>
+                                            <th>Speed (TPS)</th>
+                                            <th>Payload Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="detailed-results-body">
+                                        <tr>
+                                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                                                Select a past benchmark or start a new run to load raw evaluation details.
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- VIEW 3: SHAREDLLM BENCHMARKS VIEW -->
+                <div id="view-shared" class="tab-view d-none">
+                    
+                    <!-- SharedLLM specific summary metrics cards -->
+                    <div class="metrics-summary-grid">
+                        <div class="metric-card primary">
+                            <span class="metric-label">FastPath Intent Latency</span>
+                            <span id="shared-metric-fastpath" class="metric-value">0 ms</span>
+                            <span class="metric-sub">Tier 1 classification speed</span>
+                        </div>
+                        <div class="metric-card secondary">
+                            <span class="metric-label">Librarian Tool Acc</span>
+                            <span id="shared-metric-librarian" class="metric-value">0%</span>
+                            <span class="metric-sub">Tier 2 JSON tool select</span>
+                        </div>
+                        <div class="metric-card success">
+                            <span class="metric-label">Raven AST Completeness</span>
+                            <span id="shared-metric-raven" class="metric-value">0%</span>
+                            <span class="metric-sub">Tier 3 structural code validation</span>
+                        </div>
+                        <div class="metric-card info">
+                            <span class="metric-label">Tested Scope</span>
+                            <span id="shared-metric-count" class="metric-value">0 Models</span>
+                            <span class="metric-sub">Currently loaded file</span>
+                        </div>
+                    </div>
+
+                    <!-- Interactive Charts -->
+                    <div class="charts-grid" style="margin-top: 1.5rem;">
+                        <div class="card">
+                            <div class="card-title">SharedLLM Tier Latency (Seconds, lower is better)</div>
+                            <div class="chart-wrapper">
+                                <canvas id="shared-latency-chart"></canvas>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">AST Compliance Rate (%)</div>
+                            <div class="chart-wrapper">
+                                <canvas id="shared-ast-chart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Logging Console Panel -->
+                    <div class="card console-card" style="margin-top: 1.5rem;">
+                        <div class="card-title">
+                            <span>SharedLLM Agentic Harness Output</span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-dark);">console.log</span>
+                        </div>
+                        <div id="shared-console-terminal" class="console-terminal">
+                            <div class="console-line info"><span class="console-line timestamp">[System]</span>SharedLLM verification channel initialized. Select target models and click "Run SharedLLM" to evaluate.</div>
+                        </div>
+                    </div>
+
+                    <!-- SharedLLM detailed verification table -->
+                    <div class="card" style="margin-top: 1.5rem;">
+                        <div class="card-title">SharedLLM Evaluation Audits</div>
+                        <div class="results-details-section">
+                            <div id="shared-model-tabs" class="model-tabs">
+                                <!-- Populated via javascript -->
+                            </div>
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Tier</th>
+                                            <th>Test Scope</th>
+                                            <th>Status</th>
+                                            <th>Latency (s)</th>
+                                            <th>Verification Payload Details</th>
+                                            <th>Payload Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="shared-detailed-results-body">
+                                        <tr>
+                                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                                                Start a SharedLLM task benchmark run or select a saved SharedLLM report.
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- VIEW 4: MODEL PROFILES VIEW -->
+                <div id="view-profiles" class="tab-view d-none">
+
+                        <div class="card" style="margin-bottom: 1.5rem; border-left: 4px solid var(--color-primary);">
+                            <div class="flex-space">
+                                <div>
+                                    <h3 style="color: white; font-size: 1.1rem; margin-bottom:0.25rem;">🔧 Model Profile &amp; Presets Editor</h3>
+                                    <p style="font-size: 0.75rem; color: var(--text-muted);">Modify hardware configurations, KV cache settings, and speculative execution modes in models.ini.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Profile cards overview grid — populated by JS -->
+                        <div class="card" style="margin-bottom: 1.5rem;">
+                            <div class="card-title">📋 Saved Profiles <span style="font-size:0.7rem;color:var(--text-muted);font-weight:400;">— click any card to load it in the editor</span></div>
+                            <div id="profile-cards-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+                                <div style="color:var(--text-muted);font-size:0.8rem;">Loading profiles...</div>
+                            </div>
+                        </div>
+
+                        <div class="grid-2" style="grid-template-columns: 1fr 2fr; gap: 1.5rem; display: grid;">
+
+                            <!-- Left pane: Select Model & Hardware Status -->
+                            <div style="display:flex; flex-direction:column; gap:1.5rem;">
+
+                                <div class="card" style="min-height: 200px;">
+
+                                    <div class="card-title">Select Model Section</div>
+                                    <div style="margin-bottom: 1rem;">
+                                        <label class="control-label" style="display:block; margin-bottom:0.5rem;">Target Section</label>
+                                        <select id="profile-section-select" class="form-control" style="width: 100%; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.5rem; border-radius: 6px; font-size:0.8rem; margin-bottom: 1rem;">
+                                            <option value="">Loading profiles...</option>
+                                        </select>
+                                        <div style="display:flex; gap:0.5rem;">
+                                            <button id="btn-create-profile" type="button" class="btn btn-secondary" style="font-size:0.75rem; padding:0.4rem; flex:1;">➕ New Section</button>
+                                            <button id="btn-delete-profile" type="button" class="btn btn-danger" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: var(--color-danger); border-color: var(--color-danger);">🗑️ Delete Section</button>
+                                        </div>
+                                    </div>
+                                    <div style="font-size: 0.7rem; color: var(--text-muted); line-height: 1.4;">
+                                        <p><strong>[*] Defaults:</strong> Global settings applied to all models unless explicitly overridden by their specific profile section.</p>
+                                    </div>
+                                </div>
+
+                                <div class="card" style="min-height: 200px;">
+
+                                    <div class="card-title">Live Hardware Status</div>
+                                    <div id="profile-hardware-gauges">
+                                        <div class="gauge-container">
+                                            <div class="gauge-label">
+                                                <span>CPU Usage</span>
+                                                <span id="profile-cpu-percent">0%</span>
+                                            </div>
+                                            <div class="gauge-bar-bg">
+                                                <div id="profile-cpu-bar" class="gauge-bar-fill purple"></div>
+                                            </div>
+                                        </div>
+                                        <div class="gauge-container" style="margin-top: 1rem;">
+                                            <div class="gauge-label">
+                                                <span>System RAM</span>
+                                                <span id="profile-ram-usage-text">0GB / 0GB (0%)</span>
+                                            </div>
+                                            <div class="gauge-bar-bg">
+                                                <div id="profile-ram-bar" class="gauge-bar-fill cyan"></div>
+                                            </div>
+                                        </div>
+                                        <div class="gauge-container" style="margin-top: 1rem;">
+                                            <div class="gauge-label">
+                                                <span>GPU VRAM</span>
+                                                <span id="profile-vram-usage-text">0MB / 0MB (0%)</span>
+                                            </div>
+                                            <div class="gauge-bar-bg">
+                                                <div id="profile-vram-bar" class="gauge-bar-fill green"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+
+                            <!-- Right pane: Edit Settings Form -->
+                            <div class="card">
+                                <div class="card-title">Profile Settings</div>
+                                <form id="profile-edit-form" style="display:flex; flex-direction:column; gap:1rem;">
+                                    
+                                    <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Context Size (ctx-size)</label>
+                                            <input type="number" name="ctx-size" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">GPU Layers (n-gpu-layers)</label>
+                                            <input type="number" name="n-gpu-layers" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                        </div>
+                                    </div>
+
+                                    <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">KV Cache Key (cache-type-k)</label>
+                                            <select name="cache-type-k" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                <option value="f16">f16 (High Precision)</option>
+                                                <option value="q8_0">q8_0</option>
+                                                <option value="q4_0">q4_0 (Compressed / Unified)</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">KV Cache Value (cache-type-v)</label>
+                                            <select name="cache-type-v" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                <option value="f16">f16 (High Precision)</option>
+                                                <option value="q8_0">q8_0</option>
+                                                <option value="q4_0">q4_0 (Compressed / Unified)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Flash Attention</label>
+                                            <select name="flash-attn" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                <option value="on">On</option>
+                                                <option value="off">Off</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">KV Cache Unified (kv-unified)</label>
+                                            <select name="kv-unified" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                <option value="true">True (Unified Compaction)</option>
+                                                <option value="false">False</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Speculative Type (spec-type)</label>
+                                            <select name="spec-type" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                <option value="none">none</option>
+                                                <option value="draft-mtp">draft-mtp (MTP SpecDecoding)</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Draft Limit (spec-draft-n-max)</label>
+                                            <input type="number" name="spec-draft-n-max" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">CPU threads for MoE (n-cpu-moe)</label>
+                                        <input type="number" name="n-cpu-moe" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                    </div>
+
+                                    <div class="flex-space" style="margin-top: 1rem; gap:1rem;">
+                                        <button type="submit" class="btn btn-primary" style="flex:1;">💾 Save Settings</button>
+                                        <button id="btn-restart-services" type="button" class="btn btn-danger" style="flex:1;">🔄 Save & Restart Backend</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                </div>
+
+                <!-- VIEW 5: REQUEST MONITOR VIEW -->
+                <div id="view-requests" class="tab-view d-none">
+                    
+                    <div class="card" style="margin-bottom: 1.5rem; border-left: 4px solid var(--color-secondary);">
+                        <div class="flex-space">
+                            <div>
+                                <h3 style="color: white; font-size: 1.1rem; margin-bottom:0.25rem;">🔍 Safe Request & Prompt Monitor</h3>
+                                <p style="font-size: 0.75rem; color: var(--text-muted);">Real-time inspect model inputs and reasoning pipelines. API keys and passwords are redacted locally for privacy.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid-2" style="grid-template-columns: 1fr 2fr; gap: 1.5rem; display: grid;">
+                        
+                        <!-- Left pane: Requests List -->
+                        <div class="card" style="min-height: 400px; display: flex; flex-direction: column; max-height: 700px;">
+                            <div class="card-title" style="margin-bottom: 0.5rem; flex-shrink: 0;">Requests Buffer</div>
+                            
+                            <!-- Search & Clear Controls -->
+                            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-shrink: 0;">
+                                <input id="requests-search-input" type="text" placeholder="Search by model or prompt..." style="flex: 1; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.75rem;">
+                                <button id="btn-clear-requests" class="btn btn-danger" style="font-size: 0.75rem; padding: 0.4rem 0.6rem; background: var(--color-danger); border-color: var(--color-danger); margin: 0; line-height: 1;">🗑️ Clear</button>
+                            </div>
+                            
+                            <div style="display: flex; flex-direction: column; gap: 1rem; flex: 1; min-height: 0;">
+                                <div style="flex-shrink: 0;">
+                                    <h4 style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.5rem; letter-spacing: 0.05em;">Active Requests</h4>
+                                    <div id="active-requests-list" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                                        <div style="color:var(--text-muted);font-size:0.75rem;padding:0.5rem;text-align:center;background:#0f172a;border-radius:6px;">No active requests</div>
+                                    </div>
+                                </div>
+
+                                <div style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
+                                    <h4 style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.5rem; letter-spacing: 0.05em; flex-shrink: 0;">Completed Requests (Last 10)</h4>
+                                    <div id="completed-requests-list" style="display: flex; flex-direction: column; gap: 0.5rem; overflow-y: auto; flex: 1;">
+                                        <div style="color:var(--text-muted);font-size:0.75rem;padding:0.5rem;text-align:center;background:#0f172a;border-radius:6px;">No requests in history</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right pane: Inspector Details -->
+                        <div class="card" style="display: flex; flex-direction: column; max-height: 700px; overflow-y: auto;">
+                            <div class="card-title" style="margin-bottom: 1rem; flex-shrink: 0;">Request Inspector</div>
+                            
+                            <div id="request-inspector-empty" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--text-muted); padding: 3rem 0;">
+                                <span style="font-size: 2.5rem; margin-bottom: 1rem;">🔍</span>
+                                <p style="font-size: 0.85rem;">Select an active or completed request from the buffer to inspect its prompt, reasoning process, and output.</p>
+                            </div>
+
+                            <div id="request-inspector-details" class="d-none" style="display: flex; flex-direction: column; gap: 1rem;">
+                                <div style="background:#0f172a; padding:0.75rem; border-radius:8px; border:1px solid var(--border-color); font-size:0.75rem;">
+                                    <div class="grid-2" style="grid-template-columns: 1fr 1fr; gap:0.5rem;">
+                                        <div><strong>Request ID:</strong> <span id="inspect-id" style="font-family:monospace;">-</span></div>
+                                        <div><strong>Type:</strong> <span id="inspect-type" class="badge badge-secondary" style="font-size:0.65rem;">-</span></div>
+                                        <div><strong>Model:</strong> <span id="inspect-model" style="color:white;">-</span></div>
+                                        <div><strong>Duration:</strong> <span id="inspect-duration" style="color:var(--color-secondary); font-weight:600;">-</span></div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                        <div class="modal-section-title" style="margin-bottom: 0;">Sanitized Prompt Input</div>
+                                        <button id="btn-copy-prompt" class="btn btn-secondary" style="font-size: 0.65rem; padding: 0.2rem 0.4rem; margin: 0; background: rgba(255,255,255,0.05);">📋 Copy</button>
+                                    </div>
+                                    <pre id="inspect-prompt" class="code-display-block" style="max-height: 200px;"></pre>
+                                </div>
+
+                                <div id="inspect-thinking-container" class="d-none">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                        <div class="modal-section-title" style="color:#fbbf24; margin-bottom: 0;">Model Thinking Process</div>
+                                        <button id="btn-copy-thinking" class="btn btn-secondary" style="font-size: 0.65rem; padding: 0.2rem 0.4rem; margin: 0; background: rgba(255,255,255,0.05);">📋 Copy</button>
+                                    </div>
+                                    <pre id="inspect-thinking" class="code-display-block" style="background:#0c0a09; border-color:rgba(251,191,36,0.15); max-height: 200px; color:#f5f5f4; font-style: italic;"></pre>
+                                </div>
+
+                                <div>
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                        <div class="modal-section-title" style="color:var(--color-success); margin-bottom: 0;">Model Output Response</div>
+                                        <button id="btn-copy-response" class="btn btn-secondary" style="font-size: 0.65rem; padding: 0.2rem 0.4rem; margin: 0; background: rgba(255,255,255,0.05);">📋 Copy</button>
+                                    </div>
+                                    <pre id="inspect-response" class="code-display-block" style="background:#030712; border-color:rgba(16,185,129,0.15); max-height: 250px;"></pre>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- VIEW 6: API DOCUMENTATION VIEW -->
+                <div id="view-docs" class="tab-view d-none">
+                    
+                    <div class="card" style="margin-bottom: 1.5rem; border-left: 4px solid var(--color-primary);">
+                        <div class="flex-space">
+                            <div>
+                                <h3 style="color: white; font-size: 1.1rem; margin-bottom:0.25rem;">📖 Alpaca Router & Proxy API Reference</h3>
+                                <p style="font-size: 0.75rem; color: var(--text-muted);">Interactive endpoint documentation for integrations, monitoring pipelines, and remote agent scripts. Ports: 11434 (Proxy) / 5000 (Dashboard).</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid-2" style="grid-template-columns: 1fr 2fr; gap: 1.5rem; display: grid;">
+                        
+                        <!-- Left pane: Endpoint Categories Menu -->
+                        <div class="card" style="min-height: 550px; display: flex; flex-direction: column; max-height: 75vh;">
+                            <div class="card-title" style="margin-bottom: 1rem; flex-shrink: 0;">Endpoints Menu</div>
+                            <div style="display: flex; flex-direction: column; gap: 0.5rem; overflow-y: auto; padding-right: 0.25rem;">
+                                
+                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Ollama Compatibility (Port 11434)</div>
+                                <div class="doc-menu-item active" data-target="doc-api-chat" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-primary); color:white;">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/chat</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-generate" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-primary); color:white;">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/generate</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-tags" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/tags</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-ps" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/ps</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-show" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-primary); color:white;">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/show</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-version" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/version</span>
+                                </div>
+
+                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">OpenAI Compatibility (Port 11434)</div>
+                                <div class="doc-menu-item" data-target="doc-v1-chat-completions" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-primary); color:white;">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/v1/chat/completions</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-v1-models" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/v1/models</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-v1-embeddings" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-primary); color:white;">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/v1/embeddings</span>
+                                </div>
+
+                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Telemetry & Admin (Port 11434 / 5000)</div>
+                                <div class="doc-menu-item" data-target="doc-api-requests" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/requests</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-requests-clear" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-danger" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-danger); border-color:var(--color-danger);">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/requests/clear</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-admin-system" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/admin/system</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-admin-runtime" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/admin/runtime</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-admin-slots" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/admin/slots</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-admin-metrics" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/admin/metrics</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-logs" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/logs</span>
+                                </div>
+
+                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Dashboard Backend (Port 5000)</div>
+                                <div class="doc-menu-item" data-target="doc-api-profiles" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/profiles</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-profiles-save" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-primary); color:white;">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/profiles/save</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-profiles-delete" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-danger" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-danger); border-color:var(--color-danger);">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/profiles/delete</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-proxy-restart" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-danger" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-danger); border-color:var(--color-danger);">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/proxy/restart</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-results" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/results</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right pane: Documentation Details -->
+                        <div class="card" style="min-height: 550px; display: flex; flex-direction: column; overflow-y: auto; max-height: 75vh; padding: 1.5rem;">
+                            
+                            <!-- API: POST /api/chat -->
+                            <div id="doc-api-chat" class="doc-detail-pane">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">💬 Ollama Chat Completions</h3>
+                                    <span class="badge" style="background:var(--color-primary); color:white;">POST /api/chat</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Ollama compatibility endpoint served on Port 11434. Sends chat messages to `llama-server`. Intercepts response stream chunks for live telemetry tracking, filters secrets, and triggers self-healing loops if loading triggers connection loss.
+                                </p>
+                                
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Payload Example</h4>
+                                <pre class="code-display-block" style="background:#030712; max-height:180px; margin-bottom:1rem; overflow-y:auto;">{
+  "model": "qwen2.5-coder:7b",
+  "messages": [
+    { "role": "user", "content": "Write a python quicksort." }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0.2
+  }
+}</pre>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px; margin-bottom:1rem;">curl http://localhost:11434/api/chat -d '{"model":"qwen2.5-coder:7b","messages":[{"role":"user","content":"Hi"}],"stream":false}'</pre>
+                            </div>
+
+                            <!-- API: POST /api/generate -->
+                            <div id="doc-api-generate" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📝 Ollama Text completions</h3>
+                                    <span class="badge" style="background:var(--color-primary); color:white;">POST /api/generate</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Ollama compatibility text generation endpoint served on Port 11434. Includes auto-recovery retry blocks and local sensitive data filters.
+                                </p>
+                                
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Payload Example</h4>
+                                <pre class="code-display-block" style="background:#030712; max-height:150px; margin-bottom:1rem; overflow-y:auto;">{
+  "model": "qwen2.5-coder:7b",
+  "prompt": "def quicksort(arr):",
+  "stream": false
+}</pre>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px; margin-bottom:1rem;">curl http://localhost:11434/api/generate -d '{"model":"qwen2.5-coder:7b","prompt":"def f():","stream":false}'</pre>
+                            </div>
+
+                            <!-- API: GET /api/tags -->
+                            <div id="doc-api-tags" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🏷️ List Local Models</h3>
+                                    <span class="badge badge-success">GET /api/tags</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Ollama compatibility endpoint on Port 11434. Returns lists of all model configurations registered locally in the manifest store.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/api/tags</pre>
+                            </div>
+
+                            <!-- API: GET /api/ps -->
+                            <div id="doc-api-ps" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🏃 List Loaded Models</h3>
+                                    <span class="badge badge-success">GET /api/ps</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Ollama compatibility endpoint on Port 11434. Returns lists of loaded active models, memory allocation sizes, keep-alive durations, and remaining TTLs.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/api/ps</pre>
+                            </div>
+
+                            <!-- API: POST /api/show -->
+                            <div id="doc-api-show" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📄 Show Model Information</h3>
+                                    <span class="badge" style="background:var(--color-primary); color:white;">POST /api/show</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Ollama compatibility endpoint on Port 11434. Retrieves metadata details, model parameters, license context, and template format strings for a specific local model.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/api/show -d '{"name":"qwen2.5-coder:7b"}'</pre>
+                            </div>
+
+                            <!-- API: GET /api/version -->
+                            <div id="doc-api-version" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🔍 Version API</h3>
+                                    <span class="badge badge-success">GET /api/version</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Ollama compatibility endpoint on Port 11434. Returns standard proxy API compatibility markers.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/api/version</pre>
+                            </div>
+
+                            <!-- API: POST /v1/chat/completions -->
+                            <div id="doc-v1-chat-completions" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🤖 OpenAI Chat completions</h3>
+                                    <span class="badge" style="background:var(--color-primary); color:white;">POST /v1/chat/completions</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    OpenAI compatibility chat completion endpoint served on Port 11434. Automatically filters API keys/passwords, registers reasoning metrics, parses thinking blocks (`reasoning_content`), and leverages self-healing recovery loops.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Payload Example</h4>
+                                <pre class="code-display-block" style="background:#030712; max-height:150px; margin-bottom:1rem; overflow-y:auto;">{
+  "model": "deepseek-coder:6.7b",
+  "messages": [
+    { "role": "user", "content": "Explain binary search." }
+  ],
+  "stream": false
+}</pre>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/v1/chat/completions -d '{"model":"deepseek-coder:6.7b","messages":[{"role":"user","content":"Hi"}],"stream":false}'</pre>
+                            </div>
+
+                            <!-- API: GET /v1/models -->
+                            <div id="doc-v1-models" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📁 OpenAI Models List</h3>
+                                    <span class="badge badge-success">GET /v1/models</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    OpenAI compatibility endpoint on Port 11434. Returns lists of all available router models formatted in standard OpenAI structures.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/v1/models</pre>
+                            </div>
+
+                            <!-- API: POST /v1/embeddings -->
+                            <div id="doc-v1-embeddings" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📊 OpenAI Embeddings</h3>
+                                    <span class="badge" style="background:var(--color-primary); color:white;">POST /v1/embeddings</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    OpenAI compatibility endpoint on Port 11434. Accepts texts and generates embeddings vectors by calling embed logic of the active backend model.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Payload Example</h4>
+                                <pre class="code-display-block" style="background:#030712; max-height:120px; margin-bottom:1rem; overflow-y:auto;">{
+  "model": "nomic-embed-text",
+  "input": "text to embed"
+}</pre>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/v1/embeddings -d '{"model":"nomic-embed-text","input":"text"}'</pre>
+                            </div>
+
+                            <!-- API: GET /api/requests -->
+                            <div id="doc-api-requests" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🔍 Fetch Requests History</h3>
+                                    <span class="badge badge-success">GET /api/requests</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Exposed on Dashboard Port 5000 (proxies to Port 11434 `/admin/requests`). Returns detailed states of all currently active requests and the 10 most recently completed requests. Credentials are automatically redacted.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:5000/api/requests</pre>
+                            </div>
+
+                            <!-- API: POST /api/requests/clear -->
+                            <div id="doc-api-requests-clear" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🗑️ Clear Telemetry History</h3>
+                                    <span class="badge badge-danger" style="background:var(--color-danger); border-color:var(--color-danger);">POST /api/requests/clear</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Exposed on Dashboard Port 5000 (proxies to Port 11434 `/admin/requests/clear`). Clears the finished completed requests history logs. Active running requests are unaffected.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl -X POST http://localhost:5000/api/requests/clear</pre>
+                            </div>
+
+                            <!-- API: GET /admin/system -->
+                            <div id="doc-admin-system" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🖥️ Fetch Hardware Telemetry</h3>
+                                    <span class="badge badge-success">GET /admin/system</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Port 11434. Queries real-time hardware status metrics from the host machine, including CPU load, RAM usage, and GPU VRAM indicators.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/admin/system</pre>
+                            </div>
+
+                            <!-- API: GET /admin/runtime -->
+                            <div id="doc-admin-runtime" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">⚙️ Fetch Loaded Models Context</h3>
+                                    <span class="badge badge-success">GET /admin/runtime</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Port 11434. Fetches runtime states of all loaded models inside the router, their KV cache context size utilization, memory allocation details, and TTL expiration timestamps.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/admin/runtime</pre>
+                            </div>
+
+                            <!-- API: GET /admin/slots -->
+                            <div id="doc-admin-slots" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🎛️ Fetch Llama Server Slots</h3>
+                                    <span class="badge badge-success">GET /admin/slots</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Port 11434. Directly queries current speculative/execution slots from the underlying `llama-server` process, showing token generation speeds and active slots context length metrics.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/admin/slots</pre>
+                            </div>
+
+                            <!-- API: GET /admin/metrics -->
+                            <div id="doc-admin-metrics" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📊 Fetch Metrics and Throughput</h3>
+                                    <span class="badge badge-success">GET /admin/metrics</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Port 11434. Returns general proxy benchmarks, request latency statistics, prompt token metrics, and completion token metrics.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/admin/metrics</pre>
+                            </div>
+
+                            <!-- API: GET /api/logs -->
+                            <div id="doc-api-logs" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📜 Fetch Proxy Logs</h3>
+                                    <span class="badge badge-success">GET /api/logs</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Port 11434. Retrieves raw logs output from the alpaca-proxy daemon stack. Supports a `limit` query parameter.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:11434/api/logs?limit=50</pre>
+                            </div>
+
+                            <!-- API: GET /api/profiles -->
+                            <div id="doc-api-profiles" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📁 Fetch Model Profiles</h3>
+                                    <span class="badge badge-success">GET /api/profiles</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Dashboard Port 5000. Reads and parses all defined configuration sections inside `models.ini`, including context cap sizes, thread count, VRAM budgeting layers, and speculative parameters.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:5000/api/profiles</pre>
+                            </div>
+
+                            <!-- API: POST /api/profiles/save -->
+                            <div id="doc-api-profiles-save" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">💾 Save/Update Model Profile</h3>
+                                    <span class="badge" style="background:var(--color-primary); color:white;">POST /api/profiles/save</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Dashboard Port 5000. Saves or modifies individual parameter keys for a designated model section inside `models.ini`.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Payload Example</h4>
+                                <pre class="code-display-block" style="background:#030712; max-height:150px; margin-bottom:1rem; overflow-y:auto;">{
+  "section": "qwen2.5-coder:7b",
+  "settings": {
+    "n_gpu_layers": "32",
+    "flash_attn": "true"
+  }
+}</pre>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:5000/api/profiles/save -d '{"section":"qwen2.5-coder:7b","settings":{"n_gpu_layers":"32"}}'</pre>
+                            </div>
+
+                            <!-- API: POST /api/profiles/delete -->
+                            <div id="doc-api-profiles-delete" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">❌ Delete Model Profile</h3>
+                                    <span class="badge" style="background:var(--color-danger); border-color:var(--color-danger); color:white;">POST /api/profiles/delete</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Dashboard Port 5000. Deletes a custom profile section from `models.ini`. The default general `[*]` configuration section cannot be deleted.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Payload Example</h4>
+                                <pre class="code-display-block" style="background:#030712; max-height:100px; margin-bottom:1rem;">{
+  "section": "qwen2.5-coder:7b"
+}</pre>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:5000/api/profiles/delete -d '{"section":"qwen2.5-coder:7b"}'</pre>
+                            </div>
+
+                            <!-- API: POST /api/proxy/restart -->
+                            <div id="doc-api-proxy-restart" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">🔄 Restart Backend Services</h3>
+                                    <span class="badge badge-danger" style="background:var(--color-danger); border-color:var(--color-danger);">POST /api/proxy/restart</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Dashboard Port 5000. Triggers background container restart sequences for both `llama-server` and `alpaca-proxy` containers.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl -X POST http://localhost:5000/api/proxy/restart</pre>
+                            </div>
+
+                            <!-- API: GET /api/results -->
+                            <div id="doc-api-results" class="doc-detail-pane d-none">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;">
+                                    <h3 style="color:white; margin:0;">📊 Fetch Benchmark Results</h3>
+                                    <span class="badge badge-success">GET /api/results</span>
+                                </div>
+                                <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
+                                    Served on Dashboard Port 5000. Returns detailed lists of all saved standard benchmarks and SharedLLM verification result runs from disk.
+                                </p>
+                                <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
+                                <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:5000/api/results</pre>
+                            </div>
+
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Modal for viewing prompt and response payloads -->
+    <div id="modal-overlay" class="modal-overlay">
+        <div class="modal-container">
+            <div class="modal-header">
+                <div id="modal-title" class="modal-title">Evaluation Payloads</div>
+                <button id="modal-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div>
+                    <div class="modal-section-title">Test Prompt</div>
+                    <pre id="modal-prompt" class="code-display-block"></pre>
+                </div>
+                <div id="modal-thinking-section" style="display:none;">
+                    <div class="modal-section-title" style="color:#fbbf24;">&#x1F9E0; Model Thinking Process</div>
+                    <pre id="modal-thinking" class="code-display-block" style="background:#0c0a09; border-color:rgba(251,191,36,0.2); color:#e5e5e4; font-style:italic; max-height:300px; overflow-y:auto;"></pre>
+                </div>
+                <div>
+                    <div class="modal-section-title" style="color:var(--color-success);">&#x2705; Model Response</div>
+                    <pre id="modal-response" class="code-display-block" style="background:#030712; border-color:rgba(16,185,129,0.2);"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Restart Status Overlay -->
+    <div id="restart-overlay" class="modal-overlay" style="z-index: 10000; background: rgba(15, 23, 42, 0.95); display: none;">
+        <div class="modal-container" style="max-width: 400px; text-align: center; padding: 2rem;">
+            <div style="margin-bottom: 1.5rem;">
+                <div class="loader" style="width: 40px; height: 40px; border-width: 4px; border-top-color: var(--color-danger); margin: 0 auto 1rem auto; display: block;"></div>
+                <h3 id="restart-overlay-title" style="color: white; font-size: 1.2rem; margin-bottom: 0.5rem;">System Restarting...</h3>
+                <p id="restart-overlay-subtitle" style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5;">
+                    The model router backend is rebooting. This takes around 10-15 seconds while llama-server reallocates GPU layers.
+                </p>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:0.5rem; text-align:left; background: #0f172a; border: 1px solid var(--border-color); padding: 0.75rem; border-radius: 6px; font-family: monospace; font-size: 0.7rem; color: var(--text-muted);">
+                <div id="restart-step-1" style="display:flex; justify-content:space-between;"><span>1. Send shutdown command</span><span id="restart-status-1">⌛</span></div>
+                <div id="restart-step-2" style="display:flex; justify-content:space-between;"><span>2. Await offline confirmation</span><span id="restart-status-2">⌛</span></div>
+                <div id="restart-step-3" style="display:flex; justify-content:space-between;"><span>3. Await online status</span><span id="restart-status-3">⌛</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Socket.IO library (CDN) -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <!-- Frontend logic script -->
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

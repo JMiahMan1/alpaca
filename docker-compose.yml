@@ -71,3 +71,26 @@ services:
         condition: service_completed_successfully
       llama-server:
         condition: service_started
+
+  alpaca-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: alpaca-web
+    restart: always
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./web:/app/web:ro
+      - ./llm_benchmark_suite.py:/app/llm_benchmark_suite.py:ro
+      - ./.alpaca-router:/router-models
+    environment:
+      OLLAMA_SERVER_URLS: "http://llama-server:8080"
+      PROXY_SERVER_URLS: "http://alpaca-proxy:11434"
+      ROUTER_MODELS_DIR: "/router-models"
+    depends_on:
+      alpaca-proxy:
+        condition: service_started
+      llama-server:
+        condition: service_started

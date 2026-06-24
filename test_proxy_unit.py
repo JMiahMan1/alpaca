@@ -660,13 +660,16 @@ async def test_admin_system_endpoint_returns_metrics():
     )
     mock_psutil.cpu_percent.return_value = 25.0
 
-    # Mock subprocess.check_output
-    mock_subprocess = MagicMock()
-    mock_subprocess.check_output.return_value = "NVIDIA GeForce RTX 4060, 8188, 1241, 6557\n"
+    # Mock asyncio.create_subprocess_exec for nvidia-smi (used by GPU detection in admin_system)
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"NVIDIA GeForce RTX 4060, 8188, 1241, 6557\n", b"")
+    )
 
     with (
         patch.dict("sys.modules", {"psutil": mock_psutil}),
-        patch("subprocess.check_output", mock_subprocess.check_output),
+        patch("asyncio.create_subprocess_exec", return_value=mock_proc),
     ):
         response = await alpaca_proxy.admin_system()
         assert response.status_code == 200
@@ -677,6 +680,7 @@ async def test_admin_system_endpoint_returns_metrics():
         assert body["gpu_info"][0]["name"] == "NVIDIA GeForce RTX 4060"
         assert body["gpu_info"][0]["total_mb"] == 8188
         assert body["gpu_info"][0]["used_pct"] == 15.2
+
 
 
 @pytest.mark.asyncio
