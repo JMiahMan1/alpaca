@@ -290,7 +290,15 @@ def update_models_ini():
     temp_ini = ini_path.with_suffix(".ini.tmp")
     with open(temp_ini, "w", encoding="utf-8") as f:
         f.write("\n".join(content))
+    try:
+        os.chmod(temp_ini, 0o666)
+    except Exception:
+        pass
     os.replace(temp_ini, ini_path)
+    try:
+        os.chmod(ini_path, 0o666)
+    except Exception:
+        pass
     print(f"Updated models preset configuration at {ini_path}")
 
 
