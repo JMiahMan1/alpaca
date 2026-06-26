@@ -20,6 +20,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const connectionStatusBadge = document.getElementById('connection-status-badge');
     const runnerStatusBadge = document.getElementById('runner-status-badge');
     const modelCheckboxes = document.getElementById('model-checkboxes');
+    const modelSwitcherSelect = document.getElementById('model-switcher-select');
+    const btnSwitchModel = document.getElementById('btn-switch-model');
+    const btnUnloadCurrent = document.getElementById('btn-unload-current');
+    const modelSwitcherStatus = document.getElementById('model-switcher-status');
     const modeProxyBtn = document.getElementById('mode-proxy-btn');
     const modeDirectBtn = document.getElementById('mode-direct-btn');
     const btnRun = document.getElementById('btn-run');
@@ -1096,6 +1100,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 item.appendChild(span);
                 modelCheckboxes.appendChild(item);
             });
+            
+            populateModelSwitcher(availableModels);
             logToTerminal(`Discovered ${availableModels.length} models from servers`, 'success');
         } catch (err) {
             logToTerminal(`Failed to discover models: ${err.message}`, 'error');
@@ -2230,6 +2236,150 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }, 2000);
     }
+
+    // Model Switcher Functions
+    let currentModelName = null;
+    
+    async function updateCurrentModel() {
+        try {
+            const res = await fetch('/api/proxy/status');
+            const data = await res.json();
+            if (data.online && data.runtime && data.runtime.loaded_models && data.runtime.loaded_models.length > 0) {
+                currentModelName = data.runtime.loaded_models[0].name;
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-success);">Currently loaded: <strong>${currentModelName}</strong></span>`;
+                }
+            } else {
+                currentModelName = null;
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--text-muted);">No model currently loaded</span>`;
+                }
+            }
+        } catch (err) {
+            console.error("Failed to get current model:", err);
+        }
+    }
+    
+    async function switchToModel(modelName) {
+        if (!modelName) {
+            if (modelSwitcherStatus) {
+                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">No model selected</span>`;
+            }
+            return;
+        }
+        
+        if (modelSwitcherStatus) {
+            modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary);">Loading ${modelName}...</span>`;
+        }
+        
+        try {
+            const res = await fetch('/api/models/switch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({model: modelName})
+            });
+            
+            const data = await res.json();
+            
+            if (res.ok) {
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-success);">✅ ${data.status}: ${modelName}</span>`;
+                }
+                await updateCurrentModel();
+                logToTerminal(`Model switched to: ${modelName}`, 'success');
+            } else {
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${data.error || 'Failed to switch model'}</span>`;
+                }
+                logToTerminal(`Model switch failed: ${data.error}`, 'error');
+            }
+        } catch (err) {
+            if (modelSwitcherStatus) {
+                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${err.message}</span>`;
+            }
+            logToTerminal(`Model switch error: ${err.message}`, 'error');
+        }
+    }
+    
+    async function unloadCurrentModel() {
+        if (!currentModelName) {
+            if (modelSwitcherStatus) {
+                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-warning);">No model currently loaded</span>`;
+            }
+            return;
+        }
+        
+        if (!confirm(`Unload model "${currentModelName}"?`)) {
+            return;
+        }
+        
+        if (modelSwitcherStatus) {
+            modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary);">Unloading ${currentModelName}...</span>`;
+        }
+        
+        try {
+            const res = await fetch('/api/models/unload', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({model: currentModelName})
+            });
+            
+            const data = await res.json();
+            
+            if (res.ok) {
+                const unloadedModel = currentModelName;
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-success);">✅ Unloaded: ${unloadedModel}</span>`;
+                }
+                currentModelName = null;
+                logToTerminal(`Model unloaded: ${unloadedModel}`, 'success');
+            } else {
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${data.error || 'Failed to unload model'}</span>`;
+                }
+            }
+        } catch (err) {
+            if (modelSwitcherStatus) {
+                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${err.message}</span>`;
+            }
+            logToTerminal(`Unload error: ${err.message}`, 'error');
+        }
+    }
+    
+    function populateModelSwitcher(models) {
+        if (!modelSwitcherSelect) return;
+        
+        modelSwitcherSelect.innerHTML = '';
+        
+        if (!models || models.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No models available';
+            modelSwitcherSelect.appendChild(option);
+            return;
+        }
+        
+        models.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model;
+            option.textContent = model;
+            modelSwitcherSelect.appendChild(option);
+        });
+    }
+    
+    if (btnSwitchModel) {
+        btnSwitchModel.addEventListener('click', () => {
+            const selectedModel = modelSwitcherSelect?.value;
+            switchToModel(selectedModel);
+        });
+    }
+    
+    if (btnUnloadCurrent) {
+        btnUnloadCurrent.addEventListener('click', unloadCurrentModel);
+    }
+    
+    // Periodically update current model in switcher
+    setInterval(updateCurrentModel, 5000);
 
     // Startup Tasks
     initCharts();

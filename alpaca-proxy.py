@@ -80,6 +80,7 @@ active_requests_lock = asyncio.Condition()
 
 # Thread-safe detailed request tracking (for user query/summary)
 import threading
+
 active_request_details = {}
 completed_requests = []
 active_request_details_lock = threading.Lock()
@@ -150,6 +151,11 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
 # Model loading state tracking (for OOM recovery)
 model_loading = {}
 MODEL_LOADING_TIMEOUT = 120  # seconds
+
+# Model usage tracking (load/unload frequency, popularity)
+model_usage_log = []
+MODEL_USAGE_LOG_MAX = 1000
+model_usage_lock = asyncio.Lock()
 
 # Persisted loaded models state (for autoload on recovery)
 _loaded_models_state_lock = asyncio.Lock()
@@ -828,7 +834,18 @@ def is_ignorable_router_unload_error(exc):
     if not message:
         message = response.text
     message = message.lower()
-    return "model is not found" in message or "model not found" in message
+    ignorable_patterns = [
+        "model is not found",
+        "model not found",
+        "not found",
+        "model is not loaded",
+        "model is not resident",
+        "model already unloaded",
+        "model is unloaded",
+        "model has been evicted",
+        "model not loaded",
+    ]
+    return any(pattern in message for pattern in ignorable_patterns)
 
 
 async def unload_model(model_name):
@@ -2147,6 +2164,40 @@ async def admin_models():
     return {"models": models, "total": len(models)}
 
 
+@app.get("/admin/usage")
+async def admin_usage():
+    """Model usage statistics: load/unload frequency, popularity, recent events."""
+    async with model_usage_lock:
+        recent_events = list(model_usage_log[-50:])
+    
+    # Calculate per-model statistics
+    model_stats = {}
+    for event in model_usage_log:
+        model = event["model"]
+        if model not in model_stats:
+            model_stats[model] = {"loads": 0, "unloads": 0, "last_loaded": None, "last_unloaded": None}
+        if event["event"] == "loaded":
+            model_stats[model]["loads"] += 1
+            model_stats[model]["last_loaded"] = event["timestamp"]
+        elif event["event"] == "unloaded":
+            model_stats[model]["unloads"] += 1
+            model_stats[model]["last_unloaded"] = event["timestamp"]
+    
+    # Calculate popularity (total loads per model)
+    popular_models = sorted(
+        model_stats.items(),
+        key=lambda x: x[1]["loads"],
+        reverse=True
+    )
+    
+    return {
+        "recent_events": recent_events,
+        "model_stats": model_stats,
+        "popular_models": [{"model": m, "stats": s} for m, s in popular_models],
+        "total_events": len(model_usage_log)
+    }
+
+
 @app.get("/admin/requests")
 async def admin_requests():
     """Retrieve detailed state of currently active and recently completed requests."""
@@ -2469,6 +2520,87 @@ async def admin_model_delete(request: Request):
     }
 
 
+@app.post("/admin/models/switch")
+async def admin_model_switch(request: Request):
+    """Switch to a different model. Body: {\"model\": \"name:tag\"}. Loads the model (unloads current if needed)."""
+    body = await request.json()
+    model = body.get("model")
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+    
+    model = with_default_tag(model)
+    
+    # Check if model exists
+    manifest_path = manifest_path_for_model(model)
+    if not manifest_path or not os.path.exists(manifest_path):
+        raise HTTPException(status_code=404, detail=f"Model {model} not found on disk")
+    
+    # Check if already loading
+    public = public_model_name(model)
+    if is_model_loading(model):
+        return {"status": "already_loading", "model": public}
+    
+    # Check if already loaded
+    try:
+        router_models = await fetch_router_models(reload=False)
+        candidates = [model, with_default_tag(model)]
+        for entry in router_models:
+            if router_entry_matches(entry, candidates):
+                current_status = router_entry_status(entry)
+                if is_resident_status(current_status):
+                    return {"status": "already_loaded", "model": public, "backend_model": entry.get("id")}
+    except Exception:
+        pass
+    
+    # Mark as loading
+    mark_model_loading(model)
+    
+    try:
+        # Load the model using the full ensure_model flow (resolve + load)
+        resolved = await ensure_model(model)
+        
+        return {
+            "status": "loaded",
+            "model": public,
+            "backend_model": resolved.get("backend_model")
+        }
+    except Exception as e:
+        mark_model_loaded(model)  # Clear loading state even on failure
+        logger.error(f"Failed to switch to model {model}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
+
+
+@app.post("/admin/models/unload")
+async def admin_model_unload(request: Request):
+    """Unload a model. Body: {\"model\": \"name:tag\"}."""
+    body = await request.json()
+    model = body.get("model")
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+    
+    model = with_default_tag(model)
+    
+    # Find the backend_model for this model
+    try:
+        router_models = await fetch_router_models(reload=False)
+        candidates = [model, with_default_tag(model)]
+        for entry in router_models:
+            if router_entry_matches(entry, candidates):
+                current_status = router_entry_status(entry)
+                if is_resident_status(current_status):
+                    backend_model = entry.get("id")
+                    await post_router_model_action("unload", backend_model)
+                    public = public_model_name(model)
+                    await record_model_unloaded(model)
+                    return {"status": "unloaded", "model": public, "backend_model": backend_model}
+        
+        # Model not found or not loaded
+        return {"status": "not_loaded", "model": model}
+    except Exception as e:
+        logger.error(f"Failed to unload model {model}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to unload model: {str(e)}")
+
+
 @app.post("/admin/models/copy")
 async def admin_model_copy(request: Request):
     """Copy a model to a new name/tag. Body: {\"source\": \"name:tag\", \"target\": \"newname:newtag\"}"""
@@ -2639,6 +2771,15 @@ async def record_model_loaded(model_name):
             current_loaded.remove(public)
         current_loaded.append(public)
         await save_loaded_models_state(current_loaded)
+    
+    async with model_usage_lock:
+        model_usage_log.append({
+            "event": "loaded",
+            "model": public,
+            "timestamp": time.time()
+        })
+        while len(model_usage_log) > MODEL_USAGE_LOG_MAX:
+            model_usage_log.pop(0)
 
 
 async def record_model_unloaded(model_name):
@@ -2648,6 +2789,15 @@ async def record_model_unloaded(model_name):
         if public in current_loaded:
             current_loaded.remove(public)
             await save_loaded_models_state(current_loaded)
+    
+    async with model_usage_lock:
+        model_usage_log.append({
+            "event": "unloaded",
+            "model": public,
+            "timestamp": time.time()
+        })
+        while len(model_usage_log) > MODEL_USAGE_LOG_MAX:
+            model_usage_log.pop(0)
 
 
 async def record_model_unloaded_by_backend_id(backend_id):

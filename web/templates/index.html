@@ -46,6 +46,29 @@
             <!-- Left Sidebar Controls -->
             <div class="sidebar">
                 
+                <!-- Model Switcher Card -->
+                <div class="card" style="border-left: 4px solid var(--color-primary);">
+                    <div class="card-title">
+                        <span>🔄 Model Switcher</span>
+                        <span class="card-title-icon">⚡</span>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                        <div>
+                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Select Model</label>
+                            <select id="model-switcher-select" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem; margin-bottom:0.5rem;">
+                                <option value="">Loading models...</option>
+                            </select>
+                            <div style="display:flex; gap:0.5rem;">
+                                <button id="btn-switch-model" class="btn btn-primary" style="font-size:0.75rem; padding:0.4rem; flex:1;">Load Model</button>
+                                <button id="btn-unload-current" class="btn btn-danger" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: var(--color-danger); border-color: var(--color-danger);">Unload</button>
+                            </div>
+                        </div>
+                        <div id="model-switcher-status" style="font-size:0.75rem; color:var(--text-muted); padding:0.5rem; background:#0f172a; border-radius:6px; min-height:2rem;">
+                            Ready
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Configuration Card -->
                 <div class="card">
                     <div class="card-title">

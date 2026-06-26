@@ -3,14 +3,15 @@
 Flask server for LLM benchmark dashboard with SocketIO
 """
 
+import asyncio
+import json
 import os
 import sys
-import json
-import time
-import asyncio
 import threading
+import time
 from pathlib import Path
-from flask import Flask, render_template, jsonify, request
+
+from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -208,8 +209,9 @@ def get_host_system_metrics():
     GPU/VRAM is intentionally omitted here — the web container has no GPU device
     access. GPU data comes from the proxy via `docker exec llama-server nvidia-smi`.
     """
-    import psutil
     import platform
+
+    import psutil
 
     info = {
         "hostname": platform.node(),
@@ -723,6 +725,115 @@ def clear_completed_requests():
     except Exception as e:
         return jsonify({
             "error": f"Failed to clear requests history in proxy: {str(e)}"
+        }), 500
+
+@app.route('/api/usage')
+def get_model_usage():
+    """Get model usage statistics from the proxy"""
+    import httpx
+    
+    proxy_url = None
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code == 200:
+                    proxy_url = url
+                    break
+        except Exception:
+            continue
+            
+    if not proxy_url:
+        return jsonify({
+            "error": "Could not connect to any proxy endpoints."
+        }), 503
+        
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{proxy_url}/admin/usage")
+            if resp.status_code == 200:
+                return jsonify(resp.json())
+            else:
+                return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
+    except Exception as e:
+        return jsonify({
+            "error": f"Failed to fetch model usage stats: {str(e)}"
+        }), 500
+
+@app.route('/api/models/switch', methods=['POST'])
+def switch_model():
+    """Switch to a different model via the proxy"""
+    import httpx
+    
+    data = request.get_json() or {}
+    model = data.get('model')
+    if not model:
+        return jsonify({'error': 'model is required'}), 400
+    
+    proxy_url = None
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code == 200:
+                    proxy_url = url
+                    break
+        except Exception:
+            continue
+            
+    if not proxy_url:
+        return jsonify({
+            "error": "Could not connect to any proxy endpoints."
+        }), 503
+        
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(f"{proxy_url}/admin/models/switch", json={"model": model})
+            if resp.status_code == 200:
+                return jsonify(resp.json())
+            else:
+                return jsonify({"error": resp.text}), resp.status_code
+    except Exception as e:
+        return jsonify({
+            "error": f"Failed to switch model: {str(e)}"
+        }), 500
+
+@app.route('/api/models/unload', methods=['POST'])
+def unload_model():
+    """Unload a model via the proxy"""
+    import httpx
+    
+    data = request.get_json() or {}
+    model = data.get('model')
+    if not model:
+        return jsonify({'error': 'model is required'}), 400
+    
+    proxy_url = None
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code == 200:
+                    proxy_url = url
+                    break
+        except Exception:
+            continue
+            
+    if not proxy_url:
+        return jsonify({
+            "error": "Could not connect to any proxy endpoints."
+        }), 503
+        
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(f"{proxy_url}/admin/models/unload", json={"model": model})
+            if resp.status_code == 200:
+                return jsonify(resp.json())
+            else:
+                return jsonify({"error": resp.text}), resp.status_code
+    except Exception as e:
+        return jsonify({
+            "error": f"Failed to unload model: {str(e)}"
         }), 500
 
 @socketio.on('connect')
