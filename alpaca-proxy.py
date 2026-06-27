@@ -3410,7 +3410,8 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
     if MAX_LOADED_MODELS == 1:
         for other in router_models:
             other_id = other.get("id")
-            if (other_id != backend_model) and is_resident_status(router_entry_status(other)):
+            other_status = router_entry_status(other)
+            if other_id != backend_model and other_status == "loaded":
                 # Wait for active requests on the model we are about to unload
                 async with active_requests_lock:
                     deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
