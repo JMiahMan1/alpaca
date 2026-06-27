@@ -152,6 +152,10 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
 model_loading = {}
 MODEL_LOADING_TIMEOUT = 120  # seconds
 
+# Track crashed models to prevent deadlock during recovery
+# When a model crashes, this is set so other models don't try to unload it
+crashed_models = {}  # {backend_model: True}
+
 # Model usage tracking (load/unload frequency, popularity)
 model_usage_log = []
 MODEL_USAGE_LOG_MAX = 1000
@@ -3381,7 +3385,7 @@ async def ensure_model(model_name: str, options: dict = None):
             return await _ensure_model_impl(model_name, options, resolved)
         finally:
             async with active_requests_lock:
-                active_requests[backend_model] -= 1
+                active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
                 active_requests_lock.notify_all()
 
 
@@ -3412,29 +3416,34 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
             other_id = other.get("id")
             other_status = router_entry_status(other)
             if other_id != backend_model and other_status == "loaded":
-                # Wait for active requests on the model we are about to unload
-                async with active_requests_lock:
-                    deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
-                    while active_requests.get(other_id, 0) > 0:
-                        remaining = deadline - asyncio.get_event_loop().time()
-                        if remaining <= 0:
-                            logger.warning(
-                                f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
-                            )
-                            break
-                        logger.info(
-                            f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
-                        )
-                        try:
-                            await asyncio.wait_for(
-                                active_requests_lock.wait(), timeout=remaining
-                            )
-                        except asyncio.TimeoutError:
-                            if active_requests.get(other_id, 0) > 0:
+                # Skip active request wait for crashed models — they're dead and
+                # need to be force-unloaded immediately (not wait forever)
+                is_crashed = crashed_models.get(other_id, False)
+                
+                if not is_crashed:
+                    # Wait for active requests on the model we are about to unload
+                    async with active_requests_lock:
+                        deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
+                        while active_requests.get(other_id, 0) > 0:
+                            remaining = deadline - asyncio.get_event_loop().time()
+                            if remaining <= 0:
                                 logger.warning(
                                     f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
                                 )
-                            break
+                                break
+                            logger.info(
+                                f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
+                            )
+                            try:
+                                await asyncio.wait_for(
+                                    active_requests_lock.wait(), timeout=remaining
+                                )
+                            except asyncio.TimeoutError:
+                                if active_requests.get(other_id, 0) > 0:
+                                    logger.warning(
+                                        f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
+                                    )
+                                break
 
                 logger.info(
                     f"Unloading backend model {other_id} before loading {backend_model}"
@@ -3925,6 +3934,18 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
 
     if oom_detected or crash_detected:
         try:
+            # Mark model as crashed so other models don't try to unload it (prevents deadlock)
+            crashed_models[backend_model] = True
+            logger.info(
+                f"Model {backend_model} marked as crashed. Other models will skip unload wait."
+            )
+            # Clear active requests for this model — the requests are dead (server crashed)
+            # and need to be retried, not waited on forever
+            async with active_requests_lock:
+                active_requests[backend_model] = 0
+                active_requests_lock.notify_all()
+                logger.info(f"Cleared active_requests for crashed model {backend_model}")
+            
             logger.info(
                 f"Recovery: unloading {backend_model} and "
                 "restarting llama-server to release GPU memory..."
@@ -4438,7 +4459,7 @@ async def chat(request: Request):
         finally:
             if resolved_backend:
                 async with active_requests_lock:
-                    active_requests[resolved_backend] -= 1
+                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
@@ -4534,7 +4555,7 @@ async def chat(request: Request):
     finally:
         if resolved_backend:
             async with active_requests_lock:
-                active_requests[resolved_backend] -= 1
+                active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
@@ -4698,7 +4719,7 @@ async def generate(request: Request):
         finally:
             if resolved_backend:
                 async with active_requests_lock:
-                    active_requests[resolved_backend] -= 1
+                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
@@ -4800,7 +4821,7 @@ async def generate(request: Request):
     finally:
         if resolved_backend:
             async with active_requests_lock:
-                active_requests[resolved_backend] -= 1
+                active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
