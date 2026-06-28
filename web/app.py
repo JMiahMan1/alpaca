@@ -727,6 +727,149 @@ def clear_completed_requests():
             "error": f"Failed to clear requests history in proxy: {str(e)}"
         }), 500
 
+
+@app.route('/api/requests/cancel', methods=['POST'])
+def cancel_stuck_request():
+    """Cancel a stuck/active request in the proxy (searches all proxies)"""
+    import httpx
+    
+    data = request.get_json() or {}
+    request_id = data.get('request_id')
+    
+    if not request_id:
+        return jsonify({"error": "request_id is required"}), 400
+    
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code != 200:
+                    continue
+                    
+                resp = client.delete(f"{url}/admin/requests/{request_id}")
+                if resp.status_code == 200:
+                    return jsonify(resp.json())
+        except Exception:
+            continue
+    
+    return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
+
+
+@app.route('/api/requests/resubmit/<string:request_id>', methods=['POST'])
+def resubmit_stuck_request(request_id):
+    """Resubmit a stuck request by extracting its prompt and sending to the model (searches all proxies)"""
+    import httpx
+    
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code != 200:
+                    continue
+                
+                # Try persistent resubmit storage first (never rotates out)
+                resp = client.get(f"{url}/admin/resubmit/{request_id}")
+                if resp.status_code == 200:
+                    req = resp.json()
+                else:
+                    # Fall back to active + completed requests
+                    resp = client.get(f"{url}/admin/requests")
+                    if resp.status_code != 200:
+                        continue
+                    all_data = resp.json()
+                    all_requests = all_data.get("active_requests", []) + all_data.get("completed_requests", [])
+                    req = None
+                    for r in all_requests:
+                        if r.get("request_id") == request_id:
+                            req = r
+                            break
+                
+                if not req:
+                    continue
+                
+                req_type = req.get("type", "unknown")
+                model = req.get("model", "")
+                prompt = req.get("prompt", "")
+                
+                if not prompt:
+                    continue
+                
+                if req_type in ("ollama_chat", "openai_chat"):
+                    import re
+                    role_pattern = re.compile(r'^([A-Z_]+):\s*(.*)', re.MULTILINE)
+                    matches = role_pattern.findall(prompt)
+                    
+                    messages = []
+                    for role, content in matches:
+                        r = role.lower()
+                        if r in ('system', 'user', 'assistant'):
+                            messages.append({"role": r, "content": content})
+                        else:
+                            messages.append({"role": "user", "content": f"{role}: {content}"})
+                    
+                    # Strip trailing assistant messages (model response stored in prompt)
+                    while len(messages) > 1 and messages[-1]["role"] == "assistant":
+                        messages.pop()
+                    
+                    if messages:
+                        body = {
+                            "model": model,
+                            "messages": messages,
+                            "stream": False,
+                            "keep_alive": -1
+                        }
+                        endpoint = f"{url}/api/chat"
+                    else:
+                        body = {
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "stream": False,
+                            "keep_alive": -1
+                        }
+                        endpoint = f"{url}/api/chat"
+                elif req_type == "ollama_generate":
+                    body = {
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "keep_alive": -1
+                    }
+                    endpoint = f"{url}/api/generate"
+                elif req_type == "openai_generate":
+                    body = {
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "keep_alive": -1
+                    }
+                    endpoint = f"{url}/v1/completions"
+                else:
+                    body = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "keep_alive": -1
+                    }
+                    endpoint = f"{url}/api/chat"
+                
+                resp = client.post(endpoint, json=body, timeout=60.0)
+                if resp.status_code != 200:
+                    return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
+                
+                result = resp.json()
+                
+                try:
+                    client.delete(f"{url}/admin/requests/{request_id}")
+                except Exception:
+                    pass
+                
+                return jsonify({"status": "resubmitted", "result": result})
+        except Exception:
+            continue
+    
+    return jsonify({"error": "Request not found in any proxy"}), 404
+
+
 @app.route('/api/usage')
 def get_model_usage():
     """Get model usage statistics from the proxy"""

@@ -810,6 +810,30 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function showToast(message, type = 'info') {
+        const toast = document.createElement('div');
+        const colors = {
+            success: { bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.3)', color: '#6ee7b7' },
+            error: { bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.3)', color: '#fca5a5' },
+            info: { bg: 'rgba(59, 130, 246, 0.15)', border: 'rgba(59, 130, 246, 0.3)', color: '#93c5fd' }
+        };
+        const c = colors[type] || colors.info;
+        Object.assign(toast.style, {
+            position: 'fixed', bottom: '1rem', right: '1rem', padding: '0.6rem 1rem',
+            background: c.bg, border: `1px solid ${c.border}`, borderRadius: '8px',
+            color: c.color, fontSize: '0.8rem', zIndex: '10000',
+            fontFamily: 'system-ui, sans-serif', boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+        });
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+
     async function pollRequestsStatus() {
         try {
             const res = await fetch('/api/requests');
@@ -963,6 +987,89 @@ document.addEventListener('DOMContentLoaded', () => {
         div.appendChild(headerDiv);
         div.appendChild(modelDiv);
         div.appendChild(idDiv);
+        const actionBtns = document.createElement('div');
+        actionBtns.style.cssText = 'display:flex; gap:0.25rem; justify-content:flex-end; margin-top:0.25rem;';
+        
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'req-action-btn';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.cssText = `
+            font-size: 0.6rem;
+            padding: 0.15rem 0.4rem;
+            background: rgba(239,68,68,0.15);
+            border: 1px solid rgba(239,68,68,0.3);
+            border-radius: 4px;
+            color: #fca5a5;
+            cursor: pointer;
+        `;
+        cancelBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            cancelBtn.textContent = 'Cancelling...';
+            cancelBtn.disabled = true;
+            fetch('/api/requests/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({request_id: req.request_id})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showToast('Error: ' + data.error, 'error');
+                    cancelBtn.textContent = 'Cancel';
+                    cancelBtn.disabled = false;
+                } else {
+                    showToast('Request cancelled', 'success');
+                    pollRequestsStatus();
+                }
+            })
+            .catch(err => {
+                showToast('Cancel failed: ' + err.message, 'error');
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.disabled = false;
+            });
+        });
+        actionBtns.appendChild(cancelBtn);
+        
+        const resubmitBtn = document.createElement('button');
+        resubmitBtn.className = 'req-action-btn';
+        resubmitBtn.textContent = 'Resubmit';
+        resubmitBtn.style.cssText = `
+            font-size: 0.6rem;
+            padding: 0.15rem 0.4rem;
+            background: rgba(251,191,36,0.15);
+            border: 1px solid rgba(251,191,36,0.3);
+            border-radius: 4px;
+            color: #fde68a;
+            cursor: pointer;
+        `;
+        resubmitBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            resubmitBtn.textContent = 'Resubmitting...';
+            resubmitBtn.disabled = true;
+            fetch('/api/requests/resubmit/' + req.request_id, {
+                method: 'POST'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showToast('Error: ' + data.error, 'error');
+                    resubmitBtn.textContent = 'Resubmit';
+                    resubmitBtn.disabled = false;
+                } else {
+                    showToast('Request resubmitted', 'success');
+                    pollRequestsStatus();
+                }
+            })
+            .catch(err => {
+                showToast('Resubmit failed: ' + err.message, 'error');
+                resubmitBtn.textContent = 'Resubmit';
+                resubmitBtn.disabled = false;
+            });
+        });
+        actionBtns.appendChild(resubmitBtn);
+        
+        div.appendChild(actionBtns);
+
 
         return div;
     }

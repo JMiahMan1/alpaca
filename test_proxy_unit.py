@@ -890,3 +890,315 @@ async def test_restore_models_on_recovery_only_preloads_last():
     await alpaca_proxy.restore_models_on_recovery()
 
     alpaca_proxy.ensure_model.assert_called_once_with("model-C:latest")
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_does_not_unload_other_models():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+
+    # Mock client_httpx for OOM check after successful load
+    props_resp = AsyncMock()
+    props_resp.status_code = 200
+    props_resp.json = MagicMock(return_value={"n_gpu_layers": -1})
+    alpaca_proxy.client_httpx = AsyncMock()
+    alpaca_proxy.client_httpx.get = AsyncMock(return_value=props_resp)
+
+    resolved = await alpaca_proxy.ensure_model("tinyllama", skip_swap=True)
+
+    assert resolved["backend_model"] == "sha256-deadbeef"
+    # With skip_swap=True, the other loaded model must NOT be unloaded
+    alpaca_proxy.post_router_model_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_calls_wait_for_server():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+
+    resolved = await alpaca_proxy.ensure_model("tinyllama", skip_swap=True)
+
+    assert resolved["backend_model"] == "sha256-deadbeef"
+    alpaca_proxy.wait_for_llama_server_or_restart.assert_awaited_once()
+    # No load or unload actions should be taken
+    alpaca_proxy.post_router_model_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_returns_correct_struct():
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+
+    resolved = await alpaca_proxy.ensure_model("tinyllama", skip_swap=True)
+
+    assert resolved["model_name"] == "tinyllama:latest"
+    assert resolved["backend_model"] == "sha256-deadbeef"
+    assert resolved["manifest_path"] is None
+    assert resolved["manifest"] is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_true_does_not_unload_other_models():
+    """Regression test: ensure skip_swap=True prevents the unloading of another loaded model.
+
+    This verifies the fix for the mid-stream crash model swap bug.
+    """
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen3.5:9b",
+            "backend_model": "qwen3.5--9b.gguf",
+            "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:qwen35"),
+            "router_models": [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+
+    resolved = await alpaca_proxy.ensure_model("qwen3.5:9b", skip_swap=True)
+
+    assert resolved["backend_model"] == "qwen3.5--9b.gguf"
+    # Key assertion: with skip_swap=True, no unload should happen
+    unload_calls = [a for a in alpaca_proxy.post_router_model_action.await_calls if a[0][0] == "unload"]
+    assert len(unload_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_false_still_unloads_other_models():
+    """Verify that skip_swap=False (default) still unloads other loaded models.
+
+    This ensures the existing behavior is preserved when skip_swap is not used.
+    """
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.fetch_router_models = AsyncMock(
+        side_effect=[
+            [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+            [
+                {"id": "other-model", "status": {"value": "unloaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "loaded"}},
+            ],
+        ]
+    )
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+
+    # Mock client_httpx for OOM check after successful load
+    props_resp = AsyncMock()
+    props_resp.status_code = 200
+    props_resp.json = MagicMock(return_value={"n_gpu_layers": -1})
+    alpaca_proxy.client_httpx = AsyncMock()
+    alpaca_proxy.client_httpx.get = AsyncMock(return_value=props_resp)
+
+    resolved = await alpaca_proxy.ensure_model("tinyllama", skip_swap=False)
+
+    assert resolved["backend_model"] == "sha256-deadbeef"
+    # With skip_swap=False (default), the other model SHOULD be unloaded
+    alpaca_proxy.post_router_model_action.assert_any_await("unload", "other-model")
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_true_with_crashed_model_does_not_unload_other_models():
+    """Verify skip_swap=True also works correctly when the target model is marked as crashed.
+
+    The skip_swap flag should prevent unloading of other models regardless of crash state.
+    """
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen3.5:9b",
+            "backend_model": "qwen3.5--9b.gguf",
+            "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:qwen35"),
+            "router_models": [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+
+    # Mark the crashed model
+    alpaca_proxy.crashed_models["qwen3.5--9b.gguf"] = True
+
+    resolved = await alpaca_proxy.ensure_model("qwen3.5:9b", skip_swap=True)
+
+    assert resolved["backend_model"] == "qwen3.5--9b.gguf"
+    # Even with crashed model, skip_swap=True means no unloading of other models
+    assert alpaca_proxy.post_router_model_action.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_true_preserves_active_requests():
+    """Verify that skip_swap=True still tracks active requests for the requested model.
+
+    This ensures the request tracking mechanism works correctly even when skip_swap is True.
+    """
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+
+    # Verify active_requests tracking works with skip_swap=True
+    initial_count = alpaca_proxy.active_requests.get("sha256-deadbeef", 0)
+    resolved = await alpaca_proxy.ensure_model("tinyllama", skip_swap=True)
+    final_count = alpaca_proxy.active_requests.get("sha256-deadbeef", 0)
+
+    # Active requests should be tracked (incremented during call, decremented after)
+    assert final_count == initial_count
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_handles_max_loaded_models_one():
+    """Verify skip_swap=True works correctly when MAX_LOADED_MODELS == 1.
+
+    This is the exact scenario from the bug report: mid-stream crash recovery
+    with MAX_LOADED_MODELS=1 should NOT trigger model swapping.
+    """
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    original_max = alpaca_proxy.MAX_LOADED_MODELS
+    try:
+        alpaca_proxy.MAX_LOADED_MODELS = 1
+
+        alpaca_proxy.resolve_router_model = AsyncMock(
+            return_value={
+                "model_name": "qwen3.5:9b",
+                "backend_model": "qwen3.5--9b.gguf",
+                "entry": {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+                "manifest_path": "/tmp/manifest",
+                "manifest": make_manifest(digest="sha256:qwen35"),
+                "router_models": [
+                    {"id": "other-model", "status": {"value": "loaded"}},
+                    {"id": "qwen3.5--9b.gguf", "status": {"value": "unloaded"}},
+                ],
+            }
+        )
+        alpaca_proxy.post_router_model_action = AsyncMock()
+        alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+        alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+        alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+
+        resolved = await alpaca_proxy.ensure_model("qwen3.5:9b", skip_swap=True)
+
+        assert resolved["backend_model"] == "qwen3.5--9b.gguf"
+        # With skip_swap=True, even when MAX_LOADED_MODELS=1, no unloading should happen
+        alpaca_proxy.post_router_model_action.assert_not_called()
+    finally:
+        alpaca_proxy.MAX_LOADED_MODELS = original_max
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_skip_swap_true_no_crash_prevents_model_swap():
+    """Verify skip_swap=True works when the target model is NOT crashed.
+
+    The skip_swap flag should prevent model swapping regardless of whether
+    the target model is crashed or not.
+    """
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "tinyllama:latest",
+            "backend_model": "sha256-deadbeef",
+            "entry": {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:deadbeef"),
+            "router_models": [
+                {"id": "other-model", "status": {"value": "loaded"}},
+                {"id": "sha256-deadbeef", "status": {"value": "unloaded"}},
+            ],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    alpaca_proxy.wait_for_llama_server_or_restart = AsyncMock(return_value=True)
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+
+    # Don't mark the model as crashed
+    alpaca_proxy.crashed_models.clear()
+
+    resolved = await alpaca_proxy.ensure_model("tinyllama", skip_swap=True)
+
+    assert resolved["backend_model"] == "sha256-deadbeef"
+    # With skip_swap=True, no unloading should happen even when target model is healthy
+    alpaca_proxy.post_router_model_action.assert_not_called()
