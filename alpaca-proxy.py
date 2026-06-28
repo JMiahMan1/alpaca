@@ -85,6 +85,10 @@ active_request_details = {}
 completed_requests = []
 active_request_details_lock = threading.Lock()
 
+# Persistent request storage for resubmit (never rotates out)
+resubmittable_requests = {}
+resubmittable_requests_lock = threading.Lock()
+
 def sanitize_prompt(text: str) -> str:
     if not text:
         return ""
@@ -135,6 +139,7 @@ def update_active_request_progress(request_id, response_chunk=None, thinking_chu
                 active_request_details[request_id]["response"] += response_chunk
 
 def complete_active_request(request_id, final_response=None, final_thinking=None):
+    req = None
     with active_request_details_lock:
         if request_id in active_request_details:
             req = active_request_details.pop(request_id)
@@ -145,8 +150,12 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
             req["completed_at"] = time.time()
             req["duration_seconds"] = round(req["completed_at"] - req["started_at"], 2)
             completed_requests.append(req)
-            if len(completed_requests) > 10:
+            if len(completed_requests) > 50:
                 completed_requests.pop(0)
+    
+    if req is not None:
+        with resubmittable_requests_lock:
+            resubmittable_requests[request_id] = dict(req)
 
 # Model loading state tracking (for OOM recovery)
 model_loading = {}
@@ -1532,7 +1541,7 @@ async def openai_chat_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        task = asyncio.create_task(ensure_model(model_name))
+                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
                                         task.set_name(f"midstream-recovery-chat-{model_name}")
                                         task.add_done_callback(handle_background_task_result)
                                     return
@@ -1715,7 +1724,7 @@ async def openai_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        task = asyncio.create_task(ensure_model(model_name))
+                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
                                         task.set_name(
                                             f"midstream-recovery-completions-{model_name}"
                                         )
@@ -2220,6 +2229,34 @@ async def admin_requests_clear():
     with active_request_details_lock:
         completed_requests.clear()
     return {"status": "success", "message": "Completed requests history cleared."}
+
+
+@app.delete("/admin/requests/{request_id}")
+async def cancel_request(request_id: str):
+    """Cancel a stuck/active request by ID."""
+    with active_request_details_lock:
+        if request_id in active_request_details:
+            req = active_request_details.pop(request_id)
+            return {"status": "cancelled", "request_id": request_id, "model": req.get("model", "unknown")}
+        else:
+            return {"status": "not_found", "message": f"Request {request_id} not found"}
+
+
+@app.get("/admin/resubmit/all")
+async def get_all_resubmit_data():
+    """Get all stored requests for resubmission (keyed by request_id)."""
+    with resubmittable_requests_lock:
+        return resubmittable_requests
+
+
+@app.get("/admin/resubmit/{request_id}")
+async def get_resubmit_data(request_id: str):
+    """Get stored request data for resubmission (persists indefinitely)."""
+    with resubmittable_requests_lock:
+        if request_id in resubmittable_requests:
+            return resubmittable_requests[request_id]
+        else:
+            return JSONResponse(status_code=404, content={"error": f"Request {request_id} not found in persistent storage"})
 
 
 @app.get("/admin/runtime")
@@ -3326,7 +3363,17 @@ def get_model_preset_info(backend_model: str) -> str:
     return ""
 
 
-async def ensure_model(model_name: str, options: dict = None):
+async def _ensure_model_skip_swap(model_name: str):
+    """Ensure model during mid-stream crash recovery without swapping models.
+
+    Used when a model crashes mid-stream and we need to fix the server without
+    unloading the user's currently-loaded model. The crashed model will autoload
+    naturally when its keep_alive triggers or when a new request comes in.
+    """
+    await ensure_model(model_name, skip_swap=True)
+
+
+async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = False):
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
 
@@ -3382,14 +3429,31 @@ async def ensure_model(model_name: str, options: dict = None):
         async with active_requests_lock:
             active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
         try:
-            return await _ensure_model_impl(model_name, options, resolved)
+            return await _ensure_model_impl(model_name, options, resolved, skip_swap)
         finally:
             async with active_requests_lock:
                 active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
                 active_requests_lock.notify_all()
 
 
-async def _ensure_model_impl(model_name: str, options: dict = None, resolved: dict = None):
+async def _ensure_model_impl(model_name: str, options: dict = None, resolved: dict = None, skip_swap: bool = False):
+    if skip_swap:
+        # During mid-stream crash recovery, don't try to load the crashed model.
+        # Another model may be loaded (user's current session) and MAX_LOADED_MODELS
+        # may prevent loading the crashed model anyway. Just ensure the server is
+        # running — the crashed model will autoload naturally when needed.
+        logger.info(
+            f"Mid-stream crash recovery: ensuring llama-server is running "
+            f"(model {public_model_name(model_name)} will autoload naturally)."
+        )
+        await wait_for_llama_server_or_restart(timeout=60.0)
+        backend = resolved["backend_model"] if resolved else model_name
+        return {
+            "model_name": model_name,
+            "backend_model": backend,
+            "manifest_path": None,
+            "manifest": None,
+        }
     if resolved is None:
         resolved = await resolve_router_model(model_name, reload=True)
     backend_model = resolved["backend_model"]
@@ -3411,7 +3475,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
         except Exception as e:
             logger.warning(f"Failed to read n-gpu-layers preset from models.ini: {e}")
 
-    if MAX_LOADED_MODELS == 1:
+    if MAX_LOADED_MODELS == 1 and not skip_swap:
         for other in router_models:
             other_id = other.get("id")
             other_status = router_entry_status(other)
