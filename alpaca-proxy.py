@@ -106,7 +106,7 @@ def sanitize_prompt(text: str) -> str:
     return text
 
 
-def register_active_request(request_id, model, req_type, payload):
+def register_active_request(request_id, model, req_type, payload, request_source="unknown", client_ip="unknown"):
     prompt_str = ""
     if "messages" in payload:
         msgs = payload["messages"]
@@ -130,19 +130,25 @@ def register_active_request(request_id, model, req_type, payload):
             "prompt": prompt_str,
             "thinking": "",
             "response": "",
+            "request_source": request_source,
+            "client_ip": client_ip,
         }
 
 
 def update_active_request_progress(request_id, response_chunk=None, thinking_chunk=None):
     with active_request_details_lock:
         if request_id in active_request_details:
+            req = active_request_details[request_id]
             if thinking_chunk:
-                active_request_details[request_id]["thinking"] += thinking_chunk
+                req["thinking"] += thinking_chunk
             if response_chunk:
-                active_request_details[request_id]["response"] += response_chunk
+                req["response"] += response_chunk
+            # Calculate TTFT (Time to First Token) on first content/thinking chunk
+            if (thinking_chunk or response_chunk) and "ttft_seconds" not in req:
+                req["ttft_seconds"] = round(time.time() - req["started_at"], 3)
 
 
-def complete_active_request(request_id, final_response=None, final_thinking=None):
+def complete_active_request(request_id, final_response=None, final_thinking=None, prompt_tokens=0, completion_tokens=0):
     req = None
     with active_request_details_lock:
         if request_id in active_request_details:
@@ -151,8 +157,31 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
                 req["response"] = final_response
             if final_thinking:
                 req["thinking"] = final_thinking
+            
+            # calculate prompt and completion tokens if not provided
+            if not completion_tokens and req["response"]:
+                completion_tokens = max(1, int(len(req["response"]) / 4))
+                if req["thinking"]:
+                    completion_tokens += max(1, int(len(req["thinking"]) / 4))
+            if not prompt_tokens and req.get("prompt"):
+                prompt_tokens = max(1, int(len(req["prompt"]) / 4))
+            
             req["completed_at"] = time.time()
             req["duration_seconds"] = round(req["completed_at"] - req["started_at"], 2)
+            
+            # calculate tps
+            if req["duration_seconds"] > 0:
+                req["tps"] = round(completion_tokens / req["duration_seconds"], 2)
+            else:
+                req["tps"] = 0.0
+                
+            # set ttft for non-streaming if not set
+            if "ttft_seconds" not in req:
+                req["ttft_seconds"] = req["duration_seconds"]
+                
+            req["completion_tokens"] = completion_tokens
+            req["prompt_tokens"] = prompt_tokens
+            
             completed_requests.append(req)
             if len(completed_requests) > 50:
                 completed_requests.pop(0)
@@ -160,6 +189,7 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
     if req is not None:
         with resubmittable_requests_lock:
             resubmittable_requests[request_id] = dict(req)
+    return req
 
 
 # Model loading state tracking (for OOM recovery)
@@ -1464,13 +1494,21 @@ async def openai_chat_completions(request: Request):
     body = await request.json()
     started_ns = now_ns()
     model_name = body.get("model", "")
+    backend_model = model_name
     stream = body.get("stream", False)
     request_id = getattr(request.state, "request_id", None)
     if not request_id or request_id == "N/A":
         import uuid
 
         request_id = str(uuid.uuid4())[:8]
-    register_active_request(request_id, model_name, "openai_chat", body)
+    register_active_request(
+        request_id,
+        model_name,
+        "openai_chat",
+        body,
+        request_source=getattr(request.state, "request_source", "unknown"),
+        client_ip=(request.client.host if request.client else "unknown")
+    )
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -1478,7 +1516,8 @@ async def openai_chat_completions(request: Request):
             if model_name:
                 try:
                     resolved = await ensure_model(model_name)
-                    body["model"] = resolved["backend_model"]
+                    backend_model = resolved["backend_model"]
+                    body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
                     return JSONResponse(
@@ -1496,6 +1535,8 @@ async def openai_chat_completions(request: Request):
 
                 async def stream_proxy():
                     stream_started = False
+                    async with active_requests_lock:
+                        active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
                     try:
                         for s_attempt in range(max_retries):
                             try:
@@ -1566,11 +1607,23 @@ async def openai_chat_completions(request: Request):
                                 await ensure_model(model_name)
                                 await asyncio.sleep(2.0)
                     finally:
-                        await record_metrics("/v1/chat/completions", (now_ns() - started_ns) / 1e6)
-                        complete_active_request(request_id)
+                        async with active_requests_lock:
+                            active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                            active_requests_lock.notify_all()
+                        req_data = complete_active_request(request_id)
+                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                        await record_metrics(
+                            "/v1/chat/completions",
+                            (now_ns() - started_ns) / 1e6,
+                            prompt_tokens=p_toks,
+                            gen_tokens=c_toks
+                        )
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
+                async with active_requests_lock:
+                    active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
                 try:
                     resp = await client_httpx.post(
                         f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body
@@ -1601,6 +1654,8 @@ async def openai_chat_completions(request: Request):
                             },
                         )
                     data = resp.json()
+                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
                     try:
                         choices = data.get("choices", [])
                         if choices and len(choices) > 0:
@@ -1610,16 +1665,21 @@ async def openai_chat_completions(request: Request):
                                 "thinking"
                             )
                             complete_active_request(
-                                request_id, final_response=content_val, final_thinking=thinking_val
+                                request_id, 
+                                final_response=content_val, 
+                                final_thinking=thinking_val,
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=gen_tokens
                             )
                     except Exception:
                         pass
                     latency = (now_ns() - started_ns) / 1e6
-                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
                     await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
                     return JSONResponse(data)
                 finally:
+                    async with active_requests_lock:
+                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                        active_requests_lock.notify_all()
                     complete_active_request(request_id)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
@@ -1657,13 +1717,21 @@ async def openai_completions(request: Request):
     body = await request.json()
     started_ns = now_ns()
     model_name = body.get("model", "")
+    backend_model = model_name
     stream = body.get("stream", False)
     request_id = getattr(request.state, "request_id", None)
     if not request_id or request_id == "N/A":
         import uuid
 
         request_id = str(uuid.uuid4())[:8]
-    register_active_request(request_id, model_name, "openai_generate", body)
+    register_active_request(
+        request_id,
+        model_name,
+        "openai_generate",
+        body,
+        request_source=getattr(request.state, "request_source", "unknown"),
+        client_ip=(request.client.host if request.client else "unknown")
+    )
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -1671,7 +1739,8 @@ async def openai_completions(request: Request):
             if model_name:
                 try:
                     resolved = await ensure_model(model_name)
-                    body["model"] = resolved["backend_model"]
+                    backend_model = resolved["backend_model"]
+                    body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
                     return JSONResponse(
@@ -1689,6 +1758,8 @@ async def openai_completions(request: Request):
 
                 async def stream_proxy():
                     stream_started = False
+                    async with active_requests_lock:
+                        active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
                     try:
                         for s_attempt in range(max_retries):
                             try:
@@ -1760,11 +1831,23 @@ async def openai_completions(request: Request):
                                 await ensure_model(model_name)
                                 await asyncio.sleep(2.0)
                     finally:
-                        await record_metrics("/v1/completions", (now_ns() - started_ns) / 1e6)
-                        complete_active_request(request_id)
+                        async with active_requests_lock:
+                            active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                            active_requests_lock.notify_all()
+                        req_data = complete_active_request(request_id)
+                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                        await record_metrics(
+                            "/v1/completions",
+                            (now_ns() - started_ns) / 1e6,
+                            prompt_tokens=p_toks,
+                            gen_tokens=c_toks
+                        )
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
+                async with active_requests_lock:
+                    active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
                 try:
                     resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
                     if resp.status_code != 200:
@@ -1793,6 +1876,8 @@ async def openai_completions(request: Request):
                             },
                         )
                     data = resp.json()
+                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
                     try:
                         choices = data.get("choices", [])
                         if choices and len(choices) > 0:
@@ -1801,16 +1886,21 @@ async def openai_completions(request: Request):
                                 "reasoning_content"
                             )
                             complete_active_request(
-                                request_id, final_response=content_val, final_thinking=thinking_val
+                                request_id, 
+                                final_response=content_val, 
+                                final_thinking=thinking_val,
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=gen_tokens
                             )
                     except Exception:
                         pass
                     latency = (now_ns() - started_ns) / 1e6
-                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
                     await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
                     return JSONResponse(data)
                 finally:
+                    async with active_requests_lock:
+                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                        active_requests_lock.notify_all()
                     complete_active_request(request_id)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
@@ -4431,7 +4521,14 @@ async def chat(request: Request):
         import uuid
 
         request_id = str(uuid.uuid4())[:8]
-    register_active_request(request_id, model_name, "ollama_chat", body)
+    register_active_request(
+        request_id,
+        model_name,
+        "ollama_chat",
+        body,
+        request_source=getattr(request.state, "request_source", "unknown"),
+        client_ip=(request.client.host if request.client else "unknown")
+    )
 
     # Ensure model is loaded and healthy (triggers recovery if crashed/dead)
     resolved = await ensure_model(model_name, options=body.get("options"))
@@ -4650,8 +4747,14 @@ async def chat(request: Request):
         # Complete request with final content and thinking
         final_content = message.get("content") if message else ""
         final_thinking = message.get("thinking") if message else None
+        prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+        gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
         complete_active_request(
-            request_id, final_response=final_content, final_thinking=final_thinking
+            request_id, 
+            final_response=final_content, 
+            final_thinking=final_thinking,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=gen_tokens
         )
 
         # Save the new slot cache checkpoint
@@ -4698,7 +4801,14 @@ async def generate(request: Request):
         import uuid
 
         request_id = str(uuid.uuid4())[:8]
-    register_active_request(request_id, model_name, "ollama_generate", body)
+    register_active_request(
+        request_id,
+        model_name,
+        "ollama_generate",
+        body,
+        request_source=getattr(request.state, "request_source", "unknown"),
+        client_ip=(request.client.host if request.client else "unknown")
+    )
 
     async def stream_proxy():
         resolved_backend = None
@@ -4941,8 +5051,14 @@ async def generate(request: Request):
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
 
         # Complete active request details
+        prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+        gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
         complete_active_request(
-            request_id, final_response=final_response, final_thinking=final_thinking
+            request_id, 
+            final_response=final_response, 
+            final_thinking=final_thinking,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=gen_tokens
         )
 
         await apply_keep_alive_policy(model_name, keep_alive)

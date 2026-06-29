@@ -934,6 +934,306 @@ def resubmit_stuck_request(request_id):
     return jsonify({"error": "Request not found in any proxy"}), 404
 
 
+
+@app.route("/api/telemetry/history")
+def get_telemetry_history():
+    """Fetch telemetry history for a specific model"""
+    model = request.args.get("model")
+    limit = request.args.get("limit", 100, type=int)
+    
+    if not model:
+        # Try to find the currently active model from the proxy
+        try:
+            import httpx
+            proxy_url = None
+            for url in benchmark.PROXY_SERVER_URLS:
+                with httpx.Client(timeout=0.5) as client:
+                    resp = client.get(f"{url}/api/version")
+                    if resp.status_code == 200:
+                        proxy_url = url
+                        break
+            if proxy_url:
+                with httpx.Client(timeout=1.0) as client:
+                    resp = client.get(f"{proxy_url}/admin/runtime")
+                    if resp.status_code == 200:
+                        model = resp.json().get("active_model")
+        except Exception:
+            pass
+
+    if not model:
+        model = "system_idle"
+
+    # sanitize model name just like telemetry_monitor.py
+    import re
+    sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
+    
+    telemetry_dir = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
+    log_file = telemetry_dir / f"{sanitized_model}.jsonl"
+    
+    if not log_file.exists():
+        # Fallback to local testing directory if it is elsewhere
+        log_file = Path("/app/data/telemetry") / f"{sanitized_model}.jsonl"
+        if not log_file.exists():
+            log_file = Path("web").parent / "data" / "telemetry" / f"{sanitized_model}.jsonl"
+            
+    if not log_file.exists():
+        return jsonify({"model": model, "history": []})
+        
+    points = []
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    points.append(json.loads(line))
+        return jsonify({"model": model, "history": points[-limit:]})
+    except Exception as e:
+        return jsonify({"error": f"Failed to read telemetry: {str(e)}"}), 500
+
+
+@app.route("/api/telemetry/recommendations")
+def get_telemetry_recommendations():
+    """Run configuration analyzer and fetch recommendations"""
+    model = request.args.get("model")
+    strategy = request.args.get("strategy", "performance")
+    
+    if not model:
+        # Default to currently loaded model
+        try:
+            import httpx
+            proxy_url = None
+            for url in benchmark.PROXY_SERVER_URLS:
+                with httpx.Client(timeout=0.5) as client:
+                    resp = client.get(f"{url}/api/version")
+                    if resp.status_code == 200:
+                        proxy_url = url
+                        break
+            if proxy_url:
+                with httpx.Client(timeout=1.0) as client:
+                    resp = client.get(f"{proxy_url}/admin/runtime")
+                    if resp.status_code == 200:
+                        model = resp.json().get("active_model")
+        except Exception:
+            pass
+            
+    if not model:
+        return jsonify({
+            "status": "insufficient_data",
+            "model_alias": "None",
+            "detected_issues": ["No active model running, and no model specified."],
+            "recommendations": {},
+            "explanation": "Please load a model or specify one via '?model=name'."
+        })
+        
+    try:
+        from analyzer import analyze_telemetry
+        perf_first = (strategy == "performance")
+        analysis = analyze_telemetry(model, performance_first=perf_first)
+        return jsonify(analysis)
+    except Exception as e:
+        # Fallback analysis if importer/analyzer fails
+        return jsonify({
+            "status": "error",
+            "model_alias": model,
+            "detected_issues": [f"Tuning analyzer engine failed: {str(e)}"],
+            "recommendations": {},
+            "explanation": "Ensure analyzer.py is mounted correctly in the web container path."
+        })
+
+
+@app.route("/api/telemetry/recommendations/apply", methods=["POST"])
+def apply_telemetry_recommendations():
+    """Apply recommendations to the model profile overlay"""
+    data = request.get_json() or {}
+    model = data.get("model")
+    recommendations = data.get("recommendations", {})
+    
+    if not model:
+        return jsonify({"error": "model is required"}), 400
+    if not recommendations:
+        return jsonify({"error": "no recommendations provided"}), 400
+        
+    import re
+    sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
+    router_models_dir = Path(os.getenv("ROUTER_MODELS_DIR", "/router-models"))
+    profile_path = router_models_dir / f"{sanitized_model}.profile.json"
+    
+    if not router_models_dir.exists():
+        profile_path = Path("data") / f"{sanitized_model}.profile.json"
+        if not profile_path.parent.exists():
+            profile_path = Path("web").parent / ".alpaca-router" / f"{sanitized_model}.profile.json"
+            
+    try:
+        profile_data = {}
+        if profile_path.exists():
+            with open(profile_path, "r", encoding="utf-8") as f:
+                profile_data = json.load(f)
+                
+        profile_data.update(recommendations)
+        
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(profile_path, "w", encoding="utf-8") as f:
+            json.dump(profile_data, f, indent=2)
+            
+        # Try to regenerate models.ini via puller
+        try:
+            from alpaca_puller import update_models_ini
+            update_models_ini()
+            ini_msg = "and regenerated models.ini"
+        except Exception:
+            ini_msg = "but could not regenerate models.ini automatically"
+            
+        return jsonify({
+            "status": "success",
+            "message": f"Applied tuning properties for {model} {ini_msg}.",
+            "applied": recommendations
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to apply tuning properties: {str(e)}"}), 500
+
+
+@app.route("/api/routing/matrix", methods=["GET", "POST"])
+def get_or_post_routing_matrix():
+    """GET current model capability routing matrix, or POST modifications to it"""
+    matrix_file = Path("data/routing_matrix.json")
+    if not matrix_file.parent.exists():
+        matrix_file = Path("web").parent / "data" / "routing_matrix.json"
+        
+    # Default routing matrix template
+    default_matrix = {
+        "fast_chat": {
+            "model": "qwen3--8b",
+            "description": "Sub-second latency chat for voice assistant or general conversation.",
+            "min_tps": 40.0,
+            "max_ttft_ms": 250,
+            "reasoning_required": false
+        },
+        "complex_coding": {
+            "model": "qwen2.5-coder--7b",
+            "description": "Accurate syntax completions, code editing, and structural debugging.",
+            "min_tps": 20.0,
+            "max_ttft_ms": 500,
+            "reasoning_required": false
+        },
+        "reasoning": {
+            "model": "gemma-4-E2B-it-uncensored-GGUF--gemma-4-E2B-it-uncensored-Q4_K_M",
+            "description": "Deep thinking, logical reasoning, multi-step problem solving, math/science.",
+            "min_tps": 15.0,
+            "max_ttft_ms": 800,
+            "reasoning_required": true
+        },
+        "summarization": {
+            "model": "gemma-4-12b-fable5",
+            "description": "Document parsing, entity extraction, context summaries, and long context tasks.",
+            "min_tps": 30.0,
+            "max_ttft_ms": 300,
+            "reasoning_required": false
+        }
+    }
+    
+    if request.method == "POST":
+        data = request.get_json() or {}
+        try:
+            matrix_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(matrix_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return jsonify({"status": "success", "message": "Routing matrix updated successfully.", "matrix": data})
+        except Exception as e:
+            return jsonify({"error": f"Failed to save routing matrix: {str(e)}"}), 500
+            
+    # GET method
+    if matrix_file.exists():
+        try:
+            with open(matrix_file, "r", encoding="utf-8") as f:
+                matrix = json.load(f)
+                return jsonify(matrix)
+        except Exception:
+            return jsonify(default_matrix)
+    else:
+        return jsonify(default_matrix)
+
+
+@app.route("/api/routing/optimal")
+def get_optimal_model():
+    """Query endpoint for SharedLLM routing decision"""
+    task = request.args.get("task", "fast_chat")
+    min_tps = request.args.get("min_tps", type=float)
+    max_ttft_ms = request.args.get("max_ttft_ms", type=int)
+    reasoning_required = request.args.get("reasoning_required")
+    if reasoning_required is not None:
+        reasoning_required = reasoning_required.lower() in ("true", "1", "yes")
+
+    # Load matrix config
+    matrix_file = Path("data/routing_matrix.json")
+    if not matrix_file.parent.exists():
+        matrix_file = Path("web").parent / "data" / "routing_matrix.json"
+        
+    matrix = {}
+    if matrix_file.exists():
+        try:
+            with open(matrix_file, "r", encoding="utf-8") as f:
+                matrix = json.load(f)
+        except Exception:
+            pass
+            
+    # Match criteria
+    task_config = matrix.get(task, {})
+    
+    # Fallbacks/overrides based on request params
+    optimal_model = task_config.get("model", "qwen3--8b")
+    explanation = f"Matched to configured model for task type '{task}'."
+    
+    # If the caller requests specific speed overrides, validate models based on benchmarks
+    try:
+        from analyzer import load_latest_benchmark
+        # Try loading benchmark for current optimal
+        bench = load_latest_benchmark(optimal_model)
+        if bench:
+            tps = bench.get("avg_tokens_per_sec", 0.0)
+            ttft = bench.get("avg_ttft_ms", 0)
+            
+            # If configured model fails constraints, search alternatives
+            if (min_tps and tps < min_tps) or (max_ttft_ms and ttft > max_ttft_ms):
+                explanation = f"Configured model '{optimal_model}' did not meet constraints (Benchmarked: {tps} TPS, {ttft}ms TTFT). Searching fallbacks..."
+                
+                best_model = optimal_model
+                best_score = -9999.0
+                
+                # Check other models in benchmark directory
+                from analyzer import BENCHMARK_DIR
+                if BENCHMARK_DIR.exists():
+                    for path in BENCHMARK_DIR.glob("*.json"):
+                        try:
+                            with open(path, "r") as f:
+                                data = json.load(f)
+                                for res in data.get("results", []):
+                                    m_tps = res.get("avg_tokens_per_sec", 0.0)
+                                    m_ttft = res.get("avg_ttft_ms", 9999)
+                                    m_model = res.get("model")
+                                    
+                                    meets_tps = (not min_tps) or (m_tps >= min_tps)
+                                    meets_ttft = (not max_ttft_ms) or (m_ttft <= max_ttft_ms)
+                                    
+                                    score = m_tps - (m_ttft / 10.0)
+                                    if meets_tps and meets_ttft and score > best_score:
+                                        best_score = score
+                                        best_model = m_model
+                        except Exception:
+                            continue
+                
+                if best_model != optimal_model:
+                    explanation += f" Routed to '{best_model}' as optimal alternative."
+                    optimal_model = best_model
+    except Exception as e:
+        explanation += f" (Benchmark validation skipped: {str(e)})"
+
+    return jsonify({
+        "optimal_model": optimal_model,
+        "task": task,
+        "explanation": explanation,
+        "fallback_model": "qwen3--8b" if optimal_model != "qwen3--8b" else "qwen2.5-coder--7b"
+    })
+
+
 @app.route("/api/usage")
 def get_model_usage():
     """Get model usage statistics from the proxy"""
