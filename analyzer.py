@@ -82,10 +82,12 @@ def read_current_config(model_alias: str) -> Dict[str, str]:
             if config.has_section(model_alias):
                 matched_section = model_alias
             else:
-                norm_alias = model_alias.replace("/", "--").replace("_", "--").lower()
+                def clean_str(s):
+                    return s.replace("/", "").replace("_", "").replace("-", "").lower()
+                clean_alias = clean_str(model_alias)
                 for sec in config.sections():
-                    norm_sec = sec.lower()
-                    if norm_alias in norm_sec or norm_sec in norm_alias or norm_alias.replace("--latest", "") in norm_sec:
+                    clean_sec = clean_str(sec)
+                    if clean_alias in clean_sec or clean_sec in clean_alias or clean_alias.replace("latest", "") in clean_sec:
                         matched_section = sec
                         break
 
@@ -366,6 +368,18 @@ def analyze_telemetry(
                 actions.append(
                     f"Reduce GPU offloaded layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to prevent CUDA OOM."
                 )
+
+        # 4. VRAM Underutilization / Quality Optimization (Plenty of VRAM headroom)
+        # If VRAM usage is low and KV cache is quantized, suggest upgrading to f16/q8_0 to improve quality
+        if max_vram < 75.0 and vram_headroom_mb > 2000:
+            if curr_cache_k in ("q4_0", "q4_1", "q8_0") or curr_cache_v in ("q4_0", "q4_1", "q8_0"):
+                target_cache = "f16" if not performance_first else "q8_0"
+                if curr_cache_k != target_cache or curr_cache_v != target_cache:
+                    recommendations["cache-type-k"] = target_cache
+                    recommendations["cache-type-v"] = target_cache
+                    actions.append(
+                        f"Upgrade KV Cache quantization ({curr_cache_k} -> {target_cache}) to improve text generation coherence and quality, utilizing the available {vram_headroom_mb}MB VRAM headroom."
+                    )
 
     # Try loading baseline benchmarks for comparison
     benchmark = load_latest_benchmark(model_alias)
