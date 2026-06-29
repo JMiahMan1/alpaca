@@ -282,18 +282,67 @@ def analyze_telemetry(
             return int(float(val))  # handles "99.0" as well as "99"
         except (ValueError, TypeError):
             return fallback
-
     curr_ngl = _safe_int(current_config.get("n-gpu-layers", "-1"), -1)
     curr_ctx = _safe_int(current_config.get("ctx-size", "4096"), 4096)
     curr_cache_k = current_config.get("cache-type-k", "f16").lower()
     curr_cache_v = current_config.get("cache-type-v", "f16").lower()
     curr_batch = _safe_int(current_config.get("batch-size", "1024"), 1024)
-
     recommendations = {}
     actions = []
 
+    # Load failed configs to prevent recommending failed setups
+    failed_configs_file = Path("data/failed_configs.json")
+    failed_configs = []
+    if failed_configs_file.exists():
+        try:
+            with open(failed_configs_file, "r") as f:
+                failed_configs = json.load(f)
+        except Exception:
+            pass
+
+    def is_blacklisted(cache_k, cache_v, ngl=None, ctx=None):
+        ngl_val = str(ngl) if ngl is not None else str(curr_ngl)
+        ctx_val = str(ctx) if ctx is not None else str(curr_ctx)
+        for fc in failed_configs:
+            fc_model = fc.get("model", "")
+            if model_alias in fc_model or fc_model in model_alias:
+                if (fc.get("cache-type-k") == cache_k and
+                    fc.get("cache-type-v") == cache_v and
+                    fc.get("n-gpu-layers") == ngl_val and
+                    fc.get("ctx-size") == ctx_val):
+                    return True
+        return False
+
+    current_is_failed = is_blacklisted(curr_cache_k, curr_cache_v, curr_ngl, curr_ctx)
+
+    if current_is_failed:
+        status = "critical"
+        issues.append(f"CRITICAL: The current configuration of {model_alias} is known to have failed to load recently.")
+
     # Recommendation Logic
-    if status in ("warning", "critical"):
+    if current_is_failed:
+        # Immediately suggest a downgrade path since the current settings failed
+        if curr_cache_k in ("f16", "f32"):
+            recommendations["cache-type-k"] = "q8_0"
+            recommendations["cache-type-v"] = "q8_0"
+            actions.append("Downgrade KV Cache quantization (f16 -> q8_0) to resolve model load failure.")
+        elif curr_cache_k == "q8_0":
+            recommendations["cache-type-k"] = "q5_0"
+            recommendations["cache-type-v"] = "q5_0"
+            actions.append("Downgrade KV Cache quantization (q8_0 -> q5_0) to resolve model load failure.")
+        elif curr_cache_k in ("q5_0", "q5_1"):
+            recommendations["cache-type-k"] = "q4_0"
+            recommendations["cache-type-v"] = "q4_0"
+            actions.append("Downgrade KV Cache quantization (q5_0 -> q4_0) to resolve model load failure.")
+        elif curr_ngl > 10:
+            suggested_ngl = max(0, curr_ngl - 10)
+            recommendations["n-gpu-layers"] = str(suggested_ngl)
+            actions.append(f"Reduce GPU layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to free up VRAM.")
+        elif curr_ctx > 8192:
+            recommendations["ctx-size"] = "8192"
+            actions.append("Reduce context window to 8192 to resolve load failure.")
+
+    elif status in ("warning", "critical"):
         # 1. System RAM Exhaustion, but VRAM has Headroom
         # We shift layers to VRAM to relieve system RAM
         vram_limit = 95.0 if performance_first else 80.0
@@ -324,13 +373,26 @@ def analyze_telemetry(
             if performance_first and (
                 curr_cache_k in ("f16", "f32") or curr_cache_v in ("f16", "f32")
             ):
-                recommendations["cache-type-k"] = "q8_0"
-                recommendations["cache-type-v"] = "q8_0"
-                actions.append(
-                    "Enable high-quality 8-bit KV Cache quantization (cache-type-k/v: f16 -> q8_0) to save 50% of cache memory with zero output degradation."
-                )
+                if not is_blacklisted("q8_0", "q8_0"):
+                    recommendations["cache-type-k"] = "q8_0"
+                    recommendations["cache-type-v"] = "q8_0"
+                    actions.append(
+                        "Enable high-quality 8-bit KV Cache quantization (cache-type-k/v: f16 -> q8_0) to save 50% of cache memory with zero output degradation."
+                    )
+                elif not is_blacklisted("q5_0", "q5_0"):
+                    recommendations["cache-type-k"] = "q5_0"
+                    recommendations["cache-type-v"] = "q5_0"
+                    actions.append(
+                        "Enable 5-bit KV Cache quantization (cache-type-k/v: f16 -> q5_0) to save KV cache memory."
+                    )
+                else:
+                    recommendations["cache-type-k"] = "q4_0"
+                    recommendations["cache-type-v"] = "q4_0"
+                    actions.append(
+                        "Enable 4-bit KV Cache quantization (cache-type-k/v: f16 -> q4_0) to save 75% of cache memory."
+                    )
             # Safe strategy or fallback: use 4-bit cache (q4_0)
-            elif curr_cache_k in ("f16", "f32", "q8_0") or curr_cache_v in ("f16", "f32", "q8_0"):
+            elif curr_cache_k in ("f16", "f32", "q8_0", "q5_0") or curr_cache_v in ("f16", "f32", "q8_0", "q5_0"):
                 recommendations["cache-type-k"] = "q4_0"
                 recommendations["cache-type-v"] = "q4_0"
                 actions.append(
@@ -370,16 +432,42 @@ def analyze_telemetry(
                 )
 
         # 4. VRAM Underutilization / Quality Optimization (Plenty of VRAM headroom)
-        # If VRAM usage is low and KV cache is quantized, suggest upgrading to f16/q8_0 to improve quality
+        # If VRAM usage is low and KV cache is quantized, suggest upgrading progressively to f16/q8_0 to improve quality
         if max_vram < 75.0 and vram_headroom_mb > 2000:
-            if curr_cache_k in ("q4_0", "q4_1", "q8_0") or curr_cache_v in ("q4_0", "q4_1", "q8_0"):
-                target_cache = "f16" if not performance_first else "q8_0"
-                if curr_cache_k != target_cache or curr_cache_v != target_cache:
-                    recommendations["cache-type-k"] = target_cache
-                    recommendations["cache-type-v"] = target_cache
-                    actions.append(
-                        f"Upgrade KV Cache quantization ({curr_cache_k} -> {target_cache}) to improve text generation coherence and quality, utilizing the available {vram_headroom_mb}MB VRAM headroom."
-                    )
+            # Map progressive upgrade steps: q4_0 -> q5_0 -> q8_0 -> f16
+            upgrade_map = {
+                "q4_0": "q5_0",
+                "q4_1": "q5_0",
+                "q5_0": "q8_0",
+                "q5_1": "q8_0",
+                "q8_0": "f16"
+            }
+            target_cache_k = upgrade_map.get(curr_cache_k, "f16")
+            target_cache_v = upgrade_map.get(curr_cache_v, "f16")
+            
+            if not performance_first:
+                target_cache_k = "f16"
+                target_cache_v = "f16"
+
+            # Resolve target against blacklist
+            while (target_cache_k != curr_cache_k or target_cache_v != curr_cache_v):
+                if not is_blacklisted(target_cache_k, target_cache_v):
+                    break
+                if target_cache_k == "f16":
+                    target_cache_k, target_cache_v = "q8_0", "q8_0"
+                elif target_cache_k == "q8_0":
+                    target_cache_k, target_cache_v = "q5_0", "q5_0"
+                elif target_cache_k == "q5_0":
+                    target_cache_k, target_cache_v = "q4_0", "q4_0"
+                else:
+                    target_cache_k, target_cache_v = curr_cache_k, curr_cache_v
+
+            if target_cache_k != curr_cache_k or target_cache_v != curr_cache_v:
+                recommendations["cache-type-k"] = target_cache_k
+                recommendations["cache-type-v"] = target_cache_v
+                actions.append(
+                    f"Upgrade KV Cache quantization ({curr_cache_k} -> {target_cache_k}) to improve text generation coherence and quality, utilizing the available {vram_headroom_mb}MB VRAM headroom."
+                )
 
     # Try loading baseline benchmarks for comparison
     benchmark = load_latest_benchmark(model_alias)
