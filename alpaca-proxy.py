@@ -2472,26 +2472,27 @@ async def admin_runtime():
             public_name = public_model_name(model_name)
             backend_model = matched_entry.get("id", "")
 
-            # Load running settings: try .profile.json first, fall back to models.ini section
+            # Load running settings: models.ini is canonical, .profile.json fills gaps
             running_settings = {}
             try:
+                import configparser
+
+                ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+                if os.path.exists(ini_path):
+                    cfg = configparser.ConfigParser(delimiters=("=",))
+                    cfg.read(ini_path)
+                    for section_key in [backend_model, public_name]:
+                        if cfg.has_section(section_key):
+                            running_settings = dict(cfg[section_key])
+                            break
+
+                # .profile.json only supplies fields not already set by models.ini
                 profile_path = os.path.join(ROUTER_MODELS_DIR, f"{backend_model}.profile.json")
                 if os.path.exists(profile_path):
                     with open(profile_path) as f:
-                        running_settings = json.load(f)
-                else:
-                    # Fall back to models.ini section matching the backend model id
-                    import configparser
-
-                    ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
-                    if os.path.exists(ini_path):
-                        cfg = configparser.ConfigParser(delimiters=("=",))
-                        cfg.read(ini_path)
-                        # Try exact backend_model id first, then the public model name
-                        for section_key in [backend_model, public_name]:
-                            if cfg.has_section(section_key):
-                                running_settings = dict(cfg[section_key])
-                                break
+                        profile_settings = json.load(f)
+                        for k, v in profile_settings.items():
+                            running_settings.setdefault(k, v)
             except Exception:
                 pass
 
@@ -3153,7 +3154,7 @@ async def restart_llama_server():
             return False
 
 
-async def get_llama_server_logs(tail=30) -> str:
+async def _fetch_llama_server_logs(tail=30) -> str:
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -3170,7 +3171,7 @@ async def get_llama_server_logs(tail=30) -> str:
 
 
 async def raise_model_load_failure_exception(model_name: str, backend_model: str, original_error: str):
-    logs = await get_llama_server_logs(tail=30)
+    logs = await _fetch_llama_server_logs(tail=30)
     logs_lower = logs.lower()
     
     suggested_fix = ""
@@ -4965,7 +4966,7 @@ async def chat(request: Request):
         }
         if final_thinking:
             client_message["thinking"] = final_thinking
-            if f"<think>" not in final_content:
+            if "<think>" not in final_content:
                 client_message["content"] = f"<think>\n{final_thinking}\n</think>\n{final_content}"
                 
         chunk = ollama_chat_chunk(model_name, client_message, True, choice.get("finish_reason"))
@@ -5306,7 +5307,7 @@ async def generate(request: Request):
             final_thinking = message.get("thinking") if message else None
             
             client_content = final_response
-            if final_thinking and f"<think>" not in final_response:
+            if final_thinking and "<think>" not in final_response:
                 client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
                 
             chunk = ollama_generate_chunk(
@@ -5321,7 +5322,7 @@ async def generate(request: Request):
             final_thinking = data.get("thinking")
             
             client_content = final_response
-            if final_thinking and f"<think>" not in final_response:
+            if final_thinking and "<think>" not in final_response:
                 client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
                 
             chunk = ollama_generate_chunk(model_name, client_content, done, done_reason)

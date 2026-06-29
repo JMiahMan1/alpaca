@@ -1973,10 +1973,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
             logToTerminal("Benchmark pipeline initialized successfully.", 'success', termTarget);
             setRunnerState('running');
-            if (isShared) {
-                switchTab('shared');
+            
+            // Ensure SocketIO is connected before switching tabs to receive progress events
+            if (socket.connected) {
+                if (isShared) {
+                    switchTab('shared');
+                } else {
+                    switchTab('general');
+                }
             } else {
-                switchTab('general');
+                // Wait for socket connection with timeout
+                let attempts = 0;
+                const maxAttempts = 50; // 5 seconds
+                await new Promise((resolve) => {
+                    const checkSocket = setInterval(() => {
+                        attempts++;
+                        if (socket.connected || attempts >= maxAttempts) {
+                            clearInterval(checkSocket);
+                            resolve();
+                        }
+                    }, 100);
+                });
+                if (isShared) {
+                    switchTab('shared');
+                } else {
+                    switchTab('general');
+                }
             }
         } catch (err) {
             logToTerminal(`Failed to start benchmark: ${err.message}`, 'error', termTarget);

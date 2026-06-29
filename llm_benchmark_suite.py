@@ -539,6 +539,10 @@ class LLMModelBenchmark:
             "home_automation": self._home_automation_tests,
         }
 
+        # Calculate total tests for progress
+        total_tests = sum(len(test_func(model)) for test_func in categories.values())
+        completed_tests = 0
+
         for category, test_func in categories.items():
             if cancel_event and cancel_event.is_set():
                 break
@@ -548,6 +552,33 @@ class LLMModelBenchmark:
                 if cancel_event and cancel_event.is_set():
                     break
                 print(f"[{category}] Running verification {i}/{len(tests)}... ", end="", flush=True)
+
+                # Emit test_start progress
+                if progress_callback:
+                    try:
+                        import inspect
+                        if inspect.iscoroutinefunction(progress_callback):
+                            await progress_callback(
+                                "test_start",
+                                {
+                                    "model": model,
+                                    "category": category,
+                                    "test_id": test["id"],
+                                    "test_label": test["label"],
+                                },
+                            )
+                        else:
+                            progress_callback(
+                                "test_start",
+                                {
+                                    "model": model,
+                                    "category": category,
+                                    "test_id": test["id"],
+                                    "test_label": test["label"],
+                                },
+                            )
+                    except Exception as e:
+                        print(f"Callback error: {e}")
 
                 test_result = (
                     await self.test_model_proxy(model, test)
@@ -572,6 +603,46 @@ class LLMModelBenchmark:
                     {"test_id": test["id"], "test_category": category, "test_label": test["label"]}
                 )
                 category_results.append(test_result)
+                completed_tests += 1
+
+                # Emit test_complete progress
+                if progress_callback:
+                    try:
+                        import inspect
+                        if inspect.iscoroutinefunction(progress_callback):
+                            await progress_callback(
+                                "test_complete",
+                                {
+                                    "model": model,
+                                    "category": category,
+                                    "test_id": test["id"],
+                                    "test_label": test["label"],
+                                    "result": test_result,
+                                    "progress": {
+                                        "completed": completed_tests,
+                                        "total": total_tests,
+                                        "percentage": round((completed_tests / total_tests) * 100),
+                                    },
+                                },
+                            )
+                        else:
+                            progress_callback(
+                                "test_complete",
+                                {
+                                    "model": model,
+                                    "category": category,
+                                    "test_id": test["id"],
+                                    "test_label": test["label"],
+                                    "result": test_result,
+                                    "progress": {
+                                        "completed": completed_tests,
+                                        "total": total_tests,
+                                        "percentage": round((completed_tests / total_tests) * 100),
+                                    },
+                                },
+                            )
+                    except Exception as e:
+                        print(f"Callback error: {e}")
 
             results[f"category_{category}"] = self._calculate_category_stats(category_results)
         return results
@@ -598,11 +669,41 @@ class LLMModelBenchmark:
         tps_list = []
         ttft_list = []
         sampler = self.ResourceSampler()
+        total_tests = len(load_tests)
+        completed_tests = 0
 
         print("Measuring footprint under active inference load...")
         for i, test in enumerate(load_tests, 1):
             if cancel_event and cancel_event.is_set():
                 break
+
+            # Emit test_start progress
+            if progress_callback:
+                try:
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback(
+                            "test_start",
+                            {
+                                "model": model,
+                                "category": "performance",
+                                "test_id": test["id"],
+                                "test_label": test["id"],
+                            },
+                        )
+                    else:
+                        progress_callback(
+                            "test_start",
+                            {
+                                "model": model,
+                                "category": "performance",
+                                "test_id": test["id"],
+                                "test_label": test["id"],
+                            },
+                        )
+                except Exception as e:
+                    print(f"Callback error: {e}")
+
             print(f"  Executing Performance Load {i}/{len(load_tests)}... ", end="", flush=True)
 
             res = (
@@ -627,6 +728,47 @@ class LLMModelBenchmark:
                 print(f"✓ ({tps:.1f} tok/s, {ttft:.0f}ms TTFT)")
             else:
                 print(f"✗ ({res.get('error')})")
+
+            completed_tests += 1
+
+            # Emit test_complete progress
+            if progress_callback:
+                try:
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback(
+                            "test_complete",
+                            {
+                                "model": model,
+                                "category": "performance",
+                                "test_id": test["id"],
+                                "test_label": test["id"],
+                                "result": res,
+                                "progress": {
+                                    "completed": completed_tests,
+                                    "total": total_tests,
+                                    "percentage": round((completed_tests / total_tests) * 100),
+                                },
+                            },
+                        )
+                    else:
+                        progress_callback(
+                            "test_complete",
+                            {
+                                "model": model,
+                                "category": "performance",
+                                "test_id": test["id"],
+                                "test_label": test["id"],
+                                "result": res,
+                                "progress": {
+                                    "completed": completed_tests,
+                                    "total": total_tests,
+                                    "percentage": round((completed_tests / total_tests) * 100),
+                                },
+                            },
+                        )
+                except Exception as e:
+                    print(f"Callback error: {e}")
 
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0.0
@@ -703,11 +845,39 @@ class LLMModelBenchmark:
             "results": [],
         }
 
+        # Emit benchmark_start event
+        if progress_callback:
+            try:
+                import inspect
+                start_data = {
+                    "models": models,
+                    "use_proxy": use_proxy,
+                    "total_tests": len(models) * (10 if mode in ("functional", "all") else 0) + len(models) * (2 if mode in ("performance", "all") else 0),
+                    "timestamp": all_results["generated_at"],
+                }
+                if inspect.iscoroutinefunction(progress_callback):
+                    await progress_callback("benchmark_start", start_data)
+                else:
+                    progress_callback("benchmark_start", start_data)
+            except Exception as e:
+                print(f"Callback error: {e}")
+
         for model in models:
             if cancel_event and cancel_event.is_set():
                 break
 
             model_data = {"model": model}
+
+            # Emit model_start event
+            if progress_callback:
+                try:
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback("model_start", {"model": model})
+                    else:
+                        progress_callback("model_start", {"model": model})
+                except Exception as e:
+                    print(f"Callback error: {e}")
 
             if mode in ("functional", "all"):
                 func_data = await self.benchmark_model_functional(
@@ -722,6 +892,29 @@ class LLMModelBenchmark:
                 model_data.update(perf_data)
 
             all_results["results"].append(model_data)
+
+            # Emit model_complete event
+            if progress_callback:
+                try:
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback("model_complete", {"model": model, "results": model_data})
+                    else:
+                        progress_callback("model_complete", {"model": model, "results": model_data})
+                except Exception as e:
+                    print(f"Callback error: {e}")
+
+        # Emit benchmark_complete event
+        if progress_callback:
+            try:
+                import inspect
+                complete_data = {"status": "completed", "saved_as": all_results.get("saved_as")}
+                if inspect.iscoroutinefunction(progress_callback):
+                    await progress_callback("benchmark_complete", complete_data)
+                else:
+                    progress_callback("benchmark_complete", complete_data)
+            except Exception as e:
+                print(f"Callback error: {e}")
 
         if all_results["results"]:
             save_file = (
