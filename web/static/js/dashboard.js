@@ -2648,6 +2648,43 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
+    async function clearVram() {
+        if (!confirm("Are you sure you want to FORCE clear VRAM? This will unload all active models and restart the llama-server.")) {
+            return;
+        }
+        
+        if (modelSwitcherStatus) {
+            modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary);">Clearing VRAM & restarting llama-server...</span>`;
+        }
+        
+        try {
+            const res = await fetch('/api/vram/clear', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            
+            const data = await res.json();
+            
+            if (res.ok) {
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-success);">✅ VRAM Cleared successfully</span>`;
+                }
+                currentModelName = null;
+                logToTerminal(`VRAM Cleared successfully: ${data.message}`, 'success');
+            } else {
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${data.error || 'Failed to clear VRAM'}</span>`;
+                }
+                logToTerminal(`VRAM Clear failure: ${data.error || 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            if (modelSwitcherStatus) {
+                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${err.message}</span>`;
+            }
+            logToTerminal(`VRAM Clear error: ${err.message}`, 'error');
+        }
+    }
+    
     // ──── TELEMETRY AND AUTO-TUNING INTEGRATION ────
     async function updateTelemetryAndRecommendations(modelName) {
         if (!modelName || modelName === 'None') {
@@ -3021,6 +3058,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (btnUnloadCurrent) {
         btnUnloadCurrent.addEventListener('click', unloadCurrentModel);
+    }
+    
+    const btnClearVram = document.getElementById('btn-clear-vram');
+    if (btnClearVram) {
+        btnClearVram.addEventListener('click', clearVram);
     }
 
     const tuningStrategySelect = document.getElementById('tuning-strategy-select');

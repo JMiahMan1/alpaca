@@ -1355,6 +1355,36 @@ def unload_model():
         return jsonify({"error": f"Failed to unload model: {str(e)}"}), 500
 
 
+@app.route("/api/vram/clear", methods=["POST"])
+def clear_vram():
+    """Clear VRAM via the proxy"""
+    import httpx
+
+    proxy_url = None
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code == 200:
+                    proxy_url = url
+                    break
+        except Exception:
+            continue
+
+    if not proxy_url:
+        return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
+
+    try:
+        with httpx.Client(timeout=45.0) as client:
+            resp = client.post(f"{proxy_url}/admin/vram/clear")
+            if resp.status_code == 200:
+                return jsonify(resp.json())
+            else:
+                return jsonify({"error": resp.text}), resp.status_code
+    except Exception as e:
+        return jsonify({"error": f"Failed to clear VRAM: {str(e)}"}), 500
+
+
 @socketio.on("connect")
 def handle_connect():
     print("Client connected")

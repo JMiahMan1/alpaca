@@ -2763,6 +2763,47 @@ async def admin_model_unload(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to unload model: {str(e)}")
 
 
+@app.post("/admin/vram/clear")
+async def admin_vram_clear():
+    """Force clear all VRAM by unloading all active models and restarting llama-server."""
+    try:
+        # 1. Unload all resident models via router
+        router_models = await fetch_router_models(reload=True)
+        unloaded_count = 0
+        for entry in router_models:
+            current_status = router_entry_status(entry)
+            if is_resident_status(current_status):
+                backend_model = entry.get("id")
+                try:
+                    await post_router_model_action("unload", backend_model)
+                    await record_model_unloaded_by_backend_id(backend_model)
+                    unloaded_count += 1
+                except Exception as unload_err:
+                    logger.warning(f"Failed to unload {backend_model} during VRAM clear: {unload_err}")
+
+        # 2. Force reset active requests counter to prevent stuck locks
+        async with active_requests_lock:
+            active_requests.clear()
+            active_requests_lock.notify_all()
+
+        # 3. Always trigger a docker restart on llama-server to guarantee 100% VRAM release
+        logger.info("Restarting llama-server container to guarantee 100% VRAM cleanup...")
+        await restart_llama_server()
+        
+        # 4. Wait for it to come back online
+        if not await wait_for_llama_server_or_restart(timeout=30.0):
+            raise HTTPException(status_code=502, detail="llama-server failed to recover after VRAM clear restart")
+
+        return {
+            "status": "success",
+            "message": f"Successfully cleared VRAM. Unloaded {unloaded_count} model(s) and restarted llama-server.",
+            "unloaded_models_count": unloaded_count
+        }
+    except Exception as e:
+        logger.error(f"Failed to clear VRAM: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to clear VRAM: {str(e)}")
+
+
 @app.post("/admin/models/copy")
 async def admin_model_copy(request: Request):
     """Copy a model to a new name/tag. Body: {\"source\": \"name:tag\", \"target\": \"newname:newtag\"}"""
@@ -3041,6 +3082,49 @@ async def restart_llama_server():
         except Exception as e:
             logger.error(f"Failed to restart llama-server: {e}")
             return False
+
+
+async def get_llama_server_logs(tail=30) -> str:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            f"--tail={tail}",
+            "llama-server",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return (stdout.decode("utf-8", errors="replace") + "\n" + stderr.decode("utf-8", errors="replace"))
+    except Exception as e:
+        return f"Failed to get container logs: {e}"
+
+
+async def raise_model_load_failure_exception(model_name: str, backend_model: str, original_error: str):
+    logs = await get_llama_server_logs(tail=30)
+    logs_lower = logs.lower()
+    
+    suggested_fix = ""
+    if "out of memory" in logs_lower or "cudamalloc failed" in logs_lower or "unable to allocate" in logs_lower:
+        suggested_fix = (
+            "Suggested Fixes:\n"
+            "1. Decrease the KV cache quantization level (e.g. from q8_0 to q4_0) in Model Profiles.\n"
+            "2. Reduce n-gpu-layers to offload fewer layers to GPU (freeing up VRAM).\n"
+            "3. Reduce ctx-size in the Model Profiles tab."
+        )
+    elif "no such file" in logs_lower or "failed to load model" in logs_lower:
+        suggested_fix = (
+            "Suggested Fixes:\n"
+            "1. Make sure the model files exist in the router models directory (/router-models).\n"
+            "2. Verify the model file format is a valid and uncorrupted GGUF file."
+        )
+    
+    detailed_msg = f"Failed to load model {model_name} ({backend_model}): {original_error}"
+    if suggested_fix:
+        detailed_msg += f"\n\n[Diagnosis] VRAM/resource limitation detected.\n{suggested_fix}"
+    
+    logger.error(f"Model load failure exception raised: {detailed_msg}\nLast logs:\n{logs}")
+    raise HTTPException(status_code=500, detail=detailed_msg)
 
 
 async def wait_for_llama_server_or_restart(timeout=300.0):
@@ -4323,7 +4407,7 @@ async def _ensure_model_impl(
                         )
         except Exception as recovery_err:
             logger.error(f"Recovery failed for {model_name}: {recovery_err}. Raising.")
-            raise
+            await raise_model_load_failure_exception(model_name, backend_model, str(recovery_err))
         await record_model_loaded(model_name)
         return {
             "model_name": model_name,
