@@ -10,14 +10,14 @@ Divided into two distinct execution phases:
 
 import asyncio
 import json
+import logging
 import os
-import time
 import re
 import sys
-import logging
-import subprocess
+import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Optional
+
 import httpx
 import psutil
 
@@ -40,7 +40,7 @@ class LLMModelBenchmark:
                 "http://localhost:8080",
                 "http://llama-server:8080",
                 "http://llama-server-primary:11434",
-                "http://llama-server-secondary:11434"
+                "http://llama-server-secondary:11434",
             ]
 
         proxy_env = os.getenv("PROXY_SERVER_URLS", "")
@@ -51,7 +51,7 @@ class LLMModelBenchmark:
                 "http://localhost:11434",
                 "http://alpaca-proxy:11434",
                 "http://alpaca-proxy-primary:11434",
-                "http://alpaca-proxy-secondary:11445"
+                "http://alpaca-proxy-secondary:11445",
             ]
         self.RESULTS_DIR = Path("data/llm_benchmarks")
         self.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,7 +78,9 @@ class LLMModelBenchmark:
                 response = await client.get(f"{base_url}/api/tags")
                 if response.status_code == 200:
                     data = response.json()
-                    models = [model.get("model") or model.get("name") for model in data.get("models", [])]
+                    models = [
+                        model.get("model") or model.get("name") for model in data.get("models", [])
+                    ]
                     print(f"[discover] Discovered {len(models)} models from proxy {base_url}")
                     return models
                 return []
@@ -214,38 +216,47 @@ class LLMModelBenchmark:
             return False
 
         # Clean the response from potential think tags
-        cleaned = re.sub(r'<think>[\s\S]*?</think>', '', response, flags=re.IGNORECASE).strip().lower()
+        cleaned = (
+            re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.IGNORECASE).strip().lower()
+        )
 
-        refusals = ["cannot", "can't", "unable", "not able", "do not have access", "don't have access"]
+        refusals = [
+            "cannot",
+            "can't",
+            "unable",
+            "not able",
+            "do not have access",
+            "don't have access",
+        ]
         if any(ref in cleaned for ref in refusals) and len(cleaned) < 150:
             return False
 
         if test_id == "debug_fix":
             return any(x in cleaned for x in ["range(len", "range(0", "for item in", "sum("])
-            
+
         elif test_id == "code_refactor":
             return "set(" in cleaned
-            
+
         elif test_id == "logic_puzzle":
             return "42" in cleaned
-            
+
         elif test_id == "math_problem":
             return any(x in cleaned for x in ["1:08", "1:09", "1 pm", "meeting", "4 hours"])
-            
+
         elif test_id == "json_extraction":
             has_name = "john" in cleaned
             has_age = "35" in cleaned
             has_loc = "boston" in cleaned
             has_brackets = "{" in cleaned and "}" in cleaned
             return has_brackets and has_name and has_age and has_loc
-            
+
         elif test_id == "summarization":
-            bullets = re.findall(r'(?:^\s*[-*•+\d]\s+.*$)|(?:^\d+\..*$)', response, re.MULTILINE)
+            bullets = re.findall(r"(?:^\s*[-*•+\d]\s+.*$)|(?:^\d+\..*$)", response, re.MULTILINE)
             return len(bullets) >= 2
-            
+
         elif test_id == "device_control":
             return "bedroom" in cleaned and ("60%" in cleaned or "60" in cleaned)
-            
+
         elif test_id == "device_status":
             return "thermostat" in cleaned and ("68" in cleaned or "sixty-eight" in cleaned)
 
@@ -253,6 +264,7 @@ class LLMModelBenchmark:
 
     class ResourceSampler:
         """Context manager to sample peak CPU, RAM, and VRAM utilization during a query."""
+
         def __init__(self, container_name: str = "llama-server"):
             self.container_name = container_name
             self.peak_ram_pct = 0.0
@@ -268,10 +280,14 @@ class LLMModelBenchmark:
 
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        "docker", "exec", self.container_name,
-                        "nvidia-smi", "--query-gpu=memory.total,memory.used",
+                        "docker",
+                        "exec",
+                        self.container_name,
+                        "nvidia-smi",
+                        "--query-gpu=memory.total,memory.used",
                         "--format=csv,noheader,nounits",
-                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
                     )
                     stdout, _ = await proc.communicate()
                     if proc.returncode == 0:
@@ -284,9 +300,11 @@ class LLMModelBenchmark:
                 except Exception:
                     try:
                         proc = await asyncio.create_subprocess_exec(
-                            "nvidia-smi", "--query-gpu=memory.total,memory.used",
+                            "nvidia-smi",
+                            "--query-gpu=memory.total,memory.used",
                             "--format=csv,noheader,nounits",
-                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
                         )
                         stdout, _ = await proc.communicate()
                         if proc.returncode == 0:
@@ -309,7 +327,9 @@ class LLMModelBenchmark:
             if hasattr(self, "loop_task"):
                 await self.loop_task
 
-    async def test_model_proxy(self, model: str, test: Dict, sampler: Optional[ResourceSampler] = None) -> Dict:
+    async def test_model_proxy(
+        self, model: str, test: Dict, sampler: Optional[ResourceSampler] = None
+    ) -> Dict:
         """Test a model against a proxy endpoint."""
         last_error = None
         for proxy_url in self.PROXY_SERVER_URLS:
@@ -324,7 +344,10 @@ class LLMModelBenchmark:
                             "model": model,
                             "messages": [{"role": "user", "content": test["prompt"]}],
                             "stream": False,
-                            "options": {"num_predict": test.get("num_predict", 50), "temperature": 0.3},
+                            "options": {
+                                "num_predict": test.get("num_predict", 50),
+                                "temperature": 0.3,
+                            },
                         },
                         timeout=120.0,
                     )
@@ -337,7 +360,9 @@ class LLMModelBenchmark:
                         eval_ns = data.get("eval_duration", 0)
                         prompt_ns = data.get("prompt_eval_duration", 0)
                         latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
-                        response_text = data.get("message", {}).get("content") or data.get("response", "")
+                        response_text = data.get("message", {}).get("content") or data.get(
+                            "response", ""
+                        )
                         return {
                             "proxy": proxy_url,
                             "success": True,
@@ -364,9 +389,19 @@ class LLMModelBenchmark:
                     await sampler.stop()
                 last_error = e
                 continue
-        return {"proxy": "all_failed", "success": False, "prompt": test["prompt"], "latency": 0, "response": None, "tokens_generated": 0, "error": str(last_error) if last_error else "Unknown error"}
+        return {
+            "proxy": "all_failed",
+            "success": False,
+            "prompt": test["prompt"],
+            "latency": 0,
+            "response": None,
+            "tokens_generated": 0,
+            "error": str(last_error) if last_error else "Unknown error",
+        }
 
-    async def test_model_direct(self, model: str, test: Dict, sampler: Optional[ResourceSampler] = None) -> Dict:
+    async def test_model_direct(
+        self, model: str, test: Dict, sampler: Optional[ResourceSampler] = None
+    ) -> Dict:
         """Test a model directly without proxy."""
         last_error = None
         for ollama_url in self.OLLAMA_SERVER_URLS:
@@ -381,7 +416,10 @@ class LLMModelBenchmark:
                             "model": model,
                             "prompt": test["prompt"],
                             "stream": False,
-                            "options": {"num_predict": test.get("num_predict", 50), "temperature": 0.3},
+                            "options": {
+                                "num_predict": test.get("num_predict", 50),
+                                "temperature": 0.3,
+                            },
                         },
                         timeout=120.0,
                     )
@@ -420,7 +458,15 @@ class LLMModelBenchmark:
                     await sampler.stop()
                 last_error = e
                 continue
-        return {"ollama_url": "all_failed", "success": False, "prompt": test["prompt"], "latency": 0, "response": None, "tokens_generated": 0, "error": str(last_error) if last_error else "Unknown error"}
+        return {
+            "ollama_url": "all_failed",
+            "success": False,
+            "prompt": test["prompt"],
+            "latency": 0,
+            "response": None,
+            "tokens_generated": 0,
+            "error": str(last_error) if last_error else "Unknown error",
+        }
 
     def _display_live_results(self, results: Dict):
         """Display benchmark results in a formatted UI."""
@@ -430,42 +476,58 @@ class LLMModelBenchmark:
         total_models = results.get("models_tested", 0)
         benchmark_time = results.get("generated_at", "Unknown")
         mode = results.get("benchmark_mode", "all")
-        print(f"\nOverview:")
+        print("\nOverview:")
         print(f"  Models Tested: {total_models}")
         print(f"  Execution Mode: {mode}")
         print(f"  Generated At: {benchmark_time}")
-        
+
         results_data = results.get("results", [])
         if not results_data:
             print("\nNo results data available.")
             return
 
         if mode in ("functional", "all"):
-            print(f"\n--- Functional Correctness Results ---")
+            print("\n--- Functional Correctness Results ---")
             print(f"{'Model':<30} {'Category':<20} {'Accuracy':<15}")
             print("-" * 70)
             for model_result in results_data:
                 model_name = model_result.get("model", "Unknown")
-                for category_key in ["coding", "reasoning", "instruction", "creative", "home_automation"]:
+                for category_key in [
+                    "coding",
+                    "reasoning",
+                    "instruction",
+                    "creative",
+                    "home_automation",
+                ]:
                     cat_key = f"category_{category_key}"
                     if cat_key in model_result:
                         cat_stats = model_result[cat_key]
-                        success_rate = cat_stats.get("tests_passed", 0) / max(cat_stats.get("tests_run", 1), 1) * 100
+                        success_rate = (
+                            cat_stats.get("tests_passed", 0)
+                            / max(cat_stats.get("tests_run", 1), 1)
+                            * 100
+                        )
                         print(f"{model_name:<30} {category_key:<20} {success_rate:>6.1f}%")
 
         if mode in ("performance", "all"):
-            print(f"\n--- Hardware & Performance Results ---")
-            print(f"{'Model':<30} {'TPS':<12} {'TTFT (ms)':<12} {'Peak RAM %':<14} {'Peak VRAM (MB)':<14}")
+            print("\n--- Hardware & Performance Results ---")
+            print(
+                f"{'Model':<30} {'TPS':<12} {'TTFT (ms)':<12} {'Peak RAM %':<14} {'Peak VRAM (MB)':<14}"
+            )
             print("-" * 85)
             for model_result in results_data:
                 model_name = model_result.get("model", "Unknown")
                 perf = model_result.get("performance_metrics", {})
                 if perf:
-                    print(f"{model_name:<30} {perf.get('avg_tps', 0.0):>6.1f} {perf.get('avg_ttft_ms', 0.0):>10.1f} {perf.get('peak_ram_pct', 0.0):>12.1f}% {perf.get('peak_vram_mb', 0):>12}")
+                    print(
+                        f"{model_name:<30} {perf.get('avg_tps', 0.0):>6.1f} {perf.get('avg_ttft_ms', 0.0):>10.1f} {perf.get('peak_ram_pct', 0.0):>12.1f}% {perf.get('peak_vram_mb', 0):>12}"
+                    )
 
         print("\n" + "=" * 80)
 
-    async def benchmark_model_functional(self, model: str, use_proxy: bool, progress_callback=None, cancel_event=None) -> Dict:
+    async def benchmark_model_functional(
+        self, model: str, use_proxy: bool, progress_callback=None, cancel_event=None
+    ) -> Dict:
         """Run only functional (accuracy) tests on a model."""
         print(f"\n--- Running Functional Correctness Suite for: {model} ---")
         results = {"model": model, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -474,7 +536,7 @@ class LLMModelBenchmark:
             "reasoning": self._reasoning_tests,
             "instruction": self._instruction_tests,
             "creative": self._creative_tests,
-            "home_automation": self._home_automation_tests
+            "home_automation": self._home_automation_tests,
         }
 
         for category, test_func in categories.items():
@@ -487,10 +549,16 @@ class LLMModelBenchmark:
                     break
                 print(f"[{category}] Running verification {i}/{len(tests)}... ", end="", flush=True)
 
-                test_result = await self.test_model_proxy(model, test) if use_proxy else await self.test_model_direct(model, test)
-                
+                test_result = (
+                    await self.test_model_proxy(model, test)
+                    if use_proxy
+                    else await self.test_model_direct(model, test)
+                )
+
                 if test_result["success"]:
-                    actual_correct = self._verify_functional_response(test["id"], test_result.get("response", ""))
+                    actual_correct = self._verify_functional_response(
+                        test["id"], test_result.get("response", "")
+                    )
                     if not actual_correct:
                         test_result["success"] = False
                         test_result["error"] = "Failed correctness verification check"
@@ -500,27 +568,31 @@ class LLMModelBenchmark:
                 else:
                     print(f"✗ ({test_result.get('error')})")
 
-                test_result.update({"test_id": test["id"], "test_category": category, "test_label": test["label"]})
+                test_result.update(
+                    {"test_id": test["id"], "test_category": category, "test_label": test["label"]}
+                )
                 category_results.append(test_result)
 
             results[f"category_{category}"] = self._calculate_category_stats(category_results)
         return results
 
-    async def benchmark_model_performance(self, model: str, use_proxy: bool, progress_callback=None, cancel_event=None) -> Dict:
+    async def benchmark_model_performance(
+        self, model: str, use_proxy: bool, progress_callback=None, cancel_event=None
+    ) -> Dict:
         """Run performance suite measuring speed and peak footprint metrics."""
         print(f"\n--- Running Performance Suite for: {model} ---")
-        
+
         load_tests = [
             {
                 "id": "perf_medium",
                 "prompt": "Write a detailed 10-paragraph essay explaining quantum mechanics and its impact on modern computing structures.",
-                "num_predict": 800
+                "num_predict": 800,
             },
             {
                 "id": "perf_long",
                 "prompt": "Generate a complete Python script implementing a web crawler that scans a local directory recursively, extracting links, saving metadata, and building a structured JSON index file.",
-                "num_predict": 1000
-            }
+                "num_predict": 1000,
+            },
         ]
 
         tps_list = []
@@ -532,13 +604,21 @@ class LLMModelBenchmark:
             if cancel_event and cancel_event.is_set():
                 break
             print(f"  Executing Performance Load {i}/{len(load_tests)}... ", end="", flush=True)
-            
-            res = await self.test_model_proxy(model, test, sampler) if use_proxy else await self.test_model_direct(model, test, sampler)
-            
+
+            res = (
+                await self.test_model_proxy(model, test, sampler)
+                if use_proxy
+                else await self.test_model_direct(model, test, sampler)
+            )
+
             if res["success"]:
-                tps = res.get("tokens_generated", 0) / self._extract_duration(res) if self._extract_duration(res) > 0 else 0
+                tps = (
+                    res.get("tokens_generated", 0) / self._extract_duration(res)
+                    if self._extract_duration(res) > 0
+                    else 0
+                )
                 tps_list.append(tps)
-                
+
                 if "prompt_eval_duration" in res:
                     ttft = res["prompt_eval_duration"] / 1e9 * 1000
                 else:
@@ -558,19 +638,31 @@ class LLMModelBenchmark:
                 "avg_ttft_ms": round(avg_ttft, 1),
                 "peak_ram_pct": round(sampler.peak_ram_pct, 1),
                 "peak_vram_mb": sampler.peak_vram_mb,
-                "vram_total_mb": sampler.vram_total_mb
-            }
+                "vram_total_mb": sampler.vram_total_mb,
+            },
         }
 
     def _calculate_category_stats(self, results: List[Dict]) -> Dict:
         successful_tests = [r for r in results if r["success"]]
         if not successful_tests:
-            return {"tests_run": len(results), "tests_passed": 0, "avg_tokens_per_sec": 0, "avg_ttft_ms": 0, "tests": results}
+            return {
+                "tests_run": len(results),
+                "tests_passed": 0,
+                "avg_tokens_per_sec": 0,
+                "avg_ttft_ms": 0,
+                "tests": results,
+            }
         total_tokens = sum(r.get("tokens_generated", 0) for r in successful_tests)
         total_time = sum(self._extract_duration(r) for r in successful_tests)
         avg_tokens_per_sec = total_tokens / total_time if total_time > 0 else 0
         avg_ttft_ms = self._calculate_avg_ttft(successful_tests)
-        return {"tests_run": len(results), "tests_passed": len(successful_tests), "avg_tokens_per_sec": round(avg_tokens_per_sec, 2), "avg_ttft_ms": round(avg_ttft_ms, 1), "tests": results}
+        return {
+            "tests_run": len(results),
+            "tests_passed": len(successful_tests),
+            "avg_tokens_per_sec": round(avg_tokens_per_sec, 2),
+            "avg_ttft_ms": round(avg_ttft_ms, 1),
+            "tests": results,
+        }
 
     def _extract_duration(self, result: Dict) -> float:
         if "eval_duration" in result and "prompt_eval_duration" in result:
@@ -587,21 +679,28 @@ class LLMModelBenchmark:
                 total_ttft += result["latency"] * 1000
         return total_ttft / len(results) if results else 0
 
-    async def run_model_benchmarks(self, models: List[str], use_proxy: bool, progress_callback=None, cancel_event=None, mode: str = "all") -> Dict:
+    async def run_model_benchmarks(
+        self,
+        models: List[str],
+        use_proxy: bool,
+        progress_callback=None,
+        cancel_event=None,
+        mode: str = "all",
+    ) -> Dict:
         """Run split model benchmarks based on mode: 'functional', 'performance', or 'all'."""
         print("=" * 80)
-        print(f"COMPREHENSIVE LLM MODEL BENCHMARKING SUITE")
+        print("COMPREHENSIVE LLM MODEL BENCHMARKING SUITE")
         print(f"Running via: {'Proxy' if use_proxy else 'Direct'} | Mode: {mode.upper()}")
         print(f"Models: {models}")
         print("=" * 80)
-        
+
         all_results = {
             "benchmark_version": "3.0.0",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "benchmark_type": "proxy" if use_proxy else "direct",
             "benchmark_mode": mode,
             "models_tested": len(models),
-            "results": []
+            "results": [],
         }
 
         for model in models:
@@ -609,43 +708,50 @@ class LLMModelBenchmark:
                 break
 
             model_data = {"model": model}
-            
+
             if mode in ("functional", "all"):
-                func_data = await self.benchmark_model_functional(model, use_proxy, progress_callback, cancel_event)
+                func_data = await self.benchmark_model_functional(
+                    model, use_proxy, progress_callback, cancel_event
+                )
                 model_data.update(func_data)
 
             if mode in ("performance", "all"):
-                perf_data = await self.benchmark_model_performance(model, use_proxy, progress_callback, cancel_event)
+                perf_data = await self.benchmark_model_performance(
+                    model, use_proxy, progress_callback, cancel_event
+                )
                 model_data.update(perf_data)
 
             all_results["results"].append(model_data)
 
         if all_results["results"]:
-            save_file = self.RESULTS_DIR / f"benchmarks_{time.strftime('%Y%m%d_%H%M%S')}_{mode}_{'proxy' if use_proxy else 'direct'}.json"
+            save_file = (
+                self.RESULTS_DIR
+                / f"benchmarks_{time.strftime('%Y%m%d_%H%M%S')}_{mode}_{'proxy' if use_proxy else 'direct'}.json"
+            )
             with open(save_file, "w") as f:
                 json.dump(all_results, f, indent=2, default=str)
-            
+
             latest_file = self.RESULTS_DIR / f"{mode}_benchmarks_latest.json"
             with open(latest_file, "w") as f:
                 json.dump(all_results, f, indent=2, default=str)
 
-            print(f"\n{'='*80}")
-            print(f"BENCHMARKING COMPLETE!")
+            print(f"\n{'=' * 80}")
+            print("BENCHMARKING COMPLETE!")
             print(f"Results saved to: {save_file}")
-            print(f"{'='*80}")
+            print(f"{'=' * 80}")
             all_results["saved_as"] = str(save_file)
 
         return all_results
 
     def run_optimization_pipeline(self, models: List[str]):
         print("=" * 80)
-        print(f"LLM MODEL OPTIMIZATION PIPELINE")
+        print("LLM MODEL OPTIMIZATION PIPELINE")
         print(f"Testing models: {models}")
         print("=" * 80)
-        
+
         direct_results = asyncio.run(self.run_model_benchmarks(models, use_proxy=False, mode="all"))
         proxy_results = asyncio.run(self.run_model_benchmarks(models, use_proxy=True, mode="all"))
-        
+
         print("\n" + "=" * 80)
         print("LIVE RESULTS DISPLAY")
         print("=" * 80)
@@ -656,15 +762,23 @@ class LLMModelBenchmark:
 
 async def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Multi-Container LLM Benchmarking Suite")
     parser.add_argument("models", nargs="?", help="Comma-separated list of models to benchmark")
-    parser.add_argument("--mode", choices=["functional", "performance", "all"], default="all", help="Phase mode: functional verification, performance testing, or both.")
-    parser.add_argument("--type", choices=["proxy", "direct", "both"], default="both", help="Endpoint target type.")
-    
+    parser.add_argument(
+        "--mode",
+        choices=["functional", "performance", "all"],
+        default="all",
+        help="Phase mode: functional verification, performance testing, or both.",
+    )
+    parser.add_argument(
+        "--type", choices=["proxy", "direct", "both"], default="both", help="Endpoint target type."
+    )
+
     args = parser.parse_args()
 
     suite = LLMModelBenchmark()
-    
+
     models = []
     if args.models:
         models = [m.strip() for m in args.models.split(",") if m.strip()]
@@ -677,7 +791,7 @@ async def main():
 
     print(f"\nModels to benchmark: {models}")
     print(f"Mode: {args.mode.upper()}")
-    
+
     if args.type == "proxy":
         await suite.run_model_benchmarks(models, use_proxy=True, mode=args.mode)
     elif args.type == "direct":
@@ -700,11 +814,11 @@ if __name__ == "__main__":
         choice = input("Enter choice (1/2/3): ").strip()
         mode_map = {"1": "functional", "2": "performance", "3": "all"}
         mode = mode_map.get(choice, "all")
-        
-        asyncio.run(LLMModelBenchmark().run_model_benchmarks(
-            models=LLMModelBenchmark()._get_fallback_models(),
-            use_proxy=True,
-            mode=mode
-        ))
+
+        asyncio.run(
+            LLMModelBenchmark().run_model_benchmarks(
+                models=LLMModelBenchmark()._get_fallback_models(), use_proxy=True, mode=mode
+            )
+        )
     else:
         asyncio.run(main())

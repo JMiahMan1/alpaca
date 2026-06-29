@@ -24,11 +24,17 @@ from pathlib import Path
 
 import httpx
 
-ROUTER_MODELS_DIR = os.getenv("ROUTER_MODELS_DIR", "/home/jeremiah/Summers Drive/Code/alpaca/.alpaca-router")
+ROUTER_MODELS_DIR = os.getenv(
+    "ROUTER_MODELS_DIR", "/home/jeremiah/Summers Drive/Code/alpaca/.alpaca-router"
+)
 INI_PATH = Path(ROUTER_MODELS_DIR) / "models.ini"
 PROXY_URL = "http://localhost:11434"
-BACKEND_URL = "http://llama-server:8080" if ROUTER_MODELS_DIR == "/router-models" else "http://localhost:8080"
-BENCHMARK_PROMPT = "List 5 primary colors and write a very short sentence for each describing its mood."
+BACKEND_URL = (
+    "http://llama-server:8080" if ROUTER_MODELS_DIR == "/router-models" else "http://localhost:8080"
+)
+BENCHMARK_PROMPT = (
+    "List 5 primary colors and write a very short sentence for each describing its mood."
+)
 
 # ---------------------------------------------------------------------------
 # Quality test suite — runs once after the optimal config is confirmed.
@@ -209,53 +215,71 @@ def run_quality_tests(public_model_name):
             continue
 
         response_text = data.get("message", {}).get("content", "")
-        eval_count    = data.get("eval_count", 0)
-        eval_dur      = data.get("eval_duration", 1) / 1e9
-        prompt_dur    = data.get("prompt_eval_duration", 0) / 1e9
-        tps           = eval_count / eval_dur if eval_dur > 0 else 0
-        ttft_ms       = prompt_dur * 1000
+        eval_count = data.get("eval_count", 0)
+        eval_dur = data.get("eval_duration", 1) / 1e9
+        prompt_dur = data.get("prompt_eval_duration", 0) / 1e9
+        tps = eval_count / eval_dur if eval_dur > 0 else 0
+        ttft_ms = prompt_dur * 1000
 
         print(f"{tps:6.1f} tok/s  {ttft_ms:5.0f}ms TTFT")
         by_category.setdefault(test["category"], []).append(tps)
-        test_results.append({
-            "id":               test["id"],
-            "label":            test["label"],
-            "category":         test["category"],
-            "tokens_per_sec":   round(tps, 2),
-            "ttft_ms":          round(ttft_ms, 1),
-            "tokens_generated": eval_count,
-            "total_time_s":     round(elapsed, 2),
-            "response_preview": response_text[:300].replace("\n", " "),
-            "error":            None,
-        })
+        test_results.append(
+            {
+                "id": test["id"],
+                "label": test["label"],
+                "category": test["category"],
+                "tokens_per_sec": round(tps, 2),
+                "ttft_ms": round(ttft_ms, 1),
+                "tokens_generated": eval_count,
+                "total_time_s": round(elapsed, 2),
+                "response_preview": response_text[:300].replace("\n", " "),
+                "error": None,
+            }
+        )
 
     good = [r for r in test_results if not r.get("error")]
-    tps_vals  = [r["tokens_per_sec"] for r in good] or [0]
-    ttft_vals = [r["ttft_ms"]        for r in good] or [0]
+    tps_vals = [r["tokens_per_sec"] for r in good] or [0]
+    ttft_vals = [r["ttft_ms"] for r in good] or [0]
 
     summary = {
-        "tests_run":          len(QUALITY_TESTS),
-        "tests_passed":       len(good),
+        "tests_run": len(QUALITY_TESTS),
+        "tests_passed": len(good),
         "avg_tokens_per_sec": round(statistics.mean(tps_vals), 2),
         "max_tokens_per_sec": round(max(tps_vals), 2),
-        "avg_ttft_ms":        round(statistics.mean(ttft_vals), 1),
-        "min_ttft_ms":        round(min(ttft_vals), 1),
-        "benchmarked_at":     time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "avg_ttft_ms": round(statistics.mean(ttft_vals), 1),
+        "min_ttft_ms": round(min(ttft_vals), 1),
+        "benchmarked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     by_cat_summary = {
         cat: {"avg_tokens_per_sec": round(statistics.mean(vals), 2)}
         for cat, vals in by_category.items()
     }
 
-    print(f"\n  Quality summary: {summary['avg_tokens_per_sec']:.1f} avg tok/s, {summary['avg_ttft_ms']:.0f}ms avg TTFT")
+    print(
+        f"\n  Quality summary: {summary['avg_tokens_per_sec']:.1f} avg tok/s, {summary['avg_ttft_ms']:.0f}ms avg TTFT"
+    )
     return {"summary": summary, "by_category": by_cat_summary, "tests": test_results}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark a model across context, cache type, and flash attention combinations.")
-    parser.add_argument("--model", required=True, help="Alias of the model to benchmark (e.g. qwen3.5--9b or qwen3--8b)")
-    parser.add_argument("--public-name", required=True, help="Ollama public tag name of the model (e.g. qwen3.5:9b or qwen3:8b)")
-    parser.add_argument("--ctx-sizes", default="8192,32768", help="Comma-separated context sizes to test (default: 8192,32768)")
+    parser = argparse.ArgumentParser(
+        description="Benchmark a model across context, cache type, and flash attention combinations."
+    )
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="Alias of the model to benchmark (e.g. qwen3.5--9b or qwen3--8b)",
+    )
+    parser.add_argument(
+        "--public-name",
+        required=True,
+        help="Ollama public tag name of the model (e.g. qwen3.5:9b or qwen3:8b)",
+    )
+    parser.add_argument(
+        "--ctx-sizes",
+        default="8192,32768",
+        help="Comma-separated context sizes to test (default: 8192,32768)",
+    )
     args = parser.parse_args()
 
     aliases = get_available_aliases()
@@ -283,7 +307,9 @@ def main():
                 for fa in flash_attns:
                     # Skip quantized cache with flash_attn = off since it is unsupported and causes crash-loops
                     if cache_k != "f16" and fa == "off":
-                        print(f"\n--- Skipping unsupported config: ctx={ctx}, cache={cache_k}, flash_attn={fa} (quantized cache requires flash_attn=on) ---")
+                        print(
+                            f"\n--- Skipping unsupported config: ctx={ctx}, cache={cache_k}, flash_attn={fa} (quantized cache requires flash_attn=on) ---"
+                        )
                         continue
 
                     print(f"\n--- Testing Config: ctx={ctx}, cache={cache_k}, flash_attn={fa} ---")
@@ -299,43 +325,51 @@ def main():
 
                     # Restart backend to apply
                     if not restart_backend():
-                        results.append({
-                            "ctx": ctx,
-                            "cache": cache_k,
-                            "flash_attn": fa,
-                            "status": "FAIL",
-                            "ttft": "-",
-                            "tps": "-",
-                            "detail": "Backend restart failed",
-                        })
+                        results.append(
+                            {
+                                "ctx": ctx,
+                                "cache": cache_k,
+                                "flash_attn": fa,
+                                "status": "FAIL",
+                                "ttft": "-",
+                                "tps": "-",
+                                "detail": "Backend restart failed",
+                            }
+                        )
                         continue
 
                     # Run test
                     ok, ttft, tps, detail = run_test(args.public_name)
 
                     if ok and ttft is not None and tps is not None:
-                        print(f"SUCCESS: TTFT = {ttft:.2f}s, Generation Speed = {tps:.2f} tokens/sec")
-                        results.append({
-                            "ctx": ctx,
-                            "cache": cache_k,
-                            "flash_attn": fa,
-                            "status": "PASS",
-                            "ttft": f"{ttft:.2f}s",
-                            "tps": f"{tps:.2f} t/s",
-                            "detail": "OK",
-                        })
+                        print(
+                            f"SUCCESS: TTFT = {ttft:.2f}s, Generation Speed = {tps:.2f} tokens/sec"
+                        )
+                        results.append(
+                            {
+                                "ctx": ctx,
+                                "cache": cache_k,
+                                "flash_attn": fa,
+                                "status": "PASS",
+                                "ttft": f"{ttft:.2f}s",
+                                "tps": f"{tps:.2f} t/s",
+                                "detail": "OK",
+                            }
+                        )
                     else:
                         detail_msg = detail if not ok else "No tokens generated"
                         print(f"FAILED: {detail_msg}")
-                        results.append({
-                            "ctx": ctx,
-                            "cache": cache_k,
-                            "flash_attn": fa,
-                            "status": "FAIL",
-                            "ttft": "-",
-                            "tps": "-",
-                            "detail": detail_msg[:30],
-                        })
+                        results.append(
+                            {
+                                "ctx": ctx,
+                                "cache": cache_k,
+                                "flash_attn": fa,
+                                "status": "FAIL",
+                                "ttft": "-",
+                                "tps": "-",
+                                "detail": detail_msg[:30],
+                            }
+                        )
     finally:
         # Restore original settings
         print("\n[benchmark] Restoring original model settings...")
@@ -349,6 +383,7 @@ def main():
     # Find and save the optimal configuration if any passed
     passed_runs = [r for r in results if r["status"] == "PASS"]
     if passed_runs:
+
         def get_tps_val(run):
             try:
                 return float(run["tps"].split()[0])
@@ -373,7 +408,9 @@ def main():
         candidates = [r for r in max_ctx_runs if get_tps_val(r) >= tps_threshold]
 
         # 5. Sort by cache precision descending, then TPS descending
-        candidates.sort(key=lambda r: (get_cache_precision(r["cache"]), get_tps_val(r)), reverse=True)
+        candidates.sort(
+            key=lambda r: (get_cache_precision(r["cache"]), get_tps_val(r)), reverse=True
+        )
         best_run = candidates[0]
 
         print("\n[benchmark] Found optimal configuration:")
@@ -424,10 +461,16 @@ def main():
     # Print results table
     print("\n\n=== BENCHMARK RESULTS ===")
     print(f"Model: {args.model} ({args.public_name})\n")
-    print("| Context Size | Cache Type (K/V) | Flash Attn | Status | TTFT (s) | Generation Speed | Notes |")
-    print("|--------------|------------------|------------|--------|----------|------------------|-------|")
+    print(
+        "| Context Size | Cache Type (K/V) | Flash Attn | Status | TTFT (s) | Generation Speed | Notes |"
+    )
+    print(
+        "|--------------|------------------|------------|--------|----------|------------------|-------|"
+    )
     for r in results:
-        print(f"| {r['ctx']} | {r['cache']} | {r['flash_attn']} | {r['status']} | {r['ttft']} | {r['tps']} | {r['detail']} |")
+        print(
+            f"| {r['ctx']} | {r['cache']} | {r['flash_attn']} | {r['status']} | {r['ttft']} | {r['tps']} | {r['detail']} |"
+        )
 
 
 if __name__ == "__main__":

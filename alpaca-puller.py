@@ -29,6 +29,8 @@ ROUTER_MODELS_DIR = os.getenv(
     str(Path(__file__).resolve().parent / ".alpaca-router"),
 )
 HUGGING_FACE_BASE = os.getenv("HUGGING_FACE_BASE", "https://huggingface.co")
+
+
 def _load_dotenv(env_path):
     if not env_path.exists():
         return
@@ -146,7 +148,10 @@ def _model_size_params(meta: dict) -> int:
 
 
 _FA_UNSUPPORTED_ARCHS = {
-    "mamba", "rwkv", "rwkv6", "wavtokenizer",
+    "mamba",
+    "rwkv",
+    "rwkv6",
+    "wavtokenizer",
 }
 
 
@@ -205,7 +210,7 @@ def update_models_ini():
         "parallel = 2",
         "kv-unified = true",
         "n-gpu-layers = 99",
-        ""
+        "",
     ]
 
     if router_dir.exists():
@@ -226,10 +231,15 @@ def update_models_ini():
                     param_count = _model_size_params(meta)
                     flash_attn = _supports_flash_attn(meta)
                 except Exception as e:
-                    print(f"Warning: could not read model metadata for {entry.name}: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: could not read model metadata for {entry.name}: {e}",
+                        file=sys.stderr,
+                    )
 
                 small_model = param_count > 0 and param_count < 9_000_000_000
-                is_mtp_capable = ("mtp" in entry.name.lower() or "mtp" in alias.lower()) and (entry.name not in mtp_incompatible and alias not in mtp_incompatible)
+                is_mtp_capable = ("mtp" in entry.name.lower() or "mtp" in alias.lower()) and (
+                    entry.name not in mtp_incompatible and alias not in mtp_incompatible
+                )
                 is_safe = alias in safe_settings or entry.name in safe_settings
 
                 profile_file = router_dir / f"{alias}.profile.json"
@@ -239,7 +249,10 @@ def update_models_ini():
                         with open(profile_file, "r") as pf:
                             profile = json.load(pf)
                     except Exception as e:
-                        print(f"Warning: could not read model profile for {alias}: {e}", file=sys.stderr)
+                        print(
+                            f"Warning: could not read model profile for {alias}: {e}",
+                            file=sys.stderr,
+                        )
 
                 content.append(f"[{alias}]")
                 content.append(f"model = /router-models/{entry.name}")
@@ -485,14 +498,17 @@ def download_blob(client, repo, digest, expected_size, headers):
 
         total = int(response.headers.get("Content-Length", 0)) + current_size
         if tqdm:
-            with open(blob_path, mode) as handle, tqdm(
-                total=total,
-                initial=current_size,
-                unit_divisor=1024,
-                unit="B",
-                unit_scale=True,
-                desc=f"Pulling {digest[:12]}",
-            ) as bar:
+            with (
+                open(blob_path, mode) as handle,
+                tqdm(
+                    total=total,
+                    initial=current_size,
+                    unit_divisor=1024,
+                    unit="B",
+                    unit_scale=True,
+                    desc=f"Pulling {digest[:12]}",
+                ) as bar,
+            ):
                 for chunk in response.iter_bytes():
                     handle.write(chunk)
                     bar.update(len(chunk))
@@ -503,7 +519,9 @@ def download_blob(client, repo, digest, expected_size, headers):
                     handle.write(chunk)
                     downloaded += len(chunk)
                     if total > 0:
-                        sys.stdout.write(f"\rProgress {digest[:12]}: {downloaded / total * 100:.1f}%")
+                        sys.stdout.write(
+                            f"\rProgress {digest[:12]}: {downloaded / total * 100:.1f}%"
+                        )
                         sys.stdout.flush()
             print()
 
@@ -591,14 +609,17 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
 
                 total = int(response.headers.get("Content-Length", 0)) + current_size
                 if tqdm:
-                    with open(output_path, mode) as handle, tqdm(
-                        total=total if total > 0 else None,
-                        initial=current_size,
-                        unit_divisor=1024,
-                        unit="B",
-                        unit_scale=True,
-                        desc=label,
-                    ) as bar:
+                    with (
+                        open(output_path, mode) as handle,
+                        tqdm(
+                            total=total if total > 0 else None,
+                            initial=current_size,
+                            unit_divisor=1024,
+                            unit="B",
+                            unit_scale=True,
+                            desc=label,
+                        ) as bar,
+                    ):
                         for chunk in response.iter_bytes():
                             handle.write(chunk)
                             bar.update(len(chunk))
@@ -609,7 +630,9 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
                             handle.write(chunk)
                             downloaded += len(chunk)
                             if total > 0:
-                                sys.stdout.write(f"\rProgress {label}: {downloaded / total * 100:.1f}%")
+                                sys.stdout.write(
+                                    f"\rProgress {label}: {downloaded / total * 100:.1f}%"
+                                )
                                 sys.stdout.flush()
                     if total > 0:
                         print()
@@ -639,7 +662,9 @@ def resolve_huggingface_filename(repo, requested_filename):
     if not model_info or not isinstance(model_info, dict):
         return requested_filename
     siblings = model_info.get("siblings", [])
-    gguf_files = [s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(".gguf")]
+    gguf_files = [
+        s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(".gguf")
+    ]
     if not gguf_files:
         return requested_filename
     target_stem = requested_filename.replace(" ", "").replace("_", "").lower()
@@ -733,14 +758,17 @@ def download_to_partial_file(client, url, headers, label, partial_path):
 
         total = int(response.headers.get("Content-Length", 0)) + current_size
         if tqdm:
-            with open(partial_path, mode) as handle, tqdm(
-                total=total if total > 0 else None,
-                initial=current_size,
-                unit_divisor=1024,
-                unit="B",
-                unit_scale=True,
-                desc=label,
-            ) as bar:
+            with (
+                open(partial_path, mode) as handle,
+                tqdm(
+                    total=total if total > 0 else None,
+                    initial=current_size,
+                    unit_divisor=1024,
+                    unit="B",
+                    unit_scale=True,
+                    desc=label,
+                ) as bar,
+            ):
                 for chunk in response.iter_bytes():
                     handle.write(chunk)
                     bar.update(len(chunk))
@@ -779,7 +807,9 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False):
     )
 
     try:
-        download_with_progress(client, url, headers, f"Importing {Path(filename).name}", partial_path)
+        download_with_progress(
+            client, url, headers, f"Importing {Path(filename).name}", partial_path
+        )
         digest = hash_file(partial_path)
         blob_path = blob_path_for_digest(digest)
         blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -958,10 +988,14 @@ def remove_model(model_name):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Pull, reindex, or remove models in Ollama storage format.")
+    parser = argparse.ArgumentParser(
+        description="Pull, reindex, or remove models in Ollama storage format."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    pull_parser = subparsers.add_parser("pull", help="Download a model into the local Ollama store.")
+    pull_parser = subparsers.add_parser(
+        "pull", help="Download a model into the local Ollama store."
+    )
     pull_parser.add_argument(
         "model",
         help=(
@@ -985,17 +1019,26 @@ def build_parser():
         help="Allow HTTP access to the configured Ollama registry endpoint.",
     )
 
-    remove_parser = subparsers.add_parser("remove", help="Remove a local model manifest and unshared blobs.")
-    remove_parser.add_argument("model", help="Local model name, for example tinyllama or qwen3:35b-q4.")
+    remove_parser = subparsers.add_parser(
+        "remove", help="Remove a local model manifest and unshared blobs."
+    )
+    remove_parser.add_argument(
+        "model", help="Local model name, for example tinyllama or qwen3:35b-q4."
+    )
 
-    subparsers.add_parser("reindex", help="Create or refresh llama-server router symlinks for all complete local models.")
+    subparsers.add_parser(
+        "reindex",
+        help="Create or refresh llama-server router symlinks for all complete local models.",
+    )
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "pull":
-        return pull_model(args.model, source=args.source, local_name=args.name, insecure=args.insecure)
+        return pull_model(
+            args.model, source=args.source, local_name=args.name, insecure=args.insecure
+        )
     if args.command == "reindex":
         return reindex_models()
     if args.command == "remove":

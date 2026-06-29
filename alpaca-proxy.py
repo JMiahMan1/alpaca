@@ -89,20 +89,22 @@ active_request_details_lock = threading.Lock()
 resubmittable_requests = {}
 resubmittable_requests_lock = threading.Lock()
 
+
 def sanitize_prompt(text: str) -> str:
     if not text:
         return ""
     # Redact common patterns for passwords, tokens, API keys
     # 1. API Keys (e.g. sk-..., gpt-..., AIzaSy...)
-    text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', '[REDACTED_API_KEY]', text)
-    text = re.sub(r'(AIzaSy[a-zA-Z0-9_-]{33})', '[REDACTED_API_KEY]', text)
+    text = re.sub(r"(sk-[a-zA-Z0-9]{20,})", "[REDACTED_API_KEY]", text)
+    text = re.sub(r"(AIzaSy[a-zA-Z0-9_-]{33})", "[REDACTED_API_KEY]", text)
     # 2. Key-value pairs for passwords/tokens/secrets in JSON or text
     text = re.sub(
         r'(?i)\b(pass|password|passwd|secret|key|token|auth|credentials)\s*[:=]\s*["\']([^"\']{4,})["\']',
         r'\1 = "[REDACTED]"',
-        text
+        text,
     )
     return text
+
 
 def register_active_request(request_id, model, req_type, payload):
     prompt_str = ""
@@ -116,9 +118,9 @@ def register_active_request(request_id, model, req_type, payload):
         prompt_str = "\n".join(formatted_msgs)
     elif "prompt" in payload:
         prompt_str = str(payload["prompt"])
-        
+
     prompt_str = sanitize_prompt(prompt_str)
-    
+
     with active_request_details_lock:
         active_request_details[request_id] = {
             "request_id": request_id,
@@ -127,8 +129,9 @@ def register_active_request(request_id, model, req_type, payload):
             "started_at": time.time(),
             "prompt": prompt_str,
             "thinking": "",
-            "response": ""
+            "response": "",
         }
+
 
 def update_active_request_progress(request_id, response_chunk=None, thinking_chunk=None):
     with active_request_details_lock:
@@ -137,6 +140,7 @@ def update_active_request_progress(request_id, response_chunk=None, thinking_chu
                 active_request_details[request_id]["thinking"] += thinking_chunk
             if response_chunk:
                 active_request_details[request_id]["response"] += response_chunk
+
 
 def complete_active_request(request_id, final_response=None, final_thinking=None):
     req = None
@@ -152,10 +156,11 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
             completed_requests.append(req)
             if len(completed_requests) > 50:
                 completed_requests.pop(0)
-    
+
     if req is not None:
         with resubmittable_requests_lock:
             resubmittable_requests[request_id] = dict(req)
+
 
 # Model loading state tracking (for OOM recovery)
 model_loading = {}
@@ -1463,6 +1468,7 @@ async def openai_chat_completions(request: Request):
     request_id = getattr(request.state, "request_id", None)
     if not request_id or request_id == "N/A":
         import uuid
+
         request_id = str(uuid.uuid4())[:8]
     register_active_request(request_id, model_name, "openai_chat", body)
     max_retries = 3
@@ -1520,13 +1526,20 @@ async def openai_chat_completions(request: Request):
                                                 if payload_str and payload_str != "[DONE]":
                                                     payload_json = json.loads(payload_str)
                                                     choices = payload_json.get("choices")
-                                                    if choices and isinstance(choices, list) and len(choices) > 0:
+                                                    if (
+                                                        choices
+                                                        and isinstance(choices, list)
+                                                        and len(choices) > 0
+                                                    ):
                                                         delta = choices[0].get("delta")
                                                         if delta:
                                                             update_active_request_progress(
                                                                 request_id,
                                                                 response_chunk=delta.get("content"),
-                                                                thinking_chunk=delta.get("reasoning_content") or delta.get("thinking")
+                                                                thinking_chunk=delta.get(
+                                                                    "reasoning_content"
+                                                                )
+                                                                or delta.get("thinking"),
                                                             )
                                             except Exception:
                                                 pass
@@ -1541,7 +1554,9 @@ async def openai_chat_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
+                                        task = asyncio.create_task(
+                                            _ensure_model_skip_swap(model_name)
+                                        )
                                         task.set_name(f"midstream-recovery-chat-{model_name}")
                                         task.add_done_callback(handle_background_task_result)
                                     return
@@ -1557,7 +1572,9 @@ async def openai_chat_completions(request: Request):
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
                 try:
-                    resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
+                    resp = await client_httpx.post(
+                        f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body
+                    )
                     if resp.status_code != 200:
                         err_msg = resp.text
                         if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
@@ -1589,11 +1606,11 @@ async def openai_chat_completions(request: Request):
                         if choices and len(choices) > 0:
                             message_obj = choices[0].get("message", {})
                             content_val = message_obj.get("content")
-                            thinking_val = message_obj.get("reasoning_content") or message_obj.get("thinking")
+                            thinking_val = message_obj.get("reasoning_content") or message_obj.get(
+                                "thinking"
+                            )
                             complete_active_request(
-                                request_id,
-                                final_response=content_val,
-                                final_thinking=thinking_val
+                                request_id, final_response=content_val, final_thinking=thinking_val
                             )
                     except Exception:
                         pass
@@ -1633,8 +1650,6 @@ async def openai_chat_completions(request: Request):
             await ensure_model(model_name)
 
 
-
-
 @app.post("/v1/completions")
 async def openai_completions(request: Request):
     """OpenAI-compatible text completions. Proxies directly to llama-server."""
@@ -1646,6 +1661,7 @@ async def openai_completions(request: Request):
     request_id = getattr(request.state, "request_id", None)
     if not request_id or request_id == "N/A":
         import uuid
+
         request_id = str(uuid.uuid4())[:8]
     register_active_request(request_id, model_name, "openai_generate", body)
     max_retries = 3
@@ -1703,13 +1719,19 @@ async def openai_completions(request: Request):
                                                 if payload_str and payload_str != "[DONE]":
                                                     payload_json = json.loads(payload_str)
                                                     choices = payload_json.get("choices")
-                                                    if choices and isinstance(choices, list) and len(choices) > 0:
+                                                    if (
+                                                        choices
+                                                        and isinstance(choices, list)
+                                                        and len(choices) > 0
+                                                    ):
                                                         text_val = choices[0].get("text")
-                                                        thinking_val = choices[0].get("thinking") or choices[0].get("reasoning_content")
+                                                        thinking_val = choices[0].get(
+                                                            "thinking"
+                                                        ) or choices[0].get("reasoning_content")
                                                         update_active_request_progress(
                                                             request_id,
                                                             response_chunk=text_val,
-                                                            thinking_chunk=thinking_val
+                                                            thinking_chunk=thinking_val,
                                                         )
                                             except Exception:
                                                 pass
@@ -1724,7 +1746,9 @@ async def openai_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
+                                        task = asyncio.create_task(
+                                            _ensure_model_skip_swap(model_name)
+                                        )
                                         task.set_name(
                                             f"midstream-recovery-completions-{model_name}"
                                         )
@@ -1773,11 +1797,11 @@ async def openai_completions(request: Request):
                         choices = data.get("choices", [])
                         if choices and len(choices) > 0:
                             content_val = choices[0].get("text")
-                            thinking_val = choices[0].get("thinking") or choices[0].get("reasoning_content")
+                            thinking_val = choices[0].get("thinking") or choices[0].get(
+                                "reasoning_content"
+                            )
                             complete_active_request(
-                                request_id,
-                                final_response=content_val,
-                                final_thinking=thinking_val
+                                request_id, final_response=content_val, final_thinking=thinking_val
                             )
                     except Exception:
                         pass
@@ -1815,8 +1839,6 @@ async def openai_completions(request: Request):
 
             await wait_for_llama_server_or_restart(timeout=60.0)
             await ensure_model(model_name)
-
-
 
 
 @app.post("/v1/embeddings")
@@ -1985,7 +2007,9 @@ async def admin_system():
     # The proxy has no GPU device access itself — it uses the Docker socket it already mounts.
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", "llama-server",
+            "docker",
+            "exec",
+            "llama-server",
             "nvidia-smi",
             "--query-gpu=gpu_name,memory.total,memory.used,memory.free",
             "--format=csv,noheader,nounits",
@@ -2182,32 +2206,33 @@ async def admin_usage():
     """Model usage statistics: load/unload frequency, popularity, recent events."""
     async with model_usage_lock:
         recent_events = list(model_usage_log[-50:])
-    
+
     # Calculate per-model statistics
     model_stats = {}
     for event in model_usage_log:
         model = event["model"]
         if model not in model_stats:
-            model_stats[model] = {"loads": 0, "unloads": 0, "last_loaded": None, "last_unloaded": None}
+            model_stats[model] = {
+                "loads": 0,
+                "unloads": 0,
+                "last_loaded": None,
+                "last_unloaded": None,
+            }
         if event["event"] == "loaded":
             model_stats[model]["loads"] += 1
             model_stats[model]["last_loaded"] = event["timestamp"]
         elif event["event"] == "unloaded":
             model_stats[model]["unloads"] += 1
             model_stats[model]["last_unloaded"] = event["timestamp"]
-    
+
     # Calculate popularity (total loads per model)
-    popular_models = sorted(
-        model_stats.items(),
-        key=lambda x: x[1]["loads"],
-        reverse=True
-    )
-    
+    popular_models = sorted(model_stats.items(), key=lambda x: x[1]["loads"], reverse=True)
+
     return {
         "recent_events": recent_events,
         "model_stats": model_stats,
         "popular_models": [{"model": m, "stats": s} for m, s in popular_models],
-        "total_events": len(model_usage_log)
+        "total_events": len(model_usage_log),
     }
 
 
@@ -2217,10 +2242,7 @@ async def admin_requests():
     with active_request_details_lock:
         active = list(active_request_details.values())
         completed = list(completed_requests)
-    return {
-        "active_requests": active,
-        "completed_requests": completed
-    }
+    return {"active_requests": active, "completed_requests": completed}
 
 
 @app.post("/admin/requests/clear")
@@ -2237,7 +2259,11 @@ async def cancel_request(request_id: str):
     with active_request_details_lock:
         if request_id in active_request_details:
             req = active_request_details.pop(request_id)
-            return {"status": "cancelled", "request_id": request_id, "model": req.get("model", "unknown")}
+            return {
+                "status": "cancelled",
+                "request_id": request_id,
+                "model": req.get("model", "unknown"),
+            }
         else:
             return {"status": "not_found", "message": f"Request {request_id} not found"}
 
@@ -2256,7 +2282,10 @@ async def get_resubmit_data(request_id: str):
         if request_id in resubmittable_requests:
             return resubmittable_requests[request_id]
         else:
-            return JSONResponse(status_code=404, content={"error": f"Request {request_id} not found in persistent storage"})
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Request {request_id} not found in persistent storage"},
+            )
 
 
 @app.get("/admin/runtime")
@@ -2294,7 +2323,9 @@ async def admin_runtime():
             candidates = router_model_candidates(model_name, manifest)
             matched_entry = None
             for entry in router_models:
-                if router_entry_status(entry) == "loaded" and router_entry_matches(entry, candidates):
+                if router_entry_status(entry) == "loaded" and router_entry_matches(
+                    entry, candidates
+                ):
                     matched_entry = entry
                     break
             if not matched_entry:
@@ -2314,6 +2345,7 @@ async def admin_runtime():
                 else:
                     # Fall back to models.ini section matching the backend model id
                     import configparser
+
                     ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
                     if os.path.exists(ini_path):
                         cfg = configparser.ConfigParser(delimiters=("=",))
@@ -2351,7 +2383,6 @@ async def admin_runtime():
             )
     except Exception:
         pass
-
 
     return {
         "loaded_models": loaded,
@@ -2568,19 +2599,19 @@ async def admin_model_switch(request: Request):
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
-    
+
     model = with_default_tag(model)
-    
+
     # Check if model exists
     manifest_path = manifest_path_for_model(model)
     if not manifest_path or not os.path.exists(manifest_path):
         raise HTTPException(status_code=404, detail=f"Model {model} not found on disk")
-    
+
     # Check if already loading
     public = public_model_name(model)
     if is_model_loading(model):
         return {"status": "already_loading", "model": public}
-    
+
     # Check if already loaded
     try:
         router_models = await fetch_router_models(reload=False)
@@ -2589,22 +2620,22 @@ async def admin_model_switch(request: Request):
             if router_entry_matches(entry, candidates):
                 current_status = router_entry_status(entry)
                 if is_resident_status(current_status):
-                    return {"status": "already_loaded", "model": public, "backend_model": entry.get("id")}
+                    return {
+                        "status": "already_loaded",
+                        "model": public,
+                        "backend_model": entry.get("id"),
+                    }
     except Exception:
         pass
-    
+
     # Mark as loading
     mark_model_loading(model)
-    
+
     try:
         # Load the model using the full ensure_model flow (resolve + load)
         resolved = await ensure_model(model)
-        
-        return {
-            "status": "loaded",
-            "model": public,
-            "backend_model": resolved.get("backend_model")
-        }
+
+        return {"status": "loaded", "model": public, "backend_model": resolved.get("backend_model")}
     except Exception as e:
         mark_model_loaded(model)  # Clear loading state even on failure
         logger.error(f"Failed to switch to model {model}: {e}", exc_info=True)
@@ -2618,9 +2649,9 @@ async def admin_model_unload(request: Request):
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
-    
+
     model = with_default_tag(model)
-    
+
     # Find the backend_model for this model
     try:
         router_models = await fetch_router_models(reload=False)
@@ -2634,7 +2665,7 @@ async def admin_model_unload(request: Request):
                     public = public_model_name(model)
                     await record_model_unloaded(model)
                     return {"status": "unloaded", "model": public, "backend_model": backend_model}
-        
+
         # Model not found or not loaded
         return {"status": "not_loaded", "model": model}
     except Exception as e:
@@ -2745,6 +2776,7 @@ def save_mtp_incompatible_models():
             logger.info("Saved MTP incompatible models list.")
         try:
             from alpaca_puller import update_models_ini
+
             update_models_ini()
         except Exception as e:
             logger.warning(f"Failed to regenerate models.ini: {e}")
@@ -2772,6 +2804,7 @@ def save_safe_settings_models():
             logger.info("Saved safe settings models list.")
         try:
             from alpaca_puller import update_models_ini
+
             update_models_ini()
         except Exception as e:
             logger.warning(f"Failed to regenerate models.ini: {e}")
@@ -2812,13 +2845,9 @@ async def record_model_loaded(model_name):
             current_loaded.remove(public)
         current_loaded.append(public)
         await save_loaded_models_state(current_loaded)
-    
+
     async with model_usage_lock:
-        model_usage_log.append({
-            "event": "loaded",
-            "model": public,
-            "timestamp": time.time()
-        })
+        model_usage_log.append({"event": "loaded", "model": public, "timestamp": time.time()})
         while len(model_usage_log) > MODEL_USAGE_LOG_MAX:
             model_usage_log.pop(0)
 
@@ -2830,13 +2859,9 @@ async def record_model_unloaded(model_name):
         if public in current_loaded:
             current_loaded.remove(public)
             await save_loaded_models_state(current_loaded)
-    
+
     async with model_usage_lock:
-        model_usage_log.append({
-            "event": "unloaded",
-            "model": public,
-            "timestamp": time.time()
-        })
+        model_usage_log.append({"event": "unloaded", "model": public, "timestamp": time.time()})
         while len(model_usage_log) > MODEL_USAGE_LOG_MAX:
             model_usage_log.pop(0)
 
@@ -3082,7 +3107,6 @@ def is_model_moe(model_name: str, meta: dict = None) -> bool:
     return "moe" in model_name.lower() or "mixtral" in model_name.lower()
 
 
-
 _FA_UNSUPPORTED_ARCHS = {
     "mamba",
     "rwkv",
@@ -3205,9 +3229,14 @@ async def _get_available_vram_mib() -> int | None:
         return None
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", "llama-server", "nvidia-smi",
-            "--query-gpu=memory.free", "--format=csv,noheader,nounits",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "docker",
+            "exec",
+            "llama-server",
+            "nvidia-smi",
+            "--query-gpu=memory.free",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
@@ -3230,7 +3259,11 @@ def _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, n_gpu_la
     if n_gpu_layers <= 0:
         return _VRAM_OVERHEAD_MIB
     # Weights: proportional to n_gpu_layers / n_layers
-    weights_mib = file_size_mib * (n_gpu_layers / n_layers) if n_layers > 0 and n_gpu_layers < n_layers else file_size_mib
+    weights_mib = (
+        file_size_mib * (n_gpu_layers / n_layers)
+        if n_layers > 0 and n_gpu_layers < n_layers
+        else file_size_mib
+    )
     # KV cache: only for layers on GPU (proportional to n_gpu_layers / n_layers)
     kv_cache_mib = 0
     if n_layers and n_embd:
@@ -3241,7 +3274,9 @@ def _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, n_gpu_la
     return int(weights_mib + kv_cache_mib + compute_mib + _VRAM_OVERHEAD_MIB)
 
 
-def _compute_safe_n_gpu_layers(model_path, meta, n_ctx, cache_type, n_parallel, available_vram_mib, requested_n_gpu_layers):
+def _compute_safe_n_gpu_layers(
+    model_path, meta, n_ctx, cache_type, n_parallel, available_vram_mib, requested_n_gpu_layers
+):
     """Binary-search for the max n_gpu_layers that fits in available VRAM (90% margin)."""
     _, n_layers, _ = _get_model_arch_meta(meta)
     if n_layers == 0:
@@ -3255,7 +3290,9 @@ def _compute_safe_n_gpu_layers(model_path, meta, n_ctx, cache_type, n_parallel, 
         candidate = min(requested_n_gpu_layers, n_layers)
     estimated = _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, candidate)
     if estimated <= target_vram:
-        logger.info(f"VRAM check passed: ~{estimated}MiB needed, ~{available_vram_mib}MiB available (n_gpu_layers={candidate})")
+        logger.info(
+            f"VRAM check passed: ~{estimated}MiB needed, ~{available_vram_mib}MiB available (n_gpu_layers={candidate})"
+        )
         return requested_n_gpu_layers
     lo, hi, best = 0, candidate, 0
     while lo <= hi:
@@ -3264,7 +3301,9 @@ def _compute_safe_n_gpu_layers(model_path, meta, n_ctx, cache_type, n_parallel, 
             best, lo = mid, mid + 1
         else:
             hi = mid - 1
-    logger.warning(f"VRAM budgeting: n_gpu_layers={requested_n_gpu_layers}→{best} (~{estimated}MiB needed, ~{available_vram_mib}MiB available)")
+    logger.warning(
+        f"VRAM budgeting: n_gpu_layers={requested_n_gpu_layers}→{best} (~{estimated}MiB needed, ~{available_vram_mib}MiB available)"
+    )
     return best
 
 
@@ -3275,6 +3314,7 @@ def _write_ini_model_setting(backend_model, key, value):
         return
     try:
         import configparser
+
         config = configparser.ConfigParser()
         config.read(ini_path)
         if config.has_section(backend_model) and config[backend_model].get(key) == str(value):
@@ -3296,6 +3336,7 @@ def _read_ini_model_setting(backend_model, key, default=""):
         return default
     try:
         import configparser
+
         config = configparser.ConfigParser()
         config.read(ini_path)
         if config.has_section(backend_model) and key in config[backend_model]:
@@ -3348,6 +3389,7 @@ def get_model_preset_info(backend_model: str) -> str:
     if not os.path.exists(ini_path):
         return ""
     import configparser
+
     try:
         config = configparser.ConfigParser()
         config.read(ini_path)
@@ -3425,7 +3467,7 @@ async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = 
         mark_model_loading(model_name)
         resolved = await resolve_router_model(model_name, reload=True)
         backend_model = resolved["backend_model"]
-        
+
         async with active_requests_lock:
             active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
         try:
@@ -3436,7 +3478,9 @@ async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = 
                 active_requests_lock.notify_all()
 
 
-async def _ensure_model_impl(model_name: str, options: dict = None, resolved: dict = None, skip_swap: bool = False):
+async def _ensure_model_impl(
+    model_name: str, options: dict = None, resolved: dict = None, skip_swap: bool = False
+):
     if skip_swap:
         # During mid-stream crash recovery, don't try to load the crashed model.
         # Another model may be loaded (user's current session) and MAX_LOADED_MODELS
@@ -3466,6 +3510,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
     if os.path.exists(ini_path):
         try:
             import configparser
+
             config = configparser.ConfigParser()
             config.read(ini_path)
             if config.has_section(backend_model):
@@ -3483,7 +3528,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                 # Skip active request wait for crashed models — they're dead and
                 # need to be force-unloaded immediately (not wait forever)
                 is_crashed = crashed_models.get(other_id, False)
-                
+
                 if not is_crashed:
                     # Wait for active requests on the model we are about to unload
                     async with active_requests_lock:
@@ -3509,9 +3554,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                                     )
                                 break
 
-                logger.info(
-                    f"Unloading backend model {other_id} before loading {backend_model}"
-                )
+                logger.info(f"Unloading backend model {other_id} before loading {backend_model}")
                 try:
                     await post_router_model_action("unload", other_id)
                     await record_model_unloaded_by_backend_id(other_id)
@@ -3532,9 +3575,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
     # If already loading, wait transparently for it to finish loading
     status = router_entry_status(entry)
     if status == "loading":
-        logger.info(
-            f"Model {backend_model} is currently loading. Waiting for load to finish..."
-        )
+        logger.info(f"Model {backend_model} is currently loading. Waiting for load to finish...")
         for _ in range(120):
             await asyncio.sleep(1.0)
             try:
@@ -3674,7 +3715,10 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
     if is_dense and model_path and os.path.exists(model_path):
         available_vram = await _get_available_vram_mib()
         if available_vram is not None:
-            eff_ctx = int(load_payload.get("n_ctx") or _read_ini_model_setting(backend_model, "ctx-size", "32768"))
+            eff_ctx = int(
+                load_payload.get("n_ctx")
+                or _read_ini_model_setting(backend_model, "ctx-size", "32768")
+            )
             eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
             safe_ngl = _compute_safe_n_gpu_layers(
                 model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
@@ -3684,15 +3728,15 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                 logger.info("Restarting llama-server to pick up VRAM-safe n_gpu_layers preset...")
                 await restart_llama_server()
                 if not await wait_for_llama_server_or_restart(timeout=60.0):
-                    raise HTTPException(status_code=502, detail="Failed to restart llama-server for VRAM budgeting")
+                    raise HTTPException(
+                        status_code=502, detail="Failed to restart llama-server for VRAM budgeting"
+                    )
                 n_gpu_layers_preset = safe_ngl
 
     try:
         await post_router_model_action("load", load_payload)
     except RouterManagementUnsupported:
-        logger.warning(
-            "Router load endpoint unavailable; relying on request-time model autoload."
-        )
+        logger.warning("Router load endpoint unavailable; relying on request-time model autoload.")
         await record_model_loaded(model_name)
         return {
             "model_name": model_name,
@@ -3702,7 +3746,9 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
         }
     except (httpx.RequestError, httpx.HTTPStatusError) as exc:
         # Skip changing settings for MoE models, but allow for dense models
-        is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+        is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(
+            model_name, resolved.get("manifest") if resolved else None
+        )
         if is_moe:
             logger.warning(
                 f"Failed to load MoE model {backend_model} "
@@ -3727,22 +3773,16 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                             resolved = await resolve_router_model(model_name, reload=True)
                             entry = resolved["entry"]
                             if router_entry_status(entry) == "loaded":
-                                logger.info(
-                                    f"Model {backend_model} finished loading successfully."
-                                )
+                                logger.info(f"Model {backend_model} finished loading successfully.")
                                 status = "loaded"
                                 break
                         except Exception as poll_exc:
                             logger.warning(f"Error polling model loading status: {poll_exc}")
                     else:
-                        logger.warning(
-                            f"Model {backend_model} did not finish loading after 120s."
-                        )
+                        logger.warning(f"Model {backend_model} did not finish loading after 120s.")
 
                 if status == "loaded":
-                    logger.info(
-                        f"Model {backend_model} successfully loaded on recovery restart."
-                    )
+                    logger.info(f"Model {backend_model} successfully loaded on recovery restart.")
                     mark_model_loaded(model_name)
                     await record_model_loaded(model_name)
                     return {
@@ -3754,9 +3794,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
 
                 try:
                     await post_router_model_action("load", load_payload)
-                    logger.info(
-                        f"Model {backend_model} successfully loaded after clean restart."
-                    )
+                    logger.info(f"Model {backend_model} successfully loaded after clean restart.")
                     mark_model_loaded(model_name)
                     await record_model_loaded(model_name)
                     return {
@@ -3766,9 +3804,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                         "manifest": resolved["manifest"],
                     }
                 except Exception as retry_exc:
-                    logger.error(
-                        f"Failed to load MoE model even after clean restart: {retry_exc}"
-                    )
+                    logger.error(f"Failed to load MoE model even after clean restart: {retry_exc}")
                     raise
             raise
 
@@ -3822,7 +3858,9 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                     }
                 except (httpx.RequestError, httpx.HTTPStatusError) as retry_exc:
                     # Escalation Tier 2: Failed even without MTP -> Apply Safe Settings!
-                    is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+                    is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(
+                        model_name, resolved.get("manifest") if resolved else None
+                    )
                     if is_moe:
                         logger.info(
                             f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
@@ -3856,9 +3894,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                             load_payload["spec_type"] = "none"
                             load_payload["spec_draft_n_max"] = 0
 
-                            logger.info(
-                                f"Retrying load of {backend_model} with Safe Settings..."
-                            )
+                            logger.info(f"Retrying load of {backend_model} with Safe Settings...")
                             try:
                                 await post_router_model_action("load", load_payload)
                                 logger.info(
@@ -3884,7 +3920,9 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
 
         # Tier 2: If we already disabled MTP but load failed, escalate directly to Safe Settings
         elif backend_model not in SAFE_SETTINGS_MODELS:
-            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(
+                model_name, resolved.get("manifest") if resolved else None
+            )
             if is_moe:
                 logger.info(
                     f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
@@ -3920,9 +3958,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                 logger.info(f"Retrying load of {backend_model} with Safe Settings...")
                 try:
                     await post_router_model_action("load", load_payload)
-                    logger.info(
-                        f"Model {backend_model} loaded successfully with Safe Settings."
-                    )
+                    logger.info(f"Model {backend_model} loaded successfully with Safe Settings.")
                     mark_model_loaded(model_name)
                     await record_model_loaded(model_name)
                     return {
@@ -3947,9 +3983,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
             except Exception:
                 msg = exc.response.text
             if "already running" in msg.lower() or "model is already running" in msg.lower():
-                logger.info(
-                    f"Model {backend_model} already loaded (detected via 400), proceeding."
-                )
+                logger.info(f"Model {backend_model} already loaded (detected via 400), proceeding.")
                 mark_model_loaded(model_name)
                 await record_model_loaded(model_name)
                 return {
@@ -4009,7 +4043,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                 active_requests[backend_model] = 0
                 active_requests_lock.notify_all()
                 logger.info(f"Cleared active_requests for crashed model {backend_model}")
-            
+
             logger.info(
                 f"Recovery: unloading {backend_model} and "
                 "restarting llama-server to release GPU memory..."
@@ -4023,7 +4057,9 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
             # The router only reads n_gpu_layers from the INI at startup, so
             # we must write the corrected value BEFORE the restart for it to
             # take effect. Use metadata-driven VRAM budgeting (no hardcoding).
-            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(
+                model_name, resolved.get("manifest") if resolved else None
+            )
             if not is_moe and model_path and os.path.exists(model_path) and meta:
                 available_vram = await _get_available_vram_mib()
                 if available_vram is not None:
@@ -4041,12 +4077,15 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
             _ANALYZER_SKIP_KEYS = {"n-gpu-layers"}
             try:
                 from analyzer import analyze_telemetry
+
                 analysis = analyze_telemetry(backend_model, performance_first=True)
                 if analysis.get("recommendations"):
                     applied = {}
                     for key, val in analysis["recommendations"].items():
                         if key in _ANALYZER_SKIP_KEYS:
-                            logger.debug(f"Auto-tuning: skipping '{key}' (managed by VRAM budget logic)")
+                            logger.debug(
+                                f"Auto-tuning: skipping '{key}' (managed by VRAM budget logic)"
+                            )
                             continue
                         _write_ini_model_setting(backend_model, key, val)
                         applied[key] = val
@@ -4068,11 +4107,11 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
             backend_model = resolved["backend_model"]
 
             # Skip changing settings for MoE models, but allow for dense models
-            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(model_name, resolved.get("manifest") if resolved else None)
+            is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(
+                model_name, resolved.get("manifest") if resolved else None
+            )
             if is_moe:
-                logger.info(
-                    f"Retrying load of MoE model {backend_model} with original settings..."
-                )
+                logger.info(f"Retrying load of MoE model {backend_model} with original settings...")
                 load_payload = {"model": backend_model}
                 if options:
                     n_ctx = options.get("num_ctx") or options.get("n_ctx")
@@ -4135,9 +4174,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                             if "n_ctx" not in load_payload:
                                 load_payload["n_ctx"] = 8192
 
-                        logger.info(
-                            f"Retrying load of {backend_model} with spec_type='none'..."
-                        )
+                        logger.info(f"Retrying load of {backend_model} with spec_type='none'...")
                         await post_router_model_action("load", load_payload)
                         logger.info(
                             f"Model {backend_model} loaded successfully after disabling speculative decoding."
@@ -4189,9 +4226,7 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                         load_payload["spec_type"] = "none"
                         load_payload["spec_draft_n_max"] = 0
 
-                        logger.info(
-                            f"Retrying load of {backend_model} with OOM-safe settings..."
-                        )
+                        logger.info(f"Retrying load of {backend_model} with OOM-safe settings...")
                         await post_router_model_action("load", load_payload)
                         logger.info(
                             f"Model {backend_model} loaded successfully with OOM-safe settings."
@@ -4394,6 +4429,7 @@ async def chat(request: Request):
     request_id = getattr(request.state, "request_id", None)
     if not request_id or request_id == "N/A":
         import uuid
+
         request_id = str(uuid.uuid4())[:8]
     register_active_request(request_id, model_name, "ollama_chat", body)
 
@@ -4470,7 +4506,7 @@ async def chat(request: Request):
                                     update_active_request_progress(
                                         request_id,
                                         response_chunk=content_chunk,
-                                        thinking_chunk=thinking_chunk
+                                        thinking_chunk=thinking_chunk,
                                     )
                                 done = choice.get("finish_reason") is not None
                                 chunk = ollama_chat_chunk(
@@ -4543,7 +4579,9 @@ async def chat(request: Request):
         finally:
             if resolved_backend:
                 async with active_requests_lock:
-                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                    active_requests[resolved_backend] = max(
+                        0, active_requests.get(resolved_backend, 0) - 1
+                    )
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
@@ -4613,9 +4651,7 @@ async def chat(request: Request):
         final_content = message.get("content") if message else ""
         final_thinking = message.get("thinking") if message else None
         complete_active_request(
-            request_id,
-            final_response=final_content,
-            final_thinking=final_thinking
+            request_id, final_response=final_content, final_thinking=final_thinking
         )
 
         # Save the new slot cache checkpoint
@@ -4639,7 +4675,9 @@ async def chat(request: Request):
     finally:
         if resolved_backend:
             async with active_requests_lock:
-                active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                active_requests[resolved_backend] = max(
+                    0, active_requests.get(resolved_backend, 0) - 1
+                )
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
@@ -4658,6 +4696,7 @@ async def generate(request: Request):
     request_id = getattr(request.state, "request_id", None)
     if not request_id or request_id == "N/A":
         import uuid
+
         request_id = str(uuid.uuid4())[:8]
     register_active_request(request_id, model_name, "ollama_generate", body)
 
@@ -4725,10 +4764,14 @@ async def generate(request: Request):
                                     if "thinking" in message:
                                         chunk["thinking"] = message["thinking"]
                                     if done:
-                                        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                        apply_metrics(
+                                            chunk, data, now_ns() - started_ns, load_duration
+                                        )
                                 else:
                                     done = data.get("stop", False)
-                                    done_reason = data.get("finish_reason") or ("stop" if done else None)
+                                    done_reason = data.get("finish_reason") or (
+                                        "stop" if done else None
+                                    )
                                     response_chunk = data.get("content") or ""
                                     thinking_chunk = data.get("thinking")
                                     chunk = ollama_generate_chunk(
@@ -4737,13 +4780,15 @@ async def generate(request: Request):
                                     if thinking_chunk is not None:
                                         chunk["thinking"] = thinking_chunk
                                     if done:
-                                        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                        apply_metrics(
+                                            chunk, data, now_ns() - started_ns, load_duration
+                                        )
                                 if response_chunk:
                                     full_response_content += response_chunk
                                 update_active_request_progress(
                                     request_id,
                                     response_chunk=response_chunk,
-                                    thinking_chunk=thinking_chunk
+                                    thinking_chunk=thinking_chunk,
                                 )
                                 yield json.dumps(chunk) + "\n"
                             except Exception as e:
@@ -4776,16 +4821,25 @@ async def generate(request: Request):
 
                     if use_chat_backend:
                         if full_response_content:
-                            current_payload["messages"] = build_generate_chat_payload(body, resolved_backend)["messages"] + [
+                            current_payload["messages"] = build_generate_chat_payload(
+                                body, resolved_backend
+                            )["messages"] + [
                                 {"role": "assistant", "content": full_response_content}
                             ]
                         else:
-                            current_payload["messages"] = build_generate_chat_payload(body, resolved_backend)["messages"]
+                            current_payload["messages"] = build_generate_chat_payload(
+                                body, resolved_backend
+                            )["messages"]
                     else:
                         if full_response_content:
-                            current_payload["prompt"] = build_generate_payload(body, resolved_backend)["prompt"] + full_response_content
+                            current_payload["prompt"] = (
+                                build_generate_payload(body, resolved_backend)["prompt"]
+                                + full_response_content
+                            )
                         else:
-                            current_payload["prompt"] = build_generate_payload(body, resolved_backend)["prompt"]
+                            current_payload["prompt"] = build_generate_payload(
+                                body, resolved_backend
+                            )["prompt"]
 
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:
@@ -4803,7 +4857,9 @@ async def generate(request: Request):
         finally:
             if resolved_backend:
                 async with active_requests_lock:
-                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                    active_requests[resolved_backend] = max(
+                        0, active_requests.get(resolved_backend, 0) - 1
+                    )
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
@@ -4886,9 +4942,7 @@ async def generate(request: Request):
 
         # Complete active request details
         complete_active_request(
-            request_id,
-            final_response=final_response,
-            final_thinking=final_thinking
+            request_id, final_response=final_response, final_thinking=final_thinking
         )
 
         await apply_keep_alive_policy(model_name, keep_alive)
@@ -4905,7 +4959,9 @@ async def generate(request: Request):
     finally:
         if resolved_backend:
             async with active_requests_lock:
-                active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                active_requests[resolved_backend] = max(
+                    0, active_requests.get(resolved_backend, 0) - 1
+                )
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )

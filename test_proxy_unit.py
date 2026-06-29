@@ -682,7 +682,6 @@ async def test_admin_system_endpoint_returns_metrics():
         assert body["gpu_info"][0]["used_pct"] == 15.2
 
 
-
 @pytest.mark.asyncio
 async def test_get_llama_server_logs_endpoint():
     mock_subprocess = MagicMock()
@@ -1010,7 +1009,9 @@ async def test_ensure_model_skip_swap_true_does_not_unload_other_models():
 
     assert resolved["backend_model"] == "qwen3.5--9b.gguf"
     # Key assertion: with skip_swap=True, no unload should happen
-    unload_calls = [a for a in alpaca_proxy.post_router_model_action.await_calls if a[0][0] == "unload"]
+    unload_calls = [
+        a for a in alpaca_proxy.post_router_model_action.await_calls if a[0][0] == "unload"
+    ]
     assert len(unload_calls) == 0
 
 
@@ -1122,7 +1123,7 @@ async def test_ensure_model_skip_swap_true_preserves_active_requests():
 
     # Verify active_requests tracking works with skip_swap=True
     initial_count = alpaca_proxy.active_requests.get("sha256-deadbeef", 0)
-    resolved = await alpaca_proxy.ensure_model("tinyllama", skip_swap=True)
+    await alpaca_proxy.ensure_model("tinyllama", skip_swap=True)
     final_count = alpaca_proxy.active_requests.get("sha256-deadbeef", 0)
 
     # Active requests should be tracked (incremented during call, decremented after)
