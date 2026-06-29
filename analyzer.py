@@ -78,11 +78,23 @@ def read_current_config(model_alias: str) -> Dict[str, str]:
                     config_dict[k] = v
 
             # Overlay model-specific settings
+            matched_section = None
             if config.has_section(model_alias):
-                for k, v in config[model_alias].items():
-                    config_dict[k] = v
+                matched_section = model_alias
+            else:
+                norm_alias = model_alias.replace("/", "--").replace("_", "--").lower()
+                for sec in config.sections():
+                    norm_sec = sec.lower()
+                    if norm_alias in norm_sec or norm_sec in norm_alias or norm_alias.replace("--latest", "") in norm_sec:
+                        matched_section = sec
+                        break
 
-            logger.info(f"Loaded config from models.ini [{model_alias}]")
+            if matched_section:
+                for k, v in config[matched_section].items():
+                    config_dict[k] = v
+                logger.info(f"Loaded config from models.ini [{matched_section}] for alias [{model_alias}]")
+            else:
+                logger.warning(f"No matching section in models.ini found for [{model_alias}]")
         except Exception as e:
             logger.warning(f"Failed to read models.ini: {e}")
 
