@@ -253,50 +253,53 @@ def update_models_ini():
                             f"Warning: could not read model profile for {alias}: {e}",
                             file=sys.stderr,
                         )
+                
+                model_settings = {}
+                if is_safe:
+                    model_settings["ctx-size"] = "8192"
+                    model_settings["cache-type-k"] = "f16"
+                    model_settings["cache-type-v"] = "f16"
+                elif small_model:
+                    model_settings["ctx-size"] = "8192"
+                    model_settings["cache-type-k"] = "f16"
+                    model_settings["cache-type-v"] = "f16"
+                else:
+                    if not is_moe:
+                        model_settings["ctx-size"] = "32768"
+                    else:
+                        model_settings["ctx-size"] = "98304"
+                    model_settings["cache-type-k"] = "q4_0"
+                    model_settings["cache-type-v"] = "q4_0"
 
-                content.append(f"[{alias}]")
-                content.append(f"model = /router-models/{entry.name}")
+                if is_safe:
+                    model_settings["flash-attn"] = "off"
+                elif flash_attn:
+                    model_settings["flash-attn"] = "on"
+                else:
+                    model_settings["flash-attn"] = "off"
+
+                if is_moe:
+                    model_settings["n-cpu-moe"] = "40"
+                    if is_mtp_capable:
+                        model_settings["spec-type"] = "draft-mtp"
+                        model_settings["spec-draft-n-max"] = "3"
+                    else:
+                        model_settings["spec-type"] = "none"
+                        model_settings["spec-draft-n-max"] = "0"
+                else:
+                    model_settings["spec-type"] = "none"
+                    model_settings["spec-draft-n-max"] = "0"
 
                 if profile:
                     for k, v in profile.items():
                         if k == "model":
                             continue
-                        content.append(f"{k} = {v}")
-                else:
-                    if is_safe:
-                        content.append("ctx-size = 8192")
-                        content.append("cache-type-k = f16")
-                        content.append("cache-type-v = f16")
-                    elif small_model:
-                        content.append("ctx-size = 8192")
-                        content.append("cache-type-k = f16")
-                        content.append("cache-type-v = f16")
-                    else:
-                        if not is_moe:
-                            content.append("ctx-size = 32768")
-                        else:
-                            content.append("ctx-size = 98304")
-                        content.append("cache-type-k = q4_0")
-                        content.append("cache-type-v = q4_0")
+                        model_settings[k] = str(v)
 
-                    if is_safe:
-                        content.append("flash-attn = off")
-                    elif flash_attn:
-                        content.append("flash-attn = on")
-                    else:
-                        content.append("flash-attn = off")
-
-                    if is_moe:
-                        content.append("n-cpu-moe = 40")
-                        if is_mtp_capable:
-                            content.append("spec-type = draft-mtp")
-                            content.append("spec-draft-n-max = 3")
-                        else:
-                            content.append("spec-type = none")
-                            content.append("spec-draft-n-max = 0")
-                    else:
-                        content.append("spec-type = none")
-                        content.append("spec-draft-n-max = 0")
+                content.append(f"[{alias}]")
+                content.append(f"model = /router-models/{entry.name}")
+                for k, v in model_settings.items():
+                    content.append(f"{k} = {v}")
 
                 content.append("")
 
