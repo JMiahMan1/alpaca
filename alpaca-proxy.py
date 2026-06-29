@@ -4035,6 +4035,26 @@ async def _ensure_model_impl(model_name: str, options: dict = None, resolved: di
                     if safe_ngl != n_gpu_layers_preset:
                         _write_ini_model_setting(backend_model, "n-gpu-layers", str(safe_ngl))
 
+            # Incorporate Telemetry & Auto-Tuning suggestions to prevent recurring memory exhaustion.
+            # NOTE: n-gpu-layers is intentionally excluded here — it is already computed above
+            # using live VRAM state and GGUF metadata, which is more accurate than heuristics.
+            _ANALYZER_SKIP_KEYS = {"n-gpu-layers"}
+            try:
+                from analyzer import analyze_telemetry
+                analysis = analyze_telemetry(backend_model, performance_first=True)
+                if analysis.get("recommendations"):
+                    applied = {}
+                    for key, val in analysis["recommendations"].items():
+                        if key in _ANALYZER_SKIP_KEYS:
+                            logger.debug(f"Auto-tuning: skipping '{key}' (managed by VRAM budget logic)")
+                            continue
+                        _write_ini_model_setting(backend_model, key, val)
+                        applied[key] = val
+                    if applied:
+                        logger.info(f"Auto-tuning recovery applied configurations: {applied}")
+            except Exception as auto_err:
+                logger.warning(f"Auto-tuning engine failed during recovery: {auto_err}")
+
             # Force restart of llama-server to guarantee GPU memory release
             # and pick up any INI overrides written above
             await restart_llama_server()
