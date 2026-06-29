@@ -1024,10 +1024,12 @@ def get_telemetry_recommendations():
             "explanation": "Please load a model or specify one via '?model=name'."
         })
         
+    import re
+    sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
     try:
         from analyzer import analyze_telemetry
         perf_first = (strategy == "performance")
-        analysis = analyze_telemetry(model, performance_first=perf_first)
+        analysis = analyze_telemetry(sanitized_model, performance_first=perf_first)
         return jsonify(analysis)
     except Exception as e:
         # Fallback analysis if importer/analyzer fails
