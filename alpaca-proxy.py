@@ -681,6 +681,10 @@ def apply_thinking_override(payload, body):
             think_disabled = True
 
     if think_disabled:
+        # Downstream llama-server setting
+        payload["thinking"] = False
+        
+        # System prompt override
         instruction = "IMPORTANT: Do NOT use <think> tags. Do NOT output any internal reasoning or thought process. Respond directly with the final answer."
         messages = payload.get("messages")
         if isinstance(messages, list):
@@ -4767,6 +4771,7 @@ async def chat(request: Request):
                         "POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=current_payload
                     ) as resp:
                         resp.raise_for_status()
+                        in_thinking = False
                         async for line in resp.aiter_lines():
                             if not line or "[DONE]" in line:
                                 continue
@@ -4777,18 +4782,49 @@ async def chat(request: Request):
                                 choice = (data.get("choices") or [{}])[0]
                                 message = chat_message_from_choice(choice)
                                 if message:
-                                    content_chunk = message.get("content")
-                                    thinking_chunk = message.get("thinking")
-                                    if content_chunk:
-                                        full_response_content += content_chunk
+                                    content_chunk = message.get("content") or ""
+                                    thinking_chunk = message.get("thinking") or ""
+                                    
+                                    # Stateful wrap thinking in <think> tags for content field
+                                    out_content = ""
+                                    if thinking_chunk:
+                                        if not in_thinking:
+                                            out_content = "<think>\n" + thinking_chunk
+                                            in_thinking = True
+                                        else:
+                                            out_content = thinking_chunk
+                                    elif content_chunk:
+                                        if in_thinking:
+                                            out_content = "</think>\n" + content_chunk
+                                            in_thinking = False
+                                        else:
+                                            out_content = content_chunk
+                                            
+                                    if out_content:
+                                        full_response_content += out_content
+                                        
                                     update_active_request_progress(
                                         request_id,
                                         response_chunk=content_chunk,
                                         thinking_chunk=thinking_chunk,
                                     )
+                                    
+                                    client_message = {
+                                        "role": message.get("role", "assistant"),
+                                        "content": out_content
+                                    }
+                                    if thinking_chunk:
+                                        client_message["thinking"] = thinking_chunk
+                                else:
+                                    client_message = {"role": "assistant", "content": ""}
+                                    
                                 done = choice.get("finish_reason") is not None
+                                if done and in_thinking:
+                                    client_message["content"] = (client_message.get("content") or "") + "\n</think>"
+                                    in_thinking = False
+                                    
                                 chunk = ollama_chat_chunk(
-                                    model_name, message, done, choice.get("finish_reason")
+                                    model_name, client_message, done, choice.get("finish_reason")
                                 )
                                 if done:
                                     apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
@@ -4919,15 +4955,26 @@ async def chat(request: Request):
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
         message = chat_message_from_choice(choice)
-        chunk = ollama_chat_chunk(model_name, message, True, choice.get("finish_reason"))
+        
+        final_content = message.get("content") if message else ""
+        final_thinking = message.get("thinking") if message else None
+        
+        client_message = {
+            "role": message.get("role", "assistant") if message else "assistant",
+            "content": final_content
+        }
+        if final_thinking:
+            client_message["thinking"] = final_thinking
+            if f"<think>" not in final_content:
+                client_message["content"] = f"<think>\n{final_thinking}\n</think>\n{final_content}"
+                
+        chunk = ollama_chat_chunk(model_name, client_message, True, choice.get("finish_reason"))
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
         logprobs = logprobs_from_choice(choice)
         if logprobs is not None:
             chunk["logprobs"] = logprobs
 
         # Complete request with final content and thinking
-        final_content = message.get("content") if message else ""
-        final_thinking = message.get("thinking") if message else None
         prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
         gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
         complete_active_request(
@@ -4939,8 +4986,8 @@ async def chat(request: Request):
         )
 
         # Save the new slot cache checkpoint
-        if message and message.get("content"):
-            new_messages = list(messages) + [message]
+        if client_message and client_message.get("content"):
+            new_messages = list(messages) + [client_message]
             new_prefix_hash = get_prefix_hash(model_name, new_messages, options=body.get("options"))
             slot_id = await find_slot_for_request(resolved_backend, new_messages)
             await save_slot_cache(resolved_backend, new_prefix_hash, slot_id)
@@ -5031,6 +5078,7 @@ async def generate(request: Request):
                         "POST", f"{LLAMA_SERVER_URL}{endpoint}", json=current_payload
                     ) as resp:
                         resp.raise_for_status()
+                        in_thinking = False
                         async for line in resp.aiter_lines():
                             if not line or "[DONE]" in line:
                                 continue
@@ -5046,14 +5094,34 @@ async def generate(request: Request):
                                     response_chunk = message.get("content", "") if message else ""
                                     thinking_chunk = message.get("thinking") if message else None
                                     done = choice.get("finish_reason") is not None
+                                    
+                                    # Stateful wrap
+                                    out_content = ""
+                                    if thinking_chunk:
+                                        if not in_thinking:
+                                            out_content = "<think>\n" + thinking_chunk
+                                            in_thinking = True
+                                        else:
+                                            out_content = thinking_chunk
+                                    elif response_chunk:
+                                        if in_thinking:
+                                            out_content = "</think>\n" + response_chunk
+                                            in_thinking = False
+                                        else:
+                                            out_content = response_chunk
+                                            
+                                    if done and in_thinking:
+                                        out_content += "\n</think>"
+                                        in_thinking = False
+                                        
                                     chunk = ollama_generate_chunk(
                                         model_name,
-                                        response_chunk,
+                                        out_content,
                                         done,
                                         choice.get("finish_reason"),
                                     )
-                                    if "thinking" in message:
-                                        chunk["thinking"] = message["thinking"]
+                                    if thinking_chunk is not None:
+                                        chunk["thinking"] = thinking_chunk
                                     if done:
                                         apply_metrics(
                                             chunk, data, now_ns() - started_ns, load_duration
@@ -5065,8 +5133,28 @@ async def generate(request: Request):
                                     )
                                     response_chunk = data.get("content") or ""
                                     thinking_chunk = data.get("thinking")
+                                    
+                                    # Stateful wrap
+                                    out_content = ""
+                                    if thinking_chunk:
+                                        if not in_thinking:
+                                            out_content = "<think>\n" + thinking_chunk
+                                            in_thinking = True
+                                        else:
+                                            out_content = thinking_chunk
+                                    elif response_chunk:
+                                        if in_thinking:
+                                            out_content = "</think>\n" + response_chunk
+                                            in_thinking = False
+                                        else:
+                                            out_content = response_chunk
+                                            
+                                    if done and in_thinking:
+                                        out_content += "\n</think>"
+                                        in_thinking = False
+                                        
                                     chunk = ollama_generate_chunk(
-                                        model_name, response_chunk, done, done_reason
+                                        model_name, out_content, done, done_reason
                                     )
                                     if thinking_chunk is not None:
                                         chunk["thinking"] = thinking_chunk
@@ -5074,8 +5162,8 @@ async def generate(request: Request):
                                         apply_metrics(
                                             chunk, data, now_ns() - started_ns, load_duration
                                         )
-                                if response_chunk:
-                                    full_response_content += response_chunk
+                                if out_content:
+                                    full_response_content += out_content
                                 update_active_request_progress(
                                     request_id,
                                     response_chunk=response_chunk,
@@ -5214,21 +5302,31 @@ async def generate(request: Request):
         if use_chat_backend:
             choice = (data.get("choices") or [{}])[0]
             message = chat_message_from_choice(choice)
+            final_response = message.get("content", "") if message else ""
+            final_thinking = message.get("thinking") if message else None
+            
+            client_content = final_response
+            if final_thinking and f"<think>" not in final_response:
+                client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                
             chunk = ollama_generate_chunk(
-                model_name, message.get("content", ""), True, choice.get("finish_reason")
+                model_name, client_content, True, choice.get("finish_reason")
             )
-            if "thinking" in message:
-                chunk["thinking"] = message["thinking"]
-            final_response = message.get("content", "")
-            final_thinking = message.get("thinking")
+            if final_thinking is not None:
+                chunk["thinking"] = final_thinking
         else:
             done = data.get("stop", True)
             done_reason = data.get("finish_reason") or ("stop" if done else None)
-            chunk = ollama_generate_chunk(model_name, data.get("content") or "", done, done_reason)
-            if data.get("thinking") is not None:
-                chunk["thinking"] = data.get("thinking")
             final_response = data.get("content") or ""
             final_thinking = data.get("thinking")
+            
+            client_content = final_response
+            if final_thinking and f"<think>" not in final_response:
+                client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                
+            chunk = ollama_generate_chunk(model_name, client_content, done, done_reason)
+            if final_thinking is not None:
+                chunk["thinking"] = final_thinking
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
 
         # Complete active request details
