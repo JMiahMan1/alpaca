@@ -59,6 +59,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./alpaca-proxy.py:/app/alpaca-proxy.py:ro
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
+      - ./alpaca_puller.py:/app/alpaca_puller.py:ro
       - ./benchmark-configs.py:/app/benchmark-configs.py:ro
       - ./analyzer.py:/app/analyzer.py:ro
       - ./data:/app/data
@@ -87,12 +88,16 @@ services:
       - ./data:/app/data
       - ./web:/app/web:ro
       - ./llm_benchmark_suite.py:/app/llm_benchmark_suite.py:ro
+      - ./alpaca-puller.py:/app/alpaca-puller.py:ro
+      - ./alpaca_puller.py:/app/alpaca_puller.py:ro
       - ./.alpaca-router:/router-models
       - ./analyzer.py:/app/analyzer.py:ro
+      - /usr/share/ollama/.ollama/models:/models:ro
     environment:
       OLLAMA_SERVER_URLS: "http://llama-server:8080"
       PROXY_SERVER_URLS: "http://alpaca-proxy:11434"
       ROUTER_MODELS_DIR: "/router-models"
+      MODELS_DIR: "/models"
     depends_on:
       alpaca-proxy:
         condition: service_started

@@ -1057,12 +1057,29 @@ def apply_telemetry_recommendations():
     import re
     sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
     router_models_dir = Path(os.getenv("ROUTER_MODELS_DIR", "/router-models"))
-    profile_path = router_models_dir / f"{sanitized_model}.profile.json"
     
-    if not router_models_dir.exists():
-        profile_path = Path("data") / f"{sanitized_model}.profile.json"
-        if not profile_path.parent.exists():
-            profile_path = Path("web").parent / ".alpaca-router" / f"{sanitized_model}.profile.json"
+    # 1. Delimiter-agnostic scan to find the correct GGUF file stem
+    profile_stem = sanitized_model
+    
+    def clean_str(s):
+        return s.replace("/", "").replace("_", "").replace("-", "").lower()
+    clean_target = clean_str(model)
+    
+    target_dir = router_models_dir
+    if not target_dir.exists():
+        target_dir = Path("data")
+        if not target_dir.exists():
+            target_dir = Path("web").parent / ".alpaca-router"
+            
+    if target_dir.exists():
+        for entry in target_dir.iterdir():
+            if entry.suffix == ".gguf":
+                clean_sec = clean_str(entry.stem)
+                if clean_target in clean_sec or clean_sec in clean_target or clean_target.replace("latest", "") in clean_sec:
+                    profile_stem = entry.stem
+                    break
+                    
+    profile_path = target_dir / f"{profile_stem}.profile.json"
             
     try:
         profile_data = {}

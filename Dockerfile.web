@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir flask flask-cors flask-socketio simple-websocket 
 
 # Copy required files into container
 COPY llm_benchmark_suite.py /app/
+COPY alpaca-puller.py /app/
+COPY alpaca_puller.py /app/
 COPY web/ /app/web/
 
 # Expose Dashboard Port
