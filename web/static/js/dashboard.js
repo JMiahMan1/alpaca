@@ -718,12 +718,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } else {
-                loadedModelName.textContent = "No model active (Evicted/Idle)";
-                loadedModelRequests.textContent = "0";
-                if (peakReqs) peakReqs.textContent = "0";
-                if (totalReqs) totalReqs.textContent = "0";
-                loadedModelContext.textContent = "-";
-                loadedModelTtl.textContent = "-";
+                const loading = data.runtime.loading_models || [];
+                if (loading.length > 0) {
+                    loadedModelName.innerHTML = `<span style="color:var(--color-secondary); animation: pulse 1.5s infinite;">Attempting to load: ${loading[0].name} (${loading[0].elapsed_seconds}s)</span>`;
+                    loadedModelRequests.textContent = "0";
+                    if (peakReqs) peakReqs.textContent = "0";
+                    if (totalReqs) totalReqs.textContent = "0";
+                    loadedModelContext.textContent = "Loading...";
+                    loadedModelTtl.textContent = "In progress...";
+                } else {
+                    loadedModelName.textContent = "No model active (Evicted/Idle)";
+                    loadedModelRequests.textContent = "0";
+                    if (peakReqs) peakReqs.textContent = "0";
+                    if (totalReqs) totalReqs.textContent = "0";
+                    loadedModelContext.textContent = "-";
+                    loadedModelTtl.textContent = "-";
+                }
             }
 
             // 3. Performance Metrics Counters
@@ -2546,10 +2556,22 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/proxy/status');
             const data = await res.json();
-            if (data.online && data.runtime && data.runtime.loaded_models && data.runtime.loaded_models.length > 0) {
-                currentModelName = data.runtime.loaded_models[0].name;
+            const loaded = (data.runtime && data.runtime.loaded_models) || [];
+            const loading = (data.runtime && data.runtime.loading_models) || [];
+            
+            if (data.online && loaded.length > 0) {
+                currentModelName = loaded[0].name;
+                let statusHTML = `<span style="color:var(--color-success);">Currently loaded: <strong>${currentModelName}</strong></span>`;
+                if (loading.length > 0) {
+                    statusHTML += ` <span style="color:var(--color-secondary); font-size:0.85rem; margin-left:0.5rem; animation: pulse 1.5s infinite;">(Switching to: ${loading[0].name}...)</span>`;
+                }
                 if (modelSwitcherStatus) {
-                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-success);">Currently loaded: <strong>${currentModelName}</strong></span>`;
+                    modelSwitcherStatus.innerHTML = statusHTML;
+                }
+            } else if (data.online && loading.length > 0) {
+                currentModelName = null;
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary); animation: pulse 1.5s infinite;">Attempting to load: <strong>${loading[0].name}</strong> (${loading[0].elapsed_seconds}s)</span>`;
                 }
             } else {
                 currentModelName = null;

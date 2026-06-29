@@ -2517,8 +2517,19 @@ async def admin_runtime():
     except Exception:
         pass
 
+    # Loading models
+    loading = []
+    current_time = time.time()
+    for name, entry in list(model_loading.items()):
+        if current_time - entry["start_time"] <= MODEL_LOADING_TIMEOUT:
+            loading.append({
+                "name": name,
+                "elapsed_seconds": int(current_time - entry["start_time"])
+            })
+
     return {
         "loaded_models": loaded,
+        "loading_models": loading,
         "active_requests": active,
         "model_expiry_timers": expiry_info,
         "max_loaded_models": MAX_LOADED_MODELS,
@@ -2794,6 +2805,15 @@ async def admin_model_unload(request: Request):
                 current_status = router_entry_status(entry)
                 if is_resident_status(current_status):
                     backend_model = entry.get("id")
+                    
+                    # Check active requests before unloading
+                    async with active_requests_lock:
+                        if active_requests.get(backend_model, 0) > 0:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"Cannot unload model {model} because it currently has {active_requests[backend_model]} active request(s)."
+                            )
+                            
                     await post_router_model_action("unload", backend_model)
                     public = public_model_name(model)
                     await record_model_unloaded(model)
@@ -2801,6 +2821,8 @@ async def admin_model_unload(request: Request):
 
         # Model not found or not loaded
         return {"status": "not_loaded", "model": model}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to unload model {model}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to unload model: {str(e)}")
