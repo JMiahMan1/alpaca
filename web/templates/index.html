@@ -255,6 +255,40 @@
 
                     </div>
 
+                    <!-- Telemetry & Auto-Tuning Grid -->
+                    <div class="monitor-grid" style="margin-top: 1.5rem; display: grid; grid-template-columns: 2fr 1.2fr; gap: 1.5rem;">
+                        <!-- Memory Creep & Exhaustion Chart -->
+                        <div class="card" style="display: flex; flex-direction: column;">
+                            <div class="card-title">Memory Telemetry (OOM Prevention & Creep Monitor)</div>
+                            <div class="chart-wrapper" style="height: 250px; position: relative;">
+                                <canvas id="memory-creep-chart"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Auto-Tuning & Recommendation Engine Card -->
+                        <div class="card" style="display: flex; flex-direction: column; justify-content: space-between; min-height: 250px;">
+                            <div>
+                                <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                                    <span>Recommended Optimizations</span>
+                                    <select id="tuning-strategy-select" style="background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.65rem; cursor: pointer;">
+                                        <option value="performance">Performance First</option>
+                                        <option value="safe">Safe First</option>
+                                    </select>
+                                </div>
+                                <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem;">
+                                    <span id="optimization-status-badge" class="badge badge-success">OK (Safe)</span>
+                                    <span id="optimization-model-badge" style="font-size: 0.65rem; color: var(--text-muted); font-family: monospace;">-</span>
+                                </div>
+                                <div id="optimization-suggestions" style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; overflow-y: auto; max-height: 120px; max-width: 100%; word-break: break-word;">
+                                    Gathering telemetry... Waiting for active model data point.
+                                </div>
+                            </div>
+                            <div style="margin-top: 1rem; flex-shrink: 0;">
+                                <button id="btn-apply-optimizations" class="btn btn-primary d-none" style="width: 100%; margin: 0; padding: 0.4rem 0.8rem; font-size: 0.75rem; background: var(--color-primary); border-color: var(--color-primary);">Apply Auto-Tuning Configs</button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Client Connections Section -->
                     <div class="monitor-grid" style="margin-top: 1.5rem;">
                         <div class="card">
@@ -417,6 +451,35 @@
                             <div class="chart-wrapper">
                                 <canvas id="shared-ast-chart"></canvas>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Future-proofing: Task Routing Capability Matrix -->
+                    <div class="card" style="margin-top: 1.5rem;">
+                        <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>Model Capability vs. Performance Routing Matrix</span>
+                            <button id="btn-save-routing-matrix" class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.6rem; margin: 0;">💾 Save Matrix Mappings</button>
+                        </div>
+                        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
+                            Map specific task categories to optimal models based on the benchmark data gathered. SharedLLM will query this matrix to make routing decisions.
+                        </p>
+                        <div class="table-wrapper">
+                            <table id="routing-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th>Use-Case / Task Category</th>
+                                        <th>Description</th>
+                                        <th>Target Model Mapping</th>
+                                        <th>Min TPS Constraint</th>
+                                        <th>Max TTFT Constraint</th>
+                                        <th>Reasoning Required</th>
+                                        <th>Live Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="routing-matrix-body">
+                                    <!-- Populated dynamically via JS -->
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
@@ -676,11 +739,15 @@
 
                             <div id="request-inspector-details" class="d-none" style="display: flex; flex-direction: column; gap: 1rem;">
                                 <div style="background:#0f172a; padding:0.75rem; border-radius:8px; border:1px solid var(--border-color); font-size:0.75rem;">
-                                    <div class="grid-2" style="grid-template-columns: 1fr 1fr; gap:0.5rem;">
+                                    <div class="grid-2" style="grid-template-columns: 1fr 1fr; gap:0.75rem; display: grid;">
                                         <div><strong>Request ID:</strong> <span id="inspect-id" style="font-family:monospace;">-</span></div>
                                         <div><strong>Type:</strong> <span id="inspect-type" class="badge badge-secondary" style="font-size:0.65rem;">-</span></div>
                                         <div><strong>Model:</strong> <span id="inspect-model" style="color:white;">-</span></div>
                                         <div><strong>Duration:</strong> <span id="inspect-duration" style="color:var(--color-secondary); font-weight:600;">-</span></div>
+                                        <div><strong>Origin / Caller:</strong> <span id="inspect-origin" style="color:var(--color-info); font-weight:600;">-</span></div>
+                                        <div><strong>Client IP:</strong> <span id="inspect-ip" style="font-family:monospace;">-</span></div>
+                                        <div><strong>TTFT:</strong> <span id="inspect-ttft" style="color:#fbbf24; font-weight:600;">-</span></div>
+                                        <div><strong>TPS / Speed:</strong> <span id="inspect-tps" style="color:var(--color-success); font-weight:600;">-</span></div>
                                     </div>
                                 </div>
 

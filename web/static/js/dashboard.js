@@ -97,6 +97,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Chart Variables (SharedLLM)
     let sharedLatencyChart = null;
     let sharedAstChart = null;
+    
+    // Memory Creep and Optimizations
+    let memoryCreepChart = null;
+    let currentRecommendations = null;
 
     // State variables
     let activeTab = 'monitor'; // 'monitor', 'general', 'shared'
@@ -109,21 +113,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // Utility function to truncate long model names
     function truncateModelName(name) {
         if (!name) return '';
-        if (name.length <= 20) return name;
+        if (name.length <= 25) return name;
         
-        // Try to split version from name
-        const [mainName, version] = name.split('-');
+        let cleanName = name.replace(/\.gguf$/i, '');
         
-        if (version) {
-            // If main name is long, truncate it
-            if (mainName.length > 12) {
-                return mainName.substring(0, 12) + '...';
-            }
-            return `${mainName}-${version}`;
+        if (cleanName.includes('--')) {
+            const parts = cleanName.split('--');
+            cleanName = parts[parts.length - 1];
         }
         
-        // Just truncate long names without version
-        return name.substring(0, 20) + '...';
+        if (cleanName.length <= 25) return cleanName;
+        
+        return cleanName.substring(0, 12) + '...' + cleanName.substring(cleanName.length - 10);
     }
 
     // Tab Navigation Logic
@@ -161,6 +162,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (tabName === 'shared') {
             tabBtnShared.classList.add('active');
             viewShared.classList.remove('d-none');
+            loadRoutingMatrix();
         } else if (tabName === 'profiles') {
             tabBtnProfiles.classList.add('active');
             viewProfiles.classList.remove('d-none');
@@ -222,51 +224,71 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const ctxSharedLatency = document.getElementById('shared-latency-chart').getContext('2d');
         const ctxSharedAst = document.getElementById('shared-ast-chart').getContext('2d');
+        
+        const ctxMemoryCreep = document.getElementById('memory-creep-chart').getContext('2d');
 
         // Common Chart.js styling overrides
         Chart.defaults.color = '#94a3b8';
         Chart.defaults.borderColor = 'rgba(255, 255, 255, 0.06)';
         Chart.defaults.font.family = "'Inter', sans-serif";
 
+        const perModelTooltip = {
+            callbacks: {
+                title: function(context) {
+                    // For per-model datasets, show the original full model name
+                    return context[0].dataset.originalLabel || context[0].dataset.label || '';
+                },
+                label: function(context) {
+                    return ` ${context.parsed.y}`;
+                }
+            }
+        };
+
         tpsChart = new Chart(ctxTps, {
             type: 'bar',
             data: {
-                labels: [],
-                datasets: [{
-                    label: 'Tokens / Second',
-                    data: [],
-                    backgroundColor: 'rgba(139, 92, 246, 0.6)',
-                    borderColor: '#8b5cf6',
-                    borderWidth: 1,
-                    borderRadius: 4
-                }]
+                labels: [''],
+                datasets: []
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: 'Tokens/s' } } }
+                plugins: { 
+                    legend: { 
+                        display: true,
+                        position: 'top',
+                        labels: { boxWidth: 10, padding: 8, font: { size: 11 } }
+                    },
+                    tooltip: perModelTooltip
+                },
+                scales: {
+                    x: { ticks: { display: false }, grid: { display: false } },
+                    y: { beginAtZero: true, title: { display: true, text: 'Tokens/s' } }
+                }
             }
         });
 
         ttftChart = new Chart(ctxTtft, {
             type: 'bar',
             data: {
-                labels: [],
-                datasets: [{
-                    label: 'TTFT (ms)',
-                    data: [],
-                    backgroundColor: 'rgba(6, 182, 212, 0.6)',
-                    borderColor: '#06b6d4',
-                    borderWidth: 1,
-                    borderRadius: 4
-                }]
+                labels: [''],
+                datasets: []
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: 'Time (ms)' } } }
+                plugins: { 
+                    legend: { 
+                        display: true,
+                        position: 'top',
+                        labels: { boxWidth: 10, padding: 8, font: { size: 11 } }
+                    },
+                    tooltip: perModelTooltip
+                },
+                scales: {
+                    x: { ticks: { display: false }, grid: { display: false } },
+                    y: { beginAtZero: true, title: { display: true, text: 'Time (ms)' } }
+                }
             }
         });
 
@@ -280,13 +302,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { position: 'top', labels: { boxWidth: 12, padding: 10 } }
+                    legend: { position: 'top', labels: { boxWidth: 12, padding: 10 } },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.originalLabel || context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y + '%';
+                                }
+                                return label;
+                            }
+                        }
+                    }
                 },
                 scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: 'Success Rate (%)' } } }
             }
         });
 
-        // SharedLLM latency comparison chart
+        // SharedLLM latency comparison chart — uses legend instead of X-axis labels
+        // to avoid diagonal/overflowing model name text on the axis
         sharedLatencyChart = new Chart(ctxSharedLatency, {
             type: 'bar',
             data: {
@@ -300,8 +337,30 @@ document.addEventListener('DOMContentLoaded', () => {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { position: 'top', labels: { boxWidth: 12 } } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: 'Latency (seconds)' } } }
+                plugins: { 
+                    legend: { position: 'top', labels: { boxWidth: 12, padding: 10 } },
+                    tooltip: {
+                        callbacks: {
+                            title: function(context) {
+                                const index = context[0].dataIndex;
+                                const originalLabels = context[0].chart.data.originalLabels;
+                                return (originalLabels && originalLabels[index]) ? originalLabels[index] : context[0].label;
+                            },
+                            afterTitle: function(context) {
+                                // Show model index as subtitle so bars are identifiable
+                                return `Model ${context[0].dataIndex + 1}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    // Hide X labels — models are in the tooltip title and legend
+                    x: {
+                        ticks: { display: false },
+                        grid: { display: false }
+                    },
+                    y: { beginAtZero: true, title: { display: true, text: 'Latency (seconds)' } }
+                }
             }
         });
 
@@ -317,6 +376,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 maintainAspectRatio: false,
                 plugins: { legend: { position: 'top', labels: { boxWidth: 12 } } },
                 scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: 'Pass Rate (%)' } } }
+            }
+        });
+
+        // Memory Creep and OOM monitoring line chart
+        memoryCreepChart = new Chart(ctxMemoryCreep, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'System RAM (%)',
+                        data: [],
+                        borderColor: '#06b6d4',
+                        backgroundColor: 'rgba(6, 182, 212, 0.05)',
+                        borderWidth: 2,
+                        tension: 0.2,
+                        fill: true
+                    },
+                    {
+                        label: 'GPU VRAM (%)',
+                        data: [],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.05)',
+                        borderWidth: 2,
+                        tension: 0.2,
+                        fill: true
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'top', labels: { boxWidth: 12 } }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        title: { display: true, text: 'Time' },
+                        ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        max: 100,
+                        title: { display: true, text: 'Memory Usage (%)' }
+                    }
+                }
             }
         });
     }
@@ -524,6 +630,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 2. Currently Loaded Model Details
             const loaded = data.runtime.loaded_models || [];
+            let activeModelName = null;
             const runningSettingsContainer = document.getElementById('loaded-model-running-settings');
             const syncBadge = document.getElementById('loaded-model-sync-badge');
             const peakReqs = document.getElementById('loaded-model-peak-requests');
@@ -538,20 +645,23 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (loaded.length > 0) {
                 const activeModel = loaded[0];
+                activeModelName = activeModel.name;
                 loadedModelName.textContent = activeModel.name;
                 loadedModelRequests.textContent = activeModel.active_requests || 0;
                 if (peakReqs) peakReqs.textContent = activeModel.peak_active_requests || 0;
                 if (totalReqs) totalReqs.textContent = activeModel.total_requests_processed || 0;
                 
-                // Determine context length
-                let ctxLength = activeModel.context_length;
+                // Determine context length — prefer running_settings ctx-size over
+                // the model record's context_length, which may be stale/default
+                const runningSettings = activeModel.running_settings || {};
+                let ctxLength = runningSettings['ctx-size'] || activeModel.context_length;
                 if (!ctxLength && data.system && data.system.llama_server_props) {
                     ctxLength = data.system.llama_server_props.n_ctx;
                 }
                 if (!ctxLength) {
-                    ctxLength = 8192; // Default fallback context limit
+                    ctxLength = '?';
                 }
-                loadedModelContext.textContent = `${ctxLength} tokens`;
+                loadedModelContext.textContent = ctxLength !== '?' ? `${Number(ctxLength).toLocaleString()} tokens` : 'Unknown';
                 
                 if (activeModel.expires_at.startsWith('9999') || activeModel.expires_at.startsWith('0001')) {
                     loadedModelTtl.textContent = "Persistent (Never Evict)";
@@ -770,6 +880,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
+            // Update OOM Telemetry and Config suggestions
+            updateTelemetryAndRecommendations(activeModelName);
+
         } catch (err) {
             console.error("Metrics Poller error: ", err);
         }
@@ -978,15 +1091,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const modelDiv = document.createElement('div');
         modelDiv.style.cssText = 'font-size: 0.75rem; font-weight: 600; color: white; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
-        modelDiv.textContent = req.model || 'Unknown Model';
+        modelDiv.title = req.model || 'Unknown Model'; // full name in native tooltip
+        modelDiv.textContent = truncateModelName(req.model) || 'Unknown Model';
 
         const idDiv = document.createElement('div');
         idDiv.style.cssText = 'font-size: 0.65rem; color: var(--text-muted); font-family: monospace;';
         idDiv.textContent = `ID: ${req.request_id}`;
 
+        const detailsRow = document.createElement('div');
+        detailsRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; font-size:0.65rem; color:var(--text-muted); margin-top:0.15rem;';
+        
+        const originSpan = document.createElement('span');
+        originSpan.style.color = '#38bdf8';
+        originSpan.style.fontWeight = '500';
+        originSpan.textContent = `Origin: ${req.request_source || 'unknown'}`;
+        
+        const metricsSpan = document.createElement('span');
+        if (req.tps) {
+            metricsSpan.textContent = `${req.tps} tps | ${req.ttft_seconds || 0}s ttft`;
+        } else {
+            metricsSpan.textContent = '';
+        }
+        
+        detailsRow.appendChild(originSpan);
+        detailsRow.appendChild(metricsSpan);
+
         div.appendChild(headerDiv);
         div.appendChild(modelDiv);
         div.appendChild(idDiv);
+        div.appendChild(detailsRow);
         const actionBtns = document.createElement('div');
         actionBtns.style.cssText = 'display:flex; gap:0.25rem; justify-content:flex-end; margin-top:0.25rem;';
         
@@ -1083,10 +1216,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const thinkingContainer = document.getElementById('inspect-thinking-container');
         const thinkingEl = document.getElementById('inspect-thinking');
         const responseEl = document.getElementById('inspect-response');
+        
+        const originEl = document.getElementById('inspect-origin');
+        const ipEl = document.getElementById('inspect-ip');
+        const ttftEl = document.getElementById('inspect-ttft');
+        const tpsEl = document.getElementById('inspect-tps');
 
         if (idEl) idEl.textContent = req.request_id;
         if (modelEl) modelEl.textContent = req.model;
         if (typeEl) typeEl.textContent = req.type;
+        if (originEl) originEl.textContent = req.request_source || 'unknown';
+        if (ipEl) ipEl.textContent = req.client_ip || 'unknown';
+        if (ttftEl) ttftEl.textContent = req.ttft_seconds ? `${req.ttft_seconds}s` : '-';
+        if (tpsEl) tpsEl.textContent = req.tps ? `${req.tps} tok/s` : '-';
         
         if (durationEl) {
             if (req.completed_at) {
@@ -1430,21 +1572,72 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderChartsFromData(results) {
         if (results.length === 0) return;
         const models = results.map(r => r.model);
-        
-        // Truncate long model names for chart labels
-        const displayNames = models.map(model => {
-            return truncateModelName(model);
-        });
+        const displayNames = models.map(model => truncateModelName(model));
+        const colors = [
+            { bg: 'rgba(139, 92, 246, 0.6)', border: '#8b5cf6' },
+            { bg: 'rgba(6, 182, 212, 0.6)',   border: '#06b6d4' },
+            { bg: 'rgba(16, 185, 129, 0.6)',  border: '#10b981' },
+            { bg: 'rgba(245, 158, 11, 0.6)',  border: '#f59e0b' },
+            { bg: 'rgba(59, 130, 246, 0.6)',  border: '#3b82f6' },
+        ];
 
-        tpsChart.data.labels = displayNames;
+        // TPS chart — one dataset per model so legend renders model names cleanly
+        const tpsDatasets = results.map((r, idx) => {
+            let totalTps = 0, tpsCount = 0;
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            categories.forEach(cat => {
+                const catData = r[`category_${cat}`];
+                if (catData && catData.avg_tokens_per_sec > 0) {
+                    totalTps += catData.avg_tokens_per_sec;
+                    tpsCount++;
+                }
+            });
+            const avgTps = tpsCount > 0 ? (totalTps / tpsCount) : 0;
+            return {
+                label: displayNames[idx],
+                originalLabel: r.model,
+                data: [avgTps],
+                backgroundColor: colors[idx % colors.length].bg,
+                borderColor: colors[idx % colors.length].border,
+                borderWidth: 1,
+                borderRadius: 4
+            };
+        });
+        tpsChart.data.labels = [''];
+        tpsChart.data.originalLabels = [''];
+        tpsChart.data.datasets = tpsDatasets;
         tpsChart.update();
 
-        ttftChart.data.labels = displayNames;
+        // TTFT chart — one dataset per model
+        const ttftDatasets = results.map((r, idx) => {
+            let totalTtft = 0, ttftCount = 0;
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            categories.forEach(cat => {
+                const catData = r[`category_${cat}`];
+                if (catData && catData.avg_ttft_ms > 0) {
+                    totalTtft += catData.avg_ttft_ms;
+                    ttftCount++;
+                }
+            });
+            const avgTtft = ttftCount > 0 ? (totalTtft / ttftCount) : 0;
+            return {
+                label: displayNames[idx],
+                originalLabel: r.model,
+                data: [avgTtft],
+                backgroundColor: colors[idx % colors.length].bg,
+                borderColor: colors[idx % colors.length].border,
+                borderWidth: 1,
+                borderRadius: 4
+            };
+        });
+        ttftChart.data.labels = [''];
+        ttftChart.data.originalLabels = [''];
+        ttftChart.data.datasets = ttftDatasets;
         ttftChart.update();
 
+        // Category success rate chart — one dataset per model, 5 categories
+        const catColors = ['rgba(139, 92, 246, 0.7)', 'rgba(6, 182, 212, 0.7)', 'rgba(16, 185, 129, 0.7)', 'rgba(245, 158, 11, 0.7)', 'rgba(59, 130, 246, 0.7)'];
         const datasets = [];
-        const colors = ['rgba(139, 92, 246, 0.7)', 'rgba(6, 182, 212, 0.7)', 'rgba(16, 185, 129, 0.7)', 'rgba(245, 158, 11, 0.7)', 'rgba(59, 130, 246, 0.7)'];
-        
         results.forEach((r, idx) => {
             const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
             const data = categories.map(c => {
@@ -1452,14 +1645,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!catData) return 0;
                 return catData.tests_run > 0 ? ((catData.tests_passed / catData.tests_run) * 100) : 0;
             });
-
-            // Truncate model name for category chart labels
             const displayName = truncateModelName(r.model);
-            
             datasets.push({
                 label: displayName,
+                originalLabel: r.model,
                 data: data,
-                backgroundColor: colors[idx % colors.length],
+                backgroundColor: catColors[idx % catColors.length],
                 borderRadius: 4,
                 borderWidth: 0
             });
@@ -1491,7 +1682,10 @@ document.addEventListener('DOMContentLoaded', () => {
             ravenLats.push(rav);
         });
 
-        sharedLatencyChart.data.labels = models;
+        const displayModels = models.map(m => truncateModelName(m));
+
+        sharedLatencyChart.data.labels = displayModels;
+        sharedLatencyChart.data.originalLabels = models;
         sharedLatencyChart.data.datasets[0].data = fastpathLats;
         sharedLatencyChart.data.datasets[1].data = librarianLats;
         sharedLatencyChart.data.datasets[2].data = ravenLats;
@@ -1514,7 +1708,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             datasets.push({
-                label: m.model,
+                label: truncateModelName(m.model),
+                originalLabel: m.model,
                 data: [classMatch, acquireMatch, releaseMatch, isComplete],
                 backgroundColor: colors[idx % colors.length],
                 borderRadius: 4
@@ -2453,6 +2648,349 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
+    // ──── TELEMETRY AND AUTO-TUNING INTEGRATION ────
+    async function updateTelemetryAndRecommendations(modelName) {
+        if (!modelName || modelName === 'None') {
+            const modelBadge = document.getElementById('optimization-model-badge');
+            if (modelBadge) modelBadge.textContent = 'None';
+            const suggestionsEl = document.getElementById('optimization-suggestions');
+            if (suggestionsEl) suggestionsEl.textContent = 'No active model running. Load a model to inspect telemetry recommendations.';
+            const applyBtn = document.getElementById('btn-apply-optimizations');
+            if (applyBtn) applyBtn.classList.add('d-none');
+            const badge = document.getElementById('optimization-status-badge');
+            if (badge) {
+                badge.className = 'badge badge-secondary';
+                badge.textContent = 'Idle';
+            }
+            
+            if (memoryCreepChart) {
+                memoryCreepChart.data.labels = [];
+                memoryCreepChart.data.datasets[0].data = [];
+                memoryCreepChart.data.datasets[1].data = [];
+                memoryCreepChart.update();
+            }
+            return;
+        }
+        
+        try {
+            const strategy = document.getElementById('tuning-strategy-select')?.value || 'performance';
+            
+            // 1. Fetch History
+            const histRes = await fetch(`/api/telemetry/history?model=${encodeURIComponent(modelName)}&limit=50`);
+            const histData = await histRes.json();
+            
+            if (histData.history && histData.history.length > 0) {
+                const timestamps = histData.history.map(p => {
+                    const t = new Date(p.timestamp);
+                    return t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                });
+                const ramData = histData.history.map(p => p.system.ram_used_pct);
+                const vramData = histData.history.map(p => {
+                    const gpus = p.gpus || [];
+                    return gpus.length > 0 ? gpus[0].vram_used_pct : 0;
+                });
+                
+                if (memoryCreepChart) {
+                    memoryCreepChart.data.labels = timestamps;
+                    memoryCreepChart.data.datasets[0].data = ramData;
+                    memoryCreepChart.data.datasets[1].data = vramData;
+                    memoryCreepChart.update();
+                }
+            } else {
+                if (memoryCreepChart) {
+                    memoryCreepChart.data.labels = [];
+                    memoryCreepChart.data.datasets[0].data = [];
+                    memoryCreepChart.data.datasets[1].data = [];
+                    memoryCreepChart.update();
+                }
+            }
+            
+            // 2. Fetch Recommendations
+            const recRes = await fetch(`/api/telemetry/recommendations?model=${encodeURIComponent(modelName)}&strategy=${strategy}`);
+            const recData = await recRes.json();
+            
+            const modelBadge = document.getElementById('optimization-model-badge');
+            const statusBadge = document.getElementById('optimization-status-badge');
+            const suggestionsEl = document.getElementById('optimization-suggestions');
+            const applyBtn = document.getElementById('btn-apply-optimizations');
+            
+            if (modelBadge) modelBadge.textContent = truncateModelName(modelName);
+            
+            if (recData.status === 'insufficient_data') {
+                if (statusBadge) {
+                    statusBadge.className = 'badge badge-warning';
+                    statusBadge.textContent = 'Collecting Data';
+                }
+                if (suggestionsEl) suggestionsEl.textContent = recData.explanation || 'Collecting telemetry... waiting for more data points.';
+                if (applyBtn) applyBtn.classList.add('d-none');
+                currentRecommendations = null;
+            } else {
+                currentRecommendations = recData.recommendations || {};
+                
+                // Status badge
+                if (statusBadge) {
+                    if (recData.status === 'critical') {
+                        statusBadge.className = 'badge badge-danger';
+                        statusBadge.textContent = 'Critical (OOM Risk)';
+                    } else if (recData.status === 'warning') {
+                        statusBadge.className = 'badge badge-warning';
+                        statusBadge.textContent = 'Warning (High Usage)';
+                    } else {
+                        statusBadge.className = 'badge badge-success';
+                        statusBadge.textContent = 'Optimal';
+                    }
+                }
+                
+                // Suggestions description
+                if (suggestionsEl) {
+                    if (recData.detected_issues && recData.detected_issues.length > 0 && Object.keys(currentRecommendations).length > 0) {
+                        let html = `<strong style="color:white; display:block; margin-bottom:0.25rem;">Detected Issues:</strong>`;
+                        html += `<ul style="margin: 0 0 0.5rem 1rem; padding: 0;">`;
+                        recData.detected_issues.forEach(issue => {
+                            html += `<li>${issue}</li>`;
+                        });
+                        html += `</ul>`;
+                        html += `<strong style="color:white; display:block; margin-bottom:0.25rem;">Actions:</strong><br>`;
+                        html += recData.explanation;
+                        suggestionsEl.innerHTML = html;
+                    } else {
+                        suggestionsEl.textContent = recData.explanation || 'System resource usage is within safe operating margins.';
+                    }
+                }
+                
+                // Show/hide apply button
+                if (applyBtn) {
+                    if (Object.keys(currentRecommendations).length > 0) {
+                        applyBtn.classList.remove('d-none');
+                    } else {
+                        applyBtn.classList.add('d-none');
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Error updating telemetry/recommendations:", err);
+        }
+    }
+
+    async function applyTuningOptimizations() {
+        const activeModelName = document.getElementById('loaded-model-name').textContent;
+        if (!activeModelName || activeModelName === 'None' || activeModelName === 'Offline') {
+            showToast("No active model loaded.", "error");
+            return;
+        }
+        
+        if (!currentRecommendations || Object.keys(currentRecommendations).length === 0) {
+            showToast("No recommendations to apply.", "warning");
+            return;
+        }
+        
+        try {
+            const res = await fetch('/api/telemetry/recommendations/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: activeModelName,
+                    recommendations: currentRecommendations
+                })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showToast(data.message || "Tuning configurations applied successfully!", "success");
+                updateTelemetryAndRecommendations(activeModelName);
+            } else {
+                showToast(data.error || "Failed to apply configurations.", "error");
+            }
+        } catch (err) {
+            console.error("Error applying tuning configurations:", err);
+            showToast("Failed to apply configurations.", "error");
+        }
+    }
+
+    // ──── CAPABILITY ROUTING MATRIX INTEGRATION ────
+    async function loadRoutingMatrix() {
+        try {
+            // 1. Fetch available models
+            const modelsRes = await fetch('/api/models');
+            const modelsData = await modelsRes.json();
+            availableModels = modelsData.models || [];
+            
+            // 2. Fetch routing matrix mappings
+            const matrixRes = await fetch('/api/routing/matrix');
+            const matrixData = await matrixRes.json();
+            
+            renderRoutingMatrix(matrixData);
+        } catch (err) {
+            console.error("Error loading routing matrix:", err);
+        }
+    }
+    
+    function renderRoutingMatrix(matrix) {
+        const tbody = document.getElementById('routing-matrix-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const entries = Object.entries(matrix || {});
+        if (entries.length === 0) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td colspan="7" style="text-align:center; color:var(--text-muted); font-size:0.8rem; padding:1.5rem;">No routing matrix configured. Load models and save to populate.</td>`;
+            tbody.appendChild(tr);
+            return;
+        }
+        
+        entries.forEach(([taskKey, config]) => {
+            const tr = document.createElement('tr');
+            
+            // Task Key
+            const tdTask = document.createElement('td');
+            tdTask.style.fontWeight = 'bold';
+            tdTask.style.color = 'white';
+            tdTask.textContent = taskKey.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            
+            // Description
+            const tdDesc = document.createElement('td');
+            tdDesc.style.fontSize = '0.7rem';
+            tdDesc.style.color = 'var(--text-muted)';
+            tdDesc.textContent = config.description || '';
+            
+            // Model selector
+            const tdModel = document.createElement('td');
+            const select = document.createElement('select');
+            select.className = 'routing-model-select';
+            select.dataset.task = taskKey;
+            select.style.cssText = 'background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.3rem; border-radius:6px; font-size:0.75rem; width:100%;';
+            
+            availableModels.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m;
+                opt.textContent = truncateModelName(m);
+                if (m === config.model) {
+                    opt.selected = true;
+                }
+                select.appendChild(opt);
+            });
+            tdModel.appendChild(select);
+            
+            // Min TPS
+            const tdMinTps = document.createElement('td');
+            const inputTps = document.createElement('input');
+            inputTps.type = 'number';
+            inputTps.step = '0.1';
+            inputTps.min = '0';
+            inputTps.className = 'routing-tps-input';
+            inputTps.dataset.task = taskKey;
+            inputTps.value = config.min_tps || 0;
+            inputTps.style.cssText = 'background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.3rem; border-radius:6px; font-size:0.75rem; width:60px; text-align:center;';
+            tdMinTps.appendChild(inputTps);
+            
+            // Max TTFT
+            const tdMaxTtft = document.createElement('td');
+            const inputTtft = document.createElement('input');
+            inputTtft.type = 'number';
+            inputTtft.min = '0';
+            inputTtft.className = 'routing-ttft-input';
+            inputTtft.dataset.task = taskKey;
+            inputTtft.value = config.max_ttft_ms || 0;
+            inputTtft.style.cssText = 'background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.3rem; border-radius:6px; font-size:0.75rem; width:70px; text-align:center;';
+            tdMaxTtft.appendChild(inputTtft);
+            
+            // Reasoning Required
+            const tdReasoning = document.createElement('td');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'routing-reasoning-checkbox';
+            checkbox.dataset.task = taskKey;
+            checkbox.checked = !!config.reasoning_required;
+            checkbox.style.cssText = 'width: 16px; height: 16px; cursor: pointer;';
+            tdReasoning.style.textAlign = 'center';
+            tdReasoning.appendChild(checkbox);
+            
+            // Live Status
+            const tdStatus = document.createElement('td');
+            tdStatus.style.fontSize = '0.7rem';
+            tdStatus.id = `routing-status-${taskKey}`;
+            tdStatus.textContent = 'Checking benchmarks...';
+            
+            tr.appendChild(tdTask);
+            tr.appendChild(tdDesc);
+            tr.appendChild(tdModel);
+            tr.appendChild(tdMinTps);
+            tr.appendChild(tdMaxTtft);
+            tr.appendChild(tdReasoning);
+            tr.appendChild(tdStatus);
+            tbody.appendChild(tr);
+            
+            updateRoutingStatus(taskKey, config.model);
+            
+            // Re-fetch status when target model changes
+            select.addEventListener('change', () => {
+                updateRoutingStatus(taskKey, select.value);
+            });
+        });
+    }
+    
+    async function updateRoutingStatus(taskKey, modelName) {
+        const td = document.getElementById(`routing-status-${taskKey}`);
+        if (!td) return;
+        
+        try {
+            const res = await fetch(`/api/telemetry/recommendations?model=${encodeURIComponent(modelName)}`);
+            const data = await res.json();
+            
+            if (data.baseline_comparison && data.baseline_comparison.baseline_tps) {
+                const tps = data.baseline_comparison.baseline_tps;
+                const ttft = data.baseline_comparison.baseline_ttft_ms;
+                td.innerHTML = `<span style="color:#10b981; font-weight:600;">⚡ Bench: ${tps} TPS</span><br><span style="color:#fbbf24; font-weight:600;">🕒 TTFT: ${ttft}ms</span>`;
+            } else {
+                td.innerHTML = `<span style="color:var(--text-muted);">No benchmark baseline</span>`;
+            }
+        } catch (err) {
+            td.innerHTML = `<span style="color:var(--color-danger);">Error</span>`;
+        }
+    }
+    
+    async function saveRoutingMatrix() {
+        const matrix = {};
+        const rows = document.querySelectorAll('#routing-matrix-body tr');
+        
+        rows.forEach(tr => {
+            const select = tr.querySelector('.routing-model-select');
+            const inputTps = tr.querySelector('.routing-tps-input');
+            const inputTtft = tr.querySelector('.routing-ttft-input');
+            const checkbox = tr.querySelector('.routing-reasoning-checkbox');
+            
+            if (select) {
+                const taskKey = select.dataset.task;
+                const description = tr.cells[1].textContent;
+                
+                matrix[taskKey] = {
+                    model: select.value,
+                    description: description,
+                    min_tps: parseFloat(inputTps.value) || 0,
+                    max_ttft_ms: parseInt(inputTtft.value) || 0,
+                    reasoning_required: checkbox.checked
+                };
+            }
+        });
+        
+        try {
+            const res = await fetch('/api/routing/matrix', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(matrix)
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showToast("Routing matrix updated successfully!", "success");
+                loadRoutingMatrix();
+            } else {
+                showToast(data.error || "Failed to update routing matrix.", "error");
+            }
+        } catch (err) {
+            console.error("Error saving routing matrix:", err);
+            showToast("Failed to save routing matrix.", "error");
+        }
+    }
+
     function populateModelSwitcher(models) {
         if (!modelSwitcherSelect) return;
         
@@ -2483,6 +3021,26 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (btnUnloadCurrent) {
         btnUnloadCurrent.addEventListener('click', unloadCurrentModel);
+    }
+
+    const tuningStrategySelect = document.getElementById('tuning-strategy-select');
+    if (tuningStrategySelect) {
+        tuningStrategySelect.addEventListener('change', () => {
+            const activeModelName = document.getElementById('loaded-model-name').textContent;
+            if (activeModelName && activeModelName !== 'None' && activeModelName !== 'Offline' && activeModelName !== 'No model active (Evicted/Idle)') {
+                updateTelemetryAndRecommendations(activeModelName);
+            }
+        });
+    }
+    
+    const btnApplyOptimizations = document.getElementById('btn-apply-optimizations');
+    if (btnApplyOptimizations) {
+        btnApplyOptimizations.addEventListener('click', applyTuningOptimizations);
+    }
+    
+    const btnSaveRoutingMatrix = document.getElementById('btn-save-routing-matrix');
+    if (btnSaveRoutingMatrix) {
+        btnSaveRoutingMatrix.addEventListener('click', saveRoutingMatrix);
     }
     
     // Periodically update current model in switcher

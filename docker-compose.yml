@@ -88,6 +88,7 @@ services:
       - ./web:/app/web:ro
       - ./llm_benchmark_suite.py:/app/llm_benchmark_suite.py:ro
       - ./.alpaca-router:/router-models
+      - ./analyzer.py:/app/analyzer.py:ro
     environment:
       OLLAMA_SERVER_URLS: "http://llama-server:8080"
       PROXY_SERVER_URLS: "http://alpaca-proxy:11434"
