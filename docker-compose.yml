@@ -60,10 +60,13 @@ services:
       - ./alpaca-proxy.py:/app/alpaca-proxy.py:ro
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
       - ./benchmark-configs.py:/app/benchmark-configs.py:ro
+      - ./analyzer.py:/app/analyzer.py:ro
+      - ./data:/app/data
     environment:
       MODELS_DIR: /models
       ROUTER_MODELS_DIR: /router-models
       SLOTS_CACHE_DIR: /slots-cache
+      TELEMETRY_DIR: /app/data/telemetry
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -92,5 +95,26 @@ services:
     depends_on:
       alpaca-proxy:
         condition: service_started
+      llama-server:
+        condition: service_started
+
+  alpaca-telemetry:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    container_name: alpaca-telemetry
+    restart: always
+    command: python /app/telemetry_monitor.py
+    mem_limit: 256m
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.alpaca-router:/router-models
+      - ./data:/app/data
+      - ./telemetry_monitor.py:/app/telemetry_monitor.py:ro
+    environment:
+      TELEMETRY_DIR: /app/data/telemetry
+      LLAMA_SERVER_URL: http://llama-server:8080
+      LLAMA_DOCKER_CONTAINER: llama-server
+    depends_on:
       llama-server:
         condition: service_started

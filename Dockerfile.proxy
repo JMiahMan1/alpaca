@@ -5,4 +5,6 @@ RUN pip install fastapi uvicorn httpx psutil
 COPY alpaca-proxy.py .
 COPY alpaca-puller.py .
 COPY benchmark-configs.py .
+COPY analyzer.py .
+COPY telemetry_monitor.py .
 CMD ["python", "alpaca-proxy.py"]
