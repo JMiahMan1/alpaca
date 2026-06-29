@@ -10,6 +10,7 @@ MoE indicators (any match → MoE):
 
 Dense models get a stripped flag set (no MoE / speculative flags).
 """
+
 import os
 import struct
 import sys
@@ -79,6 +80,7 @@ def _model_size_params(meta: dict) -> int:
     label = meta.get("general.size_label", "")
     if isinstance(label, str):
         import re
+
         m = re.match(r"(\d+(?:\.\d+)?)\s*[Bb]", label)
         if m:
             return int(float(m.group(1)) * 1_000_000_000)
@@ -87,7 +89,10 @@ def _model_size_params(meta: dict) -> int:
 
 # Architectures that do NOT support Flash Attention in llama.cpp (non-transformer / state-space)
 _FA_UNSUPPORTED_ARCHS = {
-    "mamba", "rwkv", "rwkv6", "wavtokenizer",
+    "mamba",
+    "rwkv",
+    "rwkv6",
+    "wavtokenizer",
 }
 
 
@@ -127,11 +132,17 @@ def _find_active_model() -> str | None:
 def get_llama_server_flags() -> list[str]:
     """Return the llama-server flag list appropriate for router mode with models preset."""
     flags = [
-        "--host", "0.0.0.0",
-        "--port", "8080",
-        "--models-preset", "/router-models/models.ini",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--models-preset",
+        "/router-models/models.ini",
     ]
-    print("[llama-flags] Configured llama-server router mode using models.ini preset file", file=sys.stderr)
+    print(
+        "[llama-flags] Configured llama-server router mode using models.ini preset file",
+        file=sys.stderr,
+    )
     return flags
 
 

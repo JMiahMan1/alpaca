@@ -15,7 +15,6 @@ import json
 import subprocess
 import sys
 
-
 # Models that are already tuned and should not have their ctx swept
 CTX_LOCKED_ALIASES = {
     "qwen3.6-35b-a3b--q4_k_m",
@@ -28,8 +27,8 @@ DENSE_LARGE_ALIASES = {
 }
 
 # Default ctx sweep for small / unknown models
-CTX_SMALL  = "8192,16384,32768"
-CTX_LARGE  = "8192,16384,32768,65536"
+CTX_SMALL = "8192,16384,32768"
+CTX_LARGE = "8192,16384,32768,65536"
 CTX_LOCKED = "32768"  # single neutral run just to generate quality profile
 
 
@@ -56,10 +55,11 @@ print(json.dumps(models))
         return models
     except Exception as e:
         print(f"Error during model discovery: {e}", file=sys.stderr)
-        if 'res' in locals():
+        if "res" in locals():
             print(f"Stdout: {res.stdout}", file=sys.stderr)
             print(f"Stderr: {res.stderr}", file=sys.stderr)
         return []
+
 
 def main():
     print("=== Starting Dynamic Benchmark Sweep for All Available Models ===")
@@ -114,6 +114,7 @@ def main():
             print(f"Successfully finished benchmark for {alias}.")
         else:
             print(f"Benchmark failed for {alias} with exit code {rc}.")
+
 
 if __name__ == "__main__":
     main()
