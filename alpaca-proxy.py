@@ -670,6 +670,39 @@ def render_template_prompt(body):
     return rendered
 
 
+def apply_thinking_override(payload, body):
+    # Check if think/enable_thinking is explicitly set to False
+    think_disabled = False
+    if body.get("think") is False or body.get("enable_thinking") is False:
+        think_disabled = True
+    elif isinstance(body.get("options"), dict):
+        opts = body["options"]
+        if opts.get("think") is False or opts.get("enable_thinking") is False:
+            think_disabled = True
+
+    if think_disabled:
+        instruction = "IMPORTANT: Do NOT use <think> tags. Do NOT output any internal reasoning or thought process. Respond directly with the final answer."
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            # Check if there's a system message
+            system_msg = None
+            for msg in messages:
+                if msg.get("role") == "system":
+                    system_msg = msg
+                    break
+            if system_msg:
+                orig = system_msg.get("content", "")
+                if instruction not in orig:
+                    system_msg["content"] = f"{orig}\n\n{instruction}" if orig else instruction
+            else:
+                messages.insert(0, {"role": "system", "content": instruction})
+        elif "prompt" in payload and isinstance(payload["prompt"], str):
+            orig_prompt = payload["prompt"]
+            if instruction not in orig_prompt:
+                # Add instruction at the beginning
+                payload["prompt"] = f"System: {instruction}\n\nUser: {orig_prompt}"
+
+
 def build_generate_chat_payload(body, backend_model):
     prompt = body.get("prompt", "")
     payload = {
@@ -686,6 +719,7 @@ def build_generate_chat_payload(body, backend_model):
         payload["thinking"] = body["think"]
     if body.get("enable_thinking") is not None:
         payload["thinking"] = body["enable_thinking"]
+    apply_thinking_override(payload, body)
     return payload
 
 
@@ -706,6 +740,7 @@ def build_chat_payload(body, backend_model):
         payload["thinking"] = body["think"]
     if body.get("enable_thinking") is not None:
         payload["thinking"] = body["enable_thinking"]
+    apply_thinking_override(payload, body)
     return payload
 
 
@@ -730,6 +765,7 @@ def build_generate_payload(body, backend_model):
         payload["input_suffix"] = body["suffix"]
     if isinstance(body.get("context"), list) and body["context"]:
         payload["prompt"] = list(body["context"]) + [payload["prompt"]]
+    apply_thinking_override(payload, body)
     return payload
 
 
@@ -901,8 +937,15 @@ async def unload_model(model_name):
         resolved = await resolve_router_model(model_name, reload=False)
     except HTTPException:
         return
+    backend_model = resolved["backend_model"]
+    async with active_requests_lock:
+        if active_requests.get(backend_model, 0) > 0:
+            logger.warning(
+                f"Aborting unload of {backend_model} because it currently has "
+                f"{active_requests[backend_model]} active request(s)."
+            )
+            return
     async with router_model_lock:
-        backend_model = resolved["backend_model"]
         try:
             await post_router_model_action("unload", backend_model)
         except RouterManagementUnsupported:
