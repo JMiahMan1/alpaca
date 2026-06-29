@@ -156,6 +156,18 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback):
             with active_run_lock:
                 active_run["status"] = "failed"
                 active_run["current_model"] = None
+                active_run["current_test"] = None
+                active_run["current_category"] = None
+        finally:
+            # Guarantee we never stay stuck in "running" state
+            with active_run_lock:
+                if active_run["status"] == "running":
+                    print("[benchmark] Thread exiting with status still 'running' — forcing to 'completed'")
+                    active_run["status"] = "completed"
+                    active_run["current_model"] = None
+                    active_run["current_test"] = None
+                    active_run["current_category"] = None
+                    socketio.emit("benchmark_complete", {"status": "completed", "saved_as": active_run.get("saved_as")})
 
     loop.run_until_complete(run())
     loop.close()
@@ -180,6 +192,18 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback):
             with active_run_lock:
                 active_run["status"] = "failed"
                 active_run["current_model"] = None
+                active_run["current_test"] = None
+                active_run["current_category"] = None
+        finally:
+            # Guarantee we never stay stuck in "running" state
+            with active_run_lock:
+                if active_run["status"] == "running":
+                    print("[benchmark] SharedLLM thread exiting with status still 'running' — forcing to 'completed'")
+                    active_run["status"] = "completed"
+                    active_run["current_model"] = None
+                    active_run["current_test"] = None
+                    active_run["current_category"] = None
+                    socketio.emit("benchmark_complete", {"status": "completed", "saved_as": active_run.get("saved_as")})
 
     loop.run_until_complete(run())
     loop.close()
