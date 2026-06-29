@@ -4407,6 +4407,38 @@ async def _ensure_model_impl(
                         )
         except Exception as recovery_err:
             logger.error(f"Recovery failed for {model_name}: {recovery_err}. Raising.")
+            try:
+                failed_config = {
+                    "model": backend_model,
+                    "cache-type-k": _read_ini_model_setting(backend_model, "cache-type-k", "f16"),
+                    "cache-type-v": _read_ini_model_setting(backend_model, "cache-type-v", "f16"),
+                    "n-gpu-layers": str(_read_ini_model_setting(backend_model, "n-gpu-layers", "-1")),
+                    "ctx-size": str(_read_ini_model_setting(backend_model, "ctx-size", "4096")),
+                    "timestamp": time.time()
+                }
+                failed_configs_file = os.path.join("data", "failed_configs.json")
+                failed_list = []
+                if os.path.exists(failed_configs_file):
+                    try:
+                        with open(failed_configs_file, "r") as f:
+                            failed_list = json.load(f)
+                            if not isinstance(failed_list, list):
+                                failed_list = []
+                    except Exception:
+                        pass
+                if not any(f.get("model") == failed_config["model"] and
+                           f.get("cache-type-k") == failed_config["cache-type-k"] and
+                           f.get("cache-type-v") == failed_config["cache-type-v"] and
+                           f.get("n-gpu-layers") == failed_config["n-gpu-layers"] and
+                           f.get("ctx-size") == failed_config["ctx-size"] for f in failed_list):
+                    failed_list.append(failed_config)
+                    failed_list = failed_list[-50:]
+                    os.makedirs("data", exist_ok=True)
+                    with open(failed_configs_file, "w") as f:
+                        json.dump(failed_list, f, indent=2)
+                    logger.info(f"Recorded failed model configuration in failed_configs.json: {failed_config}")
+            except Exception as rec_err:
+                logger.warning(f"Failed to record failed configuration: {rec_err}")
             await raise_model_load_failure_exception(model_name, backend_model, str(recovery_err))
         await record_model_loaded(model_name)
         return {
