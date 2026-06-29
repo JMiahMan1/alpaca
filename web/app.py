@@ -1148,28 +1148,28 @@ def get_or_post_routing_matrix():
             "description": "Sub-second latency chat for voice assistant or general conversation.",
             "min_tps": 40.0,
             "max_ttft_ms": 250,
-            "reasoning_required": false
+            "reasoning_required": False
         },
         "complex_coding": {
             "model": "qwen2.5-coder--7b",
             "description": "Accurate syntax completions, code editing, and structural debugging.",
             "min_tps": 20.0,
             "max_ttft_ms": 500,
-            "reasoning_required": false
+            "reasoning_required": False
         },
         "reasoning": {
             "model": "gemma-4-E2B-it-uncensored-GGUF--gemma-4-E2B-it-uncensored-Q4_K_M",
             "description": "Deep thinking, logical reasoning, multi-step problem solving, math/science.",
             "min_tps": 15.0,
             "max_ttft_ms": 800,
-            "reasoning_required": true
+            "reasoning_required": True
         },
         "summarization": {
             "model": "gemma-4-12b-fable5",
             "description": "Document parsing, entity extraction, context summaries, and long context tasks.",
             "min_tps": 30.0,
             "max_ttft_ms": 300,
-            "reasoning_required": false
+            "reasoning_required": False
         }
     }
     

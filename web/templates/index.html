@@ -626,22 +626,24 @@
                                     </div>
 
                                     <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
-                                        <div>
-                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">KV Cache Key (cache-type-k)</label>
-                                            <select name="cache-type-k" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                                <option value="f16">f16 (High Precision)</option>
-                                                <option value="q8_0">q8_0</option>
-                                                <option value="q4_0">q4_0 (Compressed / Unified)</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">KV Cache Value (cache-type-v)</label>
-                                            <select name="cache-type-v" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                                <option value="f16">f16 (High Precision)</option>
-                                                <option value="q8_0">q8_0</option>
-                                                <option value="q4_0">q4_0 (Compressed / Unified)</option>
-                                            </select>
-                                        </div>
+<div>
+    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">KV Cache Key (cache-type-k)</label>
+    <select name="cache-type-k" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+        <option value="f16">f16 (High Precision)</option>
+        <option value="q8_0">q8_0</option>
+        <option value="q5_0">q5_0 (Balanced)</option>
+        <option value="q4_0">q4_0 (Compressed / Unified)</option>
+    </select>
+</div>
+<div>
+    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">KV Cache Value (cache-type-v)</label>
+    <select name="cache-type-v" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+        <option value="f16">f16 (High Precision)</option>
+        <option value="q8_0">q8_0</option>
+        <option value="q5_0">q5_0 (Balanced)</option>
+        <option value="q4_0">q4_0 (Compressed / Unified)</option>
+    </select>
+</div>
                                     </div>
 
                                     <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
