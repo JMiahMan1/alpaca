@@ -175,6 +175,23 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
     """Retrieve runtime settings and slot utilization from llama-server."""
     props = {}
     slots = []
+    model_alias = "unknown_model"
+    backend_model = None
+
+    # Detect the active model name and backend model from the proxy runtime status
+    proxy_url = os.getenv("PROXY_URL", "http://alpaca-proxy:11434")
+    try:
+        resp = await client.get(f"{proxy_url}/admin/runtime", timeout=1.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            loaded = data.get("loaded_models", [])
+            if loaded:
+                public_name = loaded[0]["name"]
+                backend_model = loaded[0]["backend_model"]
+                # Sanitize the public name (e.g. replacing '/' with '_') to match the web app's expectation
+                model_alias = re.sub(r"[^\w\-.\.]", "_", public_name)
+    except Exception as e:
+        logger.debug(f"Could not reach alpaca-proxy for runtime info: {e}")
 
     # 1. Fetch props
     try:
@@ -184,24 +201,25 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
     except Exception as e:
         logger.debug(f"Could not reach llama-server /props: {e}")
 
+    # Fallback to model_path stem if we couldn't get the name from the proxy
+    if model_alias == "unknown_model" or model_alias == "system_idle":
+        model_path = props.get("model_path")
+        if model_path and model_path != "none":
+            raw_stem = Path(model_path).stem
+            model_alias = re.sub(r"[^\w\-.\.]", "_", raw_stem)
+        else:
+            model_alias = "system_idle"
+
     # 2. Fetch slots (for context usage tracking)
     try:
-        resp = await client.get(f"{LLAMA_SERVER_URL}/slots", timeout=2.0)
+        slots_url = f"{LLAMA_SERVER_URL}/slots"
+        if backend_model:
+            slots_url += f"?model={backend_model}"
+        resp = await client.get(slots_url, timeout=2.0)
         if resp.status_code == 200:
             slots = resp.json()
     except Exception as e:
         logger.debug(f"Could not reach llama-server /slots: {e}")
-
-    # Process models & slots details
-    model_path = props.get("model_path")
-    # Sanitize: derive stem from the path, then strip any characters that are
-    # not alphanumeric, dash, dot, or underscore to prevent path-traversal or
-    # invalid filename issues when writing per-model JSONL files.
-    if model_path:
-        raw_stem = Path(model_path).stem
-        model_alias = re.sub(r"[^\w\-.\.]", "_", raw_stem)
-    else:
-        model_alias = "unknown_model"
 
     # Context window stats
     n_ctx = props.get("n_ctx", 0)
@@ -236,7 +254,7 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
 
     return {
         "model_alias": model_alias,
-        "model_path": model_path,
+        "model_path": props.get("model_path"),
         "n_ctx": n_ctx,
         "n_gpu_layers": props.get("n_gpu_layers"),
         "flash_attn": props.get("flash_attn"),
