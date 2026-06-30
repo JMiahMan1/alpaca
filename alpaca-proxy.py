@@ -1175,11 +1175,41 @@ async def log_requests(request: Request, call_next):
     # Extract explicit origin tracking header (case-insensitive)
     request_source = request.headers.get("x-request-source")
     if not request_source:
-        # Fallback detection based on User-Agent patterns
-        if "playwright" in user_agent.lower() or "python-httpx" in user_agent.lower():
-            request_source = "agent/script"
-        elif "mozilla" in user_agent.lower() or "chrome" in user_agent.lower():
-            request_source = "browser/ui"
+        ua_lower = user_agent.lower()
+        referer = request.headers.get("referer", "").lower()
+        origin = request.headers.get("origin", "").lower()
+        sec_fetch_mode = request.headers.get("sec-fetch-mode", "").lower()
+
+        # 1. Voice assistant detection
+        if any(kw in ua_lower for kw in ("voice", "assistant", "speech", "home-assistant", "hass", "alexa", "siri", "google-home")):
+            request_source = "voice/assistant"
+        # 2. Browser UI / CORS requests from web page
+        elif sec_fetch_mode == "cors" or origin or referer:
+            # If it's a browser request, distinguish between the dashboard/web UI and general browser calls
+            if "localhost:5000" in referer or "127.0.0.1:5000" in referer or "/dashboard" in referer:
+                request_source = "browser/ui"
+            else:
+                request_source = "browser/web-page"
+        # 3. Known automated clients & CLI tools
+        elif any(kw in ua_lower for kw in ("playwright", "puppeteer", "selenium")):
+            request_source = "browser/automation"
+        elif "ollama" in ua_lower:
+            request_source = "ollama/cli"
+        elif "curl" in ua_lower or ua_lower.startswith("wget") or "httpie" in ua_lower:
+            request_source = "terminal/cli"
+        elif "openai" in ua_lower:
+            request_source = "openai/client"
+        elif "python-requests" in ua_lower or "requests/" in ua_lower:
+            request_source = "python/requests"
+        elif "python-httpx" in ua_lower or "httpx/" in ua_lower:
+            request_source = "python/httpx"
+        elif any(kw in ua_lower for kw in ("node-fetch", "axios", "undici", "node/")):
+            request_source = "node/script"
+        elif "go-http-client" in ua_lower:
+            request_source = "go/client"
+        # 4. Fallback based on browser user-agent
+        elif any(kw in ua_lower for kw in ("mozilla", "chrome", "safari")):
+            request_source = "browser/agent"
         else:
             request_source = "unknown-origin"
 
@@ -4731,6 +4761,12 @@ async def chat(request: Request):
                 opts = body["options"]
                 think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
+            # Better Origin override: if request origin is voice assistant, default think_val to False
+            request_source = getattr(request.state, "request_source", "unknown")
+            if think_val is None and request_source == "voice/assistant":
+                think_val = False
+
+
             full_response_content = ""
             current_payload = build_chat_payload(body, resolved_backend)
             attempt = 0
@@ -4955,6 +4991,12 @@ async def chat(request: Request):
             opts = body["options"]
             think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
+        # Better Origin override: if request origin is voice assistant, default think_val to False
+        request_source = getattr(request.state, "request_source", "unknown")
+        if think_val is None and request_source == "voice/assistant":
+            think_val = False
+
+
         client_message = {
             "role": message.get("role", "assistant") if message else "assistant",
             "content": final_content
@@ -5065,6 +5107,12 @@ async def generate(request: Request):
             if think_val is None and isinstance(body.get("options"), dict):
                 opts = body["options"]
                 think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+
+            # Better Origin override: if request origin is voice assistant, default think_val to False
+            request_source = getattr(request.state, "request_source", "unknown")
+            if think_val is None and request_source == "voice/assistant":
+                think_val = False
+
 
             full_response_content = ""
             current_payload = (
@@ -5293,6 +5341,12 @@ async def generate(request: Request):
         if think_val is None and isinstance(body.get("options"), dict):
             opts = body["options"]
             think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+
+        # Better Origin override: if request origin is voice assistant, default think_val to False
+        request_source = getattr(request.state, "request_source", "unknown")
+        if think_val is None and request_source == "voice/assistant":
+            think_val = False
+
 
         payload = (
             build_generate_chat_payload(body, resolved_backend)
