@@ -131,6 +131,11 @@ document.addEventListener('DOMContentLoaded', () => {
     function switchTab(tabName) {
         activeTab = tabName;
         
+        // Update URL hash without causing page reload
+        if (window.location.hash !== `#${tabName}`) {
+            history.replaceState(null, null, `#${tabName}`);
+        }
+        
         // Update tab buttons
         tabBtnMonitor.classList.remove('active');
         tabBtnGeneral.classList.remove('active');
@@ -3144,5 +3149,21 @@ document.addEventListener('DOMContentLoaded', () => {
     loadModels();
     loadModelProfiles();
     loadHistory();
-    switchTab('monitor'); // Start on System Monitor
+
+    // Initial tab routing based on URL hash
+    const initialHash = window.location.hash.substring(1);
+    const validTabs = ['monitor', 'general', 'shared', 'profiles', 'requests', 'docs'];
+    if (validTabs.includes(initialHash)) {
+        switchTab(initialHash);
+    } else {
+        switchTab('monitor'); // Start on System Monitor
+    }
+
+    // Listen for hashchange event to handle back/forward navigation
+    window.addEventListener('hashchange', () => {
+        const hash = window.location.hash.substring(1);
+        if (validTabs.includes(hash)) {
+            switchTab(hash);
+        }
+    });
 });
