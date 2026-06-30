@@ -1943,9 +1943,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnRun.disabled = true;
         btnRunShared.disabled = true;
-        btnRun.innerHTML = `<span class="loader"></span> Starting...`;
         
         const isShared = endpoint.endsWith('shared_llm');
+        if (isShared) {
+            btnRunShared.innerHTML = `<span class="loader"></span> Starting...`;
+        } else {
+            btnRun.innerHTML = `<span class="loader"></span> Starting...`;
+        }
+        
         const termTarget = isShared ? 'shared' : 'general';
         
         try {
@@ -2045,6 +2050,8 @@ document.addEventListener('DOMContentLoaded', () => {
             runnerStatusBadge.innerHTML = `<span class="badge-dot"></span> IDLE`;
             btnRun.disabled = false;
             btnRunShared.disabled = false;
+            btnRun.innerHTML = 'Run General';
+            btnRunShared.innerHTML = 'Run SharedLLM';
             btnCancel.disabled = true;
             btnCancel.textContent = 'Cancel Run';
             progressCard.classList.add('d-none');
