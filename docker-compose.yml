@@ -50,8 +50,7 @@ services:
       dockerfile: Dockerfile.proxy
     container_name: alpaca-proxy
     restart: always
-    ports:
-      - "11434:11434"
+    network_mode: "host"
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
@@ -68,6 +67,7 @@ services:
       ROUTER_MODELS_DIR: /router-models
       SLOTS_CACHE_DIR: /slots-cache
       TELEMETRY_DIR: /app/data/telemetry
+      LLAMA_SERVER_URL: "http://localhost:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -95,9 +95,11 @@ services:
       - /usr/share/ollama/.ollama/models:/models:ro
     environment:
       OLLAMA_SERVER_URLS: "http://llama-server:8080"
-      PROXY_SERVER_URLS: "http://alpaca-proxy:11434"
+      PROXY_SERVER_URLS: "http://host.docker.internal:11434"
       ROUTER_MODELS_DIR: "/router-models"
       MODELS_DIR: "/models"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       alpaca-proxy:
         condition: service_started
