@@ -1149,11 +1149,50 @@ def get_model_info(model_name):
     return manifest_stats(manifest_path, manifest)
 
 
+_last_resolved_time = 0
+_cached_shared_llm_ips = {"192.168.2.205"}
+_resolve_lock = asyncio.Lock()
+
+async def get_shared_llm_ips() -> set:
+    global _last_resolved_time, _cached_shared_llm_ips
+    now = time.time()
+    if now - _last_resolved_time > 300:
+        async with _resolve_lock:
+            # Double check inside lock
+            if now - _last_resolved_time > 300:
+                def _resolve():
+                    import socket
+                    ips = {"192.168.2.205"}  # Hardcoded default fallback
+                    hosts_env = os.getenv("SHARED_LLM_HOSTS", "ai.local,jarvis.sumemail.com")
+                    hosts = [h.strip() for h in hosts_env.split(",") if h.strip()]
+                    for host in hosts:
+                        try:
+                            addr_info = socket.getaddrinfo(host, None)
+                            for info in addr_info:
+                                ips.add(info[4][0])
+                        except Exception:
+                            pass
+                    return ips
+
+                try:
+                    resolved_ips = await asyncio.to_thread(_resolve)
+                    _cached_shared_llm_ips = resolved_ips
+                    _last_resolved_time = now
+                except Exception as e:
+                    logger.warning(f"Error resolving SharedLLM hosts: {e}")
+    return _cached_shared_llm_ips
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global client_httpx
     client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
     await restore_models_on_recovery()
+    # Eagerly resolve SharedLLM IPs on startup to prevent latency on first request
+    try:
+        await get_shared_llm_ips()
+    except Exception:
+        pass
     yield
     for task in list(model_unload_tasks.values()):
         task.cancel()
@@ -1200,8 +1239,9 @@ async def log_requests(request: Request, call_next):
         origin = request.headers.get("origin", "").lower()
         sec_fetch_mode = request.headers.get("sec-fetch-mode", "").lower()
 
-        # 1. Check client IP to identify SharedLLM App calls directly (hosted on 192.168.2.205)
-        if client_ip == "192.168.2.205":
+        # 1. Check client IP to identify SharedLLM App calls directly (dynamic DNS resolution)
+        shared_llm_ips = await get_shared_llm_ips()
+        if client_ip in shared_llm_ips:
             request_source = "shared-llm/app"
         # 2. Admin/system calls from the SharedLLM web container
         elif request.url.path.startswith("/admin") or request.url.path == "/api/logs":
