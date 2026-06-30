@@ -349,6 +349,7 @@ class LLMModelBenchmark:
                                 "temperature": 0.3,
                             },
                         },
+                        headers={"X-Request-Source": "shared-llm/benchmark"},
                         timeout=120.0,
                     )
                     elapsed = time.time() - start_t

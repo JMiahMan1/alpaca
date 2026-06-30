@@ -1200,13 +1200,16 @@ async def log_requests(request: Request, call_next):
         origin = request.headers.get("origin", "").lower()
         sec_fetch_mode = request.headers.get("sec-fetch-mode", "").lower()
 
-        # 1. Voice assistant detection
-        if any(kw in ua_lower for kw in ("voice", "assistant", "speech", "home-assistant", "hass", "alexa", "siri", "google-home")):
+        # 1. Admin/system calls from the SharedLLM web container
+        if request.url.path.startswith("/admin") or request.url.path == "/api/logs":
+            request_source = "shared-llm/admin"
+        # 2. Voice assistant detection
+        elif any(kw in ua_lower for kw in ("voice", "assistant", "speech", "home-assistant", "hass", "alexa", "siri", "google-home")):
             request_source = "voice/assistant"
-        # 2. Browser UI / CORS requests from web page
+        # 3. Browser UI / CORS requests from web page
         elif sec_fetch_mode == "cors" or origin or referer:
             # If it's a browser request, distinguish between the dashboard/web UI and general browser calls
-            if "localhost:5000" in referer or "127.0.0.1:5000" in referer or "/dashboard" in referer:
+            if any(h in referer for h in ("localhost:5000", "127.0.0.1:5000", "jarvis.sumemail.com", "/dashboard")):
                 request_source = "browser/ui"
             else:
                 request_source = "browser/web-page"
