@@ -29,7 +29,8 @@ ROUTER_MODELS_DIR = os.getenv(
 )
 INI_PATH = Path(ROUTER_MODELS_DIR) / "models.ini"
 PROXY_URL = "http://localhost:11434"
-BACKEND_URL = (
+BACKEND_URL = os.getenv(
+    "LLAMA_SERVER_URL",
     "http://llama-server:8080" if ROUTER_MODELS_DIR == "/router-models" else "http://localhost:8080"
 )
 BENCHMARK_PROMPT = (
