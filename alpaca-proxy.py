@@ -1160,6 +1160,26 @@ async def lifespan(app: FastAPI):
     await client_httpx.aclose()
 
 
+def get_client_ip(request: Request) -> str:
+    # 1. Check X-Forwarded-For header (handles proxies/load balancers)
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        parts = [ip.strip() for ip in x_forwarded_for.split(",")]
+        if parts and parts[0]:
+            return parts[0]
+            
+    # 2. Check X-Real-IP header
+    x_real_ip = request.headers.get("x-real-ip")
+    if x_real_ip:
+        return x_real_ip
+        
+    # 3. Fallback to client host
+    if request.client and request.client.host:
+        return request.client.host
+        
+    return "unknown-ip"
+
+
 app = FastAPI(lifespan=lifespan)
 
 
@@ -1169,7 +1189,7 @@ async def log_requests(request: Request, call_next):
     request.state.request_id = request_id
 
     # Extract client IP and User-Agent
-    client_ip = request.client.host if request.client else "unknown-ip"
+    client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent", "unknown-ua")
 
     # Extract explicit origin tracking header (case-insensitive)
@@ -1555,7 +1575,7 @@ async def openai_chat_completions(request: Request):
         "openai_chat",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=(request.client.host if request.client else "unknown")
+        client_ip=get_client_ip(request)
     )
     max_retries = 3
     for attempt in range(max_retries):
@@ -1778,7 +1798,7 @@ async def openai_completions(request: Request):
         "openai_generate",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=(request.client.host if request.client else "unknown")
+        client_ip=get_client_ip(request)
     )
     max_retries = 3
     for attempt in range(max_retries):
@@ -4714,7 +4734,7 @@ async def chat(request: Request):
         "ollama_chat",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=(request.client.host if request.client else "unknown")
+        client_ip=get_client_ip(request)
     )
 
     # Ensure model is loaded and healthy (triggers recovery if crashed/dead)
@@ -5081,7 +5101,7 @@ async def generate(request: Request):
         "ollama_generate",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=(request.client.host if request.client else "unknown")
+        client_ip=get_client_ip(request)
     )
 
     async def stream_proxy():
