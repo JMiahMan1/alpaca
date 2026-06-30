@@ -122,6 +122,7 @@ class SharedLLMModelBenchmark:
                                 "think": False,
                                 "options": {"num_predict": max_tokens, "temperature": 0.2},
                             },
+                            headers={"X-Request-Source": "shared-llm/benchmark"},
                             timeout=180.0,
                         )
                         latency = time.time() - start_t
