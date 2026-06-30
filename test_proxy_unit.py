@@ -1203,3 +1203,152 @@ async def test_ensure_model_skip_swap_true_no_crash_prevents_model_swap():
     assert resolved["backend_model"] == "sha256-deadbeef"
     # With skip_swap=True, no unloading should happen even when target model is healthy
     alpaca_proxy.post_router_model_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_thinking_behavior_generate_think_false():
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.apply_keep_alive_policy = AsyncMock()
+    mock_http = MockHTTPClient(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done", "thinking": "trace"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        }
+    )
+    alpaca_proxy.client_httpx = mock_http
+
+    response = await alpaca_proxy.generate(
+        make_request(
+            "/api/generate",
+            {
+                "model": "tinyllama",
+                "prompt": "hi",
+                "system": "be terse",
+                "think": False,
+                "keep_alive": 0,
+                "stream": False,
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["response"] == "done"
+    assert "thinking" not in body
+    assert mock_http.calls[0]["json"]["thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_thinking_behavior_generate_think_none():
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.apply_keep_alive_policy = AsyncMock()
+    mock_http = MockHTTPClient(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done", "thinking": "trace"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        }
+    )
+    alpaca_proxy.client_httpx = mock_http
+
+    response = await alpaca_proxy.generate(
+        make_request(
+            "/api/generate",
+            {
+                "model": "tinyllama",
+                "prompt": "hi",
+                "system": "be terse",
+                "keep_alive": 0,
+                "stream": False,
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["response"] == "<think>\ntrace\n</think>\ndone"
+    assert body["thinking"] == "trace"
+    assert mock_http.calls[0]["json"]["thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_thinking_behavior_chat_think_false():
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.apply_keep_alive_policy = AsyncMock()
+    mock_http = MockHTTPClient(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done", "thinking": "trace"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        }
+    )
+    alpaca_proxy.client_httpx = mock_http
+
+    response = await alpaca_proxy.chat(
+        make_request(
+            "/api/chat",
+            {
+                "model": "tinyllama",
+                "messages": [{"role": "user", "content": "hi"}],
+                "think": False,
+                "keep_alive": 0,
+                "stream": False,
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["message"]["content"] == "done"
+    assert "thinking" not in body["message"]
+    assert mock_http.calls[0]["json"]["thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_thinking_behavior_chat_think_none():
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.apply_keep_alive_policy = AsyncMock()
+    mock_http = MockHTTPClient(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done", "thinking": "trace"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        }
+    )
+    alpaca_proxy.client_httpx = mock_http
+
+    response = await alpaca_proxy.chat(
+        make_request(
+            "/api/chat",
+            {
+                "model": "tinyllama",
+                "messages": [{"role": "user", "content": "hi"}],
+                "keep_alive": 0,
+                "stream": False,
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["message"]["content"] == "<think>\ntrace\n</think>\ndone"
+    assert body["message"]["thinking"] == "trace"
+    assert mock_http.calls[0]["json"]["thinking"] is True
+
