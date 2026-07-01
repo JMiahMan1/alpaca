@@ -30,6 +30,13 @@ def load_dotenv_custom():
 
 load_dotenv_custom()
 
+import logging
+
+DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv("DEBUG_LOGGING", "0").lower() in ("1", "true", "yes")
+if not DEBUG_LOGGING:
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 from flask_socketio import SocketIO

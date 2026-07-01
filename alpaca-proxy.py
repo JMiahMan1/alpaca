@@ -17,6 +17,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 LOG_BUFFER = deque(maxlen=1000)
 
 
+DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv("DEBUG_LOGGING", "0").lower() in ("1", "true", "yes")
+
 class DequeHandler(logging.Handler):
     def emit(self, record):
         LOG_BUFFER.append(self.format(record))
@@ -24,6 +26,8 @@ class DequeHandler(logging.Handler):
 
 logger = logging.getLogger("alpaca-proxy")
 logger.setLevel(logging.INFO)
+if not DEBUG_LOGGING:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 if not logger.handlers:
     stream_handler = logging.StreamHandler()
     deque_handler = DequeHandler()
@@ -1238,21 +1242,24 @@ async def log_requests(request: Request, call_next):
 
     request.state.request_source = request_source
 
-    logger.info(
-        f"Hit: {request.method} {request.url.path} | "
-        f"Origin: {request_source} | IP: {client_ip} | UA: {user_agent}",
-        extra={"request_id": request_id, "request_source": request_source},
-    )
+    if DEBUG_LOGGING:
+        logger.info(
+            f"Hit: {request.method} {request.url.path} | "
+            f"Origin: {request_source} | IP: {client_ip} | UA: {user_agent}",
+            extra={"request_id": request_id, "request_source": request_source},
+        )
 
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
 
-    logger.info(
-        f"Finished: {request.method} {request.url.path} in {duration:.3f}s | "
-        f"Origin: {request_source}",
-        extra={"request_id": request_id, "request_source": request_source},
-    )
+    if DEBUG_LOGGING or response.status_code >= 400:
+        log_func = logger.error if response.status_code >= 400 else logger.info
+        log_func(
+            f"Finished: {request.method} {request.url.path} in {duration:.3f}s | "
+            f"Origin: {request_source} | Status: {response.status_code}",
+            extra={"request_id": request_id, "request_source": request_source},
+        )
     return response
 
 
@@ -5807,4 +5814,4 @@ async def version():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=11434)
+    uvicorn.run(app, host="0.0.0.0", port=11434, access_log=DEBUG_LOGGING)
