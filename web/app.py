@@ -63,7 +63,13 @@ def run_puller_thread(model_name, source, local_name):
             if not line and process.poll() is not None:
                 break
             if line:
-                socketio.emit("pull_log", {"model": model_name, "line": line.rstrip()})
+                line_str = line.rstrip()
+                with active_pulls_lock:
+                    if model_name in active_pulls:
+                        active_pulls[model_name]["logs"].append(line_str)
+                        if len(active_pulls[model_name]["logs"]) > 1000:
+                            active_pulls[model_name]["logs"].pop(0)
+                socketio.emit("pull_log", {"model": model_name, "line": line_str})
 
         rc = process.poll()
         if rc == 0:
@@ -1670,7 +1676,12 @@ def trigger_model_pull():
                 jsonify({"error": f"Model {model} is already being downloaded."}),
                 409,
             )
-        active_pulls[model] = True
+        active_pulls[model] = {
+            "model": model,
+            "source": source,
+            "local_name": local_name or "",
+            "logs": []
+        }
 
     t = threading.Thread(
         target=run_puller_thread, args=(model, source, local_name), daemon=True
@@ -1683,6 +1694,24 @@ def trigger_model_pull():
             "message": f"Started pulling model {model} in the background.",
         }
     )
+
+
+@app.route("/api/models/pulls/active", methods=["GET"])
+def get_active_pulls():
+    """Retrieve currently active downloads and their logs"""
+    with active_pulls_lock:
+        return jsonify({
+            "active_pulls": {
+                k: {
+                    "model": v["model"],
+                    "source": v["source"],
+                    "local_name": v.get("local_name", ""),
+                    "logs": v["logs"]
+                }
+                for k, v in active_pulls.items()
+            }
+        })
+
 
 
 

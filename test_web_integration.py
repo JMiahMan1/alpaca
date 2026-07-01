@@ -381,3 +381,33 @@ def test_api_models_hf_files_route(mock_get, client):
     assert "GB" in data["files"][0]["size"]
 
 
+def test_api_models_active_pulls_route(client):
+    """Test retrieving active pulls and logs"""
+    res = client.get("/api/models/pulls/active")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert "active_pulls" in data
+    assert len(data["active_pulls"]) == 0
+
+    from web.app import active_pulls
+    active_pulls["test-model"] = {
+        "model": "test-model",
+        "source": "huggingface",
+        "local_name": "test-alias",
+        "logs": ["Downloading...", "10% completed"],
+    }
+
+    try:
+        res = client.get("/api/models/pulls/active")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert "active_pulls" in data
+        assert "test-model" in data["active_pulls"]
+        assert data["active_pulls"]["test-model"]["model"] == "test-model"
+        assert len(data["active_pulls"]["test-model"]["logs"]) == 2
+        assert data["active_pulls"]["test-model"]["logs"][0] == "Downloading..."
+    finally:
+        active_pulls.pop("test-model", None)
+
+
+
