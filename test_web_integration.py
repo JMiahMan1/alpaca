@@ -358,6 +358,19 @@ def test_api_models_search_route(mock_get, client):
     assert data["results"][0]["name"] == "llama3.1"
     assert data["results"][1]["name"] == "Qwen/Qwen2.5-Coder-7B"
 
+    # Test precise repo lookup
+    mock_resp_precise = MagicMock()
+    mock_resp_precise.status_code = 200
+    mock_resp_precise.json.return_value = {"id": "Precise/Repo", "author": "Precise", "downloads": 10, "likes": 5, "tags": ["gguf"]}
+    mock_get.return_value = mock_resp_precise
+
+    res = client.post("/api/models/search", json={"query": "Precise/Repo", "source": "huggingface"})
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert len(data["results"]) == 1
+    assert data["results"][0]["name"] == "Precise/Repo"
+    assert "Direct Match" in data["results"][0]["description"]
+
 
 @patch("httpx.get")
 def test_api_models_hf_files_route(mock_get, client):
