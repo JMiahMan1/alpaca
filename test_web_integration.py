@@ -410,4 +410,22 @@ def test_api_models_active_pulls_route(client):
         active_pulls.pop("test-model", None)
 
 
+@patch("httpx.get")
+def test_api_models_ollama_tags_route(mock_get, client):
+    """Test retrieving tags for an Ollama library model"""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = '<html>href="/library/llama3:latest" ... href="/library/llama3:8b"</html>'
+    mock_get.return_value = mock_resp
+
+    res = client.get("/api/models/ollama/tags?model=llama3")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert "tags" in data
+    assert len(data["tags"]) == 2
+    assert data["tags"][0] == "latest"
+    assert data["tags"][1] == "8b"
+
+
+
 
