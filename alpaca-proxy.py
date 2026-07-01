@@ -2505,13 +2505,18 @@ async def admin_runtime():
                 if os.path.exists(ini_path):
                     cfg = configparser.ConfigParser(delimiters=("=",))
                     cfg.read(ini_path)
-                    for section_key in [backend_model, public_name]:
-                        if cfg.has_section(section_key):
-                            running_settings = dict(cfg[section_key])
-                            break
+                    resolved_section = _resolve_ini_section_name(cfg, backend_model)
+                    if cfg.has_section(resolved_section):
+                        running_settings = dict(cfg[resolved_section])
+                    else:
+                        for section_key in [backend_model, public_name]:
+                            if cfg.has_section(section_key):
+                                running_settings = dict(cfg[section_key])
+                                resolved_section = section_key
+                                break
 
                 # .profile.json only supplies fields not already set by models.ini
-                profile_path = os.path.join(ROUTER_MODELS_DIR, f"{backend_model}.profile.json")
+                profile_path = os.path.join(ROUTER_MODELS_DIR, f"{resolved_section}.profile.json")
                 if os.path.exists(profile_path):
                     with open(profile_path) as f:
                         profile_settings = json.load(f)
@@ -3602,6 +3607,35 @@ def _compute_safe_n_gpu_layers(
     return best
 
 
+def _resolve_ini_section_name(config, backend_model: str) -> str:
+    # 1. Direct match
+    if config.has_section(backend_model):
+        return backend_model
+    
+    # 2. Try sanitizing (slashes to '--', etc.)
+    sanitized = backend_model.replace("/", "--")
+    for suffix in ["", "--latest"]:
+        candidate = sanitized + suffix
+        if config.has_section(candidate):
+            return candidate
+            
+    # 3. Check model file path match
+    for section in config.sections():
+        if section == "*":
+            continue
+        model_path = config[section].get("model", "")
+        if model_path:
+            model_file = os.path.basename(model_path)
+            if model_file.endswith(".gguf"):
+                model_file = model_file[:-5]
+            if model_file.lower() == backend_model.lower().replace("/", "--"):
+                return section
+            if model_file.lower() == sanitized.lower():
+                return section
+                
+    return sanitized
+
+
 def _write_ini_model_setting(backend_model, key, value):
     """Write a setting to a model section in models.ini. No-op if already correct."""
     ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
@@ -3612,34 +3646,36 @@ def _write_ini_model_setting(backend_model, key, value):
 
         config = configparser.ConfigParser()
         config.read(ini_path)
-        if config.has_section(backend_model) and config[backend_model].get(key) == str(value):
+        
+        section = _resolve_ini_section_name(config, backend_model)
+        
+        if config.has_section(section) and config[section].get(key) == str(value):
             return
-        if not config.has_section(backend_model):
-            config.add_section(backend_model)
-        config[backend_model][key] = str(value)
+        if not config.has_section(section):
+            config.add_section(section)
+        config[section][key] = str(value)
         with open(ini_path, "w") as f:
             config.write(f)
-        logger.info(f"Updated models.ini: [{backend_model}] {key} = {value}")
+        logger.info(f"Updated models.ini: [{section}] {key} = {value}")
+        
+        # Also update profile.json to prevent reversion on reindexing
+        if section != "*":
+            try:
+                profile_path = os.path.join(ROUTER_MODELS_DIR, f"{section}.profile.json")
+                profile = {}
+                if os.path.exists(profile_path):
+                    try:
+                        with open(profile_path, "r") as pf:
+                            profile = json.load(pf)
+                    except Exception:
+                        pass
+                profile[key] = value
+                with open(profile_path, "w") as pf:
+                    json.dump(profile, pf, indent=4)
+            except Exception as pe:
+                logger.warning(f"Failed to write {key}={value} to profile json overlay: {pe}")
     except Exception as e:
         logger.warning(f"Failed to write {key}={value} to models.ini: {e}")
-
-    # Also update profile.json to prevent reversion on reindexing
-    if backend_model != "*":
-        try:
-            profile_path = os.path.join(ROUTER_MODELS_DIR, f"{backend_model}.profile.json")
-            profile = {}
-            if os.path.exists(profile_path):
-                try:
-                    with open(profile_path, "r") as pf:
-                        profile = json.load(pf)
-                except Exception:
-                    pass
-            profile[key] = value
-            with open(profile_path, "w") as pf:
-                json.dump(profile, pf, indent=4)
-        except Exception as pe:
-            logger.warning(f"Failed to write {key}={value} to profile json overlay: {pe}")
-
 
 
 def _read_ini_model_setting(backend_model, key, default=""):
@@ -3652,8 +3688,11 @@ def _read_ini_model_setting(backend_model, key, default=""):
 
         config = configparser.ConfigParser()
         config.read(ini_path)
-        if config.has_section(backend_model) and key in config[backend_model]:
-            return config[backend_model][key]
+        
+        section = _resolve_ini_section_name(config, backend_model)
+        
+        if config.has_section(section) and key in config[section]:
+            return config[section][key]
         if config.has_section("*") and key in config["*"]:
             return config["*"][key]
     except Exception as e:
@@ -3706,8 +3745,9 @@ def get_model_preset_info(backend_model: str) -> str:
     try:
         config = configparser.ConfigParser()
         config.read(ini_path)
-        if config.has_section(backend_model):
-            sec = config[backend_model]
+        section = _resolve_ini_section_name(config, backend_model)
+        if config.has_section(section):
+            sec = config[section]
             ctx = sec.get("ctx-size", "unknown")
             cache_k = sec.get("cache-type-k", "unknown")
             cache_v = sec.get("cache-type-v", "unknown")
@@ -3826,8 +3866,9 @@ async def _ensure_model_impl(
 
             config = configparser.ConfigParser()
             config.read(ini_path)
-            if config.has_section(backend_model):
-                sec = config[backend_model]
+            section = _resolve_ini_section_name(config, backend_model)
+            if config.has_section(section):
+                sec = config[section]
                 if "n-gpu-layers" in sec:
                     n_gpu_layers_preset = int(sec["n-gpu-layers"])
         except Exception as e:

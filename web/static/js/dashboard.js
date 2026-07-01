@@ -2375,6 +2375,76 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert('Failed to save profile settings');
             });
         });
+
+        if (btnRestartServices) {
+            btnRestartServices.addEventListener('click', () => {
+                const section = profileSectionSelect.value;
+                if (!section) {
+                    alert('Please select a model profile section first.');
+                    return;
+                }
+                
+                const confirmed = confirm('Are you sure you want to save the settings and restart the backend services (llama-server and alpaca-proxy)? This will temporarily interrupt any active inference sessions.');
+                if (!confirmed) return;
+                
+                // Construct settings from form fields
+                const settings = {
+                    'ctx-size': profileEditForm.elements['ctx-size'].value || null,
+                    'n-gpu-layers': profileEditForm.elements['n-gpu-layers'].value || null,
+                    'cache-type-k': profileEditForm.elements['cache-type-k'].value,
+                    'cache-type-v': profileEditForm.elements['cache-type-v'].value,
+                    'flash-attn': profileEditForm.elements['flash-attn'].value,
+                    'kv-unified': profileEditForm.elements['kv-unified'].value,
+                    'spec-type': profileEditForm.elements['spec-type'].value,
+                    'spec-draft-n-max': profileEditForm.elements['spec-draft-n-max'].value || null,
+                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null
+                };
+                
+                Object.keys(settings).forEach(key => {
+                    if (settings[key] === null || settings[key] === '') {
+                        delete settings[key];
+                    }
+                });
+                
+                btnRestartServices.disabled = true;
+                btnRestartServices.textContent = '🔄 Restarting Backend...';
+                
+                fetch('/api/profiles/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ section, settings })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    modelProfiles[section] = settings;
+                    
+                    // Trigger container restart
+                    return fetch('/api/proxy/restart', { method: 'POST' });
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Restart command failed: ' + data.error);
+                    } else {
+                        showToast('Backend restart sequence initiated. Reloading system monitor in 5 seconds...', 'success');
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 5000);
+                    }
+                })
+                .catch(err => {
+                    console.error("Save and restart error:", err);
+                    alert('Failed to save settings or restart backend: ' + err.message);
+                })
+                .finally(() => {
+                    btnRestartServices.disabled = false;
+                    btnRestartServices.textContent = '🔄 Save & Restart Backend';
+                });
+            });
+        }
     }
 
     // Wire Create Profile
