@@ -2756,9 +2756,9 @@ async def admin_model_delete(request: Request):
             backend_model = resolved["backend_model"]
             try:
                 await post_router_model_action("unload", backend_model)
-            except RouterManagementUnsupported:
-                pass
-        except HTTPException:
+            except Exception as exc:
+                logger.info(f"Model unload failed during deletion (ignoring): {exc}")
+        except Exception:
             pass
         await record_model_unloaded(model)
 
