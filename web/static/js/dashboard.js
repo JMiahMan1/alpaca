@@ -3248,6 +3248,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (hfFilesContainer) hfFilesContainer.classList.add('d-none');
             if (pullProgressContainer) pullProgressContainer.classList.add('d-none');
+            loadActivePulls();
         });
     }
 
@@ -3635,11 +3636,40 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    async function loadActivePulls() {
+        try {
+            const res = await fetch('/api/models/pulls/active');
+            if (!res.ok) return;
+            const data = await res.json();
+            const pulls = data.active_pulls || {};
+            
+            const activeModels = Object.keys(pulls);
+            if (activeModels.length > 0) {
+                const activeModel = activeModels[0];
+                const pullInfo = pulls[activeModel];
+                
+                if (pullProgressContainer) pullProgressContainer.classList.remove('d-none');
+                if (pullModelName) pullModelName.textContent = `Pulling: ${pullInfo.model}`;
+                if (pullStatusBadge) {
+                    pullStatusBadge.className = 'badge badge-warning';
+                    pullStatusBadge.textContent = 'Running';
+                }
+                if (pullConsoleLog) {
+                    pullConsoleLog.textContent = pullInfo.logs.join('\n') + '\n';
+                    pullConsoleLog.scrollTop = pullConsoleLog.scrollHeight;
+                }
+            }
+        } catch (err) {
+            console.error("Error loading active pulls:", err);
+        }
+    }
+
     // Startup Tasks
     initCharts();
     loadModels();
     loadModelProfiles();
     loadHistory();
+    loadActivePulls();
 
     // Initial tab routing based on URL hash
     const initialHash = window.location.hash.substring(1);
