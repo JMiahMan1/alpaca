@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import ssl
 import struct
 import sys
@@ -67,6 +68,39 @@ if dotenv_path:
     _load_dotenv(dotenv_path)
 
 HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_TOKEN") or os.getenv("HF_TOKEN")
+_STOPPED = False
+_CURRENT_MODEL = ""
+
+def _signal_handler(signum, frame):
+    """Handle SIGTERM/SIGINT for graceful download interruption."""
+    global _STOPPED
+    _STOPPED = True
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+
+def _should_stop():
+    """Check if download should be stopped (signal or marker file)."""
+    if _STOPPED:
+        return True
+    if not _CURRENT_MODEL:
+        return False
+    # Check for stop marker file: .alpaca-stop/{model_name}
+    safe_name = _CURRENT_MODEL.replace("/", "_").replace(":", "_")
+    router_dir = os.getenv("ROUTER_MODELS_DIR")
+    stop_dirs = [
+        Path.cwd() / ".alpaca-stop",
+        Path(__file__).resolve().parent / ".alpaca-stop",
+    ]
+    if router_dir:
+        stop_dirs.append(Path(router_dir) / ".alpaca-stop")
+    for stop_dir in stop_dirs:
+        if stop_dir.exists():
+            stop_file = stop_dir / safe_name
+            if stop_file.is_file():
+                return True
+    return False
+
 MODEL_LAYER_MEDIA_TYPE = "application/vnd.ollama.image.model"
 MODEL_GGUF_MEDIA_TYPE = "application/vnd.ollama.image.model+gguf"
 MANIFEST_MEDIA_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
@@ -513,12 +547,18 @@ def download_blob(client, repo, digest, expected_size, headers):
                 ) as bar,
             ):
                 for chunk in response.iter_bytes():
+                    if _should_stop():
+                        print(f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)")
+                        return
                     handle.write(chunk)
                     bar.update(len(chunk))
         else:
             downloaded = current_size
             with open(blob_path, mode) as handle:
                 for chunk in response.iter_bytes():
+                    if _should_stop():
+                        print(f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)")
+                        return
                     handle.write(chunk)
                     downloaded += len(chunk)
                     if total > 0:
@@ -625,12 +665,18 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
                         ) as bar,
                     ):
                         for chunk in response.iter_bytes():
+                            if _should_stop():
+                                print(f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)")
+                                return None
                             handle.write(chunk)
                             bar.update(len(chunk))
                 else:
                     downloaded = current_size
                     with open(output_path, mode) as handle:
                         for chunk in response.iter_bytes():
+                            if _should_stop():
+                                print(f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)")
+                                return None
                             handle.write(chunk)
                             downloaded += len(chunk)
                             if total > 0:
@@ -774,12 +820,18 @@ def download_to_partial_file(client, url, headers, label, partial_path):
                 ) as bar,
             ):
                 for chunk in response.iter_bytes():
+                    if _should_stop():
+                        print(f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)")
+                        return None
                     handle.write(chunk)
                     bar.update(len(chunk))
         else:
             downloaded = current_size
             with open(partial_path, mode) as handle:
                 for chunk in response.iter_bytes():
+                    if _should_stop():
+                        print(f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)")
+                        return None
                     handle.write(chunk)
                     downloaded += len(chunk)
                     if total > 0:
@@ -791,7 +843,7 @@ def download_to_partial_file(client, url, headers, label, partial_path):
     return partial_path
 
 
-def import_huggingface_gguf(model_name, local_name=None, insecure=False):
+def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resume=False):
     if insecure:
         raise RuntimeError("--insecure is only supported for Ollama registry pulls.")
 
@@ -805,6 +857,9 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False):
 
     print(f"Importing Hugging Face GGUF: {repo}/{filename}")
     print(f"Local Ollama model name: {normalize_model_name(local_name)}")
+    if no_resume and partial_path.exists():
+        print(f"Ignoring partial download and starting fresh.")
+        partial_path.unlink()
     client = httpx.Client(
         timeout=httpx.Timeout(300.0, connect=30.0, read=300.0),
         follow_redirects=True,
@@ -814,6 +869,9 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False):
         download_with_progress(
             client, url, headers, f"Importing {Path(filename).name}", partial_path
         )
+        if _should_stop():
+            print(f"\nInterrupted: {local_name} ({partial_path.stat().st_size} bytes downloaded).")
+            return 1
         digest = hash_file(partial_path)
         blob_path = blob_path_for_digest(digest)
         blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -876,7 +934,7 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False):
         client.close()
 
 
-def pull_ollama_model(model_name, insecure=False):
+def pull_ollama_model(model_name, insecure=False, no_resume=False):
     repo, tag, manifest_path = get_model_info(model_name)
     print(f"Resolving model: {repo}:{tag}...")
     client = httpx.Client(timeout=httpx.Timeout(60.0, read=None), follow_redirects=True)
@@ -884,11 +942,29 @@ def pull_ollama_model(model_name, insecure=False):
     try:
         response, headers = manifest_response(repo, tag, client, insecure=insecure)
         manifest = response.json()
+        # Clear partial blobs when no_resume is requested
+        if no_resume:
+            for layer in [manifest.get("config", {})] + manifest.get("layers", []):
+                digest = layer.get("digest")
+                if digest:
+                    blob_path = blob_path_for_digest(digest)
+                    if blob_path.exists():
+                        blob_size = blob_path.stat().st_size
+                        expected = layer.get("size", 0)
+                        if blob_size != expected:
+                            blob_path.unlink()
+                            print(f"Removed incomplete blob {digest[:12]} ({blob_size} bytes)")
         for layer in [manifest.get("config", {})] + manifest.get("layers", []):
             digest = layer.get("digest")
             if not digest:
                 continue
+            if _should_stop():
+                print(f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes).")
+                return 1
             download_blob(client, repo, digest, layer.get("size", 0), headers)
+            if _should_stop():
+                print(f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes).")
+                return 1
         write_manifest_atomic(manifest_path, manifest)
         router_path = ensure_router_symlink(model_name, manifest)
         update_models_ini()
@@ -899,13 +975,15 @@ def pull_ollama_model(model_name, insecure=False):
         client.close()
 
 
-def pull_model(model_name, source="auto", local_name=None, insecure=False):
+def pull_model(model_name, source="auto", local_name=None, insecure=False, no_resume=False):
+    global _CURRENT_MODEL
+    _CURRENT_MODEL = model_name
     resolved_source = choose_source(model_name, source)
     try:
         if resolved_source == "huggingface":
-            result = import_huggingface_gguf(model_name, local_name=local_name, insecure=insecure)
+            result = import_huggingface_gguf(model_name, local_name=local_name, insecure=insecure, no_resume=no_resume)
         else:
-            result = pull_ollama_model(model_name, insecure=insecure)
+            result = pull_ollama_model(model_name, insecure=insecure, no_resume=no_resume)
         if result == 0:
             reindex_models()
         return result
@@ -919,6 +997,8 @@ def pull_model(model_name, source="auto", local_name=None, insecure=False):
     except Exception as exc:
         print(f"\nError pulling model: {exc}")
         return 1
+    finally:
+        _CURRENT_MODEL = ""
 
 
 def blob_referenced_elsewhere(digest, current_manifest_path):
@@ -1022,6 +1102,11 @@ def build_parser():
         action="store_true",
         help="Allow HTTP access to the configured Ollama registry endpoint.",
     )
+    pull_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore any partial downloads and start from scratch.",
+    )
 
     remove_parser = subparsers.add_parser(
         "remove", help="Remove a local model manifest and unshared blobs."
@@ -1041,7 +1126,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "pull":
         return pull_model(
-            args.model, source=args.source, local_name=args.name, insecure=args.insecure
+            args.model, source=args.source, local_name=args.name, insecure=args.insecure, no_resume=args.no_resume
         )
     if args.command == "reindex":
         return reindex_models()

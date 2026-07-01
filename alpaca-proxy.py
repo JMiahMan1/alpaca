@@ -2749,13 +2749,11 @@ async def admin_model_delete(request: Request):
 
         model = with_default_tag(model)
         manifest_path = manifest_path_for_model(model)
-        if not manifest_path:
-            raise HTTPException(status_code=404, detail=f"Model {model} not found")
+        router_path = router_path_for_model_name(model)
 
-        # Read manifest to find blobs
-        manifest = read_manifest(manifest_path)
-        if not manifest:
-            raise HTTPException(status_code=500, detail=f"Model {model} manifest is corrupted")
+        # If neither manifest nor router GGUF file/symlink exists, then 404
+        if not manifest_path and not os.path.exists(router_path) and not os.path.islink(router_path):
+            raise HTTPException(status_code=404, detail=f"Model {model} not found")
 
         # Unload from router if loaded
         try:
@@ -2772,48 +2770,50 @@ async def admin_model_delete(request: Request):
             pass
         await record_model_unloaded(model)
 
-        # Remove manifest
-        try:
-            os.remove(manifest_path)
-        except Exception as me:
-            logger.error(f"Failed to remove manifest file {manifest_path}: {me}")
-            raise HTTPException(status_code=500, detail=f"Failed to remove manifest file: {me}")
-
         deleted_blobs = []
 
-        # Clean up orphaned blobs
-        for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
-            digest = layer.get("digest")
-            if digest:
-                blob_path = blob_path_for_digest(digest)
-                if os.path.exists(blob_path):
-                    # Check if any other manifest references this blob
-                    referenced = False
-                    for mb, mp, m in iter_local_manifests():
-                        if mp == manifest_path:
-                            continue
-                        for l in m.get("layers", []) + [m.get("config", {})]:
-                            if l.get("digest") == digest:
-                                referenced = True
-                                break
-                        if referenced:
-                            break
-                    if not referenced:
-                        try:
-                            os.remove(blob_path)
-                            deleted_blobs.append(normalize_digest(digest))
-                        except Exception as be:
-                            logger.warning(f"Failed to remove orphaned blob {blob_path}: {be}")
+        # Clean up manifest and blobs if manifest exists
+        if manifest_path and os.path.exists(manifest_path):
+            manifest = read_manifest(manifest_path)
+            if manifest:
+                try:
+                    os.remove(manifest_path)
+                except Exception as me:
+                    logger.error(f"Failed to remove manifest file {manifest_path}: {me}")
+                    raise HTTPException(status_code=500, detail=f"Failed to remove manifest file: {me}")
 
-        # Clean up router symlink
-        router_path = router_path_for_model_name(model)
+                # Clean up orphaned blobs
+                for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
+                    digest = layer.get("digest")
+                    if digest:
+                        blob_path = blob_path_for_digest(digest)
+                        if os.path.exists(blob_path):
+                            # Check if any other manifest references this blob
+                            referenced = False
+                            for mb, mp, m in iter_local_manifests():
+                                if mp == manifest_path:
+                                    continue
+                                for l in m.get("layers", []) + [m.get("config", {})]:
+                                    if l.get("digest") == digest:
+                                        referenced = True
+                                        break
+                                if referenced:
+                                    break
+                            if not referenced:
+                                try:
+                                    os.remove(blob_path)
+                                    deleted_blobs.append(normalize_digest(digest))
+                                except Exception as be:
+                                    logger.warning(f"Failed to remove orphaned blob {blob_path}: {be}")
+
+        # Clean up router symlink or GGUF file
         try:
             if os.path.islink(router_path):
                 os.remove(router_path)
             elif os.path.exists(router_path):
                 os.remove(router_path)
         except Exception as re:
-            logger.warning(f"Failed to remove router symlink/path {router_path}: {re}")
+            logger.warning(f"Failed to remove router path {router_path}: {re}")
 
         # Clean up profile.json and models.ini section for the deleted model
         alias = os.path.splitext(os.path.basename(router_path))[0]

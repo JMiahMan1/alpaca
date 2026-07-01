@@ -93,6 +93,8 @@ services:
       - ./.alpaca-router:/router-models
       - ./analyzer.py:/app/analyzer.py:ro
       - /usr/share/ollama/.ollama/models:/models
+    env_file:
+      - ./.env
     environment:
       OLLAMA_SERVER_URLS: "http://llama-server:8080"
       PROXY_SERVER_URLS: "http://host.docker.internal:11434"
