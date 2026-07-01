@@ -2581,6 +2581,9 @@ async def admin_slots(fail_on_no_slot: int = 0):
             params={"fail_on_no_slot": fail_on_no_slot},
             timeout=httpx.Timeout(5.0),
         )
+        if resp.status_code in (400, 503, 404):
+            return {"slots": [], "total": 0, "status": "no_model_loaded", "message": "No model loaded in llama-server"}
+
         resp.raise_for_status()
         slots = resp.json()
 
@@ -2597,10 +2600,15 @@ async def admin_slots(fail_on_no_slot: int = 0):
             }
 
         return {"slots": slots, "total": len(slots)}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as e:
+        return {"slots": [], "total": 0, "status": "offline", "message": f"llama-server is offline: {e}"}
     except httpx.HTTPStatusError as e:
+        if e.response.status_code in (400, 503, 404):
+            return {"slots": [], "total": 0, "status": "no_model_loaded", "message": "No model loaded in llama-server"}
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch slot info: {e}")
+        logger.error(f"Failed to fetch slot info: {e}")
+        return {"slots": [], "total": 0, "status": "error", "message": str(e)}
 
 
 @app.get("/admin/lora")
@@ -2703,98 +2711,115 @@ async def admin_model_pull(request: Request):
 @app.post("/admin/models/delete")
 async def admin_model_delete(request: Request):
     """Delete a model and clean up blobs. Body: {\"model\": \"name:tag\"}"""
-    body = await request.json()
-    model = body.get("model")
-    if not model:
-        raise HTTPException(status_code=400, detail="model is required")
-
-    model = with_default_tag(model)
-    manifest_path = manifest_path_for_model(model)
-    if not manifest_path:
-        raise HTTPException(status_code=404, detail=f"Model {model} not found")
-
-    # Read manifest to find blobs
-    manifest = read_manifest(manifest_path)
-    if not manifest:
-        raise HTTPException(status_code=500, detail=f"Model {model} manifest is corrupted")
-
-    # Unload from router if loaded
     try:
-        resolved = await resolve_router_model(model, reload=False)
-        backend_model = resolved["backend_model"]
+        body = await request.json()
+        model = body.get("model")
+        if not model:
+            raise HTTPException(status_code=400, detail="model is required")
+
+        model = with_default_tag(model)
+        manifest_path = manifest_path_for_model(model)
+        if not manifest_path:
+            raise HTTPException(status_code=404, detail=f"Model {model} not found")
+
+        # Read manifest to find blobs
+        manifest = read_manifest(manifest_path)
+        if not manifest:
+            raise HTTPException(status_code=500, detail=f"Model {model} manifest is corrupted")
+
+        # Unload from router if loaded
         try:
-            await post_router_model_action("unload", backend_model)
-        except RouterManagementUnsupported:
+            resolved = await resolve_router_model(model, reload=False)
+            backend_model = resolved["backend_model"]
+            try:
+                await post_router_model_action("unload", backend_model)
+            except RouterManagementUnsupported:
+                pass
+        except HTTPException:
             pass
-    except HTTPException:
-        pass
-    await record_model_unloaded(model)
+        await record_model_unloaded(model)
 
-    # Remove manifest
-    os.remove(manifest_path)
-    deleted_blobs = []
+        # Remove manifest
+        try:
+            os.remove(manifest_path)
+        except Exception as me:
+            logger.error(f"Failed to remove manifest file {manifest_path}: {me}")
+            raise HTTPException(status_code=500, detail=f"Failed to remove manifest file: {me}")
 
-    # Clean up orphaned blobs
-    for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
-        digest = layer.get("digest")
-        if digest:
-            blob_path = blob_path_for_digest(digest)
-            if os.path.exists(blob_path):
-                # Check if any other manifest references this blob
-                referenced = False
-                for mb, mp, m in iter_local_manifests():
-                    if mp == manifest_path:
-                        continue
-                    for l in m.get("layers", []) + [m.get("config", {})]:
-                        if l.get("digest") == digest:
-                            referenced = True
+        deleted_blobs = []
+
+        # Clean up orphaned blobs
+        for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
+            digest = layer.get("digest")
+            if digest:
+                blob_path = blob_path_for_digest(digest)
+                if os.path.exists(blob_path):
+                    # Check if any other manifest references this blob
+                    referenced = False
+                    for mb, mp, m in iter_local_manifests():
+                        if mp == manifest_path:
+                            continue
+                        for l in m.get("layers", []) + [m.get("config", {})]:
+                            if l.get("digest") == digest:
+                                referenced = True
+                                break
+                        if referenced:
                             break
-                    if referenced:
-                        break
-                if not referenced:
-                    os.remove(blob_path)
-                    deleted_blobs.append(normalize_digest(digest))
+                    if not referenced:
+                        try:
+                            os.remove(blob_path)
+                            deleted_blobs.append(normalize_digest(digest))
+                        except Exception as be:
+                            logger.warning(f"Failed to remove orphaned blob {blob_path}: {be}")
 
-    # Clean up router symlink
-    router_path = router_path_for_model_name(model)
-    if os.path.islink(router_path):
-        os.remove(router_path)
-    elif os.path.exists(router_path):
-        os.remove(router_path)
+        # Clean up router symlink
+        router_path = router_path_for_model_name(model)
+        try:
+            if os.path.islink(router_path):
+                os.remove(router_path)
+            elif os.path.exists(router_path):
+                os.remove(router_path)
+        except Exception as re:
+            logger.warning(f"Failed to remove router symlink/path {router_path}: {re}")
 
-    # Clean up profile.json and models.ini section for the deleted model
-    alias = os.path.splitext(os.path.basename(router_path))[0]
-    try:
-        profile_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.profile.json")
-        if os.path.exists(profile_path):
-            os.remove(profile_path)
-    except Exception as pe:
-        logger.warning(f"Failed to clean up profile json for deleted model {alias}: {pe}")
+        # Clean up profile.json and models.ini section for the deleted model
+        alias = os.path.splitext(os.path.basename(router_path))[0]
+        try:
+            profile_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.profile.json")
+            if os.path.exists(profile_path):
+                os.remove(profile_path)
+        except Exception as pe:
+            logger.warning(f"Failed to clean up profile json for deleted model {alias}: {pe}")
 
-    try:
-        ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
-        if os.path.exists(ini_path):
-            import configparser
-            config = configparser.ConfigParser()
-            config.read(ini_path)
-            if config.has_section(alias):
-                config.remove_section(alias)
-                with open(ini_path, "w") as f:
-                    config.write(f)
-                try:
-                    os.chmod(ini_path, 0o666)
-                except Exception:
-                    pass
-                logger.info(f"Removed section [{alias}] from models.ini for deleted model")
-    except Exception as ie:
-        logger.warning(f"Failed to clean up models.ini section for deleted model {alias}: {ie}")
+        try:
+            ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+            if os.path.exists(ini_path):
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(ini_path)
+                if config.has_section(alias):
+                    config.remove_section(alias)
+                    with open(ini_path, "w") as f:
+                        config.write(f)
+                    try:
+                        os.chmod(ini_path, 0o666)
+                    except Exception:
+                        pass
+                    logger.info(f"Removed section [{alias}] from models.ini for deleted model")
+        except Exception as ie:
+            logger.warning(f"Failed to clean up models.ini section for deleted model {alias}: {ie}")
 
-    return {
-        "status": "deleted",
-        "model": model,
-        "manifest": manifest_path,
-        "deleted_blobs": deleted_blobs,
-    }
+        return {
+            "status": "deleted",
+            "model": model,
+            "manifest": manifest_path,
+            "deleted_blobs": deleted_blobs,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unhandled error during model delete: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error during deletion: {e}")
 
 
 @app.post("/admin/models/switch")
