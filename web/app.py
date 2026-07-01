@@ -1629,6 +1629,35 @@ def search_models():
         except Exception as e:
             print(f"Hugging Face search error: {e}")
 
+    # 3. Precise HF Repo Lookup if query has a slash
+    if source in ("huggingface", "all") and "/" in query:
+        try:
+            precise_url = f"https://huggingface.co/api/models/{query}"
+            token = os.getenv("HUGGING_FACE_TOKEN") or os.getenv("HF_TOKEN")
+            headers = {"User-Agent": "Mozilla/5.0"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+            resp = httpx.get(precise_url, headers=headers, timeout=5.0)
+            if resp.status_code == 200:
+                model_item = resp.json()
+                model_id = model_item.get("id")
+                # Avoid duplicate entries in list
+                if not any(r["name"] == model_id for r in results):
+                    downloads = model_item.get("downloads", 0)
+                    likes = model_item.get("likes", 0)
+                    tags = model_item.get("tags", [])
+                    qwen_tags = [t for t in tags if t != "gguf"][:3]
+                    tag_str = ", ".join(qwen_tags) if qwen_tags else "GGUF"
+                    desc = f"[Direct Match] GGUF repository by {model_item.get('author', 'HF author')}. Downloads: {downloads:,} | Likes: {likes:,} | Tags: {tag_str}"
+                    results.insert(0, {
+                        "name": model_id,
+                        "description": desc,
+                        "source": "huggingface"
+                    })
+        except Exception as e:
+            print(f"Precise HF lookup error: {e}")
+
     return jsonify({"results": results})
 
 
