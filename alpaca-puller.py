@@ -604,8 +604,9 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
                     current_size = 0
 
                 if response.status_code >= 400:
+                    body = response.read()
                     raise httpx.HTTPStatusError(
-                        f"{response.status_code}: {response.text}",
+                        f"{response.status_code}: {body.decode(errors='ignore')}",
                         request=response.request,
                         response=response,
                     )
