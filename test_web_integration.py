@@ -227,6 +227,14 @@ mlock = true
     data = json.loads(res.data.decode("utf-8"))
     assert "success" in data["status"]
 
+    # Verify profile.json is created
+    profile_json_path = tmp_path / "new-model.profile.json"
+    assert profile_json_path.exists()
+    with open(profile_json_path, "r") as pf:
+        pf_data = json.load(pf)
+    assert pf_data["ctx-size"] == 4096
+    assert pf_data["flash-attn"] == "on"
+
     import configparser
 
     config = configparser.ConfigParser(delimiters=("=",))
@@ -269,11 +277,19 @@ ctx-size = 4096
     res = client.post("/api/profiles/delete", json={"section": "non-existent"})
     assert res.status_code == 404
 
+    # Write a mock profile.json to verify deletion
+    mock_profile_json = tmp_path / "to-delete.profile.json"
+    mock_profile_json.write_text('{"ctx-size": 4096}')
+    assert mock_profile_json.exists()
+
     # Try deleting to-delete (should succeed)
     res = client.post("/api/profiles/delete", json={"section": "to-delete"})
     assert res.status_code == 200
     data = json.loads(res.data.decode("utf-8"))
     assert "success" in data["status"]
+
+    # Verify profile.json was cleaned up
+    assert not mock_profile_json.exists()
 
     import configparser
 
@@ -301,3 +317,67 @@ def test_api_logs_download_route(mock_get, client):
     assert res.status_code == 200
     assert res.data == b"line 1\nline 2"
     assert res.headers["Content-Disposition"] == "attachment; filename=alpaca_proxy_system.log"
+
+
+@patch("httpx.Client.post")
+@patch("httpx.Client.get")
+def test_api_models_delete_route(mock_get, mock_post, client):
+    """Test that model deletion correctly proxies the request to the proxy server"""
+    # Mock proxy version check (online)
+    mock_version = MagicMock()
+    mock_version.status_code = 200
+    mock_get.return_value = mock_version
+
+    # Mock proxy delete response
+    mock_delete = MagicMock()
+    mock_delete.status_code = 200
+    mock_delete.json.return_value = {"status": "deleted", "model": "qwen:7b"}
+    mock_post.return_value = mock_delete
+
+    res = client.post("/api/models/delete", json={"model": "qwen:7b"})
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert data["status"] == "deleted"
+    assert data["model"] == "qwen:7b"
+
+
+@patch("httpx.get")
+def test_api_models_search_route(mock_get, client):
+    """Test searching models from Ollama and Hugging Face"""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = '<html>href="/library/llama3.1" class="group w-full"><div class="flex flex-col mb-1" title="llama3.1"><h2 class="truncate text-xl font-medium underline-offset-2 group-hover:underline md:text-2xl"><span x-test-search-response-title>llama3.1</span></h2><p class="max-w-lg break-words text-neutral-800 text-md">Llama description</p></div></html>'
+    mock_resp.json.return_value = [{"id": "Qwen/Qwen2.5-Coder-7B", "author": "Qwen"}]
+    mock_get.return_value = mock_resp
+
+    res = client.post("/api/models/search", json={"query": "llama", "source": "all"})
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert "results" in data
+    assert len(data["results"]) >= 2
+    assert data["results"][0]["name"] == "llama3.1"
+    assert data["results"][1]["name"] == "Qwen/Qwen2.5-Coder-7B"
+
+
+@patch("httpx.get")
+def test_api_models_hf_files_route(mock_get, client):
+    """Test listing GGUF files in Hugging Face repository"""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "siblings": [
+            {"rfilename": "model-q4_k_m.gguf", "size": 4829102910},
+            {"rfilename": "readme.md"},
+        ]
+    }
+    mock_get.return_value = mock_resp
+
+    res = client.get("/api/models/huggingface/files?repo=Qwen/Qwen2.5")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert "files" in data
+    assert len(data["files"]) == 1
+    assert data["files"][0]["filename"] == "model-q4_k_m.gguf"
+    assert "GB" in data["files"][0]["size"]
+
+

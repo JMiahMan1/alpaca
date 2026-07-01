@@ -565,6 +565,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (vramUsageText) vramUsageText.textContent = "0MB / 0MB (0%)";
                 if (vramBar) vramBar.style.width = "0%";
                 if (loadedModelName) loadedModelName.textContent = "Offline";
+                currentModelName = null;
 
                 const pCpuPct = document.getElementById('profile-cpu-percent');
                 const pCpuBar = document.getElementById('profile-cpu-bar');
@@ -651,6 +652,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (loaded.length > 0) {
                 const activeModel = loaded[0];
                 activeModelName = activeModel.name;
+                currentModelName = activeModel.name;
                 loadedModelName.textContent = activeModel.name;
                 loadedModelRequests.textContent = activeModel.active_requests || 0;
                 if (peakReqs) peakReqs.textContent = activeModel.peak_active_requests || 0;
@@ -724,6 +726,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } else {
                 const loading = data.runtime.loading_models || [];
+                currentModelName = null;
                 if (loading.length > 0) {
                     loadedModelName.innerHTML = `<span style="color:var(--color-secondary); animation: pulse 1.5s infinite;">Attempting to load: ${loading[0].name} (${loading[0].elapsed_seconds}s)</span>`;
                     loadedModelRequests.textContent = "0";
@@ -1138,83 +1141,85 @@ document.addEventListener('DOMContentLoaded', () => {
         const actionBtns = document.createElement('div');
         actionBtns.style.cssText = 'display:flex; gap:0.25rem; justify-content:flex-end; margin-top:0.25rem;';
         
-        const cancelBtn = document.createElement('button');
-        cancelBtn.className = 'req-action-btn';
-        cancelBtn.textContent = 'Cancel';
-        cancelBtn.style.cssText = `
-            font-size: 0.6rem;
-            padding: 0.15rem 0.4rem;
-            background: rgba(239,68,68,0.15);
-            border: 1px solid rgba(239,68,68,0.3);
-            border-radius: 4px;
-            color: #fca5a5;
-            cursor: pointer;
-        `;
-        cancelBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            cancelBtn.textContent = 'Cancelling...';
-            cancelBtn.disabled = true;
-            fetch('/api/requests/cancel', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({request_id: req.request_id})
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.error) {
-                    showToast('Error: ' + data.error, 'error');
+        if (isActive) {
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'req-action-btn';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.style.cssText = `
+                font-size: 0.6rem;
+                padding: 0.15rem 0.4rem;
+                background: rgba(239,68,68,0.15);
+                border: 1px solid rgba(239,68,68,0.3);
+                border-radius: 4px;
+                color: #fca5a5;
+                cursor: pointer;
+            `;
+            cancelBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                cancelBtn.textContent = 'Cancelling...';
+                cancelBtn.disabled = true;
+                fetch('/api/requests/cancel', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({request_id: req.request_id})
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        showToast('Error: ' + data.error, 'error');
+                        cancelBtn.textContent = 'Cancel';
+                        cancelBtn.disabled = false;
+                    } else {
+                        showToast('Request cancelled', 'success');
+                        pollRequestsStatus();
+                    }
+                })
+                .catch(err => {
+                    showToast('Cancel failed: ' + err.message, 'error');
                     cancelBtn.textContent = 'Cancel';
                     cancelBtn.disabled = false;
-                } else {
-                    showToast('Request cancelled', 'success');
-                    pollRequestsStatus();
-                }
-            })
-            .catch(err => {
-                showToast('Cancel failed: ' + err.message, 'error');
-                cancelBtn.textContent = 'Cancel';
-                cancelBtn.disabled = false;
+                });
             });
-        });
-        actionBtns.appendChild(cancelBtn);
-        
-        const resubmitBtn = document.createElement('button');
-        resubmitBtn.className = 'req-action-btn';
-        resubmitBtn.textContent = 'Resubmit';
-        resubmitBtn.style.cssText = `
-            font-size: 0.6rem;
-            padding: 0.15rem 0.4rem;
-            background: rgba(251,191,36,0.15);
-            border: 1px solid rgba(251,191,36,0.3);
-            border-radius: 4px;
-            color: #fde68a;
-            cursor: pointer;
-        `;
-        resubmitBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            resubmitBtn.textContent = 'Resubmitting...';
-            resubmitBtn.disabled = true;
-            fetch('/api/requests/resubmit/' + req.request_id, {
-                method: 'POST'
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.error) {
-                    showToast('Error: ' + data.error, 'error');
+            actionBtns.appendChild(cancelBtn);
+        } else {
+            const resubmitBtn = document.createElement('button');
+            resubmitBtn.className = 'req-action-btn';
+            resubmitBtn.textContent = 'Resubmit';
+            resubmitBtn.style.cssText = `
+                font-size: 0.6rem;
+                padding: 0.15rem 0.4rem;
+                background: rgba(251,191,36,0.15);
+                border: 1px solid rgba(251,191,36,0.3);
+                border-radius: 4px;
+                color: #fde68a;
+                cursor: pointer;
+            `;
+            resubmitBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                resubmitBtn.textContent = 'Resubmitting...';
+                resubmitBtn.disabled = true;
+                fetch('/api/requests/resubmit/' + req.request_id, {
+                    method: 'POST'
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        showToast('Error: ' + data.error, 'error');
+                        resubmitBtn.textContent = 'Resubmit';
+                        resubmitBtn.disabled = false;
+                    } else {
+                        showToast('Request resubmitted', 'success');
+                        pollRequestsStatus();
+                    }
+                })
+                .catch(err => {
+                    showToast('Resubmit failed: ' + err.message, 'error');
                     resubmitBtn.textContent = 'Resubmit';
                     resubmitBtn.disabled = false;
-                } else {
-                    showToast('Request resubmitted', 'success');
-                    pollRequestsStatus();
-                }
-            })
-            .catch(err => {
-                showToast('Resubmit failed: ' + err.message, 'error');
-                resubmitBtn.textContent = 'Resubmit';
-                resubmitBtn.disabled = false;
+                });
             });
-        });
-        actionBtns.appendChild(resubmitBtn);
+            actionBtns.appendChild(resubmitBtn);
+        }
         
         div.appendChild(actionBtns);
 
@@ -1880,7 +1885,8 @@ document.addEventListener('DOMContentLoaded', () => {
             tdStatus.appendChild(badge);
 
             const tdLat = document.createElement('td');
-            tdLat.textContent = `${task.latency.toFixed(2)}s`;
+            const latency = typeof task.latency === 'number' ? task.latency : 0;
+            tdLat.textContent = `${latency.toFixed(2)}s`;
 
             // Custom Payload descriptions
             const tdPayload = document.createElement('td');
@@ -2740,6 +2746,60 @@ document.addEventListener('DOMContentLoaded', () => {
             logToTerminal(`VRAM Clear error: ${err.message}`, 'error');
         }
     }
+
+    async function deleteModel(modelName) {
+        if (!modelName) {
+            alert("Please select a model to delete.");
+            return;
+        }
+        if (!confirm(`Are you sure you want to permanently delete model "${modelName}"?\nThis will remove the manifest and all unshared blobs from disk. This action cannot be undone!`)) {
+            return;
+        }
+
+        if (modelSwitcherStatus) {
+            modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary);">Deleting ${modelName}...</span>`;
+        }
+
+        try {
+            const res = await fetch('/api/models/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ model: modelName })
+            });
+
+            const data = await res.json();
+
+            if (res.ok) {
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-success);">✅ Model "${modelName}" deleted successfully</span>`;
+                }
+                logToTerminal(`Model "${modelName}" deleted successfully.`, 'success');
+                showToast(`Model "${modelName}" deleted successfully.`, 'success');
+
+                if (currentModelName === modelName) {
+                    currentModelName = null;
+                }
+
+                await loadModels();
+                
+                if (typeof loadRoutingMatrix === 'function') {
+                    loadRoutingMatrix();
+                }
+            } else {
+                if (modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${data.error || 'Failed to delete model'}</span>`;
+                }
+                logToTerminal(`Model delete failure: ${data.error || 'Unknown error'}`, 'error');
+                showToast(`Failed to delete model: ${data.error || 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            if (modelSwitcherStatus) {
+                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${err.message}</span>`;
+            }
+            logToTerminal(`Model delete error: ${err.message}`, 'error');
+            showToast(`Model delete error: ${err.message}`, 'error');
+        }
+    }
     
     // ──── TELEMETRY AND AUTO-TUNING INTEGRATION ────
     async function updateTelemetryAndRecommendations(modelName) {
@@ -2866,8 +2926,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function applyTuningOptimizations() {
-        const activeModelName = document.getElementById('loaded-model-name').textContent;
-        if (!activeModelName || activeModelName === 'None' || activeModelName === 'Offline') {
+        const activeModelName = currentModelName;
+        if (!activeModelName) {
             showToast("No active model loaded.", "error");
             return;
         }
@@ -3024,6 +3084,10 @@ document.addEventListener('DOMContentLoaded', () => {
     async function updateRoutingStatus(taskKey, modelName) {
         const td = document.getElementById(`routing-status-${taskKey}`);
         if (!td) return;
+        if (!modelName) {
+            td.innerHTML = `<span style="color:var(--text-muted);">No model selected</span>`;
+            return;
+        }
         
         try {
             const res = await fetch(`/api/telemetry/recommendations?model=${encodeURIComponent(modelName)}`);
@@ -3121,11 +3185,19 @@ document.addEventListener('DOMContentLoaded', () => {
         btnClearVram.addEventListener('click', clearVram);
     }
 
+    const btnDeleteModel = document.getElementById('btn-delete-model');
+    if (btnDeleteModel) {
+        btnDeleteModel.addEventListener('click', () => {
+            const selectedModel = modelSwitcherSelect?.value;
+            deleteModel(selectedModel);
+        });
+    }
+
     const tuningStrategySelect = document.getElementById('tuning-strategy-select');
     if (tuningStrategySelect) {
         tuningStrategySelect.addEventListener('change', () => {
-            const activeModelName = document.getElementById('loaded-model-name').textContent;
-            if (activeModelName && activeModelName !== 'None' && activeModelName !== 'Offline' && activeModelName !== 'No model active (Evicted/Idle)') {
+            const activeModelName = currentModelName;
+            if (activeModelName) {
                 updateTelemetryAndRecommendations(activeModelName);
             }
         });
@@ -3143,6 +3215,334 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Periodically update current model in switcher
     setInterval(updateCurrentModel, 5000);
+
+    // ──── MODEL DISCOVERY SEARCH AND PULL INTEGRATION ────
+    const btnOpenSearchModal = document.getElementById('btn-open-search-modal');
+    const searchPullOverlay = document.getElementById('search-pull-overlay');
+    const searchPullClose = document.getElementById('search-pull-close');
+    const modelSearchQuery = document.getElementById('model-search-query');
+    const modelSearchSource = document.getElementById('model-search-source');
+    const btnRunModelSearch = document.getElementById('btn-run-model-search');
+    const searchLoading = document.getElementById('search-loading');
+    const searchResultsContainer = document.getElementById('search-results-container');
+    const hfFilesContainer = document.getElementById('hf-files-container');
+    const hfFilesTitle = document.getElementById('hf-files-title');
+    const hfFilesList = document.getElementById('hf-files-list');
+    const btnBackToSearch = document.getElementById('btn-back-to-search');
+    const pullProgressContainer = document.getElementById('pull-progress-container');
+    const pullModelName = document.getElementById('pull-model-name');
+    const pullStatusBadge = document.getElementById('pull-status-badge');
+    const pullConsoleLog = document.getElementById('pull-console-log');
+
+    let currentHfRepo = "";
+
+    if (btnOpenSearchModal) {
+        btnOpenSearchModal.addEventListener('click', () => {
+            if (searchPullOverlay) searchPullOverlay.classList.add('open');
+            if (modelSearchQuery) {
+                modelSearchQuery.value = '';
+                modelSearchQuery.focus();
+            }
+            if (searchResultsContainer) {
+                searchResultsContainer.innerHTML = `<div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:2rem;">Search for models above to discover from Ollama Library and Hugging Face.</div>`;
+            }
+            if (hfFilesContainer) hfFilesContainer.classList.add('d-none');
+            if (pullProgressContainer) pullProgressContainer.classList.add('d-none');
+        });
+    }
+
+    if (searchPullClose) {
+        searchPullClose.addEventListener('click', () => {
+            if (searchPullOverlay) searchPullOverlay.classList.remove('open');
+        });
+    }
+
+    if (searchPullOverlay) {
+        searchPullOverlay.addEventListener('click', (e) => {
+            if (e.target === searchPullOverlay) {
+                searchPullOverlay.classList.remove('open');
+            }
+        });
+    }
+
+    if (btnBackToSearch) {
+        btnBackToSearch.addEventListener('click', () => {
+            if (hfFilesContainer) hfFilesContainer.classList.add('d-none');
+            if (searchResultsContainer) searchResultsContainer.classList.remove('d-none');
+        });
+    }
+
+    async function executeModelSearch() {
+        const query = modelSearchQuery?.value.trim();
+        if (!query) {
+            alert("Please enter a search query.");
+            return;
+        }
+
+        if (searchLoading) searchLoading.classList.remove('d-none');
+        if (searchResultsContainer) searchResultsContainer.innerHTML = '';
+        if (hfFilesContainer) hfFilesContainer.classList.add('d-none');
+
+        try {
+            const res = await fetch('/api/models/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: query,
+                    source: modelSearchSource?.value || 'all'
+                })
+            });
+
+            const data = await res.json();
+            if (searchLoading) searchLoading.classList.add('d-none');
+
+            if (!res.ok) {
+                if (searchResultsContainer) {
+                    searchResultsContainer.innerHTML = `<div style="text-align:center; color:var(--color-danger); padding:1rem;">${data.error || 'Failed to search models'}</div>`;
+                }
+                return;
+            }
+
+            const results = data.results || [];
+            if (results.length === 0) {
+                if (searchResultsContainer) {
+                    searchResultsContainer.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:2rem;">No matching models found. Try a different query.</div>`;
+                }
+                return;
+            }
+
+            if (searchResultsContainer) {
+                searchResultsContainer.innerHTML = '';
+                results.forEach(item => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'background:#1e293b; border:1px solid var(--border-color); border-radius:6px; padding:0.75rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:0.5rem;';
+                    
+                    const left = document.createElement('div');
+                    left.style.cssText = 'display:flex; flex-direction:column; gap:0.25rem; flex:1; min-width:0;';
+                    
+                    const header = document.createElement('div');
+                    header.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
+                    
+                    const nameSpan = document.createElement('strong');
+                    nameSpan.style.color = 'white';
+                    nameSpan.style.fontSize = '0.85rem';
+                    nameSpan.style.whiteSpace = 'nowrap';
+                    nameSpan.style.overflow = 'hidden';
+                    nameSpan.style.textOverflow = 'ellipsis';
+                    nameSpan.textContent = item.name;
+                    
+                    const sourceBadge = document.createElement('span');
+                    sourceBadge.className = `badge ${item.source === 'ollama' ? 'badge-success' : 'badge-primary'}`;
+                    sourceBadge.style.fontSize = '0.6rem';
+                    sourceBadge.style.padding = '0.1rem 0.35rem';
+                    sourceBadge.textContent = item.source === 'ollama' ? 'Ollama' : 'HF GGUF';
+                    
+                    header.appendChild(nameSpan);
+                    header.appendChild(sourceBadge);
+                    
+                    const descDiv = document.createElement('div');
+                    descDiv.style.cssText = 'font-size:0.75rem; color:var(--text-muted); line-height:1.4;';
+                    descDiv.textContent = item.description || '';
+                    
+                    left.appendChild(header);
+                    left.appendChild(descDiv);
+                    
+                    const actionBtn = document.createElement('button');
+                    if (item.source === 'ollama') {
+                        actionBtn.className = 'btn btn-primary';
+                        actionBtn.style.cssText = 'font-size:0.75rem; padding:0.3rem 0.75rem; background:#059669; border-color:#059669;';
+                        actionBtn.textContent = 'Pull Model';
+                        actionBtn.addEventListener('click', () => {
+                            pullModel(item.name, 'ollama');
+                        });
+                    } else {
+                        actionBtn.className = 'btn btn-secondary';
+                        actionBtn.style.cssText = 'font-size:0.75rem; padding:0.3rem 0.75rem; background:#2563eb; border-color:#2563eb; color:white;';
+                        actionBtn.textContent = 'View GGUF Files';
+                        actionBtn.addEventListener('click', () => {
+                            showHfRepoFiles(item.name);
+                        });
+                    }
+                    
+                    row.appendChild(left);
+                    row.appendChild(actionBtn);
+                    searchResultsContainer.appendChild(row);
+                });
+            }
+
+        } catch (err) {
+            if (searchLoading) searchLoading.classList.add('d-none');
+            if (searchResultsContainer) {
+                searchResultsContainer.innerHTML = `<div style="text-align:center; color:var(--color-danger); padding:1rem;">Search error: ${err.message}</div>`;
+            }
+        }
+    }
+
+    if (btnRunModelSearch) {
+        btnRunModelSearch.addEventListener('click', executeModelSearch);
+    }
+    if (modelSearchQuery) {
+        modelSearchQuery.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') executeModelSearch();
+        });
+    }
+
+    async function showHfRepoFiles(repoName) {
+        currentHfRepo = repoName;
+        if (searchResultsContainer) searchResultsContainer.classList.add('d-none');
+        if (hfFilesContainer) {
+            hfFilesContainer.classList.remove('d-none');
+        }
+        if (hfFilesTitle) {
+            hfFilesTitle.textContent = `Repository: ${repoName}`;
+        }
+        if (hfFilesList) {
+            hfFilesList.innerHTML = `<div style="text-align:center; padding:1.5rem; color:var(--text-muted);"><div class="loader" style="width:20px; height:20px; border-width:2px; display:inline-block;"></div><br>Fetching files from Hugging Face...</div>`;
+        }
+
+        try {
+            const res = await fetch(`/api/models/huggingface/files?repo=${encodeURIComponent(repoName)}`);
+            const data = await res.json();
+
+            if (!res.ok) {
+                if (hfFilesList) {
+                    hfFilesList.innerHTML = `<div style="text-align:center; color:var(--color-danger); padding:1rem;">${data.error || 'Failed to list files'}</div>`;
+                }
+                return;
+            }
+
+            const files = data.files || [];
+            if (files.length === 0) {
+                if (hfFilesList) {
+                    hfFilesList.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:1rem;">No GGUF files found in this repository.</div>`;
+                }
+                return;
+            }
+
+            if (hfFilesList) {
+                hfFilesList.innerHTML = '';
+                files.forEach(file => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'background:#1e293b; border:1px solid var(--border-color); border-radius:6px; padding:0.5rem; display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.25rem;';
+                    
+                    const fileInfo = document.createElement('div');
+                    fileInfo.style.cssText = 'display:flex; flex-direction:column; gap:0.15rem; min-width:0;';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.style.color = 'white';
+                    nameSpan.style.fontSize = '0.75rem';
+                    nameSpan.style.fontFamily = 'monospace';
+                    nameSpan.style.whiteSpace = 'nowrap';
+                    nameSpan.style.overflow = 'hidden';
+                    nameSpan.style.textOverflow = 'ellipsis';
+                    nameSpan.textContent = file.filename;
+                    
+                    const sizeSpan = document.createElement('span');
+                    sizeSpan.style.fontSize = '0.65rem';
+                    sizeSpan.style.color = 'var(--text-muted)';
+                    sizeSpan.textContent = file.size || 'Size unknown';
+                    
+                    fileInfo.appendChild(nameSpan);
+                    fileInfo.appendChild(sizeSpan);
+                    
+                    const pullBtn = document.createElement('button');
+                    pullBtn.className = 'btn btn-primary';
+                    pullBtn.style.cssText = 'font-size:0.7rem; padding:0.25rem 0.5rem; background:#059669; border-color:#059669;';
+                    pullBtn.textContent = 'Pull File';
+                    pullBtn.addEventListener('click', () => {
+                        const defaultAlias = file.filename.replace(/\.gguf$/i, '').toLowerCase().replace(/[^a-z0-9\-]/g, '-');
+                        const alias = prompt(`Enter a friendly local name/alias for this model:\n(Leave empty to use: "${defaultAlias}")`);
+                        if (alias === null) return;
+                        
+                        const ref = `hf://${repoName}/${file.filename}`;
+                        pullModel(ref, 'huggingface', alias || defaultAlias);
+                    });
+                    
+                    row.appendChild(fileInfo);
+                    row.appendChild(pullBtn);
+                    hfFilesList.appendChild(row);
+                });
+            }
+
+        } catch (err) {
+            if (hfFilesList) {
+                hfFilesList.innerHTML = `<div style="text-align:center; color:var(--color-danger); padding:1rem;">Error listing files: ${err.message}</div>`;
+            }
+        }
+    }
+
+    async function pullModel(modelName, source, localName = "") {
+        if (pullProgressContainer) pullProgressContainer.classList.remove('d-none');
+        if (pullModelName) pullModelName.textContent = `Pulling: ${modelName}`;
+        if (pullStatusBadge) {
+            pullStatusBadge.className = 'badge badge-warning';
+            pullStatusBadge.textContent = 'Running';
+        }
+        if (pullConsoleLog) {
+            pullConsoleLog.textContent = `[System] Spawning download process for ${modelName}...\n`;
+        }
+
+        try {
+            const res = await fetch('/api/models/pull', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: modelName,
+                    source: source,
+                    local_name: localName
+                })
+            });
+
+            const data = await res.json();
+            if (!res.ok) {
+                if (pullStatusBadge) {
+                    pullStatusBadge.className = 'badge badge-danger';
+                    pullStatusBadge.textContent = 'Error';
+                }
+                if (pullConsoleLog) {
+                    pullConsoleLog.textContent += `[Error] ${data.error || 'Failed to start download.'}\n`;
+                }
+            } else {
+                if (pullConsoleLog) {
+                    pullConsoleLog.textContent += `[System] ${data.message}\n`;
+                }
+            }
+        } catch (err) {
+            if (pullStatusBadge) {
+                pullStatusBadge.className = 'badge badge-danger';
+                pullStatusBadge.textContent = 'Error';
+            }
+            if (pullConsoleLog) {
+                pullConsoleLog.textContent += `[Error] Connection error: ${err.message}\n`;
+            }
+        }
+    }
+
+    socket.on('pull_log', (data) => {
+        if (pullConsoleLog) {
+            pullConsoleLog.textContent += data.line + '\n';
+            pullConsoleLog.scrollTop = pullConsoleLog.scrollHeight;
+        }
+    });
+
+    socket.on('pull_status', (data) => {
+        if (pullStatusBadge) {
+            if (data.status === 'success') {
+                pullStatusBadge.className = 'badge badge-success';
+                pullStatusBadge.textContent = 'Success';
+                showToast(`Model pull successful!`, 'success');
+                loadModels();
+            } else {
+                pullStatusBadge.className = 'badge badge-danger';
+                pullStatusBadge.textContent = 'Failed';
+                showToast(`Model pull failed: ${data.error || 'Unknown error'}`, 'error');
+            }
+        }
+        if (pullConsoleLog) {
+            pullConsoleLog.textContent += `\n[System] Pull process completed with status: ${data.status.toUpperCase()} ${data.error ? '(' + data.error + ')' : ''}\n`;
+            pullConsoleLog.scrollTop = pullConsoleLog.scrollHeight;
+        }
+    });
 
     // Startup Tasks
     initCharts();

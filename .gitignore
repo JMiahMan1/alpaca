@@ -8,3 +8,5 @@ venv/
 *.pyc
 .alpaca-router/
 .benchmark_host/
+.agents/
+
