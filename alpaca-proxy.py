@@ -2757,6 +2757,33 @@ async def admin_model_delete(request: Request):
     elif os.path.exists(router_path):
         os.remove(router_path)
 
+    # Clean up profile.json and models.ini section for the deleted model
+    alias = os.path.splitext(os.path.basename(router_path))[0]
+    try:
+        profile_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.profile.json")
+        if os.path.exists(profile_path):
+            os.remove(profile_path)
+    except Exception as pe:
+        logger.warning(f"Failed to clean up profile json for deleted model {alias}: {pe}")
+
+    try:
+        ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+        if os.path.exists(ini_path):
+            import configparser
+            config = configparser.ConfigParser()
+            config.read(ini_path)
+            if config.has_section(alias):
+                config.remove_section(alias)
+                with open(ini_path, "w") as f:
+                    config.write(f)
+                try:
+                    os.chmod(ini_path, 0o666)
+                except Exception:
+                    pass
+                logger.info(f"Removed section [{alias}] from models.ini for deleted model")
+    except Exception as ie:
+        logger.warning(f"Failed to clean up models.ini section for deleted model {alias}: {ie}")
+
     return {
         "status": "deleted",
         "model": model,
@@ -3595,6 +3622,24 @@ def _write_ini_model_setting(backend_model, key, value):
         logger.info(f"Updated models.ini: [{backend_model}] {key} = {value}")
     except Exception as e:
         logger.warning(f"Failed to write {key}={value} to models.ini: {e}")
+
+    # Also update profile.json to prevent reversion on reindexing
+    if backend_model != "*":
+        try:
+            profile_path = os.path.join(ROUTER_MODELS_DIR, f"{backend_model}.profile.json")
+            profile = {}
+            if os.path.exists(profile_path):
+                try:
+                    with open(profile_path, "r") as pf:
+                        profile = json.load(pf)
+                except Exception:
+                    pass
+            profile[key] = value
+            with open(profile_path, "w") as pf:
+                json.dump(profile, pf, indent=4)
+        except Exception as pe:
+            logger.warning(f"Failed to write {key}={value} to profile json overlay: {pe}")
+
 
 
 def _read_ini_model_setting(backend_model, key, default=""):

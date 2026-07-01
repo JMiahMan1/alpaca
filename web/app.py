@@ -28,6 +28,62 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 benchmark = LLMModelBenchmark()
 shared_llm_benchmark = SharedLLMModelBenchmark()
 
+puller_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py"
+)
+active_pulls = {}
+active_pulls_lock = threading.Lock()
+
+
+def run_puller_thread(model_name, source, local_name):
+    global active_pulls
+    import subprocess
+
+    cmd = [sys.executable, puller_path, "pull", model_name]
+    if source and source != "auto":
+        cmd += ["--source", source]
+    if local_name:
+        cmd += ["--name", local_name]
+
+    try:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                socketio.emit("pull_log", {"model": model_name, "line": line.rstrip()})
+
+        rc = process.poll()
+        if rc == 0:
+            socketio.emit("pull_status", {"model": model_name, "status": "success"})
+        else:
+            socketio.emit(
+                "pull_status",
+                {"model": model_name, "status": "failed", "error": f"Exit code {rc}"},
+            )
+
+    except Exception as e:
+        socketio.emit(
+            "pull_status", {"model": model_name, "status": "failed", "error": str(e)}
+        )
+    finally:
+        with active_pulls_lock:
+            if model_name in active_pulls:
+                del active_pulls[model_name]
+
+
 # Active run status tracking
 active_run = {
     "status": "idle",  # "idle", "running", "cancelled", "completed", "failed"
@@ -630,6 +686,33 @@ def save_profile():
         except Exception:
             pass
 
+        # Write to profile.json as well so reindexing doesn't discard overrides
+        if section != "*":
+            try:
+                profile_path = ini_path.parent / f"{section}.profile.json"
+                existing_profile = {}
+                if profile_path.exists():
+                    try:
+                        with open(profile_path, "r") as pf:
+                            existing_profile = json.load(pf)
+                    except Exception:
+                        pass
+                
+                for k, v in settings.items():
+                    if v is None or v == "":
+                        existing_profile.pop(k, None)
+                    else:
+                        existing_profile[k] = v
+                
+                with open(profile_path, "w") as pf:
+                    json.dump(existing_profile, pf, indent=4)
+                try:
+                    os.chmod(profile_path, 0o666)
+                except Exception:
+                    pass
+            except Exception as pe:
+                print(f"Failed to save profile json overlay: {pe}")
+
         return jsonify(
             {"status": "success", "message": f"Successfully updated section [{section}]"}
         )
@@ -662,6 +745,14 @@ def delete_profile():
                 os.chmod(ini_path, 0o666)
             except Exception:
                 pass
+            # Remove profile.json if it exists
+            try:
+                profile_path = ini_path.parent / f"{section}.profile.json"
+                if profile_path.exists():
+                    os.remove(profile_path)
+            except Exception as pe:
+                print(f"Failed to remove profile json file: {pe}")
+
             return jsonify(
                 {"status": "success", "message": f"Successfully deleted section [{section}]"}
             )
@@ -1407,6 +1498,192 @@ def clear_vram():
                 return jsonify({"error": resp.text}), resp.status_code
     except Exception as e:
         return jsonify({"error": f"Failed to clear VRAM: {str(e)}"}), 500
+
+
+@app.route("/api/models/delete", methods=["POST"])
+def delete_model():
+    """Delete a model and clean up blobs via the proxy"""
+    import httpx
+
+    data = request.get_json() or {}
+    model = data.get("model")
+    if not model:
+        return jsonify({"error": "model is required"}), 400
+
+    proxy_url = None
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code == 200:
+                    proxy_url = url
+                    break
+        except Exception:
+            continue
+
+    if not proxy_url:
+        return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(f"{proxy_url}/admin/models/delete", json={"model": model})
+            if resp.status_code == 200:
+                return jsonify(resp.json())
+            else:
+                try:
+                    err_msg = resp.json().get("detail", resp.text)
+                except Exception:
+                    err_msg = resp.text
+                return jsonify({"error": err_msg}), resp.status_code
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete model: {str(e)}"}), 500
+
+
+@app.route("/api/models/search", methods=["POST"])
+def search_models():
+    """Search for models on Ollama Registry and Hugging Face"""
+    import re
+    from html import unescape
+
+    import httpx
+
+    data = request.get_json() or {}
+    query = data.get("query")
+    source = data.get("source", "all")  # "ollama", "huggingface", or "all"
+
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+
+    results = []
+
+    # 1. Ollama Search
+    if source in ("ollama", "all"):
+        try:
+            url = f"https://ollama.com/search?q={query}"
+            resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
+            if resp.status_code == 200:
+                html_content = resp.text
+                pattern = r'href="/library/([^"]+)"[^>]*>.*?<span[^>]*>([^<]+)</span>.*?<p class="[^"]*break-words[^"]*">([^<]+)</p>'
+                matches = re.findall(pattern, html_content, re.DOTALL)
+                for library_name, span_name, desc in matches:
+                    clean_desc = unescape(desc.strip().replace("\n", " "))
+                    results.append(
+                        {
+                            "name": library_name.strip(),
+                            "description": clean_desc,
+                            "source": "ollama",
+                        }
+                    )
+        except Exception as e:
+            print(f"Ollama search error: {e}")
+
+    # 2. Hugging Face Search
+    if source in ("huggingface", "all"):
+        try:
+            url = f"https://huggingface.co/api/models?search={query}&filter=gguf&limit=20"
+            resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
+            if resp.status_code == 200:
+                hf_data = resp.json()
+                for model_item in hf_data:
+                    model_id = model_item.get("id")
+                    downloads = model_item.get("downloads", 0)
+                    likes = model_item.get("likes", 0)
+                    tags = model_item.get("tags", [])
+                    qwen_tags = [t for t in tags if t != "gguf"][:3]
+                    tag_str = ", ".join(qwen_tags) if qwen_tags else "GGUF"
+
+                    desc = f"GGUF repository by {model_item.get('author', 'HF author')}. Downloads: {downloads:,} | Likes: {likes:,} | Tags: {tag_str}"
+
+                    results.append(
+                        {
+                            "name": model_id,
+                            "description": desc,
+                            "source": "huggingface",
+                        }
+                    )
+        except Exception as e:
+            print(f"Hugging Face search error: {e}")
+
+    return jsonify({"results": results})
+
+
+@app.route("/api/models/huggingface/files", methods=["GET"])
+def get_hf_files():
+    """List .gguf files in a Hugging Face repository"""
+    repo = request.args.get("repo")
+    if not repo:
+        return jsonify({"error": "repo is required"}), 400
+
+    import httpx
+
+    token = os.getenv("HUGGING_FACE_TOKEN") or os.getenv("HF_TOKEN")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    url = f"https://huggingface.co/api/models/{repo}"
+    try:
+        resp = httpx.get(url, headers=headers, timeout=15.0)
+        if resp.status_code != 200:
+            return (
+                jsonify(
+                    {
+                        "error": f"Failed to fetch model info from Hugging Face: {resp.text}"
+                    }
+                ),
+                resp.status_code,
+            )
+
+        model_info = resp.json()
+        siblings = model_info.get("siblings", [])
+        gguf_files = []
+        for s in siblings:
+            fname = s.get("rfilename", "")
+            if fname.endswith(".gguf"):
+                size = s.get("size")
+                size_str = ""
+                if size:
+                    if size > 1024**3:
+                        size_str = f"{size / (1024**3):.2f} GB"
+                    else:
+                        size_str = f"{size / (1024**2):.1f} MB"
+                gguf_files.append({"filename": fname, "size": size_str})
+        return jsonify({"files": gguf_files})
+    except Exception as e:
+        return jsonify({"error": f"Error fetching Hugging Face files: {str(e)}"}), 500
+
+
+@app.route("/api/models/pull", methods=["POST"])
+def trigger_model_pull():
+    """Trigger a background pull of a model via alpaca-puller.py"""
+    data = request.get_json() or {}
+    model = data.get("model")
+    source = data.get("source", "auto")
+    local_name = data.get("local_name")
+
+    if not model:
+        return jsonify({"error": "model is required"}), 400
+
+    with active_pulls_lock:
+        if model in active_pulls:
+            return (
+                jsonify({"error": f"Model {model} is already being downloaded."}),
+                409,
+            )
+        active_pulls[model] = True
+
+    t = threading.Thread(
+        target=run_puller_thread, args=(model, source, local_name), daemon=True
+    )
+    t.start()
+
+    return jsonify(
+        {
+            "status": "pulling_started",
+            "message": f"Started pulling model {model} in the background.",
+        }
+    )
+
 
 
 @socketio.on("connect")

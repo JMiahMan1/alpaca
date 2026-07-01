@@ -63,8 +63,12 @@
                                 <button id="btn-unload-current" class="btn btn-danger" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: var(--color-danger); border-color: var(--color-danger);">Unload</button>
                             </div>
                             <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+                                <button id="btn-delete-model" class="btn btn-danger" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: #991b1b; border-color: #991b1b; color: white;">Delete Model</button>
                                 <button id="btn-clear-vram" class="btn btn-warning" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: var(--color-warning); border-color: var(--color-warning); color: black;">Force Clear VRAM</button>
                             </div>
+                             <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+                                <button id="btn-open-search-modal" class="btn btn-success" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: #059669; border-color: #059669; color: white;">🔍 Find & Pull Models</button>
+                             </div>
                         </div>
                         <div id="model-switcher-status" style="font-size:0.75rem; color:var(--text-muted); padding:0.5rem; background:#0f172a; border-radius:6px; min-height:2rem;">
                             Ready
@@ -1266,6 +1270,60 @@
                 <div id="restart-step-1" style="display:flex; justify-content:space-between;"><span>1. Send shutdown command</span><span id="restart-status-1">⌛</span></div>
                 <div id="restart-step-2" style="display:flex; justify-content:space-between;"><span>2. Await offline confirmation</span><span id="restart-status-2">⌛</span></div>
                 <div id="restart-step-3" style="display:flex; justify-content:space-between;"><span>3. Await online status</span><span id="restart-status-3">⌛</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Search & Pull Models Overlay -->
+    <div id="search-pull-overlay" class="modal-overlay" style="z-index: 9999;">
+        <div class="modal-container" style="max-width: 800px; width: 90%;">
+            <div class="modal-header">
+                <div class="modal-title">🔍 Find & Pull Models</div>
+                <button id="search-pull-close" class="modal-close" style="background:transparent; border:none; color:var(--text-muted); font-size:1.5rem; cursor:pointer;">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:1rem; max-height: 80vh; overflow-y: auto;">
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <input type="text" id="model-search-query" placeholder="Enter model name (e.g. qwen, llama, gemma)..." style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.5rem 0.75rem; border-radius:6px; font-size:0.85rem;">
+                    <select id="model-search-source" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.5rem; border-radius:6px; font-size:0.85rem; width:150px;">
+                        <option value="all">All registries</option>
+                        <option value="ollama">Ollama Library</option>
+                        <option value="huggingface">Hugging Face</option>
+                    </select>
+                    <button id="btn-run-model-search" class="btn btn-primary" style="font-size:0.85rem; padding:0.5rem 1rem;">Search</button>
+                </div>
+                
+                <!-- Search Loading spinner -->
+                <div id="search-loading" class="d-none" style="text-align:center; padding:2rem;">
+                    <div class="loader" style="width: 30px; height: 30px; border-width: 3px; display:inline-block;"></div>
+                    <div style="color:var(--text-muted); font-size:0.8rem; margin-top:0.5rem;">Querying registries...</div>
+                </div>
+
+                <!-- Search Results Area -->
+                <div id="search-results-container" style="display:flex; flex-direction:column; gap:0.5rem; max-height: 350px; overflow-y:auto; padding-right:0.25rem;">
+                    <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:2rem;">
+                        Search for models above to discover from Ollama Library and Hugging Face.
+                    </div>
+                </div>
+
+                <!-- HF Repo GGUF Files Viewer Area -->
+                <div id="hf-files-container" class="d-none" style="background:#0f172a; border:1px solid var(--border-color); border-radius:6px; padding:0.75rem; display:flex; flex-direction:column; gap:0.5rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong id="hf-files-title" style="color:white; font-size:0.85rem;">Select GGUF File</strong>
+                        <button id="btn-back-to-search" class="btn btn-secondary" style="font-size:0.7rem; padding:0.2rem 0.5rem; background:#334155; border-color:#334155; color:white;">&larr; Back to Results</button>
+                    </div>
+                    <div id="hf-files-list" style="display:flex; flex-direction:column; gap:0.25rem; max-height:200px; overflow-y:auto; padding-right:0.25rem;">
+                        <!-- Files listed here -->
+                    </div>
+                </div>
+
+                <!-- Active Pull Logs & Progress -->
+                <div id="pull-progress-container" class="d-none" style="background:#020617; border:1px solid #1e293b; border-radius:6px; padding:0.75rem; display:flex; flex-direction:column; gap:0.5rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span id="pull-model-name" style="font-size:0.8rem; font-weight:600; color:var(--color-primary);">Downloading model...</span>
+                        <span id="pull-status-badge" class="badge badge-secondary">Connecting...</span>
+                    </div>
+                    <pre id="pull-console-log" style="background:#090514; border:1px solid rgba(139,92,246,0.15); color:#a78bfa; font-family:monospace; font-size:0.7rem; padding:0.5rem; border-radius:4px; max-height:180px; overflow-y:auto; margin:0; white-space:pre-wrap;"></pre>
+                </div>
             </div>
         </div>
     </div>
