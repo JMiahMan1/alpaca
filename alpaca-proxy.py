@@ -2572,20 +2572,47 @@ async def admin_runtime():
     }
 
 
+async def get_active_child_port() -> int | None:
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models")
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            for model in data:
+                args = model.get("status", {}).get("args", [])
+                if args:
+                    try:
+                        port_idx = args.index("--port")
+                        return int(args[port_idx + 1])
+                    except (ValueError, IndexError):
+                        continue
+    except Exception as e:
+        logger.warning(f"Failed to find active child port: {e}")
+    return None
+
+
 @app.get("/admin/slots")
 async def admin_slots(fail_on_no_slot: int = 0):
     """llama-server slot status with enhanced Alpaca metadata."""
     try:
-        resp = await client_httpx.get(
-            f"{LLAMA_SERVER_URL}/slots",
-            params={"fail_on_no_slot": fail_on_no_slot},
-            timeout=httpx.Timeout(5.0),
-        )
-        if resp.status_code in (400, 503, 404):
+        port = await get_active_child_port()
+        if not port:
             return {"slots": [], "total": 0, "status": "no_model_loaded", "message": "No model loaded in llama-server"}
 
-        resp.raise_for_status()
-        slots = resp.json()
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "llama-server",
+            "curl",
+            "-s",
+            f"http://127.0.0.1:{port}/slots",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise Exception(f"Failed to fetch slots from child: {stderr.decode()}")
+
+        slots = json.loads(stdout.decode().strip())
 
         # Enhance with Alpaca metadata
         for slot in slots:
@@ -2602,10 +2629,6 @@ async def admin_slots(fail_on_no_slot: int = 0):
         return {"slots": slots, "total": len(slots)}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as e:
         return {"slots": [], "total": 0, "status": "offline", "message": f"llama-server is offline: {e}"}
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code in (400, 503, 404):
-            return {"slots": [], "total": 0, "status": "no_model_loaded", "message": "No model loaded in llama-server"}
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
         logger.error(f"Failed to fetch slot info: {e}")
         return {"slots": [], "total": 0, "status": "error", "message": str(e)}
