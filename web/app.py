@@ -11,6 +11,24 @@ import threading
 import time
 from pathlib import Path
 
+# Load .env file if present
+def load_dotenv_custom():
+    base_dir = Path(__file__).resolve().parent.parent
+    dotenv_path = base_dir / ".env"
+    if dotenv_path.exists():
+        with open(dotenv_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip("\"'")
+                    os.environ.setdefault(key, value)
+
+load_dotenv_custom()
+
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 from flask_socketio import SocketIO
