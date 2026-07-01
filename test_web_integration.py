@@ -440,5 +440,202 @@ def test_api_models_ollama_tags_route(mock_get, client):
     assert data["tags"][1] == "8b"
 
 
+def test_api_pull_stop_returns_404_for_missing_pull(client):
+    """Test that stopping a non-existent pull returns 404"""
+    res = client.post("/api/models/pulls/nonexistent/stop")
+    assert res.status_code == 404
+    data = json.loads(res.data.decode("utf-8"))
+    assert "error" in data
+
+
+def test_api_pull_cancel_returns_404_for_missing_pull(client):
+    """Test that cancelling a non-existent pull returns 404"""
+    res = client.post("/api/models/pulls/nonexistent/cancel")
+    assert res.status_code == 404
+    data = json.loads(res.data.decode("utf-8"))
+    assert "error" in data
+
+
+@patch("pathlib.Path.mkdir")
+@patch("pathlib.Path.write_text")
+def test_api_pull_stop_success(mock_write, mock_mkdir, client):
+    """Test that stopping an active pull sets status and creates marker file"""
+    from web.app import active_pulls
+
+    active_pulls["test-model"] = {
+        "model": "test-model",
+        "source": "ollama",
+        "local_name": "",
+        "status": "running",
+        "logs": [],
+    }
+
+    try:
+        res = client.post("/api/models/pulls/test-model/stop")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "stopping"
+        assert "Stopping" in data["message"]
+        assert active_pulls["test-model"]["status"] == "stopping"
+    finally:
+        active_pulls.pop("test-model", None)
+
+
+@patch("pathlib.Path.mkdir")
+@patch("pathlib.Path.write_text")
+def test_api_pull_stop_fails_if_not_running(mock_write, mock_mkdir, client):
+    """Test that stopping a non-running pull returns an error"""
+    from web.app import active_pulls
+
+    active_pulls["test-model"] = {
+        "model": "test-model",
+        "source": "ollama",
+        "local_name": "",
+        "status": "success",
+        "logs": [],
+    }
+
+    try:
+        res = client.post("/api/models/pulls/test-model/stop")
+        assert res.status_code == 400
+        data = json.loads(res.data.decode("utf-8"))
+        assert "error" in data
+    finally:
+        active_pulls.pop("test-model", None)
+
+
+def test_api_pull_cancel_success(client):
+    """Test that cancelling an active pull sets status to cancelled"""
+    from web.app import active_pulls
+
+    active_pulls["test-model"] = {
+        "model": "test-model",
+        "source": "ollama",
+        "local_name": "",
+        "status": "running",
+        "logs": [],
+    }
+
+    try:
+        res = client.post("/api/models/pulls/test-model/cancel")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "cancelled"
+        assert "cancelled" in data["message"].lower()
+        assert active_pulls["test-model"]["status"] == "cancelled"
+    finally:
+        active_pulls.pop("test-model", None)
+
+
+def test_api_pull_cancel_double_returns_error(client):
+    """Test that cancelling an already-cancelled pull returns an error"""
+    from web.app import active_pulls
+
+    active_pulls["test-model"] = {
+        "model": "test-model",
+        "source": "ollama",
+        "local_name": "",
+        "status": "cancelled",
+        "logs": [],
+    }
+
+    try:
+        res = client.post("/api/models/pulls/test-model/cancel")
+        assert res.status_code == 400
+        data = json.loads(res.data.decode("utf-8"))
+        assert "error" in data
+        assert "already cancelled" in data["error"].lower()
+    finally:
+        active_pulls.pop("test-model", None)
+
+
+def test_api_pull_trigger_with_no_resume(client):
+    """Test that pull trigger accepts and passes no_resume flag"""
+    with patch("threading.Thread.start"):
+        res = client.post("/api/models/pull", json={
+            "model": "test-model",
+            "source": "huggingface",
+            "no_resume": True,
+        })
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "pulling_started"
+
+
+def test_api_pull_trigger_duplicate_returns_409(client):
+    """Test that triggering a pull for an already-active model returns 409"""
+    from web.app import active_pulls
+
+    active_pulls["test-model"] = {
+        "model": "test-model",
+        "source": "ollama",
+        "local_name": "",
+        "status": "running",
+        "logs": [],
+    }
+
+    try:
+        with patch("threading.Thread.start"):
+            res = client.post("/api/models/pull", json={"model": "test-model"})
+            assert res.status_code == 409
+            data = json.loads(res.data.decode("utf-8"))
+            assert "already being downloaded" in data["error"].lower()
+    finally:
+        active_pulls.pop("test-model", None)
+
+
+def test_api_pull_trigger_missing_model_returns_400(client):
+    """Test that triggering a pull without a model returns 400"""
+    res = client.post("/api/models/pull", json={})
+    assert res.status_code == 400
+    data = json.loads(res.data.decode("utf-8"))
+    assert "model is required" in data["error"]
+
+
+@patch("pathlib.Path.exists", return_value=False)
+def test_get_telemetry_history_no_model_returns_empty(mock_exists, client):
+    """Test telemetry history with no model parameter returns empty list"""
+    res = client.get("/api/telemetry/history")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert "history" in data
+    assert data["model"] == "system_idle"
+    assert data["history"] == []
+
+
+@patch("pathlib.Path.exists", return_value=True)
+@patch("builtins.open", new_callable=lambda: MagicMock())
+def test_get_telemetry_history_with_file(mock_open, mock_exists, client):
+    """Test telemetry history returns data when file exists"""
+    import json as json_mod
+
+    mock_open.return_value.__enter__.return_value.read.return_value = json_mod.dumps({"epoch_time": 1})
+    res = client.get("/api/telemetry/history?model=test-model")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert "history" in data
+
+
+def test_api_pulls_active_includes_status_field(client):
+    """Test that active pulls endpoint includes the status field"""
+    from web.app import active_pulls
+
+    active_pulls["test-model"] = {
+        "model": "test-model",
+        "source": "ollama",
+        "local_name": "alias",
+        "status": "running",
+        "logs": ["log entry"],
+    }
+
+    try:
+        res = client.get("/api/models/pulls/active")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["active_pulls"]["test-model"]["status"] == "running"
+        assert data["active_pulls"]["test-model"]["local_name"] == "alias"
+    finally:
+        active_pulls.pop("test-model", None)
+
 
 

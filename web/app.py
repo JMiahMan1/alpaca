@@ -61,7 +61,7 @@ active_pulls = {}
 active_pulls_lock = threading.Lock()
 
 
-def run_puller_thread(model_name, source, local_name):
+def run_puller_thread(model_name, source, local_name, no_resume=False):
     global active_pulls
     import subprocess
 
@@ -70,6 +70,8 @@ def run_puller_thread(model_name, source, local_name):
         cmd += ["--source", source]
     if local_name:
         cmd += ["--name", local_name]
+    if no_resume:
+        cmd += ["--no-resume"]
 
     try:
         env = os.environ.copy()
@@ -88,6 +90,38 @@ def run_puller_thread(model_name, source, local_name):
             line = process.stdout.readline()
             if not line and process.poll() is not None:
                 break
+            # Check for stop/cancel events
+            with active_pulls_lock:
+                if model_name in active_pulls:
+                    status = active_pulls[model_name].get("status", "running")
+                    if status == "cancelled":
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                        socketio.emit("pull_status", {
+                            "model": model_name,
+                            "status": "cancelled"
+                        })
+                        return
+                    elif status == "stopping":
+                        active_pulls[model_name]["status"] = "stopping"
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                        active_pulls[model_name]["status"] = "stopped"
+                        socketio.emit("pull_status", {
+                            "model": model_name,
+                            "status": "stopped"
+                        })
+                        # Clean up stop marker so it doesn't interfere with future pulls
+                        stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+                        stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
+                        stop_file.unlink(missing_ok=True)
+                        return
             if line:
                 line_str = line.rstrip()
                 with active_pulls_lock:
@@ -98,6 +132,17 @@ def run_puller_thread(model_name, source, local_name):
                 socketio.emit("pull_log", {"model": model_name, "line": line_str})
 
         rc = process.poll()
+        with active_pulls_lock:
+            if model_name in active_pulls:
+                status = active_pulls[model_name].get("status", "running")
+                if status == "stopping":
+                    active_pulls[model_name]["status"] = "stopped"
+                    socketio.emit("pull_status", {"model": model_name, "status": "stopped"})
+                    stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+                    stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
+                    stop_file.unlink(missing_ok=True)
+                    return
+
         if rc == 0:
             socketio.emit("pull_status", {"model": model_name, "status": "success"})
         else:
@@ -1112,18 +1157,41 @@ def get_telemetry_history():
 
     # sanitize model name just like telemetry_monitor.py
     import re
-    sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
-    
     telemetry_dir = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
-    log_file = telemetry_dir / f"{sanitized_model}.jsonl"
+    sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
+    sanitized_model_lower = sanitized_model.lower()
     
-    if not log_file.exists():
-        # Fallback to local testing directory if it is elsewhere
-        log_file = Path("/app/data/telemetry") / f"{sanitized_model}.jsonl"
-        if not log_file.exists():
-            log_file = Path("web").parent / "data" / "telemetry" / f"{sanitized_model}.jsonl"
-            
-    if not log_file.exists():
+    def find_telemetry_file(filename):
+        """Try multiple directories and flexible matching for telemetry files."""
+        candidates = [
+            telemetry_dir / filename,
+            Path("/app/data/telemetry") / filename,
+            Path("web").parent / "data" / "telemetry" / filename,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
+    # 1. Try exact match
+    log_file = find_telemetry_file(f"{sanitized_model}.jsonl")
+    
+    # 2. Try case-insensitive match
+    if log_file is None:
+        log_file = find_telemetry_file(f"{sanitized_model_lower}.jsonl")
+    
+    # 3. Search all telemetry files for one containing the model name
+    if log_file is None:
+        for search_dir in [telemetry_dir, Path("/app/data/telemetry"), Path("web").parent / "data" / "telemetry"]:
+            if search_dir.exists():
+                for f in search_dir.glob("*.jsonl"):
+                    if sanitized_model_lower in f.stem.lower():
+                        log_file = f
+                        break
+            if log_file:
+                break
+
+    if log_file is None or not log_file.exists():
         return jsonify({"model": model, "history": []})
         
     points = []
@@ -1775,6 +1843,7 @@ def trigger_model_pull():
     model = data.get("model")
     source = data.get("source", "auto")
     local_name = data.get("local_name")
+    no_resume = data.get("no_resume", False)
 
     if not model:
         return jsonify({"error": "model is required"}), 400
@@ -1789,11 +1858,12 @@ def trigger_model_pull():
             "model": model,
             "source": source,
             "local_name": local_name or "",
+            "status": "running",
             "logs": []
         }
 
     t = threading.Thread(
-        target=run_puller_thread, args=(model, source, local_name), daemon=True
+        target=run_puller_thread, args=(model, source, local_name, no_resume), daemon=True
     )
     t.start()
 
@@ -1815,6 +1885,7 @@ def get_active_pulls():
                     "model": v["model"],
                     "source": v["source"],
                     "local_name": v.get("local_name", ""),
+                    "status": v.get("status", "running"),
                     "logs": v["logs"]
                 }
                 for k, v in active_pulls.items()
@@ -1822,6 +1893,51 @@ def get_active_pulls():
         })
 
 
+@app.route("/api/models/pulls/<model_id>/stop", methods=["POST"])
+def stop_pull(model_id):
+    """Stop/pause a running pull by creating a stop marker file."""
+    with active_pulls_lock:
+        if model_id not in active_pulls:
+            return jsonify({"error": "Pull not found"}), 404
+        pull = active_pulls[model_id]
+        if pull.get("status") not in ("running", "paused"):
+            return jsonify({"error": f"Pull is {pull.get('status', 'unknown')}, cannot stop"}), 400
+        pull["status"] = "stopping"
+
+    # Create stop marker file that alpaca-puller checks
+    stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+    stop_dir.mkdir(parents=True, exist_ok=True)
+    stop_file = stop_dir / f"{model_id.replace('/', '_').replace(':', '_')}"
+    stop_file.write_text(str(time.time()))
+    print(f"Stop marker created: {stop_file}")
+
+    return jsonify({
+        "status": "stopping",
+        "message": f"Stopping pull for {pull['model']}..."
+    })
+
+
+@app.route("/api/models/pulls/<model_id>/cancel", methods=["POST"])
+def cancel_pull(model_id):
+    """Cancel a pull: stop it and remove any partial downloads."""
+    with active_pulls_lock:
+        if model_id not in active_pulls:
+            return jsonify({"error": "Pull not found"}), 404
+        pull = active_pulls[model_id]
+        if pull.get("status") == "cancelled":
+            return jsonify({"error": "Pull already cancelled"}), 400
+        pull["status"] = "cancelled"
+
+    # Remove stop marker for this specific model to prevent interfering with future pulls
+    stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+    stop_file = stop_dir / f"{model_id.replace('/', '_').replace(':', '_')}"
+    stop_file.unlink(missing_ok=True)
+    print(f"Cancelled pull for {pull['model']}, partial downloads will be cleaned up on next restart.")
+
+    return jsonify({
+        "status": "cancelled",
+        "message": f"Pull for {pull['model']} cancelled."
+    })
 
 
 @socketio.on("connect")

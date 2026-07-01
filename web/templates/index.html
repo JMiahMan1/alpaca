@@ -1320,7 +1320,11 @@
                 <div id="pull-progress-container" class="d-none" style="background:#020617; border:1px solid #1e293b; border-radius:6px; padding:0.75rem; display:flex; flex-direction:column; gap:0.5rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span id="pull-model-name" style="font-size:0.8rem; font-weight:600; color:var(--color-primary);">Downloading model...</span>
-                        <span id="pull-status-badge" class="badge badge-secondary">Connecting...</span>
+                        <div style="display:flex; gap:0.5rem; align-items:center;">
+                            <span id="pull-status-badge" class="badge badge-secondary">Connecting...</span>
+                            <button id="btn-pull-stop" class="btn btn-secondary" style="font-size:0.65rem; padding:0.2rem 0.5rem; background:#334155; border-color:#334155; color:white; display:none;" title="Stop/Pause this download">⏹ Stop</button>
+                            <button id="btn-pull-cancel" class="btn btn-danger" style="font-size:0.65rem; padding:0.2rem 0.5rem; background:#991b1b; border-color:#991b1b; color:white; display:none;" title="Cancel and remove partial downloads">✕ Cancel</button>
+                        </div>
                     </div>
                     <pre id="pull-console-log" style="background:#090514; border:1px solid rgba(139,92,246,0.15); color:#a78bfa; font-family:monospace; font-size:0.7rem; padding:0.5rem; border-radius:4px; max-height:180px; overflow-y:auto; margin:0; white-space:pre-wrap;"></pre>
                 </div>

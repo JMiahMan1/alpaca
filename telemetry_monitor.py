@@ -213,8 +213,6 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
     # 2. Fetch slots (for context usage tracking)
     try:
         slots_url = f"{LLAMA_SERVER_URL}/slots"
-        if backend_model:
-            slots_url += f"?model={backend_model}"
         resp = await client.get(slots_url, timeout=2.0)
         if resp.status_code == 200:
             slots = resp.json()

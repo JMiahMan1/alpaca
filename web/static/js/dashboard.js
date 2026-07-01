@@ -3303,6 +3303,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const pullModelName = document.getElementById('pull-model-name');
     const pullStatusBadge = document.getElementById('pull-status-badge');
     const pullConsoleLog = document.getElementById('pull-console-log');
+    const btnPullStop = document.getElementById('btn-pull-stop');
+    const btnPullCancel = document.getElementById('btn-pull-cancel');
 
     let currentHfRepo = "";
 
@@ -3782,6 +3784,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 pullStatusBadge.textContent = 'Success';
                 showToast(`Model pull successful!`, 'success');
                 loadModels();
+            } else if (data.status === 'stopping') {
+                pullStatusBadge.className = 'badge badge-warning';
+                pullStatusBadge.textContent = 'Stopping...';
+            } else if (data.status === 'stopped') {
+                pullStatusBadge.className = 'badge badge-secondary';
+                pullStatusBadge.textContent = 'Stopped';
+                showToast('Download stopped', 'warning');
+            } else if (data.status === 'cancelled') {
+                pullStatusBadge.className = 'badge badge-danger';
+                pullStatusBadge.textContent = 'Cancelled';
             } else {
                 pullStatusBadge.className = 'badge badge-danger';
                 pullStatusBadge.textContent = 'Failed';
@@ -3808,18 +3820,106 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 if (pullProgressContainer) pullProgressContainer.classList.remove('d-none');
                 if (pullModelName) pullModelName.textContent = `Pulling: ${pullInfo.model}`;
+                
+                let showButtons = false;
                 if (pullStatusBadge) {
-                    pullStatusBadge.className = 'badge badge-warning';
-                    pullStatusBadge.textContent = 'Running';
+                    if (pullInfo.status === 'running') {
+                        pullStatusBadge.className = 'badge badge-warning';
+                        pullStatusBadge.textContent = 'Running';
+                        showButtons = true;
+                    } else if (pullInfo.status === 'stopping') {
+                        pullStatusBadge.className = 'badge badge-warning';
+                        pullStatusBadge.textContent = 'Stopping...';
+                        showButtons = false;
+                    } else if (pullInfo.status === 'cancelled') {
+                        pullStatusBadge.className = 'badge badge-danger';
+                        pullStatusBadge.textContent = 'Cancelled';
+                        showButtons = false;
+                    } else if (pullInfo.status === 'stopped') {
+                        pullStatusBadge.className = 'badge badge-secondary';
+                        pullStatusBadge.textContent = 'Stopped';
+                        showButtons = false;
+                    } else if (pullInfo.status === 'failed') {
+                        pullStatusBadge.className = 'badge badge-danger';
+                        pullStatusBadge.textContent = 'Failed';
+                        showButtons = false;
+                    } else {
+                        pullStatusBadge.className = 'badge badge-secondary';
+                        pullStatusBadge.textContent = pullInfo.status || 'Unknown';
+                        showButtons = false;
+                    }
                 }
+                if (btnPullStop) btnPullStop.style.display = showButtons ? 'inline-block' : 'none';
+                if (btnPullCancel) btnPullCancel.style.display = showButtons ? 'inline-block' : 'none';
                 if (pullConsoleLog) {
                     pullConsoleLog.textContent = pullInfo.logs.join('\n') + '\n';
                     pullConsoleLog.scrollTop = pullConsoleLog.scrollHeight;
                 }
+            } else {
+                if (btnPullStop) btnPullStop.style.display = 'none';
+                if (btnPullCancel) btnPullCancel.style.display = 'none';
+                if (pullProgressContainer) pullProgressContainer.classList.add('d-none');
             }
         } catch (err) {
             console.error("Error loading active pulls:", err);
         }
+    }
+
+    // Stop/Cancel button handlers
+    if (btnPullStop) {
+        btnPullStop.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/models/pulls/active', { method: 'GET' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const pulls = data.active_pulls || {};
+                const activeModel = Object.keys(pulls)[0];
+                if (!activeModel) return;
+                
+                const stopRes = await fetch(`/api/models/pulls/${encodeURIComponent(activeModel)}/stop`, {
+                    method: 'POST'
+                });
+                if (stopRes.ok) {
+                    if (pullStatusBadge) {
+                        pullStatusBadge.className = 'badge badge-warning';
+                        pullStatusBadge.textContent = 'Stopping...';
+                    }
+                    showToast('Stopping download...', 'warning');
+                }
+            } catch (err) {
+                console.error("Failed to stop pull:", err);
+                showToast('Failed to stop download', 'error');
+            }
+        });
+    }
+
+    if (btnPullCancel) {
+        btnPullCancel.addEventListener('click', async () => {
+            if (!confirm('Cancel this download and remove partial files?')) return;
+            try {
+                const res = await fetch('/api/models/pulls/active', { method: 'GET' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const pulls = data.active_pulls || {};
+                const activeModel = Object.keys(pulls)[0];
+                if (!activeModel) return;
+                
+                const cancelRes = await fetch(`/api/models/pulls/${encodeURIComponent(activeModel)}/cancel`, {
+                    method: 'POST'
+                });
+                if (cancelRes.ok) {
+                    if (pullStatusBadge) {
+                        pullStatusBadge.className = 'badge badge-danger';
+                        pullStatusBadge.textContent = 'Cancelled';
+                    }
+                    showToast('Download cancelled', 'warning');
+                    setTimeout(loadActivePulls, 2000);
+                }
+            } catch (err) {
+                console.error("Failed to cancel pull:", err);
+                showToast('Failed to cancel download', 'error');
+            }
+        });
     }
 
     // Startup Tasks
@@ -3828,6 +3928,17 @@ document.addEventListener('DOMContentLoaded', () => {
     loadModelProfiles();
     loadHistory();
     loadActivePulls();
+
+    // Poll pull status periodically to keep UI in sync
+    setInterval(() => {
+        try {
+            fetch('/api/models/pulls/active').then(res => res.ok ? res.json().then(data => {
+                if (data.active_pulls && Object.keys(data.active_pulls).length > 0) {
+                    loadActivePulls();
+                }
+            }) : null).catch(() => {});
+        } catch(e) {}
+    }, 3000);
 
     // Initial tab routing based on URL hash
     const initialHash = window.location.hash.substring(1);
