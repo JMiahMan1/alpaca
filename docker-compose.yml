@@ -52,7 +52,7 @@ services:
     restart: always
     network_mode: "host"
     volumes:
-      - /usr/share/ollama/.ollama/models:/models:ro
+      - /usr/share/ollama/.ollama/models:/models
       - ./.alpaca-router:/router-models
       - ./.slots-cache:/slots-cache
       - /var/run/docker.sock:/var/run/docker.sock
@@ -92,7 +92,7 @@ services:
       - ./alpaca_puller.py:/app/alpaca_puller.py:ro
       - ./.alpaca-router:/router-models
       - ./analyzer.py:/app/analyzer.py:ro
-      - /usr/share/ollama/.ollama/models:/models:ro
+      - /usr/share/ollama/.ollama/models:/models
     environment:
       OLLAMA_SERVER_URLS: "http://llama-server:8080"
       PROXY_SERVER_URLS: "http://host.docker.internal:11434"
