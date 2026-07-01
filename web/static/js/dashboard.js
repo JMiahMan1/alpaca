@@ -3414,12 +3414,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     actionBtn.className = 'btn';
                     if (item.source === 'ollama') {
                         actionBtn.style.cssText = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#059669; border-color:#059669; color:white; border-radius:6px; font-weight: 500; transition: background 0.2s, transform 0.1s; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.25rem; cursor: pointer;';
-                        actionBtn.innerHTML = '📥 Pull Model';
+                        actionBtn.innerHTML = '📂 View Available Tags';
                         actionBtn.addEventListener('click', () => {
-                            const tag = prompt(`Enter the tag/size/version for this Ollama model:\n(Examples: "latest", "8b", "32b", "70b")\n\nLeave empty to use: "latest"`, 'latest');
-                            if (tag === null) return;
-                            const fullModelName = tag.trim() ? `${item.name}:${tag.trim()}` : `${item.name}:latest`;
-                            pullModel(fullModelName, 'ollama');
+                            showOllamaModelTags(item.name);
                         });
                     } else {
                         actionBtn.style.cssText = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#2563eb; border-color:#2563eb; color:white; border-radius:6px; font-weight: 500; transition: background 0.2s, transform 0.1s; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.25rem; cursor: pointer;';
@@ -3470,6 +3467,94 @@ document.addEventListener('DOMContentLoaded', () => {
         modelSearchQuery.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') executeModelSearch();
         });
+    }
+
+    async function showOllamaModelTags(modelName) {
+        if (searchResultsContainer) searchResultsContainer.classList.add('d-none');
+        if (hfFilesContainer) {
+            hfFilesContainer.classList.remove('d-none');
+        }
+        if (hfFilesTitle) {
+            hfFilesTitle.textContent = `Model Tags: ${modelName}`;
+        }
+        if (hfFilesList) {
+            hfFilesList.innerHTML = `<div style="text-align:center; padding:1.5rem; color:var(--text-muted);"><div class="loader" style="width:20px; height:20px; border-width:2px; display:inline-block;"></div><br>Fetching tags from Ollama Registry...</div>`;
+        }
+
+        try {
+            const res = await fetch(`/api/models/ollama/tags?model=${encodeURIComponent(modelName)}`);
+            const data = await res.json();
+
+            if (!res.ok) {
+                if (hfFilesList) {
+                    hfFilesList.innerHTML = `<div style="text-align:center; color:var(--color-danger); padding:1rem;">${data.error || 'Failed to list tags'}</div>`;
+                }
+                return;
+            }
+
+            const tags = data.tags || [];
+            if (tags.length === 0) {
+                if (hfFilesList) {
+                    hfFilesList.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:1rem;">No tags found for this model.</div>`;
+                }
+                return;
+            }
+
+            if (hfFilesList) {
+                hfFilesList.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0.75rem; padding: 0.25rem; max-height: 250px; overflow-y: auto;';
+                hfFilesList.innerHTML = '';
+                tags.forEach(tag => {
+                    const card = document.createElement('div');
+                    card.style.cssText = 'background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; transition: border-color 0.2s, transform 0.2s;';
+                    
+                    const top = document.createElement('div');
+                    top.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:0.5rem;';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.style.cssText = 'color: white; font-size: 0.75rem; font-family: monospace; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;';
+                    nameSpan.textContent = `${modelName}:${tag}`;
+                    nameSpan.title = `${modelName}:${tag}`;
+                    
+                    const tagSpan = document.createElement('span');
+                    tagSpan.style.cssText = 'font-size: 0.65rem; color: #10b981; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); padding: 0.1rem 0.35rem; border-radius: 4px; font-weight: 500;';
+                    tagSpan.textContent = tag;
+                    
+                    top.appendChild(nameSpan);
+                    top.appendChild(tagSpan);
+                    
+                    const footer = document.createElement('div');
+                    footer.style.cssText = 'display:flex; justify-content:flex-end; border-top: 1px solid rgba(255, 255, 255, 0.04); padding-top: 0.4rem; margin-top: auto;';
+                    
+                    const pullBtn = document.createElement('button');
+                    pullBtn.className = 'btn btn-primary';
+                    pullBtn.style.cssText = 'font-size: 0.7rem; padding: 0.3rem 0.65rem; background: #059669; border-color: #059669; color: white; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500; cursor: pointer; transition: background 0.2s, transform 0.1s; width: 100%; justify-content: center;';
+                    pullBtn.innerHTML = '📥 Pull Model Variant';
+                    
+                    pullBtn.addEventListener('mouseenter', () => {
+                        pullBtn.style.transform = 'scale(1.01)';
+                        pullBtn.style.background = '#047857';
+                    });
+                    pullBtn.addEventListener('mouseleave', () => {
+                        pullBtn.style.transform = 'none';
+                        pullBtn.style.background = '#059669';
+                    });
+                    
+                    pullBtn.addEventListener('click', () => {
+                        pullModel(`${modelName}:${tag}`, 'ollama');
+                    });
+                    
+                    footer.appendChild(pullBtn);
+                    card.appendChild(top);
+                    card.appendChild(footer);
+                    hfFilesList.appendChild(card);
+                });
+            }
+
+        } catch (err) {
+            if (hfFilesList) {
+                hfFilesList.innerHTML = `<div style="text-align:center; color:var(--color-danger); padding:1rem;">Error listing tags: ${err.message}</div>`;
+            }
+        }
     }
 
     async function showHfRepoFiles(repoName) {

@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 
+
 # Load .env file if present
 def load_dotenv_custom():
     base_dir = Path(__file__).resolve().parent.parent
@@ -1675,6 +1676,60 @@ def get_hf_files():
         return jsonify({"files": gguf_files})
     except Exception as e:
         return jsonify({"error": f"Error fetching Hugging Face files: {str(e)}"}), 500
+
+
+@app.route("/api/models/ollama/tags", methods=["GET"])
+def get_ollama_model_tags():
+    """List available tags/sizes for a model in the Ollama library"""
+    model = request.args.get("model")
+    if not model:
+        return jsonify({"error": "model is required"}), 400
+
+    import re
+
+    import httpx
+
+    url = f"https://ollama.com/library/{model}/tags"
+    try:
+        resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0)
+        if resp.status_code != 200:
+            return (
+                jsonify(
+                    {
+                        "error": f"Failed to fetch tags from Ollama Library: {resp.text}"
+                    }
+                ),
+                resp.status_code,
+            )
+
+        html = resp.text
+        # Matches href="/library/model:tag"
+        pattern = rf'href="/library/{re.escape(model)}:([^"]+)"'
+        tags = re.findall(pattern, html)
+
+        # Deduplicate and keep order
+        unique_tags = []
+        seen = set()
+        for t in tags:
+            t_clean = t.strip()
+            if t_clean not in seen:
+                seen.add(t_clean)
+                unique_tags.append(t_clean)
+
+        # Fallback to general tag parsing if specific model name prefix did not match
+        if not unique_tags:
+            fallback_pattern = r'href="/library/[^"]+:([^"]+)"'
+            generic_tags = re.findall(fallback_pattern, html)
+            for t in generic_tags:
+                t_clean = t.strip()
+                if t_clean not in seen:
+                    seen.add(t_clean)
+                    unique_tags.append(t_clean)
+
+        return jsonify({"tags": unique_tags})
+    except Exception as e:
+        return jsonify({"error": f"Error fetching Ollama model tags: {str(e)}"}), 500
+
 
 
 @app.route("/api/models/pull", methods=["POST"])
