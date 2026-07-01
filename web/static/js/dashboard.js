@@ -3416,7 +3416,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         actionBtn.style.cssText = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#059669; border-color:#059669; color:white; border-radius:6px; font-weight: 500; transition: background 0.2s, transform 0.1s; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.25rem; cursor: pointer;';
                         actionBtn.innerHTML = '📥 Pull Model';
                         actionBtn.addEventListener('click', () => {
-                            pullModel(item.name, 'ollama');
+                            const tag = prompt(`Enter the tag/size/version for this Ollama model:\n(Examples: "latest", "8b", "32b", "70b")\n\nLeave empty to use: "latest"`, 'latest');
+                            if (tag === null) return;
+                            const fullModelName = tag.trim() ? `${item.name}:${tag.trim()}` : `${item.name}:latest`;
+                            pullModel(fullModelName, 'ollama');
                         });
                     } else {
                         actionBtn.style.cssText = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#2563eb; border-color:#2563eb; color:white; border-radius:6px; font-weight: 500; transition: background 0.2s, transform 0.1s; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.25rem; cursor: pointer;';
