@@ -2747,7 +2747,6 @@ async def admin_model_delete(request: Request):
         if not model:
             raise HTTPException(status_code=400, detail="model is required")
 
-        model = with_default_tag(model)
         manifest_path = manifest_path_for_model(model)
         
         # Try to resolve alias using configparser models.ini section helper
@@ -2758,10 +2757,15 @@ async def admin_model_delete(request: Request):
                 import configparser
                 config = configparser.ConfigParser()
                 config.read(ini_path)
-                alias = _resolve_ini_section_name(config, model)
+                if config.has_section(model):
+                    alias = model
+                else:
+                    normalized = with_default_tag(model)
+                    alias = _resolve_ini_section_name(config, normalized)
         except Exception:
             pass
 
+        model = with_default_tag(model)
         if not alias:
             router_path = router_path_for_model_name(model)
             alias = os.path.splitext(os.path.basename(router_path))[0]
