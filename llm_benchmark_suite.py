@@ -187,7 +187,7 @@ class LLMModelBenchmark:
                 "id": "analogy",
                 "category": "creative",
                 "label": "Creative: generate analogy",
-                "prompt": "Create an analogy comparing mental health to something tangible and useful.",
+                "prompt": "Create an analogy comparing friendship to something tangible and useful.",
                 "num_predict": 400,
             },
         ]
