@@ -1359,7 +1359,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const input = document.createElement('input');
                 input.type = 'checkbox';
                 input.value = model;
-                input.checked = (idx === 0);
+                input.checked = false;
                 
                 const span = document.createElement('span');
                 span.className = 'checkbox-label';
