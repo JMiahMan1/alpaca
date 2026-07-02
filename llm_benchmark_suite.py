@@ -250,10 +250,15 @@ class LLMModelBenchmark:
             return False
 
         if test_id == "debug_fix":
-            return any(x in cleaned for x in ["range(len", "range(0", "for item in", "sum("])
+            no_spaces = cleaned.replace(" ", "")
+            has_correct_range = any(r in no_spaces for r in ["range(len", "range(0,len"])
+            has_sum = "sum(" in no_spaces
+            has_direct_loop = any(f"for {var} in items" in cleaned for var in ["item", "i", "x", "val", "num", "elem", "element"])
+            return has_correct_range or has_sum or has_direct_loop
 
         elif test_id == "code_refactor":
-            return "set(" in cleaned
+            no_spaces = cleaned.replace(" ", "")
+            return any(x in no_spaces for x in ["set(", "fromkeys("])
 
         elif test_id == "guess_game":
             return "random" in cleaned and "input(" in cleaned and any(x in cleaned for x in ["randint", "randrange", "secret", "number"])
@@ -265,7 +270,8 @@ class LLMModelBenchmark:
             return "42" in cleaned
 
         elif test_id == "math_problem":
-            return any(x in cleaned for x in ["1:08", "1:09", "1 pm", "meeting", "4 hours"])
+            no_spaces = cleaned.replace(" ", "")
+            return any(x in no_spaces for x in ["1:08", "1:09", "13:08", "13:09", "1.08pm", "1.09pm", "1.08", "1.09"])
 
         elif test_id == "json_extraction":
             has_name = "john" in cleaned
@@ -358,7 +364,7 @@ class LLMModelBenchmark:
         last_error = None
         for proxy_url in self.PROXY_SERVER_URLS:
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
+                async with httpx.AsyncClient(timeout=240.0) as client:
                     start_t = time.time()
                     if sampler:
                         sampler.start()
@@ -373,14 +379,14 @@ class LLMModelBenchmark:
                             "think": False,
                             "options": {
                                 "num_predict": (
-                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reason", "thinking", "ornith"])
                                     else test.get("num_predict", 50)
                                 ),
                                 "temperature": 0.3,
                             },
                         },
                         headers={"X-Request-Source": "shared-llm/benchmark"},
-                        timeout=120.0,
+                        timeout=240.0,
                     )
                     elapsed = time.time() - start_t
                     if sampler:
@@ -420,6 +426,15 @@ class LLMModelBenchmark:
                     await sampler.stop()
                 last_error = e
                 continue
+        error_msg = ""
+        if last_error:
+            if isinstance(last_error, (httpx.TimeoutException, asyncio.TimeoutError)):
+                error_msg = f"Request timed out: {type(last_error).__name__}"
+            else:
+                error_msg = f"{type(last_error).__name__}: {str(last_error)}" if str(last_error) else type(last_error).__name__
+        else:
+            error_msg = "Unknown error"
+
         return {
             "proxy": "all_failed",
             "success": False,
@@ -427,7 +442,7 @@ class LLMModelBenchmark:
             "latency": 0,
             "response": None,
             "tokens_generated": 0,
-            "error": str(last_error) if last_error else "Unknown error",
+            "error": error_msg,
         }
 
     async def test_model_direct(
@@ -437,7 +452,7 @@ class LLMModelBenchmark:
         last_error = None
         for ollama_url in self.OLLAMA_SERVER_URLS:
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
+                async with httpx.AsyncClient(timeout=240.0) as client:
                     start_t = time.time()
                     if sampler:
                         sampler.start()
@@ -452,13 +467,13 @@ class LLMModelBenchmark:
                             "think": False,
                             "options": {
                                 "num_predict": (
-                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reason", "thinking", "ornith"])
                                     else test.get("num_predict", 50)
                                 ),
                                 "temperature": 0.3,
                             },
                         },
-                        timeout=120.0,
+                        timeout=240.0,
                     )
                     elapsed = time.time() - start_t
                     if sampler:
@@ -495,6 +510,15 @@ class LLMModelBenchmark:
                     await sampler.stop()
                 last_error = e
                 continue
+        error_msg = ""
+        if last_error:
+            if isinstance(last_error, (httpx.TimeoutException, asyncio.TimeoutError)):
+                error_msg = f"Request timed out: {type(last_error).__name__}"
+            else:
+                error_msg = f"{type(last_error).__name__}: {str(last_error)}" if str(last_error) else type(last_error).__name__
+        else:
+            error_msg = "Unknown error"
+
         return {
             "ollama_url": "all_failed",
             "success": False,
@@ -502,7 +526,7 @@ class LLMModelBenchmark:
             "latency": 0,
             "response": None,
             "tokens_generated": 0,
-            "error": str(last_error) if last_error else "Unknown error",
+            "error": error_msg,
         }
 
     def _display_live_results(self, results: Dict):
