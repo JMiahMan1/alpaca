@@ -5188,18 +5188,26 @@ async def chat(request: Request):
             "role": message.get("role", "assistant") if message else "assistant",
             "content": final_content
         }
-        if final_thinking:
-            if think_val is None:
-                # Default: blend/wrap
-                if "<think>" not in final_content:
-                    client_message["content"] = f"<think>\n{final_thinking}\n</think>\n{final_content}"
-                client_message["thinking"] = final_thinking
-            elif think_val is True:
-                # Explicit True: separate
-                client_message["thinking"] = final_thinking
-            else:
-                # Explicit False: strip/filter out thinking entirely
-                pass
+        
+        if think_val is False:
+            if client_message.get("content"):
+                client_message["content"] = re.sub(
+                    r"<(think|thinking)>[\s\S]*?</\1>\s*",
+                    "",
+                    client_message["content"],
+                    flags=re.IGNORECASE
+                ).strip()
+            final_thinking = None
+        else:
+            if final_thinking:
+                if think_val is None:
+                    # Default: blend/wrap
+                    if "<think>" not in final_content:
+                        client_message["content"] = f"<think>\n{final_thinking}\n</think>\n{final_content}"
+                    client_message["thinking"] = final_thinking
+                elif think_val is True:
+                    # Explicit True: separate
+                    client_message["thinking"] = final_thinking
                 
         chunk = ollama_chat_chunk(model_name, client_message, True, choice.get("finish_reason"))
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
@@ -5579,18 +5587,23 @@ async def generate(request: Request):
             final_thinking = message.get("thinking") if message else None
             
             client_content = final_response
-            if final_thinking:
-                if think_val is None:
-                    # Default: blend/wrap
-                    if "<think>" not in final_response:
-                        client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
-                elif think_val is True:
-                    # Explicit True: separate
-                    client_content = final_response
-                else:
-                    # Explicit False: strip thinking
-                    client_content = final_response
-                    final_thinking = None
+            if think_val is False:
+                client_content = re.sub(
+                    r"<(think|thinking)>[\s\S]*?</\1>\s*",
+                    "",
+                    client_content,
+                    flags=re.IGNORECASE
+                ).strip()
+                final_thinking = None
+            else:
+                if final_thinking:
+                    if think_val is None:
+                        # Default: blend/wrap
+                        if "<think>" not in final_response:
+                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                    elif think_val is True:
+                        # Explicit True: separate
+                        client_content = final_response
                 
             chunk = ollama_generate_chunk(
                 model_name, client_content, True, choice.get("finish_reason")
@@ -5604,18 +5617,23 @@ async def generate(request: Request):
             final_thinking = data.get("thinking")
             
             client_content = final_response
-            if final_thinking:
-                if think_val is None:
-                    # Default: blend/wrap
-                    if "<think>" not in final_response:
-                        client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
-                elif think_val is True:
-                    # Explicit True: separate
-                    client_content = final_response
-                else:
-                    # Explicit False: strip thinking
-                    client_content = final_response
-                    final_thinking = None
+            if think_val is False:
+                client_content = re.sub(
+                    r"<(think|thinking)>[\s\S]*?</\1>\s*",
+                    "",
+                    client_content,
+                    flags=re.IGNORECASE
+                ).strip()
+                final_thinking = None
+            else:
+                if final_thinking:
+                    if think_val is None:
+                        # Default: blend/wrap
+                        if "<think>" not in final_response:
+                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                    elif think_val is True:
+                        # Explicit True: separate
+                        client_content = final_response
                 
             chunk = ollama_generate_chunk(model_name, client_content, done, done_reason)
             if final_thinking is not None and think_val is not False:

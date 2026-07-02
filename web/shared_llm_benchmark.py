@@ -12,7 +12,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 
 import httpx
 
@@ -40,11 +40,11 @@ class SharedLLMModelBenchmark:
         self.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     def strip_thinking(self, text: str) -> str:
-        """Remove <think>...</think> blocks from response — thinking models may still emit them."""
+        """Remove <think>/<thinking> blocks from response — thinking models may still emit them."""
         import re
 
-        # Remove <think>...</think> including multiline
-        cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        # Remove <think>...</think> and <thinking>...</thinking> including multiline
+        cleaned = re.sub(r"<(think|thinking)>[\s\S]*?</\1>", "", text, flags=re.IGNORECASE)
         return cleaned.strip()
 
     def validate_code(self, code: str) -> Dict:
@@ -181,7 +181,7 @@ class SharedLLMModelBenchmark:
         self,
         models: List[str],
         use_proxy: bool,
-        progress_callback: Callable = None,
+        progress_callback: Callable[..., Any] | None = None,
         cancel_event=None,
     ) -> Dict:
         """Run tasks for FastPath, Tool Use, and Code Gen validation."""

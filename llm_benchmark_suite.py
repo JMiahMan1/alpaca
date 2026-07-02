@@ -16,7 +16,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 import psutil
@@ -210,6 +210,10 @@ class LLMModelBenchmark:
             },
         ]
 
+    def strip_thinking(self, text: str) -> str:
+        """Remove <think>/<thinking> blocks from response — thinking models may still emit them."""
+        return re.sub(r"<(think|thinking)>[\s\S]*?</\1>", "", text, flags=re.IGNORECASE).strip()
+
     def _verify_functional_response(self, test_id: str, response: str) -> bool:
         """Evaluate functional response correctness based on the target requirements."""
         if not response or len(response.strip()) == 0:
@@ -217,7 +221,7 @@ class LLMModelBenchmark:
 
         # Clean the response from potential think tags
         cleaned = (
-            re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.IGNORECASE).strip().lower()
+            re.sub(r"<(think|thinking)>[\s\S]*?</\1>", "", response, flags=re.IGNORECASE).strip().lower()
         )
 
         refusals = [
@@ -344,6 +348,9 @@ class LLMModelBenchmark:
                             "model": model,
                             "messages": [{"role": "user", "content": test["prompt"]}],
                             "stream": False,
+                            # Disable thinking mode so MoE / thinking models don't
+                            # spend all tokens on <thinking> and return empty content.
+                            "think": False,
                             "options": {
                                 "num_predict": test.get("num_predict", 50),
                                 "temperature": 0.3,
@@ -361,9 +368,9 @@ class LLMModelBenchmark:
                         eval_ns = data.get("eval_duration", 0)
                         prompt_ns = data.get("prompt_eval_duration", 0)
                         latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
-                        response_text = data.get("message", {}).get("content") or data.get(
+                        response_text = self.strip_thinking(data.get("message", {}).get("content") or data.get(
                             "response", ""
-                        )
+                        ))
                         return {
                             "proxy": proxy_url,
                             "success": True,
@@ -417,6 +424,9 @@ class LLMModelBenchmark:
                             "model": model,
                             "prompt": test["prompt"],
                             "stream": False,
+                            # Disable thinking mode so MoE / thinking models don't
+                            # spend all tokens on <thinking> and return empty content.
+                            "think": False,
                             "options": {
                                 "num_predict": test.get("num_predict", 50),
                                 "temperature": 0.3,
@@ -438,7 +448,7 @@ class LLMModelBenchmark:
                             "success": True,
                             "prompt": test["prompt"],
                             "latency": round(latency, 3),
-                            "response": data.get("response", ""),
+                            "response": self.strip_thinking(data.get("response", "")),
                             "tokens_generated": data.get("eval_count", 0),
                             "eval_duration": eval_ns,
                             "prompt_eval_duration": prompt_ns,
@@ -531,7 +541,7 @@ class LLMModelBenchmark:
     ) -> Dict:
         """Run only functional (accuracy) tests on a model."""
         print(f"\n--- Running Functional Correctness Suite for: {model} ---")
-        results = {"model": model, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        results: Dict[str, Any] = {"model": model, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
         categories = {
             "coding": self._coding_tests,
             "reasoning": self._reasoning_tests,
@@ -837,7 +847,7 @@ class LLMModelBenchmark:
         print(f"Models: {models}")
         print("=" * 80)
 
-        all_results = {
+        all_results: Dict[str, Any] = {
             "benchmark_version": "3.0.0",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "benchmark_type": "proxy" if use_proxy else "direct",
