@@ -136,6 +136,20 @@ class LLMModelBenchmark:
                 "prompt": "Refactor this code to be more Pythonic and remove the nested loops:\n\n```\ndef find_unique_numbers(list1, list2, list3):\n    result = []\n    for item in list1:\n        if item not in result:\n            result.append(item)\n    for item in list2:\n        if item not in result:\n            result.append(item)\n    for item in list3:\n        if item not in result:\n            result.append(item)\n    return result\n```",
                 "num_predict": 500,
             },
+            {
+                "id": "guess_game",
+                "category": "coding",
+                "label": "Game: Number Guessing Game",
+                "prompt": "Write a fully functional, interactive Python script for a CLI Number Guessing Game. The game should randomly select a secret number between 1 and 100, give the player 7 attempts, provide higher/lower feedback, and display game stats (attempts used, win/loss) at the end.",
+                "num_predict": 600,
+            },
+            {
+                "id": "text_adventure",
+                "category": "coding",
+                "label": "Game: Text Adventure Game",
+                "prompt": "Write a short, interactive text-based adventure game in Python. The player should start in a room with at least two doors (e.g. gold door, monster door). The script must use input() to take player choices, branch the story path based on choices, and lead to at least one winning outcome and one losing outcome.",
+                "num_predict": 600,
+            },
         ]
 
     def _reasoning_tests(self, model: str) -> List[Dict]:
@@ -240,6 +254,12 @@ class LLMModelBenchmark:
 
         elif test_id == "code_refactor":
             return "set(" in cleaned
+
+        elif test_id == "guess_game":
+            return "random" in cleaned and "input(" in cleaned and any(x in cleaned for x in ["randint", "randrange", "secret", "number"])
+
+        elif test_id == "text_adventure":
+            return "input(" in cleaned and any(x in cleaned for x in ["door", "choice", "room", "path"]) and any(x in cleaned for x in ["win", "lose", "gold", "monster"])
 
         elif test_id == "logic_puzzle":
             return "42" in cleaned

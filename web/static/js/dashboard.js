@@ -1823,6 +1823,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 tr.appendChild(tdLat);
                 tr.appendChild(tdSpeed);
                 tr.appendChild(tdView);
+                
+                let expandedRow = null;
+                tr.style.cursor = 'pointer';
+                tr.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('prompt-text')) return;
+                    
+                    if (expandedRow) {
+                        expandedRow.remove();
+                        expandedRow = null;
+                        tr.classList.remove('expanded-parent');
+                    } else {
+                        expandedRow = document.createElement('tr');
+                        expandedRow.className = 'expanded-row';
+                        const tdFull = document.createElement('td');
+                        tdFull.colSpan = 6;
+                        tdFull.style.cssText = 'background: rgba(15, 23, 42, 0.4); padding: 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04);';
+                        
+                        const flex = document.createElement('div');
+                        flex.style.cssText = 'display:flex; flex-direction:column; gap:0.5rem;';
+                        
+                        const title = document.createElement('div');
+                        title.style.cssText = 'font-weight: 600; font-size: 0.75rem; color: var(--color-primary);';
+                        title.textContent = 'Inline Result Preview:';
+                        
+                        const codeBlock = document.createElement('pre');
+                        codeBlock.style.cssText = 'margin: 0; background: rgba(9, 15, 29, 0.95); border: 1px solid rgba(255, 255, 255, 0.05); padding: 0.75rem; border-radius: 6px; font-family: monospace; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; color: #e2e8f0; max-height: 300px;';
+                        codeBlock.textContent = test.response || test.error || 'No response recorded';
+                        
+                        flex.appendChild(title);
+                        flex.appendChild(codeBlock);
+                        tdFull.appendChild(flex);
+                        expandedRow.appendChild(tdFull);
+                        
+                        tr.parentNode.insertBefore(expandedRow, tr.nextSibling);
+                        tr.classList.add('expanded-parent');
+                    }
+                });
+                
                 detailedResultsBody.appendChild(tr);
             });
         });
@@ -1934,6 +1972,43 @@ document.addEventListener('DOMContentLoaded', () => {
             tr.appendChild(tdLat);
             tr.appendChild(tdPayload);
             tr.appendChild(tdView);
+            
+            let expandedRow = null;
+            tr.style.cursor = 'pointer';
+            tr.addEventListener('click', (e) => {
+                if (e.target.classList.contains('prompt-text')) return;
+                
+                if (expandedRow) {
+                    expandedRow.remove();
+                    expandedRow = null;
+                    tr.classList.remove('expanded-parent');
+                } else {
+                    expandedRow = document.createElement('tr');
+                    expandedRow.className = 'expanded-row';
+                    const tdFull = document.createElement('td');
+                    tdFull.colSpan = 6;
+                    tdFull.style.cssText = 'background: rgba(15, 23, 42, 0.4); padding: 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04);';
+                    
+                    const flex = document.createElement('div');
+                    flex.style.cssText = 'display:flex; flex-direction:column; gap:0.5rem;';
+                    
+                    const title = document.createElement('div');
+                    title.style.cssText = 'font-weight: 600; font-size: 0.75rem; color: var(--color-primary);';
+                    title.textContent = 'Inline Result Preview:';
+                    
+                    const codeBlock = document.createElement('pre');
+                    codeBlock.style.cssText = 'margin: 0; background: rgba(9, 15, 29, 0.95); border: 1px solid rgba(255, 255, 255, 0.05); padding: 0.75rem; border-radius: 6px; font-family: monospace; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; color: #e2e8f0; max-height: 300px;';
+                    codeBlock.textContent = task.response || task.error || 'No response recorded';
+                    
+                    flex.appendChild(title);
+                    flex.appendChild(codeBlock);
+                    tdFull.appendChild(flex);
+                    expandedRow.appendChild(tdFull);
+                    
+                    tr.parentNode.insertBefore(expandedRow, tr.nextSibling);
+                    tr.classList.add('expanded-parent');
+                }
+            });
             
             sharedDetailedResultsBody.appendChild(tr);
         });
