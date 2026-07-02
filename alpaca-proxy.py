@@ -2749,7 +2749,24 @@ async def admin_model_delete(request: Request):
 
         model = with_default_tag(model)
         manifest_path = manifest_path_for_model(model)
-        router_path = router_path_for_model_name(model)
+        
+        # Try to resolve alias using configparser models.ini section helper
+        alias = None
+        try:
+            ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+            if os.path.exists(ini_path):
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(ini_path)
+                alias = _resolve_ini_section_name(config, model)
+        except Exception:
+            pass
+
+        if not alias:
+            router_path = router_path_for_model_name(model)
+            alias = os.path.splitext(os.path.basename(router_path))[0]
+        else:
+            router_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.gguf")
 
         # If neither manifest nor router GGUF file/symlink exists, then 404
         if not manifest_path and not os.path.exists(router_path) and not os.path.islink(router_path):
@@ -2816,7 +2833,6 @@ async def admin_model_delete(request: Request):
             logger.warning(f"Failed to remove router path {router_path}: {re}")
 
         # Clean up profile.json and models.ini section for the deleted model
-        alias = os.path.splitext(os.path.basename(router_path))[0]
         try:
             profile_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.profile.json")
             if os.path.exists(profile_path):
@@ -3670,8 +3686,8 @@ def _resolve_ini_section_name(config, backend_model: str) -> str:
     if config.has_section(backend_model):
         return backend_model
     
-    # 2. Try sanitizing (slashes to '--', etc.)
-    sanitized = backend_model.replace("/", "--")
+    # 2. Try sanitizing (slashes and colons to '--', etc.)
+    sanitized = backend_model.replace("/", "--").replace(":", "--")
     for suffix in ["", "--latest"]:
         candidate = sanitized + suffix
         if config.has_section(candidate):
