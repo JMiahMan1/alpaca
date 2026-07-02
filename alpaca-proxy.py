@@ -162,6 +162,13 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
             if final_thinking:
                 req["thinking"] = final_thinking
             
+            # Extract thinking block if embedded in response
+            if not req.get("thinking") and req.get("response"):
+                match = re.search(r"<(think|thinking)>([\s\S]*?)</\1>", req["response"], flags=re.IGNORECASE)
+                if match:
+                    req["thinking"] = match.group(2).strip()
+                    req["response"] = re.sub(r"<(think|thinking)>[\s\S]*?</\1>\s*", "", req["response"], flags=re.IGNORECASE).strip()
+            
             # calculate prompt and completion tokens if not provided
             if not completion_tokens and req["response"]:
                 completion_tokens = max(1, int(len(req["response"]) / 4))
@@ -4797,7 +4804,7 @@ async def restore_slot_cache(backend_model: str, prefix_hash: str) -> bool:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 f"{LLAMA_SERVER_URL}/slots/{target_slot_id}",
-                params={"action": "restore"},
+                params={"action": "restore", "model": backend_model},
                 json={"filename": filename},
                 timeout=10.0,
             )
@@ -4859,7 +4866,7 @@ async def save_slot_cache(backend_model: str, new_prefix_hash: str, slot_id: int
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 f"{LLAMA_SERVER_URL}/slots/{slot_id}",
-                params={"action": "save"},
+                params={"action": "save", "model": backend_model},
                 json={"filename": filename},
                 timeout=10.0,
             )

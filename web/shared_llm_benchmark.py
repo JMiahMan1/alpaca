@@ -122,7 +122,7 @@ class SharedLLMModelBenchmark:
                                 "think": False,
                                 "options": {
                                     "num_predict": (
-                                        2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                        2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reason", "thinking", "ornith"])
                                         else max_tokens
                                     ),
                                     "temperature": 0.2,
@@ -155,7 +155,7 @@ class SharedLLMModelBenchmark:
                                 "think": False,
                                 "options": {
                                     "num_predict": (
-                                        2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                        2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reason", "thinking", "ornith"])
                                         else max_tokens
                                     ),
                                     "temperature": 0.2,
