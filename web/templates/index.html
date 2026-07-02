@@ -103,6 +103,19 @@
                             <div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Loading models...</div>
                         </div>
                     </div>
+
+                    <div class="control-group">
+                        <div class="flex-space" style="margin-bottom: 0.5rem;">
+                            <span class="control-label">Target Tests (General Run only)</span>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <span id="btn-select-all-tests" style="font-size:0.7rem; color:var(--color-primary); cursor:pointer; font-weight:600;">All</span>
+                                <span id="btn-deselect-all-tests" style="font-size:0.7rem; color:var(--text-muted); cursor:pointer; font-weight:600;">None</span>
+                            </div>
+                        </div>
+                        <div id="test-checkboxes" class="model-list-container" style="max-height: 150px; overflow-y: auto;">
+                            <div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Loading tests...</div>
+                        </div>
+                    </div>
                     
                     <div class="control-group grid-2" style="margin-bottom: 0.5rem;">
                         <button id="btn-run" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.5rem 0.25rem;">Run General</button>
@@ -402,6 +415,7 @@
                                             <th>Category</th>
                                             <th>Test Scenario</th>
                                             <th>Status</th>
+                                            <th>Last Run Date</th>
                                             <th>Latency (s)</th>
                                             <th>Speed (TPS)</th>
                                             <th>Payload Action</th>
@@ -409,7 +423,7 @@
                                     </thead>
                                     <tbody id="detailed-results-body">
                                         <tr>
-                                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                                            <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
                                                 Select a past benchmark or start a new run to load raw evaluation details.
                                             </td>
                                         </tr>

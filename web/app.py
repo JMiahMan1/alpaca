@@ -320,7 +320,7 @@ def get_progress_callback(run_type):
     return callback
 
 
-def run_general_in_thread(models, use_proxy, run_cancel_event, callback):
+def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_ids=None):
     global active_run
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -332,6 +332,7 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback):
                 use_proxy=use_proxy,
                 progress_callback=callback,
                 cancel_event=run_cancel_event,
+                test_ids=test_ids,
             )
         except Exception as e:
             print(f"Error in benchmark execution: {e}")
@@ -445,6 +446,43 @@ def get_models():
                 "warning": str(e),
             }
         )
+
+
+@app.route("/api/tests")
+def get_tests():
+    """Return list of all available tests dynamically loaded from configs"""
+    try:
+        all_tests = []
+        for cat in ["coding", "reasoning", "instruction", "creative", "home_automation"]:
+            cat_tests = getattr(benchmark, f"_{cat}_tests")("")
+            for t in cat_tests:
+                all_tests.append(
+                    {
+                        "id": t["id"],
+                        "category": cat,
+                        "label": t.get("label", t["id"]),
+                        "type": "functional",
+                    }
+                )
+        all_tests.append(
+            {
+                "id": "perf_medium",
+                "category": "performance",
+                "label": "Performance: Medium Load (800 tokens)",
+                "type": "performance",
+            }
+        )
+        all_tests.append(
+            {
+                "id": "perf_long",
+                "category": "performance",
+                "label": "Performance: Long Load (1000 tokens)",
+                "type": "performance",
+            }
+        )
+        return jsonify({"tests": all_tests})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def get_host_system_metrics():
@@ -575,6 +613,7 @@ def start_benchmark():
     data = request.get_json() or {}
     models = data.get("models", [])
     use_proxy = data.get("use_proxy", True)
+    test_ids = data.get("test_ids", None)
 
     if not models:
         return jsonify({"error": "No models specified"}), 400
@@ -595,7 +634,7 @@ def start_benchmark():
 
         benchmark_thread = threading.Thread(
             target=run_general_in_thread,
-            args=(models, use_proxy, cancel_event, callback),
+            args=(models, use_proxy, cancel_event, callback, test_ids),
             daemon=True,
         )
         benchmark_thread.start()
