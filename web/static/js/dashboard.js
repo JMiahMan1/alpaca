@@ -1474,6 +1474,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 item.appendChild(meta);
                 item.appendChild(badges);
                 
+                // Add Delete button
+                item.style.position = 'relative';
+                const deleteBtn = document.createElement('span');
+                deleteBtn.innerHTML = '🗑️';
+                deleteBtn.style.cssText = 'position: absolute; right: 10px; top: 10px; cursor: pointer; font-size: 0.85rem; opacity: 0.6; transition: opacity 0.2s; z-index: 10;';
+                deleteBtn.title = 'Delete result file';
+                deleteBtn.addEventListener('mouseenter', () => deleteBtn.style.opacity = '1');
+                deleteBtn.addEventListener('mouseleave', () => deleteBtn.style.opacity = '0.6');
+                deleteBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (!confirm(`Are you sure you want to permanently delete result file "${result.filename}"?`)) {
+                        return;
+                    }
+                    try {
+                        const deleteRes = await fetch(`/api/results/${result.filename}`, { method: 'DELETE' });
+                        if (deleteRes.ok) {
+                            logToTerminal(`Deleted result file ${result.filename}`, 'success');
+                            loadHistory();
+                        } else {
+                            const errData = await deleteRes.json();
+                            logToTerminal(errData.error || "Failed to delete result file", "error");
+                        }
+                    } catch (err) {
+                        logToTerminal(`Error deleting result file: ${err.message}`, "error");
+                    }
+                });
+                item.appendChild(deleteBtn);
+                
                 item.addEventListener('click', () => {
                     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
                     item.classList.add('active');
@@ -4022,6 +4050,157 @@ document.addEventListener('DOMContentLoaded', () => {
         switchTab(initialHash);
     } else {
         switchTab('monitor'); // Start on System Monitor
+    }
+
+    function downloadFile(content, filename, contentType) {
+        const blob = new Blob([content], { type: contentType });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+
+    function exportGeneralResults() {
+        if (!currentResults || currentResults.length === 0) {
+            showToast("No general benchmark results loaded to export", "error");
+            return;
+        }
+        
+        let md = `# General Benchmark Results Report\n\n`;
+        md += `* **Generated At:** ${new Date().toLocaleString()}\n`;
+        md += `* **Models Tested:** ${currentResults.length}\n\n`;
+        
+        currentResults.forEach(modelData => {
+            md += `## Model: ${modelData.model}\n\n`;
+            md += `* **Timestamp:** ${modelData.timestamp || 'N/A'}\n`;
+            if (modelData.performance_metrics) {
+                const perf = modelData.performance_metrics;
+                md += `* **Average Speed:** ${perf.avg_tps || 0} TPS\n`;
+                md += `* **Average TTFT:** ${perf.avg_ttft_ms || 0} ms\n`;
+                md += `* **Peak RAM:** ${perf.peak_ram_pct || 0}%\n`;
+                md += `* **Peak VRAM:** ${perf.peak_vram_mb || 0} MB\n`;
+            }
+            md += `\n`;
+            
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            categories.forEach(catKey => {
+                const catStats = modelData[`category_${catKey}`];
+                if (!catStats || !catStats.tests) return;
+                
+                md += `### Category: ${catKey.replace('_', ' ').toUpperCase()}\n\n`;
+                md += `| Test Scenario | Status | Latency | Speed |\n`;
+                md += `| --- | --- | --- | --- |\n`;
+                
+                catStats.tests.forEach(test => {
+                    const latVal = test.eval_duration && test.prompt_eval_duration ? (test.eval_duration + test.prompt_eval_duration) / 1e9 : test.latency;
+                    const duration = latVal || 0;
+                    const tps = (test.success && test.tokens_generated > 0 && duration > 0) ? (test.tokens_generated / duration) : 0;
+                    
+                    md += `| ${test.test_label} | ${test.success ? '✅ Success' : '❌ Fail'} | ${duration.toFixed(2)}s | ${tps > 0 ? tps.toFixed(1) + ' TPS' : '-'} |\n`;
+                });
+                md += `\n`;
+                
+                catStats.tests.forEach(test => {
+                    md += `#### ${test.test_label} Detailed Log\n\n`;
+                    md += `**Prompt (Question):**\n\`\`\`\n${test.prompt || '(none)'}\n\`\`\`\n\n`;
+                    
+                    let thinking = test.thinking || '';
+                    let response = test.response || '';
+                    if (!thinking && response) {
+                        const match = response.match(/<(think|thinking)>([\s\S]*?)<\/\1>/i);
+                        if (match) {
+                            thinking = match[2].trim();
+                        }
+                    }
+                    
+                    if (thinking) {
+                        md += `**Thinking Process:**\n\`\`\`\n${thinking}\n\`\`\`\n\n`;
+                    }
+                    
+                    md += `**Response:**\n\`\`\`\n${response || test.error || '(no response)'}\n\`\`\`\n\n`;
+                    md += `* * * * *\n\n`;
+                });
+            });
+        });
+        
+        downloadFile(md, `general_benchmark_report_${new Date().toISOString().slice(0,10)}.md`, 'text/markdown');
+    }
+
+    function exportSharedResults() {
+        if (!currentSharedResults || currentSharedResults.length === 0) {
+            showToast("No SharedLLM benchmark results loaded to export", "error");
+            return;
+        }
+        
+        let md = `# SharedLLM Benchmark Results Report\n\n`;
+        md += `* **Generated At:** ${new Date().toLocaleString()}\n`;
+        md += `* **Models Tested:** ${currentSharedResults.length}\n\n`;
+        
+        currentSharedResults.forEach(modelData => {
+            md += `## Model: ${modelData.model}\n\n`;
+            md += `* **Timestamp:** ${modelData.timestamp || 'N/A'}\n`;
+            if (modelData.performance_metrics) {
+                const perf = modelData.performance_metrics;
+                md += `* **Average Speed:** ${perf.avg_tps || 0} TPS\n`;
+                md += `* **Average TTFT:** ${perf.avg_ttft_ms || 0} ms\n`;
+            }
+            md += `\n`;
+            
+            if (modelData.tasks) {
+                md += `### Verification Audits\n\n`;
+                md += `| Test Scope | Status | Latency | Payload Details |\n`;
+                md += `| --- | --- | --- | --- |\n`;
+                
+                modelData.tasks.forEach(task => {
+                    const latency = typeof task.latency === 'number' ? task.latency : 0;
+                    const val = task.validation || {};
+                    let details = '';
+                    if (task.test_id === 'fast_path') {
+                        details = `Intent: "${val.actual || ''}" (${val.correct_intent ? 'Correct' : 'Incorrect'})`;
+                    } else if (task.test_id === 'tool_use') {
+                        details = `Valid JSON: ${val.valid_json ? 'Yes' : 'No'} | Tool: "${val.parsed?.tool || ''}"`;
+                    } else if (task.test_id === 'code_gen') {
+                        details = `Class: ${val.has_class ? 'Yes' : 'No'} | acquire: ${val.has_acquire ? 'Yes' : 'No'} | release: ${val.has_release ? 'Yes' : 'No'}`;
+                    }
+                    
+                    md += `| ${task.test_label} | ${task.success ? '✅ Pass' : '❌ Fail'} | ${latency.toFixed(2)}s | ${details} |\n`;
+                });
+                md += `\n`;
+                
+                modelData.tasks.forEach(task => {
+                    md += `#### ${task.test_label} Detailed Log\n\n`;
+                    md += `**Prompt (Question):**\n\`\`\`\n${task.prompt || '(none)'}\n\`\`\`\n\n`;
+                    
+                    let thinking = task.thinking || '';
+                    let response = task.response || '';
+                    if (!thinking && response) {
+                        const match = response.match(/<(think|thinking)>([\s\S]*?)<\/\1>/i);
+                        if (match) {
+                            thinking = match[2].trim();
+                        }
+                    }
+                    
+                    if (thinking) {
+                        md += `**Thinking Process:**\n\`\`\`\n${thinking}\n\`\`\`\n\n`;
+                    }
+                    
+                    md += `**Response / Generated Code:**\n\`\`\`python\n${response || task.error || '(no response)'}\n\`\`\`\n\n`;
+                    md += `* * * * *\n\n`;
+                });
+            }
+        });
+        
+        downloadFile(md, `shared_llm_benchmark_report_${new Date().toISOString().slice(0,10)}.md`, 'text/markdown');
+    }
+
+    const btnExportGeneral = document.getElementById('btn-export-general');
+    if (btnExportGeneral) {
+        btnExportGeneral.addEventListener('click', exportGeneralResults);
+    }
+    const btnExportShared = document.getElementById('btn-export-shared');
+    if (btnExportShared) {
+        btnExportShared.addEventListener('click', exportSharedResults);
     }
 
     // Listen for hashchange event to handle back/forward navigation
