@@ -706,7 +706,7 @@ def get_results_list():
                 print(f"Error reading file {file_path.name}: {fe}")
 
         # Sort files by timestamp (newest first)
-        results_list.sort(key=lambda x: x["filename"], reverse=True)
+        results_list.sort(key=lambda x: x.get("generated_at") or "", reverse=True)
         return jsonify({"results": results_list})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
