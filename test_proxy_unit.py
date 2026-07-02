@@ -1525,7 +1525,7 @@ async def test_admin_model_delete_conditional_unload():
     alpaca_proxy.read_manifest = mock_read_manifest
 
     with patch("os.path.exists", return_value=True), \
-         patch("os.remove") as mock_remove:
+         patch("os.remove"):
         # Delete with status "loaded"
         res = await alpaca_proxy.admin_model_delete(mock_request)
         assert res["status"] == "deleted"
