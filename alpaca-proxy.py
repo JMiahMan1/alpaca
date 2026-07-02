@@ -4882,8 +4882,8 @@ async def restore_slot_cache(backend_model: str, prefix_hash: str) -> bool:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 f"{LLAMA_SERVER_URL}/slots/{target_slot_id}",
-                params={"action": "restore", "model": backend_model},
-                json={"filename": filename},
+                params={"action": "restore"},
+                json={"filename": filename, "model": backend_model},
                 timeout=10.0,
             )
             if resp.status_code == 200:
@@ -4944,8 +4944,8 @@ async def save_slot_cache(backend_model: str, new_prefix_hash: str, slot_id: int
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 f"{LLAMA_SERVER_URL}/slots/{slot_id}",
-                params={"action": "save", "model": backend_model},
-                json={"filename": filename},
+                params={"action": "save"},
+                json={"filename": filename, "model": backend_model},
                 timeout=10.0,
             )
             if resp.status_code == 200:
