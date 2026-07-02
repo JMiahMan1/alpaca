@@ -1,5 +1,5 @@
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -636,6 +636,29 @@ def test_api_pulls_active_includes_status_field(client):
         assert data["active_pulls"]["test-model"]["local_name"] == "alias"
     finally:
         active_pulls.pop("test-model", None)
+
+
+def test_api_result_detail_get_and_delete(client):
+    """Test retrieving and deleting result files via API"""
+    mock_data = {"benchmark_version": "3.0.0", "results": []}
+    mock_file_content = json.dumps(mock_data)
+
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("builtins.open", mock_open(read_data=mock_file_content)), \
+         patch("os.remove") as mock_remove:
+         
+        # Test GET
+        res = client.get("/api/results/benchmarks_12345_all_proxy.json")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["benchmark_version"] == "3.0.0"
+
+        # Test DELETE
+        res_del = client.delete("/api/results/benchmarks_12345_all_proxy.json")
+        assert res_del.status_code == 200
+        del_data = json.loads(res_del.data.decode("utf-8"))
+        assert del_data["status"] == "deleted"
+        mock_remove.assert_called_once()
 
 
 
