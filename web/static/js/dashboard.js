@@ -29,8 +29,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnRun = document.getElementById('btn-run');
     const btnRunShared = document.getElementById('btn-run-shared');
     const btnCancel = document.getElementById('btn-cancel');
-    const selectAllBtn = document.getElementById('btn-select-all');
+     const selectAllBtn = document.getElementById('btn-select-all');
     const deselectAllBtn = document.getElementById('btn-deselect-all');
+    const testCheckboxes = document.getElementById('test-checkboxes');
+    const selectAllTestsBtn = document.getElementById('btn-select-all-tests');
+    const deselectAllTestsBtn = document.getElementById('btn-deselect-all-tests');
     
     // Progress UI Elements
     const progressCard = document.getElementById('progress-card');
@@ -534,6 +537,23 @@ document.addEventListener('DOMContentLoaded', () => {
         boxes.forEach(box => box.checked = false);
         logToTerminal("All models deselected");
     });
+
+    selectAllTestsBtn.addEventListener('click', () => {
+        const boxes = testCheckboxes.querySelectorAll('input[type="checkbox"]');
+        boxes.forEach(box => box.checked = true);
+        logToTerminal("All tests selected");
+    });
+
+    deselectAllTestsBtn.addEventListener('click', () => {
+        const boxes = testCheckboxes.querySelectorAll('input[type="checkbox"]');
+        boxes.forEach(box => box.checked = false);
+        logToTerminal("All tests deselected");
+    });
+
+    function getSelectedTests() {
+        const boxes = testCheckboxes.querySelectorAll('input[type="checkbox"]:checked');
+        return Array.from(boxes).map(box => box.value);
+    }
 
     function getSelectedModels() {
         const boxes = modelCheckboxes.querySelectorAll('input[type="checkbox"]:checked');
@@ -1377,6 +1397,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Fetch and display available tests in configurations sidebar
+    async function loadTests() {
+        try {
+            logToTerminal("Fetching available test cases...");
+            const res = await fetch('/api/tests');
+            const data = await res.json();
+            
+            const tests = data.tests || [];
+            testCheckboxes.innerHTML = '';
+            
+            if (tests.length === 0) {
+                testCheckboxes.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">No test cases detected</div>`;
+                return;
+            }
+
+            tests.forEach((test) => {
+                const item = document.createElement('label');
+                item.className = 'checkbox-item';
+                
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = test.id;
+                input.checked = true;
+                
+                const span = document.createElement('span');
+                span.className = 'checkbox-label';
+                span.textContent = `${test.category.toUpperCase()}: ${test.label}`;
+                
+                item.appendChild(input);
+                item.appendChild(span);
+                testCheckboxes.appendChild(item);
+            });
+            
+            logToTerminal(`Loaded ${tests.length} benchmark test cases`, 'success');
+        } catch (err) {
+            logToTerminal(`Failed to load tests: ${err.message}`, 'error');
+        }
+    }
+
     // Load past reports list and auto-restore comparison view on refresh
     async function loadHistory() {
         try {
@@ -1828,6 +1887,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 badge.textContent = test.success ? 'Success' : 'Fail';
                 tdStatus.appendChild(badge);
 
+                const tdLastRun = document.createElement('td');
+                tdLastRun.style.color = 'var(--text-muted)';
+                tdLastRun.textContent = test.last_run ? test.last_run.replace('T', ' ') : '-';
+
                 const tdLat = document.createElement('td');
                 let latVal = test.eval_duration && test.prompt_eval_duration ? (test.eval_duration + test.prompt_eval_duration) / 1e9 : test.latency;
                 tdLat.textContent = latVal ? `${latVal.toFixed(2)}s` : '-';
@@ -1854,6 +1917,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tr.appendChild(tdCat);
                 tr.appendChild(tdLabel);
                 tr.appendChild(tdStatus);
+                tr.appendChild(tdLastRun);
                 tr.appendChild(tdLat);
                 tr.appendChild(tdSpeed);
                 tr.appendChild(tdView);
@@ -2061,10 +2125,16 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const isShared = endpoint.endsWith('shared_llm');
+        const selectedTests = isShared ? [] : getSelectedTests();
+        if (!isShared && selectedTests.length === 0) {
+            alert('Please select at least one test case to run.');
+            return;
+        }
+
         btnRun.disabled = true;
         btnRunShared.disabled = true;
         
-        const isShared = endpoint.endsWith('shared_llm');
         if (isShared) {
             btnRunShared.innerHTML = `<span class="loader"></span> Starting...`;
         } else {
@@ -2075,13 +2145,19 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             logToTerminal(`Initiating benchmark for models: ${selected.join(', ')}...`, 'info', termTarget);
+            
+            const payload = {
+                models: selected,
+                use_proxy: (benchmarkMode === 'proxy')
+            };
+            if (!isShared) {
+                payload.test_ids = selectedTests;
+            }
+
             const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    models: selected,
-                    use_proxy: (benchmarkMode === 'proxy')
-                })
+                body: JSON.stringify(payload)
             });
 
             if (res.status === 409) {
@@ -4034,6 +4110,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Startup Tasks
     initCharts();
     loadModels();
+    loadTests();
     loadModelProfiles();
     loadHistory();
     loadActivePulls();

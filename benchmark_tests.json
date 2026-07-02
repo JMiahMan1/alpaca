@@ -1,0 +1,84 @@
+{
+  "coding": [
+    {
+      "id": "debug_fix",
+      "label": "Python: debug logic error",
+      "prompt": "Find and fix the bug in this function:\n\n```\ndef sum_list(items):\n    total = 0\n    for i in range(1, len(items)):\n        total += items[i]\n    return total\n```\nThe function should sum all list items, not skip the first one.",
+      "num_predict": 400
+    },
+    {
+      "id": "code_refactor",
+      "label": "Code: refactor for efficiency",
+      "prompt": "Refactor this code to be more Pythonic and remove the nested loops:\n\n```\ndef find_unique_numbers(list1, list2, list3):\n    result = []\n    for item in list1:\n        if item not in result:\n            result.append(item)\n    for item in list2:\n        if item not in result:\n            result.append(item)\n    for item in list3:\n        if item not in result:\n            result.append(item)\n    return result\n```",
+      "num_predict": 500
+    },
+    {
+      "id": "guess_game",
+      "label": "Game: Number Guessing Game",
+      "prompt": "Write a fully functional, interactive Python script for a CLI Number Guessing Game. The game should randomly select a secret number between 1 and 100, give the player 7 attempts, provide higher/lower feedback, and display game stats (attempts used, win/loss) at the end.",
+      "num_predict": 600
+    },
+    {
+      "id": "text_adventure",
+      "label": "Game: Text Adventure Game",
+      "prompt": "Write a short, interactive text-based adventure game in Python. The player should start in a room with at least two doors (e.g. gold door, monster door). The script must use input() to take player choices, branch the story path based on choices, and lead to at least one winning outcome and one losing outcome.",
+      "num_predict": 600
+    }
+  ],
+  "reasoning": [
+    {
+      "id": "logic_puzzle",
+      "label": "Logic: identify rule",
+      "prompt": "What rule is being followed in this sequence? 2, 6, 12, 20, 30... and what comes next?",
+      "num_predict": 400
+    },
+    {
+      "id": "math_problem",
+      "label": "Math: train meeting problem",
+      "prompt": "Two trains leave from different cities heading toward each other. Train A travels 60 mph and leaves at 9:00 AM. Train B travels 80 mph and leaves at 10:00 AM. The cities are 500 miles apart. When do they meet?",
+      "num_predict": 500
+    }
+  ],
+  "instruction": [
+    {
+      "id": "json_extraction",
+      "label": "JSON: extract structured data",
+      "prompt": "Extract the person's name, age, and location from this text and return as JSON: 'John Doe, 35, lives in Boston, MA'",
+      "num_predict": 300
+    },
+    {
+      "id": "summarization",
+      "label": "Summarization: 3 bullet points",
+      "prompt": "Summarize in exactly 3 bullet points: 'The transformer architecture revolutionized natural language processing by introducing self-attention mechanisms. This innovation replaced recurrent neural networks and enabled parallelization, significantly improving training efficiency. Transformers now power state-of-the-art models like GPT, BERT, and T5.'",
+      "num_predict": 400
+    }
+  ],
+  "creative": [
+    {
+      "id": "story_start",
+      "label": "Creative: sci-fi story opening",
+      "prompt": "Write a compelling 4-sentence opening for a sci-fi story about an AI that discovers it's been dreaming.",
+      "num_predict": 400
+    },
+    {
+      "id": "analogy",
+      "label": "Creative: generate analogy",
+      "prompt": "Create an analogy comparing friendship to something tangible and useful.",
+      "num_predict": 400
+    }
+  ],
+  "home_automation": [
+    {
+      "id": "device_control",
+      "label": "HA: control smart device",
+      "prompt": "You are a home automation assistant. A user says: 'Turn on the bedroom light and set it to 60% brightness.' Describe in plain text exactly what action you would take and confirm it to the user.",
+      "num_predict": 300
+    },
+    {
+      "id": "device_status",
+      "label": "HA: report device status",
+      "prompt": "You are a home automation assistant. A user asks: 'Is the thermostat currently set to 68 degrees?' Describe what you would check and give a plausible confirmation response to the user.",
+      "num_predict": 300
+    }
+  ]
+}

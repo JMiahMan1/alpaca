@@ -55,6 +55,26 @@ class LLMModelBenchmark:
             ]
         self.RESULTS_DIR = Path("data/llm_benchmarks")
         self.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        self.tests_config = self._load_tests_config()
+
+    def _load_tests_config(self) -> Dict[str, List[Dict]]:
+        filepath = os.getenv("BENCHMARK_TESTS_JSON", "benchmark_tests.json")
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as f:
+                    config = json.load(f)
+                required = ["coding", "reasoning", "instruction", "creative", "home_automation"]
+                if all(req in config for req in required):
+                    for cat in required:
+                        for test in config[cat]:
+                            test["category"] = cat
+                    print(f"[benchmark] Successfully loaded dynamic tests config from {filepath}")
+                    return config
+            except Exception as e:
+                print(
+                    f"[benchmark] Error loading {filepath}: {e}. Falling back to hardcoded defaults."
+                )
+        return {}
 
     async def discover_ollama_models(self, base_url: str) -> List[str]:
         """Dynamically discover available models from Ollama endpoint."""
@@ -121,6 +141,8 @@ class LLMModelBenchmark:
         return ["qwen3:8b", "qwen2.5-coder:7b", "qwen3.5:9b"]
 
     def _coding_tests(self, model: str) -> List[Dict]:
+        if "coding" in self.tests_config:
+            return self.tests_config["coding"]
         return [
             {
                 "id": "debug_fix",
@@ -153,6 +175,8 @@ class LLMModelBenchmark:
         ]
 
     def _reasoning_tests(self, model: str) -> List[Dict]:
+        if "reasoning" in self.tests_config:
+            return self.tests_config["reasoning"]
         return [
             {
                 "id": "logic_puzzle",
@@ -171,6 +195,8 @@ class LLMModelBenchmark:
         ]
 
     def _instruction_tests(self, model: str) -> List[Dict]:
+        if "instruction" in self.tests_config:
+            return self.tests_config["instruction"]
         return [
             {
                 "id": "json_extraction",
@@ -189,6 +215,8 @@ class LLMModelBenchmark:
         ]
 
     def _creative_tests(self, model: str) -> List[Dict]:
+        if "creative" in self.tests_config:
+            return self.tests_config["creative"]
         return [
             {
                 "id": "story_start",
@@ -207,6 +235,8 @@ class LLMModelBenchmark:
         ]
 
     def _home_automation_tests(self, model: str) -> List[Dict]:
+        if "home_automation" in self.tests_config:
+            return self.tests_config["home_automation"]
         return [
             {
                 "id": "device_control",
@@ -633,7 +663,14 @@ class LLMModelBenchmark:
         print("\n" + "=" * 80)
 
     async def benchmark_model_functional(
-        self, model: str, use_proxy: bool, progress_callback=None, cancel_event=None
+        self,
+        model: str,
+        use_proxy: bool,
+        progress_callback=None,
+        cancel_event=None,
+        completed_container=None,
+        total_tests=None,
+        test_ids: Optional[List[str]] = None,
     ) -> Dict:
         """Run only functional (accuracy) tests on a model."""
         print(f"\n--- Running Functional Correctness Suite for: {model} ---")
@@ -647,13 +684,19 @@ class LLMModelBenchmark:
         }
 
         # Calculate total tests for progress
-        total_tests = sum(len(test_func(model)) for test_func in categories.values())
-        completed_tests = 0
+        if total_tests is None:
+            total_tests = sum(len(test_func(model)) for test_func in categories.values())
+        if completed_container is None:
+            completed_container = [0]
 
         for category, test_func in categories.items():
             if cancel_event and cancel_event.is_set():
                 break
             tests = test_func(model)
+            if test_ids:
+                tests = [t for t in tests if t["id"] in test_ids]
+                if not tests:
+                    continue
             category_results = []
             for i, test in enumerate(tests, 1):
                 if cancel_event and cancel_event.is_set():
@@ -711,7 +754,7 @@ class LLMModelBenchmark:
                     {"test_id": test["id"], "test_category": category, "test_label": test["label"]}
                 )
                 category_results.append(test_result)
-                completed_tests += 1
+                completed_container[0] += 1
 
                 # Emit test_complete progress
                 if progress_callback:
@@ -728,9 +771,11 @@ class LLMModelBenchmark:
                                     "test_label": test["label"],
                                     "result": test_result,
                                     "progress": {
-                                        "completed": completed_tests,
+                                        "completed": completed_container[0],
                                         "total": total_tests,
-                                        "percentage": round((completed_tests / total_tests) * 100),
+                                        "percentage": round(
+                                            (completed_container[0] / total_tests) * 100
+                                        ),
                                     },
                                 },
                             )
@@ -744,9 +789,11 @@ class LLMModelBenchmark:
                                     "test_label": test["label"],
                                     "result": test_result,
                                     "progress": {
-                                        "completed": completed_tests,
+                                        "completed": completed_container[0],
                                         "total": total_tests,
-                                        "percentage": round((completed_tests / total_tests) * 100),
+                                        "percentage": round(
+                                            (completed_container[0] / total_tests) * 100
+                                        ),
                                     },
                                 },
                             )
@@ -757,7 +804,14 @@ class LLMModelBenchmark:
         return results
 
     async def benchmark_model_performance(
-        self, model: str, use_proxy: bool, progress_callback=None, cancel_event=None
+        self,
+        model: str,
+        use_proxy: bool,
+        progress_callback=None,
+        cancel_event=None,
+        completed_container=None,
+        total_tests=None,
+        test_ids: Optional[List[str]] = None,
     ) -> Dict:
         """Run performance suite measuring speed and peak footprint metrics."""
         print(f"\n--- Running Performance Suite for: {model} ---")
@@ -774,12 +828,16 @@ class LLMModelBenchmark:
                 "num_predict": 1000,
             },
         ]
+        if test_ids:
+            load_tests = [t for t in load_tests if t["id"] in test_ids]
 
         tps_list = []
         ttft_list = []
         sampler = self.ResourceSampler()
-        total_tests = len(load_tests)
-        completed_tests = 0
+        if total_tests is None:
+            total_tests = len(load_tests)
+        if completed_container is None:
+            completed_container = [0]
 
         print("Measuring footprint under active inference load...")
         for i, test in enumerate(load_tests, 1):
@@ -839,7 +897,7 @@ class LLMModelBenchmark:
             else:
                 print(f"✗ ({res.get('error')})")
 
-            completed_tests += 1
+            completed_container[0] += 1
 
             # Emit test_complete progress
             if progress_callback:
@@ -856,9 +914,11 @@ class LLMModelBenchmark:
                                 "test_label": test["id"],
                                 "result": res,
                                 "progress": {
-                                    "completed": completed_tests,
+                                    "completed": completed_container[0],
                                     "total": total_tests,
-                                    "percentage": round((completed_tests / total_tests) * 100),
+                                    "percentage": round(
+                                        (completed_container[0] / total_tests) * 100
+                                    ),
                                 },
                             },
                         )
@@ -872,9 +932,11 @@ class LLMModelBenchmark:
                                 "test_label": test["id"],
                                 "result": res,
                                 "progress": {
-                                    "completed": completed_tests,
+                                    "completed": completed_container[0],
                                     "total": total_tests,
-                                    "percentage": round((completed_tests / total_tests) * 100),
+                                    "percentage": round(
+                                        (completed_container[0] / total_tests) * 100
+                                    ),
                                 },
                             },
                         )
@@ -932,6 +994,28 @@ class LLMModelBenchmark:
                 total_ttft += result["latency"] * 1000
         return total_ttft / len(results) if results else 0
 
+    def get_total_tests_per_model(self, mode: str, test_ids: Optional[List[str]] = None) -> int:
+        total = 0
+        if mode in ("functional", "all"):
+            tests = (
+                self._coding_tests("")
+                + self._reasoning_tests("")
+                + self._instruction_tests("")
+                + self._creative_tests("")
+                + self._home_automation_tests("")
+            )
+            if test_ids:
+                total += sum(1 for t in tests if t["id"] in test_ids)
+            else:
+                total += len(tests)
+        if mode in ("performance", "all"):
+            perf_tests = ["perf_medium", "perf_long"]
+            if test_ids:
+                total += sum(1 for t in perf_tests if t in test_ids)
+            else:
+                total += len(perf_tests)
+        return total
+
     async def run_model_benchmarks(
         self,
         models: List[str],
@@ -939,12 +1023,15 @@ class LLMModelBenchmark:
         progress_callback=None,
         cancel_event=None,
         mode: str = "all",
+        test_ids: Optional[List[str]] = None,
     ) -> Dict:
         """Run split model benchmarks based on mode: 'functional', 'performance', or 'all'."""
         print("=" * 80)
         print("COMPREHENSIVE LLM MODEL BENCHMARKING SUITE")
         print(f"Running via: {'Proxy' if use_proxy else 'Direct'} | Mode: {mode.upper()}")
         print(f"Models: {models}")
+        if test_ids:
+            print(f"Selected Test IDs: {test_ids}")
         print("=" * 80)
 
         all_results: Dict[str, Any] = {
@@ -956,6 +1043,9 @@ class LLMModelBenchmark:
             "results": [],
         }
 
+        total_tests = len(models) * self.get_total_tests_per_model(mode, test_ids)
+        completed_container = [0]
+
         # Emit benchmark_start event
         if progress_callback:
             try:
@@ -964,8 +1054,7 @@ class LLMModelBenchmark:
                 start_data = {
                     "models": models,
                     "use_proxy": use_proxy,
-                    "total_tests": len(models) * (10 if mode in ("functional", "all") else 0)
-                    + len(models) * (2 if mode in ("performance", "all") else 0),
+                    "total_tests": total_tests,
                     "timestamp": all_results["generated_at"],
                 }
                 if inspect.iscoroutinefunction(progress_callback):
@@ -995,13 +1084,25 @@ class LLMModelBenchmark:
 
             if mode in ("functional", "all"):
                 func_data = await self.benchmark_model_functional(
-                    model, use_proxy, progress_callback, cancel_event
+                    model,
+                    use_proxy,
+                    progress_callback,
+                    cancel_event,
+                    completed_container,
+                    total_tests,
+                    test_ids,
                 )
                 model_data.update(func_data)
 
             if mode in ("performance", "all"):
                 perf_data = await self.benchmark_model_performance(
-                    model, use_proxy, progress_callback, cancel_event
+                    model,
+                    use_proxy,
+                    progress_callback,
+                    cancel_event,
+                    completed_container,
+                    total_tests,
+                    test_ids,
                 )
                 model_data.update(perf_data)
 
@@ -1022,6 +1123,67 @@ class LLMModelBenchmark:
                     print(f"Callback error: {e}")
 
         if all_results["results"]:
+            latest_file = self.RESULTS_DIR / f"{mode}_benchmarks_latest.json"
+            merged_results = []
+            if latest_file.exists():
+                try:
+                    with open(latest_file, "r") as f:
+                        prev_data = json.load(f)
+                    merged_results = prev_data.get("results", [])
+                except Exception as e:
+                    print(f"[benchmark] Warning: failed to load previous latest file: {e}")
+
+            current_time = time.strftime("%Y-%m-%dT%H:%M:%S")
+            for new_model in all_results["results"]:
+                model_found = False
+                for prev_model in merged_results:
+                    if prev_model.get("model") == new_model["model"]:
+                        for cat in [
+                            "category_coding",
+                            "category_reasoning",
+                            "category_instruction",
+                            "category_creative",
+                            "category_home_automation",
+                        ]:
+                            if cat in new_model:
+                                if cat not in prev_model:
+                                    prev_model[cat] = new_model[cat]
+                                    for t in prev_model[cat].get("tests", []):
+                                        t["last_run"] = current_time
+                                else:
+                                    prev_tests = prev_model[cat].get("tests", [])
+                                    new_tests = new_model[cat].get("tests", [])
+                                    test_map = {t["test_id"]: t for t in prev_tests}
+                                    for nt in new_tests:
+                                        nt["last_run"] = current_time
+                                        test_map[nt["test_id"]] = nt
+                                    prev_model[cat]["tests"] = list(test_map.values())
+                                    prev_model[cat]["tests_run"] = len(prev_model[cat]["tests"])
+                                    prev_model[cat]["tests_passed"] = sum(
+                                        1 for t in prev_model[cat]["tests"] if t.get("success")
+                                    )
+                        if "performance_metrics" in new_model:
+                            prev_model["performance_metrics"] = new_model["performance_metrics"]
+                            prev_model["performance_metrics"]["last_run"] = current_time
+                        model_found = True
+                        break
+                if not model_found:
+                    for cat in [
+                        "category_coding",
+                        "category_reasoning",
+                        "category_instruction",
+                        "category_creative",
+                        "category_home_automation",
+                    ]:
+                        if cat in new_model:
+                            for nt in new_model[cat].get("tests", []):
+                                nt["last_run"] = current_time
+                    if "performance_metrics" in new_model:
+                        new_model["performance_metrics"]["last_run"] = current_time
+                    merged_results.append(new_model)
+
+            all_results["results"] = merged_results
+
             save_file = (
                 self.RESULTS_DIR
                 / f"benchmarks_{time.strftime('%Y%m%d_%H%M%S')}_{mode}_{'proxy' if use_proxy else 'direct'}.json"
@@ -1029,13 +1191,12 @@ class LLMModelBenchmark:
             with open(save_file, "w") as f:
                 json.dump(all_results, f, indent=2, default=str)
 
-            latest_file = self.RESULTS_DIR / f"{mode}_benchmarks_latest.json"
             with open(latest_file, "w") as f:
                 json.dump(all_results, f, indent=2, default=str)
 
             print(f"\n{'=' * 80}")
             print("BENCHMARKING COMPLETE!")
-            print(f"Results saved to: {save_file}")
+            print(f"Results saved and merged to: {save_file}")
             print(f"{'=' * 80}")
             all_results["saved_as"] = str(save_file)
 
