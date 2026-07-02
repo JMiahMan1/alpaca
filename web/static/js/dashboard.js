@@ -4159,7 +4159,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (task.test_id === 'fast_path') {
                         details = `Intent: "${val.actual || ''}" (${val.correct_intent ? 'Correct' : 'Incorrect'})`;
                     } else if (task.test_id === 'tool_use') {
-                        details = `Valid JSON: ${val.valid_json ? 'Yes' : 'No'} | Tool: "${val.parsed?.tool || ''}"`;
+                        details = `Valid JSON: ${val.valid_json ? 'Yes' : 'No'} | Tool: "${(val.parsed && val.parsed.tool) || ''}"`;
                     } else if (task.test_id === 'code_gen') {
                         details = `Class: ${val.has_class ? 'Yes' : 'No'} | acquire: ${val.has_acquire ? 'Yes' : 'No'} | release: ${val.has_release ? 'Yes' : 'No'}`;
                     }

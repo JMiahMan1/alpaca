@@ -185,7 +185,7 @@ class SharedLLMModelBenchmark:
         cancel_event=None,
     ) -> Dict:
         """Run tasks for FastPath, Tool Use, and Code Gen validation."""
-        all_results = {
+        all_results: Dict[str, Any] = {
             "benchmark_version": "SharedLLM-v1",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "benchmark_type": "proxy" if use_proxy else "direct",
@@ -256,7 +256,7 @@ class SharedLLMModelBenchmark:
                 except Exception as e:
                     print(f"Callback error: {e}")
 
-            model_record = {
+            model_record: Dict[str, Any] = {
                 "model": model,
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "tasks": [],
@@ -294,7 +294,9 @@ class SharedLLMModelBenchmark:
                         print(f"Callback error: {e}")
 
                 # Query endpoint
-                res = await self.query_model(model, use_proxy, task["prompt"], task["max_tokens"])
+                prompt_val = task["prompt"] if isinstance(task["prompt"], str) else ""
+                tokens_val = task["max_tokens"] if isinstance(task["max_tokens"], int) else 250
+                res = await self.query_model(model, use_proxy, prompt_val, tokens_val)
 
                 # Custom evaluations for SharedLLM tiers
                 validation_results = {}
@@ -391,7 +393,9 @@ class SharedLLMModelBenchmark:
                     except Exception as e:
                         print(f"Callback error: {e}")
 
-            all_results["results"].append(model_record)
+            results_list = all_results["results"]
+            if isinstance(results_list, list):
+                results_list.append(model_record)
             if progress_callback:
                 try:
                     import inspect
