@@ -224,7 +224,9 @@ def test_should_stop_returns_true_when_marker_file_exists_for_current_model(tmp_
     stop_file.write_text("1000000")
 
     original_model = alpaca_puller._CURRENT_MODEL
-    original_router_dir = alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
+    original_router_dir = (
+        alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
+    )
     original_env = os.environ.get("ROUTER_MODELS_DIR")
 
     try:
@@ -257,7 +259,9 @@ def test_should_stop_returns_false_when_marker_exists_but_wrong_model(tmp_path):
     stop_file.write_text("1000000")
 
     original_model = alpaca_puller._CURRENT_MODEL
-    original_router_dir = alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
+    original_router_dir = (
+        alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
+    )
     original_env = os.environ.get("ROUTER_MODELS_DIR")
 
     try:
@@ -281,8 +285,8 @@ def test_should_stop_returns_false_when_marker_exists_but_wrong_model(tmp_path):
 
 def test_should_stop_handles_slash_colon_in_model_name():
     """Test that model names with / and : produce correct safe file names"""
+
     import alpaca_puller
-    import os
 
     original_model = alpaca_puller._CURRENT_MODEL
     try:
@@ -304,6 +308,7 @@ def test_pull_model_resets_current_model_on_completion(tmp_path):
         # Since we can't easily mock all the HTTP calls, just verify the pattern
         # by checking the function signature accepts no_resume
         import inspect
+
         sig = inspect.signature(alpaca_puller.pull_model)
         params = sig.parameters
         assert "no_resume" in params

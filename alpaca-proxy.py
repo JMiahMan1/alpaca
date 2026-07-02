@@ -17,7 +17,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 LOG_BUFFER = deque(maxlen=1000)
 
 
-DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv("DEBUG_LOGGING", "0").lower() in ("1", "true", "yes")
+DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv(
+    "DEBUG_LOGGING", "0"
+).lower() in ("1", "true", "yes")
+
 
 class DequeHandler(logging.Handler):
     def emit(self, record):
@@ -110,7 +113,9 @@ def sanitize_prompt(text: str) -> str:
     return text
 
 
-def register_active_request(request_id, model, req_type, payload, request_source="unknown", client_ip="unknown"):
+def register_active_request(
+    request_id, model, req_type, payload, request_source="unknown", client_ip="unknown"
+):
     prompt_str = ""
     if "messages" in payload:
         msgs = payload["messages"]
@@ -152,7 +157,9 @@ def update_active_request_progress(request_id, response_chunk=None, thinking_chu
                 req["ttft_seconds"] = round(time.time() - req["started_at"], 3)
 
 
-def complete_active_request(request_id, final_response=None, final_thinking=None, prompt_tokens=0, completion_tokens=0):
+def complete_active_request(
+    request_id, final_response=None, final_thinking=None, prompt_tokens=0, completion_tokens=0
+):
     req = None
     with active_request_details_lock:
         if request_id in active_request_details:
@@ -161,14 +168,21 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
                 req["response"] = final_response
             if final_thinking:
                 req["thinking"] = final_thinking
-            
+
             # Extract thinking block if embedded in response
             if not req.get("thinking") and req.get("response"):
-                match = re.search(r"<(think|thinking)>([\s\S]*?)</\1>", req["response"], flags=re.IGNORECASE)
+                match = re.search(
+                    r"<(think|thinking)>([\s\S]*?)</\1>", req["response"], flags=re.IGNORECASE
+                )
                 if match:
                     req["thinking"] = match.group(2).strip()
-                    req["response"] = re.sub(r"<(think|thinking)>[\s\S]*?</\1>\s*", "", req["response"], flags=re.IGNORECASE).strip()
-            
+                    req["response"] = re.sub(
+                        r"<(think|thinking)>[\s\S]*?</\1>\s*",
+                        "",
+                        req["response"],
+                        flags=re.IGNORECASE,
+                    ).strip()
+
             # calculate prompt and completion tokens if not provided
             if not completion_tokens and req["response"]:
                 completion_tokens = max(1, int(len(req["response"]) / 4))
@@ -176,23 +190,23 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
                     completion_tokens += max(1, int(len(req["thinking"]) / 4))
             if not prompt_tokens and req.get("prompt"):
                 prompt_tokens = max(1, int(len(req["prompt"]) / 4))
-            
+
             req["completed_at"] = time.time()
             req["duration_seconds"] = round(req["completed_at"] - req["started_at"], 2)
-            
+
             # calculate tps
             if req["duration_seconds"] > 0:
                 req["tps"] = round(completion_tokens / req["duration_seconds"], 2)
             else:
                 req["tps"] = 0.0
-                
+
             # set ttft for non-streaming if not set
             if "ttft_seconds" not in req:
                 req["ttft_seconds"] = req["duration_seconds"]
-                
+
             req["completion_tokens"] = completion_tokens
             req["prompt_tokens"] = prompt_tokens
-            
+
             completed_requests.append(req)
             if len(completed_requests) > 50:
                 completed_requests.pop(0)
@@ -695,13 +709,14 @@ def apply_thinking_override(payload, body):
         think_val = body.get("enable_thinking")
     if think_val is None and isinstance(body.get("options"), dict):
         opts = body["options"]
-        think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+        think_val = (
+            opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+        )
 
     if think_val is False:
         original_n_predict = payload.get("n_predict")
         if original_n_predict is not None:
             payload["n_predict"] = original_n_predict + 2048
-
 
 
 def build_generate_chat_payload(body, backend_model):
@@ -1193,16 +1208,16 @@ def get_client_ip(request: Request) -> str:
         parts = [ip.strip() for ip in x_forwarded_for.split(",")]
         if parts and parts[0]:
             return parts[0]
-            
+
     # 2. Check X-Real-IP header
     x_real_ip = request.headers.get("x-real-ip")
     if x_real_ip:
         return x_real_ip
-        
+
     # 3. Fallback to client host
     if request.client and request.client.host:
         return request.client.host
-        
+
     return "unknown-ip"
 
 
@@ -1230,12 +1245,27 @@ async def log_requests(request: Request, call_next):
         if request.url.path.startswith("/admin") or request.url.path == "/api/logs":
             request_source = "shared-llm/admin"
         # 2. Voice assistant detection
-        elif any(kw in ua_lower for kw in ("voice", "assistant", "speech", "home-assistant", "hass", "alexa", "siri", "google-home")):
+        elif any(
+            kw in ua_lower
+            for kw in (
+                "voice",
+                "assistant",
+                "speech",
+                "home-assistant",
+                "hass",
+                "alexa",
+                "siri",
+                "google-home",
+            )
+        ):
             request_source = "voice/assistant"
         # 3. Browser UI / CORS requests from web page
         elif sec_fetch_mode == "cors" or origin or referer:
             # If it's a browser request, distinguish between the dashboard/web UI and general browser calls
-            if any(h in referer for h in ("localhost:5000", "127.0.0.1:5000", "jarvis.sumemail.com", "/dashboard")):
+            if any(
+                h in referer
+                for h in ("localhost:5000", "127.0.0.1:5000", "jarvis.sumemail.com", "/dashboard")
+            ):
                 request_source = "browser/ui"
             else:
                 request_source = "browser/web-page"
@@ -1607,7 +1637,7 @@ async def openai_chat_completions(request: Request):
         "openai_chat",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=get_client_ip(request)
+        client_ip=get_client_ip(request),
     )
     max_retries = 3
     for attempt in range(max_retries):
@@ -1708,7 +1738,9 @@ async def openai_chat_completions(request: Request):
                                 await asyncio.sleep(2.0)
                     finally:
                         async with active_requests_lock:
-                            active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                            active_requests[backend_model] = max(
+                                0, active_requests.get(backend_model, 0) - 1
+                            )
                             active_requests_lock.notify_all()
                         req_data = complete_active_request(request_id)
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
@@ -1717,7 +1749,7 @@ async def openai_chat_completions(request: Request):
                             "/v1/chat/completions",
                             (now_ns() - started_ns) / 1e6,
                             prompt_tokens=p_toks,
-                            gen_tokens=c_toks
+                            gen_tokens=c_toks,
                         )
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
@@ -1765,11 +1797,11 @@ async def openai_chat_completions(request: Request):
                                 "thinking"
                             )
                             complete_active_request(
-                                request_id, 
-                                final_response=content_val, 
+                                request_id,
+                                final_response=content_val,
                                 final_thinking=thinking_val,
                                 prompt_tokens=prompt_tokens,
-                                completion_tokens=gen_tokens
+                                completion_tokens=gen_tokens,
                             )
                     except Exception:
                         pass
@@ -1778,7 +1810,9 @@ async def openai_chat_completions(request: Request):
                     return JSONResponse(data)
                 finally:
                     async with active_requests_lock:
-                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                        active_requests[backend_model] = max(
+                            0, active_requests.get(backend_model, 0) - 1
+                        )
                         active_requests_lock.notify_all()
                     complete_active_request(request_id)
         except httpx.RequestError as exc:
@@ -1830,7 +1864,7 @@ async def openai_completions(request: Request):
         "openai_generate",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=get_client_ip(request)
+        client_ip=get_client_ip(request),
     )
     max_retries = 3
     for attempt in range(max_retries):
@@ -1932,7 +1966,9 @@ async def openai_completions(request: Request):
                                 await asyncio.sleep(2.0)
                     finally:
                         async with active_requests_lock:
-                            active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                            active_requests[backend_model] = max(
+                                0, active_requests.get(backend_model, 0) - 1
+                            )
                             active_requests_lock.notify_all()
                         req_data = complete_active_request(request_id)
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
@@ -1941,7 +1977,7 @@ async def openai_completions(request: Request):
                             "/v1/completions",
                             (now_ns() - started_ns) / 1e6,
                             prompt_tokens=p_toks,
-                            gen_tokens=c_toks
+                            gen_tokens=c_toks,
                         )
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
@@ -1986,11 +2022,11 @@ async def openai_completions(request: Request):
                                 "reasoning_content"
                             )
                             complete_active_request(
-                                request_id, 
-                                final_response=content_val, 
+                                request_id,
+                                final_response=content_val,
                                 final_thinking=thinking_val,
                                 prompt_tokens=prompt_tokens,
-                                completion_tokens=gen_tokens
+                                completion_tokens=gen_tokens,
                             )
                     except Exception:
                         pass
@@ -1999,7 +2035,9 @@ async def openai_completions(request: Request):
                     return JSONResponse(data)
                 finally:
                     async with active_requests_lock:
-                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                        active_requests[backend_model] = max(
+                            0, active_requests.get(backend_model, 0) - 1
+                        )
                         active_requests_lock.notify_all()
                     complete_active_request(request_id)
         except httpx.RequestError as exc:
@@ -2585,10 +2623,9 @@ async def admin_runtime():
     current_time = time.time()
     for name, entry in list(model_loading.items()):
         if current_time - entry["start_time"] <= MODEL_LOADING_TIMEOUT:
-            loading.append({
-                "name": name,
-                "elapsed_seconds": int(current_time - entry["start_time"])
-            })
+            loading.append(
+                {"name": name, "elapsed_seconds": int(current_time - entry["start_time"])}
+            )
 
     return {
         "loaded_models": loaded,
@@ -2625,7 +2662,12 @@ async def admin_slots(fail_on_no_slot: int = 0):
     try:
         port = await get_active_child_port()
         if not port:
-            return {"slots": [], "total": 0, "status": "no_model_loaded", "message": "No model loaded in llama-server"}
+            return {
+                "slots": [],
+                "total": 0,
+                "status": "no_model_loaded",
+                "message": "No model loaded in llama-server",
+            }
 
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -2657,7 +2699,12 @@ async def admin_slots(fail_on_no_slot: int = 0):
 
         return {"slots": slots, "total": len(slots)}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as e:
-        return {"slots": [], "total": 0, "status": "offline", "message": f"llama-server is offline: {e}"}
+        return {
+            "slots": [],
+            "total": 0,
+            "status": "offline",
+            "message": f"llama-server is offline: {e}",
+        }
     except Exception as e:
         logger.error(f"Failed to fetch slot info: {e}")
         return {"slots": [], "total": 0, "status": "error", "message": str(e)}
@@ -2770,13 +2817,14 @@ async def admin_model_delete(request: Request):
             raise HTTPException(status_code=400, detail="model is required")
 
         manifest_path = manifest_path_for_model(model)
-        
+
         # Try to resolve alias using configparser models.ini section helper
         alias = None
         try:
             ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
             if os.path.exists(ini_path):
                 import configparser
+
                 config = configparser.ConfigParser()
                 config.read(ini_path)
                 if config.has_section(model):
@@ -2795,7 +2843,11 @@ async def admin_model_delete(request: Request):
             router_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.gguf")
 
         # If neither manifest nor router GGUF file/symlink exists, then 404
-        if not manifest_path and not os.path.exists(router_path) and not os.path.islink(router_path):
+        if (
+            not manifest_path
+            and not os.path.exists(router_path)
+            and not os.path.islink(router_path)
+        ):
             raise HTTPException(status_code=404, detail=f"Model {model} not found")
 
         # Unload from router if loaded
@@ -2823,7 +2875,9 @@ async def admin_model_delete(request: Request):
                     os.remove(manifest_path)
                 except Exception as me:
                     logger.error(f"Failed to remove manifest file {manifest_path}: {me}")
-                    raise HTTPException(status_code=500, detail=f"Failed to remove manifest file: {me}")
+                    raise HTTPException(
+                        status_code=500, detail=f"Failed to remove manifest file: {me}"
+                    )
 
                 # Clean up orphaned blobs
                 for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
@@ -2847,7 +2901,9 @@ async def admin_model_delete(request: Request):
                                     os.remove(blob_path)
                                     deleted_blobs.append(normalize_digest(digest))
                                 except Exception as be:
-                                    logger.warning(f"Failed to remove orphaned blob {blob_path}: {be}")
+                                    logger.warning(
+                                        f"Failed to remove orphaned blob {blob_path}: {be}"
+                                    )
 
         # Clean up router symlink or GGUF file
         try:
@@ -2870,6 +2926,7 @@ async def admin_model_delete(request: Request):
             ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
             if os.path.exists(ini_path):
                 import configparser
+
                 config = configparser.ConfigParser()
                 config.read(ini_path)
                 if config.has_section(alias):
@@ -2966,15 +3023,15 @@ async def admin_model_unload(request: Request):
                 current_status = router_entry_status(entry)
                 if is_resident_status(current_status):
                     backend_model = entry.get("id")
-                    
+
                     # Check active requests before unloading
                     async with active_requests_lock:
                         if active_requests.get(backend_model, 0) > 0:
                             raise HTTPException(
                                 status_code=409,
-                                detail=f"Cannot unload model {model} because it currently has {active_requests[backend_model]} active request(s)."
+                                detail=f"Cannot unload model {model} because it currently has {active_requests[backend_model]} active request(s).",
                             )
-                            
+
                     await post_router_model_action("unload", backend_model)
                     public = public_model_name(model)
                     await record_model_unloaded(model)
@@ -3005,7 +3062,9 @@ async def admin_vram_clear():
                     await record_model_unloaded_by_backend_id(backend_model)
                     unloaded_count += 1
                 except Exception as unload_err:
-                    logger.warning(f"Failed to unload {backend_model} during VRAM clear: {unload_err}")
+                    logger.warning(
+                        f"Failed to unload {backend_model} during VRAM clear: {unload_err}"
+                    )
 
         # 2. Force reset active requests counter to prevent stuck locks
         async with active_requests_lock:
@@ -3015,15 +3074,17 @@ async def admin_vram_clear():
         # 3. Always trigger a docker restart on llama-server to guarantee 100% VRAM release
         logger.info("Restarting llama-server container to guarantee 100% VRAM cleanup...")
         await restart_llama_server()
-        
+
         # 4. Wait for it to come back online
         if not await wait_for_llama_server_or_restart(timeout=30.0):
-            raise HTTPException(status_code=502, detail="llama-server failed to recover after VRAM clear restart")
+            raise HTTPException(
+                status_code=502, detail="llama-server failed to recover after VRAM clear restart"
+            )
 
         return {
             "status": "success",
             "message": f"Successfully cleared VRAM. Unloaded {unloaded_count} model(s) and restarted llama-server.",
-            "unloaded_models_count": unloaded_count
+            "unloaded_models_count": unloaded_count,
         }
     except Exception as e:
         logger.error(f"Failed to clear VRAM: {e}", exc_info=True)
@@ -3321,17 +3382,27 @@ async def _fetch_llama_server_logs(tail=30) -> str:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
-        return (stdout.decode("utf-8", errors="replace") + "\n" + stderr.decode("utf-8", errors="replace"))
+        return (
+            stdout.decode("utf-8", errors="replace")
+            + "\n"
+            + stderr.decode("utf-8", errors="replace")
+        )
     except Exception as e:
         return f"Failed to get container logs: {e}"
 
 
-async def raise_model_load_failure_exception(model_name: str, backend_model: str, original_error: str):
+async def raise_model_load_failure_exception(
+    model_name: str, backend_model: str, original_error: str
+):
     logs = await _fetch_llama_server_logs(tail=30)
     logs_lower = logs.lower()
-    
+
     suggested_fix = ""
-    if "out of memory" in logs_lower or "cudamalloc failed" in logs_lower or "unable to allocate" in logs_lower:
+    if (
+        "out of memory" in logs_lower
+        or "cudamalloc failed" in logs_lower
+        or "unable to allocate" in logs_lower
+    ):
         suggested_fix = (
             "Suggested Fixes:\n"
             "1. Decrease the KV cache quantization level (e.g. from q8_0 to q4_0) in Model Profiles.\n"
@@ -3344,11 +3415,11 @@ async def raise_model_load_failure_exception(model_name: str, backend_model: str
             "1. Make sure the model files exist in the router models directory (/router-models).\n"
             "2. Verify the model file format is a valid and uncorrupted GGUF file."
         )
-    
+
     detailed_msg = f"Failed to load model {model_name} ({backend_model}): {original_error}"
     if suggested_fix:
         detailed_msg += f"\n\n[Diagnosis] VRAM/resource limitation detected.\n{suggested_fix}"
-    
+
     logger.error(f"Model load failure exception raised: {detailed_msg}\nLast logs:\n{logs}")
     raise HTTPException(status_code=500, detail=detailed_msg)
 
@@ -3711,14 +3782,14 @@ def _resolve_ini_section_name(config, backend_model: str) -> str:
     # 1. Direct match
     if config.has_section(backend_model):
         return backend_model
-    
+
     # 2. Try sanitizing (slashes and colons to '--', etc.)
     sanitized = backend_model.replace("/", "--").replace(":", "--")
     for suffix in ["", "--latest"]:
         candidate = sanitized + suffix
         if config.has_section(candidate):
             return candidate
-            
+
     # 3. Check model file path match
     for section in config.sections():
         if section == "*":
@@ -3732,7 +3803,7 @@ def _resolve_ini_section_name(config, backend_model: str) -> str:
                 return section
             if model_file.lower() == sanitized.lower():
                 return section
-                
+
     return sanitized
 
 
@@ -3746,9 +3817,9 @@ def _write_ini_model_setting(backend_model, key, value):
 
         config = configparser.ConfigParser()
         config.read(ini_path)
-        
+
         section = _resolve_ini_section_name(config, backend_model)
-        
+
         if config.has_section(section) and config[section].get(key) == str(value):
             return
         if not config.has_section(section):
@@ -3757,7 +3828,7 @@ def _write_ini_model_setting(backend_model, key, value):
         with open(ini_path, "w") as f:
             config.write(f)
         logger.info(f"Updated models.ini: [{section}] {key} = {value}")
-        
+
         # Also update profile.json to prevent reversion on reindexing
         if section != "*":
             try:
@@ -3788,9 +3859,9 @@ def _read_ini_model_setting(backend_model, key, default=""):
 
         config = configparser.ConfigParser()
         config.read(ini_path)
-        
+
         section = _resolve_ini_section_name(config, backend_model)
-        
+
         if config.has_section(section) and key in config[section]:
             return config[section][key]
         if config.has_section("*") and key in config["*"]:
@@ -4692,9 +4763,11 @@ async def _ensure_model_impl(
                     "model": backend_model,
                     "cache-type-k": _read_ini_model_setting(backend_model, "cache-type-k", "f16"),
                     "cache-type-v": _read_ini_model_setting(backend_model, "cache-type-v", "f16"),
-                    "n-gpu-layers": str(_read_ini_model_setting(backend_model, "n-gpu-layers", "-1")),
+                    "n-gpu-layers": str(
+                        _read_ini_model_setting(backend_model, "n-gpu-layers", "-1")
+                    ),
                     "ctx-size": str(_read_ini_model_setting(backend_model, "ctx-size", "4096")),
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
                 }
                 failed_configs_file = os.path.join("data", "failed_configs.json")
                 failed_list = []
@@ -4706,17 +4779,22 @@ async def _ensure_model_impl(
                                 failed_list = []
                     except Exception:
                         pass
-                if not any(f.get("model") == failed_config["model"] and
-                           f.get("cache-type-k") == failed_config["cache-type-k"] and
-                           f.get("cache-type-v") == failed_config["cache-type-v"] and
-                           f.get("n-gpu-layers") == failed_config["n-gpu-layers"] and
-                           f.get("ctx-size") == failed_config["ctx-size"] for f in failed_list):
+                if not any(
+                    f.get("model") == failed_config["model"]
+                    and f.get("cache-type-k") == failed_config["cache-type-k"]
+                    and f.get("cache-type-v") == failed_config["cache-type-v"]
+                    and f.get("n-gpu-layers") == failed_config["n-gpu-layers"]
+                    and f.get("ctx-size") == failed_config["ctx-size"]
+                    for f in failed_list
+                ):
                     failed_list.append(failed_config)
                     failed_list = failed_list[-50:]
                     os.makedirs("data", exist_ok=True)
                     with open(failed_configs_file, "w") as f:
                         json.dump(failed_list, f, indent=2)
-                    logger.info(f"Recorded failed model configuration in failed_configs.json: {failed_config}")
+                    logger.info(
+                        f"Recorded failed model configuration in failed_configs.json: {failed_config}"
+                    )
             except Exception as rec_err:
                 logger.warning(f"Failed to record failed configuration: {rec_err}")
             await raise_model_load_failure_exception(model_name, backend_model, str(recovery_err))
@@ -4923,7 +5001,7 @@ async def chat(request: Request):
         "ollama_chat",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=get_client_ip(request)
+        client_ip=get_client_ip(request),
     )
 
     # Ensure model is loaded and healthy (triggers recovery if crashed/dead)
@@ -4968,13 +5046,16 @@ async def chat(request: Request):
                 think_val = body.get("enable_thinking")
             if think_val is None and isinstance(body.get("options"), dict):
                 opts = body["options"]
-                think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+                think_val = (
+                    opts.get("think")
+                    if opts.get("think") is not None
+                    else opts.get("enable_thinking")
+                )
 
             # Better Origin override: if request origin is voice assistant, default think_val to False
             request_source = getattr(request.state, "request_source", "unknown")
             if think_val is None and request_source == "voice/assistant":
                 think_val = False
-
 
             full_response_content = ""
             current_payload = build_chat_payload(body, resolved_backend)
@@ -5008,7 +5089,7 @@ async def chat(request: Request):
                                 if message:
                                     content_chunk = message.get("content") or ""
                                     thinking_chunk = message.get("thinking") or ""
-                                    
+
                                     # Blend/wrap or separate based on think_val
                                     out_content = ""
                                     if think_val is None:
@@ -5030,19 +5111,19 @@ async def chat(request: Request):
                                         if in_thinking:
                                             in_thinking = False
                                         out_content = content_chunk
-                                            
+
                                     if out_content:
                                         full_response_content += out_content
-                                        
+
                                     update_active_request_progress(
                                         request_id,
                                         response_chunk=content_chunk,
                                         thinking_chunk=thinking_chunk,
                                     )
-                                    
+
                                     client_message = {
                                         "role": message.get("role", "assistant"),
-                                        "content": out_content
+                                        "content": out_content,
                                     }
                                     if thinking_chunk and think_val is True:
                                         client_message["thinking"] = thinking_chunk
@@ -5050,12 +5131,14 @@ async def chat(request: Request):
                                         client_message["thinking"] = thinking_chunk
                                 else:
                                     client_message = {"role": "assistant", "content": ""}
-                                    
+
                                 done = choice.get("finish_reason") is not None
                                 if done and in_thinking and think_val is None:
-                                    client_message["content"] = (client_message.get("content") or "") + "\n</think>"
+                                    client_message["content"] = (
+                                        client_message.get("content") or ""
+                                    ) + "\n</think>"
                                     in_thinking = False
-                                    
+
                                 chunk = ollama_chat_chunk(
                                     model_name, client_message, done, choice.get("finish_reason")
                                 )
@@ -5188,36 +5271,37 @@ async def chat(request: Request):
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
         message = chat_message_from_choice(choice)
-        
+
         final_content = message.get("content") if message else ""
         final_thinking = message.get("thinking") if message else None
-        
+
         # Determine think_val
         think_val = body.get("think")
         if think_val is None:
             think_val = body.get("enable_thinking")
         if think_val is None and isinstance(body.get("options"), dict):
             opts = body["options"]
-            think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+            think_val = (
+                opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+            )
 
         # Better Origin override: if request origin is voice assistant, default think_val to False
         request_source = getattr(request.state, "request_source", "unknown")
         if think_val is None and request_source == "voice/assistant":
             think_val = False
 
-
         client_message = {
             "role": message.get("role", "assistant") if message else "assistant",
-            "content": final_content
+            "content": final_content,
         }
-        
+
         if think_val is False:
             if client_message.get("content"):
                 client_message["content"] = re.sub(
                     r"<(think|thinking)>[\s\S]*?</\1>\s*",
                     "",
                     client_message["content"],
-                    flags=re.IGNORECASE
+                    flags=re.IGNORECASE,
                 ).strip()
             final_thinking = None
         else:
@@ -5225,12 +5309,14 @@ async def chat(request: Request):
                 if think_val is None:
                     # Default: blend/wrap
                     if "<think>" not in final_content:
-                        client_message["content"] = f"<think>\n{final_thinking}\n</think>\n{final_content}"
+                        client_message["content"] = (
+                            f"<think>\n{final_thinking}\n</think>\n{final_content}"
+                        )
                     client_message["thinking"] = final_thinking
                 elif think_val is True:
                     # Explicit True: separate
                     client_message["thinking"] = final_thinking
-                
+
         chunk = ollama_chat_chunk(model_name, client_message, True, choice.get("finish_reason"))
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
         logprobs = logprobs_from_choice(choice)
@@ -5241,11 +5327,11 @@ async def chat(request: Request):
         prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
         gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
         complete_active_request(
-            request_id, 
-            final_response=final_content, 
+            request_id,
+            final_response=final_content,
             final_thinking=final_thinking,
             prompt_tokens=prompt_tokens,
-            completion_tokens=gen_tokens
+            completion_tokens=gen_tokens,
         )
 
         # Save the new slot cache checkpoint
@@ -5298,7 +5384,7 @@ async def generate(request: Request):
         "ollama_generate",
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=get_client_ip(request)
+        client_ip=get_client_ip(request),
     )
 
     async def stream_proxy():
@@ -5317,19 +5403,22 @@ async def generate(request: Request):
                 )
 
             load_duration = now_ns() - load_started_ns
-            
+
             think_val = body.get("think")
             if think_val is None:
                 think_val = body.get("enable_thinking")
             if think_val is None and isinstance(body.get("options"), dict):
                 opts = body["options"]
-                think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+                think_val = (
+                    opts.get("think")
+                    if opts.get("think") is not None
+                    else opts.get("enable_thinking")
+                )
 
             # Better Origin override: if request origin is voice assistant, default think_val to False
             request_source = getattr(request.state, "request_source", "unknown")
             if think_val is None and request_source == "voice/assistant":
                 think_val = False
-
 
             full_response_content = ""
             current_payload = (
@@ -5371,7 +5460,7 @@ async def generate(request: Request):
                                     response_chunk = message.get("content", "") if message else ""
                                     thinking_chunk = message.get("thinking") if message else None
                                     done = choice.get("finish_reason") is not None
-                                    
+
                                     # Blend/wrap or separate based on think_val
                                     out_content = ""
                                     if think_val is None:
@@ -5396,7 +5485,7 @@ async def generate(request: Request):
                                         if in_thinking:
                                             in_thinking = False
                                         out_content = response_chunk
-                                        
+
                                     chunk = ollama_generate_chunk(
                                         model_name,
                                         out_content,
@@ -5416,7 +5505,7 @@ async def generate(request: Request):
                                     )
                                     response_chunk = data.get("content") or ""
                                     thinking_chunk = data.get("thinking")
-                                    
+
                                     # Blend/wrap or separate based on think_val
                                     out_content = ""
                                     if think_val is None:
@@ -5441,7 +5530,7 @@ async def generate(request: Request):
                                         if in_thinking:
                                             in_thinking = False
                                         out_content = response_chunk
-                                        
+
                                     chunk = ollama_generate_chunk(
                                         model_name, out_content, done, done_reason
                                     )
@@ -5551,19 +5640,20 @@ async def generate(request: Request):
             )
 
         load_duration = now_ns() - load_started_ns
-        
+
         think_val = body.get("think")
         if think_val is None:
             think_val = body.get("enable_thinking")
         if think_val is None and isinstance(body.get("options"), dict):
             opts = body["options"]
-            think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+            think_val = (
+                opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+            )
 
         # Better Origin override: if request origin is voice assistant, default think_val to False
         request_source = getattr(request.state, "request_source", "unknown")
         if think_val is None and request_source == "voice/assistant":
             think_val = False
-
 
         payload = (
             build_generate_chat_payload(body, resolved_backend)
@@ -5607,14 +5697,11 @@ async def generate(request: Request):
             message = chat_message_from_choice(choice)
             final_response = message.get("content", "") if message else ""
             final_thinking = message.get("thinking") if message else None
-            
+
             client_content = final_response
             if think_val is False:
                 client_content = re.sub(
-                    r"<(think|thinking)>[\s\S]*?</\1>\s*",
-                    "",
-                    client_content,
-                    flags=re.IGNORECASE
+                    r"<(think|thinking)>[\s\S]*?</\1>\s*", "", client_content, flags=re.IGNORECASE
                 ).strip()
                 final_thinking = None
             else:
@@ -5622,11 +5709,13 @@ async def generate(request: Request):
                     if think_val is None:
                         # Default: blend/wrap
                         if "<think>" not in final_response:
-                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                            client_content = (
+                                f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                            )
                     elif think_val is True:
                         # Explicit True: separate
                         client_content = final_response
-                
+
             chunk = ollama_generate_chunk(
                 model_name, client_content, True, choice.get("finish_reason")
             )
@@ -5637,14 +5726,11 @@ async def generate(request: Request):
             done_reason = data.get("finish_reason") or ("stop" if done else None)
             final_response = data.get("content") or ""
             final_thinking = data.get("thinking")
-            
+
             client_content = final_response
             if think_val is False:
                 client_content = re.sub(
-                    r"<(think|thinking)>[\s\S]*?</\1>\s*",
-                    "",
-                    client_content,
-                    flags=re.IGNORECASE
+                    r"<(think|thinking)>[\s\S]*?</\1>\s*", "", client_content, flags=re.IGNORECASE
                 ).strip()
                 final_thinking = None
             else:
@@ -5652,11 +5738,13 @@ async def generate(request: Request):
                     if think_val is None:
                         # Default: blend/wrap
                         if "<think>" not in final_response:
-                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                            client_content = (
+                                f"<think>\n{final_thinking}\n</think>\n{final_response}"
+                            )
                     elif think_val is True:
                         # Explicit True: separate
                         client_content = final_response
-                
+
             chunk = ollama_generate_chunk(model_name, client_content, done, done_reason)
             if final_thinking is not None and think_val is not False:
                 chunk["thinking"] = final_thinking
@@ -5666,11 +5754,11 @@ async def generate(request: Request):
         prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
         gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
         complete_active_request(
-            request_id, 
-            final_response=final_response, 
+            request_id,
+            final_response=final_response,
             final_thinking=final_thinking,
             prompt_tokens=prompt_tokens,
-            completion_tokens=gen_tokens
+            completion_tokens=gen_tokens,
         )
 
         await apply_keep_alive_policy(model_name, keep_alive)

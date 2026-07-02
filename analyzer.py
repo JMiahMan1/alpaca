@@ -82,19 +82,27 @@ def read_current_config(model_alias: str) -> Dict[str, str]:
             if config.has_section(model_alias):
                 matched_section = model_alias
             else:
+
                 def clean_str(s):
                     return s.replace("/", "").replace("_", "").replace("-", "").lower()
+
                 clean_alias = clean_str(model_alias)
                 for sec in config.sections():
                     clean_sec = clean_str(sec)
-                    if clean_alias in clean_sec or clean_sec in clean_alias or clean_alias.replace("latest", "") in clean_sec:
+                    if (
+                        clean_alias in clean_sec
+                        or clean_sec in clean_alias
+                        or clean_alias.replace("latest", "") in clean_sec
+                    ):
                         matched_section = sec
                         break
 
             if matched_section:
                 for k, v in config[matched_section].items():
                     config_dict[k] = v
-                logger.info(f"Loaded config from models.ini [{matched_section}] for alias [{model_alias}]")
+                logger.info(
+                    f"Loaded config from models.ini [{matched_section}] for alias [{model_alias}]"
+                )
             else:
                 logger.warning(f"No matching section in models.ini found for [{model_alias}]")
         except Exception as e:
@@ -282,6 +290,7 @@ def analyze_telemetry(
             return int(float(val))  # handles "99.0" as well as "99"
         except (ValueError, TypeError):
             return fallback
+
     curr_ngl = _safe_int(current_config.get("n-gpu-layers", "-1"), -1)
     curr_ctx = _safe_int(current_config.get("ctx-size", "4096"), 4096)
     curr_cache_k = current_config.get("cache-type-k", "f16").lower()
@@ -306,10 +315,12 @@ def analyze_telemetry(
         for fc in failed_configs:
             fc_model = fc.get("model", "")
             if model_alias in fc_model or fc_model in model_alias:
-                if (fc.get("cache-type-k") == cache_k and
-                    fc.get("cache-type-v") == cache_v and
-                    fc.get("n-gpu-layers") == ngl_val and
-                    fc.get("ctx-size") == ctx_val):
+                if (
+                    fc.get("cache-type-k") == cache_k
+                    and fc.get("cache-type-v") == cache_v
+                    and fc.get("n-gpu-layers") == ngl_val
+                    and fc.get("ctx-size") == ctx_val
+                ):
                     return True
         return False
 
@@ -317,7 +328,9 @@ def analyze_telemetry(
 
     if current_is_failed:
         status = "critical"
-        issues.append(f"CRITICAL: The current configuration of {model_alias} is known to have failed to load recently.")
+        issues.append(
+            f"CRITICAL: The current configuration of {model_alias} is known to have failed to load recently."
+        )
 
     # Recommendation Logic
     if current_is_failed:
@@ -325,19 +338,27 @@ def analyze_telemetry(
         if curr_cache_k in ("f16", "f32"):
             recommendations["cache-type-k"] = "q8_0"
             recommendations["cache-type-v"] = "q8_0"
-            actions.append("Downgrade KV Cache quantization (f16 -> q8_0) to resolve model load failure.")
+            actions.append(
+                "Downgrade KV Cache quantization (f16 -> q8_0) to resolve model load failure."
+            )
         elif curr_cache_k == "q8_0":
             recommendations["cache-type-k"] = "q5_0"
             recommendations["cache-type-v"] = "q5_0"
-            actions.append("Downgrade KV Cache quantization (q8_0 -> q5_0) to resolve model load failure.")
+            actions.append(
+                "Downgrade KV Cache quantization (q8_0 -> q5_0) to resolve model load failure."
+            )
         elif curr_cache_k in ("q5_0", "q5_1"):
             recommendations["cache-type-k"] = "q4_0"
             recommendations["cache-type-v"] = "q4_0"
-            actions.append("Downgrade KV Cache quantization (q5_0 -> q4_0) to resolve model load failure.")
+            actions.append(
+                "Downgrade KV Cache quantization (q5_0 -> q4_0) to resolve model load failure."
+            )
         elif curr_ngl > 10:
             suggested_ngl = max(0, curr_ngl - 10)
             recommendations["n-gpu-layers"] = str(suggested_ngl)
-            actions.append(f"Reduce GPU layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to free up VRAM.")
+            actions.append(
+                f"Reduce GPU layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to free up VRAM."
+            )
         elif curr_ctx > 8192:
             recommendations["ctx-size"] = "8192"
             actions.append("Reduce context window to 8192 to resolve load failure.")
@@ -392,7 +413,12 @@ def analyze_telemetry(
                         "Enable 4-bit KV Cache quantization (cache-type-k/v: f16 -> q4_0) to save 75% of cache memory."
                     )
             # Safe strategy or fallback: use 4-bit cache (q4_0)
-            elif curr_cache_k in ("f16", "f32", "q8_0", "q5_0") or curr_cache_v in ("f16", "f32", "q8_0", "q5_0"):
+            elif curr_cache_k in ("f16", "f32", "q8_0", "q5_0") or curr_cache_v in (
+                "f16",
+                "f32",
+                "q8_0",
+                "q5_0",
+            ):
                 recommendations["cache-type-k"] = "q4_0"
                 recommendations["cache-type-v"] = "q4_0"
                 actions.append(
@@ -440,17 +466,17 @@ def analyze_telemetry(
                 "q4_1": "q5_0",
                 "q5_0": "q8_0",
                 "q5_1": "q8_0",
-                "q8_0": "f16"
+                "q8_0": "f16",
             }
             target_cache_k = upgrade_map.get(curr_cache_k, "f16")
             target_cache_v = upgrade_map.get(curr_cache_v, "f16")
-            
+
             if not performance_first:
                 target_cache_k = "f16"
                 target_cache_v = "f16"
 
             # Resolve target against blacklist
-            while (target_cache_k != curr_cache_k or target_cache_v != curr_cache_v):
+            while target_cache_k != curr_cache_k or target_cache_v != curr_cache_v:
                 if not is_blacklisted(target_cache_k, target_cache_v):
                     break
                 if target_cache_k == "f16":

@@ -1431,11 +1431,16 @@ async def test_thinking_behavior_voice_origin_auto_override_generate():
 def test_resolve_ini_section_name():
     """Test resolving section names in models.ini"""
     import configparser
+
     _resolve_ini_section_name = alpaca_proxy._resolve_ini_section_name
 
     config = configparser.ConfigParser()
     config.add_section("Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest")
-    config.set("Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest", "model", "/router-models/Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest.gguf")
+    config.set(
+        "Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest",
+        "model",
+        "/router-models/Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest.gguf",
+    )
 
     config.add_section("qwen2.5-coder--7b")
     config.set("qwen2.5-coder--7b", "model", "/router-models/qwen2.5-coder--7b.gguf")
@@ -1444,7 +1449,10 @@ def test_resolve_ini_section_name():
     assert _resolve_ini_section_name(config, "qwen2.5-coder--7b") == "qwen2.5-coder--7b"
 
     # 2. Sanitized match with slashes
-    assert _resolve_ini_section_name(config, "Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M") == "Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest"
+    assert (
+        _resolve_ini_section_name(config, "Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M")
+        == "Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest"
+    )
 
     # 3. Fallback to sanitized representation if completely missing
     assert _resolve_ini_section_name(config, "non/existent/model") == "non--existent--model"
@@ -1454,19 +1462,13 @@ def test_resolve_ini_section_name():
 async def test_admin_slots_direct_child_query():
     """Test /admin/slots resolving the active child port and querying it via docker exec"""
     import asyncio
+
     # 1. Mock /models response to return a ready model with --port 37825
     mock_get = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
-        "data": [
-            {
-                "id": "test-model",
-                "status": {
-                    "args": ["--port", "37825", "-m", "test.gguf"]
-                }
-            }
-        ]
+        "data": [{"id": "test-model", "status": {"args": ["--port", "37825", "-m", "test.gguf"]}}]
     }
     mock_get.return_value = mock_resp
 
@@ -1474,7 +1476,9 @@ async def test_admin_slots_direct_child_query():
     mock_subproc = AsyncMock()
     mock_process = MagicMock()
     mock_process.returncode = 0
-    mock_process.communicate = AsyncMock(return_value=(b'[{"id": 0, "is_processing": true, "n_ctx": 4096, "prompt": [1, 2]}]', b''))
+    mock_process.communicate = AsyncMock(
+        return_value=(b'[{"id": 0, "is_processing": true, "n_ctx": 4096, "prompt": [1, 2]}]', b"")
+    )
     mock_subproc.return_value = mock_process
 
     # Apply patches directly on alpaca_proxy
@@ -1492,11 +1496,16 @@ async def test_admin_slots_direct_child_query():
 
         # Verify subprocess called with port 37825
         mock_subproc.assert_called_once_with(
-            "docker", "exec", "llama-server", "curl", "-s", "http://127.0.0.1:37825/slots",
+            "docker",
+            "exec",
+            "llama-server",
+            "curl",
+            "-s",
+            "http://127.0.0.1:37825/slots",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
-    
+
     # Restore original client
     alpaca_proxy.client_httpx = original_client
 
@@ -1505,10 +1514,9 @@ async def test_admin_slots_direct_child_query():
 async def test_admin_model_delete_conditional_unload():
     """Test that model delete only calls unload if status == loaded"""
     # Mock resolved model where status is loaded
-    mock_resolve = AsyncMock(return_value={
-        "backend_model": "test-backend",
-        "entry": {"status": {"value": "loaded"}}
-    })
+    mock_resolve = AsyncMock(
+        return_value={"backend_model": "test-backend", "entry": {"status": {"value": "loaded"}}}
+    )
     mock_post_action = AsyncMock()
     mock_read_manifest = MagicMock(return_value={"layers": [], "config": {}})
 
@@ -1519,13 +1527,12 @@ async def test_admin_model_delete_conditional_unload():
     orig_resolve = alpaca_proxy.resolve_router_model
     orig_post_action = alpaca_proxy.post_router_model_action
     orig_read_manifest = alpaca_proxy.read_manifest
-    
+
     alpaca_proxy.resolve_router_model = mock_resolve
     alpaca_proxy.post_router_model_action = mock_post_action
     alpaca_proxy.read_manifest = mock_read_manifest
 
-    with patch("os.path.exists", return_value=True), \
-         patch("os.remove"):
+    with patch("os.path.exists", return_value=True), patch("os.remove"):
         # Delete with status "loaded"
         res = await alpaca_proxy.admin_model_delete(mock_request)
         assert res["status"] == "deleted"
@@ -1535,7 +1542,7 @@ async def test_admin_model_delete_conditional_unload():
         mock_post_action.reset_mock()
         mock_resolve.return_value = {
             "backend_model": "test-backend",
-            "entry": {"status": {"value": "unloaded"}}
+            "entry": {"status": {"value": "unloaded"}},
         }
 
         # Delete with status "unloaded" (should NOT call unload)

@@ -1,6 +1,7 @@
 import pytest
 from playwright.sync_api import sync_playwright
 
+
 def test_dashboard_smoke():
     """Verify that dashboard loads and model checkboxes are not checked by default"""
     with sync_playwright() as p:
@@ -25,10 +26,12 @@ def test_dashboard_smoke():
         # 3. Verify target models checkboxes are not checked by default
         page.wait_for_selector("#model-checkboxes", timeout=5000)
         checkboxes = page.locator("#model-checkboxes input[type='checkbox']")
-        
+
         count = checkboxes.count()
         for i in range(count):
-            assert not checkboxes.nth(i).is_checked(), f"Checkbox at index {i} was checked by default"
+            assert not checkboxes.nth(i).is_checked(), (
+                f"Checkbox at index {i} was checked by default"
+            )
 
         # 4. Verify system monitor tab is clickable
         monitor_btn = page.locator("#tab-btn-monitor")

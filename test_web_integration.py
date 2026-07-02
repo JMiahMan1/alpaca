@@ -361,7 +361,13 @@ def test_api_models_search_route(mock_get, client):
     # Test precise repo lookup
     mock_resp_precise = MagicMock()
     mock_resp_precise.status_code = 200
-    mock_resp_precise.json.return_value = {"id": "Precise/Repo", "author": "Precise", "downloads": 10, "likes": 5, "tags": ["gguf"]}
+    mock_resp_precise.json.return_value = {
+        "id": "Precise/Repo",
+        "author": "Precise",
+        "downloads": 10,
+        "likes": 5,
+        "tags": ["gguf"],
+    }
     mock_get.return_value = mock_resp_precise
 
     res = client.post("/api/models/search", json={"query": "Precise/Repo", "source": "huggingface"})
@@ -403,6 +409,7 @@ def test_api_models_active_pulls_route(client):
     assert len(data["active_pulls"]) == 0
 
     from web.app import active_pulls
+
     active_pulls["test-model"] = {
         "model": "test-model",
         "source": "huggingface",
@@ -552,11 +559,14 @@ def test_api_pull_cancel_double_returns_error(client):
 def test_api_pull_trigger_with_no_resume(client):
     """Test that pull trigger accepts and passes no_resume flag"""
     with patch("threading.Thread.start"):
-        res = client.post("/api/models/pull", json={
-            "model": "test-model",
-            "source": "huggingface",
-            "no_resume": True,
-        })
+        res = client.post(
+            "/api/models/pull",
+            json={
+                "model": "test-model",
+                "source": "huggingface",
+                "no_resume": True,
+            },
+        )
         assert res.status_code == 200
         data = json.loads(res.data.decode("utf-8"))
         assert data["status"] == "pulling_started"
@@ -609,7 +619,9 @@ def test_get_telemetry_history_with_file(mock_open, mock_exists, client):
     """Test telemetry history returns data when file exists"""
     import json as json_mod
 
-    mock_open.return_value.__enter__.return_value.read.return_value = json_mod.dumps({"epoch_time": 1})
+    mock_open.return_value.__enter__.return_value.read.return_value = json_mod.dumps(
+        {"epoch_time": 1}
+    )
     res = client.get("/api/telemetry/history?model=test-model")
     assert res.status_code == 200
     data = json.loads(res.data.decode("utf-8"))
@@ -643,10 +655,11 @@ def test_api_result_detail_get_and_delete(client):
     mock_data = {"benchmark_version": "3.0.0", "results": []}
     mock_file_content = json.dumps(mock_data)
 
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("builtins.open", mock_open(read_data=mock_file_content)), \
-         patch("os.remove") as mock_remove:
-         
+    with (
+        patch("pathlib.Path.exists", return_value=True),
+        patch("builtins.open", mock_open(read_data=mock_file_content)),
+        patch("os.remove") as mock_remove,
+    ):
         # Test GET
         res = client.get("/api/results/benchmarks_12345_all_proxy.json")
         assert res.status_code == 200
@@ -659,6 +672,3 @@ def test_api_result_detail_get_and_delete(client):
         del_data = json.loads(res_del.data.decode("utf-8"))
         assert del_data["status"] == "deleted"
         mock_remove.assert_called_once()
-
-
-
