@@ -6,10 +6,13 @@ Flask server for LLM benchmark dashboard with SocketIO
 import asyncio
 import json
 import os
+import select
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any, Dict
 
 
 # Load .env file if present
@@ -51,19 +54,41 @@ CORS(app)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "alpaca-secret-key-12984")
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
+
+@app.after_request
+def add_cache_headers(response):
+    """Prevent caching of static JS/CSS to avoid stale code after deployments."""
+    if request.path.startswith("/static/") and request.path.endswith((".js", ".css")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 benchmark = LLMModelBenchmark()
 shared_llm_benchmark = SharedLLMModelBenchmark()
 
 puller_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py"
 )
-active_pulls = {}
+active_pulls: Dict[str, Dict[str, Any]] = {}
 active_pulls_lock = threading.Lock()
+
+
+def _terminate_process(process, model_name):
+    """Terminate a subprocess with SIGTERM, retry with SIGKILL on timeout."""
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print(f"Warning: could not kill process for {model_name}")
 
 
 def run_puller_thread(model_name, source, local_name, no_resume=False):
     global active_pulls
-    import subprocess
 
     cmd = [sys.executable, puller_path, "pull", model_name]
     if source and source != "auto":
@@ -73,9 +98,14 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
     if no_resume:
         cmd += ["--no-resume"]
 
+    process = None
     try:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        # Explicitly pass ROUTER_MODELS_DIR so puller checks the same stop directory
+        router_dir = os.getenv("ROUTER_MODELS_DIR")
+        if router_dir:
+            env["ROUTER_MODELS_DIR"] = router_dir
 
         process = subprocess.Popen(
             cmd,
@@ -86,50 +116,59 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
             env=env,
         )
 
+        assert process.stdout is not None, "subprocess stdout should not be None with stdout=PIPE"
+
+        print(f"Pull started: {model_name} (PID: {process.pid})")
+        socketio.emit("pull_log", {
+            "model": model_name,
+            "line": f"[alpaca] Pull started (PID: {process.pid})"
+        })
+
         while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            # Check for stop/cancel events
+            # Use select() with 1s timeout instead of blocking readline() forever
+            ready, _, _ = select.select([process.stdout], [], [], 1.0)
+            if ready:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if line:
+                    line_str = line.rstrip()
+                    with active_pulls_lock:
+                        if model_name in active_pulls:
+                            active_pulls[model_name]["logs"].append(line_str)
+                            if len(active_pulls[model_name]["logs"]) > 1000:
+                                active_pulls[model_name]["logs"].pop(0)
+                    socketio.emit("pull_log", {"model": model_name, "line": line_str})
+            else:
+                # Timeout from select() — check for stop/cancel
+                pass
+
+            # Check for stop/cancel events on every loop iteration
             with active_pulls_lock:
-                if model_name in active_pulls:
-                    status = active_pulls[model_name].get("status", "running")
-                    if status == "cancelled":
-                        process.terminate()
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                        socketio.emit("pull_status", {
-                            "model": model_name,
-                            "status": "cancelled"
-                        })
-                        return
-                    elif status == "stopping":
-                        active_pulls[model_name]["status"] = "stopping"
-                        process.terminate()
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                        active_pulls[model_name]["status"] = "stopped"
-                        socketio.emit("pull_status", {
-                            "model": model_name,
-                            "status": "stopped"
-                        })
-                        # Clean up stop marker so it doesn't interfere with future pulls
-                        stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
-                        stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
-                        stop_file.unlink(missing_ok=True)
-                        return
-            if line:
-                line_str = line.rstrip()
-                with active_pulls_lock:
-                    if model_name in active_pulls:
-                        active_pulls[model_name]["logs"].append(line_str)
-                        if len(active_pulls[model_name]["logs"]) > 1000:
-                            active_pulls[model_name]["logs"].pop(0)
-                socketio.emit("pull_log", {"model": model_name, "line": line_str})
+                if model_name not in active_pulls:
+                    break
+                status = active_pulls[model_name].get("status", "running")
+                if status == "cancelled":
+                    print(f"Pull cancelled: {model_name}")
+                    _terminate_process(process, model_name)
+                    socketio.emit("pull_status", {
+                        "model": model_name,
+                        "status": "cancelled"
+                    })
+                    return
+                elif status == "stopping":
+                    active_pulls[model_name]["status"] = "stopping"
+                    print(f"Pull stopping: {model_name}")
+                    _terminate_process(process, model_name)
+                    active_pulls[model_name]["status"] = "stopped"
+                    socketio.emit("pull_status", {
+                        "model": model_name,
+                        "status": "stopped"
+                    })
+                    stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+                    stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
+                    stop_file.unlink(missing_ok=True)
+                    return
 
         rc = process.poll()
         with active_pulls_lock:
@@ -138,7 +177,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
                 if status == "stopping":
                     active_pulls[model_name]["status"] = "stopped"
                     socketio.emit("pull_status", {"model": model_name, "status": "stopped"})
-                    stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+                    stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
                     stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
                     stop_file.unlink(missing_ok=True)
                     return
@@ -146,12 +185,18 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
         if rc == 0:
             socketio.emit("pull_status", {"model": model_name, "status": "success"})
         else:
+            # Clean up stop marker on failure so it doesn't block future pulls
+            stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+            stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
+            stop_file.unlink(missing_ok=True)
             socketio.emit(
                 "pull_status",
                 {"model": model_name, "status": "failed", "error": f"Exit code {rc}"},
             )
 
     except Exception as e:
+        if process is not None and process.poll() is None:
+            _terminate_process(process, model_name)
         socketio.emit(
             "pull_status", {"model": model_name, "status": "failed", "error": str(e)}
         )
@@ -162,7 +207,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
 
 
 # Active run status tracking
-active_run = {
+active_run: Dict[str, Any] = {
     "status": "idle",  # "idle", "running", "cancelled", "completed", "failed"
     "type": None,  # "general" or "shared_llm"
     "current_model": None,
@@ -365,6 +410,11 @@ def get_models():
         direct_models = loop.run_until_complete(benchmark.discover_all_models())
         proxy_models = loop.run_until_complete(benchmark.discover_all_proxy_models())
         loop.close()
+
+        # Filter out hardcoded fallback placeholders if we successfully retrieved real proxy models
+        fallback = benchmark._get_fallback_models()
+        if proxy_models and proxy_models != fallback and direct_models == fallback:
+            direct_models = []
 
         combined = list(dict.fromkeys(direct_models + proxy_models))
         return jsonify(
