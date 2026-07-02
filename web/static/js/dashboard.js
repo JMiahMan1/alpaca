@@ -1477,11 +1477,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Add Delete button
                 item.style.position = 'relative';
                 const deleteBtn = document.createElement('span');
-                deleteBtn.innerHTML = '🗑️';
-                deleteBtn.style.cssText = 'position: absolute; right: 10px; top: 10px; cursor: pointer; font-size: 0.85rem; opacity: 0.6; transition: opacity 0.2s; z-index: 10;';
+                deleteBtn.textContent = 'Delete';
+                deleteBtn.style.cssText = 'position: absolute; right: 8px; top: 8px; cursor: pointer; font-size: 0.65rem; color: #ef4444; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); padding: 2px 6px; border-radius: 4px; font-weight: 600; text-transform: uppercase; transition: all 0.2s; z-index: 100;';
                 deleteBtn.title = 'Delete result file';
-                deleteBtn.addEventListener('mouseenter', () => deleteBtn.style.opacity = '1');
-                deleteBtn.addEventListener('mouseleave', () => deleteBtn.style.opacity = '0.6');
+                deleteBtn.addEventListener('mouseenter', () => {
+                    deleteBtn.style.background = '#ef4444';
+                    deleteBtn.style.color = '#ffffff';
+                });
+                deleteBtn.addEventListener('mouseleave', () => {
+                    deleteBtn.style.background = 'rgba(239, 68, 68, 0.1)';
+                    deleteBtn.style.color = '#ef4444';
+                });
                 deleteBtn.addEventListener('click', async (e) => {
                     e.stopPropagation();
                     if (!confirm(`Are you sure you want to permanently delete result file "${result.filename}"?`)) {
