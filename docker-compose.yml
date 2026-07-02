@@ -125,6 +125,9 @@ services:
       TELEMETRY_DIR: /app/data/telemetry
       LLAMA_SERVER_URL: http://llama-server:8080
       LLAMA_DOCKER_CONTAINER: llama-server
+      PROXY_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       llama-server:
         condition: service_started

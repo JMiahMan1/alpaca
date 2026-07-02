@@ -31,11 +31,14 @@ def load_dotenv_custom():
                     value = value.strip().strip("\"'")
                     os.environ.setdefault(key, value)
 
+
 load_dotenv_custom()
 
 import logging
 
-DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv("DEBUG_LOGGING", "0").lower() in ("1", "true", "yes")
+DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv(
+    "DEBUG_LOGGING", "0"
+).lower() in ("1", "true", "yes")
 if not DEBUG_LOGGING:
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -58,7 +61,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 @app.after_request
 def add_cache_headers(response):
     """Prevent caching of static JS/CSS and API endpoints to avoid stale data/code."""
-    if (request.path.startswith("/static/") and request.path.endswith((".js", ".css"))) or request.path.startswith("/api/"):
+    if (
+        request.path.startswith("/static/") and request.path.endswith((".js", ".css"))
+    ) or request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -119,10 +124,9 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
         assert process.stdout is not None, "subprocess stdout should not be None with stdout=PIPE"
 
         print(f"Pull started: {model_name} (PID: {process.pid})")
-        socketio.emit("pull_log", {
-            "model": model_name,
-            "line": f"[alpaca] Pull started (PID: {process.pid})"
-        })
+        socketio.emit(
+            "pull_log", {"model": model_name, "line": f"[alpaca] Pull started (PID: {process.pid})"}
+        )
 
         while True:
             # Use select() with 1s timeout instead of blocking readline() forever
@@ -151,21 +155,18 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
                 if status == "cancelled":
                     print(f"Pull cancelled: {model_name}")
                     _terminate_process(process, model_name)
-                    socketio.emit("pull_status", {
-                        "model": model_name,
-                        "status": "cancelled"
-                    })
+                    socketio.emit("pull_status", {"model": model_name, "status": "cancelled"})
                     return
                 elif status == "stopping":
                     active_pulls[model_name]["status"] = "stopping"
                     print(f"Pull stopping: {model_name}")
                     _terminate_process(process, model_name)
                     active_pulls[model_name]["status"] = "stopped"
-                    socketio.emit("pull_status", {
-                        "model": model_name,
-                        "status": "stopped"
-                    })
-                    stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+                    socketio.emit("pull_status", {"model": model_name, "status": "stopped"})
+                    stop_dir = (
+                        Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router"))
+                        / ".alpaca-stop"
+                    )
                     stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
                     stop_file.unlink(missing_ok=True)
                     return
@@ -177,7 +178,10 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
                 if status == "stopping":
                     active_pulls[model_name]["status"] = "stopped"
                     socketio.emit("pull_status", {"model": model_name, "status": "stopped"})
-                    stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+                    stop_dir = (
+                        Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router"))
+                        / ".alpaca-stop"
+                    )
                     stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
                     stop_file.unlink(missing_ok=True)
                     return
@@ -186,7 +190,10 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
             socketio.emit("pull_status", {"model": model_name, "status": "success"})
         else:
             # Clean up stop marker on failure so it doesn't block future pulls
-            stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
+            stop_dir = (
+                Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router"))
+                / ".alpaca-stop"
+            )
             stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
             stop_file.unlink(missing_ok=True)
             socketio.emit(
@@ -197,9 +204,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
     except Exception as e:
         if process is not None and process.poll() is None:
             _terminate_process(process, model_name)
-        socketio.emit(
-            "pull_status", {"model": model_name, "status": "failed", "error": str(e)}
-        )
+        socketio.emit("pull_status", {"model": model_name, "status": "failed", "error": str(e)})
     finally:
         with active_pulls_lock:
             if model_name in active_pulls:
@@ -340,12 +345,17 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback):
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
-                    print("[benchmark] Thread exiting with status still 'running' — forcing to 'completed'")
+                    print(
+                        "[benchmark] Thread exiting with status still 'running' — forcing to 'completed'"
+                    )
                     active_run["status"] = "completed"
                     active_run["current_model"] = None
                     active_run["current_test"] = None
                     active_run["current_category"] = None
-                    socketio.emit("benchmark_complete", {"status": "completed", "saved_as": active_run.get("saved_as")})
+                    socketio.emit(
+                        "benchmark_complete",
+                        {"status": "completed", "saved_as": active_run.get("saved_as")},
+                    )
 
     loop.run_until_complete(run())
     loop.close()
@@ -376,12 +386,17 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback):
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
-                    print("[benchmark] SharedLLM thread exiting with status still 'running' — forcing to 'completed'")
+                    print(
+                        "[benchmark] SharedLLM thread exiting with status still 'running' — forcing to 'completed'"
+                    )
                     active_run["status"] = "completed"
                     active_run["current_model"] = None
                     active_run["current_test"] = None
                     active_run["current_category"] = None
-                    socketio.emit("benchmark_complete", {"status": "completed", "saved_as": active_run.get("saved_as")})
+                    socketio.emit(
+                        "benchmark_complete",
+                        {"status": "completed", "saved_as": active_run.get("saved_as")},
+                    )
 
     loop.run_until_complete(run())
     loop.close()
@@ -828,13 +843,13 @@ def save_profile():
                             existing_profile = json.load(pf)
                     except Exception:
                         pass
-                
+
                 for k, v in settings.items():
                     if v is None or v == "":
                         existing_profile.pop(k, None)
                     else:
                         existing_profile[k] = v
-                
+
                 with open(profile_path, "w") as pf:
                     json.dump(existing_profile, pf, indent=4)
                 try:
@@ -1180,17 +1195,17 @@ def resubmit_stuck_request(request_id):
     return jsonify({"error": "Request not found in any proxy"}), 404
 
 
-
 @app.route("/api/telemetry/history")
 def get_telemetry_history():
     """Fetch telemetry history for a specific model"""
     model = request.args.get("model")
     limit = request.args.get("limit", 100, type=int)
-    
+
     if not model:
         # Try to find the currently active model from the proxy
         try:
             import httpx
+
             proxy_url = None
             for url in benchmark.PROXY_SERVER_URLS:
                 with httpx.Client(timeout=0.5) as client:
@@ -1211,10 +1226,11 @@ def get_telemetry_history():
 
     # sanitize model name just like telemetry_monitor.py
     import re
+
     telemetry_dir = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
     sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
     sanitized_model_lower = sanitized_model.lower()
-    
+
     def find_telemetry_file(filename):
         """Try multiple directories and flexible matching for telemetry files."""
         candidates = [
@@ -1229,14 +1245,18 @@ def get_telemetry_history():
 
     # 1. Try exact match
     log_file = find_telemetry_file(f"{sanitized_model}.jsonl")
-    
+
     # 2. Try case-insensitive match
     if log_file is None:
         log_file = find_telemetry_file(f"{sanitized_model_lower}.jsonl")
-    
+
     # 3. Search all telemetry files for one containing the model name
     if log_file is None:
-        for search_dir in [telemetry_dir, Path("/app/data/telemetry"), Path("web").parent / "data" / "telemetry"]:
+        for search_dir in [
+            telemetry_dir,
+            Path("/app/data/telemetry"),
+            Path("web").parent / "data" / "telemetry",
+        ]:
             if search_dir.exists():
                 for f in search_dir.glob("*.jsonl"):
                     if sanitized_model_lower in f.stem.lower():
@@ -1247,7 +1267,7 @@ def get_telemetry_history():
 
     if log_file is None or not log_file.exists():
         return jsonify({"model": model, "history": []})
-        
+
     points = []
     try:
         with open(log_file, "r", encoding="utf-8") as f:
@@ -1264,11 +1284,12 @@ def get_telemetry_recommendations():
     """Run configuration analyzer and fetch recommendations"""
     model = request.args.get("model")
     strategy = request.args.get("strategy", "performance")
-    
+
     if not model:
         # Default to currently loaded model
         try:
             import httpx
+
             proxy_url = None
             for url in benchmark.PROXY_SERVER_URLS:
                 with httpx.Client(timeout=0.5) as client:
@@ -1283,32 +1304,38 @@ def get_telemetry_recommendations():
                         model = resp.json().get("active_model")
         except Exception:
             pass
-            
+
     if not model:
-        return jsonify({
-            "status": "insufficient_data",
-            "model_alias": "None",
-            "detected_issues": ["No active model running, and no model specified."],
-            "recommendations": {},
-            "explanation": "Please load a model or specify one via '?model=name'."
-        })
-        
+        return jsonify(
+            {
+                "status": "insufficient_data",
+                "model_alias": "None",
+                "detected_issues": ["No active model running, and no model specified."],
+                "recommendations": {},
+                "explanation": "Please load a model or specify one via '?model=name'.",
+            }
+        )
+
     import re
+
     sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
     try:
         from analyzer import analyze_telemetry
-        perf_first = (strategy == "performance")
+
+        perf_first = strategy == "performance"
         analysis = analyze_telemetry(sanitized_model, performance_first=perf_first)
         return jsonify(analysis)
     except Exception as e:
         # Fallback analysis if importer/analyzer fails
-        return jsonify({
-            "status": "error",
-            "model_alias": model,
-            "detected_issues": [f"Tuning analyzer engine failed: {str(e)}"],
-            "recommendations": {},
-            "explanation": "Ensure analyzer.py is mounted correctly in the web container path."
-        })
+        return jsonify(
+            {
+                "status": "error",
+                "model_alias": model,
+                "detected_issues": [f"Tuning analyzer engine failed: {str(e)}"],
+                "recommendations": {},
+                "explanation": "Ensure analyzer.py is mounted correctly in the web container path.",
+            }
+        )
 
 
 @app.route("/api/telemetry/recommendations/apply", methods=["POST"])
@@ -1317,64 +1344,73 @@ def apply_telemetry_recommendations():
     data = request.get_json() or {}
     model = data.get("model")
     recommendations = data.get("recommendations", {})
-    
+
     if not model:
         return jsonify({"error": "model is required"}), 400
     if not recommendations:
         return jsonify({"error": "no recommendations provided"}), 400
-        
+
     import re
+
     sanitized_model = re.sub(r"[^\w\-.\.]", "_", model)
     router_models_dir = Path(os.getenv("ROUTER_MODELS_DIR", "/router-models"))
-    
+
     # 1. Delimiter-agnostic scan to find the correct GGUF file stem
     profile_stem = sanitized_model
-    
+
     def clean_str(s):
         return s.replace("/", "").replace("_", "").replace("-", "").lower()
+
     clean_target = clean_str(model)
-    
+
     target_dir = router_models_dir
     if not target_dir.exists():
         target_dir = Path("data")
         if not target_dir.exists():
             target_dir = Path("web").parent / ".alpaca-router"
-            
+
     if target_dir.exists():
         for entry in target_dir.iterdir():
             if entry.suffix == ".gguf":
                 clean_sec = clean_str(entry.stem)
-                if clean_target in clean_sec or clean_sec in clean_target or clean_target.replace("latest", "") in clean_sec:
+                if (
+                    clean_target in clean_sec
+                    or clean_sec in clean_target
+                    or clean_target.replace("latest", "") in clean_sec
+                ):
                     profile_stem = entry.stem
                     break
-                    
+
     profile_path = target_dir / f"{profile_stem}.profile.json"
-            
+
     try:
         profile_data = {}
         if profile_path.exists():
             with open(profile_path, "r", encoding="utf-8") as f:
                 profile_data = json.load(f)
-                
+
         profile_data.update(recommendations)
-        
+
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         with open(profile_path, "w", encoding="utf-8") as f:
             json.dump(profile_data, f, indent=2)
-            
+
         # Try to regenerate models.ini via puller
         try:
             from alpaca_puller import update_models_ini
+
             update_models_ini()
             ini_msg = "and regenerated models.ini"
         except Exception:
             ini_msg = "but could not regenerate models.ini automatically"
-            
-        return jsonify({
-            "status": "success",
-            "message": f"Applied tuning properties for {model} {ini_msg}.",
-            "applied": recommendations
-        })
+
+        return jsonify(
+            {
+                "status": "success",
+                "message": f"Applied tuning properties for {model} {ini_msg}.",
+                "applied": recommendations,
+            }
+        )
     except Exception as e:
         return jsonify({"error": f"Failed to apply tuning properties: {str(e)}"}), 500
 
@@ -1385,7 +1421,7 @@ def get_or_post_routing_matrix():
     matrix_file = Path("data/routing_matrix.json")
     if not matrix_file.parent.exists():
         matrix_file = Path("web").parent / "data" / "routing_matrix.json"
-        
+
     # Default routing matrix template
     default_matrix = {
         "fast_chat": {
@@ -1393,41 +1429,47 @@ def get_or_post_routing_matrix():
             "description": "Sub-second latency chat for voice assistant or general conversation.",
             "min_tps": 40.0,
             "max_ttft_ms": 250,
-            "reasoning_required": False
+            "reasoning_required": False,
         },
         "complex_coding": {
             "model": "qwen2.5-coder--7b",
             "description": "Accurate syntax completions, code editing, and structural debugging.",
             "min_tps": 20.0,
             "max_ttft_ms": 500,
-            "reasoning_required": False
+            "reasoning_required": False,
         },
         "reasoning": {
             "model": "gemma-4-E2B-it-uncensored-GGUF--gemma-4-E2B-it-uncensored-Q4_K_M",
             "description": "Deep thinking, logical reasoning, multi-step problem solving, math/science.",
             "min_tps": 15.0,
             "max_ttft_ms": 800,
-            "reasoning_required": True
+            "reasoning_required": True,
         },
         "summarization": {
             "model": "gemma-4-12b-fable5",
             "description": "Document parsing, entity extraction, context summaries, and long context tasks.",
             "min_tps": 30.0,
             "max_ttft_ms": 300,
-            "reasoning_required": False
-        }
+            "reasoning_required": False,
+        },
     }
-    
+
     if request.method == "POST":
         data = request.get_json() or {}
         try:
             matrix_file.parent.mkdir(parents=True, exist_ok=True)
             with open(matrix_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return jsonify({"status": "success", "message": "Routing matrix updated successfully.", "matrix": data})
+            return jsonify(
+                {
+                    "status": "success",
+                    "message": "Routing matrix updated successfully.",
+                    "matrix": data,
+                }
+            )
         except Exception as e:
             return jsonify({"error": f"Failed to save routing matrix: {str(e)}"}), 500
-            
+
     # GET method
     if matrix_file.exists():
         try:
@@ -1454,7 +1496,7 @@ def get_optimal_model():
     matrix_file = Path("data/routing_matrix.json")
     if not matrix_file.parent.exists():
         matrix_file = Path("web").parent / "data" / "routing_matrix.json"
-        
+
     matrix = {}
     if matrix_file.exists():
         try:
@@ -1462,32 +1504,34 @@ def get_optimal_model():
                 matrix = json.load(f)
         except Exception:
             pass
-            
+
     # Match criteria
     task_config = matrix.get(task, {})
-    
+
     # Fallbacks/overrides based on request params
     optimal_model = task_config.get("model", "qwen3--8b")
     explanation = f"Matched to configured model for task type '{task}'."
-    
+
     # If the caller requests specific speed overrides, validate models based on benchmarks
     try:
         from analyzer import load_latest_benchmark
+
         # Try loading benchmark for current optimal
         bench = load_latest_benchmark(optimal_model)
         if bench:
             tps = bench.get("avg_tokens_per_sec", 0.0)
             ttft = bench.get("avg_ttft_ms", 0)
-            
+
             # If configured model fails constraints, search alternatives
             if (min_tps and tps < min_tps) or (max_ttft_ms and ttft > max_ttft_ms):
                 explanation = f"Configured model '{optimal_model}' did not meet constraints (Benchmarked: {tps} TPS, {ttft}ms TTFT). Searching fallbacks..."
-                
+
                 best_model = optimal_model
                 best_score = -9999.0
-                
+
                 # Check other models in benchmark directory
                 from analyzer import BENCHMARK_DIR
+
                 if BENCHMARK_DIR.exists():
                     for path in BENCHMARK_DIR.glob("*.json"):
                         try:
@@ -1497,29 +1541,31 @@ def get_optimal_model():
                                     m_tps = res.get("avg_tokens_per_sec", 0.0)
                                     m_ttft = res.get("avg_ttft_ms", 9999)
                                     m_model = res.get("model")
-                                    
+
                                     meets_tps = (not min_tps) or (m_tps >= min_tps)
                                     meets_ttft = (not max_ttft_ms) or (m_ttft <= max_ttft_ms)
-                                    
+
                                     score = m_tps - (m_ttft / 10.0)
                                     if meets_tps and meets_ttft and score > best_score:
                                         best_score = score
                                         best_model = m_model
                         except Exception:
                             continue
-                
+
                 if best_model != optimal_model:
                     explanation += f" Routed to '{best_model}' as optimal alternative."
                     optimal_model = best_model
     except Exception as e:
         explanation += f" (Benchmark validation skipped: {str(e)})"
 
-    return jsonify({
-        "optimal_model": optimal_model,
-        "task": task,
-        "explanation": explanation,
-        "fallback_model": "qwen3--8b" if optimal_model != "qwen3--8b" else "qwen2.5-coder--7b"
-    })
+    return jsonify(
+        {
+            "optimal_model": optimal_model,
+            "task": task,
+            "explanation": explanation,
+            "fallback_model": "qwen3--8b" if optimal_model != "qwen3--8b" else "qwen2.5-coder--7b",
+        }
+    )
 
 
 @app.route("/api/usage")
@@ -1779,11 +1825,9 @@ def search_models():
                     qwen_tags = [t for t in tags if t != "gguf"][:3]
                     tag_str = ", ".join(qwen_tags) if qwen_tags else "GGUF"
                     desc = f"[Direct Match] GGUF repository by {model_item.get('author', 'HF author')}. Downloads: {downloads:,} | Likes: {likes:,} | Tags: {tag_str}"
-                    results.insert(0, {
-                        "name": model_id,
-                        "description": desc,
-                        "source": "huggingface"
-                    })
+                    results.insert(
+                        0, {"name": model_id, "description": desc, "source": "huggingface"}
+                    )
         except Exception as e:
             print(f"Precise HF lookup error: {e}")
 
@@ -1809,11 +1853,7 @@ def get_hf_files():
         resp = httpx.get(url, headers=headers, timeout=15.0)
         if resp.status_code != 200:
             return (
-                jsonify(
-                    {
-                        "error": f"Failed to fetch model info from Hugging Face: {resp.text}"
-                    }
-                ),
+                jsonify({"error": f"Failed to fetch model info from Hugging Face: {resp.text}"}),
                 resp.status_code,
             )
 
@@ -1852,11 +1892,7 @@ def get_ollama_model_tags():
         resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0)
         if resp.status_code != 200:
             return (
-                jsonify(
-                    {
-                        "error": f"Failed to fetch tags from Ollama Library: {resp.text}"
-                    }
-                ),
+                jsonify({"error": f"Failed to fetch tags from Ollama Library: {resp.text}"}),
                 resp.status_code,
             )
 
@@ -1889,7 +1925,6 @@ def get_ollama_model_tags():
         return jsonify({"error": f"Error fetching Ollama model tags: {str(e)}"}), 500
 
 
-
 @app.route("/api/models/pull", methods=["POST"])
 def trigger_model_pull():
     """Trigger a background pull of a model via alpaca-puller.py"""
@@ -1913,7 +1948,7 @@ def trigger_model_pull():
             "source": source,
             "local_name": local_name or "",
             "status": "running",
-            "logs": []
+            "logs": [],
         }
 
     t = threading.Thread(
@@ -1933,18 +1968,20 @@ def trigger_model_pull():
 def get_active_pulls():
     """Retrieve currently active downloads and their logs"""
     with active_pulls_lock:
-        return jsonify({
-            "active_pulls": {
-                k: {
-                    "model": v["model"],
-                    "source": v["source"],
-                    "local_name": v.get("local_name", ""),
-                    "status": v.get("status", "running"),
-                    "logs": v["logs"]
+        return jsonify(
+            {
+                "active_pulls": {
+                    k: {
+                        "model": v["model"],
+                        "source": v["source"],
+                        "local_name": v.get("local_name", ""),
+                        "status": v.get("status", "running"),
+                        "logs": v["logs"],
+                    }
+                    for k, v in active_pulls.items()
                 }
-                for k, v in active_pulls.items()
             }
-        })
+        )
 
 
 @app.route("/api/models/pulls/<model_id>/stop", methods=["POST"])
@@ -1965,10 +2002,7 @@ def stop_pull(model_id):
     stop_file.write_text(str(time.time()))
     print(f"Stop marker created: {stop_file}")
 
-    return jsonify({
-        "status": "stopping",
-        "message": f"Stopping pull for {pull['model']}..."
-    })
+    return jsonify({"status": "stopping", "message": f"Stopping pull for {pull['model']}..."})
 
 
 @app.route("/api/models/pulls/<model_id>/cancel", methods=["POST"])
@@ -1986,12 +2020,11 @@ def cancel_pull(model_id):
     stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
     stop_file = stop_dir / f"{model_id.replace('/', '_').replace(':', '_')}"
     stop_file.unlink(missing_ok=True)
-    print(f"Cancelled pull for {pull['model']}, partial downloads will be cleaned up on next restart.")
+    print(
+        f"Cancelled pull for {pull['model']}, partial downloads will be cleaned up on next restart."
+    )
 
-    return jsonify({
-        "status": "cancelled",
-        "message": f"Pull for {pull['model']} cancelled."
-    })
+    return jsonify({"status": "cancelled", "message": f"Pull for {pull['model']} cancelled."})
 
 
 @socketio.on("connect")

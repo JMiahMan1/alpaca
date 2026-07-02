@@ -179,7 +179,7 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
     backend_model = None
 
     # Detect the active model name and backend model from the proxy runtime status
-    proxy_url = os.getenv("PROXY_URL", "http://alpaca-proxy:11434")
+    proxy_url = os.getenv("PROXY_URL", "http://host.docker.internal:11434")
     try:
         resp = await client.get(f"{proxy_url}/admin/runtime", timeout=1.0)
         if resp.status_code == 200:
@@ -211,13 +211,14 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
             model_alias = "system_idle"
 
     # 2. Fetch slots (for context usage tracking)
-    try:
-        slots_url = f"{LLAMA_SERVER_URL}/slots"
-        resp = await client.get(slots_url, timeout=2.0)
-        if resp.status_code == 200:
-            slots = resp.json()
-    except Exception as e:
-        logger.debug(f"Could not reach llama-server /slots: {e}")
+    if backend_model:
+        try:
+            slots_url = f"{LLAMA_SERVER_URL}/slots"
+            slots_resp = await client.get(slots_url, params={"model": backend_model}, timeout=2.0)
+            if slots_resp.status_code == 200:
+                slots = slots_resp.json()
+        except Exception as e:
+            logger.debug(f"Could not reach llama-server /slots: {e}")
 
     # Context window stats
     n_ctx = props.get("n_ctx", 0)

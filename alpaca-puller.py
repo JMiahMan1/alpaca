@@ -71,13 +71,16 @@ HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_TOKEN") or os.getenv("HF_TOKEN")
 _STOPPED = False
 _CURRENT_MODEL = ""
 
+
 def _signal_handler(signum, frame):
     """Handle SIGTERM/SIGINT for graceful download interruption."""
     global _STOPPED
     _STOPPED = True
 
+
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
+
 
 def _should_stop():
     """Check if download should be stopped (signal or marker file)."""
@@ -100,6 +103,7 @@ def _should_stop():
             if stop_file.is_file():
                 return True
     return False
+
 
 MODEL_LAYER_MEDIA_TYPE = "application/vnd.ollama.image.model"
 MODEL_GGUF_MEDIA_TYPE = "application/vnd.ollama.image.model+gguf"
@@ -268,9 +272,18 @@ def update_models_ini():
                     if p_entry.suffix == ".gguf" and p_entry != entry:
                         p_name = p_entry.name.lower()
                         if "projector" in p_name or "mmproj" in p_name:
-                            stem_clean = entry.stem.lower().replace("--latest", "").replace("--latest-gguf", "")
+                            stem_clean = (
+                                entry.stem.lower()
+                                .replace("--latest", "")
+                                .replace("--latest-gguf", "")
+                            )
                             p_clean = p_entry.stem.lower()
-                            if stem_clean in p_clean or p_clean.startswith(stem_clean) or len(list(router_dir.glob("*projector*.gguf"))) == 1 or len(list(router_dir.glob("*mmproj*.gguf"))) == 1:
+                            if (
+                                stem_clean in p_clean
+                                or p_clean.startswith(stem_clean)
+                                or len(list(router_dir.glob("*projector*.gguf"))) == 1
+                                or len(list(router_dir.glob("*mmproj*.gguf"))) == 1
+                            ):
                                 projector_path = f"/router-models/{p_entry.name}"
                                 break
 
@@ -302,7 +315,7 @@ def update_models_ini():
                             f"Warning: could not read model profile for {alias}: {e}",
                             file=sys.stderr,
                         )
-                
+
                 model_settings = {}
                 if projector_path:
                     model_settings["mmproj"] = projector_path
@@ -565,7 +578,9 @@ def download_blob(client, repo, digest, expected_size, headers):
             ):
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)")
+                        print(
+                            f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)"
+                        )
                         return
                     handle.write(chunk)
                     bar.update(len(chunk))
@@ -574,7 +589,9 @@ def download_blob(client, repo, digest, expected_size, headers):
             with open(blob_path, mode) as handle:
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)")
+                        print(
+                            f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)"
+                        )
                         return
                     handle.write(chunk)
                     downloaded += len(chunk)
@@ -683,7 +700,9 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
                     ):
                         for chunk in response.iter_bytes():
                             if _should_stop():
-                                print(f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)")
+                                print(
+                                    f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)"
+                                )
                                 return None
                             handle.write(chunk)
                             bar.update(len(chunk))
@@ -692,7 +711,9 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
                     with open(output_path, mode) as handle:
                         for chunk in response.iter_bytes():
                             if _should_stop():
-                                print(f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)")
+                                print(
+                                    f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)"
+                                )
                                 return None
                             handle.write(chunk)
                             downloaded += len(chunk)
@@ -838,7 +859,9 @@ def download_to_partial_file(client, url, headers, label, partial_path):
             ):
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)")
+                        print(
+                            f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)"
+                        )
                         return None
                     handle.write(chunk)
                     bar.update(len(chunk))
@@ -847,7 +870,9 @@ def download_to_partial_file(client, url, headers, label, partial_path):
             with open(partial_path, mode) as handle:
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)")
+                        print(
+                            f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)"
+                        )
                         return None
                     handle.write(chunk)
                     downloaded += len(chunk)
@@ -875,7 +900,7 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resu
     print(f"Importing Hugging Face GGUF: {repo}/{filename}")
     print(f"Local Ollama model name: {normalize_model_name(local_name)}")
     if no_resume and partial_path.exists():
-        print(f"Ignoring partial download and starting fresh.")
+        print("Ignoring partial download and starting fresh.")
         partial_path.unlink()
     client = httpx.Client(
         timeout=httpx.Timeout(300.0, connect=30.0, read=300.0),
@@ -976,11 +1001,15 @@ def pull_ollama_model(model_name, insecure=False, no_resume=False):
             if not digest:
                 continue
             if _should_stop():
-                print(f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes).")
+                print(
+                    f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes)."
+                )
                 return 1
             download_blob(client, repo, digest, layer.get("size", 0), headers)
             if _should_stop():
-                print(f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes).")
+                print(
+                    f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes)."
+                )
                 return 1
         write_manifest_atomic(manifest_path, manifest)
         router_path = ensure_router_symlink(model_name, manifest)
@@ -998,7 +1027,9 @@ def pull_model(model_name, source="auto", local_name=None, insecure=False, no_re
     resolved_source = choose_source(model_name, source)
     try:
         if resolved_source == "huggingface":
-            result = import_huggingface_gguf(model_name, local_name=local_name, insecure=insecure, no_resume=no_resume)
+            result = import_huggingface_gguf(
+                model_name, local_name=local_name, insecure=insecure, no_resume=no_resume
+            )
         else:
             result = pull_ollama_model(model_name, insecure=insecure, no_resume=no_resume)
         if result == 0:
@@ -1143,7 +1174,11 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "pull":
         return pull_model(
-            args.model, source=args.source, local_name=args.name, insecure=args.insecure, no_resume=args.no_resume
+            args.model,
+            source=args.source,
+            local_name=args.name,
+            insecure=args.insecure,
+            no_resume=args.no_resume,
         )
     if args.command == "reindex":
         return reindex_models()

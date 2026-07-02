@@ -235,7 +235,9 @@ class LLMModelBenchmark:
 
         # Clean the response from potential think tags
         cleaned = (
-            re.sub(r"<(think|thinking)>[\s\S]*?</\1>", "", response, flags=re.IGNORECASE).strip().lower()
+            re.sub(r"<(think|thinking)>[\s\S]*?</\1>", "", response, flags=re.IGNORECASE)
+            .strip()
+            .lower()
         )
 
         refusals = [
@@ -253,7 +255,10 @@ class LLMModelBenchmark:
             no_spaces = cleaned.replace(" ", "")
             has_correct_range = any(r in no_spaces for r in ["range(len", "range(0,len"])
             has_sum = "sum(" in no_spaces
-            has_direct_loop = any(f"for {var} in items" in cleaned for var in ["item", "i", "x", "val", "num", "elem", "element"])
+            has_direct_loop = any(
+                f"for {var} in items" in cleaned
+                for var in ["item", "i", "x", "val", "num", "elem", "element"]
+            )
             return has_correct_range or has_sum or has_direct_loop
 
         elif test_id == "code_refactor":
@@ -261,17 +266,28 @@ class LLMModelBenchmark:
             return any(x in no_spaces for x in ["set(", "fromkeys("])
 
         elif test_id == "guess_game":
-            return "random" in cleaned and "input(" in cleaned and any(x in cleaned for x in ["randint", "randrange", "secret", "number"])
+            return (
+                "random" in cleaned
+                and "input(" in cleaned
+                and any(x in cleaned for x in ["randint", "randrange", "secret", "number"])
+            )
 
         elif test_id == "text_adventure":
-            return "input(" in cleaned and any(x in cleaned for x in ["door", "choice", "room", "path"]) and any(x in cleaned for x in ["win", "lose", "gold", "monster"])
+            return (
+                "input(" in cleaned
+                and any(x in cleaned for x in ["door", "choice", "room", "path"])
+                and any(x in cleaned for x in ["win", "lose", "gold", "monster"])
+            )
 
         elif test_id == "logic_puzzle":
             return "42" in cleaned
 
         elif test_id == "math_problem":
             no_spaces = cleaned.replace(" ", "")
-            return any(x in no_spaces for x in ["1:08", "1:09", "13:08", "13:09", "1.08pm", "1.09pm", "1.08", "1.09"])
+            return any(
+                x in no_spaces
+                for x in ["1:08", "1:09", "13:08", "13:09", "1.08pm", "1.09pm", "1.08", "1.09"]
+            )
 
         elif test_id == "json_extraction":
             has_name = "john" in cleaned
@@ -379,7 +395,18 @@ class LLMModelBenchmark:
                             "think": False,
                             "options": {
                                 "num_predict": (
-                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reason", "thinking", "ornith"])
+                                    2048
+                                    if any(
+                                        term in model.lower()
+                                        for term in [
+                                            "qwen3",
+                                            "r1",
+                                            "math",
+                                            "reason",
+                                            "thinking",
+                                            "ornith",
+                                        ]
+                                    )
                                     else test.get("num_predict", 50)
                                 ),
                                 "temperature": 0.3,
@@ -397,9 +424,9 @@ class LLMModelBenchmark:
                         eval_ns = data.get("eval_duration", 0)
                         prompt_ns = data.get("prompt_eval_duration", 0)
                         latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
-                        response_text = self.strip_thinking(data.get("message", {}).get("content") or data.get(
-                            "response", ""
-                        ))
+                        response_text = self.strip_thinking(
+                            data.get("message", {}).get("content") or data.get("response", "")
+                        )
                         return {
                             "proxy": proxy_url,
                             "success": True,
@@ -431,7 +458,11 @@ class LLMModelBenchmark:
             if isinstance(last_error, (httpx.TimeoutException, asyncio.TimeoutError)):
                 error_msg = f"Request timed out: {type(last_error).__name__}"
             else:
-                error_msg = f"{type(last_error).__name__}: {str(last_error)}" if str(last_error) else type(last_error).__name__
+                error_msg = (
+                    f"{type(last_error).__name__}: {str(last_error)}"
+                    if str(last_error)
+                    else type(last_error).__name__
+                )
         else:
             error_msg = "Unknown error"
 
@@ -467,7 +498,18 @@ class LLMModelBenchmark:
                             "think": False,
                             "options": {
                                 "num_predict": (
-                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reason", "thinking", "ornith"])
+                                    2048
+                                    if any(
+                                        term in model.lower()
+                                        for term in [
+                                            "qwen3",
+                                            "r1",
+                                            "math",
+                                            "reason",
+                                            "thinking",
+                                            "ornith",
+                                        ]
+                                    )
                                     else test.get("num_predict", 50)
                                 ),
                                 "temperature": 0.3,
@@ -515,7 +557,11 @@ class LLMModelBenchmark:
             if isinstance(last_error, (httpx.TimeoutException, asyncio.TimeoutError)):
                 error_msg = f"Request timed out: {type(last_error).__name__}"
             else:
-                error_msg = f"{type(last_error).__name__}: {str(last_error)}" if str(last_error) else type(last_error).__name__
+                error_msg = (
+                    f"{type(last_error).__name__}: {str(last_error)}"
+                    if str(last_error)
+                    else type(last_error).__name__
+                )
         else:
             error_msg = "Unknown error"
 
@@ -618,6 +664,7 @@ class LLMModelBenchmark:
                 if progress_callback:
                     try:
                         import inspect
+
                         if inspect.iscoroutinefunction(progress_callback):
                             await progress_callback(
                                 "test_start",
@@ -670,6 +717,7 @@ class LLMModelBenchmark:
                 if progress_callback:
                     try:
                         import inspect
+
                         if inspect.iscoroutinefunction(progress_callback):
                             await progress_callback(
                                 "test_complete",
@@ -742,6 +790,7 @@ class LLMModelBenchmark:
             if progress_callback:
                 try:
                     import inspect
+
                     if inspect.iscoroutinefunction(progress_callback):
                         await progress_callback(
                             "test_start",
@@ -796,6 +845,7 @@ class LLMModelBenchmark:
             if progress_callback:
                 try:
                     import inspect
+
                     if inspect.iscoroutinefunction(progress_callback):
                         await progress_callback(
                             "test_complete",
@@ -910,10 +960,12 @@ class LLMModelBenchmark:
         if progress_callback:
             try:
                 import inspect
+
                 start_data = {
                     "models": models,
                     "use_proxy": use_proxy,
-                    "total_tests": len(models) * (10 if mode in ("functional", "all") else 0) + len(models) * (2 if mode in ("performance", "all") else 0),
+                    "total_tests": len(models) * (10 if mode in ("functional", "all") else 0)
+                    + len(models) * (2 if mode in ("performance", "all") else 0),
                     "timestamp": all_results["generated_at"],
                 }
                 if inspect.iscoroutinefunction(progress_callback):
@@ -933,6 +985,7 @@ class LLMModelBenchmark:
             if progress_callback:
                 try:
                     import inspect
+
                     if inspect.iscoroutinefunction(progress_callback):
                         await progress_callback("model_start", {"model": model})
                     else:
@@ -958,8 +1011,11 @@ class LLMModelBenchmark:
             if progress_callback:
                 try:
                     import inspect
+
                     if inspect.iscoroutinefunction(progress_callback):
-                        await progress_callback("model_complete", {"model": model, "results": model_data})
+                        await progress_callback(
+                            "model_complete", {"model": model, "results": model_data}
+                        )
                     else:
                         progress_callback("model_complete", {"model": model, "results": model_data})
                 except Exception as e:
@@ -987,6 +1043,7 @@ class LLMModelBenchmark:
         if progress_callback:
             try:
                 import inspect
+
                 all_results["status"] = "completed"
                 if inspect.iscoroutinefunction(progress_callback):
                     await progress_callback("benchmark_complete", all_results)
