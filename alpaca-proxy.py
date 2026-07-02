@@ -680,6 +680,21 @@ def apply_thinking_override(payload, body):
     # the thinking phase from the output returned to the client if think is False.
     payload["thinking"] = True
 
+    # If the user explicitly disabled thinking, we must increase the token budget
+    # downstream to account for the model's reasoning phase. Otherwise, the model
+    # will run out of tokens before generating the actual response.
+    think_val = body.get("think")
+    if think_val is None:
+        think_val = body.get("enable_thinking")
+    if think_val is None and isinstance(body.get("options"), dict):
+        opts = body["options"]
+        think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
+
+    if think_val is False:
+        original_n_predict = payload.get("n_predict")
+        if original_n_predict is not None:
+            payload["n_predict"] = original_n_predict + 1024
+
 
 
 def build_generate_chat_payload(body, backend_model):
