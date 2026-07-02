@@ -372,7 +372,10 @@ class LLMModelBenchmark:
                             # spend all tokens on <thinking> and return empty content.
                             "think": False,
                             "options": {
-                                "num_predict": test.get("num_predict", 50),
+                                "num_predict": (
+                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                    else test.get("num_predict", 50)
+                                ),
                                 "temperature": 0.3,
                             },
                         },
@@ -448,7 +451,10 @@ class LLMModelBenchmark:
                             # spend all tokens on <thinking> and return empty content.
                             "think": False,
                             "options": {
-                                "num_predict": test.get("num_predict", 50),
+                                "num_predict": (
+                                    2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                    else test.get("num_predict", 50)
+                                ),
                                 "temperature": 0.3,
                             },
                         },
@@ -935,18 +941,6 @@ class LLMModelBenchmark:
                 except Exception as e:
                     print(f"Callback error: {e}")
 
-        # Emit benchmark_complete event
-        if progress_callback:
-            try:
-                import inspect
-                complete_data = {"status": "completed", "saved_as": all_results.get("saved_as")}
-                if inspect.iscoroutinefunction(progress_callback):
-                    await progress_callback("benchmark_complete", complete_data)
-                else:
-                    progress_callback("benchmark_complete", complete_data)
-            except Exception as e:
-                print(f"Callback error: {e}")
-
         if all_results["results"]:
             save_file = (
                 self.RESULTS_DIR
@@ -964,6 +958,18 @@ class LLMModelBenchmark:
             print(f"Results saved to: {save_file}")
             print(f"{'=' * 80}")
             all_results["saved_as"] = str(save_file)
+
+        # Emit benchmark_complete event
+        if progress_callback:
+            try:
+                import inspect
+                all_results["status"] = "completed"
+                if inspect.iscoroutinefunction(progress_callback):
+                    await progress_callback("benchmark_complete", all_results)
+                else:
+                    progress_callback("benchmark_complete", all_results)
+            except Exception as e:
+                print(f"Callback error: {e}")
 
         return all_results
 

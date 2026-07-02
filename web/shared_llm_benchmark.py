@@ -120,7 +120,13 @@ class SharedLLMModelBenchmark:
                                 # Disable thinking mode so MoE / thinking models don't
                                 # spend all tokens on <think> and return empty content.
                                 "think": False,
-                                "options": {"num_predict": max_tokens, "temperature": 0.2},
+                                "options": {
+                                    "num_predict": (
+                                        2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                        else max_tokens
+                                    ),
+                                    "temperature": 0.2,
+                                },
                             },
                             headers={"X-Request-Source": "shared-llm/benchmark"},
                             timeout=180.0,
@@ -147,7 +153,13 @@ class SharedLLMModelBenchmark:
                                 "prompt": prompt,
                                 "stream": False,
                                 "think": False,
-                                "options": {"num_predict": max_tokens, "temperature": 0.2},
+                                "options": {
+                                    "num_predict": (
+                                        2048 if any(term in model.lower() for term in ["qwen3", "r1", "math", "reasoning", "thinking"])
+                                        else max_tokens
+                                    ),
+                                    "temperature": 0.2,
+                                },
                             },
                             timeout=180.0,
                         )
