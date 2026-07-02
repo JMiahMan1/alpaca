@@ -712,9 +712,9 @@ def get_results_list():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/results/<filename>")
+@app.route("/api/results/<filename>", methods=["GET", "DELETE"])
 def get_result_detail(filename):
-    """Get the detail of a specific benchmark result file"""
+    """Get or delete a specific benchmark result file"""
     try:
         filename = os.path.basename(filename)
 
@@ -726,6 +726,10 @@ def get_result_detail(filename):
 
         if not file_path.exists():
             return jsonify({"error": "Result file not found"}), 404
+
+        if request.method == "DELETE":
+            os.remove(file_path)
+            return jsonify({"status": "deleted", "filename": filename})
 
         with open(file_path, "r") as f:
             data = json.load(f)

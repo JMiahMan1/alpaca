@@ -385,7 +385,10 @@
 
                     <!-- Audits and Details Table -->
                     <div class="card" style="margin-top: 1.5rem;">
-                        <div class="card-title">Detailed Evaluation Results</div>
+                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>Detailed Evaluation Results</span>
+                            <button id="btn-export-general" class="btn" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; background: var(--color-primary); color: var(--color-bg); border: none; font-weight: 600;">Export Report</button>
+                        </div>
                         <div class="results-details-section">
                             <!-- Model selector tabs -->
                             <div id="model-tabs" class="model-tabs">
@@ -503,7 +506,10 @@
 
                     <!-- SharedLLM detailed verification table -->
                     <div class="card" style="margin-top: 1.5rem;">
-                        <div class="card-title">SharedLLM Evaluation Audits</div>
+                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>SharedLLM Evaluation Audits</span>
+                            <button id="btn-export-shared" class="btn" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; background: var(--color-primary); color: var(--color-bg); border: none; font-weight: 600;">Export Report</button>
+                        </div>
                         <div class="results-details-section">
                             <div id="shared-model-tabs" class="model-tabs">
                                 <!-- Populated via javascript -->
@@ -1335,6 +1341,6 @@
     <!-- Socket.IO library (CDN) -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <!-- Frontend logic script -->
-    <script src="/static/js/dashboard.js"></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 </body>
 </html>

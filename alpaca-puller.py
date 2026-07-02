@@ -255,9 +255,24 @@ def update_models_ini():
                     continue
 
                 alias = entry.stem
+                if "projector" in alias.lower() or "mmproj" in alias.lower():
+                    continue
+
                 is_moe = False
                 param_count = 0
                 flash_attn = False
+                projector_path = None
+
+                # Look for a projector file for this model
+                for p_entry in router_dir.iterdir():
+                    if p_entry.suffix == ".gguf" and p_entry != entry:
+                        p_name = p_entry.name.lower()
+                        if "projector" in p_name or "mmproj" in p_name:
+                            stem_clean = entry.stem.lower().replace("--latest", "").replace("--latest-gguf", "")
+                            p_clean = p_entry.stem.lower()
+                            if stem_clean in p_clean or p_clean.startswith(stem_clean) or len(list(router_dir.glob("*projector*.gguf"))) == 1 or len(list(router_dir.glob("*mmproj*.gguf"))) == 1:
+                                projector_path = f"/router-models/{p_entry.name}"
+                                break
 
                 try:
                     meta = _read_gguf_metadata(str(resolved))
@@ -289,6 +304,8 @@ def update_models_ini():
                         )
                 
                 model_settings = {}
+                if projector_path:
+                    model_settings["mmproj"] = projector_path
                 if is_safe:
                     model_settings["ctx-size"] = "8192"
                     model_settings["cache-type-k"] = "f16"
