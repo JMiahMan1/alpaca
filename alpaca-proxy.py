@@ -693,7 +693,7 @@ def apply_thinking_override(payload, body):
     if think_val is False:
         original_n_predict = payload.get("n_predict")
         if original_n_predict is not None:
-            payload["n_predict"] = original_n_predict + 1024
+            payload["n_predict"] = original_n_predict + 800
 
 
 
