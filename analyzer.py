@@ -457,7 +457,23 @@ def analyze_telemetry(
                     f"Reduce GPU offloaded layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to prevent CUDA OOM."
                 )
 
-        # 4. VRAM Underutilization / Quality Optimization (Plenty of VRAM headroom)
+        # 4. VRAM Underutilization: GPU Layer Offload Opportunity
+        # If VRAM is underutilized and the model is running with less than full GPU offload,
+        # recommend increasing n-gpu-layers to shift weights onto GPU for faster inference.
+        # This is the highest-impact optimization when VRAM < 55% and layers < 99.
+        if max_vram < 55.0 and vram_headroom_mb > 1500 and 0 <= curr_ngl < 99:
+            # Estimate how many more layers we can fit with 80% of the headroom
+            # Use a simple heuristic: each extra layer ≈ headroom / (99 - curr_ngl) MiB
+            extra_layers_estimate = int((vram_headroom_mb * 0.80) / max(1, vram_headroom_mb / max(1, 99 - curr_ngl)))
+            suggested_ngl = min(curr_ngl + max(10, extra_layers_estimate), 99)
+            recommendations["n-gpu-layers"] = str(suggested_ngl)
+            actions.append(
+                f"Increase GPU layer offload (n-gpu-layers: {curr_ngl} → {suggested_ngl}): "
+                f"VRAM is only {round(max_vram, 1)}% utilized with {vram_headroom_mb}MB free. "
+                f"Offloading more layers to GPU should significantly improve inference speed (TPS)."
+            )
+
+        # 5. VRAM Underutilization / Quality Optimization (Plenty of VRAM headroom)
         # If VRAM usage is low and KV cache is quantized, suggest upgrading progressively to f16/q8_0 to improve quality
         if max_vram < 75.0 and vram_headroom_mb > 2000:
             # Map progressive upgrade steps: q4_0 -> q5_0 -> q8_0 -> f16
@@ -492,8 +508,23 @@ def analyze_telemetry(
                 recommendations["cache-type-k"] = target_cache_k
                 recommendations["cache-type-v"] = target_cache_v
                 actions.append(
-                    f"Upgrade KV Cache quantization ({curr_cache_k} -> {target_cache_k}) to improve text generation coherence and quality, utilizing the available {vram_headroom_mb}MB VRAM headroom."
+                    f"Upgrade KV Cache quantization ({curr_cache_k} → {target_cache_k}) to improve text generation coherence and quality, utilizing the available {vram_headroom_mb}MB VRAM headroom."
                 )
+
+        # 6. Context Window Expansion Opportunity
+        # If VRAM headroom is large and current ctx-size is modest, suggest expanding for longer conversations.
+        if max_vram < 60.0 and vram_headroom_mb > 3000 and curr_ctx <= 16384:
+            # Suggest doubling context, capped at 32768
+            suggested_ctx = min(curr_ctx * 2, 32768)
+            if suggested_ctx > curr_ctx:
+                # Don't add if already recommended something that conflicts
+                if "ctx-size" not in recommendations:
+                    recommendations["ctx-size"] = str(suggested_ctx)
+                    actions.append(
+                        f"Expand context window (ctx-size: {curr_ctx} → {suggested_ctx}): "
+                        f"VRAM headroom ({vram_headroom_mb}MB free) is sufficient to support a larger context, "
+                        f"enabling longer document processing and multi-turn conversations."
+                    )
 
     # Try loading baseline benchmarks for comparison
     benchmark = load_latest_benchmark(model_alias)
