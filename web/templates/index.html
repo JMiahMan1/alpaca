@@ -309,6 +309,24 @@
                         </div>
                     </div>
 
+
+                    <!-- Resource Analysis Card -->
+                    <div class="card" id="resource-analysis-card" style="display: flex; flex-direction: column; min-height: 220px; margin-top: 1rem;">
+                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                            <span>&#x26A1; Resource Usage Analysis &amp; Tuning Suggestions</span>
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <select id="analysis-strategy-select" style="background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.65rem; cursor: pointer;">
+                                    <option value="performance">Performance First</option>
+                                    <option value="safe">Safe First</option>
+                                </select>
+                                <button id="btn-analyze-all" class="btn btn-primary" style="margin: 0; padding: 0.3rem 0.75rem; font-size: 0.7rem;">Analyze All Models</button>
+                            </div>
+                        </div>
+                        <div id="resource-analysis-results" style="font-size: 0.75rem; color: var(--text-muted); flex: 1; overflow-y: auto; max-height: 320px;">
+                            <div style="text-align: center; padding: 2rem;">Click <strong style="color:var(--text-primary)">Analyze All Models</strong> to compare VRAM/GPU utilization against model profile settings and get optimization suggestions (e.g. increase GPU layers, expand context window).</div>
+                        </div>
+                    </div>
+
                     <!-- Client Connections Section -->
                     <div class="monitor-grid" style="margin-top: 1.5rem;">
                         <div class="card">

@@ -1454,6 +1454,103 @@ def apply_telemetry_recommendations():
         return jsonify({"error": f"Failed to apply tuning properties: {str(e)}"}), 500
 
 
+@app.route("/api/analyze/all")
+def analyze_all_models():
+    """Run resource usage analysis across all models with telemetry data.
+
+    Compares actual VRAM/RAM/GPU utilization against current profile settings
+    and returns prioritized optimization recommendations for each model.
+    """
+    telemetry_dir = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
+    strategy = request.args.get("strategy", "performance")
+
+    if not telemetry_dir.exists():
+        return jsonify({"error": "Telemetry directory not found", "models": []}), 404
+
+    try:
+        from analyzer import analyze_telemetry
+    except ImportError as e:
+        return jsonify({"error": f"Analyzer module unavailable: {e}", "models": []}), 500
+
+    perf_first = strategy != "safe"
+    results = []
+    skipped = []
+
+    for jsonl_file in sorted(telemetry_dir.glob("*.jsonl")):
+        model_alias = jsonl_file.stem
+        # Skip non-model files
+        if model_alias in ("none", "system_idle", "unknown_model"):
+            skipped.append(model_alias)
+            continue
+
+        try:
+            analysis = analyze_telemetry(model_alias, performance_first=perf_first)
+
+            # Skip models with no data
+            if analysis.get("status") == "insufficient_data":
+                skipped.append(model_alias)
+                continue
+
+            # Compute an optimization priority score for sorting:
+            # Higher score = more urgent / impactful to act on
+            metrics = analysis.get("metrics_summary", {})
+            vram = metrics.get("vram", {})
+            ram = metrics.get("system_ram", {})
+            recs = analysis.get("recommendations", {})
+
+            vram_pct = vram.get("max_pct", 0)
+            vram_headroom = vram.get("headroom_mb", 0)
+            ram_pct = ram.get("max_pct", 0)
+            n_recommendations = len(recs)
+
+            # Priority: critical OOM issues score highest, then optimization opportunities
+            status = analysis.get("status", "ok")
+            priority_score = 0
+            if status == "critical":
+                priority_score = 100
+            elif status == "warning":
+                priority_score = 60
+            elif n_recommendations > 0:
+                # Optimization opportunity: score based on potential gain
+                # More VRAM headroom with partial GPU offload = bigger opportunity
+                priority_score = min(50, int(vram_headroom / 100))
+
+            results.append({
+                "model_alias": model_alias,
+                "status": status,
+                "priority_score": priority_score,
+                "vram_summary": {
+                    "total_mb": vram.get("total_mb", 0),
+                    "used_mb": vram.get("max_used_mb", 0),
+                    "headroom_mb": vram_headroom,
+                    "max_pct": round(vram_pct, 1),
+                },
+                "ram_summary": {
+                    "max_pct": round(ram_pct, 1),
+                    "mean_pct": round(ram.get("mean_pct", 0), 1),
+                },
+                "gpu_util_pct": metrics.get("gpu_util_pct", {}),
+                "current_config": analysis.get("recommendations", {}),
+                "recommendations": recs,
+                "detected_issues": analysis.get("detected_issues", []),
+                "explanation": analysis.get("explanation", ""),
+                "baseline_comparison": analysis.get("baseline_comparison", {}),
+            })
+        except Exception as e:
+            app.logger.warning(f"Analysis failed for {model_alias}: {e}")
+            skipped.append(model_alias)
+
+    # Sort by priority (highest first), then by VRAM headroom descending for same priority
+    results.sort(key=lambda r: (-r["priority_score"], -r["vram_summary"]["headroom_mb"]))
+
+    return jsonify({
+        "strategy": strategy,
+        "models_analyzed": len(results),
+        "models_skipped": skipped,
+        "results": results,
+    })
+
+
 @app.route("/api/routing/matrix", methods=["GET", "POST"])
 def get_or_post_routing_matrix():
     """GET current model capability routing matrix, or POST modifications to it"""

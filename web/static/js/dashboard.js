@@ -3462,7 +3462,115 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnApplyOptimizations) {
         btnApplyOptimizations.addEventListener('click', applyTuningOptimizations);
     }
-    
+
+    // ──── RESOURCE ANALYSIS ────
+    async function analyzeAllModels() {
+        const btn = document.getElementById('btn-analyze-all');
+        const resultsEl = document.getElementById('resource-analysis-results');
+        const strategy = document.getElementById('analysis-strategy-select')?.value || 'performance';
+
+        if (!btn || !resultsEl) return;
+        btn.disabled = true;
+        btn.textContent = 'Analyzing...';
+        resultsEl.innerHTML = `<div style="text-align:center;padding:2rem;color:var(--text-muted);">⏳ Running resource analysis across all models...</div>`;
+
+        try {
+            const res = await fetch(`/api/analyze/all?strategy=${strategy}`);
+            const data = await res.json();
+
+            if (data.error) {
+                resultsEl.innerHTML = `<div style="color:var(--color-danger);padding:1rem;">❌ ${data.error}</div>`;
+                return;
+            }
+
+            const { results, models_analyzed, models_skipped } = data;
+
+            if (!results || results.length === 0) {
+                resultsEl.innerHTML = `<div style="text-align:center;padding:2rem;color:var(--text-muted);">No telemetry data found. Ensure models have been run with telemetry active.</div>`;
+                return;
+            }
+
+            const statusColors = { ok: 'var(--color-success)', warning: 'var(--color-warning)', critical: 'var(--color-danger)' };
+            const statusIcons = { ok: '✅', warning: '⚠️', critical: '🔴' };
+
+            let html = `<div style="margin-bottom:0.75rem;font-size:0.7rem;color:var(--text-muted);">Analyzed <strong style="color:var(--text-primary)">${models_analyzed}</strong> models. Skipped: ${models_skipped.join(', ') || 'none'}.</div>`;
+
+            results.forEach(r => {
+                const statusColor = statusColors[r.status] || 'var(--text-muted)';
+                const statusIcon = statusIcons[r.status] || '✅';
+                const hasRecs = r.recommendations && Object.keys(r.recommendations).length > 0;
+                const vram = r.vram_summary;
+                const ram = r.ram_summary;
+
+                // VRAM bar
+                const vramPct = Math.min(100, vram.max_pct || 0);
+                const vramBarColor = vramPct > 85 ? 'var(--color-danger)' : vramPct > 60 ? 'var(--color-warning)' : 'var(--color-success)';
+
+                html += `
+                <div style="border:1px solid var(--border-color);border-radius:8px;padding:0.75rem;margin-bottom:0.75rem;background:rgba(255,255,255,0.02);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+                        <span style="font-weight:600;color:var(--text-primary);font-family:monospace;font-size:0.78rem;">${r.model_alias}</span>
+                        <span style="color:${statusColor};font-size:0.7rem;">${statusIcon} ${r.status.toUpperCase()}</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;margin-bottom:0.5rem;font-size:0.68rem;">
+                        <div>
+                            <div style="color:var(--text-muted);margin-bottom:2px;">VRAM: ${vram.used_mb}MB / ${vram.total_mb}MB (${vramPct}%)</div>
+                            <div style="background:var(--border-color);border-radius:4px;height:6px;overflow:hidden;">
+                                <div style="width:${vramPct}%;height:100%;background:${vramBarColor};border-radius:4px;transition:width 0.3s;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="color:var(--text-muted);margin-bottom:2px;">RAM Peak: ${ram.max_pct}% &nbsp;|&nbsp; GPU Util: ${r.gpu_util_pct?.max || 0}%</div>
+                            <div style="color:var(--text-muted);">VRAM Headroom: <strong style="color:var(--text-primary)">${vram.headroom_mb}MB free</strong></div>
+                        </div>
+                    </div>
+                    ${r.detected_issues && r.detected_issues[0] !== 'No resource utilization issues detected.' ? `
+                    <div style="color:${statusColor};font-size:0.68rem;margin-bottom:0.4rem;">⚠ ${r.detected_issues[0]}</div>` : ''}
+                    ${hasRecs ? `
+                    <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);border-radius:6px;padding:0.5rem;margin-top:0.4rem;">
+                        <div style="color:var(--color-primary);font-weight:600;font-size:0.68rem;margin-bottom:0.3rem;">💡 Suggested Settings:</div>
+                        <div style="font-family:monospace;font-size:0.67rem;color:var(--text-secondary);margin-bottom:0.4rem;">${Object.entries(r.recommendations).map(([k,v]) => `${k} = ${v}`).join(' &nbsp;|&nbsp; ')}</div>
+                        <div style="font-size:0.67rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.4;">${r.explanation}</div>
+                        <button class="btn btn-primary" style="padding:0.25rem 0.6rem;font-size:0.65rem;margin:0;"
+                            onclick="applyAnalysisRec('${r.model_alias}', ${JSON.stringify(r.recommendations).replace(/"/g, '&quot;')})">
+                            Apply to Profile
+                        </button>
+                    </div>` : `<div style="color:var(--color-success);font-size:0.68rem;">✅ No optimizations needed. Settings are well-configured.</div>`}
+                </div>`;
+            });
+
+            resultsEl.innerHTML = html;
+        } catch (err) {
+            resultsEl.innerHTML = `<div style="color:var(--color-danger);padding:1rem;">❌ Analysis failed: ${err.message}</div>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Analyze All Models';
+        }
+    }
+
+    async function applyAnalysisRec(modelAlias, recommendations) {
+        try {
+            const res = await fetch('/api/telemetry/recommendations/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: modelAlias, recommendations })
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+                showToast(`✅ Applied settings for ${modelAlias}. Reload model to activate.`, 'success');
+            } else {
+                showToast(`❌ Failed to apply: ${data.error || 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            showToast(`❌ Apply failed: ${err.message}`, 'error');
+        }
+    }
+
+    const btnAnalyzeAll = document.getElementById('btn-analyze-all');
+    if (btnAnalyzeAll) {
+        btnAnalyzeAll.addEventListener('click', analyzeAllModels);
+    }
+
     const btnSaveRoutingMatrix = document.getElementById('btn-save-routing-matrix');
     if (btnSaveRoutingMatrix) {
         btnSaveRoutingMatrix.addEventListener('click', saveRoutingMatrix);
