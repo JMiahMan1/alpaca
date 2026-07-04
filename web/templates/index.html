@@ -364,6 +364,30 @@
                         </div>
                     </div>
 
+                    <!-- Model Error Log -->
+                    <div class="card" id="error-log-card" style="margin-top: 1.5rem;">
+                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                            <span>&#x26A0;&#xFE0F; Model Error Log</span>
+                            <div style="display:flex;gap:0.5rem;align-items:center;">
+                                <select id="error-log-filter-type" style="background:#0f172a;color:white;border:1px solid var(--border-color);padding:0.2rem 0.4rem;border-radius:4px;font-size:0.65rem;cursor:pointer;">
+                                    <option value="">All Types</option>
+                                    <option value="context_overflow">Context Overflow</option>
+                                    <option value="oom">OOM</option>
+                                    <option value="slot_unavailable">Slot Unavailable</option>
+                                    <option value="connection_error">Connection Error</option>
+                                    <option value="inference_error">Inference Error</option>
+                                    <option value="bad_request">Bad Request</option>
+                                </select>
+                                <button id="btn-refresh-errors" class="btn btn-secondary" style="margin:0;padding:0.25rem 0.6rem;font-size:0.7rem;">&#x21BB; Refresh</button>
+                                <button id="btn-clear-errors" class="btn btn-danger" style="margin:0;padding:0.25rem 0.6rem;font-size:0.7rem;">Clear</button>
+                            </div>
+                        </div>
+                        <div id="error-log-summary" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.75rem;font-size:0.7rem;"></div>
+                        <div id="error-log-list" style="max-height:300px;overflow-y:auto;font-size:0.72rem;">
+                            <div style="color:var(--text-muted);text-align:center;padding:1.5rem;">No errors recorded. Errors from inference requests will appear here automatically.</div>
+                        </div>
+                    </div>
+
                 </div>
 
                 <!-- VIEW 2: GENERAL BENCHMARKS VIEW -->

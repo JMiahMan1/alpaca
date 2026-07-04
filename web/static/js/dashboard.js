@@ -185,6 +185,7 @@ document.addEventListener('DOMContentLoaded', () => {
             viewDocs.classList.remove('d-none');
             setupDocsMenuHandlers();
         }
+        document.dispatchEvent(new CustomEvent('tabChanged', { detail: tabName }));
     }
 
     tabBtnMonitor.addEventListener('click', () => switchTab('monitor'));
@@ -3624,6 +3625,117 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnAnalyzeAll) {
         btnAnalyzeAll.addEventListener('click', analyzeAllModels);
     }
+
+    // ──── MODEL ERROR LOG ────
+    const ERROR_TYPE_STYLES = {
+        context_overflow: { color: '#f97316', label: 'CTX OVERFLOW' },
+        oom:              { color: '#ef4444', label: 'OOM' },
+        slot_unavailable: { color: '#eab308', label: 'SLOT BUSY' },
+        connection_error: { color: '#8b5cf6', label: 'CONN ERROR' },
+        inference_error:  { color: '#64748b', label: 'INFERENCE' },
+        bad_request:      { color: '#06b6d4', label: 'BAD REQUEST' },
+        model_not_found:  { color: '#ec4899', label: 'NOT FOUND' },
+        upstream_error:   { color: '#f43f5e', label: 'UPSTREAM' },
+    };
+
+    async function loadErrorLog() {
+        const listEl = document.getElementById('error-log-list');
+        const summaryEl = document.getElementById('error-log-summary');
+        const filterType = document.getElementById('error-log-filter-type')?.value || '';
+        if (!listEl) return;
+
+        try {
+            const params = new URLSearchParams({ limit: 100 });
+            if (filterType) params.set('error_type', filterType);
+            const res = await fetch(`/api/errors?${params}`);
+            const data = await res.json();
+
+            if (data.error) {
+                listEl.innerHTML = `<div style="color:var(--color-danger);padding:0.75rem;">⚠ ${data.error}</div>`;
+                return;
+            }
+
+            const errors = data.errors || [];
+            const counts = data.error_type_counts || {};
+
+            // Summary badges
+            if (summaryEl) {
+                summaryEl.innerHTML = Object.entries(counts).map(([type, cnt]) => {
+                    const style = ERROR_TYPE_STYLES[type] || { color: '#64748b', label: type.toUpperCase() };
+                    return `<span style="background:${style.color}22;border:1px solid ${style.color}55;color:${style.color};padding:0.15rem 0.5rem;border-radius:4px;font-size:0.65rem;font-weight:600;">${style.label} &times;${cnt}</span>`;
+                }).join('') || '<span style="color:var(--text-muted);">No errors</span>';
+            }
+
+            if (errors.length === 0) {
+                listEl.innerHTML = `<div style="color:var(--text-muted);text-align:center;padding:1.5rem;">No errors recorded${filterType ? ` for type "${filterType}"` : ''}.</div>`;
+                return;
+            }
+
+            listEl.innerHTML = errors.map(e => {
+                const style = ERROR_TYPE_STYLES[e.error_type] || { color: '#64748b', label: (e.error_type || 'unknown').toUpperCase() };
+                const ts = e.timestamp || '';
+                const model = e.model || 'unknown';
+                const msg = (e.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const extras = [];
+                if (e.n_prompt_tokens) extras.push(`prompt_tokens: ${e.n_prompt_tokens.toLocaleString()}`);
+                if (e.n_ctx) extras.push(`ctx_size: ${e.n_ctx.toLocaleString()}`);
+                if (e.http_status) extras.push(`HTTP ${e.http_status}`);
+                return `
+                <div style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.5rem 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+                    <span style="background:${style.color}22;border:1px solid ${style.color}55;color:${style.color};padding:0.1rem 0.4rem;border-radius:4px;font-size:0.6rem;font-weight:700;white-space:nowrap;margin-top:1px;">${style.label}</span>
+                    <div style="flex:1;min-width:0;">
+                        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.2rem;">
+                            <span style="color:var(--text-primary);font-family:monospace;font-size:0.7rem;font-weight:600;">${model}</span>
+                            <span style="color:var(--text-muted);font-size:0.62rem;">${ts}</span>
+                            ${extras.map(x => `<span style="color:var(--text-muted);font-size:0.62rem;background:rgba(255,255,255,0.05);padding:0 0.3rem;border-radius:3px;">${x}</span>`).join('')}
+                        </div>
+                        <div style="color:var(--text-secondary);font-size:0.68rem;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;" title="${msg}">${msg}</div>
+                    </div>
+                </div>`;
+            }).join('');
+
+        } catch (err) {
+            if (listEl) listEl.innerHTML = `<div style="color:var(--color-danger);padding:0.75rem;">Failed to load error log: ${err.message}</div>`;
+        }
+    }
+
+    // Auto-refresh error log every 30s when on Monitor tab
+    let errorLogInterval = null;
+    document.addEventListener('tabChanged', (e) => {
+        if (e.detail === 'monitor') {
+            if (!errorLogInterval) {
+                loadErrorLog();
+                errorLogInterval = setInterval(loadErrorLog, 30000);
+            }
+        } else {
+            if (errorLogInterval) {
+                clearInterval(errorLogInterval);
+                errorLogInterval = null;
+            }
+        }
+    });
+
+    const btnRefreshErrors = document.getElementById('btn-refresh-errors');
+    if (btnRefreshErrors) btnRefreshErrors.addEventListener('click', loadErrorLog);
+
+    const errorFilterType = document.getElementById('error-log-filter-type');
+    if (errorFilterType) errorFilterType.addEventListener('change', loadErrorLog);
+
+    const btnClearErrors = document.getElementById('btn-clear-errors');
+    if (btnClearErrors) {
+        btnClearErrors.addEventListener('click', async () => {
+            try {
+                await fetch('/api/errors/clear', { method: 'POST' });
+                await loadErrorLog();
+                showToast('Error log cleared', 'success');
+            } catch (err) {
+                showToast(`Failed to clear: ${err.message}`, 'error');
+            }
+        });
+    }
+
+    // Load error log on initial monitor tab view
+    loadErrorLog();
 
     const btnSaveRoutingMatrix = document.getElementById('btn-save-routing-matrix');
     if (btnSaveRoutingMatrix) {
