@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from collections import deque
@@ -81,12 +82,16 @@ LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv(
 FOREVER_EXPIRES_AT = "9999-12-31T23:59:59Z"
 LOADED_MODELS_STATE_FILE = os.path.join(ROUTER_MODELS_DIR, ".loaded-models.json")
 
+# Structured model error log — JSONL file + in-memory ring buffer
+MODEL_ERRORS_FILE = os.path.join(os.getenv("DATA_DIR", "data"), "model_errors.jsonl")
+_model_errors_buffer: deque = deque(maxlen=500)
+_model_errors_lock = threading.Lock()
+
 # Reference counting for active requests to prevent unloading in-use models
 active_requests = {}
 active_requests_lock = asyncio.Condition()
 
 # Thread-safe detailed request tracking (for user query/summary)
-import threading
 
 active_request_details = {}
 completed_requests = []
@@ -95,6 +100,68 @@ active_request_details_lock = threading.Lock()
 # Persistent request storage for resubmit (never rotates out)
 resubmittable_requests = {}
 resubmittable_requests_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Structured Model Error Logger
+# ---------------------------------------------------------------------------
+_ERROR_TYPE_MAP = {
+    "exceed_context_size_error": "context_overflow",
+    "context_size": "context_overflow",
+    "out of memory": "oom",
+    "cuda out of memory": "oom",
+    "slot unavailable": "slot_unavailable",
+    "no slot available": "slot_unavailable",
+    "model not found": "model_not_found",
+    "bad request": "bad_request",
+    "upstream request failed": "upstream_error",
+    "connection refused": "connection_error",
+    "connection error": "connection_error",
+}
+
+
+def _classify_error(message: str, upstream_type: str | None = None) -> str:
+    """Classify an error string into a canonical error type label."""
+    if upstream_type and upstream_type in _ERROR_TYPE_MAP:
+        return _ERROR_TYPE_MAP[upstream_type]
+    lower = (message or "").lower()
+    for fragment, label in _ERROR_TYPE_MAP.items():
+        if fragment in lower:
+            return label
+    return "inference_error"
+
+
+def log_model_error(
+    model: str,
+    message: str,
+    http_status: int | None = None,
+    upstream_type: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    """Write a structured error record to the model error log.
+
+    Records are written to both an in-memory ring buffer (for fast API reads)
+    and a persistent JSONL file so they survive proxy restarts.
+    """
+    error_type = _classify_error(message, upstream_type)
+    record = {
+        "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "epoch_time": time.time(),
+        "model": model or "unknown",
+        "error_type": error_type,
+        "http_status": http_status,
+        "message": (message or "")[:500],  # cap length
+        **(extra or {}),
+    }
+    with _model_errors_lock:
+        _model_errors_buffer.append(record)
+        try:
+            os.makedirs(os.path.dirname(MODEL_ERRORS_FILE), exist_ok=True)
+            with open(MODEL_ERRORS_FILE, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except Exception as write_err:
+            logger.debug(f"Failed to write model error log: {write_err}")
+
 
 
 def sanitize_prompt(text: str) -> str:
@@ -1768,12 +1835,27 @@ async def openai_chat_completions(request: Request):
                             )
                             await ensure_model(model_name)
                             continue
+                        upstream_type = None
+                        extra_fields = {}
                         try:
                             upstream_err = resp.json()
                             if "error" in upstream_err:
-                                err_msg = upstream_err["error"].get("message", err_msg)
+                                err_obj = upstream_err["error"]
+                                upstream_type = err_obj.get("type")
+                                err_msg = err_obj.get("message", err_msg)
+                                # Capture structured context fields if present
+                                for field in ("n_prompt_tokens", "n_ctx"):
+                                    if field in err_obj:
+                                        extra_fields[field] = err_obj[field]
                         except Exception:
                             pass
+                        log_model_error(
+                            model=model_name,
+                            message=err_msg,
+                            http_status=resp.status_code,
+                            upstream_type=upstream_type,
+                            extra=extra_fields if extra_fields else None,
+                        )
                         await record_metrics("/v1/chat/completions", 0, error=True)
                         return JSONResponse(
                             status_code=resp.status_code,
@@ -3044,6 +3126,52 @@ async def admin_model_unload(request: Request):
     except Exception as e:
         logger.error(f"Failed to unload model {model}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to unload model: {str(e)}")
+
+
+@app.get("/admin/errors")
+async def get_model_errors(
+    model: str | None = None,
+    error_type: str | None = None,
+    limit: int = 100,
+):
+    """Return recent model errors from the in-memory buffer.
+
+    Query params:
+      model      – filter to a specific model alias (substring match)
+      error_type – filter by canonical error type (e.g. context_overflow, oom)
+      limit      – max records to return (default 100, max 500)
+    """
+    with _model_errors_lock:
+        records = list(_model_errors_buffer)
+
+    # Apply filters
+    if model:
+        records = [r for r in records if model.lower() in (r.get("model") or "").lower()]
+    if error_type:
+        records = [r for r in records if r.get("error_type") == error_type]
+
+    # Most recent first, capped
+    records = records[-min(limit, 500):][::-1]
+
+    # Build per-type summary counts
+    counts: dict = {}
+    for r in records:
+        t = r.get("error_type", "unknown")
+        counts[t] = counts.get(t, 0) + 1
+
+    return JSONResponse({
+        "total": len(records),
+        "error_type_counts": counts,
+        "errors": records,
+    })
+
+
+@app.post("/admin/errors/clear")
+async def clear_model_errors():
+    """Clear the in-memory error buffer (does not truncate the JSONL file)."""
+    with _model_errors_lock:
+        _model_errors_buffer.clear()
+    return JSONResponse({"status": "cleared"})
 
 
 @app.post("/admin/vram/clear")
@@ -5202,9 +5330,32 @@ async def chat(request: Request):
                 body_text = "<unreadable>"
             error_msg = f"Upstream error {e.response.status_code}: {body_text}"
             logger.error(error_msg)
+            # Parse structured upstream error for classification
+            upstream_type = None
+            extra_fields = {}
+            try:
+                err_json = json.loads(body_text)
+                err_obj = err_json.get("error", err_json)
+                if isinstance(err_obj, dict):
+                    upstream_type = err_obj.get("type")
+                    raw_msg = err_obj.get("message", body_text)
+                    for field in ("n_prompt_tokens", "n_ctx"):
+                        if field in err_obj:
+                            extra_fields[field] = err_obj[field]
+                    error_msg = f"Upstream error {e.response.status_code}: {raw_msg}"
+            except Exception:
+                pass
+            log_model_error(
+                model=model_name,
+                message=error_msg,
+                http_status=e.response.status_code,
+                upstream_type=upstream_type,
+                extra=extra_fields if extra_fields else None,
+            )
             yield json.dumps({"error": error_msg}) + "\n"
         except Exception as e:
             logger.error(f"Stream error: {e}")
+            log_model_error(model=model_name, message=str(e))
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
             if resolved_backend:

@@ -1857,6 +1857,92 @@ def clear_vram():
         return jsonify({"error": f"Failed to clear VRAM: {str(e)}"}), 500
 
 
+@app.route("/api/errors")
+def get_model_errors():
+    """Proxy to /admin/errors on the proxy — returns recent structured model error log."""
+    import httpx
+
+    model = request.args.get("model")
+    error_type = request.args.get("error_type")
+    limit = request.args.get("limit", "100")
+
+    proxy_url = None
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code == 200:
+                    proxy_url = url
+                    break
+        except Exception:
+            continue
+
+    if not proxy_url:
+        # Fall back to reading the JSONL file directly if proxy is unreachable
+        errors_file = Path(os.getenv("DATA_DIR", "data")) / "model_errors.jsonl"
+        if not errors_file.exists():
+            return jsonify({"total": 0, "error_type_counts": {}, "errors": []})
+        try:
+            records = []
+            with open(errors_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        records.append(json.loads(line))
+            if model:
+                records = [r for r in records if model.lower() in (r.get("model") or "").lower()]
+            if error_type:
+                records = [r for r in records if r.get("error_type") == error_type]
+            records = records[-int(limit):][::-1]
+            counts: dict = {}
+            for r in records:
+                t = r.get("error_type", "unknown")
+                counts[t] = counts.get(t, 0) + 1
+            return jsonify({"total": len(records), "error_type_counts": counts, "errors": records})
+        except Exception as e:
+            return jsonify({"error": f"Failed to read error log: {str(e)}"}), 500
+
+    try:
+        params = {"limit": limit}
+        if model:
+            params["model"] = model
+        if error_type:
+            params["error_type"] = error_type
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{proxy_url}/admin/errors", params=params)
+            if resp.status_code == 200:
+                return jsonify(resp.json())
+            else:
+                return jsonify({"error": resp.text}), resp.status_code
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch errors: {str(e)}"}), 500
+
+
+@app.route("/api/errors/clear", methods=["POST"])
+def clear_model_errors():
+    """Clear in-memory error buffer via the proxy."""
+    import httpx
+
+    proxy_url = None
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code == 200:
+                    proxy_url = url
+                    break
+        except Exception:
+            continue
+
+    if not proxy_url:
+        return jsonify({"error": "Proxy unreachable"}), 503
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{proxy_url}/admin/errors/clear")
+            return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/models/delete", methods=["POST"])
 def delete_model():
     """Delete a model and clean up blobs via the proxy"""
