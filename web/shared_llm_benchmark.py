@@ -211,27 +211,10 @@ class SharedLLMModelBenchmark:
             "error": last_error or "Endpoint unavailable",
         }
 
-    async def run_shared_llm_benchmarks(
-        self,
-        models: List[str],
-        use_proxy: bool,
-        progress_callback: Callable[..., Any] | None = None,
-        cancel_event=None,
-    ) -> Dict:
-        """Run tasks for FastPath, Tool Use, and Code Gen validation."""
-        all_results: Dict[str, Any] = {
-            "benchmark_version": "SharedLLM-v1",
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "benchmark_type": "proxy" if use_proxy else "direct",
-            "models_tested": len(models),
-            "results": [],
-        }
-
-        # /no_think prefix: Qwen3-family models respect this at the tokenizer level,
-        # instructing them to skip the internal reasoning phase and output directly.
-        # Other models safely ignore it. Token budgets are set high enough that
-        # thinking models can finish reasoning AND produce content.
-        TASKS = [
+    @classmethod
+    def get_all_tasks(cls) -> List[Dict]:
+        """Return all available SharedLLM task definitions."""
+        return [
             {
                 "id": "fast_path",
                 "category": "FastPath Intent",
@@ -254,6 +237,37 @@ class SharedLLMModelBenchmark:
                 "max_tokens": 600,
             },
         ]
+
+    async def run_shared_llm_benchmarks(
+        self,
+        models: List[str],
+        use_proxy: bool,
+        progress_callback: Callable[..., Any] | None = None,
+        cancel_event=None,
+        task_ids: List[str] | None = None,
+    ) -> Dict:
+        """Run tasks for FastPath, Tool Use, and Code Gen validation.
+
+        task_ids: optional list of task IDs to run. If None or empty, all tasks run.
+        """
+        all_results: Dict[str, Any] = {
+            "benchmark_version": "SharedLLM-v1",
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "benchmark_type": "proxy" if use_proxy else "direct",
+            "models_tested": len(models),
+            "results": [],
+        }
+
+        # /no_think prefix: Qwen3-family models respect this at the tokenizer level,
+        # instructing them to skip the internal reasoning phase and output directly.
+        # Other models safely ignore it. Token budgets are set high enough that
+        # thinking models can finish reasoning AND produce content.
+        all_tasks = self.get_all_tasks()
+        TASKS = (
+            [t for t in all_tasks if t["id"] in task_ids]
+            if task_ids
+            else all_tasks
+        )
 
         total_tests = len(models) * len(TASKS)
         if progress_callback:

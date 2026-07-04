@@ -117,6 +117,19 @@
                         </div>
                     </div>
                     
+                    <div class="control-group">
+                        <div class="flex-space" style="margin-bottom: 0.5rem;">
+                            <span class="control-label">Target Tests (SharedLLM Run only)</span>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <span id="btn-select-all-shared-tests" style="font-size:0.7rem; color:var(--color-secondary); cursor:pointer; font-weight:600;">All</span>
+                                <span id="btn-deselect-all-shared-tests" style="font-size:0.7rem; color:var(--text-muted); cursor:pointer; font-weight:600;">None</span>
+                            </div>
+                        </div>
+                        <div id="shared-test-checkboxes" class="model-list-container" style="max-height: 100px; overflow-y: auto;">
+                            <div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Loading tests...</div>
+                        </div>
+                    </div>
+
                     <div class="control-group grid-2" style="margin-bottom: 0.5rem;">
                         <button id="btn-run" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.5rem 0.25rem;">Run General</button>
                         <button id="btn-run-shared" class="btn btn-primary" style="background: linear-gradient(135deg, var(--color-secondary), #0891b2); font-size: 0.75rem; padding: 0.5rem 0.25rem;">Run SharedLLM</button>
