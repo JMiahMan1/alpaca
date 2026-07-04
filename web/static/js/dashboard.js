@@ -555,6 +555,13 @@ document.addEventListener('DOMContentLoaded', () => {
         return Array.from(boxes).map(box => box.value);
     }
 
+    function getSelectedSharedTests() {
+        const container = document.getElementById('shared-test-checkboxes');
+        if (!container) return [];
+        const boxes = container.querySelectorAll('input[type="checkbox"]:checked');
+        return Array.from(boxes).map(box => box.value);
+    }
+
     function getSelectedModels() {
         const boxes = modelCheckboxes.querySelectorAll('input[type="checkbox"]:checked');
         return Array.from(boxes).map(box => box.value);
@@ -1436,6 +1443,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function loadSharedTests() {
+        const container = document.getElementById('shared-test-checkboxes');
+        if (!container) return;
+        try {
+            const res = await fetch('/api/tests/shared_llm');
+            const data = await res.json();
+            const tests = data.tests || [];
+            container.innerHTML = '';
+
+            if (tests.length === 0) {
+                container.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">No SharedLLM tasks found</div>`;
+                return;
+            }
+
+            tests.forEach((test) => {
+                const item = document.createElement('label');
+                item.className = 'checkbox-item';
+
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = test.id;
+                input.checked = true;
+
+                const span = document.createElement('span');
+                span.className = 'checkbox-label';
+                span.textContent = `${test.category}: ${test.label}`;
+
+                item.appendChild(input);
+                item.appendChild(span);
+                container.appendChild(item);
+            });
+        } catch (err) {
+            container.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Failed to load tasks</div>`;
+        }
+    }
+
     // Load past reports list and auto-restore comparison view on refresh
     async function loadHistory() {
         try {
@@ -2126,9 +2169,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const isShared = endpoint.endsWith('shared_llm');
-        const selectedTests = isShared ? [] : getSelectedTests();
+        const selectedTests = isShared ? getSelectedSharedTests() : getSelectedTests();
         if (!isShared && selectedTests.length === 0) {
             alert('Please select at least one test case to run.');
+            return;
+        }
+        if (isShared && selectedTests.length === 0) {
+            alert('Please select at least one SharedLLM task to run.');
             return;
         }
 
@@ -2152,6 +2199,13 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             if (!isShared) {
                 payload.test_ids = selectedTests;
+            } else {
+                // Only pass test_ids if not all tasks selected (backend treats null as "all")
+                const allSharedTasks = document.getElementById('shared-test-checkboxes')
+                    ?.querySelectorAll('input[type="checkbox"]').length || 0;
+                if (selectedTests.length < allSharedTasks) {
+                    payload.test_ids = selectedTests;
+                }
             }
 
             const res = await fetch(endpoint, {
@@ -4219,9 +4273,28 @@ document.addEventListener('DOMContentLoaded', () => {
     initCharts();
     loadModels();
     loadTests();
+    loadSharedTests();
     loadModelProfiles();
     loadHistory();
     loadActivePulls();
+
+    // SharedLLM test select-all / none
+    const btnSelectAllSharedTests = document.getElementById('btn-select-all-shared-tests');
+    const btnDeselectAllSharedTests = document.getElementById('btn-deselect-all-shared-tests');
+    if (btnSelectAllSharedTests) {
+        btnSelectAllSharedTests.addEventListener('click', () => {
+            document.getElementById('shared-test-checkboxes')
+                ?.querySelectorAll('input[type="checkbox"]')
+                .forEach(cb => { cb.checked = true; });
+        });
+    }
+    if (btnDeselectAllSharedTests) {
+        btnDeselectAllSharedTests.addEventListener('click', () => {
+            document.getElementById('shared-test-checkboxes')
+                ?.querySelectorAll('input[type="checkbox"]')
+                .forEach(cb => { cb.checked = false; });
+        });
+    }
 
     // Poll pull status periodically to keep UI in sync
     setInterval(() => {

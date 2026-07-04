@@ -362,7 +362,7 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_id
     loop.close()
 
 
-def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback):
+def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task_ids=None):
     global active_run
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -374,6 +374,7 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback):
                 use_proxy=use_proxy,
                 progress_callback=callback,
                 cancel_event=run_cancel_event,
+                task_ids=task_ids,
             )
         except Exception as e:
             print(f"Error in SharedLLM execution: {e}")
@@ -480,6 +481,25 @@ def get_tests():
                 "type": "performance",
             }
         )
+        return jsonify({"tests": all_tests})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tests/shared_llm")
+def get_shared_llm_tests():
+    """Return list of all SharedLLM task definitions"""
+    try:
+        tasks = shared_llm_benchmark.get_all_tasks()
+        all_tests = [
+            {
+                "id": t["id"],
+                "category": t["category"],
+                "label": t["label"],
+                "type": "shared_llm",
+            }
+            for t in tasks
+        ]
         return jsonify({"tests": all_tests})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -653,6 +673,7 @@ def start_shared_llm_benchmark():
     data = request.get_json() or {}
     models = data.get("models", [])
     use_proxy = data.get("use_proxy", True)
+    test_ids = data.get("test_ids") or None  # None means run all
 
     if not models:
         return jsonify({"error": "No models specified"}), 400
@@ -673,7 +694,7 @@ def start_shared_llm_benchmark():
 
         benchmark_thread = threading.Thread(
             target=run_shared_llm_in_thread,
-            args=(models, use_proxy, cancel_event, callback),
+            args=(models, use_proxy, cancel_event, callback, test_ids),
             daemon=True,
         )
         benchmark_thread.start()
