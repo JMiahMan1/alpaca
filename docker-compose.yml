@@ -68,6 +68,8 @@ services:
       SLOTS_CACHE_DIR: /slots-cache
       TELEMETRY_DIR: /app/data/telemetry
       LLAMA_SERVER_URL: "http://localhost:8080"
+      SD_SERVER_URL: "http://localhost:8081"
+      SD_CONTAINER_NAME: "sd-server"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -131,3 +133,32 @@ services:
     depends_on:
       llama-server:
         condition: service_started
+
+  sd-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.sd-server
+    container_name: sd-server
+    restart: always
+    cap_add:
+      - IPC_LOCK
+    ulimits:
+      memlock: -1
+    ports:
+      - "8081:8081"
+    volumes:
+      - /usr/share/ollama/.ollama/models:/models
+      - ./.alpaca-router:/router-models
+      - ./sd-entrypoint.sh:/scripts/sd-entrypoint.sh
+    entrypoint: ["/bin/bash", "/scripts/sd-entrypoint.sh"]
+    deploy:
+      resources:
+        limits:
+          memory: 31G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+

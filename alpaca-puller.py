@@ -212,6 +212,40 @@ def _is_moe(meta: dict) -> bool:
     return False
 
 
+def _image_model_family_for_router_entry(entry):
+    """Return the model_family for a router .gguf entry if it is an image model, else None.
+
+    Matches the router filename against local Ollama manifests and inspects the
+    config blob's ``model_family``/``families`` — the authoritative signal written by
+    the puller for Stable Diffusion imports (e.g. ``stable-diffusion``). This reliably
+    catches models like ``qwen-image`` whose GGUF architecture is not literally "sd".
+    """
+    entry_name = entry.name
+    try:
+        for model_name, _path, manifest in iter_local_models():
+            if not manifest:
+                continue
+            if router_filename_for_model_name(model_name) != entry_name:
+                continue
+            config = manifest.get("config", {})
+            digest = config.get("digest")
+            cfg = {}
+            if digest:
+                cfg_path = blob_path_for_digest(digest)
+                if cfg_path.exists():
+                    try:
+                        cfg = json.loads(cfg_path.read_text())
+                    except Exception:
+                        cfg = {}
+            family = cfg.get("model_family")
+            families = cfg.get("families") or []
+            if family == "stable-diffusion" or "stable-diffusion" in families:
+                return family or "stable-diffusion"
+    except Exception:
+        return None
+    return None
+
+
 def update_models_ini():
     """Scan all GGUF models in the router directory and regenerate models.ini."""
     router_dir = Path(ROUTER_MODELS_DIR)
@@ -260,6 +294,41 @@ def update_models_ini():
 
                 alias = entry.stem
                 if "projector" in alias.lower() or "mmproj" in alias.lower():
+                    continue
+
+                # Skip stable-diffusion / image-generation models in the llama-server
+                # models.ini. These must never be registered as llama.cpp LLMs — they
+                # are handled exclusively by the sd-server. The authoritative signal is
+                # the model's Ollama manifest `model_family` (set to "stable-diffusion"
+                # by the puller for SD imports); we fall back to a GGUF arch/keyword
+                # heuristic only when no manifest is available.
+                is_sd = False
+                try:
+                    manifest_family = _image_model_family_for_router_entry(entry)
+                    if manifest_family:
+                        is_sd = True
+                    else:
+                        meta = _read_gguf_metadata(str(resolved))
+                        arch = meta.get("general.architecture", "").lower()
+                        if arch in ("sd", "stable-diffusion", "flux") or any(
+                            kw in entry.name.lower() or kw in alias.lower()
+                            for kw in [
+                                "stable-diffusion",
+                                "sdxl",
+                                "sd1.",
+                                "sd2.",
+                                "sd3",
+                                "flux",
+                                "pony",
+                                "photoreal",
+                                "sd-",
+                                "illustrious",
+                            ]
+                        ):
+                            is_sd = True
+                except Exception:
+                    pass
+                if is_sd:
                     continue
 
                 is_moe = False
@@ -411,7 +480,12 @@ def normalized_model_parts(model_name):
 def router_filename_for_model_name(model_name):
     name, tag = normalized_model_parts(model_name)
     flattened = f"{name}--{tag}".replace("/", "--")
-    return f"{sanitize_model_component(flattened)}.gguf"
+    ext = (
+        ".safetensors"
+        if "safetensors" in model_name.lower() or "safetensors" in tag.lower()
+        else ".gguf"
+    )
+    return f"{sanitize_model_component(flattened)}{ext}"
 
 
 def router_models_dir():
@@ -623,17 +697,21 @@ def choose_source(model_name, source):
 def parse_huggingface_ref(model_name):
     if model_name.startswith("hf://"):
         parsed = urlparse(model_name)
-        repo = parsed.netloc
-        filename = parsed.path.lstrip("/")
-        if repo and filename:
-            return repo, filename
-        raise ValueError("Expected hf://<repo>/<file.gguf> for Hugging Face pulls.")
+        full_path = parsed.netloc + "/" + parsed.path.lstrip("/")
+        path_parts = [part for part in full_path.split("/") if part]
+        if len(path_parts) < 2:
+            raise ValueError("Expected hf://<repo>/<filename> for Hugging Face pulls.")
+        filename = path_parts[-1]
+        repo = "/".join(path_parts[:-1])
+        if not repo:
+            raise ValueError("Expected hf://<repo>/<filename> for Hugging Face pulls.")
+        return repo, filename
 
     if model_name.startswith(("https://huggingface.co/", "https://hf.co/")):
         parsed = urlparse(model_name)
         parts = [part for part in parsed.path.split("/") if part]
         if "resolve" not in parts:
-            raise ValueError("Expected a Hugging Face resolve URL ending in the GGUF filename.")
+            raise ValueError("Expected a Hugging Face resolve URL ending in the filename.")
         resolve_index = parts.index("resolve")
         if resolve_index < 2 or resolve_index + 2 >= len(parts):
             raise ValueError("Could not parse repository and filename from Hugging Face URL.")
@@ -647,7 +725,7 @@ def parse_huggingface_ref(model_name):
             return repo, filename
 
     raise ValueError(
-        "For Hugging Face pulls, use one of: hf://repo/file.gguf, https://huggingface.co/repo/resolve/main/file.gguf, or repo:file.gguf."
+        "For Hugging Face pulls, use one of: hf://repo/filename, https://huggingface.co/repo/resolve/main/filename, or repo:filename."
     )
 
 
@@ -744,21 +822,22 @@ def list_huggingface_files(repo):
 
 
 def resolve_huggingface_filename(repo, requested_filename):
-    if requested_filename.endswith(".gguf"):
+    supported_exts = (".gguf", ".safetensors", ".ckpt", ".bin")
+    if requested_filename.endswith(supported_exts):
         return requested_filename
     model_info = list_huggingface_files(repo)
     if not model_info or not isinstance(model_info, dict):
         return requested_filename
     siblings = model_info.get("siblings", [])
-    gguf_files = [
-        s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(".gguf")
+    files = [
+        s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(supported_exts)
     ]
-    if not gguf_files:
+    if not files:
         return requested_filename
     target_stem = requested_filename.replace(" ", "").replace("_", "").lower()
     exact_match = None
     best_match = None
-    for fname in gguf_files:
+    for fname in files:
         stem = Path(fname).stem.replace(" ", "").replace("_", "").lower()
         if stem == target_stem:
             exact_match = fname
@@ -770,11 +849,12 @@ def resolve_huggingface_filename(repo, requested_filename):
         return exact_match
     if best_match:
         return best_match
-    fallback = f"{repo.rsplit('/', 1)[-1]}-{requested_filename}.gguf"
-    for fname in gguf_files:
-        if fname == fallback:
-            return fname
-    return gguf_files[0]
+    for ext in supported_exts:
+        fallback = f"{repo.rsplit('/', 1)[-1]}-{requested_filename}{ext}"
+        for fname in files:
+            if fname == fallback:
+                return fname
+    return files[0]
 
 
 def huggingface_blob_url(repo, filename):
@@ -928,10 +1008,32 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resu
         else:
             os.replace(partial_path, blob_path)
 
+        def is_stable_diffusion_model(repo_name: str, file_name: str) -> bool:
+            name_lower = f"{repo_name}/{file_name}".lower()
+            sd_keywords = [
+                "stable-diffusion",
+                "sdxl",
+                "sd1.",
+                "sd2.",
+                "sd3",
+                "flux",
+                "pony",
+                "photoreal",
+                "sd-",
+                "illustrious",
+                "safetensors",
+                "qwen",
+                "qwen-image",
+                "qwen_image",
+            ]
+            return any(kw in name_lower for kw in sd_keywords)
+
+        is_sd = is_stable_diffusion_model(repo, filename)
+        is_safetensors = filename.endswith(".safetensors")
         config = {
-            "model_format": "gguf",
-            "model_family": "gguf",
-            "families": ["gguf"],
+            "model_format": "safetensors" if is_safetensors else "gguf",
+            "model_family": "stable-diffusion" if is_sd else "gguf",
+            "families": ["stable-diffusion" if is_sd else "gguf"],
             "general.source": "huggingface",
             "general.source_repo": repo,
             "general.source_file": filename,
@@ -1021,9 +1123,76 @@ def pull_ollama_model(model_name, insecure=False, no_resume=False):
         client.close()
 
 
-def pull_model(model_name, source="auto", local_name=None, insecure=False, no_resume=False):
+def pull_companion(model_name, no_resume=False):
+    try:
+        repo, filename = parse_huggingface_ref(model_name)
+    except ValueError as exc:
+        print(f"Error parsing Hugging Face ref: {exc}")
+        return 1
+    filename = resolve_huggingface_filename(repo, filename)
+    url = huggingface_blob_url(repo, filename)
+    headers = huggingface_headers()
+
+    companions_dir = Path(MODELS_DIR) / "companions"
+    try:
+        companions_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"Error creating companions directory: {e}")
+        return 1
+
+    output_path = companions_dir / filename
+
+    print(f"Downloading companion file: {repo}/{filename}")
+    print(f"Destination: {output_path}")
+
+    partial_path = partial_download_path("companion", f"{repo}:{filename}")
+    if no_resume and partial_path.exists():
+        try:
+            partial_path.unlink()
+        except Exception:
+            pass
+
+    client = httpx.Client(
+        timeout=httpx.Timeout(300.0, connect=30.0, read=300.0),
+        follow_redirects=True,
+    )
+    try:
+        download_with_progress(client, url, headers, f"Companion {filename}", partial_path)
+        if _should_stop():
+            print(
+                f"\nInterrupted: companion download ({partial_path.stat().st_size} bytes downloaded)."
+            )
+            return 1
+
+        # Move partial file to final companion location
+        if output_path.exists():
+            try:
+                output_path.unlink()
+            except Exception:
+                pass
+        try:
+            os.replace(partial_path, output_path)
+        except Exception as e:
+            print(f"Error moving companion file: {e}")
+            return 1
+
+        print(f"Successfully downloaded companion file: {output_path.name}")
+        return 0
+    except Exception as e:
+        print(f"Error downloading companion file: {e}")
+        return 1
+    finally:
+        client.close()
+
+
+def pull_model(
+    model_name, source="auto", local_name=None, insecure=False, no_resume=False, companion=False
+):
     global _CURRENT_MODEL
     _CURRENT_MODEL = model_name
+    if companion:
+        return pull_companion(model_name, no_resume=no_resume)
+
     resolved_source = choose_source(model_name, source)
     try:
         if resolved_source == "huggingface":
@@ -1155,6 +1324,11 @@ def build_parser():
         action="store_true",
         help="Ignore any partial downloads and start from scratch.",
     )
+    pull_parser.add_argument(
+        "--companion",
+        action="store_true",
+        help="Download as a companion file (VAE, CLIP, etc.) and save to companion directory.",
+    )
 
     remove_parser = subparsers.add_parser(
         "remove", help="Remove a local model manifest and unshared blobs."
@@ -1179,6 +1353,7 @@ def main(argv=None):
             local_name=args.name,
             insecure=args.insecure,
             no_resume=args.no_resume,
+            companion=args.companion,
         )
     if args.command == "reindex":
         return reindex_models()
