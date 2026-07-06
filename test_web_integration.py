@@ -672,3 +672,72 @@ def test_api_result_detail_get_and_delete(client):
         del_data = json.loads(res_del.data.decode("utf-8"))
         assert del_data["status"] == "deleted"
         mock_remove.assert_called_once()
+
+
+def test_api_errors_get_fallback_to_file(client):
+    """Test that /api/errors falls back to reading the JSONL file directly if the proxy is offline"""
+    # Mock Path.exists to return True and open to return sample errors file content
+    mock_file_content = (
+        '{"timestamp": "2026-07-06T09:00:00Z", "model": "qwen", "error_type": "oom", "message": "OOM"}\n'
+        '{"timestamp": "2026-07-06T09:05:00Z", "model": "llama", "error_type": "context_overflow", "message": "overflow"}\n'
+    )
+    # We force the proxy connection check to fail by mocking Client.get to raise an error
+    with (
+        patch("httpx.Client.get", side_effect=Exception("Proxy offline")),
+        patch("pathlib.Path.exists", return_value=True),
+        patch("builtins.open", mock_open(read_data=mock_file_content)),
+    ):
+        res = client.get("/api/errors")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["total"] == 2
+        assert data["error_type_counts"]["oom"] == 1
+        assert data["error_type_counts"]["context_overflow"] == 1
+        assert data["errors"][0]["model"] == "llama"  # most recent (last line) is returned first
+
+        # Test model filter in fallback mode
+        res_filtered = client.get("/api/errors?model=qwen")
+        data_filtered = json.loads(res_filtered.data.decode("utf-8"))
+        assert data_filtered["total"] == 1
+        assert data_filtered["errors"][0]["model"] == "qwen"
+
+
+def test_api_errors_get_and_clear_proxy(client):
+    """Test that /api/errors and /api/errors/clear successfully proxy when proxy is online"""
+    mock_proxy_res = MagicMock()
+    mock_proxy_res.status_code = 200
+    mock_proxy_res.json.return_value = {
+        "total": 1,
+        "error_type_counts": {"oom": 1},
+        "errors": [{"model": "qwen", "error_type": "oom", "message": "OOM"}],
+    }
+
+    mock_clear_res = MagicMock()
+    mock_clear_res.status_code = 200
+    mock_clear_res.json.return_value = {"status": "cleared"}
+
+    def mock_client_request(client_self, method, url, **kwargs):
+        # First call is to /api/version to check if proxy is online
+        if "/api/version" in url:
+            mock_ver = MagicMock()
+            mock_ver.status_code = 200
+            return mock_ver
+        if "/admin/errors/clear" in url:
+            return mock_clear_res
+        if "/admin/errors" in url:
+            return mock_proxy_res
+        raise ValueError(f"Unexpected url: {url}")
+
+    with patch("httpx.Client.request", new=mock_client_request):
+        # Test proxy GET
+        res = client.get("/api/errors")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["total"] == 1
+        assert data["error_type_counts"]["oom"] == 1
+
+        # Test proxy POST clear
+        res_clear = client.post("/api/errors/clear")
+        assert res_clear.status_code == 200
+        data_clear = json.loads(res_clear.data.decode("utf-8"))
+        assert data_clear["status"] == "cleared"

@@ -1560,3 +1560,63 @@ def test_debug_logging_configuration():
     """Test debug log configurations and logger level adjustments"""
     assert hasattr(alpaca_proxy, "DEBUG_LOGGING")
     assert isinstance(alpaca_proxy.DEBUG_LOGGING, bool)
+
+
+def test_log_model_error_classification_and_limits():
+    """Test log_model_error classifies different messages and respects limit/ring-buffer size."""
+    # Reset internal buffer
+    alpaca_proxy._model_errors_buffer.clear()
+
+    # Test error type classification
+    alpaca_proxy.log_model_error("test-model-1", "CUDA out of memory error occurred", 500)
+    alpaca_proxy.log_model_error("test-model-2", "request (100 tokens) exceeds the available context size", 400)
+    alpaca_proxy.log_model_error("test-model-3", "unknown random inference failure", 500)
+
+    records = list(alpaca_proxy._model_errors_buffer)
+    assert len(records) == 3
+
+    assert records[0]["model"] == "test-model-1"
+    assert records[0]["error_type"] == "oom"
+    assert records[0]["http_status"] == 500
+
+    assert records[1]["model"] == "test-model-2"
+    assert records[1]["error_type"] == "context_overflow"
+    assert records[1]["http_status"] == 400
+
+    assert records[2]["model"] == "test-model-3"
+    assert records[2]["error_type"] == "inference_error"
+
+
+@pytest.mark.asyncio
+async def test_admin_errors_endpoint():
+    """Test get_model_errors and clear_model_errors admin functions."""
+    alpaca_proxy._model_errors_buffer.clear()
+
+    # Populate buffer
+    alpaca_proxy.log_model_error("qwen", "CUDA out of memory", 500)
+    alpaca_proxy.log_model_error("llama", "exceeds the available context size", 400)
+
+    # Test filtering and limits
+    res_all = await alpaca_proxy.get_model_errors()
+    assert res_all.status_code == 200
+    data_all = json.loads(res_all.body.decode("utf-8"))
+    assert data_all["total"] == 2
+    assert data_all["error_type_counts"]["oom"] == 1
+    assert data_all["error_type_counts"]["context_overflow"] == 1
+
+    # Filter by model
+    res_qwen = await alpaca_proxy.get_model_errors(model="qwen")
+    data_qwen = json.loads(res_qwen.body.decode("utf-8"))
+    assert data_qwen["total"] == 1
+    assert data_qwen["errors"][0]["model"] == "qwen"
+
+    # Filter by type
+    res_type = await alpaca_proxy.get_model_errors(error_type="context_overflow")
+    data_type = json.loads(res_type.body.decode("utf-8"))
+    assert data_type["total"] == 1
+    assert data_type["errors"][0]["model"] == "llama"
+
+    # Clear errors
+    res_clear = await alpaca_proxy.clear_model_errors()
+    assert res_clear.status_code == 200
+    assert len(alpaca_proxy._model_errors_buffer) == 0

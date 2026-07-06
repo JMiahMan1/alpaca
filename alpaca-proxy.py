@@ -108,6 +108,7 @@ resubmittable_requests_lock = threading.Lock()
 _ERROR_TYPE_MAP = {
     "exceed_context_size_error": "context_overflow",
     "context_size": "context_overflow",
+    "context size": "context_overflow",
     "out of memory": "oom",
     "cuda out of memory": "oom",
     "slot unavailable": "slot_unavailable",
