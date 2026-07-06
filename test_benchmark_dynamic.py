@@ -192,3 +192,73 @@ async def test_two_phase_token_generation_and_nudge_injection():
         # 2 direct calls made
         direct_calls = [c for c in calls if "api/generate" in c[0]]
         assert len(direct_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_llm_two_phase_query_model():
+    """Test that SharedLLMModelBenchmark.query_model triggers two-phase generation for both proxy and direct paths."""
+    from web.shared_llm_benchmark import SharedLLMModelBenchmark
+    shared_bench = SharedLLMModelBenchmark()
+
+    calls = []
+
+    class MockResponse:
+        def __init__(self, data, status_code=200):
+            self.data = data
+            self.status_code = status_code
+        def json(self):
+            return self.data
+
+    async def mock_post(client_self, url, json, **kwargs):
+        calls.append((url, json))
+        options = json.get("options", {})
+        assert options.get("num_predict") == 4000
+
+        if "messages" in json:
+            # Proxy /api/chat path
+            messages = json["messages"]
+            if len(messages) == 1:
+                return MockResponse({
+                    "eval_count": 4000,
+                    "message": {"content": "SharedLLM Phase 1 Chat"}
+                })
+            else:
+                assert messages[-1]["role"] == "user"
+                assert "halfway through your token budget" in messages[-1]["content"]
+                return MockResponse({
+                    "eval_count": 1800,
+                    "message": {"content": "SharedLLM Phase 2 Chat"}
+                })
+        else:
+            # Direct /api/generate path
+            prompt = json["prompt"]
+            if "halfway through your token budget" not in prompt:
+                return MockResponse({
+                    "eval_count": 4000,
+                    "response": "SharedLLM Phase 1 Direct"
+                })
+            else:
+                assert "SharedLLM Phase 1 Direct" in prompt
+                return MockResponse({
+                    "eval_count": 1200,
+                    "response": "SharedLLM Phase 2 Direct"
+                })
+
+    with patch("httpx.AsyncClient.post", new=mock_post):
+        # 1. Test Proxy Path
+        res_proxy = await shared_bench.query_model("test-model", use_proxy=True, prompt="HA lights")
+        assert res_proxy["success"] is True
+        assert "SharedLLM Phase 1 Chat" in res_proxy["response"]
+        assert "SharedLLM Phase 2 Chat" in res_proxy["response"]
+        assert res_proxy["tokens_generated"] == 5800  # 4000 + 1800
+        assert len([c for c in calls if "api/chat" in c[0]]) == 2
+
+        calls.clear()
+
+        # 2. Test Direct Path
+        res_direct = await shared_bench.query_model("test-model", use_proxy=False, prompt="HA lights")
+        assert res_direct["success"] is True
+        assert "SharedLLM Phase 1 Direct" in res_direct["response"]
+        assert "SharedLLM Phase 2 Direct" in res_direct["response"]
+        assert res_direct["tokens_generated"] == 5200  # 4000 + 1200
+        assert len([c for c in calls if "api/generate" in c[0]]) == 2
