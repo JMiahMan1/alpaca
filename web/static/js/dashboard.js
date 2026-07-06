@@ -568,9 +568,53 @@ document.addEventListener('DOMContentLoaded', () => {
         return Array.from(boxes).map(box => box.value);
     }
 
+    // Polling Stable Diffusion Status
+    async function pollSDStatus() {
+        const sdStatusCard = document.getElementById('sd-status-card');
+        const sdConnectionTitle = document.getElementById('sd-connection-title');
+        const sdConnectionSubtitle = document.getElementById('sd-connection-subtitle');
+        const sdActiveModelBadge = document.getElementById('sd-active-model-badge');
+        const sdStatusBadge = document.getElementById('sd-status-badge');
+
+        if (!sdStatusCard) return;
+
+        try {
+            const res = await fetch('/api/sd/status');
+            const data = await res.json();
+
+            if (!data.online) {
+                sdStatusCard.style.borderLeftColor = 'var(--color-danger)';
+                sdConnectionTitle.textContent = "Stable Diffusion Backend Offline";
+                sdConnectionSubtitle.textContent = `Error connecting to Stable Diffusion proxy: ${data.error || 'Server unreachable'}`;
+                sdActiveModelBadge.textContent = "Model: None";
+                sdStatusBadge.className = "badge badge-danger";
+                sdStatusBadge.textContent = "Offline";
+                return;
+            }
+
+            sdStatusCard.style.borderLeftColor = 'var(--color-success)';
+            sdConnectionTitle.textContent = "Stable Diffusion Backend [Online]";
+            sdStatusBadge.className = "badge badge-success";
+            sdStatusBadge.textContent = "Online";
+
+            if (data.active_model) {
+                const modelName = data.active_model.split('/').pop();
+                sdActiveModelBadge.textContent = `Model: ${modelName}`;
+                sdConnectionSubtitle.textContent = `SD-Server is active. Queue depth: ${data.queue_depth || 0}. GPU VRAM: ${data.vram_used_mb}MB / ${data.vram_total_mb}MB`;
+            } else {
+                sdActiveModelBadge.textContent = "Model: None (Idle)";
+                sdConnectionSubtitle.textContent = "SD-Server is active and idling. Waiting for generation requests.";
+            }
+
+        } catch (err) {
+            console.error("SD Poller error:", err);
+        }
+    }
+
     // Polling System Metrics from proxy
     async function pollProxyStatus() {
         try {
+            pollSDStatus();
             const res = await fetch('/api/proxy/status');
             const data = await res.json();
             
@@ -1164,6 +1208,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
         div.appendChild(headerDiv);
         div.appendChild(modelDiv);
+
+        // Small preview thumbnail for image-generation requests in the Active Requests list.
+        if (req.type === 'image_generation' && req.images && req.images.length) {
+            const first = req.images[0];
+            const src = first.type === 'url' ? first.data : `data:image/png;base64,${first.data}`;
+            const thumb = document.createElement('img');
+            thumb.src = src;
+            thumb.alt = 'preview';
+            thumb.title = `Preview (${req.images.length} image(s))`;
+            thumb.style.cssText = 'max-width:100%; max-height:90px; border-radius:6px; border:1px solid var(--border-color); margin-top:0.25rem; cursor:pointer;';
+            thumb.addEventListener('click', (e) => {
+                e.stopPropagation();
+                window.open(src, '_blank');
+            });
+            div.appendChild(thumb);
+        }
+
         div.appendChild(idDiv);
         div.appendChild(detailsRow);
         const actionBtns = document.createElement('div');
@@ -1306,10 +1367,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         if (responseEl) {
-            const isNearBottom = responseEl.scrollHeight - responseEl.clientHeight - responseEl.scrollTop < 40;
-            responseEl.textContent = req.response || (req.completed_at ? '(No Output)' : 'Generating output...');
-            if (isNearBottom || !req.completed_at) {
-                responseEl.scrollTop = responseEl.scrollHeight;
+            if (req.type === 'image_generation' && req.images && req.images.length) {
+                // Render a preview gallery of generated images (thumbnails, not full-size).
+                let html = `<div style="display:flex; flex-wrap:wrap; gap:0.5rem;">`;
+                req.images.forEach((img, i) => {
+                    const src = img.type === 'url' ? img.data : `data:image/png;base64,${img.data}`;
+                    html += `<img src="${src}" alt="generated ${i + 1}" title="Generated image ${i + 1}" ` +
+                        `style="max-width:220px; max-height:220px; border-radius:6px; border:1px solid var(--border-color); cursor:pointer;" ` +
+                        `onclick="window.open('${src}', '_blank')" />`;
+                });
+                html += `</div>`;
+                responseEl.innerHTML = html;
+            } else {
+                const isNearBottom = responseEl.scrollHeight - responseEl.clientHeight - responseEl.scrollTop < 40;
+                responseEl.textContent = req.response || (req.completed_at ? '(No Output)' : 'Generating output...');
+                if (isNearBottom || !req.completed_at) {
+                    responseEl.scrollTop = responseEl.scrollHeight;
+                }
             }
         }
     }

@@ -9,6 +9,7 @@ import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -162,7 +163,6 @@ def log_model_error(
                 fh.write(json.dumps(record) + "\n")
         except Exception as write_err:
             logger.debug(f"Failed to write model error log: {write_err}")
-
 
 
 def sanitize_prompt(text: str) -> str:
@@ -885,6 +885,15 @@ async def resolve_router_model(model_name, reload=True):
             status_code=409, detail=f"Model {resolved_name} is still downloading or incomplete."
         )
 
+    if is_image_model_manifest(manifest):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{resolved_name}' is an image-generation (Stable Diffusion) model and "
+                f"cannot be used for chat/completion. Use POST /v1/images/generations instead."
+            ),
+        )
+
     candidates = router_model_candidates(resolved_name, manifest)
     router_models = await fetch_router_models(reload=reload)
     for entry in router_models:
@@ -1260,13 +1269,30 @@ def get_model_info(model_name):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global client_httpx
+    global client_httpx, client_sd_httpx
     client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
+    client_sd_httpx = httpx.AsyncClient(
+        timeout=httpx.Timeout(180.0, connect=5.0),
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
+    )
     await restore_models_on_recovery()
+
+    # Start SD VRAM tracking background task
+    sd_poll_task = asyncio.create_task(sd_vram_poll_loop())
+
     yield
+
+    sd_poll_task.cancel()
+    try:
+        await sd_poll_task
+    except asyncio.CancelledError:
+        pass
+
     for task in list(model_unload_tasks.values()):
         task.cancel()
     await client_httpx.aclose()
+    if client_sd_httpx:
+        await client_sd_httpx.aclose()
 
 
 def get_client_ip(request: Request) -> str:
@@ -1631,9 +1657,32 @@ async def embeddings_legacy(request: Request):
 
 
 # ─── OpenAI-Compatible Endpoints ──────────────────────────────────────────────
+def _sd_openai_model_entry(name: str, manifest: dict) -> dict:
+    """Build an OpenAI-style model entry for a Stable Diffusion model."""
+    info = manifest_stats(manifest_path_for_model(name) or "", manifest)
+    return {
+        "id": public_model_name(name),
+        "object": "model",
+        "created": int(time.time()),
+        "owned_by": "alpaca",
+        "alpaca": {
+            "name": name,
+            "type": "image",
+            "size": info.get("size"),
+            "details": {"family": "stable-diffusion"},
+            "capabilities": ["image_generation"],
+            "context_length": None,
+        },
+    }
+
+
 @app.get("/v1/models")
 async def openai_models():
     """OpenAI-compatible model listing. Proxies to llama-server /v1/models or builds from local manifests."""
+    sd_entries = [
+        _sd_openai_model_entry(name, manifest)
+        for name, _blob, manifest in iter_local_sd_models()
+    ]
     try:
         resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/v1/models")
         if resp.status_code == 200:
@@ -1641,6 +1690,8 @@ async def openai_models():
             # Enrich with local manifest info
             local_info = {}
             for manifest_base, path, manifest in iter_local_manifests():
+                if is_image_model_manifest(manifest):
+                    continue
                 mn = manifest_model_name(manifest_base, path)
                 if mn:
                     info = manifest_stats(path, manifest)
@@ -1657,6 +1708,7 @@ async def openai_models():
                             "context_length": info["context_length"],
                         }
                         break
+            data.setdefault("data", []).extend(sd_entries)
             return data
     except Exception:
         pass
@@ -1664,6 +1716,8 @@ async def openai_models():
     # Fallback: build from local manifests
     models = []
     for manifest_base, path, manifest in iter_local_manifests():
+        if is_image_model_manifest(manifest):
+            continue
         mn = manifest_model_name(manifest_base, path)
         if mn:
             info = manifest_stats(path, manifest)
@@ -1682,6 +1736,7 @@ async def openai_models():
                     },
                 }
             )
+    models.extend(sd_entries)
     return {"object": "list", "data": models}
 
 
@@ -2226,6 +2281,602 @@ async def openai_embeddings(request: Request):
                 }
             },
         )
+
+
+# Global state for VRAM tracking
+active_llama_model: Optional[str] = None
+active_sd_model: Optional[str] = None
+vram_monitoring_lock = asyncio.Lock()
+
+active_sd_requests = 0
+active_sd_requests_lock = asyncio.Condition()
+client_sd_httpx: Optional[httpx.AsyncClient] = None
+backend_swap_lock = asyncio.Lock()
+
+
+async def sd_vram_poll_loop() -> None:
+    """Periodically poll both llama-server and sd-server to track loaded models in VRAM."""
+    global active_llama_model, active_sd_model
+    while True:
+        try:
+            # 1. Poll llama-server
+            if client_httpx:
+                try:
+                    resp = await client_httpx.get(ROUTER_MODELS_URL, timeout=1.0)
+                    if resp.status_code == 200:
+                        data = resp.json().get("data", [])
+                        loaded = [
+                            m
+                            for m in data
+                            if m.get("status") == "loaded" or m.get("status") == "loading"
+                        ]
+                        async with vram_monitoring_lock:
+                            active_llama_model = loaded[0].get("id") if loaded else None
+                except Exception:
+                    async with vram_monitoring_lock:
+                        active_llama_model = None
+
+            # 2. Poll sd-server
+            sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+            try:
+                if client_sd_httpx:
+                    resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
+                    if resp.status_code == 200:
+                        data = resp.json().get("data", [])
+                        async with vram_monitoring_lock:
+                            active_sd_model = data[0].get("id") if data else None
+                    else:
+                        async with vram_monitoring_lock:
+                            active_sd_model = None
+                else:
+                    async with vram_monitoring_lock:
+                        active_sd_model = None
+            except Exception:
+                async with vram_monitoring_lock:
+                    active_sd_model = None
+
+        except Exception as e:
+            logger.debug(f"Error in SD VRAM poll loop: {e}")
+        await asyncio.sleep(5.0)
+
+
+def validate_sd_parameters(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """Validates the input parameters for Stable Diffusion image generation."""
+    size = payload.get("size", "512x512")
+    if not isinstance(size, str) or "x" not in size:
+        return False, f"Malformed size parameter: {size!r}. Expected format WIDTHxHEIGHT."
+    try:
+        w, h = map(int, size.split("x"))
+        if w > 2048 or h > 2048 or w <= 0 or h <= 0:
+            return (
+                False,
+                f"Invalid image size {size}. Maximum supported resolution is 2048x2048.",
+            )
+    except ValueError:
+        return False, f"Malformed size parameter: {size}."
+
+    n = payload.get("n", 1)
+    if not isinstance(n, int) or n < 1 or n > 4:
+        return False, f"Invalid 'n' parameter: {n}. Must be between 1 and 4."
+
+    steps = payload.get("steps")
+    if steps is not None:
+        try:
+            steps_val = int(steps)
+            if steps_val <= 0 or steps_val > 150:
+                return False, f"Invalid 'steps' parameter: {steps}. Must be between 1 and 150."
+        except ValueError:
+            return False, f"Malformed steps parameter: {steps}."
+
+    return True, None
+
+
+def is_image_model_manifest(manifest: dict) -> bool:
+    """Returns True if a manifest describes a Stable Diffusion / image model.
+
+    Image models are stored as regular Ollama manifests but their config blob marks
+    ``model_family`` (or a member of ``families``) as ``stable-diffusion``. We must NOT
+    route these to llama.cpp for chat/completion.
+    """
+    if not isinstance(manifest, dict):
+        return False
+    config = read_config_blob(manifest)
+    family = config.get("model_family")
+    families = config.get("families") or []
+    if family == "stable-diffusion":
+        return True
+    if "stable-diffusion" in families:
+        return True
+    arch = str(config.get("model_architecture") or "").lower()
+    if any(k in arch for k in ("stable-diffusion", "flux", "sd1", "sd2", "sd3", "sdxl")):
+        return True
+    return False
+
+
+def iter_local_sd_models():
+    """Yields (model_name, blob_path, manifest) for local Stable Diffusion models.
+
+    Discovery is manifest-driven (not filename heuristics) so it works regardless of
+    whether the underlying file is a ``.safetensors`` or an SD ``.gguf`` blob, and
+    regardless of the router symlink naming.
+    """
+    for manifest_base, path, manifest in iter_local_manifests():
+        if not is_image_model_manifest(manifest):
+            continue
+        name = manifest_model_name(manifest_base, path)
+        if not name:
+            continue
+        layer = manifest_layer(manifest, "application/vnd.ollama.image.model")
+        digest = layer.get("digest") if layer else None
+        blob = blob_path_for_digest(digest) if digest else None
+        if blob and os.path.exists(blob):
+            yield name, blob, manifest
+
+
+def find_local_model_file(model_name: str) -> Optional[str]:
+    """Finds the absolute path to a matching Stable Diffusion model.
+
+    Resolution is done by matching the requested model name against local SD model
+    manifests. The returned path is the real model blob (which the sd-server can load
+    directly, following any router symlink it may point through).
+    """
+    if not model_name:
+        return None
+
+    target = with_default_tag(model_name)
+    target_public = public_model_name(target).lower()
+
+    try:
+        for name, blob, manifest in iter_local_sd_models():
+            candidate_public = public_model_name(name).lower()
+            if candidate_public == target_public:
+                return blob
+        # Fallback: case-insensitive substring match on the public name
+        for name, blob, manifest in iter_local_sd_models():
+            candidate_public = public_model_name(name).lower()
+            if candidate_public and (candidate_public in target_public or target_public in candidate_public):
+                return blob
+    except Exception as e:
+        logger.error(f"Error searching for SD model file: {e}")
+
+    return None
+
+
+def resolve_companion_path(filename: str) -> Optional[str]:
+    """Resolves the absolute path of a companion file (VAE/CLIP) in the system."""
+    if not filename:
+        return None
+
+    search_dirs = [
+        os.path.join(OLLAMA_BASE, "companions"),
+        os.path.join(ROUTER_MODELS_DIR, "companions"),
+        "/models/companions",
+        "/router-models/companions",
+    ]
+
+    for d in search_dirs:
+        candidate = os.path.join(d, filename)
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+
+    return None
+
+
+def get_model_profile(model_path: str) -> Dict[str, Any]:
+    """Loads a model's companion profile if it exists."""
+    if not model_path:
+        return {}
+    profile_path = model_path + ".profile.json"
+    if os.path.exists(profile_path):
+        try:
+            with open(profile_path, "r") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.error(f"Failed to read model profile {profile_path}: {e}")
+    return {}
+
+
+def get_active_model_config() -> Optional[Dict[str, Any]]:
+    """Reads the current active model JSON config if it exists."""
+    config_path = os.path.join(ROUTER_MODELS_DIR, "sd_active_model.json")
+    if not os.path.exists(config_path):
+        return None
+    try:
+        with open(config_path, "r") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        logger.error(f"Failed to read active model config: {e}")
+    return None
+
+
+def write_active_model_config(
+    model_path: str,
+    vae_path: Optional[str] = None,
+    clip_l_path: Optional[str] = None,
+    t5xxl_path: Optional[str] = None,
+    llm_path: Optional[str] = None,
+    model_family: Optional[str] = None,
+    extra_args: Optional[str] = None,
+) -> None:
+    """Writes the active model and companion configuration to the router models directory."""
+    config_path = os.path.join(ROUTER_MODELS_DIR, "sd_active_model.json")
+    config = {
+        "model_path": model_path,
+        "vae_path": vae_path,
+        "clip_l_path": clip_l_path,
+        "t5xxl_path": t5xxl_path,
+        "llm_path": llm_path,
+        "model_family": model_family,
+        "host": "0.0.0.0",
+        "port": "8081",
+        "extra_args": extra_args,
+    }
+    try:
+        temp_path = config_path + ".tmp"
+        with open(temp_path, "w") as f:
+            json.dump(config, f, indent=2)
+        os.replace(temp_path, config_path)
+        logger.info(f"Wrote active model config: {config}")
+    except Exception as e:
+        logger.error(f"Failed to write active model configuration: {e}")
+        raise
+
+
+async def check_sd_server_health() -> bool:
+    """Verifies that the stable-diffusion.cpp server is online and responding."""
+    sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+    try:
+        if client_sd_httpx:
+            resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
+            if resp.status_code == 200:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def _evict_llama_vram() -> None:
+    """Internal helper: unload all LLM models and restart llama-server.
+
+    This is the lock-safe version used inside backend_swap_lock. It does NOT
+    call unload_sd_model() (which would deadlock) and does NOT acquire
+    backend_swap_lock (which is already held by the caller).
+    Active-request guards are the caller's responsibility before invoking.
+    """
+    router_models = await fetch_router_models(reload=True)
+    for entry in router_models:
+        if is_resident_status(router_entry_status(entry)):
+            backend_model = entry.get("id")
+            try:
+                await post_router_model_action("unload", backend_model)
+                await record_model_unloaded_by_backend_id(backend_model)
+            except Exception as unload_err:
+                logger.warning(
+                    f"Failed to unload {backend_model} during LLM eviction: {unload_err}"
+                )
+
+    async with active_requests_lock:
+        active_requests.clear()
+        active_requests_lock.notify_all()
+
+    logger.info("Restarting llama-server to release VRAM for SD model...")
+    await restart_llama_server()
+    await wait_for_llama_server_or_restart(timeout=30.0)
+
+
+async def unload_sd_model() -> bool:
+    """Evicts Stable Diffusion model from VRAM to make room for LLM usage."""
+    async with active_sd_requests_lock:
+        while active_sd_requests > 0:
+            logger.info("Active Stable Diffusion requests in progress, waiting before unload...")
+            await active_sd_requests_lock.wait()
+
+    logger.info("Evicting Stable Diffusion model from VRAM to make room for LLM...")
+    config_path = os.path.join(ROUTER_MODELS_DIR, "sd_active_model.json")
+    try:
+        config = {
+            "model_path": "",
+            "vae_path": "",
+            "clip_l_path": "",
+            "t5xxl_path": "",
+            "host": "0.0.0.0",
+            "port": "8081",
+            "extra_args": "",
+        }
+        temp_path = config_path + ".tmp"
+        with open(temp_path, "w") as f:
+            json.dump(config, f, indent=2)
+        os.replace(temp_path, config_path)
+    except Exception as e:
+        logger.error(f"Failed to write empty active model config: {e}")
+        return False
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "restart",
+            "sd-server",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode == 0:
+            logger.info("sd-server container successfully restarted/idle.")
+            for _ in range(30):
+                sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+                try:
+                    if client_sd_httpx:
+                        resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
+                        if resp.status_code == 200 and not resp.json().get("data"):
+                            logger.info("SD model unload verified.")
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+            return True
+    except Exception as e:
+        logger.error(f"Error restarting sd-server: {e}")
+    return False
+
+
+@app.post("/v1/images/generations")
+async def generate_images(request: Request) -> JSONResponse:
+    """OpenAI-compatible image generations endpoint. Fully protected by O.O.D.A loop and queue."""
+    global active_sd_requests
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    # 1. Validate parameters first
+    is_valid, err_msg = validate_sd_parameters(payload)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=err_msg)
+
+    requested_model = payload.get("model", "")
+    target_path = find_local_model_file(requested_model)
+    if not target_path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{requested_model}' not found in router models repository.",
+        )
+
+    # Observe active LLM model state
+    async with vram_monitoring_lock:
+        llama_active = active_llama_model
+
+    # Use backend_swap_lock to atomicize model swaps and prevent concurrent swaps/evictions
+    async with backend_swap_lock:
+        if llama_active is not None:
+            # Wait until there are no active LLM requests
+            async with active_requests_lock:
+                while any(count > 0 for count in active_requests.values()):
+                    logger.info(
+                        "Active LLM requests in progress, waiting before clearing LLM VRAM..."
+                    )
+                    await active_requests_lock.wait()
+
+            # Recheck active LLM model after wait to ensure it hasn't self-evicted
+            async with vram_monitoring_lock:
+                llama_active_now = active_llama_model
+
+            if llama_active_now is not None:
+                logger.info(
+                    f"Evicting LLM model '{llama_active_now}' from VRAM before loading Stable Diffusion model."
+                )
+                try:
+                    await _evict_llama_vram()
+                    # Wait for VRAM to be freed by verifying loaded count is 0
+                    for _ in range(30):
+                        router_models = await fetch_router_models(reload=True)
+                        loaded = [m for m in router_models if router_entry_status(m) == "loaded"]
+                        if not loaded:
+                            logger.info("llama-server VRAM successfully cleared.")
+                            break
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"Error clearing llama-server VRAM: {e}")
+
+        # Check SD health dynamically after potential LLM eviction delay
+        sd_healthy = await check_sd_server_health()
+
+        # Swap model config, restart, and forward request
+        is_sd_loaded = False
+        active_config = get_active_model_config()
+        if active_config and target_path:
+            active_path = active_config.get("model_path", "")
+            if os.path.abspath(target_path) == os.path.abspath(active_path) and sd_healthy:
+                is_sd_loaded = True
+
+        if not is_sd_loaded:
+            logger.info(f"Loading SD model: {target_path}")
+            profile = get_model_profile(target_path)
+            vae_path = resolve_companion_path(profile.get("vae", ""))
+            clip_l_path = resolve_companion_path(profile.get("clip_l", ""))
+            t5xxl_path = resolve_companion_path(profile.get("t5xxl", ""))
+            llm_path = resolve_companion_path(profile.get("llm", ""))
+            model_family = profile.get("model_family", "")
+            extra_args = profile.get("extra_args", "")
+
+            write_active_model_config(
+                model_path=target_path,
+                vae_path=vae_path,
+                clip_l_path=clip_l_path,
+                t5xxl_path=t5xxl_path,
+                llm_path=llm_path,
+                model_family=model_family,
+                extra_args=extra_args,
+            )
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "restart",
+                    "sd-server",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+            except Exception as e:
+                logger.error(f"Failed to restart sd-server: {e}")
+                raise HTTPException(
+                    status_code=503, detail="Failed to restart sd-server container."
+                )
+
+            # Wait for sd-server to become responsive
+            healthy = False
+            sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+            for _ in range(60):
+                try:
+                    if client_sd_httpx:
+                        resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
+                        if resp.status_code == 200:
+                            healthy = True
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(1.5)
+
+            if not healthy:
+                raise HTTPException(
+                    status_code=503,
+                    detail="stable-diffusion.cpp server failed to become responsive after model swap.",
+                )
+
+    # Track this request in the Active Requests UI (so SD generations are visible
+    # alongside LLM chat/completion requests).
+    request_id = str(uuid.uuid4())[:8]
+    register_active_request(
+        request_id,
+        requested_model or "stable-diffusion",
+        "image_generation",
+        payload,
+        request_source=getattr(request.state, "request_source", "unknown"),
+        client_ip=get_client_ip(request),
+    )
+
+    # Wrap the forwarding call with active request increment/decrement
+    async with active_sd_requests_lock:
+        active_sd_requests += 1
+
+    result_data = None
+    try:
+        logger.info(f"Forwarding image generation request: {payload}")
+        sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "alpaca-proxy/1.0",
+        }
+
+        if client_sd_httpx:
+            try:
+                resp = await client_sd_httpx.post(
+                    f"{sd_url}/v1/images/generations", json=payload, headers=headers
+                )
+                if resp.status_code >= 400:
+                    logger.error(f"sd-server error {resp.status_code}: {resp.text}")
+                    raise HTTPException(status_code=502, detail=f"sd-server error: {resp.text}")
+                result_data = resp.json()
+                return JSONResponse(content=result_data)
+            except Exception as e:
+                logger.error(f"Failed to forward request to sd-server: {e}")
+                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.")
+        else:
+            raise HTTPException(status_code=503, detail="SD HTTP client is not initialized.")
+    finally:
+        async with active_sd_requests_lock:
+            active_sd_requests = max(0, active_sd_requests - 1)
+            active_sd_requests_lock.notify_all()
+
+        # Record the generated image(s) into the request history for the UI.
+        images = []
+        if result_data:
+            for item in result_data.get("data", []) or []:
+                b64 = item.get("b64_json")
+                url = item.get("url")
+                if b64:
+                    images.append({"type": "b64_json", "data": b64})
+                elif url:
+                    images.append({"type": "url", "data": url})
+        with active_request_details_lock:
+            detail = active_request_details.get(request_id)
+            if detail is not None:
+                detail["images"] = images
+        if result_data is not None:
+            complete_active_request(
+                request_id,
+                final_response=f"Generated {len(images)} image(s).",
+                prompt_tokens=0,
+                completion_tokens=0,
+            )
+        else:
+            complete_active_request(
+                request_id,
+                final_response="Image generation failed.",
+                prompt_tokens=0,
+                completion_tokens=0,
+            )
+
+
+async def _get_gpu_vram_telemetry() -> Tuple[int, int, int]:
+    """Queries GPU VRAM metrics from nvidia-smi on llama-server."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "llama-server",
+            "nvidia-smi",
+            "--query-gpu=memory.total,memory.used,memory.free",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            lines = stdout.decode().strip().split("\n")
+            if lines and lines[0]:
+                parts = [p.strip() for p in lines[0].split(",")]
+                if len(parts) == 3:
+                    return int(parts[0]), int(parts[1]), int(parts[2])
+    except Exception as e:
+        logger.debug(f"Failed to query VRAM metrics: {e}")
+    return 8192, 0, 8192  # Default fallback if query fails
+
+
+@app.get("/admin/sd/health")
+async def admin_sd_health():
+    """Retrieve Stable Diffusion health, active model, and memory telemetry."""
+    async with vram_monitoring_lock:
+        active_model = active_sd_model
+
+    sd_healthy = await check_sd_server_health()
+    total_vram, used_vram, free_vram = await _get_gpu_vram_telemetry()
+
+    return {
+        "online": True,
+        "active_model": active_model,
+        "sd_server_healthy": sd_healthy,
+        "queue_depth": 0,
+        "vram_total_mb": total_vram,
+        "vram_used_mb": used_vram,
+        "vram_free_mb": free_vram,
+    }
+
+
+@app.post("/admin/sd/unload")
+async def admin_sd_unload():
+    """Manually request to unload the Stable Diffusion model."""
+    async with backend_swap_lock:
+        success = await unload_sd_model()
+    if success:
+        return {"status": "success", "message": "Stable Diffusion model evicted."}
+    else:
+        return JSONResponse(status_code=500, content={"error": "Failed to unload SD model."})
 
 
 # ─── Management API ───────────────────────────────────────────────────────────
@@ -3152,7 +3803,7 @@ async def get_model_errors(
         records = [r for r in records if r.get("error_type") == error_type]
 
     # Most recent first, capped
-    records = records[-min(limit, 500):][::-1]
+    records = records[-min(limit, 500) :][::-1]
 
     # Build per-type summary counts
     counts: dict = {}
@@ -3160,11 +3811,13 @@ async def get_model_errors(
         t = r.get("error_type", "unknown")
         counts[t] = counts.get(t, 0) + 1
 
-    return JSONResponse({
-        "total": len(records),
-        "error_type_counts": counts,
-        "errors": records,
-    })
+    return JSONResponse(
+        {
+            "total": len(records),
+            "error_type_counts": counts,
+            "errors": records,
+        }
+    )
 
 
 @app.post("/admin/errors/clear")
@@ -3178,6 +3831,23 @@ async def clear_model_errors():
 @app.post("/admin/vram/clear")
 async def admin_vram_clear():
     """Force clear all VRAM by unloading all active models and restarting llama-server."""
+    # Wait until there are no active LLM requests
+    async with active_requests_lock:
+        while any(count > 0 for count in active_requests.values()):
+            logger.info("Active LLM requests in progress, waiting before VRAM clear...")
+            await active_requests_lock.wait()
+
+    # Wait until there are no active Stable Diffusion requests
+    async with active_sd_requests_lock:
+        while active_sd_requests > 0:
+            logger.info(
+                "Active Stable Diffusion requests in progress, waiting before VRAM clear..."
+            )
+            await active_sd_requests_lock.wait()
+
+    # Also unload SD model if active
+    await unload_sd_model()
+
     try:
         # 1. Unload all resident models via router
         router_models = await fetch_router_models(reload=True)
@@ -3436,6 +4106,15 @@ async def restore_models_on_recovery():
         f"Restoring only the last loaded model after recovery: {last_model} (out of {loaded_models})"
     )
     try:
+        # Never auto-load an image-generation (Stable Diffusion) model into
+        # llama.cpp on startup. Those are handled exclusively by the sd-server.
+        _, last_manifest = load_local_manifest(last_model, require_complete=False)
+        if last_manifest and is_image_model_manifest(last_manifest):
+            logger.info(
+                f"Skipping auto-restore of image-generation model {last_model} "
+                f"(handled by sd-server, not llama.cpp)."
+            )
+            return
         logger.info(f"Auto-loading model on recovery: {last_model}")
         task = asyncio.create_task(ensure_model(last_model))
         task.set_name(f"restore-model-{last_model}")
@@ -4068,6 +4747,18 @@ async def _ensure_model_skip_swap(model_name: str):
     await ensure_model(model_name, skip_swap=True)
 
 
+async def ensure_sd_unloaded():
+    """Unloads the Stable Diffusion model to free up VRAM for LLM usage."""
+    async with backend_swap_lock:
+        async with vram_monitoring_lock:
+            sd_active = active_sd_model is not None
+        if sd_active:
+            try:
+                await unload_sd_model()
+            except Exception as e:
+                logger.error(f"Failed to unload Stable Diffusion model: {e}")
+
+
 async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = False):
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
@@ -4116,6 +4807,7 @@ async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = 
     except Exception as e:
         logger.warning(f"Lock-free status check failed: {e}")
 
+    await ensure_sd_unloaded()
     async with router_model_lock:
         mark_model_loading(model_name)
         resolved = await resolve_router_model(model_name, reload=True)
@@ -5942,18 +6634,22 @@ async def tags():
     models = []
     for manifest_base, path, manifest in iter_local_manifests():
         model_name = manifest_model_name(manifest_base, path)
-        if model_name:
-            info = manifest_stats(path, manifest)
-            models.append(
-                {
-                    "name": model_name,
-                    "model": model_name,
-                    "modified_at": info["modified_at"],
-                    "size": info["size"],
-                    "digest": info["digest"],
-                    "details": info["details"],
-                }
-            )
+        if not model_name:
+            continue
+        info = manifest_stats(path, manifest)
+        entry = {
+            "name": model_name,
+            "model": model_name,
+            "modified_at": info["modified_at"],
+            "size": info["size"],
+            "digest": info["digest"],
+            "details": info["details"],
+        }
+        if is_image_model_manifest(manifest):
+            entry["type"] = "image"
+            entry["details"] = {**(entry.get("details") or {}), "family": "stable-diffusion"}
+            entry["capabilities"] = ["image_generation"]
+        models.append(entry)
     return {"models": models}
 
 

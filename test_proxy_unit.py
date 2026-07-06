@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +21,9 @@ REAL_POST_ROUTER_MODEL_ACTION = alpaca_proxy.post_router_model_action
 REAL_RESOLVE_ROUTER_MODEL = alpaca_proxy.resolve_router_model
 REAL_ENSURE_MODEL = alpaca_proxy.ensure_model
 REAL_FETCH_ROUTER_MODELS = alpaca_proxy.fetch_router_models
+REAL_ITER_LOCAL_MANIFESTS = alpaca_proxy.iter_local_manifests
+REAL_LOAD_LOCAL_MANIFEST = alpaca_proxy.load_local_manifest
+REAL_MANIFEST_MODEL_NAME = alpaca_proxy.manifest_model_name
 
 # Globally mock network/docker boundary endpoints to protect unit tests
 alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
@@ -1620,3 +1624,180 @@ async def test_admin_errors_endpoint():
     res_clear = await alpaca_proxy.clear_model_errors()
     assert res_clear.status_code == 200
     assert len(alpaca_proxy._model_errors_buffer) == 0
+
+
+# ─── Stable Diffusion vs Llama.cpp service routing ────────────────────────────
+_ORIG_OLLAMA_BASE = alpaca_proxy.OLLAMA_BASE
+
+
+def _write_complete_manifest(base, model_name, family, config_extra=None):
+    """Writes a complete Ollama-style manifest (config + model blobs with exact sizes).
+
+    ``model_name`` is ``family/name:tag`` or ``name:tag``. Returns (manifest_path, model_blob_path).
+    """
+    base = pathlib.Path(base)
+    alpaca_proxy.OLLAMA_BASE = str(base)
+    manifest_root = base / "manifests" / "registry.ollama.ai"
+    name, tag = (model_name if ":" in model_name else f"{model_name}:latest").rsplit(":", 1)
+    name = name.replace(":", "/").replace("//", "/")
+    manifest_path = manifest_root / name / tag if "/" in name else manifest_root / "library" / name / tag
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    blobs_dir = base / "blobs"
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+
+    config = {"model_family": family, "model_format": "gguf"}
+    if config_extra:
+        config.update(config_extra)
+    cfg_bytes = json.dumps(config).encode()
+    slug = re.sub(r"[^A-Za-z0-9]", "-", model_name)
+    cfg_digest = "sha256:cfg-" + slug
+    (blobs_dir / cfg_digest.replace(":", "-")).write_bytes(cfg_bytes)
+
+    model_bytes = b"\x00GGUF" + bytes((hash(model_name) % 256,) * 16)
+    model_digest = "sha256:model-" + slug
+    model_blob_path = blobs_dir / model_digest.replace(":", "-")
+    model_blob_path.write_bytes(model_bytes)
+
+    manifest = {
+        "schemaVersion": 2,
+        "config": {"mediaType": "application/vnd.ollama.image.model.config", "digest": cfg_digest, "size": len(cfg_bytes)},
+        "layers": [
+            {"mediaType": "application/vnd.ollama.image.model", "digest": model_digest, "size": len(model_bytes)}
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    return manifest_path, model_blob_path
+
+
+def _with_ollama_base(base):
+    return base
+
+
+def test_is_image_model_manifest_classifies_correctly():
+    orig_iter = alpaca_proxy.iter_local_manifests
+    alpaca_proxy.iter_local_manifests = REAL_ITER_LOCAL_MANIFESTS
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            _write_complete_manifest(base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion")
+            sd_manifest = alpaca_proxy.load_local_manifest("stable-diffusion-xl-base-1.0", require_complete=True)[1]
+            assert alpaca_proxy.is_image_model_manifest(sd_manifest) is True
+
+            _write_complete_manifest(base, "tinyllama:latest", "llama")
+            llm_manifest = alpaca_proxy.load_local_manifest("tinyllama", require_complete=True)[1]
+            assert alpaca_proxy.is_image_model_manifest(llm_manifest) is False
+    finally:
+        alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
+        alpaca_proxy.iter_local_manifests = orig_iter
+
+
+def test_iter_local_sd_models_only_lists_image_models():
+    orig_iter = alpaca_proxy.iter_local_manifests
+    orig_mn = alpaca_proxy.manifest_model_name
+    alpaca_proxy.iter_local_manifests = REAL_ITER_LOCAL_MANIFESTS
+    alpaca_proxy.manifest_model_name = REAL_MANIFEST_MODEL_NAME
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            _write_complete_manifest(base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion")
+            _write_complete_manifest(base, "tinyllama:latest", "llama")
+            sd_names = [name for name, _blob, _mf in alpaca_proxy.iter_local_sd_models()]
+            assert "stable-diffusion-xl-base-1.0" in sd_names
+            assert "tinyllama" not in sd_names
+    finally:
+        alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
+        alpaca_proxy.iter_local_manifests = orig_iter
+        alpaca_proxy.manifest_model_name = orig_mn
+
+
+def test_find_local_model_file_resolves_sd_not_llm():
+    orig_iter = alpaca_proxy.iter_local_manifests
+    orig_mn = alpaca_proxy.manifest_model_name
+    alpaca_proxy.iter_local_manifests = REAL_ITER_LOCAL_MANIFESTS
+    alpaca_proxy.manifest_model_name = REAL_MANIFEST_MODEL_NAME
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            sd_path, sd_blob = _write_complete_manifest(
+                base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion"
+            )
+            _write_complete_manifest(base, "tinyllama:latest", "llama")
+
+            resolved_sd = alpaca_proxy.find_local_model_file("stable-diffusion-xl-base-1.0")
+            assert resolved_sd == str(sd_blob)
+
+            # LLM models must NOT be resolved by the SD model finder
+            assert alpaca_proxy.find_local_model_file("tinyllama") is None
+    finally:
+        alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
+        alpaca_proxy.iter_local_manifests = orig_iter
+        alpaca_proxy.manifest_model_name = orig_mn
+
+
+@pytest.mark.asyncio
+async def test_resolve_router_model_rejects_image_model_for_llama():
+    """An SD model must never be routed to llama.cpp for chat/completion."""
+    orig_resolve = alpaca_proxy.resolve_router_model
+    alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            _write_complete_manifest(base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion")
+            with pytest.raises(HTTPException) as exc:
+                await alpaca_proxy.resolve_router_model("stable-diffusion-xl-base-1.0", reload=False)
+            assert exc.value.status_code == 400
+            assert "image" in exc.value.detail.lower()
+    finally:
+        alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
+        alpaca_proxy.resolve_router_model = orig_resolve
+
+
+@pytest.mark.asyncio
+async def test_resolve_router_model_routes_llm_to_llama_server():
+    """An LLM model must be resolved to a llama-server backend, not rejected as an image model."""
+    orig_resolve = alpaca_proxy.resolve_router_model
+    alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            _write_complete_manifest(base, "tinyllama:latest", "llama")
+            alpaca_proxy.fetch_router_models = AsyncMock(
+                return_value=[{"id": "tinyllama--latest.gguf", "status": {"value": "unloaded"}}]
+            )
+            resolved = await alpaca_proxy.resolve_router_model("tinyllama", reload=False)
+            assert resolved["backend_model"] == "tinyllama--latest.gguf"
+    finally:
+        alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
+        alpaca_proxy.resolve_router_model = orig_resolve
+
+
+@pytest.mark.asyncio
+async def test_images_generation_endpoint_routes_to_sd_server():
+    """POST /v1/images/generations must dispatch to the SD backend, not llama.cpp."""
+    orig_iter = alpaca_proxy.iter_local_manifests
+    orig_mn = alpaca_proxy.manifest_model_name
+    alpaca_proxy.iter_local_manifests = REAL_ITER_LOCAL_MANIFESTS
+    alpaca_proxy.manifest_model_name = REAL_MANIFEST_MODEL_NAME
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            sd_blob = _write_complete_manifest(
+                base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion"
+            )[1]
+
+            sd_resp = AsyncMock()
+            sd_resp.status_code = 200
+            sd_resp.json = MagicMock(return_value={"data": [{"b64_json": "AAAA"}]})
+            alpaca_proxy.client_sd_httpx = AsyncMock()
+            alpaca_proxy.client_sd_httpx.get = AsyncMock(return_value=AsyncMock(status_code=200, json=MagicMock(return_value={"data": []})))
+            alpaca_proxy.client_sd_httpx.post = AsyncMock(return_value=sd_resp)
+            alpaca_proxy.check_sd_server_health = AsyncMock(return_value=True)
+            alpaca_proxy.get_active_model_config = MagicMock(return_value={"model_path": str(sd_blob)})
+
+            request = make_request(
+                "/v1/images/generations",
+                {"model": "stable-diffusion-xl-base-1.0", "prompt": "a cat", "size": "512x512", "n": 1},
+            )
+            response = await alpaca_proxy.generate_images(request)
+            assert response.status_code == 200
+            sent = alpaca_proxy.client_sd_httpx.post.call_args
+            assert sent[0][0].endswith("/v1/images/generations")
+    finally:
+        alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
+        alpaca_proxy.iter_local_manifests = orig_iter
+        alpaca_proxy.manifest_model_name = orig_mn
+        alpaca_proxy.client_sd_httpx = None

@@ -64,6 +64,36 @@ def test_parse_huggingface_ref_url_syntax():
     assert filename == "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf"
 
 
+def test_parse_huggingface_ref_hf_prefix_single_segment():
+    repo, filename = alpaca_puller.parse_huggingface_ref(
+        "hf://username/repo.gguf"
+    )
+    assert repo == "username"
+    assert filename == "repo.gguf"
+    constructed = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+    assert constructed == "https://huggingface.co/username/resolve/main/repo.gguf"
+
+
+def test_parse_huggingface_ref_hf_prefix_multi_segment():
+    repo, filename = alpaca_puller.parse_huggingface_ref(
+        "hf://unsloth/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    )
+    assert repo == "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
+    assert filename == "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    constructed = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+    assert constructed == "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+
+
+def test_parse_huggingface_ref_hf_prefix_deep_nested():
+    repo, filename = alpaca_puller.parse_huggingface_ref(
+        "hf://a/b/c/d/model.gguf"
+    )
+    assert repo == "a/b/c/d"
+    assert filename == "model.gguf"
+    constructed = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+    assert constructed == "https://huggingface.co/a/b/c/d/resolve/main/model.gguf"
+
+
 def test_infer_local_name_from_huggingface_uses_repo_and_filename():
     result = alpaca_puller.infer_local_name_from_huggingface(
         "Qwen/Qwen3.6-35B-A3B-GGUF",

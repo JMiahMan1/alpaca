@@ -75,6 +75,7 @@ shared_llm_benchmark = SharedLLMModelBenchmark()
 puller_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py"
 )
+PROXY_URL = os.environ.get("PROXY_URL", "http://host.docker.internal:11434")
 active_pulls: Dict[str, Dict[str, Any]] = {}
 active_pulls_lock = threading.Lock()
 
@@ -620,6 +621,45 @@ def get_proxy_status():
                 "error": f"Failed to fetch metrics from active proxy {proxy_url}: {str(e)}",
             }
         )
+
+
+@app.route("/api/sd/status")
+def get_sd_status():
+    """Fetch health, active model, and queue depth from Stable Diffusion proxy."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=1.5) as client:
+            resp = client.get(f"{PROXY_URL}/admin/sd/health")
+            if resp.status_code == 200:
+                data = resp.json()
+                return jsonify(
+                    {
+                        "online": True,
+                        "active_model": data.get("active_model"),
+                        "sd_server_healthy": data.get("sd_server_healthy"),
+                        "queue_depth": data.get("queue_depth"),
+                        "vram_total_mb": data.get("vram_total_mb"),
+                        "vram_used_mb": data.get("vram_used_mb"),
+                        "vram_free_mb": data.get("vram_free_mb"),
+                    }
+                )
+    except Exception as e:
+        return jsonify({"online": False, "error": str(e)})
+    return jsonify({"online": False, "error": "Proxy unresponsive"})
+
+
+@app.route("/api/sd/unload", methods=["POST"])
+def unload_sd_model_api():
+    """Request sd-proxy to unload its active model."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{PROXY_URL}/admin/sd/unload")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/run", methods=["POST"])
@@ -1536,27 +1576,29 @@ def analyze_all_models():
                 # More VRAM headroom with partial GPU offload = bigger opportunity
                 priority_score = min(50, int(vram_headroom / 100))
 
-            results.append({
-                "model_alias": model_alias,
-                "status": status,
-                "priority_score": priority_score,
-                "vram_summary": {
-                    "total_mb": vram.get("total_mb", 0),
-                    "used_mb": vram.get("max_used_mb", 0),
-                    "headroom_mb": vram_headroom,
-                    "max_pct": round(vram_pct, 1),
-                },
-                "ram_summary": {
-                    "max_pct": round(ram_pct, 1),
-                    "mean_pct": round(ram.get("mean_pct", 0), 1),
-                },
-                "gpu_util_pct": metrics.get("gpu_util_pct", {}),
-                "current_config": analysis.get("recommendations", {}),
-                "recommendations": recs,
-                "detected_issues": analysis.get("detected_issues", []),
-                "explanation": analysis.get("explanation", ""),
-                "baseline_comparison": analysis.get("baseline_comparison", {}),
-            })
+            results.append(
+                {
+                    "model_alias": model_alias,
+                    "status": status,
+                    "priority_score": priority_score,
+                    "vram_summary": {
+                        "total_mb": vram.get("total_mb", 0),
+                        "used_mb": vram.get("max_used_mb", 0),
+                        "headroom_mb": vram_headroom,
+                        "max_pct": round(vram_pct, 1),
+                    },
+                    "ram_summary": {
+                        "max_pct": round(ram_pct, 1),
+                        "mean_pct": round(ram.get("mean_pct", 0), 1),
+                    },
+                    "gpu_util_pct": metrics.get("gpu_util_pct", {}),
+                    "current_config": analysis.get("recommendations", {}),
+                    "recommendations": recs,
+                    "detected_issues": analysis.get("detected_issues", []),
+                    "explanation": analysis.get("explanation", ""),
+                    "baseline_comparison": analysis.get("baseline_comparison", {}),
+                }
+            )
         except Exception as e:
             app.logger.warning(f"Analysis failed for {model_alias}: {e}")
             skipped.append(model_alias)
@@ -1564,12 +1606,14 @@ def analyze_all_models():
     # Sort by priority (highest first), then by VRAM headroom descending for same priority
     results.sort(key=lambda r: (-r["priority_score"], -r["vram_summary"]["headroom_mb"]))
 
-    return jsonify({
-        "strategy": strategy,
-        "models_analyzed": len(results),
-        "models_skipped": skipped,
-        "results": results,
-    })
+    return jsonify(
+        {
+            "strategy": strategy,
+            "models_analyzed": len(results),
+            "models_skipped": skipped,
+            "results": results,
+        }
+    )
 
 
 @app.route("/api/routing/matrix", methods=["GET", "POST"])
@@ -1892,7 +1936,7 @@ def get_model_errors():
                 records = [r for r in records if model.lower() in (r.get("model") or "").lower()]
             if error_type:
                 records = [r for r in records if r.get("error_type") == error_type]
-            records = records[-int(limit):][::-1]
+            records = records[-int(limit) :][::-1]
             counts: dict = {}
             for r in records:
                 t = r.get("error_type", "unknown")

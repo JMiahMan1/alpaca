@@ -1,0 +1,24 @@
+# Prebuilt upstream CUDA image: already contains a compiled `sd-server` binary
+# (with SD_CUDA=ON) at /sd.cpp/bin/sd-server. This avoids a multi-minute CUDA
+# compile at image build / container start time. The sd-entrypoint.sh detects
+# the prebuilt binary and skips compilation entirely.
+FROM ghcr.io/leejet/stable-diffusion.cpp:master-cuda
+
+# Avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# The prebuilt runtime image only ships libgomp1. Add the tooling our entrypoint
+# needs (python3 to parse the model config JSON, plus diagnostics).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    pciutils \
+    curl \
+    ca-certificates \
+    coreutils \
+    findutils \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The entrypoint runs stable-diffusion.cpp's sd-server (prebuilt in this image)
+ENTRYPOINT ["/bin/bash", "/scripts/sd-entrypoint.sh"]
