@@ -1,8 +1,11 @@
-import os
 import json
-import pytest
+import os
 from unittest.mock import patch
+
+import pytest
+
 from llm_benchmark_suite import LLMModelBenchmark
+
 
 @pytest.mark.asyncio
 async def test_dynamic_tests_loading(tmp_path):
