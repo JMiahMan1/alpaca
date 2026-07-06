@@ -420,25 +420,9 @@ class LLMModelBenchmark:
                             "model": model,
                             "messages": [{"role": "user", "content": test["prompt"]}],
                             "stream": False,
-                            # Disable thinking mode so MoE / thinking models don't
-                            # spend all tokens on <thinking> and return empty content.
                             "think": False,
                             "options": {
-                                "num_predict": (
-                                    2048
-                                    if any(
-                                        term in model.lower()
-                                        for term in [
-                                            "qwen3",
-                                            "r1",
-                                            "math",
-                                            "reason",
-                                            "thinking",
-                                            "ornith",
-                                        ]
-                                    )
-                                    else test.get("num_predict", 50)
-                                ),
+                                "num_predict": 4000,
                                 "temperature": 0.3,
                             },
                         },
@@ -453,17 +437,59 @@ class LLMModelBenchmark:
                         data = response.json()
                         eval_ns = data.get("eval_duration", 0)
                         prompt_ns = data.get("prompt_eval_duration", 0)
-                        latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
+                        eval_count = data.get("eval_count", 0)
                         response_text = self.strip_thinking(
                             data.get("message", {}).get("content") or data.get("response", "")
                         )
+                        
+                        # If we used 4000 tokens or more (half of 8000), inject nudge and request remaining tokens
+                        if eval_count >= 4000:
+                            try:
+                                payload2 = {
+                                    "model": model,
+                                    "messages": [
+                                        {"role": "user", "content": test["prompt"]},
+                                        {"role": "assistant", "content": response_text},
+                                        {
+                                            "role": "user",
+                                            "content": "[System: You are halfway through your token budget. Please come up with an answer quickly.]",
+                                        },
+                                    ],
+                                    "stream": False,
+                                    "think": False,
+                                    "options": {
+                                        "num_predict": 4000,
+                                        "temperature": 0.3,
+                                    },
+                                }
+                                start_t2 = time.time()
+                                response2 = await client.post(
+                                    f"{proxy_url}/api/chat",
+                                    json=payload2,
+                                    headers={"X-Request-Source": "shared-llm/benchmark"},
+                                    timeout=240.0,
+                                )
+                                elapsed += (time.time() - start_t2)
+                                if response2.status_code == 200:
+                                    data2 = response2.json()
+                                    response_text2 = self.strip_thinking(
+                                        data2.get("message", {}).get("content") or data2.get("response", "")
+                                    )
+                                    response_text = response_text + "\n" + response_text2
+                                    eval_count += data2.get("eval_count", 0)
+                                    eval_ns += data2.get("eval_duration", 0)
+                                    prompt_ns += data2.get("prompt_eval_duration", 0)
+                            except Exception as e2:
+                                print(f"Phase 2 proxy query error: {e2}")
+
+                        latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
                         return {
                             "proxy": proxy_url,
                             "success": True,
                             "prompt": test["prompt"],
                             "latency": round(latency, 3),
                             "response": response_text,
-                            "tokens_generated": data.get("eval_count", 0),
+                            "tokens_generated": eval_count,
                             "eval_duration": eval_ns,
                             "prompt_eval_duration": prompt_ns,
                             "error": None,
@@ -523,25 +549,9 @@ class LLMModelBenchmark:
                             "model": model,
                             "prompt": test["prompt"],
                             "stream": False,
-                            # Disable thinking mode so MoE / thinking models don't
-                            # spend all tokens on <thinking> and return empty content.
                             "think": False,
                             "options": {
-                                "num_predict": (
-                                    2048
-                                    if any(
-                                        term in model.lower()
-                                        for term in [
-                                            "qwen3",
-                                            "r1",
-                                            "math",
-                                            "reason",
-                                            "thinking",
-                                            "ornith",
-                                        ]
-                                    )
-                                    else test.get("num_predict", 50)
-                                ),
+                                "num_predict": 4000,
                                 "temperature": 0.3,
                             },
                         },
@@ -555,14 +565,51 @@ class LLMModelBenchmark:
                         data = response.json()
                         eval_ns = data.get("eval_duration", 0)
                         prompt_ns = data.get("prompt_eval_duration", 0)
+                        eval_count = data.get("eval_count", 0)
+                        response_text = self.strip_thinking(data.get("response", ""))
+
+                        # If we used 4000 tokens or more (half of 8000), inject nudge and request remaining tokens
+                        if eval_count >= 4000:
+                            try:
+                                new_prompt = (
+                                    f"{test['prompt']}\n{response_text}\n"
+                                    f"[System: You are halfway through your token budget. Please come up with an answer quickly.]"
+                                )
+                                payload2 = {
+                                    "model": model,
+                                    "prompt": new_prompt,
+                                    "stream": False,
+                                    "think": False,
+                                    "options": {
+                                        "num_predict": 4000,
+                                        "temperature": 0.3,
+                                    },
+                                }
+                                start_t2 = time.time()
+                                response2 = await client.post(
+                                    f"{ollama_url}/api/generate",
+                                    json=payload2,
+                                    timeout=240.0,
+                                )
+                                elapsed += (time.time() - start_t2)
+                                if response2.status_code == 200:
+                                    data2 = response2.json()
+                                    response_text2 = self.strip_thinking(data2.get("response", ""))
+                                    response_text = response_text + "\n" + response_text2
+                                    eval_count += data2.get("eval_count", 0)
+                                    eval_ns += data2.get("eval_duration", 0)
+                                    prompt_ns += data2.get("prompt_eval_duration", 0)
+                            except Exception as e2:
+                                print(f"Phase 2 direct query error: {e2}")
+
                         latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
                         return {
                             "ollama_url": ollama_url,
                             "success": True,
                             "prompt": test["prompt"],
                             "latency": round(latency, 3),
-                            "response": self.strip_thinking(data.get("response", "")),
-                            "tokens_generated": data.get("eval_count", 0),
+                            "response": response_text,
+                            "tokens_generated": eval_count,
                             "eval_duration": eval_ns,
                             "prompt_eval_duration": prompt_ns,
                             "error": None,

@@ -102,6 +102,9 @@ class SharedLLMModelBenchmark:
         Thinking mode is explicitly disabled (think=false) so that thinking models
         (e.g. Qwen3.6 MoE) don't consume the entire token budget on internal reasoning,
         which would produce an empty content field in the response.
+
+        Configures 8000 tokens total budget: Phase 1 gets 4000 tokens, and if it exceeds
+        4000 tokens, Phase 2 gets 4000 tokens with a nudge injection to finish quickly.
         """
         urls = self.PROXY_SERVER_URLS if use_proxy else self.OLLAMA_SERVER_URLS
         last_error = None
@@ -117,25 +120,9 @@ class SharedLLMModelBenchmark:
                                 "model": model,
                                 "messages": [{"role": "user", "content": prompt}],
                                 "stream": False,
-                                # Disable thinking mode so MoE / thinking models don't
-                                # spend all tokens on <think> and return empty content.
                                 "think": False,
                                 "options": {
-                                    "num_predict": (
-                                        2048
-                                        if any(
-                                            term in model.lower()
-                                            for term in [
-                                                "qwen3",
-                                                "r1",
-                                                "math",
-                                                "reason",
-                                                "thinking",
-                                                "ornith",
-                                            ]
-                                        )
-                                        else max_tokens
-                                    ),
+                                    "num_predict": 4000,
                                     "temperature": 0.2,
                                 },
                             },
@@ -146,9 +133,47 @@ class SharedLLMModelBenchmark:
                         if resp.status_code == 200:
                             data = resp.json()
                             content = self.strip_thinking(
-                                data.get("message", {}).get("content", "") or ""
+                                data.get("message", {}).get("content", "") or data.get("response", "") or ""
                             )
                             eval_cnt = data.get("eval_count", 0)
+
+                            if eval_cnt >= 4000:
+                                try:
+                                    payload2 = {
+                                        "model": model,
+                                        "messages": [
+                                            {"role": "user", "content": prompt},
+                                            {"role": "assistant", "content": content},
+                                            {
+                                                "role": "user",
+                                                "content": "[System: You are halfway through your token budget. Please come up with an answer quickly.]",
+                                            },
+                                        ],
+                                        "stream": False,
+                                        "think": False,
+                                        "options": {
+                                            "num_predict": 4000,
+                                            "temperature": 0.2,
+                                        },
+                                    }
+                                    start_t2 = time.time()
+                                    resp2 = await client.post(
+                                        f"{base_url}/api/chat",
+                                        json=payload2,
+                                        headers={"X-Request-Source": "shared-llm/benchmark"},
+                                        timeout=180.0,
+                                    )
+                                    latency += (time.time() - start_t2)
+                                    if resp2.status_code == 200:
+                                        data2 = resp2.json()
+                                        content2 = self.strip_thinking(
+                                            data2.get("message", {}).get("content", "") or data2.get("response", "") or ""
+                                        )
+                                        content = content + "\n" + content2
+                                        eval_cnt += data2.get("eval_count", 0)
+                                except Exception as e2:
+                                    print(f"Phase 2 proxy query error in SharedLLM: {e2}")
+
                             return {
                                 "success": True,
                                 "latency": latency,
@@ -165,21 +190,7 @@ class SharedLLMModelBenchmark:
                                 "stream": False,
                                 "think": False,
                                 "options": {
-                                    "num_predict": (
-                                        2048
-                                        if any(
-                                            term in model.lower()
-                                            for term in [
-                                                "qwen3",
-                                                "r1",
-                                                "math",
-                                                "reason",
-                                                "thinking",
-                                                "ornith",
-                                            ]
-                                        )
-                                        else max_tokens
-                                    ),
+                                    "num_predict": 4000,
                                     "temperature": 0.2,
                                 },
                             },
@@ -190,6 +201,38 @@ class SharedLLMModelBenchmark:
                             data = resp.json()
                             content = self.strip_thinking(data.get("response", "") or "")
                             eval_cnt = data.get("eval_count", 0)
+
+                            if eval_cnt >= 4000:
+                                try:
+                                    new_prompt = (
+                                        f"{prompt}\n{content}\n"
+                                        f"[System: You are halfway through your token budget. Please come up with an answer quickly.]"
+                                    )
+                                    payload2 = {
+                                        "model": model,
+                                        "prompt": new_prompt,
+                                        "stream": False,
+                                        "think": False,
+                                        "options": {
+                                            "num_predict": 4000,
+                                            "temperature": 0.2,
+                                        },
+                                    }
+                                    start_t2 = time.time()
+                                    resp2 = await client.post(
+                                        f"{base_url}/api/generate",
+                                        json=payload2,
+                                        timeout=180.0,
+                                    )
+                                    latency += (time.time() - start_t2)
+                                    if resp2.status_code == 200:
+                                        data2 = resp2.json()
+                                        content2 = self.strip_thinking(data2.get("response", "") or "")
+                                        content = content + "\n" + content2
+                                        eval_cnt += data2.get("eval_count", 0)
+                                except Exception as e2:
+                                    print(f"Phase 2 direct query error in SharedLLM: {e2}")
+
                             return {
                                 "success": True,
                                 "latency": latency,

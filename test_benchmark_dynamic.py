@@ -97,7 +97,6 @@ async def test_incremental_merging(tmp_path):
     
     coding_tests = model_res["category_coding"]["tests"]
     reasoning_tests = model_res["category_reasoning"]["tests"]
-    
     assert len(coding_tests) == 1
     assert coding_tests[0]["test_id"] == "debug_fix"
     assert "last_run" in coding_tests[0]
@@ -105,3 +104,91 @@ async def test_incremental_merging(tmp_path):
     assert len(reasoning_tests) == 1
     assert reasoning_tests[0]["test_id"] == "logic_puzzle"
     assert "last_run" in reasoning_tests[0]
+
+
+@pytest.mark.asyncio
+async def test_two_phase_token_generation_and_nudge_injection():
+    """Test that both test_model_proxy and test_model_direct trigger a two-phase request when tokens reach 4000."""
+    benchmark = LLMModelBenchmark()
+    
+    # We mock Client.post to simulate hitting the 4000 token limit in phase 1,
+    # followed by a successful phase 2.
+    calls = []
+    
+    class MockResponse:
+        def __init__(self, data, status_code=200):
+            self.data = data
+            self.status_code = status_code
+        def json(self):
+            return self.data
+
+    async def mock_post(client_self, url, json, **kwargs):
+        calls.append((url, json))
+        # Determine if it's phase 1 or phase 2 based on json payload structure
+        options = json.get("options", {})
+        assert options.get("num_predict") == 4000
+        
+        if "messages" in json:
+            # Chat endpoint (proxy)
+            messages = json["messages"]
+            if len(messages) == 1:
+                # Phase 1
+                return MockResponse({
+                    "eval_count": 4000,
+                    "eval_duration": 4000000000,
+                    "prompt_eval_duration": 1000000000,
+                    "message": {"content": "Phase 1 chat output"}
+                })
+            else:
+                # Phase 2
+                assert messages[-1]["role"] == "user"
+                assert "halfway through your token budget" in messages[-1]["content"]
+                return MockResponse({
+                    "eval_count": 2500,
+                    "eval_duration": 2000000000,
+                    "prompt_eval_duration": 500000000,
+                    "message": {"content": "Phase 2 chat output"}
+                })
+        else:
+            # Generate endpoint (direct)
+            prompt = json["prompt"]
+            if "halfway through your token budget" not in prompt:
+                # Phase 1
+                return MockResponse({
+                    "eval_count": 4000,
+                    "eval_duration": 4000000000,
+                    "prompt_eval_duration": 1000000000,
+                    "response": "Phase 1 direct output"
+                })
+            else:
+                # Phase 2
+                assert "Phase 1 direct output" in prompt
+                return MockResponse({
+                    "eval_count": 1500,
+                    "eval_duration": 1500000000,
+                    "prompt_eval_duration": 300000000,
+                    "response": "Phase 2 direct output"
+                })
+
+    with patch("httpx.AsyncClient.post", new=mock_post):
+        # 1. Test Proxy Path
+        res_proxy = await benchmark.test_model_proxy("test-model", {"id": "test", "prompt": "Hello"})
+        assert res_proxy["success"] is True
+        assert "Phase 1 chat output" in res_proxy["response"]
+        assert "Phase 2 chat output" in res_proxy["response"]
+        assert res_proxy["tokens_generated"] == 6500  # 4000 + 2500
+        # 2 proxy calls made
+        proxy_calls = [c for c in calls if "api/chat" in c[0]]
+        assert len(proxy_calls) == 2
+
+        calls.clear()
+
+        # 2. Test Direct Path
+        res_direct = await benchmark.test_model_direct("test-model", {"id": "test", "prompt": "Hello"})
+        assert res_direct["success"] is True
+        assert "Phase 1 direct output" in res_direct["response"]
+        assert "Phase 2 direct output" in res_direct["response"]
+        assert res_direct["tokens_generated"] == 5500  # 4000 + 1500
+        # 2 direct calls made
+        direct_calls = [c for c in calls if "api/generate" in c[0]]
+        assert len(direct_calls) == 2
