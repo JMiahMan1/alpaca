@@ -118,10 +118,9 @@ else
     echo "[sd-entrypoint] No configuration file found at $CONFIG_FILE"
 fi
 
-# Fallback: find any model in /router-models if not configured
 if [ -z "$MODEL_PATH" ]; then
     echo "[sd-entrypoint] Scanning for models in /router-models..."
-    MODEL_PATH=$(find /router-models -type f \( -name "*.safetensors" -o -name "*.gguf" \) | head -n 1)
+    MODEL_PATH=$(find /router-models -maxdepth 1 -type f \( -name "*.safetensors" -o -name "*.gguf" \) | head -n 1)
 fi
 
 # If still no model, wait in an idle loop
@@ -133,7 +132,13 @@ if [ -z "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH" ]; then
 fi
 
 echo "[sd-entrypoint] Loading model: $MODEL_PATH"
-CMD=("$BINARY_PATH" "-m" "$MODEL_PATH" "--listen-ip" "$LISTEN_IP" "--listen-port" "$LISTEN_PORT")
+if [ "$MODEL_FAMILY" = "qwen-image" ] || [ -n "$LLM_PATH" ] || [ -n "$VAE_PATH" ]; then
+    echo "[sd-entrypoint] Loading as standalone diffusion model..."
+    CMD=("$BINARY_PATH" "--diffusion-model" "$MODEL_PATH" "--listen-ip" "$LISTEN_IP" "--listen-port" "$LISTEN_PORT")
+else
+    CMD=("$BINARY_PATH" "-m" "$MODEL_PATH" "--listen-ip" "$LISTEN_IP" "--listen-port" "$LISTEN_PORT")
+fi
+
 
 if [ -n "$VAE_PATH" ] && [ -f "$VAE_PATH" ]; then
     echo "[sd-entrypoint] Using VAE companion file: $VAE_PATH"
