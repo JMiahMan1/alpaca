@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 # Precise logging setup with memory buffer
 LOG_BUFFER = deque(maxlen=1000)
@@ -2292,6 +2293,25 @@ active_sd_requests = 0
 active_sd_requests_lock = asyncio.Condition()
 client_sd_httpx: Optional[httpx.AsyncClient] = None
 backend_swap_lock = asyncio.Lock()
+async def is_container_running(name: str) -> bool:
+    """Checks if a Docker container is currently in the running state."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            "-f",
+            "{{.State.Running}}",
+            name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            return stdout.decode().strip().lower() == "true"
+    except Exception:
+        pass
+    return True  # Fallback to True to avoid aborting prematurely on docker API issues
+
 
 
 async def sd_vram_poll_loop() -> None:
@@ -2308,7 +2328,7 @@ async def sd_vram_poll_loop() -> None:
                         loaded = [
                             m
                             for m in data
-                            if m.get("status") == "loaded" or m.get("status") == "loading"
+                            if router_entry_status(m) in ("loaded", "loading")
                         ]
                         async with vram_monitoring_lock:
                             active_llama_model = loaded[0].get("id") if loaded else None
@@ -2413,6 +2433,62 @@ def iter_local_sd_models():
             yield name, blob, manifest
 
 
+def iter_router_sd_models():
+    """Yields (model_name, blob_path, profile) for Stable Diffusion / image models
+    discovered directly in the router models directory via a companion
+    ``.profile.json``.
+
+    This covers models that were added without an Ollama manifest (e.g. Qwen-Image
+    / Qwen-Image-Edit GGUFs dropped into ``.alpaca-router`` as a symlink + profile).
+    """
+    if not os.path.isdir(ROUTER_MODELS_DIR):
+        return
+    sd_families = {"stable-diffusion", "qwen-image", "flux"}
+    for entry in os.scandir(ROUTER_MODELS_DIR):
+        if not (entry.is_file() or entry.is_symlink()):
+            continue
+        if not (entry.name.endswith(".gguf") or entry.name.endswith(".safetensors")):
+            continue
+        profile_path = entry.path + ".profile.json"
+        if not os.path.exists(profile_path):
+            continue
+        try:
+            with open(profile_path, "r") as f:
+                profile = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(profile, dict):
+            continue
+        family = (profile.get("model_family") or "").lower()
+        if family not in sd_families:
+            # Fall back to filename heuristics for models without an explicit family.
+            lowered = entry.name.lower()
+            if not any(h in lowered for h in ("stable-diffusion", "qwen-image", "flux", "-sd-", "_sd_", "sdxl")):
+                continue
+        blob = os.path.realpath(entry.path)
+        if not os.path.exists(blob):
+            continue
+        model_name = entry.name
+        if model_name.endswith(".gguf"):
+            model_name = model_name[:-5]
+        elif model_name.endswith(".safetensors"):
+            model_name = model_name[:-12]
+        yield model_name, blob, profile
+
+
+def iter_all_sd_models():
+    """Combines manifest-based and router-directory-based SD model discovery."""
+    seen = set()
+    for name, blob, meta in iter_local_sd_models():
+        seen.add((public_model_name(name).lower(), blob))
+        yield name, blob, meta
+    for name, blob, profile in iter_router_sd_models():
+        key = (public_model_name(name).lower(), blob)
+        if key in seen:
+            continue
+        yield name, blob, profile
+
+
 def find_local_model_file(model_name: str) -> Optional[str]:
     """Finds the absolute path to a matching Stable Diffusion model.
 
@@ -2424,16 +2500,16 @@ def find_local_model_file(model_name: str) -> Optional[str]:
         return None
 
     target = with_default_tag(model_name)
-    target_public = public_model_name(target).lower()
+    target_public = public_model_name(target).lower().replace("/", "--")
 
     try:
-        for name, blob, manifest in iter_local_sd_models():
-            candidate_public = public_model_name(name).lower()
+        for name, blob, manifest in iter_all_sd_models():
+            candidate_public = public_model_name(name).lower().replace("/", "--")
             if candidate_public == target_public:
                 return blob
         # Fallback: case-insensitive substring match on the public name
-        for name, blob, manifest in iter_local_sd_models():
-            candidate_public = public_model_name(name).lower()
+        for name, blob, manifest in iter_all_sd_models():
+            candidate_public = public_model_name(name).lower().replace("/", "--")
             if candidate_public and (candidate_public in target_public or target_public in candidate_public):
                 return blob
     except Exception as e:
@@ -2467,6 +2543,21 @@ def get_model_profile(model_path: str) -> Dict[str, Any]:
     if not model_path:
         return {}
     profile_path = model_path + ".profile.json"
+    if not os.path.exists(profile_path) and "/blobs/" in model_path:
+        real_blob = os.path.realpath(model_path)
+        for entry in os.scandir(ROUTER_MODELS_DIR):
+            if entry.is_symlink():
+                try:
+                    target = os.readlink(entry.path)
+                    abs_target = os.path.abspath(os.path.join(ROUTER_MODELS_DIR, target))
+                    if os.path.realpath(abs_target) == real_blob:
+                        cand_profile = entry.path + ".profile.json"
+                        if os.path.exists(cand_profile):
+                            profile_path = cand_profile
+                            break
+                except Exception:
+                    pass
+
     if os.path.exists(profile_path):
         try:
             with open(profile_path, "r") as f:
@@ -2623,6 +2714,323 @@ async def unload_sd_model() -> bool:
     return False
 
 
+_IMAGE_FILE_FORMATS = {
+    "png": ("image/png", "png"),
+    "jpg": ("image/jpeg", "jpg"),
+    "jpeg": ("image/jpeg", "jpg"),
+    "file": ("image/png", "png"),
+}
+
+
+def _maybe_return_image_file(result_data, response_format):
+    """If ``response_format`` requests a raw image file, decode the first
+    ``b64_json`` item and return it as a binary image response. Returns ``None``
+    (caller should return JSON) otherwise."""
+    rf = (response_format or "b64_json").lower()
+    if rf not in _IMAGE_FILE_FORMATS:
+        return None
+    items = (result_data.get("data") or []) if isinstance(result_data, dict) else []
+    if not items or not isinstance(items[0], dict) or not items[0].get("b64_json"):
+        return None
+    try:
+        img_bytes = base64.b64decode(items[0]["b64_json"])
+    except Exception:
+        return None
+    media_type, ext = _IMAGE_FILE_FORMATS[rf]
+    return Response(
+        content=img_bytes,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="edited_image.{ext}"'},
+    )
+
+
+async def ensure_sd_model_loaded(requested_model: str) -> str:
+    """Ensures ``requested_model`` is the active model loaded into the
+    stable-diffusion.cpp (``sd-server``) backend.
+
+    Performs LLM VRAM eviction if needed, writes ``sd_active_model.json``,
+    restarts the ``sd-server`` container, and waits for it to become healthy.
+    Returns the resolved local model blob path.
+    """
+    target_path = find_local_model_file(requested_model)
+    if not target_path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{requested_model}' not found in router models repository.",
+        )
+
+    # Observe active LLM model state
+    async with vram_monitoring_lock:
+        llama_active = active_llama_model
+
+    # Use backend_swap_lock to atomicize model swaps and prevent concurrent swaps/evictions
+    async with backend_swap_lock:
+        if llama_active is not None:
+            # Wait until there are no active LLM requests
+            async with active_requests_lock:
+                while any(count > 0 for count in active_requests.values()):
+                    logger.info(
+                        "Active LLM requests in progress, waiting before clearing LLM VRAM..."
+                    )
+                    await active_requests_lock.wait()
+
+            # Recheck active LLM model after wait to ensure it hasn't self-evicted
+            async with vram_monitoring_lock:
+                llama_active_now = active_llama_model
+
+            if llama_active_now is not None:
+                logger.info(
+                    f"Evicting LLM model '{llama_active_now}' from VRAM before loading Stable Diffusion model."
+                )
+                try:
+                    await _evict_llama_vram()
+                    # Wait for VRAM to be freed by verifying loaded count is 0
+                    for _ in range(30):
+                        router_models = await fetch_router_models(reload=True)
+                        loaded = [m for m in router_models if router_entry_status(m) == "loaded"]
+                        if not loaded:
+                            logger.info("llama-server VRAM successfully cleared.")
+                            break
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"Error clearing llama-server VRAM: {e}")
+
+        # Check SD health dynamically after potential LLM eviction delay
+        sd_healthy = await check_sd_server_health()
+
+        # Swap model config, restart, and forward request
+        is_sd_loaded = False
+        active_config = get_active_model_config()
+        if active_config and target_path:
+            active_path = active_config.get("model_path", "")
+            if os.path.abspath(target_path) == os.path.abspath(active_path) and sd_healthy:
+                is_sd_loaded = True
+
+        if not is_sd_loaded:
+            logger.info(f"Loading SD model: {target_path}")
+            profile = get_model_profile(target_path)
+            vae_path = resolve_companion_path(profile.get("vae", ""))
+            clip_l_path = resolve_companion_path(profile.get("clip_l", ""))
+            t5xxl_path = resolve_companion_path(profile.get("t5xxl", ""))
+            llm_path = resolve_companion_path(profile.get("llm", ""))
+            model_family = profile.get("model_family", "")
+            extra_args = profile.get("extra_args", "")
+
+            write_active_model_config(
+                model_path=target_path,
+                vae_path=vae_path,
+                clip_l_path=clip_l_path,
+                t5xxl_path=t5xxl_path,
+                llm_path=llm_path,
+                model_family=model_family,
+                extra_args=extra_args,
+            )
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "restart",
+                    "sd-server",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+            except Exception as e:
+                logger.error(f"Failed to restart sd-server: {e}")
+                raise HTTPException(
+                    status_code=503, detail="Failed to restart sd-server container."
+                )
+
+            # Wait for sd-server to become responsive
+            healthy = False
+            sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+            sd_container = os.getenv("SD_CONTAINER_NAME", "sd-server")
+            for _ in range(60):
+                if not await is_container_running(sd_container):
+                    logger.error("sd-server container has stopped or crashed. Aborting swap wait.")
+                    break
+                try:
+                    if client_sd_httpx:
+                        resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
+                        if resp.status_code == 200:
+                            healthy = True
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(1.5)
+
+            if not healthy:
+                raise HTTPException(
+                    status_code=503,
+                    detail="stable-diffusion.cpp server failed to become responsive after model swap.",
+                )
+
+    return target_path
+
+
+@app.get("/v1/images/models")
+async def list_sd_models() -> JSONResponse:
+    """Returns the list of locally available Stable Diffusion / image models."""
+    models = []
+    try:
+        for name, blob, meta in iter_all_sd_models():
+            family = "stable-diffusion"
+            if isinstance(meta, dict):
+                family = meta.get("model_family") or meta.get("config", {}).get("model_family") or "stable-diffusion"
+            models.append({
+                "id": name,
+                "name": name,
+                "family": family,
+                "object": "model",
+            })
+    except Exception as e:
+        logger.error(f"Failed to list SD models: {e}")
+    return JSONResponse(content={"object": "list", "data": models})
+
+
+@app.post("/v1/images/models/load")
+async def load_sd_model_endpoint(request: Request) -> JSONResponse:
+    """Loads a Stable Diffusion model into the sd-server backend (no generation)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    requested_model = payload.get("model", "")
+    if not requested_model:
+        raise HTTPException(status_code=400, detail="`model` is required.")
+    try:
+        target_path = await ensure_sd_model_loaded(requested_model)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load SD model: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load SD model: {str(e)}")
+    return JSONResponse(content={"status": "loaded", "model": requested_model, "path": target_path})
+
+
+@app.post("/v1/images/edits")
+async def edit_images(request: Request) -> Response:
+    """OpenAI-compatible image edits endpoint. Auto-loads the requested SD model,
+    then forwards the multipart request to the stable-diffusion.cpp server."""
+    global active_sd_requests
+    try:
+        form = await request.form()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid multipart form data.")
+
+    requested_model = str(form.get("model", ""))
+    if not requested_model:
+        raise HTTPException(status_code=400, detail="`model` field is required.")
+
+    # Validate parameters we understand
+    try:
+        n_val = int(str(form.get("n", "1")))
+    except (TypeError, ValueError):
+        n_val = 1
+    ok, err = validate_sd_parameters({"size": form.get("size", "512x512"), "n": n_val})
+    if not ok:
+        raise HTTPException(status_code=400, detail=err)
+
+    response_format = str(form.get("response_format", "b64_json")).lower()
+
+    await ensure_sd_model_loaded(requested_model)
+
+    # Track this request in the Active Requests UI
+    request_id = str(uuid.uuid4())[:8]
+    register_active_request(
+        request_id,
+        requested_model or "stable-diffusion",
+        "image_edit",
+        {"prompt": form.get("prompt", "")},
+        request_source=getattr(request.state, "request_source", "unknown"),
+        client_ip=get_client_ip(request),
+    )
+
+    async with active_sd_requests_lock:
+        active_sd_requests += 1
+
+    result_data = None
+    try:
+        sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+        headers = {"Accept": "application/json", "User-Agent": "alpaca-proxy/1.0"}
+        files = []
+        data = {}
+        for key in form.keys():
+            items = form.getlist(key)
+            for item in items:
+                if isinstance(item, str):
+                    data[key] = item
+                else:
+                    content = await item.read()
+                    files.append(
+                        (
+                            key,
+                            (
+                                getattr(item, "filename", key),
+                                content,
+                                getattr(item, "content_type", "application/octet-stream"),
+                            ),
+                        )
+                    )
+
+        if response_format in _IMAGE_FILE_FORMATS:
+            # Force b64_json from sd-server so we can decode it into a raw file.
+            data["response_format"] = "b64_json"
+
+        if client_sd_httpx:
+            try:
+                resp = await client_sd_httpx.post(
+                    f"{sd_url}/v1/images/edits",
+                    data=data,
+                    files=files,
+                    headers=headers,
+                    timeout=600.0,
+                )
+                if resp.status_code >= 400:
+                    logger.error(f"sd-server edit error {resp.status_code}: {resp.text}")
+                    raise HTTPException(status_code=502, detail=f"sd-server error: {resp.text}")
+                result_data = resp.json()
+                file_resp = _maybe_return_image_file(result_data, response_format)
+                if file_resp is not None:
+                    return file_resp
+                return JSONResponse(content=result_data)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to forward edit request to sd-server: {e}")
+                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.")
+        else:
+            raise HTTPException(status_code=503, detail="SD HTTP client is not initialized.")
+    finally:
+        async with active_sd_requests_lock:
+            active_sd_requests = max(0, active_sd_requests - 1)
+            active_sd_requests_lock.notify_all()
+
+        images = []
+        if result_data:
+            for item in result_data.get("data", []) or []:
+                b64 = item.get("b64_json")
+                url = item.get("url")
+                if b64:
+                    images.append({"type": "b64_json", "data": b64})
+                elif url:
+                    images.append({"type": "url", "data": url})
+        with active_request_details_lock:
+            detail = active_request_details.get(request_id)
+            if detail is not None:
+                detail["images"] = images
+        if result_data is not None:
+            complete_active_request(
+                request_id, final_response=f"Edited {len(images)} image(s).",
+                prompt_tokens=0, completion_tokens=0,
+            )
+        else:
+            complete_active_request(
+                request_id, final_response="Image edit failed.",
+                prompt_tokens=0, completion_tokens=0,
+            )
+
+
 @app.post("/v1/images/generations")
 async def generate_images(request: Request) -> JSONResponse:
     """OpenAI-compatible image generations endpoint. Fully protected by O.O.D.A loop and queue."""
@@ -2730,7 +3138,11 @@ async def generate_images(request: Request) -> JSONResponse:
             # Wait for sd-server to become responsive
             healthy = False
             sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+            sd_container = os.getenv("SD_CONTAINER_NAME", "sd-server")
             for _ in range(60):
+                if not await is_container_running(sd_container):
+                    logger.error("sd-server container has stopped or crashed. Aborting swap wait.")
+                    break
                 try:
                     if client_sd_httpx:
                         resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
@@ -3697,6 +4109,19 @@ async def admin_model_switch(request: Request):
         raise HTTPException(status_code=400, detail="model is required")
 
     model = with_default_tag(model)
+
+    # Image / Stable Diffusion models are loaded into the sd-server backend, not
+    # llama.cpp. Route them through the SD load path so the Model Switcher can load
+    # them directly (they have no Ollama manifest to satisfy the LLM checks below).
+    if find_local_model_file(model):
+        try:
+            await ensure_sd_model_loaded(model)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load SD model {model}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to load SD model: {str(e)}")
+        return {"status": "loaded", "model": public_model_name(model), "backend": "sd-server"}
 
     # Check if model exists
     manifest_path = manifest_path_for_model(model)

@@ -9,12 +9,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabBtnProfiles = document.getElementById('tab-btn-profiles');
     const tabBtnRequests = document.getElementById('tab-btn-requests');
     const tabBtnDocs = document.getElementById('tab-btn-docs');
+    const tabBtnSd = document.getElementById('tab-btn-sd');
     const viewMonitor = document.getElementById('view-monitor');
     const viewGeneral = document.getElementById('view-general');
     const viewShared = document.getElementById('view-shared');
     const viewProfiles = document.getElementById('view-profiles');
     const viewRequests = document.getElementById('view-requests');
     const viewDocs = document.getElementById('view-docs');
+    const viewImageStudio = document.getElementById('view-image-studio');
 
     // Controls Elements
     const connectionStatusBadge = document.getElementById('connection-status-badge');
@@ -146,7 +148,8 @@ document.addEventListener('DOMContentLoaded', () => {
         tabBtnProfiles.classList.remove('active');
         tabBtnRequests.classList.remove('active');
         tabBtnDocs.classList.remove('active');
-        
+        tabBtnSd.classList.remove('active');
+
         // Hide views
         viewMonitor.classList.add('d-none');
         viewGeneral.classList.add('d-none');
@@ -154,6 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
         viewProfiles.classList.add('d-none');
         viewRequests.classList.add('d-none');
         viewDocs.classList.add('d-none');
+        viewImageStudio.classList.add('d-none');
         
         // Stop both polls to start clean
         stopMonitorPolling();
@@ -184,6 +188,10 @@ document.addEventListener('DOMContentLoaded', () => {
             tabBtnDocs.classList.add('active');
             viewDocs.classList.remove('d-none');
             setupDocsMenuHandlers();
+        } else if (tabName === 'sd') {
+            tabBtnSd.classList.add('active');
+            viewImageStudio.classList.remove('d-none');
+            loadSdModels();
         }
         document.dispatchEvent(new CustomEvent('tabChanged', { detail: tabName }));
     }
@@ -194,6 +202,143 @@ document.addEventListener('DOMContentLoaded', () => {
     tabBtnProfiles.addEventListener('click', () => switchTab('profiles'));
     tabBtnRequests.addEventListener('click', () => switchTab('requests'));
     tabBtnDocs.addEventListener('click', () => switchTab('docs'));
+    tabBtnSd.addEventListener('click', () => switchTab('sd'));
+
+    // ─── Image Studio (Stable Diffusion) ───────────────────────────────────
+    async function loadSdModels() {
+        const sel = document.getElementById('sd-model-select');
+        if (!sel) return;
+        try {
+            const res = await fetch('/api/sd/models');
+            const data = await res.json();
+            const models = (data.data || []).map(m => m.name);
+            if (models.length === 0) {
+                sel.innerHTML = '<option value="">No image models found</option>';
+                return;
+            }
+            sel.innerHTML = models.map(n => `<option value="${n}">${n}</option>`).join('');
+        } catch (e) {
+            sel.innerHTML = '<option value="">Error loading models</option>';
+            logToTerminal('Failed to load SD models: ' + e.message, 'error');
+        }
+    }
+
+    const sdLoadBtn = document.getElementById('sd-load-btn');
+    const sdUnloadBtn = document.getElementById('sd-unload-btn');
+    const sdStatus = document.getElementById('sd-status');
+    const sdEditBtn = document.getElementById('sd-edit-btn');
+    const sdEditStatus = document.getElementById('sd-edit-status');
+    const sdResults = document.getElementById('sd-results');
+    const sdClearResults = document.getElementById('sd-clear-results');
+
+    if (sdClearResults) {
+        sdClearResults.addEventListener('click', () => {
+            if (sdResults) sdResults.innerHTML = '';
+            if (sdEditStatus) sdEditStatus.textContent = 'Results cleared.';
+        });
+    }
+
+    if (sdLoadBtn) {
+        sdLoadBtn.addEventListener('click', async () => {
+            const model = document.getElementById('sd-model-select').value;
+            if (!model) { sdStatus.textContent = 'Select a model first.'; return; }
+            sdStatus.textContent = `Loading ${model} into Stable Diffusion...`;
+            sdLoadBtn.disabled = true;
+            try {
+                const res = await fetch('/api/sd/load', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    sdStatus.textContent = `✅ Loaded: ${model}`;
+                } else {
+                    sdStatus.textContent = `❌ ${data.error || 'Failed to load model'}`;
+                }
+            } catch (e) {
+                sdStatus.textContent = `❌ ${e.message}`;
+            } finally {
+                sdLoadBtn.disabled = false;
+            }
+        });
+    }
+
+    if (sdUnloadBtn) {
+        sdUnloadBtn.addEventListener('click', async () => {
+            sdStatus.textContent = 'Unloading SD model...';
+            try {
+                const res = await fetch('/api/sd/unload', { method: 'POST' });
+                const data = await res.json();
+                sdStatus.textContent = data.status === 'success' ? '⏏️ Unloaded.' : `❌ ${data.error || 'Failed'}`;
+            } catch (e) {
+                sdStatus.textContent = `❌ ${e.message}`;
+            }
+        });
+    }
+
+    if (sdEditBtn) {
+        sdEditBtn.addEventListener('click', async () => {
+            const model = document.getElementById('sd-model-select').value;
+            const fileInput = document.getElementById('sd-edit-image');
+            const prompt = document.getElementById('sd-edit-prompt').value.trim();
+            const size = document.getElementById('sd-edit-size').value.trim();
+            const n = document.getElementById('sd-edit-n').value;
+            const strength = document.getElementById('sd-edit-strength').value;
+            const negative = document.getElementById('sd-edit-negative').value.trim();
+            if (!model) { sdEditStatus.textContent = 'Load an image model first.'; return; }
+            if (!fileInput.files || fileInput.files.length === 0) { sdEditStatus.textContent = 'Choose a source image.'; return; }
+            if (!prompt) { sdEditStatus.textContent = 'Enter an edit prompt.'; return; }
+
+            const fullPrompt = `${prompt}<sd_cpp_extra_args>{"strength": ${parseFloat(strength) || 0.45}, "negative_prompt": "${negative.replace(/"/g, '\\"')}"}</sd_cpp_extra_args>`;
+
+            const fd = new FormData();
+            fd.append('model', model);
+            fd.append('prompt', fullPrompt);
+            fd.append('size', size);
+            fd.append('n', n);
+            fd.append('image', fileInput.files[0]);
+
+            sdEditStatus.textContent = 'Editing image (this can take a while)...';
+            sdEditBtn.disabled = true;
+            try {
+                const res = await fetch('/api/sd/edit', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (res.ok && data.data) {
+                    sdResults.innerHTML = '';
+                    data.data.forEach(item => {
+                        if (item.b64_json) {
+                            const wrap = document.createElement('a');
+                            wrap.href = 'data:image/png;base64,' + item.b64_json;
+                            wrap.download = 'edit_result.png';
+                            wrap.title = 'Click to download PNG';
+                            wrap.style.display = 'inline-block';
+                            const img = document.createElement('img');
+                            img.src = wrap.href;
+                            img.style.maxWidth = '320px';
+                            img.style.borderRadius = '8px';
+                            img.style.border = '1px solid var(--border-color)';
+                            wrap.appendChild(img);
+                            sdResults.appendChild(wrap);
+                        } else if (item.url) {
+                            const a = document.createElement('a');
+                            a.href = item.url;
+                            a.textContent = item.url;
+                            a.target = '_blank';
+                            sdResults.appendChild(a);
+                        }
+                    });
+                    sdEditStatus.textContent = `✅ Edited ${data.data.length} image(s).`;
+                } else {
+                    sdEditStatus.textContent = `❌ ${data.error || 'Edit failed'}`;
+                }
+            } catch (e) {
+                sdEditStatus.textContent = `❌ ${e.message}`;
+            } finally {
+                sdEditBtn.disabled = false;
+            }
+        });
+    }
 
     let docsMenuSetup = false;
     function setupDocsMenuHandlers() {
@@ -3838,6 +3983,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const pullConsoleLog = document.getElementById('pull-console-log');
     const btnPullStop = document.getElementById('btn-pull-stop');
     const btnPullCancel = document.getElementById('btn-pull-cancel');
+    const modelSearchType = document.getElementById('model-search-type');
+    const searchResultCount = document.getElementById('search-result-count');
 
     let currentHfRepo = "";
 
@@ -3888,6 +4035,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (searchLoading) searchLoading.classList.remove('d-none');
         if (searchResultsContainer) searchResultsContainer.innerHTML = '';
         if (hfFilesContainer) hfFilesContainer.classList.add('d-none');
+        if (searchResultCount) searchResultCount.textContent = '';
 
         try {
             const res = await fetch('/api/models/search', {
@@ -3895,7 +4043,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     query: query,
-                    source: modelSearchSource?.value || 'all'
+                    source: modelSearchSource?.value || 'all',
+                    type: modelSearchType?.value || 'all'
                 })
             });
 
@@ -3910,9 +4059,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const results = data.results || [];
+            if (searchResultCount) searchResultCount.textContent = `${results.length} result${results.length !== 1 ? 's' : ''}`;
+
             if (results.length === 0) {
                 if (searchResultsContainer) {
-                    searchResultsContainer.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:2rem;">No matching models found. Try a different query.</div>`;
+                    searchResultsContainer.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:2rem;">No matching models found. Try a different query or type filter.</div>`;
                 }
                 return;
             }
@@ -3920,136 +4071,144 @@ document.addEventListener('DOMContentLoaded', () => {
             if (searchResultsContainer) {
                 searchResultsContainer.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem; padding: 0.25rem; max-height: 350px; overflow-y: auto;';
                 searchResultsContainer.innerHTML = '';
+
                 results.forEach(item => {
+                    const isSd = item.type === 'stable-diffusion';
+
+                    // Card base — tinted differently for SD vs LLM
                     const card = document.createElement('div');
-                    card.style.cssText = 'background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.75rem; transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;';
-                    
-                    // Hover dynamic effects
+                    card.style.cssText = isSd
+                        ? 'background: rgba(234, 88, 12, 0.07); border: 1px solid rgba(234, 88, 12, 0.18); border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.75rem; transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;'
+                        : 'background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.75rem; transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;';
+
+                    const hoverBorder = isSd ? 'rgba(251, 146, 60, 0.4)' : 'rgba(139, 92, 246, 0.3)';
+                    const hoverShadow = isSd
+                        ? '0 8px 20px rgba(0,0,0,0.3), 0 0 10px rgba(234,88,12,0.15)'
+                        : '0 8px 20px rgba(0,0,0,0.3), 0 0 10px rgba(139,92,246,0.1)';
                     card.addEventListener('mouseenter', () => {
                         card.style.transform = 'translateY(-2px)';
-                        card.style.borderColor = 'rgba(139, 92, 246, 0.3)';
-                        card.style.boxShadow = '0 8px 20px rgba(0, 0, 0, 0.3), 0 0 10px rgba(139, 92, 246, 0.1)';
+                        card.style.borderColor = hoverBorder;
+                        card.style.boxShadow = hoverShadow;
                     });
                     card.addEventListener('mouseleave', () => {
                         card.style.transform = 'none';
-                        card.style.borderColor = 'rgba(255, 255, 255, 0.07)';
+                        card.style.borderColor = isSd ? 'rgba(234,88,12,0.18)' : 'rgba(255,255,255,0.07)';
                         card.style.boxShadow = 'none';
                     });
 
-                    // Top section (Title, Source Badge)
+                    // ── Header: name + badges ──
                     const header = document.createElement('div');
                     header.style.cssText = 'display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem;';
-                    
+
                     const titleWrapper = document.createElement('div');
-                    titleWrapper.style.cssText = 'display: flex; flex-direction: column; min-width: 0; flex: 1;';
-                    
+                    titleWrapper.style.cssText = 'display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 0.25rem;';
+
                     const nameSpan = document.createElement('span');
                     nameSpan.style.cssText = 'color: white; font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;';
                     nameSpan.textContent = item.name;
                     nameSpan.title = item.name;
                     titleWrapper.appendChild(nameSpan);
 
+                    // Type badge (LLM or Stable Diffusion)
+                    const typeBadge = document.createElement('span');
+                    if (isSd) {
+                        typeBadge.style.cssText = 'background: rgba(234,88,12,0.15); color: #fb923c; border: 1px solid rgba(234,88,12,0.3); font-size: 0.6rem; padding: 0.1rem 0.35rem; border-radius: 20px; font-weight: 600; display: inline-flex; align-items: center; gap: 0.2rem; width: fit-content;';
+                        typeBadge.innerHTML = '🎨 Stable Diffusion';
+                    } else {
+                        typeBadge.style.cssText = 'background: rgba(99,102,241,0.12); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.25); font-size: 0.6rem; padding: 0.1rem 0.35rem; border-radius: 20px; font-weight: 600; display: inline-flex; align-items: center; gap: 0.2rem; width: fit-content;';
+                        typeBadge.innerHTML = '🤖 Language Model';
+                    }
+                    titleWrapper.appendChild(typeBadge);
+
+                    // Source badge (Ollama / HF)
                     const sourceBadge = document.createElement('span');
-                    sourceBadge.style.cssText = item.source === 'ollama' 
-                        ? 'background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.25); font-size: 0.65rem; padding: 0.15rem 0.4rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500; white-space: nowrap;'
-                        : 'background: rgba(37, 99, 235, 0.15); color: #60a5fa; border: 1px solid rgba(37, 99, 235, 0.25); font-size: 0.65rem; padding: 0.15rem 0.4rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500; white-space: nowrap;';
-                    
-                    const sourceIcon = document.createElement('span');
-                    sourceIcon.textContent = item.source === 'ollama' ? '🦙' : '🤗';
-                    sourceBadge.appendChild(sourceIcon);
-                    
-                    const sourceText = document.createTextNode(item.source === 'ollama' ? ' Ollama' : ' HF GGUF');
-                    sourceBadge.appendChild(sourceText);
+                    sourceBadge.style.cssText = item.source === 'ollama'
+                        ? 'background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.25); font-size: 0.65rem; padding: 0.15rem 0.4rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500; white-space: nowrap;'
+                        : 'background: rgba(37,99,235,0.15); color: #60a5fa; border: 1px solid rgba(37,99,235,0.25); font-size: 0.65rem; padding: 0.15rem 0.4rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500; white-space: nowrap;';
+                    sourceBadge.textContent = item.source === 'ollama' ? '🦙 Ollama' : '🤗 HF';
 
                     header.appendChild(titleWrapper);
                     header.appendChild(sourceBadge);
 
-                    // Middle section (Description / Stats)
+                    // ── Body: description + stats pills ──
                     const body = document.createElement('div');
-                    body.style.cssText = 'flex: 1; display: flex; flex-direction: column; gap: 0.5rem;';
+                    body.style.cssText = 'flex: 1; display: flex; flex-direction: column; gap: 0.4rem;';
 
                     const descDiv = document.createElement('p');
-                    descDiv.style.cssText = 'font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; min-height: 2.85rem;';
-                    
+                    descDiv.style.cssText = 'font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;';
+
                     if (item.source === 'huggingface') {
-                        const match = item.description.match(/Downloads:\s*([^\s|]+)\s*\|\s*Likes:\s*([^\s|]+)(?:\s*\|\s*Tags:\s*(.*))?/i);
-                        if (match) {
-                            const authorMatch = item.description.match(/repository by ([^.]+)\./i);
-                            const author = authorMatch ? authorMatch[1] : "HF Author";
-                            
-                            descDiv.textContent = `GGUF repository by ${author}.`;
-                            
-                            const statsWrapper = document.createElement('div');
-                            statsWrapper.style.cssText = 'display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.25rem;';
-                            
+                        // Author line
+                        const author = item.author || 'HF Author';
+                        descDiv.textContent = item.description.startsWith('[Direct Match]')
+                            ? `⭐ Direct match · by ${author}`
+                            : `Repository by ${author}`;
+
+                        const statsWrapper = document.createElement('div');
+                        statsWrapper.style.cssText = 'display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.1rem;';
+
+                        const pillStyle = 'background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.65rem; color: #94a3b8; display: inline-flex; align-items: center; gap: 0.2rem;';
+
+                        if (item.downloads != null) {
                             const dlPill = document.createElement('span');
-                            dlPill.style.cssText = 'background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.65rem; color: #94a3b8; display: inline-flex; align-items: center; gap: 0.25rem;';
-                            dlPill.innerHTML = `📥 <span style="color:#cbd5e1; font-weight:500;">${match[1]}</span>`;
-                            
-                            const likesPill = document.createElement('span');
-                            likesPill.style.cssText = 'background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.65rem; color: #94a3b8; display: inline-flex; align-items: center; gap: 0.25rem;';
-                            likesPill.innerHTML = `❤️ <span style="color:#cbd5e1; font-weight:500;">${match[2]}</span>`;
-
+                            dlPill.style.cssText = pillStyle;
+                            dlPill.innerHTML = `📥 <span style="color:#cbd5e1;font-weight:500;">${Number(item.downloads).toLocaleString()}</span>`;
                             statsWrapper.appendChild(dlPill);
-                            statsWrapper.appendChild(likesPill);
-
-                            if (match[3] && match[3].trim()) {
-                                const tagsPill = document.createElement('span');
-                                tagsPill.style.cssText = 'background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.65rem; color: #94a3b8; display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;';
-                                tagsPill.innerHTML = `🏷️ <span style="color:#cbd5e1;">${match[3]}</span>`;
-                                statsWrapper.appendChild(tagsPill);
-                            }
-                            
-                            body.appendChild(descDiv);
-                            body.appendChild(statsWrapper);
-                        } else {
-                            descDiv.textContent = item.description;
-                            body.appendChild(descDiv);
                         }
+                        if (item.likes != null) {
+                            const likesPill = document.createElement('span');
+                            likesPill.style.cssText = pillStyle;
+                            likesPill.innerHTML = `❤️ <span style="color:#cbd5e1;font-weight:500;">${Number(item.likes).toLocaleString()}</span>`;
+                            statsWrapper.appendChild(likesPill);
+                        }
+                        if (item.tags && item.tags.length > 0) {
+                            item.tags.slice(0, 3).forEach(tag => {
+                                const tagPill = document.createElement('span');
+                                tagPill.style.cssText = pillStyle + ' max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                                tagPill.textContent = `🏷️ ${tag}`;
+                                statsWrapper.appendChild(tagPill);
+                            });
+                        }
+
+                        body.appendChild(descDiv);
+                        body.appendChild(statsWrapper);
                     } else {
                         descDiv.textContent = item.description || 'No description provided.';
                         body.appendChild(descDiv);
                     }
 
-                    // Bottom section (Actions)
+                    // ── Footer: action button ──
                     const footer = document.createElement('div');
-                    footer.style.cssText = 'display: flex; justify-content: flex-end; align-items: center; margin-top: auto; padding-top: 0.5rem; border-top: 1px solid rgba(255, 255, 255, 0.05);';
+                    footer.style.cssText = 'display: flex; justify-content: flex-end; align-items: center; margin-top: auto; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.05);';
 
                     const actionBtn = document.createElement('button');
                     actionBtn.className = 'btn';
+
+                    const sdBtnStyle = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#c2410c; border-color:#c2410c; color:white; border-radius:6px; font-weight:500; width:100%; text-align:center; display:flex; align-items:center; justify-content:center; gap:0.25rem; cursor:pointer; transition: background 0.2s, transform 0.1s;';
+                    const llmOllamaBtnStyle = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#059669; border-color:#059669; color:white; border-radius:6px; font-weight:500; width:100%; text-align:center; display:flex; align-items:center; justify-content:center; gap:0.25rem; cursor:pointer; transition: background 0.2s, transform 0.1s;';
+                    const llmHfBtnStyle = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#2563eb; border-color:#2563eb; color:white; border-radius:6px; font-weight:500; width:100%; text-align:center; display:flex; align-items:center; justify-content:center; gap:0.25rem; cursor:pointer; transition: background 0.2s, transform 0.1s;';
+
                     if (item.source === 'ollama') {
-                        actionBtn.style.cssText = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#059669; border-color:#059669; color:white; border-radius:6px; font-weight: 500; transition: background 0.2s, transform 0.1s; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.25rem; cursor: pointer;';
+                        actionBtn.style.cssText = llmOllamaBtnStyle;
                         actionBtn.innerHTML = '📂 View Available Tags';
-                        actionBtn.addEventListener('click', () => {
-                            showOllamaModelTags(item.name);
-                        });
+                        actionBtn.addEventListener('click', () => showOllamaModelTags(item.name));
+                        actionBtn.addEventListener('mouseenter', () => { actionBtn.style.background = '#047857'; actionBtn.style.transform = 'scale(1.01)'; });
+                        actionBtn.addEventListener('mouseleave', () => { actionBtn.style.background = '#059669'; actionBtn.style.transform = 'none'; });
+                    } else if (isSd) {
+                        actionBtn.style.cssText = sdBtnStyle;
+                        actionBtn.innerHTML = '🎨 Browse Model Files';
+                        actionBtn.addEventListener('click', () => showHfRepoFiles(item.name, 'stable-diffusion'));
+                        actionBtn.addEventListener('mouseenter', () => { actionBtn.style.background = '#9a3412'; actionBtn.style.transform = 'scale(1.01)'; });
+                        actionBtn.addEventListener('mouseleave', () => { actionBtn.style.background = '#c2410c'; actionBtn.style.transform = 'none'; });
                     } else {
-                        actionBtn.style.cssText = 'font-size:0.75rem; padding:0.35rem 0.75rem; background:#2563eb; border-color:#2563eb; color:white; border-radius:6px; font-weight: 500; transition: background 0.2s, transform 0.1s; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.25rem; cursor: pointer;';
+                        actionBtn.style.cssText = llmHfBtnStyle;
                         actionBtn.innerHTML = '📂 View GGUF Files';
-                        actionBtn.addEventListener('click', () => {
-                            showHfRepoFiles(item.name);
-                        });
+                        actionBtn.addEventListener('click', () => showHfRepoFiles(item.name, 'llm'));
+                        actionBtn.addEventListener('mouseenter', () => { actionBtn.style.background = '#1d4ed8'; actionBtn.style.transform = 'scale(1.01)'; });
+                        actionBtn.addEventListener('mouseleave', () => { actionBtn.style.background = '#2563eb'; actionBtn.style.transform = 'none'; });
                     }
 
-                    actionBtn.addEventListener('mouseenter', () => {
-                        actionBtn.style.transform = 'scale(1.01)';
-                        if (item.source === 'ollama') {
-                            actionBtn.style.background = '#047857';
-                        } else {
-                            actionBtn.style.background = '#1d4ed8';
-                        }
-                    });
-                    actionBtn.addEventListener('mouseleave', () => {
-                        actionBtn.style.transform = 'none';
-                        if (item.source === 'ollama') {
-                            actionBtn.style.background = '#059669';
-                        } else {
-                            actionBtn.style.background = '#2563eb';
-                        }
-                    });
-
                     footer.appendChild(actionBtn);
-
                     card.appendChild(header);
                     card.appendChild(body);
                     card.appendChild(footer);
@@ -4162,14 +4321,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function showHfRepoFiles(repoName) {
+    async function showHfRepoFiles(repoName, hintType = 'llm') {
         currentHfRepo = repoName;
         if (searchResultsContainer) searchResultsContainer.classList.add('d-none');
-        if (hfFilesContainer) {
-            hfFilesContainer.classList.remove('d-none');
-        }
+        if (hfFilesContainer) hfFilesContainer.classList.remove('d-none');
         if (hfFilesTitle) {
+            const typeLabel = hintType === 'stable-diffusion' ? '🎨 Stable Diffusion' : '🤖 GGUF';
             hfFilesTitle.textContent = `Repository: ${repoName}`;
+            hfFilesTitle.title = `Type: ${typeLabel}`;
         }
         if (hfFilesList) {
             hfFilesList.innerHTML = `<div style="text-align:center; padding:1.5rem; color:var(--text-muted);"><div class="loader" style="width:20px; height:20px; border-width:2px; display:inline-block;"></div><br>Fetching files from Hugging Face...</div>`;
@@ -4187,9 +4346,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const files = data.files || [];
+            const repoType = data.repo_type || hintType;  // authoritative type from backend
+            const isSDRepo = repoType === 'stable-diffusion';
+
+            // Update title with confirmed type
+            if (hfFilesTitle) {
+                const typeBadgeHtml = isSDRepo
+                    ? '<span style="font-size:0.65rem; background:rgba(234,88,12,0.15); color:#fb923c; border:1px solid rgba(234,88,12,0.3); padding:0.1rem 0.35rem; border-radius:20px; font-weight:600; margin-left:0.5rem;">🎨 Stable Diffusion</span>'
+                    : '<span style="font-size:0.65rem; background:rgba(99,102,241,0.12); color:#a5b4fc; border:1px solid rgba(99,102,241,0.25); padding:0.1rem 0.35rem; border-radius:20px; font-weight:600; margin-left:0.5rem;">🤖 Language Model</span>';
+                hfFilesTitle.innerHTML = `Repository: <span style="color:white;">${repoName}</span>${typeBadgeHtml}`;
+            }
+
             if (files.length === 0) {
                 if (hfFilesList) {
-                    hfFilesList.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:1rem;">No GGUF files found in this repository.</div>`;
+                    hfFilesList.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:1rem;">No compatible model files found in this repository.</div>`;
                 }
                 return;
             }
@@ -4197,51 +4367,82 @@ document.addEventListener('DOMContentLoaded', () => {
             if (hfFilesList) {
                 hfFilesList.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0.75rem; padding: 0.25rem; max-height: 250px; overflow-y: auto;';
                 hfFilesList.innerHTML = '';
+
                 files.forEach(file => {
+                    const isFileSd = file.type === 'stable-diffusion';
+                    const isSafetensors = file.format === 'safetensors';
+
                     const card = document.createElement('div');
-                    card.style.cssText = 'background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; transition: border-color 0.2s, transform 0.2s;';
-                    
+                    card.style.cssText = isFileSd
+                        ? 'background: rgba(234,88,12,0.06); border: 1px solid rgba(234,88,12,0.18); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; transition: border-color 0.2s, transform 0.2s;'
+                        : 'background: rgba(30,41,59,0.45); border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; transition: border-color 0.2s, transform 0.2s;';
+
                     const top = document.createElement('div');
                     top.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:0.5rem;';
-                    
+
                     const nameSpan = document.createElement('span');
                     nameSpan.style.cssText = 'color: white; font-size: 0.75rem; font-family: monospace; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;';
                     nameSpan.textContent = file.filename;
                     nameSpan.title = file.filename;
-                    
-                    const sizeSpan = document.createElement('span');
-                    sizeSpan.style.cssText = 'font-size: 0.65rem; color: #94a3b8; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06); padding: 0.1rem 0.35rem; border-radius: 4px; font-weight: 500;';
-                    sizeSpan.textContent = file.size || 'Size unknown';
-                    
+
+                    const badgesDiv = document.createElement('div');
+                    badgesDiv.style.cssText = 'display:flex; gap:0.25rem; align-items:center; flex-shrink:0;';
+
+                    // Format badge (.gguf vs .safetensors)
+                    const fmtBadge = document.createElement('span');
+                    if (isSafetensors) {
+                        fmtBadge.style.cssText = 'font-size:0.6rem; color:#fb923c; background:rgba(234,88,12,0.15); border:1px solid rgba(234,88,12,0.3); padding:0.1rem 0.3rem; border-radius:4px; font-weight:600;';
+                        fmtBadge.textContent = '.safetensors';
+                    } else {
+                        fmtBadge.style.cssText = 'font-size:0.6rem; color:#a5b4fc; background:rgba(99,102,241,0.12); border:1px solid rgba(99,102,241,0.25); padding:0.1rem 0.3rem; border-radius:4px; font-weight:600;';
+                        fmtBadge.textContent = '.gguf';
+                    }
+                    badgesDiv.appendChild(fmtBadge);
+
+                    // Size badge
+                    if (file.size) {
+                        const sizeSpan = document.createElement('span');
+                        sizeSpan.style.cssText = 'font-size:0.65rem; color:#94a3b8; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); padding:0.1rem 0.35rem; border-radius:4px; font-weight:500;';
+                        sizeSpan.textContent = file.size;
+                        badgesDiv.appendChild(sizeSpan);
+                    }
+
                     top.appendChild(nameSpan);
-                    top.appendChild(sizeSpan);
-                    
+                    top.appendChild(badgesDiv);
+
                     const footer = document.createElement('div');
-                    footer.style.cssText = 'display:flex; justify-content:flex-end; border-top: 1px solid rgba(255, 255, 255, 0.04); padding-top: 0.4rem; margin-top: auto;';
-                    
+                    footer.style.cssText = 'display:flex; justify-content:flex-end; border-top:1px solid rgba(255,255,255,0.04); padding-top:0.4rem; margin-top:auto;';
+
                     const pullBtn = document.createElement('button');
                     pullBtn.className = 'btn btn-primary';
-                    pullBtn.style.cssText = 'font-size: 0.7rem; padding: 0.3rem 0.65rem; background: #059669; border-color: #059669; color: white; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500; cursor: pointer; transition: background 0.2s, transform 0.1s; width: 100%; justify-content: center;';
-                    pullBtn.innerHTML = '📥 Pull Quantization';
-                    
-                    pullBtn.addEventListener('mouseenter', () => {
-                        pullBtn.style.transform = 'scale(1.01)';
-                        pullBtn.style.background = '#047857';
-                    });
-                    pullBtn.addEventListener('mouseleave', () => {
-                        pullBtn.style.transform = 'none';
-                        pullBtn.style.background = '#059669';
-                    });
-                    
+
+                    if (isFileSd) {
+                        pullBtn.style.cssText = 'font-size:0.7rem; padding:0.3rem 0.65rem; background:#c2410c; border-color:#c2410c; color:white; border-radius:4px; display:inline-flex; align-items:center; gap:0.25rem; font-weight:500; cursor:pointer; width:100%; justify-content:center;';
+                        pullBtn.innerHTML = '🎨 Download for Diffusion';
+                        pullBtn.addEventListener('mouseenter', () => { pullBtn.style.background = '#9a3412'; });
+                        pullBtn.addEventListener('mouseleave', () => { pullBtn.style.background = '#c2410c'; });
+                    } else {
+                        pullBtn.style.cssText = 'font-size:0.7rem; padding:0.3rem 0.65rem; background:#059669; border-color:#059669; color:white; border-radius:4px; display:inline-flex; align-items:center; gap:0.25rem; font-weight:500; cursor:pointer; width:100%; justify-content:center;';
+                        pullBtn.innerHTML = '📥 Download for LLM';
+                        pullBtn.addEventListener('mouseenter', () => { pullBtn.style.background = '#047857'; });
+                        pullBtn.addEventListener('mouseleave', () => { pullBtn.style.background = '#059669'; });
+                    }
+
                     pullBtn.addEventListener('click', () => {
-                        const defaultAlias = file.filename.replace(/\.gguf$/i, '').toLowerCase().replace(/[^a-z0-9\-]/g, '-');
-                        const alias = prompt(`Enter a friendly local name/alias for this model:\n(Leave empty to use: "${defaultAlias}")`);
-                        if (alias === null) return;
-                        
+                        const baseName = file.filename.replace(/\.(gguf|safetensors)$/i, '').toLowerCase().replace(/[^a-z0-9\-]/g, '-');
+                        let alias;
+                        if (isFileSd) {
+                            alias = prompt(`Enter a local name for this Stable Diffusion model:\n(Leave empty to use: "${baseName}")`);
+                        } else {
+                            alias = prompt(`Enter a friendly local name/alias for this model:\n(Leave empty to use: "${baseName}")`);
+                        }
+                        if (alias === null) return;  // user pressed Cancel
+
                         const ref = `hf://${repoName}/${file.filename}`;
-                        pullModel(ref, 'huggingface', alias || defaultAlias);
+                        // Always use 'huggingface' as source — puller auto-detects SD vs LLM from the file
+                        pullModel(ref, 'huggingface', alias || baseName);
                     });
-                    
+
                     footer.appendChild(pullBtn);
                     card.appendChild(top);
                     card.appendChild(footer);

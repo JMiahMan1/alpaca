@@ -662,6 +662,81 @@ def unload_sd_model_api():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/sd/health", methods=["GET"])
+def sd_health_api():
+    """Proxy sd-server health/active-model info from the proxy."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{PROXY_URL}/admin/sd/health")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e), "online": False}), 500
+
+
+@app.route("/api/sd/models", methods=["GET"])
+def sd_models_api():
+    """List locally available Stable Diffusion / image models."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{PROXY_URL}/v1/images/models")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e), "data": []}), 500
+
+
+@app.route("/api/sd/load", methods=["POST"])
+def sd_load_api():
+    """Load a Stable Diffusion model into the sd-server backend (no generation)."""
+    import httpx
+
+    data = request.get_json() or {}
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(f"{PROXY_URL}/v1/images/models/load", json=data)
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sd/generate", methods=["POST"])
+def sd_generate_api():
+    """Forward an image generation request to the proxy (auto-loads SD model)."""
+    import httpx
+
+    data = request.get_json() or {}
+    try:
+        with httpx.Client(timeout=600.0) as client:
+            resp = client.post(f"{PROXY_URL}/v1/images/generations", json=data)
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sd/edit", methods=["POST"])
+def sd_edit_api():
+    """Forward a multipart image-edit request to the proxy (auto-loads SD model)."""
+    import httpx
+
+    try:
+        data = {}
+        files = {}
+        for key in request.form:
+            vals = request.form.getlist(key)
+            data[key] = vals[0] if len(vals) == 1 else vals
+        for key in request.files:
+            f = request.files[key]
+            files[key] = (f.filename, f.read(), f.mimetype)
+        with httpx.Client(timeout=600.0) as client:
+            resp = client.post(f"{PROXY_URL}/v1/images/edits", data=data, files=files)
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/run", methods=["POST"])
 def start_benchmark():
     """Start standard benchmarking process"""
@@ -2034,9 +2109,49 @@ def search_models():
 
     import httpx
 
+    # Keywords that identify Stable Diffusion / image-generation models
+    _SD_NAME_KEYWORDS = [
+        "stable-diffusion",
+        "sdxl",
+        "sd1.",
+        "sd2.",
+        "sd3",
+        "flux",
+        "pony",
+        "photoreal",
+        "sd-",
+        "illustrious",
+        "diffusion",
+        "imagen",
+        "dalle",
+        "kandinsky",
+        "playground",
+        "waifu-diffusion",
+    ]
+    _SD_HF_TAGS = {
+        "diffusers",
+        "stable-diffusion",
+        "text-to-image",
+        "image-generation",
+        "stable-diffusion-xl",
+        "stable-diffusion-3",
+        "flux",
+        "image-to-image",
+    }
+
+    def _detect_model_type(name: str, tags: list) -> str:
+        """Returns 'stable-diffusion' or 'llm' based on name and HF tags."""
+        name_lower = name.lower()
+        if any(kw in name_lower for kw in _SD_NAME_KEYWORDS):
+            return "stable-diffusion"
+        if any(t in _SD_HF_TAGS for t in tags):
+            return "stable-diffusion"
+        return "llm"
+
     data = request.get_json() or {}
     query = data.get("query")
     source = data.get("source", "all")  # "ollama", "huggingface", or "all"
+    type_filter = data.get("type", "all")  # "all", "llm", "stable-diffusion"
 
     if not query:
         return jsonify({"error": "query is required"}), 400
@@ -2053,41 +2168,76 @@ def search_models():
                 pattern = r'href="/library/([^"]+)"[^>]*>.*?<span[^>]*>([^<]+)</span>.*?<p class="[^"]*break-words[^"]*">([^<]+)</p>'
                 matches = re.findall(pattern, html_content, re.DOTALL)
                 for library_name, span_name, desc in matches:
+                    clean_name = library_name.strip()
                     clean_desc = unescape(desc.strip().replace("\n", " "))
+                    model_type = _detect_model_type(clean_name, [])
                     results.append(
                         {
-                            "name": library_name.strip(),
+                            "name": clean_name,
                             "description": clean_desc,
                             "source": "ollama",
+                            "type": model_type,
+                            "downloads": None,
+                            "likes": None,
+                            "tags": [],
+                            "author": None,
                         }
                     )
         except Exception as e:
             print(f"Ollama search error: {e}")
 
-    # 2. Hugging Face Search
+    # 2. Hugging Face Search — include both GGUF (LLM) and all types (for SD)
     if source in ("huggingface", "all"):
         try:
-            url = f"https://huggingface.co/api/models?search={query}&filter=gguf&limit=20"
-            resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
-            if resp.status_code == 200:
-                hf_data = resp.json()
-                for model_item in hf_data:
-                    model_id = model_item.get("id")
-                    downloads = model_item.get("downloads", 0)
-                    likes = model_item.get("likes", 0)
-                    tags = model_item.get("tags", [])
-                    qwen_tags = [t for t in tags if t != "gguf"][:3]
-                    tag_str = ", ".join(qwen_tags) if qwen_tags else "GGUF"
+            # Search GGUF models (primarily LLMs)
+            url_gguf = f"https://huggingface.co/api/models?search={query}&filter=gguf&limit=20"
+            resp_gguf = httpx.get(url_gguf, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
 
-                    desc = f"GGUF repository by {model_item.get('author', 'HF author')}. Downloads: {downloads:,} | Likes: {likes:,} | Tags: {tag_str}"
+            # Also search for diffusers/SD models
+            url_sd = f"https://huggingface.co/api/models?search={query}&filter=diffusers&limit=10"
+            resp_sd = httpx.get(url_sd, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
 
-                    results.append(
-                        {
-                            "name": model_id,
-                            "description": desc,
-                            "source": "huggingface",
-                        }
-                    )
+            seen_ids: set = set()
+
+            def _process_hf_item(model_item: dict, forced_type: str | None = None) -> dict | None:
+                model_id = model_item.get("id")
+                if not model_id or model_id in seen_ids:
+                    return None
+                seen_ids.add(model_id)
+                tags = model_item.get("tags", [])
+                model_type = forced_type or _detect_model_type(model_id, tags)
+                downloads = model_item.get("downloads", 0)
+                likes = model_item.get("likes", 0)
+                author = model_item.get("author", "")
+                display_tags = [
+                    t
+                    for t in tags
+                    if t not in ("gguf", "diffusers", "transformers", "pytorch", "safetensors")
+                ][:5]
+                desc = f"Repository by {author}. Downloads: {downloads:,} | Likes: {likes:,}"
+                return {
+                    "name": model_id,
+                    "description": desc,
+                    "source": "huggingface",
+                    "type": model_type,
+                    "downloads": downloads,
+                    "likes": likes,
+                    "tags": display_tags,
+                    "author": author,
+                }
+
+            if resp_gguf.status_code == 200:
+                for item in resp_gguf.json():
+                    entry = _process_hf_item(item)
+                    if entry:
+                        results.append(entry)
+
+            if resp_sd.status_code == 200:
+                for item in resp_sd.json():
+                    entry = _process_hf_item(item, forced_type="stable-diffusion")
+                    if entry:
+                        results.append(entry)
+
         except Exception as e:
             print(f"Hugging Face search error: {e}")
 
@@ -2104,26 +2254,43 @@ def search_models():
             if resp.status_code == 200:
                 model_item = resp.json()
                 model_id = model_item.get("id")
-                # Avoid duplicate entries in list
-                if not any(r["name"] == model_id for r in results):
+                if model_id and not any(r["name"] == model_id for r in results):
+                    tags = model_item.get("tags", [])
+                    model_type = _detect_model_type(model_id, tags)
                     downloads = model_item.get("downloads", 0)
                     likes = model_item.get("likes", 0)
-                    tags = model_item.get("tags", [])
-                    qwen_tags = [t for t in tags if t != "gguf"][:3]
-                    tag_str = ", ".join(qwen_tags) if qwen_tags else "GGUF"
-                    desc = f"[Direct Match] GGUF repository by {model_item.get('author', 'HF author')}. Downloads: {downloads:,} | Likes: {likes:,} | Tags: {tag_str}"
+                    author = model_item.get("author", "")
+                    display_tags = [
+                        t
+                        for t in tags
+                        if t not in ("gguf", "diffusers", "transformers", "pytorch", "safetensors")
+                    ][:5]
                     results.insert(
-                        0, {"name": model_id, "description": desc, "source": "huggingface"}
+                        0,
+                        {
+                            "name": model_id,
+                            "description": f"[Direct Match] Repository by {author}. Downloads: {downloads:,} | Likes: {likes:,}",
+                            "source": "huggingface",
+                            "type": model_type,
+                            "downloads": downloads,
+                            "likes": likes,
+                            "tags": display_tags,
+                            "author": author,
+                        },
                     )
         except Exception as e:
             print(f"Precise HF lookup error: {e}")
+
+    # Apply optional type filter
+    if type_filter in ("llm", "stable-diffusion"):
+        results = [r for r in results if r.get("type") == type_filter]
 
     return jsonify({"results": results})
 
 
 @app.route("/api/models/huggingface/files", methods=["GET"])
 def get_hf_files():
-    """List .gguf files in a Hugging Face repository"""
+    """List downloadable model files (.gguf and .safetensors) in a Hugging Face repository"""
     repo = request.args.get("repo")
     if not repo:
         return jsonify({"error": "repo is required"}), 400
@@ -2145,20 +2312,65 @@ def get_hf_files():
             )
 
         model_info = resp.json()
+        tags = model_info.get("tags", [])
+        # Detect if this repo is a Stable Diffusion / image generation repo
+        _SD_HF_TAGS = {
+            "diffusers",
+            "stable-diffusion",
+            "text-to-image",
+            "image-generation",
+            "stable-diffusion-xl",
+            "flux",
+        }
+        _SD_NAME_KW = [
+            "stable-diffusion",
+            "sdxl",
+            "sd1.",
+            "sd2.",
+            "sd3",
+            "flux",
+            "pony",
+            "photoreal",
+            "sd-",
+            "illustrious",
+            "diffusion",
+        ]
+        is_sd_repo = any(t in _SD_HF_TAGS for t in tags) or any(
+            kw in repo.lower() for kw in _SD_NAME_KW
+        )
+
         siblings = model_info.get("siblings", [])
-        gguf_files = []
+        model_files = []
         for s in siblings:
             fname = s.get("rfilename", "")
-            if fname.endswith(".gguf"):
-                size = s.get("size")
-                size_str = ""
-                if size:
-                    if size > 1024**3:
-                        size_str = f"{size / (1024**3):.2f} GB"
-                    else:
-                        size_str = f"{size / (1024**2):.1f} MB"
-                gguf_files.append({"filename": fname, "size": size_str})
-        return jsonify({"files": gguf_files})
+            is_gguf = fname.endswith(".gguf")
+            is_safetensors = fname.endswith(".safetensors")
+
+            # Include .gguf for all repos; include .safetensors only for SD repos
+            if not is_gguf and not (is_sd_repo and is_safetensors):
+                continue
+
+            size = s.get("size")
+            size_str = ""
+            if size:
+                if size > 1024**3:
+                    size_str = f"{size / (1024**3):.2f} GB"
+                else:
+                    size_str = f"{size / (1024**2):.1f} MB"
+
+            file_type = "stable-diffusion" if (is_safetensors or is_sd_repo) else "llm"
+            model_files.append(
+                {
+                    "filename": fname,
+                    "size": size_str,
+                    "type": file_type,
+                    "format": "safetensors" if is_safetensors else "gguf",
+                }
+            )
+
+        return jsonify(
+            {"files": model_files, "repo_type": "stable-diffusion" if is_sd_repo else "llm"}
+        )
     except Exception as e:
         return jsonify({"error": f"Error fetching Hugging Face files: {str(e)}"}), 500
 

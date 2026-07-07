@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends docker-cli curl && rm -rf /var/lib/apt/lists/*
-RUN pip install fastapi uvicorn httpx psutil
+RUN pip install fastapi uvicorn httpx psutil python-multipart
 COPY alpaca-proxy.py .
 COPY alpaca-puller.py .
 COPY alpaca_puller.py .

@@ -1022,7 +1022,6 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resu
                 "sd-",
                 "illustrious",
                 "safetensors",
-                "qwen",
                 "qwen-image",
                 "qwen_image",
             ]
