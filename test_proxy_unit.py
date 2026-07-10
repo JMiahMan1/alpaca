@@ -24,6 +24,7 @@ REAL_FETCH_ROUTER_MODELS = alpaca_proxy.fetch_router_models
 REAL_ITER_LOCAL_MANIFESTS = alpaca_proxy.iter_local_manifests
 REAL_LOAD_LOCAL_MANIFEST = alpaca_proxy.load_local_manifest
 REAL_MANIFEST_MODEL_NAME = alpaca_proxy.manifest_model_name
+REAL_WAIT_FOR_SLOT = alpaca_proxy.wait_for_slot
 
 # Globally mock network/docker boundary endpoints to protect unit tests
 alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
@@ -1715,7 +1716,7 @@ def test_find_local_model_file_resolves_sd_not_llm():
     alpaca_proxy.manifest_model_name = REAL_MANIFEST_MODEL_NAME
     try:
         with tempfile.TemporaryDirectory() as base:
-            sd_path, sd_blob = _write_complete_manifest(
+            _, sd_blob = _write_complete_manifest(
                 base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion"
             )
             _write_complete_manifest(base, "tinyllama:latest", "llama")
@@ -1801,3 +1802,171 @@ async def test_images_generation_endpoint_routes_to_sd_server():
         alpaca_proxy.iter_local_manifests = orig_iter
         alpaca_proxy.manifest_model_name = orig_mn
         alpaca_proxy.client_sd_httpx = None
+
+
+class _SlotClient:
+    """Fake httpx.AsyncClient that returns a fixed /slots payload."""
+
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self._status = status_code
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, *args, **kwargs):
+        return MockResponse(self._payload, self._status)
+
+
+@pytest.mark.asyncio
+async def test_mark_release_request_queued_accounting():
+    """mark_request_queued/release_request_queued track queued_requests safely."""
+    saved = dict(alpaca_proxy.queued_requests)
+    saved_resolve = alpaca_proxy.resolve_router_model
+    try:
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.resolve_router_model = AsyncMock(
+            return_value={"backend_model": "sha256-abc"}
+        )
+        backend = await alpaca_proxy.mark_request_queued("my-model")
+        assert backend == "sha256-abc"
+        assert alpaca_proxy.queued_requests.get("sha256-abc") == 1
+        await alpaca_proxy.release_request_queued("sha256-abc")
+        assert alpaca_proxy.queued_requests.get("sha256-abc") == 0
+        # releasing a model that was never queued must be safe (no negative count)
+        await alpaca_proxy.release_request_queued("sha256-missing")
+        assert alpaca_proxy.queued_requests.get("sha256-missing", 0) == 0
+    finally:
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.queued_requests.update(saved)
+        alpaca_proxy.resolve_router_model = saved_resolve
+
+
+@pytest.mark.asyncio
+async def test_mark_request_queued_unresolvable_is_none():
+    """An unresolvable model name must not increment the queue."""
+    saved = alpaca_proxy.resolve_router_model
+    saved_q = dict(alpaca_proxy.queued_requests)
+    try:
+        alpaca_proxy.resolve_router_model = AsyncMock(side_effect=Exception("nope"))
+        alpaca_proxy.queued_requests.clear()
+        assert await alpaca_proxy.mark_request_queued("ghost") is None
+        assert alpaca_proxy.queued_requests == {}
+    finally:
+        alpaca_proxy.resolve_router_model = saved
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.queued_requests.update(saved_q)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_slot_admits_on_free_slot():
+    saved = alpaca_proxy._fetch_model_slots
+    saved_wait = alpaca_proxy.wait_for_slot
+    alpaca_proxy.wait_for_slot = REAL_WAIT_FOR_SLOT
+    try:
+        alpaca_proxy._fetch_model_slots = AsyncMock(
+            return_value=[{"id": 0, "is_processing": False}]
+        )
+        assert await alpaca_proxy.wait_for_slot("sha256-abc", timeout=0.3) is True
+    finally:
+        alpaca_proxy._fetch_model_slots = saved
+        alpaca_proxy.wait_for_slot = saved_wait
+
+
+@pytest.mark.asyncio
+async def test_wait_for_slot_blocks_when_all_processing():
+    saved = alpaca_proxy._fetch_model_slots
+    saved_wait = alpaca_proxy.wait_for_slot
+    alpaca_proxy.wait_for_slot = REAL_WAIT_FOR_SLOT
+    try:
+        alpaca_proxy._fetch_model_slots = AsyncMock(
+            return_value=[{"id": 0, "is_processing": True}]
+        )
+        assert await alpaca_proxy.wait_for_slot("sha256-abc", timeout=0.3) is False
+    finally:
+        alpaca_proxy._fetch_model_slots = saved
+        alpaca_proxy.wait_for_slot = saved_wait
+
+
+@pytest.mark.asyncio
+async def test_wait_for_slot_is_model_aware():
+    """A request only inspects slots for its own model, never a different one."""
+    saved = alpaca_proxy._fetch_model_slots
+    saved_wait = alpaca_proxy.wait_for_slot
+    alpaca_proxy.wait_for_slot = REAL_WAIT_FOR_SLOT
+
+    def side(model_id):
+        if model_id == "modelA":
+            return [{"id": 0, "is_processing": True}]
+        return [{"id": 0, "is_processing": False}]
+
+    try:
+        alpaca_proxy._fetch_model_slots = AsyncMock(side_effect=side)
+        # modelA's only slot is busy -> must wait and time out
+        assert await alpaca_proxy.wait_for_slot("modelA", timeout=0.3) is False
+        # modelB has a free slot -> admit immediately
+        assert await alpaca_proxy.wait_for_slot("modelB", timeout=0.3) is True
+    finally:
+        alpaca_proxy._fetch_model_slots = saved
+        alpaca_proxy.wait_for_slot = saved_wait
+
+
+@pytest.mark.asyncio
+async def test_fetch_model_slots_structured_list():
+    payload = {
+        "data": [
+            {"id": 0, "is_processing": False},
+            {"id": 1, "is_processing": True},
+        ]
+    }
+    client = _SlotClient(payload)
+    saved = alpaca_proxy.httpx.AsyncClient
+    alpaca_proxy.httpx.AsyncClient = lambda *a, **k: client
+    try:
+        result = await alpaca_proxy._fetch_model_slots("sha256-abc")
+        assert len(result) == 2
+        assert all(isinstance(s, dict) for s in result)
+        assert result[0]["is_processing"] is False
+        assert result[1]["is_processing"] is True
+    finally:
+        alpaca_proxy.httpx.AsyncClient = saved
+
+
+@pytest.mark.asyncio
+async def test_fetch_model_slots_list_of_strings():
+    client = _SlotClient(["slot0", "slot1"])
+    saved = alpaca_proxy.httpx.AsyncClient
+    alpaca_proxy.httpx.AsyncClient = lambda *a, **k: client
+    try:
+        result = await alpaca_proxy._fetch_model_slots("sha256-abc")
+        assert result == [
+            {"id": "slot0", "is_processing": True},
+            {"id": "slot1", "is_processing": True},
+        ]
+    finally:
+        alpaca_proxy.httpx.AsyncClient = saved
+
+
+@pytest.mark.asyncio
+async def test_fetch_model_slots_error_dict():
+    client = _SlotClient({"error": {"code": 500, "message": "boom"}})
+    saved = alpaca_proxy.httpx.AsyncClient
+    alpaca_proxy.httpx.AsyncClient = lambda *a, **k: client
+    try:
+        assert await alpaca_proxy._fetch_model_slots("sha256-abc") == []
+    finally:
+        alpaca_proxy.httpx.AsyncClient = saved
+
+
+@pytest.mark.asyncio
+async def test_fetch_model_slots_non_200_is_empty():
+    client = _SlotClient([{"id": 0}], status_code=503)
+    saved = alpaca_proxy.httpx.AsyncClient
+    alpaca_proxy.httpx.AsyncClient = lambda *a, **k: client
+    try:
+        assert await alpaca_proxy._fetch_model_slots("sha256-abc") == []
+    finally:
+        alpaca_proxy.httpx.AsyncClient = saved

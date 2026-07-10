@@ -302,11 +302,22 @@ Fetches loaded models in memory, their relative active sizes, their expiration k
 ---
 
 ### GET /admin/slots
-Retrieves deep speculative and evaluation slots statuses directly from the local `llama-server`.
+Retrieves the deep slot status (speculative/evaluation slots) directly from the child
+`llama-server` `/slots` endpoint. The proxy always targets the slot endpoint for the
+resolved `model` (router ID) query parameter and normalizes the response so it stays
+useful even when the server is mid-load or returns a speculative-decoding shape:
+
+- structured `slots` array (objects) → mapped directly
+- list-of-strings (speculative decoding) → reported as `raw_slots`
+- `{"error": ...}` payloads or non-200 statuses → surfaced under `error` rather than
+  crashing the endpoint
+
+This is the same source `wait_for_slot()` consults for shared-queue admission.
 
 * **Curl Example**:
   ```bash
   curl http://localhost:11434/admin/slots
+  curl "http://localhost:11434/admin/slots?model=qwen3.5-9b"
   ```
 
 ---

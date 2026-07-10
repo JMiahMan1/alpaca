@@ -10,3 +10,7 @@ venv/
 .benchmark_host/
 .agents/
 
+
+# build artifacts / runtime caches
+.sd-build/
+.slots-cache/

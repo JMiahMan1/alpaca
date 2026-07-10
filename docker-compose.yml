@@ -18,6 +18,11 @@ services:
       context: .
       dockerfile: Dockerfile.llama-server
     container_name: llama-server
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: always
     cap_add:
       - IPC_LOCK
@@ -139,6 +144,11 @@ services:
       context: .
       dockerfile: Dockerfile.sd-server
     container_name: sd-server
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: always
     cap_add:
       - IPC_LOCK
@@ -146,6 +156,15 @@ services:
       memlock: -1
     ports:
       - "8081:8081"
+    environment:
+      # Cap sd.cpp CPU threads so CPU-bound diffusion doesn't peg every core
+      # and thermally shut down weak-cooled hosts. Tune to your thermals.
+      - SD_CPU_THREADS=8
+      # GPU layer configuration (highly recommended for RTX 4060 8GB).
+      # Controls default layers offloaded to GPU for Qwen models.
+      - SD_GPU_LAYERS=40
+      # Enable verbose diagnostic and hardware detection reporting on startup.
+      - SD_DEBUG=true
     volumes:
       - /usr/share/ollama/.ollama/models:/models
       - ./.alpaca-router:/router-models
