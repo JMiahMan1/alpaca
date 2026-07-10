@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
 # Load .env file if present
@@ -20,7 +20,7 @@ def load_dotenv_custom():
     base_dir = Path(__file__).resolve().parent.parent
     dotenv_path = base_dir / ".env"
     if dotenv_path.exists():
-        with open(dotenv_path, "r") as f:
+        with open(dotenv_path) as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -49,6 +49,8 @@ from flask_socketio import SocketIO
 
 # Add project root to path if needed to import llm_benchmark_suite
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import contextlib
+
 from llm_benchmark_suite import LLMModelBenchmark
 from web.shared_llm_benchmark import SharedLLMModelBenchmark
 
@@ -76,7 +78,7 @@ puller_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py"
 )
 PROXY_URL = os.environ.get("PROXY_URL", "http://host.docker.internal:11434")
-active_pulls: Dict[str, Dict[str, Any]] = {}
+active_pulls: dict[str, dict[str, Any]] = {}
 active_pulls_lock = threading.Lock()
 
 
@@ -208,12 +210,11 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
         socketio.emit("pull_status", {"model": model_name, "status": "failed", "error": str(e)})
     finally:
         with active_pulls_lock:
-            if model_name in active_pulls:
-                del active_pulls[model_name]
+            active_pulls.pop(model_name, None)
 
 
 # Active run status tracking
-active_run: Dict[str, Any] = {
+active_run: dict[str, Any] = {
     "status": "idle",  # "idle", "running", "cancelled", "completed", "failed"
     "type": None,  # "general" or "shared_llm"
     "current_model": None,
@@ -562,7 +563,7 @@ def get_proxy_status():
                     proxy_url = url
                     break
         except Exception as e:
-            errors.append(f"{url}: {str(e)}")
+            errors.append(f"{url}: {e!s}")
             continue
 
     if not proxy_url:
@@ -618,7 +619,7 @@ def get_proxy_status():
         return jsonify(
             {
                 "online": False,
-                "error": f"Failed to fetch metrics from active proxy {proxy_url}: {str(e)}",
+                "error": f"Failed to fetch metrics from active proxy {proxy_url}: {e!s}",
             }
         )
 
@@ -714,6 +715,24 @@ def sd_generate_api():
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/companions", methods=["GET"])
+def list_companions():
+    """List companion model files (VAE / LLM / CLIP / T5XXL) available for SD models."""
+    dirs = [
+        os.path.join(os.environ.get("ROUTER_MODELS_DIR", "/router-models"), "companions"),
+        os.path.join(os.environ.get("MODELS_DIR", "/models"), "companions"),
+        "/models/companions",
+        "/router-models/companions",
+    ]
+    found = []
+    for d in dirs:
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                if fn.lower().endswith((".gguf", ".safetensors")) and fn not in found:
+                    found.append(fn)
+    return jsonify({"companions": found})
 
 
 @app.route("/api/sd/edit", methods=["POST"])
@@ -854,7 +873,7 @@ def get_results_list():
         # Process general files
         for file_path in general_files:
             try:
-                with open(file_path, "r") as f:
+                with open(file_path) as f:
                     data = json.load(f)
                 results_list.append(
                     {
@@ -876,7 +895,7 @@ def get_results_list():
         # Process SharedLLM files
         for file_path in shared_files:
             try:
-                with open(file_path, "r") as f:
+                with open(file_path) as f:
                     data = json.load(f)
                 results_list.append(
                     {
@@ -921,7 +940,7 @@ def get_result_detail(filename):
             os.remove(file_path)
             return jsonify({"status": "deleted", "filename": filename})
 
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             data = json.load(f)
         return jsonify(data)
     except Exception as e:
@@ -946,7 +965,7 @@ def get_models_ini_path():
 
 @app.route("/api/profiles")
 def get_profiles():
-    """Retrieve all model profile sections from models.ini"""
+    """Retrieve all model profile sections from models.ini, and include standalone .profile.json overlays"""
     ini_path = get_models_ini_path()
     if not ini_path.exists():
         return jsonify({"error": f"models.ini not found at {ini_path}"}), 404
@@ -960,10 +979,70 @@ def get_profiles():
         # Include [*] defaults section if present
         if config.has_section("*"):
             profiles["*"] = dict(config["*"])
+            profiles["*"]["backend"] = "llama.cpp"
+
+        def merge_companion_profiles(section_name, target_dict):
+            # Load and merge in order: gguf, safetensors, profile
+            for ext in [".gguf.profile.json", ".safetensors.profile.json", ".profile.json"]:
+                p_path = ini_path.parent / f"{section_name}{ext}"
+                if p_path.exists():
+                    try:
+                        with open(p_path) as pf:
+                            profile_data = json.load(pf)
+                            if isinstance(profile_data, dict):
+                                target_dict.update(profile_data)
+                    except Exception as pe:
+                        print(f"Failed to merge profile {p_path}: {pe}")
 
         for section in config.sections():
             if section != "*":
                 profiles[section] = dict(config[section])
+                merge_companion_profiles(section, profiles[section])
+
+                # Smart classification: if the section has any SD-specific parameters,
+                # mark it as stable-diffusion backend instead of llama.cpp
+                sd_keys = {"vae", "clip_l", "t5xxl", "llm", "model_family", "gpu_layers", "threads"}
+                if any(k in profiles[section] for k in sd_keys):
+                    profiles[section]["backend"] = "stable-diffusion"
+                else:
+                    profiles[section]["backend"] = "llama.cpp"
+
+        # Discover all *.profile.json files in the router directory
+        # to ensure SD / image models (which are excluded from models.ini LLM sections)
+        # can also be loaded and edited in the profiles editor UI.
+        try:
+            router_dir = ini_path.parent
+            if router_dir.exists():
+                for entry in router_dir.glob("*.profile.json"):
+                    base = entry.name[:-13]  # strip ".profile.json"
+                    # A standalone profile is only valid if its backing model file
+                    # still exists; otherwise it is an orphan left behind by a
+                    # deleted model. Skip those so stale profiles don't reappear.
+                    backing = base
+                    if not (backing.endswith(".gguf") or backing.endswith(".safetensors")):
+                        backing = base + ".gguf"
+                    if not (
+                        (router_dir / backing).exists()
+                        or (router_dir / (base + ".safetensors")).exists()
+                        or (router_dir / base).exists()
+                    ):
+                        continue
+                    # E.g. "qwen-vl.profile.json" -> section "qwen-vl"
+                    section_name = base
+                    if section_name.endswith(".gguf") or section_name.endswith(".safetensors"):
+                        section_name = section_name.rsplit(".", 1)[0]
+                    if section_name not in profiles:
+                        profiles[section_name] = {}
+                        merge_companion_profiles(section_name, profiles[section_name])
+
+                        # Smart classification for discovered profiles
+                        sd_keys = {"vae", "clip_l", "t5xxl", "llm", "model_family", "gpu_layers", "threads"}
+                        if any(k in profiles[section_name] for k in sd_keys):
+                            profiles[section_name]["backend"] = "stable-diffusion"
+                        else:
+                            profiles[section_name]["backend"] = "llama.cpp"
+        except Exception as pe:
+            print(f"Failed to scan standalone profile JSONs: {pe}")
 
         return jsonify({"profiles": profiles})
     except Exception as e:
@@ -972,15 +1051,55 @@ def get_profiles():
 
 @app.route("/api/profiles/save", methods=["POST"])
 def save_profile():
-    """Save/update a specific model profile section in models.ini"""
+    """Save/update a model profile.
+
+    For llama.cpp models this writes the ``[section]`` to ``models.ini`` and a
+    companion ``<section>.profile.json`` overlay. For image/SD models (backend
+    ``stable-diffusion``) the profile lives exclusively in a
+    ``<section>.<ext>.profile.json`` overlay next to the router symlink, so we
+    write there and deliberately do NOT touch ``models.ini`` (SD models must
+    never be registered as llama.cpp LLM sections).
+    """
     data = request.get_json() or {}
     section = data.get("section")
     settings = data.get("settings")
+    backend = data.get("backend", "llama.cpp")
     if not section or not isinstance(settings, dict):
         return jsonify({"error": "Invalid payload: 'section' and 'settings' required"}), 400
 
     ini_path = get_models_ini_path()
     try:
+        if backend == "stable-diffusion":
+            # Persist to the canonical SD profile overlay only.
+            profile_path = _resolve_sd_profile_path(ini_path.parent, section)
+            existing_profile = {}
+            if profile_path.exists():
+                try:
+                    with open(profile_path) as pf:
+                        existing_profile = json.load(pf)
+                except Exception:
+                    pass
+            for k, v in settings.items():
+                if v is None or v == "":
+                    existing_profile.pop(k, None)
+                else:
+                    existing_profile[k] = v
+            if not existing_profile:
+                if profile_path.exists():
+                    with contextlib.suppress(Exception):
+                        os.remove(profile_path)
+            else:
+                with open(profile_path, "w") as pf:
+                    json.dump(existing_profile, pf, indent=4)
+                with contextlib.suppress(Exception):
+                    os.chmod(profile_path, 0o666)
+            return jsonify(
+                {
+                    "status": "success",
+                    "message": f"Successfully updated SD profile {profile_path.name}",
+                }
+            )
+
         import configparser
 
         config = configparser.ConfigParser(delimiters=("=",))
@@ -1002,10 +1121,8 @@ def save_profile():
         # Write back to file
         with open(ini_path, "w") as f:
             config.write(f)
-        try:
+        with contextlib.suppress(Exception):
             os.chmod(ini_path, 0o666)
-        except Exception:
-            pass
 
         # Write to profile.json as well so reindexing doesn't discard overrides
         if section != "*":
@@ -1014,7 +1131,7 @@ def save_profile():
                 existing_profile = {}
                 if profile_path.exists():
                     try:
-                        with open(profile_path, "r") as pf:
+                        with open(profile_path) as pf:
                             existing_profile = json.load(pf)
                     except Exception:
                         pass
@@ -1027,10 +1144,8 @@ def save_profile():
 
                 with open(profile_path, "w") as pf:
                     json.dump(existing_profile, pf, indent=4)
-                try:
+                with contextlib.suppress(Exception):
                     os.chmod(profile_path, 0o666)
-                except Exception:
-                    pass
             except Exception as pe:
                 print(f"Failed to save profile json overlay: {pe}")
 
@@ -1039,6 +1154,21 @@ def save_profile():
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _resolve_sd_profile_path(router_dir, section):
+    """Return the canonical ``.profile.json`` path for an image/SD model section.
+
+    SD models are stored in the router directory as ``<section>.<ext>`` symlinks
+    (where ``<ext>`` is ``.gguf`` or ``.safetensors``); the proxy reads the
+    companion profile as ``<symlink> + '.profile.json'``. Match that location so
+    UI edits are picked up by the sd-server.
+    """
+    for ext in (".gguf", ".safetensors"):
+        symlink = router_dir / f"{section}{ext}"
+        if symlink.exists() or symlink.is_symlink():
+            return router_dir / f"{section}{ext}.profile.json"
+    return router_dir / f"{section}.profile.json"
 
 
 @app.route("/api/profiles/delete", methods=["POST"])
@@ -1058,24 +1188,33 @@ def delete_profile():
         config = configparser.ConfigParser(delimiters=("=",))
         config.read(str(ini_path))
 
+        removed = False
         if config.has_section(section):
             config.remove_section(section)
             with open(ini_path, "w") as f:
                 config.write(f)
-            try:
+            with contextlib.suppress(Exception):
                 os.chmod(ini_path, 0o666)
-            except Exception:
-                pass
-            # Remove profile.json if it exists
+            removed = True
+
+        # Remove any companion profile overlays (LLM <section>.profile.json and
+        # image/SD <section>.<ext>.profile.json). SD models are not in models.ini
+        # but still own a profile overlay, so deletion must not 404 on them.
+        removed_any_profile = False
+        for cand in (
+            ini_path.parent / f"{section}.profile.json",
+            _resolve_sd_profile_path(ini_path.parent, section),
+        ):
             try:
-                profile_path = ini_path.parent / f"{section}.profile.json"
-                if profile_path.exists():
-                    os.remove(profile_path)
+                if cand.exists():
+                    os.remove(cand)
+                    removed_any_profile = True
             except Exception as pe:
                 print(f"Failed to remove profile json file: {pe}")
 
+        if removed or removed_any_profile:
             return jsonify(
-                {"status": "success", "message": f"Successfully deleted section [{section}]"}
+                {"status": "success", "message": f"Successfully deleted profile [{section}]"}
             )
         else:
             return jsonify({"error": f"Section [{section}] not found"}), 404
@@ -1118,7 +1257,7 @@ def download_logs():
                 )
             return "Failed to fetch logs from proxy", 500
     except Exception as e:
-        return f"Failed to retrieve logs: {str(e)}", 500
+        return f"Failed to retrieve logs: {e!s}", 500
 
 
 @app.route("/api/proxy/restart", methods=["POST"])
@@ -1198,7 +1337,7 @@ def get_active_requests():
                     {"error": f"Proxy returned status {resp.status_code}"}
                 ), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to fetch requests telemetry from proxy: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to fetch requests telemetry from proxy: {e!s}"}), 500
 
 
 @app.route("/api/requests/clear", methods=["POST"])
@@ -1230,7 +1369,7 @@ def clear_completed_requests():
                     {"error": f"Proxy returned status {resp.status_code}"}
                 ), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to clear requests history in proxy: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to clear requests history in proxy: {e!s}"}), 500
 
 
 @app.route("/api/requests/cancel", methods=["POST"])
@@ -1358,10 +1497,8 @@ def resubmit_stuck_request(request_id):
 
                 result = resp.json()
 
-                try:
+                with contextlib.suppress(Exception):
                     client.delete(f"{url}/admin/requests/{request_id}")
-                except Exception:
-                    pass
 
                 return jsonify({"status": "resubmitted", "result": result})
         except Exception:
@@ -1445,13 +1582,13 @@ def get_telemetry_history():
 
     points = []
     try:
-        with open(log_file, "r", encoding="utf-8") as f:
+        with open(log_file, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     points.append(json.loads(line))
         return jsonify({"model": model, "history": points[-limit:]})
     except Exception as e:
-        return jsonify({"error": f"Failed to read telemetry: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to read telemetry: {e!s}"}), 500
 
 
 @app.route("/api/telemetry/recommendations")
@@ -1506,7 +1643,7 @@ def get_telemetry_recommendations():
             {
                 "status": "error",
                 "model_alias": model,
-                "detected_issues": [f"Tuning analyzer engine failed: {str(e)}"],
+                "detected_issues": [f"Tuning analyzer engine failed: {e!s}"],
                 "recommendations": {},
                 "explanation": "Ensure analyzer.py is mounted correctly in the web container path.",
             }
@@ -1561,7 +1698,7 @@ def apply_telemetry_recommendations():
     try:
         profile_data = {}
         if profile_path.exists():
-            with open(profile_path, "r", encoding="utf-8") as f:
+            with open(profile_path, encoding="utf-8") as f:
                 profile_data = json.load(f)
 
         profile_data.update(recommendations)
@@ -1587,7 +1724,7 @@ def apply_telemetry_recommendations():
             }
         )
     except Exception as e:
-        return jsonify({"error": f"Failed to apply tuning properties: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to apply tuning properties: {e!s}"}), 500
 
 
 @app.route("/api/analyze/all")
@@ -1744,12 +1881,12 @@ def get_or_post_routing_matrix():
                 }
             )
         except Exception as e:
-            return jsonify({"error": f"Failed to save routing matrix: {str(e)}"}), 500
+            return jsonify({"error": f"Failed to save routing matrix: {e!s}"}), 500
 
     # GET method
     if matrix_file.exists():
         try:
-            with open(matrix_file, "r", encoding="utf-8") as f:
+            with open(matrix_file, encoding="utf-8") as f:
                 matrix = json.load(f)
                 return jsonify(matrix)
         except Exception:
@@ -1776,7 +1913,7 @@ def get_optimal_model():
     matrix = {}
     if matrix_file.exists():
         try:
-            with open(matrix_file, "r", encoding="utf-8") as f:
+            with open(matrix_file, encoding="utf-8") as f:
                 matrix = json.load(f)
         except Exception:
             pass
@@ -1811,7 +1948,7 @@ def get_optimal_model():
                 if BENCHMARK_DIR.exists():
                     for path in BENCHMARK_DIR.glob("*.json"):
                         try:
-                            with open(path, "r") as f:
+                            with open(path) as f:
                                 data = json.load(f)
                                 for res in data.get("results", []):
                                     m_tps = res.get("avg_tokens_per_sec", 0.0)
@@ -1832,7 +1969,7 @@ def get_optimal_model():
                     explanation += f" Routed to '{best_model}' as optimal alternative."
                     optimal_model = best_model
     except Exception as e:
-        explanation += f" (Benchmark validation skipped: {str(e)})"
+        explanation += f" (Benchmark validation skipped: {e!s})"
 
     return jsonify(
         {
@@ -1873,7 +2010,7 @@ def get_model_usage():
                     {"error": f"Proxy returned status {resp.status_code}"}
                 ), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to fetch model usage stats: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to fetch model usage stats: {e!s}"}), 500
 
 
 @app.route("/api/models/switch", methods=["POST"])
@@ -1908,7 +2045,7 @@ def switch_model():
             else:
                 return jsonify({"error": resp.text}), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to switch model: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to switch model: {e!s}"}), 500
 
 
 @app.route("/api/models/unload", methods=["POST"])
@@ -1943,7 +2080,7 @@ def unload_model():
             else:
                 return jsonify({"error": resp.text}), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to unload model: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to unload model: {e!s}"}), 500
 
 
 @app.route("/api/vram/clear", methods=["POST"])
@@ -1973,7 +2110,7 @@ def clear_vram():
             else:
                 return jsonify({"error": resp.text}), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to clear VRAM: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to clear VRAM: {e!s}"}), 500
 
 
 @app.route("/api/errors")
@@ -2003,7 +2140,7 @@ def get_model_errors():
             return jsonify({"total": 0, "error_type_counts": {}, "errors": []})
         try:
             records = []
-            with open(errors_file, "r", encoding="utf-8") as f:
+            with open(errors_file, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
                         records.append(json.loads(line))
@@ -2018,7 +2155,7 @@ def get_model_errors():
                 counts[t] = counts.get(t, 0) + 1
             return jsonify({"total": len(records), "error_type_counts": counts, "errors": records})
         except Exception as e:
-            return jsonify({"error": f"Failed to read error log: {str(e)}"}), 500
+            return jsonify({"error": f"Failed to read error log: {e!s}"}), 500
 
     try:
         params = {"limit": limit}
@@ -2033,7 +2170,7 @@ def get_model_errors():
             else:
                 return jsonify({"error": resp.text}), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to fetch errors: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to fetch errors: {e!s}"}), 500
 
 
 @app.route("/api/errors/clear", methods=["POST"])
@@ -2098,7 +2235,7 @@ def delete_model():
                     err_msg = resp.text
                 return jsonify({"error": err_msg}), resp.status_code
     except Exception as e:
-        return jsonify({"error": f"Failed to delete model: {str(e)}"}), 500
+        return jsonify({"error": f"Failed to delete model: {e!s}"}), 500
 
 
 @app.route("/api/models/search", methods=["POST"])
@@ -2167,7 +2304,7 @@ def search_models():
                 html_content = resp.text
                 pattern = r'href="/library/([^"]+)"[^>]*>.*?<span[^>]*>([^<]+)</span>.*?<p class="[^"]*break-words[^"]*">([^<]+)</p>'
                 matches = re.findall(pattern, html_content, re.DOTALL)
-                for library_name, span_name, desc in matches:
+                for library_name, _span_name, desc in matches:
                     clean_name = library_name.strip()
                     clean_desc = unescape(desc.strip().replace("\n", " "))
                     model_type = _detect_model_type(clean_name, [])
@@ -2353,10 +2490,7 @@ def get_hf_files():
             size = s.get("size")
             size_str = ""
             if size:
-                if size > 1024**3:
-                    size_str = f"{size / (1024**3):.2f} GB"
-                else:
-                    size_str = f"{size / (1024**2):.1f} MB"
+                size_str = f"{size / 1024 ** 3:.2f} GB" if size > 1024 ** 3 else f"{size / 1024 ** 2:.1f} MB"
 
             file_type = "stable-diffusion" if (is_safetensors or is_sd_repo) else "llm"
             model_files.append(
@@ -2372,7 +2506,7 @@ def get_hf_files():
             {"files": model_files, "repo_type": "stable-diffusion" if is_sd_repo else "llm"}
         )
     except Exception as e:
-        return jsonify({"error": f"Error fetching Hugging Face files: {str(e)}"}), 500
+        return jsonify({"error": f"Error fetching Hugging Face files: {e!s}"}), 500
 
 
 @app.route("/api/models/ollama/tags", methods=["GET"])
@@ -2421,7 +2555,7 @@ def get_ollama_model_tags():
 
         return jsonify({"tags": unique_tags})
     except Exception as e:
-        return jsonify({"error": f"Error fetching Ollama model tags: {str(e)}"}), 500
+        return jsonify({"error": f"Error fetching Ollama model tags: {e!s}"}), 500
 
 
 @app.route("/api/models/pull", methods=["POST"])

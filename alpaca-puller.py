@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -35,7 +36,7 @@ HUGGING_FACE_BASE = os.getenv("HUGGING_FACE_BASE", "https://huggingface.co")
 def _load_dotenv(env_path):
     if not env_path.exists():
         return
-    with open(env_path, "r") as f:
+    with open(env_path) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -207,9 +208,7 @@ def _is_moe(meta: dict) -> bool:
         if key.endswith(".expert_used_count") and isinstance(val, int) and val > 0:
             return True
     arch = meta.get("general.architecture", "")
-    if "moe" in arch.lower():
-        return True
-    return False
+    return "moe" in arch.lower()
 
 
 def _image_model_family_for_router_entry(entry):
@@ -246,6 +245,89 @@ def _image_model_family_for_router_entry(entry):
     return None
 
 
+def _detect_sd_family(repo, filename):
+    """Best-effort detection of an image/SD model family from a Hugging Face
+    repo/file reference. Returns one of 'qwen-image', 'flux', 'stable-diffusion'
+    or None for plain LLM GGUFs."""
+    name_lower = f"{repo}/{filename}".lower()
+    if "qwen-image" in name_lower or "qwen_image" in name_lower:
+        return "qwen-image"
+    if "flux" in name_lower:
+        return "flux"
+    if any(
+        kw in name_lower
+        for kw in [
+            "stable-diffusion",
+            "sdxl",
+            "sd1.",
+            "sd2.",
+            "sd3",
+            "sd-",
+            "illustrious",
+            "pony",
+            "photoreal",
+        ]
+    ):
+        return "stable-diffusion"
+    return None
+
+
+def create_model_profile(router_path, manifest=None, repo=None, filename=None):
+    """Create a companion ``.profile.json`` for a freshly pulled model.
+
+    This makes the model appear in the dashboard profiles UI, and (for
+    image/SD models) lets the sd-server load it. Image models get a specific
+    ``model_family`` plus a default ``gpu_layers``; LLM models get an (initially
+    empty) overlay profile that mirrors the behaviour of benchmark-generated
+    profiles. No-op if a profile already exists, so re-pulls and manual edits
+    are preserved.
+    """
+    if not router_path or not (router_path.exists() or router_path.is_symlink()):
+        return
+
+    # Prefer a specific family from the source reference, then fall back to the
+    # manifest's recorded model_family (reliable for Ollama pulls).
+    family = None
+    if repo and filename:
+        family = _detect_sd_family(repo, filename)
+    if family is None and manifest is not None:
+        cfg = {}
+        config = manifest.get("config", {})
+        digest = config.get("digest")
+        if digest:
+            cfg_path = blob_path_for_digest(digest)
+            if cfg_path.exists():
+                try:
+                    cfg = json.loads(cfg_path.read_text())
+                except Exception:
+                    cfg = {}
+        fam = cfg.get("model_family")
+        if fam and fam != "gguf":
+            family = fam
+
+    if family:
+        # Image/SD models: name the profile after the full symlink so the proxy's
+        # iter_router_sd_models() (entry.path + ".profile.json") discovers it.
+        profile_path = router_path.with_name(router_path.name + ".profile.json")
+        content = {"model_family": family}
+        if family in ("qwen-image", "flux", "stable-diffusion"):
+            content["gpu_layers"] = os.environ.get("SD_GPU_LAYERS", "40")
+    else:
+        # LLM models: name the profile after the symlink stem (alias.profile.json).
+        profile_path = router_path.with_name(router_path.stem + ".profile.json")
+        content = {}
+
+    if profile_path.exists():
+        return
+    try:
+        profile_path.write_text(json.dumps(content, indent=2) + "\n")
+        with contextlib.suppress(Exception):
+            os.chmod(profile_path, 0o666)
+        print(f"Created model profile: {profile_path.name}")
+    except Exception as e:
+        print(f"Warning: could not create model profile {profile_path}: {e}", file=sys.stderr)
+
+
 def update_models_ini():
     """Scan all GGUF models in the router directory and regenerate models.ini."""
     router_dir = Path(ROUTER_MODELS_DIR)
@@ -256,7 +338,7 @@ def update_models_ini():
     mtp_inc_file = router_dir / ".mtp_incompatible_models.json"
     if mtp_inc_file.exists():
         try:
-            with open(mtp_inc_file, "r") as f:
+            with open(mtp_inc_file) as f:
                 mtp_incompatible = set(json.load(f))
         except Exception:
             pass
@@ -265,7 +347,7 @@ def update_models_ini():
     safe_file = router_dir / ".safe_settings_models.json"
     if safe_file.exists():
         try:
-            with open(safe_file, "r") as f:
+            with open(safe_file) as f:
                 safe_settings = set(json.load(f))
         except Exception:
             pass
@@ -377,7 +459,7 @@ def update_models_ini():
                 profile = {}
                 if profile_file.exists():
                     try:
-                        with open(profile_file, "r") as pf:
+                        with open(profile_file) as pf:
                             profile = json.load(pf)
                     except Exception as e:
                         print(
@@ -388,11 +470,7 @@ def update_models_ini():
                 model_settings = {}
                 if projector_path:
                     model_settings["mmproj"] = projector_path
-                if is_safe:
-                    model_settings["ctx-size"] = "8192"
-                    model_settings["cache-type-k"] = "f16"
-                    model_settings["cache-type-v"] = "f16"
-                elif small_model:
+                if is_safe or small_model:
                     model_settings["ctx-size"] = "8192"
                     model_settings["cache-type-k"] = "f16"
                     model_settings["cache-type-v"] = "f16"
@@ -439,15 +517,11 @@ def update_models_ini():
     temp_ini = ini_path.with_suffix(".ini.tmp")
     with open(temp_ini, "w", encoding="utf-8") as f:
         f.write("\n".join(content))
-    try:
+    with contextlib.suppress(Exception):
         os.chmod(temp_ini, 0o666)
-    except Exception:
-        pass
     os.replace(temp_ini, ini_path)
-    try:
+    with contextlib.suppress(Exception):
         os.chmod(ini_path, 0o666)
-    except Exception:
-        pass
     print(f"Updated models preset configuration at {ini_path}")
 
 
@@ -499,7 +573,7 @@ def router_model_path_for_name(model_name):
 def model_blobs(manifest):
     layers = manifest.get("layers", [])
     config = manifest.get("config", {})
-    for layer in [config] + layers:
+    for layer in [config, *layers]:
         digest = layer.get("digest")
         if digest:
             yield digest
@@ -510,7 +584,7 @@ def blob_path_for_digest(digest):
 
 
 def load_manifest(manifest_path):
-    with open(manifest_path, "r", encoding="utf-8") as handle:
+    with open(manifest_path, encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -523,7 +597,7 @@ def write_manifest_atomic(manifest_path, manifest):
 
 
 def is_model_complete(manifest):
-    for layer in [manifest.get("config", {})] + manifest.get("layers", []):
+    for layer in [manifest.get("config", {}), *manifest.get("layers", [])]:
         digest = layer.get("digest")
         if not digest:
             continue
@@ -842,9 +916,8 @@ def resolve_huggingface_filename(repo, requested_filename):
         if stem == target_stem:
             exact_match = fname
             break
-        if target_stem in stem:
-            if best_match is None:
-                best_match = fname
+        if target_stem in stem and best_match is None:
+            best_match = fname
     if exact_match:
         return exact_match
     if best_match:
@@ -1070,6 +1143,7 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resu
         write_manifest_atomic(manifest_path, manifest)
         router_path = ensure_router_symlink(local_name, manifest)
         update_models_ini()
+        create_model_profile(router_path, manifest=manifest, repo=repo, filename=filename)
         print(f"Registered router model: {router_path.name}")
         print(f"\nSuccessfully imported {normalize_model_name(local_name)}")
         return 0
@@ -1087,7 +1161,7 @@ def pull_ollama_model(model_name, insecure=False, no_resume=False):
         manifest = response.json()
         # Clear partial blobs when no_resume is requested
         if no_resume:
-            for layer in [manifest.get("config", {})] + manifest.get("layers", []):
+            for layer in [manifest.get("config", {}), *manifest.get("layers", [])]:
                 digest = layer.get("digest")
                 if digest:
                     blob_path = blob_path_for_digest(digest)
@@ -1097,7 +1171,7 @@ def pull_ollama_model(model_name, insecure=False, no_resume=False):
                         if blob_size != expected:
                             blob_path.unlink()
                             print(f"Removed incomplete blob {digest[:12]} ({blob_size} bytes)")
-        for layer in [manifest.get("config", {})] + manifest.get("layers", []):
+        for layer in [manifest.get("config", {}), *manifest.get("layers", [])]:
             digest = layer.get("digest")
             if not digest:
                 continue
@@ -1115,6 +1189,7 @@ def pull_ollama_model(model_name, insecure=False, no_resume=False):
         write_manifest_atomic(manifest_path, manifest)
         router_path = ensure_router_symlink(model_name, manifest)
         update_models_ini()
+        create_model_profile(router_path, manifest=manifest)
         print(f"Registered router model: {router_path.name}")
         print(f"\nSuccessfully pulled {normalize_model_name(model_name)}")
         return 0
@@ -1146,10 +1221,8 @@ def pull_companion(model_name, no_resume=False):
 
     partial_path = partial_download_path("companion", f"{repo}:{filename}")
     if no_resume and partial_path.exists():
-        try:
+        with contextlib.suppress(Exception):
             partial_path.unlink()
-        except Exception:
-            pass
 
     client = httpx.Client(
         timeout=httpx.Timeout(300.0, connect=30.0, read=300.0),
@@ -1165,10 +1238,8 @@ def pull_companion(model_name, no_resume=False):
 
         # Move partial file to final companion location
         if output_path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 output_path.unlink()
-            except Exception:
-                pass
         try:
             os.replace(partial_path, output_path)
         except Exception as e:
@@ -1249,7 +1320,7 @@ def reindex_models():
 
 
 def remove_model(model_name):
-    repo, tag, manifest_path = get_model_info(model_name)
+    _repo, _tag, manifest_path = get_model_info(model_name)
     if not manifest_path.exists():
         print(f"Error: Model {normalize_model_name(model_name)} not found locally.")
         return 1
@@ -1268,6 +1339,13 @@ def remove_model(model_name):
     if router_path.exists() or router_path.is_symlink():
         router_path.unlink()
         print(f"Deleted router index: {router_path}")
+        # Remove any companion profile overlays for this model so they don't
+        # linger as stale profiles in the dashboard after the model is gone.
+        for prof_ext in (".profile.json", ".gguf.profile.json", ".safetensors.profile.json"):
+            prof_path = router_path.with_name(router_path.stem + prof_ext)
+            if prof_path.exists():
+                prof_path.unlink()
+                print(f"Deleted router profile: {prof_path}")
         update_models_ini()
 
     for digest in model_blobs(manifest):

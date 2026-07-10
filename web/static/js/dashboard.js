@@ -208,15 +208,37 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadSdModels() {
         const sel = document.getElementById('sd-model-select');
         if (!sel) return;
+        // Signatures that indicate a true image-generation model
+        const SD_PATTERNS = [
+            /\.safetensors$/i,
+            /\bflux\b/i,
+            /\bsdxl\b/i,
+            /\bsd[123x]\b/i,
+            /\bstable.diffusion\b/i,
+            /\bsd-/i,
+            /-sd\b/i,
+            /\bimage.gen\b/i,
+        ];
+        const isImageModel = name =>
+            SD_PATTERNS.some(re => re.test(name)) ||
+            // family tag returned by the API
+            false;
+
         try {
             const res = await fetch('/api/sd/models');
             const data = await res.json();
-            const models = (data.data || []).map(m => m.name);
-            if (models.length === 0) {
-                sel.innerHTML = '<option value="">No image models found</option>';
+            const allModels = (data.data || []);
+            // Filter: prefer family tag from API; fall back to name heuristic
+            const imageModels = allModels.filter(m => {
+                const family = (m.family || '').toLowerCase();
+                if (family === 'stable-diffusion' || family === 'flux' || family === 'sdxl') return true;
+                return isImageModel(m.name || '');
+            });
+            if (imageModels.length === 0) {
+                sel.innerHTML = '<option value="">No image-generation models found</option>';
                 return;
             }
-            sel.innerHTML = models.map(n => `<option value="${n}">${n}</option>`).join('');
+            sel.innerHTML = imageModels.map(m => `<option value="${m.name}">${m.name}</option>`).join('');
         } catch (e) {
             sel.innerHTML = '<option value="">Error loading models</option>';
             logToTerminal('Failed to load SD models: ' + e.message, 'error');
@@ -227,7 +249,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const sdUnloadBtn = document.getElementById('sd-unload-btn');
     const sdStatus = document.getElementById('sd-status');
     const sdEditBtn = document.getElementById('sd-edit-btn');
+    const sdGenBtn = document.getElementById('sd-gen-btn');
     const sdEditStatus = document.getElementById('sd-edit-status');
+    const sdGenStatus = document.getElementById('sd-gen-status');
     const sdResults = document.getElementById('sd-results');
     const sdClearResults = document.getElementById('sd-clear-results');
 
@@ -308,18 +332,42 @@ document.addEventListener('DOMContentLoaded', () => {
                     sdResults.innerHTML = '';
                     data.data.forEach(item => {
                         if (item.b64_json) {
-                            const wrap = document.createElement('a');
-                            wrap.href = 'data:image/png;base64,' + item.b64_json;
-                            wrap.download = 'edit_result.png';
-                            wrap.title = 'Click to download PNG';
-                            wrap.style.display = 'inline-block';
+                            const card = document.createElement('div');
+                            card.style.display = 'inline-block';
+                            card.style.margin = '6px';
+                            card.style.textAlign = 'center';
                             const img = document.createElement('img');
-                            img.src = wrap.href;
+                            img.src = 'data:image/png;base64,' + item.b64_json;
                             img.style.maxWidth = '320px';
                             img.style.borderRadius = '8px';
                             img.style.border = '1px solid var(--border-color)';
-                            wrap.appendChild(img);
-                            sdResults.appendChild(wrap);
+                            card.appendChild(img);
+                            const dl = document.createElement('a');
+                            dl.textContent = '⬇ Download PNG';
+                            dl.href = '#';
+                            dl.title = 'Download this image';
+                            dl.style.display = 'block';
+                            dl.style.marginTop = '6px';
+                            dl.style.color = 'var(--color-primary)';
+                            dl.style.textDecoration = 'none';
+                            dl.style.cursor = 'pointer';
+                            dl.addEventListener('click', (ev) => {
+                                ev.preventDefault();
+                                const bin = atob(item.b64_json);
+                                const bytes = new Uint8Array(bin.length);
+                                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                                const blob = new Blob([bytes], { type: 'image/png' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = 'edit_result.png';
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                URL.revokeObjectURL(url);
+                            });
+                            card.appendChild(dl);
+                            sdResults.appendChild(card);
                         } else if (item.url) {
                             const a = document.createElement('a');
                             a.href = item.url;
@@ -336,6 +384,101 @@ document.addEventListener('DOMContentLoaded', () => {
                 sdEditStatus.textContent = `❌ ${e.message}`;
             } finally {
                 sdEditBtn.disabled = false;
+            }
+        });
+    }
+
+    if (sdGenBtn) {
+        sdGenBtn.addEventListener('click', async () => {
+            const model = document.getElementById('sd-model-select').value;
+            const prompt = document.getElementById('sd-gen-prompt').value.trim();
+            const size = document.getElementById('sd-gen-size').value.trim();
+            const n = document.getElementById('sd-gen-n').value;
+            const negative = document.getElementById('sd-gen-negative').value.trim();
+            const steps = document.getElementById('sd-gen-steps').value;
+            const guidance = document.getElementById('sd-gen-guidance').value;
+            let seed = document.getElementById('sd-gen-seed').value;
+            if (!model) { sdGenStatus.textContent = 'Load an image model first.'; return; }
+            if (!prompt) { sdGenStatus.textContent = 'Enter a prompt.'; return; }
+            if (seed === '' || seed === '-1') seed = -1;
+            else seed = parseInt(seed, 10);
+
+            const payload = {
+                model,
+                prompt,
+                size,
+                n: parseInt(n, 10) || 1,
+            };
+            if (negative) payload.negative_prompt = negative;
+            if (steps && parseInt(steps, 10) > 0) payload.steps = parseInt(steps, 10);
+            if (guidance && parseFloat(guidance) > 0) payload.guidance = parseFloat(guidance);
+            if (seed >= 0) payload.seed = seed;
+
+            sdGenStatus.textContent = 'Generating image (this can take a while)...';
+            sdGenBtn.disabled = true;
+            try {
+                const res = await fetch('/api/sd/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+                if (res.ok && data.data) {
+                    sdResults.innerHTML = '';
+                    data.data.forEach(item => {
+                        if (item.b64_json) {
+                            const card = document.createElement('div');
+                            card.style.display = 'inline-block';
+                            card.style.margin = '6px';
+                            card.style.textAlign = 'center';
+                            const img = document.createElement('img');
+                            img.src = 'data:image/png;base64,' + item.b64_json;
+                            img.style.maxWidth = '320px';
+                            img.style.borderRadius = '8px';
+                            img.style.border = '1px solid var(--border-color)';
+                            card.appendChild(img);
+                            const dl = document.createElement('a');
+                            dl.textContent = '⬇ Download PNG';
+                            dl.href = '#';
+                            dl.title = 'Download this image';
+                            dl.style.display = 'block';
+                            dl.style.marginTop = '6px';
+                            dl.style.color = 'var(--color-primary)';
+                            dl.style.textDecoration = 'none';
+                            dl.style.cursor = 'pointer';
+                            dl.addEventListener('click', (ev) => {
+                                ev.preventDefault();
+                                const bin = atob(item.b64_json);
+                                const bytes = new Uint8Array(bin.length);
+                                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                                const blob = new Blob([bytes], { type: 'image/png' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = 'generated.png';
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                URL.revokeObjectURL(url);
+                            });
+                            card.appendChild(dl);
+                            sdResults.appendChild(card);
+                        } else if (item.url) {
+                            const a = document.createElement('a');
+                            a.href = item.url;
+                            a.textContent = item.url;
+                            a.target = '_blank';
+                            sdResults.appendChild(a);
+                        }
+                    });
+                    sdGenStatus.textContent = `✅ Generated ${data.data.length} image(s).`;
+                } else {
+                    sdGenStatus.textContent = `❌ ${data.error || 'Generation failed'}`;
+                }
+            } catch (e) {
+                sdGenStatus.textContent = `❌ ${e.message}`;
+            } finally {
+                sdGenBtn.disabled = false;
             }
         });
     }
@@ -724,7 +867,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!sdStatusCard) return;
 
         try {
-            const res = await fetch('/api/sd/status');
+            const res = await fetch('/api/sd/status', { signal: AbortSignal.timeout(3000) });
             const data = await res.json();
 
             if (!data.online) {
@@ -734,6 +877,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 sdActiveModelBadge.textContent = "Model: None";
                 sdStatusBadge.className = "badge badge-danger";
                 sdStatusBadge.textContent = "Offline";
+                return;
+            }
+
+            // Proxy is reachable — check if sd-server is still booting (model swap in progress)
+            if (data.online && !data.sd_server_healthy) {
+                sdStatusCard.style.borderLeftColor = 'var(--color-warning)';
+                sdConnectionTitle.textContent = "Stable Diffusion Backend [Loading...]";
+                sdConnectionSubtitle.textContent = "SD-Server is starting up — auto-loading a model. This may take up to 60 seconds.";
+                sdActiveModelBadge.textContent = data.active_model ? `Loading: ${data.active_model.split('/').pop()}` : "Model: Loading...";
+                sdStatusBadge.className = "badge badge-warning";
+                sdStatusBadge.textContent = "Loading";
                 return;
             }
 
@@ -752,7 +906,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
         } catch (err) {
-            console.error("SD Poller error:", err);
+            // Swallow fetch errors (timeout / network) — proxy may be momentarily busy during model swap
+            if (err.name !== 'AbortError' && err.name !== 'TimeoutError') {
+                console.error("SD Poller error:", err);
+            }
         }
     }
 
@@ -760,7 +917,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function pollProxyStatus() {
         try {
             pollSDStatus();
-            const res = await fetch('/api/proxy/status');
+            const res = await fetch('/api/proxy/status', { signal: AbortSignal.timeout(4000) });
             const data = await res.json();
             
             if (!data.online) {
@@ -2731,12 +2888,18 @@ document.addEventListener('DOMContentLoaded', () => {
                             ? `<span style="background:rgba(139,92,246,0.25);color:#a78bfa;padding:1px 6px;border-radius:4px;font-size:0.65rem;">${s['spec-type']}</span>` : '';
                         const flashBadge = s['flash-attn'] === 'on' || s['flash-attn'] === 'true'
                             ? `<span style="background:rgba(34,211,238,0.2);color:#22d3ee;padding:1px 6px;border-radius:4px;font-size:0.65rem;">FA✓</span>` : '';
+                        
+                        // Backend classification badge
+                        const isSd = s['backend'] === 'stable-diffusion';
+                        const backendBadge = isSd
+                            ? `<span style="background:rgba(236,72,153,0.2);color:#f472b6;padding:1px 6px;border-radius:4px;font-size:0.65rem;font-weight:600;">🎨 Image SD</span>`
+                            : `<span style="background:rgba(59,130,246,0.2);color:#60a5fa;padding:1px 6px;border-radius:4px;font-size:0.65rem;font-weight:600;">💬 Text LLM</span>`;
 
                         const card = document.createElement('div');
                         card.style.cssText = `background:var(--card-bg);border:1px solid var(--border-color);border-radius:8px;padding:0.85rem;cursor:pointer;transition:border-color 0.2s,box-shadow 0.2s;`;
                         card.innerHTML = `
                             <div style="font-size:0.72rem;font-weight:600;color:${isDefault ? '#f59e0b' : 'var(--color-primary)'};margin-bottom:0.5rem;word-break:break-all;line-height:1.3;">${label}</div>
-                            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:0.5rem;">${specBadge}${flashBadge}</div>
+                            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:0.5rem;">${backendBadge}${specBadge}${flashBadge}</div>
                             <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;font-size:0.68rem;">
                                 ${s['ctx-size'] ? `<span style="color:var(--text-muted);">CTX</span><span style="color:white;">${Number(s['ctx-size']).toLocaleString()}</span>` : ''}
                                 ${s['n-gpu-layers'] ? `<span style="color:var(--text-muted);">GPU Layers</span><span style="color:white;">${s['n-gpu-layers']}</span>` : ''}
@@ -2767,27 +2930,195 @@ document.addEventListener('DOMContentLoaded', () => {
     const profileSectionSelect = document.getElementById('profile-section-select');
     const profileEditForm = document.getElementById('profile-edit-form');
     const btnRestartServices = document.getElementById('btn-restart-services');
+    let cachedCompanions = null;
 
     if (profileSectionSelect && profileEditForm) {
         profileSectionSelect.addEventListener('change', () => {
             const section = profileSectionSelect.value;
+            const badgeEl = document.getElementById('profile-backend-badge');
             if (!section) {
                 profileEditForm.reset();
+                if (badgeEl) badgeEl.style.display = 'none';
                 return;
             }
             
             const settings = modelProfiles[section] || {};
+
+            // Dynamic warning and information badge based on backend type
+            if (badgeEl) {
+                if (settings['backend'] === 'stable-diffusion') {
+                    badgeEl.style.display = 'block';
+                    badgeEl.innerHTML = `
+                        <div style="background:rgba(236,72,153,0.1); border:1px solid rgba(236,72,153,0.25); color:#f472b6; padding:0.6rem; border-radius:6px; font-size:0.75rem; line-height:1.4;">
+                            <strong>🎨 Stable Diffusion Profile</strong><br>
+                            Only <strong>GPU Layers</strong> (offloaded transformer layers) and <strong>CPU Threads</strong> (under MoE threads) apply to this model backend. Other settings are ignored.
+                        </div>
+                    `;
+                } else if (section === '*') {
+                    badgeEl.style.display = 'block';
+                    badgeEl.innerHTML = `
+                        <div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.25); color:#fbbf24; padding:0.6rem; border-radius:6px; font-size:0.75rem; line-height:1.4;">
+                            <strong>⚙️ Global Default Presets</strong><br>
+                            These parameters apply to all llama.cpp models unless overridden in their specific model profiles.
+                        </div>
+                    `;
+                } else {
+                    badgeEl.style.display = 'block';
+                    badgeEl.innerHTML = `
+                        <div style="background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.25); color:#60a5fa; padding:0.6rem; border-radius:6px; font-size:0.75rem; line-height:1.4;">
+                            <strong>💬 llama.cpp Language Model Profile</strong><br>
+                            All parameters below are configurable for the llama.cpp inference engine.
+                        </div>
+                    `;
+                }
+            }
             
-            profileEditForm.elements['ctx-size'].value = settings['ctx-size'] || '';
-            profileEditForm.elements['n-gpu-layers'].value = settings['n-gpu-layers'] || '';
-            profileEditForm.elements['cache-type-k'].value = settings['cache-type-k'] || 'q4_0';
-            profileEditForm.elements['cache-type-v'].value = settings['cache-type-v'] || 'q4_0';
-            profileEditForm.elements['flash-attn'].value = settings['flash-attn'] || 'on';
-            profileEditForm.elements['kv-unified'].value = settings['kv-unified'] || 'true';
-            profileEditForm.elements['spec-type'].value = settings['spec-type'] || 'none';
-            profileEditForm.elements['spec-draft-n-max'].value = settings['spec-draft-n-max'] || '';
-            profileEditForm.elements['n-cpu-moe'].value = settings['n-cpu-moe'] || '';
+            const globalDefaults = modelProfiles['*'] || {};
+            const isSd = settings['backend'] === 'stable-diffusion';
+
+            // Show the field group that matches the model backend.
+            const llmFields = document.getElementById('llm-fields');
+            const sdFields = document.getElementById('sd-fields');
+            if (llmFields) llmFields.style.display = isSd ? 'none' : 'block';
+            if (sdFields) sdFields.style.display = isSd ? 'block' : 'none';
+
+            const setNumberInput = (name, key, fallbackDesc) => {
+                const input = profileEditForm.elements[name];
+                if (!input) return;
+                const sectionVal = settings[key];
+                const globalVal = globalDefaults[key];
+
+                if (sectionVal !== undefined && sectionVal !== null && sectionVal !== '') {
+                    input.value = sectionVal;
+                    input.placeholder = '';
+                } else if (globalVal !== undefined && globalVal !== null && globalVal !== '' && section !== '*') {
+                    input.value = '';
+                    input.placeholder = `${globalVal} (Inherited)`;
+                } else {
+                    input.value = '';
+                    input.placeholder = fallbackDesc;
+                }
+            };
+
+            const setSelectInput = (name, key, fallbackVal) => {
+                const select = profileEditForm.elements[name];
+                if (!select) return;
+                const sectionVal = settings[key];
+                const globalVal = globalDefaults[key];
+
+                if (sectionVal !== undefined && sectionVal !== null && sectionVal !== '') {
+                    select.value = sectionVal;
+                } else if (globalVal !== undefined && globalVal !== null && globalVal !== '' && section !== '*') {
+                    select.value = globalVal;
+                } else {
+                    select.value = fallbackVal;
+                }
+            };
+
+            setNumberInput('ctx-size', 'ctx-size', '4096 (Default)');
+            setNumberInput('n-gpu-layers', 'n-gpu-layers', isSd ? '40 (Default)' : '99 (Default)');
+            
+            setSelectInput('cache-type-k', 'cache-type-k', 'f16');
+            setSelectInput('cache-type-v', 'cache-type-v', 'f16');
+            setSelectInput('flash-attn', 'flash-attn', 'on');
+            setSelectInput('kv-unified', 'kv-unified', 'true');
+            setSelectInput('spec-type', 'spec-type', 'none');
+
+            setNumberInput('spec-draft-n-max', 'spec-draft-n-max', '0 (Disabled)');
+            setNumberInput('n-cpu-moe', 'n-cpu-moe', isSd ? 'Auto (nproc - 2)' : 'Auto');
+
+            // SD / image model fields
+            setSelectInput('model_family', 'model_family', 'qwen-image');
+            setNumberInput('gpu_layers', 'gpu_layers', '40 (Default)');
+            const setTextInput = (name, key) => {
+                const el = profileEditForm.elements[name];
+                if (!el) return;
+                const v = settings[key];
+                el.value = (v !== undefined && v !== null) ? v : '';
+            };
+            setTextInput('extra_args', 'extra_args');
+            setNumberInput('threads', 'threads', 'Auto (nproc - 2)');
+            setSelectInput('cache-mode', 'cache-mode', '');
+            setTextInput('cache-option', 'cache-option');
+
+            // SD companion models come from a dropdown populated with the
+            // companion files discovered on disk (VAE / LLM / CLIP / T5XXL).
+            const populateCompanion = (name, key) => {
+                const sel = profileEditForm.elements[name];
+                if (!sel) return;
+                const cur = settings[key] || '';
+                let opts = '<option value="">&lt;none&gt;</option>';
+                (cachedCompanions || []).forEach(c => {
+                    const selAttr = (c === cur) ? ' selected' : '';
+                    opts += `<option value="${c}"${selAttr}>${c}</option>`;
+                });
+                sel.innerHTML = opts;
+            };
+            if (isSd) {
+                if (cachedCompanions === null) {
+                    fetch('/api/companions')
+                        .then(r => r.json())
+                        .then(d => {
+                            cachedCompanions = (d.companions || []);
+                            populateCompanion('vae', 'vae');
+                            populateCompanion('llm', 'llm');
+                            populateCompanion('clip_l', 'clip_l');
+                            populateCompanion('t5xxl', 't5xxl');
+                        })
+                        .catch(() => {});
+                } else {
+                    populateCompanion('vae', 'vae');
+                    populateCompanion('llm', 'llm');
+                    populateCompanion('clip_l', 'clip_l');
+                    populateCompanion('t5xxl', 't5xxl');
+                }
+            }
         });
+
+        // Build the settings payload from the visible field group, including the
+        // model backend so the server knows where to persist (models.ini vs the
+        // image-model .profile.json overlay).
+        const buildProfileSettings = (section) => {
+            const isSd = (modelProfiles[section] || {})['backend'] === 'stable-diffusion';
+            let settings, backend = 'llama.cpp';
+            if (isSd) {
+                backend = 'stable-diffusion';
+                const get = (name) => {
+                    const el = profileEditForm.elements[name];
+                    return el ? (el.value || null) : null;
+                };
+                settings = {
+                    'model_family': get('model_family'),
+                    'gpu_layers': get('gpu_layers'),
+                    'vae': get('vae'),
+                    'llm': get('llm'),
+                    'clip_l': get('clip_l'),
+                    't5xxl': get('t5xxl'),
+                    'extra_args': get('extra_args'),
+                    'threads': get('threads'),
+                    'cache-mode': get('cache-mode'),
+                    'cache-option': get('cache-option')
+                };
+            } else {
+                settings = {
+                    'ctx-size': profileEditForm.elements['ctx-size'].value || null,
+                    'n-gpu-layers': profileEditForm.elements['n-gpu-layers'].value || null,
+                    'cache-type-k': profileEditForm.elements['cache-type-k'].value,
+                    'cache-type-v': profileEditForm.elements['cache-type-v'].value,
+                    'flash-attn': profileEditForm.elements['flash-attn'].value,
+                    'kv-unified': profileEditForm.elements['kv-unified'].value,
+                    'spec-type': profileEditForm.elements['spec-type'].value,
+                    'spec-draft-n-max': profileEditForm.elements['spec-draft-n-max'].value || null,
+                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null
+                };
+            }
+            Object.keys(settings).forEach(key => {
+                if (settings[key] === null || settings[key] === '') {
+                    delete settings[key];
+                }
+            });
+            return { settings, backend };
+        };
 
         profileEditForm.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -2796,36 +3127,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert('Please select a model profile section to save.');
                 return;
             }
-            
-            const settings = {
-                'ctx-size': profileEditForm.elements['ctx-size'].value || null,
-                'n-gpu-layers': profileEditForm.elements['n-gpu-layers'].value || null,
-                'cache-type-k': profileEditForm.elements['cache-type-k'].value,
-                'cache-type-v': profileEditForm.elements['cache-type-v'].value,
-                'flash-attn': profileEditForm.elements['flash-attn'].value,
-                'kv-unified': profileEditForm.elements['kv-unified'].value,
-                'spec-type': profileEditForm.elements['spec-type'].value,
-                'spec-draft-n-max': profileEditForm.elements['spec-draft-n-max'].value || null,
-                'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null
-            };
-            
-            Object.keys(settings).forEach(key => {
-                if (settings[key] === null || settings[key] === '') {
-                    delete settings[key];
-                }
-            });
-            
+
+            const { settings, backend } = buildProfileSettings(section);
+
             fetch('/api/profiles/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ section, settings })
+                body: JSON.stringify({ section, settings, backend })
             })
             .then(res => res.json())
             .then(data => {
                 if (data.error) {
                     alert('Failed to save settings: ' + data.error);
                 } else {
-                    modelProfiles[section] = settings;
+                    modelProfiles[section] = Object.assign({}, modelProfiles[section], settings);
                     alert('Settings saved successfully!');
                 }
             })
@@ -2847,23 +3162,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!confirmed) return;
                 
                 // Construct settings from form fields
-                const settings = {
-                    'ctx-size': profileEditForm.elements['ctx-size'].value || null,
-                    'n-gpu-layers': profileEditForm.elements['n-gpu-layers'].value || null,
-                    'cache-type-k': profileEditForm.elements['cache-type-k'].value,
-                    'cache-type-v': profileEditForm.elements['cache-type-v'].value,
-                    'flash-attn': profileEditForm.elements['flash-attn'].value,
-                    'kv-unified': profileEditForm.elements['kv-unified'].value,
-                    'spec-type': profileEditForm.elements['spec-type'].value,
-                    'spec-draft-n-max': profileEditForm.elements['spec-draft-n-max'].value || null,
-                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null
-                };
-                
-                Object.keys(settings).forEach(key => {
-                    if (settings[key] === null || settings[key] === '') {
-                        delete settings[key];
-                    }
-                });
+                const { settings, backend } = buildProfileSettings(section);
                 
                 btnRestartServices.disabled = true;
                 btnRestartServices.textContent = '🔄 Restarting Backend...';
@@ -2871,14 +3170,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 fetch('/api/profiles/save', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ section, settings })
+                    body: JSON.stringify({ section, settings, backend })
                 })
                 .then(res => res.json())
                 .then(data => {
                     if (data.error) {
                         throw new Error(data.error);
                     }
-                    modelProfiles[section] = settings;
+                    modelProfiles[section] = Object.assign({}, modelProfiles[section], settings);
                     
                     // Trigger container restart
                     return fetch('/api/proxy/restart', { method: 'POST' });

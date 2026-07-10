@@ -113,6 +113,61 @@ flowchart LR
 
 Once indexed, any future requests for mapped models bypass initial crash attempts entirely and execute using the cached healthy profile.
 
+## Request Queueing & Concurrency Control
+
+When VRAM only fits a single model (`MAX_LOADED_MODELS=1`), concurrent requests for
+*different* models would otherwise thrash: every request evicts the prior model and
+reloads its own, serializing unrelated workloads through repeated multi-second loads.
+Alpaca serializes LLM requests on the model(s) that are actually resident so a steady
+stream of requests for the same model never forces a reload.
+
+### Slot-aware admission
+
+`wait_for_slot(backend_model, timeout)` blocks a request until a `llama-server` slot is
+free **on the requested model**. Slot availability is read from the child `llama-server`
+`/slots` endpoint (via `_fetch_model_slots()`), which tolerates both the structured
+(list-of-objects) and speculative-decoding (list-of-strings) response shapes as well as
+`{"error": ...}` payloads. When the real slot count cannot be determined the proxy falls
+back to the in-flight counter rather than claiming a free slot that does not exist.
+
+For `MAX_LOADED_MODELS >= 2` admission stays **per-model**: a request for model *A*
+waits if all of *A*'s slots are taken even when model *B* has free slots, and the proxy
+only switches the loaded model when no slots are taken or the next request targets the
+same model.
+
+### Shared queue across endpoints
+
+All request entry points share one queue so Ollama and OpenAI clients are treated
+identically:
+
+- `/api/chat` and `/api/generate` (Ollama)
+- `/v1/chat/completions` and `/v1/completions` (OpenAI)
+
+On admission each request calls `mark_request_queued(model_name)`, incrementing
+`queued_requests[backend_model]`. The request is admitted only when `wait_for_slot()`
+reports a free slot for that exact model, then it increments `active_requests` and
+decrements `queued_requests` once it actually begins executing. The queued count is
+released on **every** exit path — `503` timeout, model-not-found, streaming `finally`,
+non-streaming `finally`, and the connection-error `502` path — so `queued_requests` can
+never leak and a stale count can never block a legitimate model switch.
+
+This matters because `ensure_model()` consults `queued_requests` as well as
+`active_requests` when deciding whether it is safe to evict a loaded model for a swap:
+a model that still has admitted-but-not-yet-in-flight requests is never force-unloaded.
+
+### Load-timeout protection
+
+If a model is still loading past its timeout, the proxy force-unloads it only when doing
+so is safe — there must be no active **or** queued requests for that model. The timeout
+scales with model size (`is_model_over_9b()` → 360s, otherwise 120s) so large models are
+not killed mid-load by an aggressive timer.
+
+### Stable Diffusion queue
+
+Image generation serializes through `active_sd_requests`, and `ensure_sd_model_loaded()`
+additionally waits on `queued_requests` so an SD load cannot evict a model that an
+in-flight or queued LLM request still depends on (cross-backend safety).
+
 ## Supported API Surface
 
 The proxy currently implements:

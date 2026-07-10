@@ -36,6 +36,23 @@ else
     CMAKE_FLAGS=""
 fi
 
+# ── SD_DEBUG: optional startup diagnostic dump ────────────────────────────────
+# Set SD_DEBUG=true to print detected hardware, CUDA capability, and the final
+# placement arguments before sd-server starts. Invaluable when tuning VRAM on
+# cards like the RTX 4060 (8 GB) where layer counts matter a lot.
+if [ "${SD_DEBUG:-false}" = "true" ]; then
+    echo "[sd-entrypoint][DEBUG] ── Hardware Detection Report ──────────────────"
+    echo "[sd-entrypoint][DEBUG]   Detected backend : $HARDWARE"
+    echo "[sd-entrypoint][DEBUG]   CMake flags      : ${CMAKE_FLAGS:-<none>}"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        echo "[sd-entrypoint][DEBUG]   nvidia-smi GPU   : $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'unavailable')"
+        echo "[sd-entrypoint][DEBUG]   CUDA version     : $(nvidia-smi | grep 'CUDA Version' | awk '{print $NF}' || echo 'unavailable')"
+    fi
+    echo "[sd-entrypoint][DEBUG]   SD_GPU_LAYERS    : ${SD_GPU_LAYERS:-<not set, default=40 for Qwen>}"
+    echo "[sd-entrypoint][DEBUG]   SD_CPU_THREADS   : ${SD_CPU_THREADS:-<not set, auto>}"
+    echo "[sd-entrypoint][DEBUG] ──────────────────────────────────────────────"
+fi
+
 # 2. Build Verification & Dynamic Compilation
 BUILD_DIR="/app/stable-diffusion.cpp/build"
 BINARY_PATH="$BUILD_DIR/bin/sd-server"
@@ -109,10 +126,30 @@ if [ -f "$CONFIG_FILE" ]; then
     LISTEN_IP=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('host') or '0.0.0.0')")
     LISTEN_PORT=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('port') or '8081')")
     EXTRA_ARGS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('extra_args') or '')")
-    # qwen-image / qwen-image-edit models are very large and need CPU offload to
-    # fit on constrained VRAM (e.g. 8GB consumer GPUs).
-    if [ "$MODEL_FAMILY" = "qwen-image" ]; then
-        OFFLOAD_ARGS="--offload-to-cpu"
+    GPU_LAYERS_CONF=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('gpu_layers') or '')")
+    THREADS_CONF=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('threads') or '')")
+
+    # Qwen-Image / qwen-image-edit models use a Qwen2.5-VL LLM text encoder and a
+    # separate diffusion model. They can be large (Q4_K_M ≈ 12 GB total), but the
+    # diffusion backbone itself is usually well under 8 GB so the RTX 4060's 8 GB
+    # VRAM can hold a significant portion.
+    #
+    # SD_GPU_LAYERS controls how many transformer layers are placed on the GPU:
+    #   - Higher value  → more VRAM used, faster generation
+    #   - Lower value   → less VRAM used, more CPU fallback
+    # Start with 40 on an RTX 4060 and increase if generation is slow and VRAM
+    # headroom permits (check with: docker exec sd-server nvidia-smi).
+    # To restore the old fully-automatic behaviour, set SD_GPU_LAYERS=0 and add
+    # --auto-fit via the model profile's extra_args key instead.
+    #
+    # If the user has configured profile-specific GPU layers (via models.ini/profile.json),
+    # use that; otherwise fall back to the Qwen heuristics / SD_GPU_LAYERS environment default.
+    if [ "$MODEL_FAMILY" = "qwen-image" ] || [ -n "$LLM_PATH" ] || echo "$MODEL_PATH" | grep -qi "qwen"; then
+        if [ -n "$GPU_LAYERS_CONF" ]; then
+            OFFLOAD_ARGS="--qwen-image-layers $GPU_LAYERS_CONF"
+        else
+            OFFLOAD_ARGS="--qwen-image-layers ${SD_GPU_LAYERS:-40}"
+        fi
     fi
 else
     echo "[sd-entrypoint] No configuration file found at $CONFIG_FILE"
@@ -130,6 +167,43 @@ if [ -z "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH" ]; then
         sleep 10
     done
 fi
+
+# ── Config check (diagnostics ONLY — never changes launch behaviour) ────────
+# Surface the resolved model configuration and warn (without failing) about
+# missing companions, so a bad load is easy to diagnose from `docker logs`.
+echo "[sd-entrypoint][check] ── Model Load Configuration Check ──────────────"
+echo "[sd-entrypoint][check]   Model path : $MODEL_PATH"
+if [ -f "$MODEL_PATH" ]; then
+    echo "[sd-entrypoint][check]   Model file : present ($(du -h "$MODEL_PATH" 2>/dev/null | cut -f1))"
+else
+    echo "[sd-entrypoint][check]   Model file : MISSING — sd-server load will fail"
+fi
+echo "[sd-entrypoint][check]   Family     : ${MODEL_FAMILY:-<undetected>}"
+if [ "$MODEL_FAMILY" = "qwen-image" ] || echo "$MODEL_PATH" | grep -qi "qwen"; then
+    echo "[sd-entrypoint][check]   Qwen-Image load path:"
+    echo "[sd-entrypoint][check]     - standalone diffusion model (--diffusion-model)"
+    echo "[sd-entrypoint][check]     - GPU layers (--qwen-image-layers): ${GPU_LAYERS_CONF:-${SD_GPU_LAYERS:-40}}"
+    if [ -n "$LLM_PATH" ]; then
+        if [ -f "$LLM_PATH" ]; then
+            echo "[sd-entrypoint][check]     - LLM text encoder: $LLM_PATH (present)"
+        else
+            echo "[sd-entrypoint][check]     - LLM text encoder: $LLM_PATH (MISSING — load may fail)"
+        fi
+    else
+        echo "[sd-entrypoint][check]     - LLM text encoder: <none specified>"
+    fi
+    if [ -n "$VAE_PATH" ]; then
+        if [ -f "$VAE_PATH" ]; then
+            echo "[sd-entrypoint][check]     - VAE companion: $VAE_PATH (present)"
+        else
+            echo "[sd-entrypoint][check]     - VAE companion: $VAE_PATH (MISSING — load may fail)"
+        fi
+    else
+        echo "[sd-entrypoint][check]     - VAE companion: <none specified>"
+    fi
+fi
+echo "[sd-entrypoint][check]   Extra args : ${EXTRA_ARGS:-<none>}"
+echo "[sd-entrypoint][check] ────────────────────────────────────────────────"
 
 echo "[sd-entrypoint] Loading model: $MODEL_PATH"
 if [ "$MODEL_FAMILY" = "qwen-image" ] || [ -n "$LLM_PATH" ] || [ -n "$VAE_PATH" ]; then
@@ -161,8 +235,30 @@ if [ -n "$LLM_PATH" ] && [ -f "$LLM_PATH" ]; then
     CMD+=("--llm" "$LLM_PATH")
 fi
 
+# Limit CPU threads so diffusion doesn't peg every core at 100% (which can
+# thermally shut down small-form-factor / weak-cooled hosts during long
+# CPU-bound generations). Default: leave 2 cores free for the OS. Override with
+# the SD_CPU_THREADS env var.
+if [ -n "$THREADS_CONF" ]; then
+    THREADS="$THREADS_CONF"
+elif [ -n "$SD_CPU_THREADS" ]; then
+    THREADS="$SD_CPU_THREADS"
+else
+    THREADS=$(( $(nproc) - 2 ))
+    [ "$THREADS" -lt 1 ] && THREADS=1
+fi
+echo "[sd-entrypoint] Using $THREADS CPU threads for sd-server (of $(nproc) available)."
+CMD+=(--threads "$THREADS")
+
 if [ -n "$OFFLOAD_ARGS" ]; then
-    echo "[sd-entrypoint] Enabling CPU offload for large model: $OFFLOAD_ARGS"
+    # Log whether we are using GPU layers or a CPU-offload fallback so it is
+    # immediately obvious in `docker logs` which path was chosen.
+    if echo "$OFFLOAD_ARGS" | grep -q "\-\-qwen-image-layers"; then
+        echo "[sd-entrypoint] GPU layer placement enabled: $OFFLOAD_ARGS  (RTX 4060: adjust SD_GPU_LAYERS to tune VRAM usage)"
+    else
+        echo "[sd-entrypoint] CPU offload mode: $OFFLOAD_ARGS"
+    fi
+    # shellcheck disable=SC2206
     CMD+=($OFFLOAD_ARGS)
 fi
 
@@ -173,7 +269,12 @@ if [ -n "$EXTRA_ARGS" ]; then
     CMD+=($EXTRA_ARGS)
 fi
 
+# Final command-line summary (always shown; also shown by SD_DEBUG for completeness).
 echo "[sd-entrypoint] Executing: ${CMD[*]}"
+if [ "${SD_DEBUG:-false}" = "true" ]; then
+    echo "[sd-entrypoint][DEBUG] CUDA enabled : $( [ "$HARDWARE" = 'CUDA' ] && echo yes || echo no )"
+    echo "[sd-entrypoint][DEBUG] GPU layers   : ${OFFLOAD_ARGS:-<none set>}"
+fi
 # Run sd-server in the foreground but trap its exit so a failed model load
 # (e.g. incompatible GGUF) drops the container into an idle loop instead of
 # exiting and crash-looping under `restart: always`.

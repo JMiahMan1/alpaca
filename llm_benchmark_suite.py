@@ -16,7 +16,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 import psutil
@@ -57,11 +57,11 @@ class LLMModelBenchmark:
         self.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         self.tests_config = self._load_tests_config()
 
-    def _load_tests_config(self) -> Dict[str, List[Dict]]:
+    def _load_tests_config(self) -> dict[str, list[dict]]:
         filepath = os.getenv("BENCHMARK_TESTS_JSON", "benchmark_tests.json")
         if os.path.exists(filepath):
             try:
-                with open(filepath, "r") as f:
+                with open(filepath) as f:
                     config = json.load(f)
                 required = ["coding", "reasoning", "instruction", "creative", "home_automation"]
                 if all(req in config for req in required):
@@ -76,39 +76,73 @@ class LLMModelBenchmark:
                 )
         return {}
 
-    async def discover_ollama_models(self, base_url: str) -> List[str]:
-        """Dynamically discover available models from Ollama endpoint."""
+    async def discover_ollama_models(self, base_url: str) -> list[str]:
+        """Dynamically discover available models from Ollama endpoint, excluding image models."""
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 response = await client.get(f"{base_url}/api/tags")
                 if response.status_code == 200:
                     data = response.json()
-                    models = [model.get("name") for model in data.get("models", [])]
-                    print(f"[discover] Discovered {len(models)} models from {base_url}")
+                    models = []
+                    for model in data.get("models", []):
+                        name = model.get("name")
+                        if not name:
+                            continue
+                        is_image = False
+                        if model.get("type") == "image":
+                            is_image = True
+                        details = model.get("details") or {}
+                        if details.get("family") == "stable-diffusion":
+                            is_image = True
+                        families = details.get("families") or []
+                        if "stable-diffusion" in families:
+                            is_image = True
+                        name_lower = name.lower()
+                        if any(k in name_lower for k in ("stable-diffusion", "flux", "sdxl", "qwen-rapid-aio", "qwen-image-edit")):
+                            is_image = True
+                        if not is_image:
+                            models.append(name)
+                    print(f"[discover] Discovered {len(models)} text models from {base_url}")
                     return models
                 return []
         except Exception as e:
             print(f"[discover] Error discovering models from {base_url}: {e}")
             return []
 
-    async def discover_proxy_models(self, base_url: str) -> List[str]:
-        """Dynamically discover available models from Alpaca proxy endpoint."""
+    async def discover_proxy_models(self, base_url: str) -> list[str]:
+        """Dynamically discover available models from Alpaca proxy endpoint, excluding image models."""
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 response = await client.get(f"{base_url}/api/tags")
                 if response.status_code == 200:
                     data = response.json()
-                    models = [
-                        model.get("model") or model.get("name") for model in data.get("models", [])
-                    ]
-                    print(f"[discover] Discovered {len(models)} models from proxy {base_url}")
+                    models = []
+                    for model in data.get("models", []):
+                        name = model.get("model") or model.get("name")
+                        if not name:
+                            continue
+                        is_image = False
+                        if model.get("type") == "image":
+                            is_image = True
+                        details = model.get("details") or {}
+                        if details.get("family") == "stable-diffusion":
+                            is_image = True
+                        families = details.get("families") or []
+                        if "stable-diffusion" in families:
+                            is_image = True
+                        name_lower = name.lower()
+                        if any(k in name_lower for k in ("stable-diffusion", "flux", "sdxl", "qwen-rapid-aio", "qwen-image-edit")):
+                            is_image = True
+                        if not is_image:
+                            models.append(name)
+                    print(f"[discover] Discovered {len(models)} text models from proxy {base_url}")
                     return models
                 return []
         except Exception as e:
             print(f"[discover] Error discovering models from proxy {base_url}: {e}")
             return []
 
-    async def discover_all_models(self) -> List[str]:
+    async def discover_all_models(self) -> list[str]:
         """Discover models from all available Ollama instances."""
         print("🔍 Discovering available models across all Ollama instances...")
         all_models = []
@@ -121,7 +155,7 @@ class LLMModelBenchmark:
             unique_models = self._get_fallback_models()
         return unique_models
 
-    async def discover_all_proxy_models(self) -> List[str]:
+    async def discover_all_proxy_models(self) -> list[str]:
         """Discover models from all available Alpaca proxy instances."""
         print("🔍 Discovering available models across all Alpaca proxies...")
         all_models = []
@@ -134,13 +168,13 @@ class LLMModelBenchmark:
             unique_models = self._get_fallback_models()
         return unique_models
 
-    def _get_fallback_models(self) -> List[str]:
+    def _get_fallback_models(self) -> list[str]:
         env_models = os.getenv("BENCHMARK_MODELS", "")
         if env_models:
             return [m.strip() for m in env_models.split(",") if m.strip()]
         return ["qwen3:8b", "qwen2.5-coder:7b", "qwen3.5:9b"]
 
-    def _coding_tests(self, model: str) -> List[Dict]:
+    def _coding_tests(self, model: str) -> list[dict]:
         if "coding" in self.tests_config:
             return self.tests_config["coding"]
         return [
@@ -174,7 +208,7 @@ class LLMModelBenchmark:
             },
         ]
 
-    def _reasoning_tests(self, model: str) -> List[Dict]:
+    def _reasoning_tests(self, model: str) -> list[dict]:
         if "reasoning" in self.tests_config:
             return self.tests_config["reasoning"]
         return [
@@ -194,7 +228,7 @@ class LLMModelBenchmark:
             },
         ]
 
-    def _instruction_tests(self, model: str) -> List[Dict]:
+    def _instruction_tests(self, model: str) -> list[dict]:
         if "instruction" in self.tests_config:
             return self.tests_config["instruction"]
         return [
@@ -214,7 +248,7 @@ class LLMModelBenchmark:
             },
         ]
 
-    def _creative_tests(self, model: str) -> List[Dict]:
+    def _creative_tests(self, model: str) -> list[dict]:
         if "creative" in self.tests_config:
             return self.tests_config["creative"]
         return [
@@ -234,7 +268,7 @@ class LLMModelBenchmark:
             },
         ]
 
-    def _home_automation_tests(self, model: str) -> List[Dict]:
+    def _home_automation_tests(self, model: str) -> list[dict]:
         if "home_automation" in self.tests_config:
             return self.tests_config["home_automation"]
         return [
@@ -404,8 +438,8 @@ class LLMModelBenchmark:
                 await self.loop_task
 
     async def test_model_proxy(
-        self, model: str, test: Dict, sampler: Optional[ResourceSampler] = None
-    ) -> Dict:
+        self, model: str, test: dict, sampler: ResourceSampler | None = None
+    ) -> dict:
         """Test a model against a proxy endpoint."""
         last_error = None
         for proxy_url in self.PROXY_SERVER_URLS:
@@ -441,7 +475,20 @@ class LLMModelBenchmark:
                         response_text = self.strip_thinking(
                             data.get("message", {}).get("content") or data.get("response", "")
                         )
-                        
+
+                        # Guard: empty generation — server returned 200 but produced nothing.
+                        # Skip the nudge retry (it would hang) and fail immediately.
+                        if not response_text and eval_count == 0:
+                            return {
+                                "proxy": proxy_url,
+                                "success": False,
+                                "prompt": test["prompt"],
+                                "latency": round(elapsed, 3),
+                                "response": None,
+                                "tokens_generated": 0,
+                                "error": "Empty generation (eval_count=0, no content returned)",
+                            }
+
                         # If we used 4000 tokens or more (half of 8000), inject nudge and request remaining tokens
                         if eval_count >= 4000:
                             try:
@@ -504,6 +551,13 @@ class LLMModelBenchmark:
                             "tokens_generated": 0,
                             "error": f"HTTP {response.status_code}: {response.text}",
                         }
+            except (httpx.RemoteProtocolError, httpx.ReadError) as e:
+                # Server crashed or dropped the connection — fail immediately
+                # instead of waiting out the full 240-second timeout.
+                if sampler:
+                    await sampler.stop()
+                last_error = e
+                continue
             except Exception as e:
                 if sampler:
                     await sampler.stop()
@@ -515,7 +569,7 @@ class LLMModelBenchmark:
                 error_msg = f"Request timed out: {type(last_error).__name__}"
             else:
                 error_msg = (
-                    f"{type(last_error).__name__}: {str(last_error)}"
+                    f"{type(last_error).__name__}: {last_error!s}"
                     if str(last_error)
                     else type(last_error).__name__
                 )
@@ -533,8 +587,8 @@ class LLMModelBenchmark:
         }
 
     async def test_model_direct(
-        self, model: str, test: Dict, sampler: Optional[ResourceSampler] = None
-    ) -> Dict:
+        self, model: str, test: dict, sampler: ResourceSampler | None = None
+    ) -> dict:
         """Test a model directly without proxy."""
         last_error = None
         for ollama_url in self.OLLAMA_SERVER_URLS:
@@ -567,6 +621,19 @@ class LLMModelBenchmark:
                         prompt_ns = data.get("prompt_eval_duration", 0)
                         eval_count = data.get("eval_count", 0)
                         response_text = self.strip_thinking(data.get("response", ""))
+
+                        # Guard: empty generation — server returned 200 but produced nothing.
+                        # Skip the nudge retry (it would hang) and fail immediately.
+                        if not response_text and eval_count == 0:
+                            return {
+                                "ollama_url": ollama_url,
+                                "success": False,
+                                "prompt": test["prompt"],
+                                "latency": round(elapsed, 3),
+                                "response": None,
+                                "tokens_generated": 0,
+                                "error": "Empty generation (eval_count=0, no content returned)",
+                            }
 
                         # If we used 4000 tokens or more (half of 8000), inject nudge and request remaining tokens
                         if eval_count >= 4000:
@@ -624,6 +691,13 @@ class LLMModelBenchmark:
                             "tokens_generated": 0,
                             "error": f"HTTP {response.status_code}",
                         }
+            except (httpx.RemoteProtocolError, httpx.ReadError) as e:
+                # Server crashed or dropped the connection — fail immediately
+                # instead of waiting out the full 240-second timeout.
+                if sampler:
+                    await sampler.stop()
+                last_error = e
+                continue
             except Exception as e:
                 if sampler:
                     await sampler.stop()
@@ -635,7 +709,7 @@ class LLMModelBenchmark:
                 error_msg = f"Request timed out: {type(last_error).__name__}"
             else:
                 error_msg = (
-                    f"{type(last_error).__name__}: {str(last_error)}"
+                    f"{type(last_error).__name__}: {last_error!s}"
                     if str(last_error)
                     else type(last_error).__name__
                 )
@@ -652,7 +726,7 @@ class LLMModelBenchmark:
             "error": error_msg,
         }
 
-    def _display_live_results(self, results: Dict):
+    def _display_live_results(self, results: dict):
         """Display benchmark results in a formatted UI."""
         print("\n" + "=" * 80)
         print("BENCHMARK RESULTS UI")
@@ -717,11 +791,11 @@ class LLMModelBenchmark:
         cancel_event=None,
         completed_container=None,
         total_tests=None,
-        test_ids: Optional[List[str]] = None,
-    ) -> Dict:
+        test_ids: list[str] | None = None,
+    ) -> dict:
         """Run only functional (accuracy) tests on a model."""
         print(f"\n--- Running Functional Correctness Suite for: {model} ---")
-        results: Dict[str, Any] = {"model": model, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        results: dict[str, Any] = {"model": model, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
         categories = {
             "coding": self._coding_tests,
             "reasoning": self._reasoning_tests,
@@ -858,8 +932,8 @@ class LLMModelBenchmark:
         cancel_event=None,
         completed_container=None,
         total_tests=None,
-        test_ids: Optional[List[str]] = None,
-    ) -> Dict:
+        test_ids: list[str] | None = None,
+    ) -> dict:
         """Run performance suite measuring speed and peak footprint metrics."""
         print(f"\n--- Running Performance Suite for: {model} ---")
 
@@ -1004,7 +1078,7 @@ class LLMModelBenchmark:
             },
         }
 
-    def _calculate_category_stats(self, results: List[Dict]) -> Dict:
+    def _calculate_category_stats(self, results: list[dict]) -> dict:
         successful_tests = [r for r in results if r["success"]]
         if not successful_tests:
             return {
@@ -1026,12 +1100,12 @@ class LLMModelBenchmark:
             "tests": results,
         }
 
-    def _extract_duration(self, result: Dict) -> float:
+    def _extract_duration(self, result: dict) -> float:
         if "eval_duration" in result and "prompt_eval_duration" in result:
             return (result["eval_duration"] + result["prompt_eval_duration"]) / 1e9
         return result.get("latency", 0)
 
-    def _calculate_avg_ttft(self, results: List[Dict]) -> float:
+    def _calculate_avg_ttft(self, results: list[dict]) -> float:
         total_ttft = 0
         for result in results:
             if "prompt_eval_duration" in result:
@@ -1041,7 +1115,7 @@ class LLMModelBenchmark:
                 total_ttft += result["latency"] * 1000
         return total_ttft / len(results) if results else 0
 
-    def get_total_tests_per_model(self, mode: str, test_ids: Optional[List[str]] = None) -> int:
+    def get_total_tests_per_model(self, mode: str, test_ids: list[str] | None = None) -> int:
         total = 0
         if mode in ("functional", "all"):
             tests = (
@@ -1065,13 +1139,13 @@ class LLMModelBenchmark:
 
     async def run_model_benchmarks(
         self,
-        models: List[str],
+        models: list[str],
         use_proxy: bool,
         progress_callback=None,
         cancel_event=None,
         mode: str = "all",
-        test_ids: Optional[List[str]] = None,
-    ) -> Dict:
+        test_ids: list[str] | None = None,
+    ) -> dict:
         """Run split model benchmarks based on mode: 'functional', 'performance', or 'all'."""
         print("=" * 80)
         print("COMPREHENSIVE LLM MODEL BENCHMARKING SUITE")
@@ -1081,7 +1155,7 @@ class LLMModelBenchmark:
             print(f"Selected Test IDs: {test_ids}")
         print("=" * 80)
 
-        all_results: Dict[str, Any] = {
+        all_results: dict[str, Any] = {
             "benchmark_version": "3.0.0",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "benchmark_type": "proxy" if use_proxy else "direct",
@@ -1174,7 +1248,7 @@ class LLMModelBenchmark:
             merged_results = []
             if latest_file.exists():
                 try:
-                    with open(latest_file, "r") as f:
+                    with open(latest_file) as f:
                         prev_data = json.load(f)
                     merged_results = prev_data.get("results", [])
                 except Exception as e:
@@ -1262,7 +1336,7 @@ class LLMModelBenchmark:
 
         return all_results
 
-    def run_optimization_pipeline(self, models: List[str]):
+    def run_optimization_pipeline(self, models: list[str]):
         print("=" * 80)
         print("LLM MODEL OPTIMIZATION PIPELINE")
         print(f"Testing models: {models}")

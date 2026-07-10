@@ -8,9 +8,10 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
-from typing import Any, Dict, Optional, Tuple
+from logging.handlers import RotatingFileHandler
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -47,6 +48,20 @@ if not logger.handlers:
 
     logger.addHandler(stream_handler)
     logger.addHandler(deque_handler)
+
+    # Persistent, timestamped audit log so requests (incl. image generations)
+    # are traceable across restarts instead of only living in the in-memory deque.
+    try:
+        _log_dir = os.getenv("DATA_DIR", "data")
+        os.makedirs(_log_dir, exist_ok=True)
+        _fh = RotatingFileHandler(
+            os.path.join(_log_dir, "alpaca-proxy.log"),
+            maxBytes=5_000_000, backupCount=3, encoding="utf-8",
+        )
+        _fh.setFormatter(formatter)
+        logger.addHandler(_fh)
+    except Exception:
+        pass
 
 
 # Custom filter to ensure request_id is always present
@@ -90,8 +105,44 @@ _model_errors_buffer: deque = deque(maxlen=500)
 _model_errors_lock = threading.Lock()
 
 # Reference counting for active requests to prevent unloading in-use models
-active_requests = {}
+active_requests: dict[str, int] = {}
+# Counts of requests that have been admitted (wait_for_slot / ensure_model) but
+# are not yet in-flight, keyed by backend model id. Lets the unload path avoid
+# swapping out a model that an already-queued request depends on.
+queued_requests: dict[str, int] = {}
 active_requests_lock = asyncio.Condition()
+
+
+async def mark_request_queued(model_name: str | None) -> str | None:
+    """Admit a chat request into the shared queue.
+
+    Increments the per-backend ``queued_requests`` count for the model's backend
+    so that a concurrent request for a *different* model waits (rather than
+    swapping this model away) during the load/queue window. Returns the backend
+    model id that was marked, or ``None`` when the model could not be resolved.
+
+    Must be paired with :func:`release_request_queued` (typically in the same
+    ``finally`` that releases ``active_requests``) when the request completes.
+    """
+    if not model_name:
+        return None
+    try:
+        _tgt = await resolve_router_model(model_name, reload=False)
+        backend = _tgt.get("backend_model")
+    except Exception:
+        return None
+    if backend:
+        async with active_requests_lock:
+            queued_requests[backend] = queued_requests.get(backend, 0) + 1
+    return backend
+
+
+async def release_request_queued(backend: str | None) -> None:
+    """Release a request previously admitted via :func:`mark_request_queued`."""
+    if backend:
+        async with active_requests_lock:
+            queued_requests[backend] = max(0, queued_requests.get(backend, 0) - 1)
+            active_requests_lock.notify_all()
 
 # Thread-safe detailed request tracking (for user query/summary)
 
@@ -378,7 +429,7 @@ def is_model_complete(manifest):
     try:
         layers = manifest.get("layers", [])
         config = manifest.get("config", {})
-        for layer in layers + [config]:
+        for layer in [*layers, config]:
             digest = layer.get("digest")
             if not digest:
                 continue
@@ -395,7 +446,7 @@ def is_model_complete(manifest):
 def read_manifest(path):
     """Load a manifest file, returning None for partial or malformed files."""
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             manifest = json.load(f)
         if isinstance(manifest, dict):
             return manifest
@@ -408,7 +459,7 @@ def iter_local_manifests():
     manifest_base = model_manifest_base()
     if not os.path.exists(manifest_base):
         return
-    for root, dirs, files in os.walk(manifest_base):
+    for root, _dirs, files in os.walk(manifest_base):
         for file in files:
             if "sha256" in file:
                 continue
@@ -595,10 +646,7 @@ def router_entry_values(entry):
 
 def router_entry_matches(entry, candidates):
     entry_values = router_entry_values(entry)
-    for candidate in candidates:
-        if candidate in entry_values:
-            return True
-    return False
+    return any(candidate in entry_values for candidate in candidates)
 
 
 OLLAMA_OPTION_MAP = {
@@ -849,7 +897,7 @@ def build_generate_payload(body, backend_model):
     if body.get("suffix") is not None:
         payload["input_suffix"] = body["suffix"]
     if isinstance(body.get("context"), list) and body["context"]:
-        payload["prompt"] = list(body["context"]) + [payload["prompt"]]
+        payload["prompt"] = [*list(body["context"]), payload["prompt"]]
     apply_thinking_override(payload, body)
     return payload
 
@@ -959,10 +1007,7 @@ async def post_router_model_action(action, payload):
     url = f"{ROUTER_MODELS_URL}/{action}"
 
     # If payload is just a string, wrap it. If it's a dict, use it as is.
-    if isinstance(payload, str):
-        json_body = {"model": payload}
-    else:
-        json_body = payload
+    json_body = {"model": payload} if isinstance(payload, str) else payload
 
     try:
         resp = await client_httpx.post(url, json=json_body)
@@ -1284,10 +1329,8 @@ async def lifespan(app: FastAPI):
     yield
 
     sd_poll_task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await sd_poll_task
-    except asyncio.CancelledError:
-        pass
 
     for task in list(model_unload_tasks.values()):
         task.cancel()
@@ -1327,6 +1370,15 @@ async def log_requests(request: Request, call_next):
     # Extract client IP and User-Agent
     client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent", "unknown-ua")
+
+    # Raw inbound routing/attribution headers — used to trace where a request
+    # actually originated (e.g. Caddy -> gateway -> proxy chains, browser vs
+    # server-to-server calls) rather than only the inferred source category.
+    xff = request.headers.get("x-forwarded-for", "")
+    x_real_ip = request.headers.get("x-real-ip", "")
+    origin_hdr = request.headers.get("origin", "")
+    referer_hdr = request.headers.get("referer", "")
+    xreqsrc = request.headers.get("x-request-source", "")
 
     # Extract explicit origin tracking header (case-insensitive)
     request_source = request.headers.get("x-request-source")
@@ -1393,6 +1445,25 @@ async def log_requests(request: Request, call_next):
         logger.info(
             f"Hit: {request.method} {request.url.path} | "
             f"Origin: {request_source} | IP: {client_ip} | UA: {user_agent}",
+            extra={"request_id": request_id, "request_source": request_source},
+        )
+    else:
+        # Always log every request with a timestamp (persisted to the audit
+        # log) so traffic — including /v1/images/generations — is attributable
+        # by time and full source chain even when verbose DEBUG is off.
+        src_detail = f"src={request_source} ip={client_ip}"
+        if xff:
+            src_detail += f" xff={xff}"
+        if x_real_ip:
+            src_detail += f" x-real-ip={x_real_ip}"
+        if origin_hdr:
+            src_detail += f" origin={origin_hdr}"
+        if referer_hdr:
+            src_detail += f" referer={referer_hdr}"
+        if xreqsrc:
+            src_detail += f" x-request-source={xreqsrc}"
+        logger.info(
+            f"REQ: {request.method} {request.url.path} | {src_detail}",
             extra={"request_id": request_id, "request_source": request_source},
         )
 
@@ -1642,13 +1713,13 @@ async def embed(request: Request):
         return JSONResponse(result)
     except httpx.HTTPStatusError as e:
         await record_metrics("/api/embed", 0, error=True)
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except httpx.TimeoutException:
         await record_metrics("/api/embed", 0, error=True)
-        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out") from None
     except httpx.RequestError as e:
         await record_metrics("/api/embed", 0, error=True)
-        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}") from e
 
 
 @app.post("/api/embeddings")
@@ -1763,17 +1834,52 @@ async def openai_chat_completions(request: Request):
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
     )
+    # Admit into the shared request queue (paired with release_request_queued in
+    # the finally blocks below and on the early-return paths).
+    queued_backend = await mark_request_queued(model_name)
     max_retries = 3
     for attempt in range(max_retries):
         try:
             # Resolve model if provided (inside the retry loop!)
             if model_name:
                 try:
+                    # Wake-on-LAN auto-load: if both backends are completely idle and the
+                    # requested model is not currently loaded, log the intercept trigger.
+                    async with vram_monitoring_lock:
+                        _llm_idle = active_llama_model is None
+                    _req_idle = not any(c > 0 for c in active_requests.values())
+                    if _llm_idle and _req_idle and attempt == 0:
+                        logger.info(
+                            f"[AUTO-LOAD] Idle intercept \u2014 chat request received for '{model_name}'. "
+                            f"Triggering auto-load (Wake-on-LAN)."
+                        )
                     resolved = await ensure_model(model_name)
                     backend_model = resolved["backend_model"]
+                    # Shared queue: only admit this request once a slot on its own
+                    # model is available, so it never lands on a slot serving a
+                    # different model (which would force a swap + thrash). Model
+                    # switching is still permitted when no slots are taken (idle)
+                    # or the request targets the same already-loaded model.
+                    slot_ok = await wait_for_slot(
+                        backend_model, timeout=body.get("queue_timeout", 120.0)
+                    )
+                    if not slot_ok:
+                        await release_request_queued(queued_backend)
+                        return JSONResponse(
+                            status_code=503,
+                            content={
+                                "error": {
+                                    "message": "No llama-server slots available within timeout",
+                                    "type": "rate_limit_error",
+                                    "param": "model",
+                                    "code": "queue_timeout",
+                                }
+                            },
+                        )
                     body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
+                    await release_request_queued(queued_backend)
                     return JSONResponse(
                         status_code=e.status_code,
                         content={
@@ -1865,12 +1971,13 @@ async def openai_chat_completions(request: Request):
                             active_requests[backend_model] = max(
                                 0, active_requests.get(backend_model, 0) - 1
                             )
-                            active_requests_lock.notify_all()
-                        req_data = complete_active_request(request_id)
-                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
-                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
-                        await record_metrics(
-                            "/v1/chat/completions",
+                        active_requests_lock.notify_all()
+                    await release_request_queued(queued_backend)
+                    req_data = complete_active_request(request_id)
+                    p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                    c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                    await record_metrics(
+                        "/v1/chat/completions",
                             (now_ns() - started_ns) / 1e6,
                             prompt_tokens=p_toks,
                             gen_tokens=c_toks,
@@ -1953,6 +2060,7 @@ async def openai_chat_completions(request: Request):
                             0, active_requests.get(backend_model, 0) - 1
                         )
                         active_requests_lock.notify_all()
+                    await release_request_queued(queued_backend)
                     complete_active_request(request_id)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
@@ -1960,6 +2068,7 @@ async def openai_chat_completions(request: Request):
                     f"Chat completions proxy failed after {max_retries} attempts due to connection error: {exc}"
                 )
                 await record_metrics("/v1/chat/completions", 0, error=True)
+                await release_request_queued(queued_backend)
                 return JSONResponse(
                     status_code=502,
                     content={
@@ -2005,6 +2114,9 @@ async def openai_completions(request: Request):
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
     )
+    # Admit into the shared request queue (paired with release_request_queued in
+    # the finally blocks below and on the early-return paths).
+    queued_backend = await mark_request_queued(model_name)
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -2013,9 +2125,29 @@ async def openai_completions(request: Request):
                 try:
                     resolved = await ensure_model(model_name)
                     backend_model = resolved["backend_model"]
+                    # Shared queue: only admit this request once a slot on its own
+                    # model is available, so it never lands on a slot serving a
+                    # different model (which would force a swap + thrash).
+                    slot_ok = await wait_for_slot(
+                        backend_model, timeout=body.get("queue_timeout", 120.0)
+                    )
+                    if not slot_ok:
+                        await release_request_queued(queued_backend)
+                        return JSONResponse(
+                            status_code=503,
+                            content={
+                                "error": {
+                                    "message": "No llama-server slots available within timeout",
+                                    "type": "rate_limit_error",
+                                    "param": "model",
+                                    "code": "queue_timeout",
+                                }
+                            },
+                        )
                     body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
+                    await release_request_queued(queued_backend)
                     return JSONResponse(
                         status_code=e.status_code,
                         content={
@@ -2109,11 +2241,12 @@ async def openai_completions(request: Request):
                                 0, active_requests.get(backend_model, 0) - 1
                             )
                             active_requests_lock.notify_all()
-                        req_data = complete_active_request(request_id)
-                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
-                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
-                        await record_metrics(
-                            "/v1/completions",
+                    await release_request_queued(queued_backend)
+                    req_data = complete_active_request(request_id)
+                    p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                    c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                    await record_metrics(
+                        "/v1/completions",
                             (now_ns() - started_ns) / 1e6,
                             prompt_tokens=p_toks,
                             gen_tokens=c_toks,
@@ -2178,6 +2311,7 @@ async def openai_completions(request: Request):
                             0, active_requests.get(backend_model, 0) - 1
                         )
                         active_requests_lock.notify_all()
+                    await release_request_queued(queued_backend)
                     complete_active_request(request_id)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
@@ -2185,6 +2319,7 @@ async def openai_completions(request: Request):
                     f"Completions proxy failed after {max_retries} attempts due to connection error: {exc}"
                 )
                 await record_metrics("/v1/completions", 0, error=True)
+                await release_request_queued(queued_backend)
                 return JSONResponse(
                     status_code=502,
                     content={
@@ -2285,13 +2420,13 @@ async def openai_embeddings(request: Request):
 
 
 # Global state for VRAM tracking
-active_llama_model: Optional[str] = None
-active_sd_model: Optional[str] = None
+active_llama_model: str | None = None
+active_sd_model: str | None = None
 vram_monitoring_lock = asyncio.Lock()
 
 active_sd_requests = 0
 active_sd_requests_lock = asyncio.Condition()
-client_sd_httpx: Optional[httpx.AsyncClient] = None
+client_sd_httpx: httpx.AsyncClient | None = None
 backend_swap_lock = asyncio.Lock()
 async def is_container_running(name: str) -> bool:
     """Checks if a Docker container is currently in the running state."""
@@ -2360,7 +2495,7 @@ async def sd_vram_poll_loop() -> None:
         await asyncio.sleep(5.0)
 
 
-def validate_sd_parameters(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+def validate_sd_parameters(payload: dict[str, Any]) -> tuple[bool, str | None]:
     """Validates the input parameters for Stable Diffusion image generation."""
     size = payload.get("size", "512x512")
     if not isinstance(size, str) or "x" not in size:
@@ -2408,9 +2543,7 @@ def is_image_model_manifest(manifest: dict) -> bool:
     if "stable-diffusion" in families:
         return True
     arch = str(config.get("model_architecture") or "").lower()
-    if any(k in arch for k in ("stable-diffusion", "flux", "sd1", "sd2", "sd3", "sdxl")):
-        return True
-    return False
+    return bool(any(k in arch for k in ("stable-diffusion", "flux", "sd1", "sd2", "sd3", "sdxl")))
 
 
 def iter_local_sd_models():
@@ -2453,7 +2586,7 @@ def iter_router_sd_models():
         if not os.path.exists(profile_path):
             continue
         try:
-            with open(profile_path, "r") as f:
+            with open(profile_path) as f:
                 profile = json.load(f)
         except Exception:
             continue
@@ -2489,7 +2622,7 @@ def iter_all_sd_models():
         yield name, blob, profile
 
 
-def find_local_model_file(model_name: str) -> Optional[str]:
+def find_local_model_file(model_name: str) -> str | None:
     """Finds the absolute path to a matching Stable Diffusion model.
 
     Resolution is done by matching the requested model name against local SD model
@@ -2503,12 +2636,12 @@ def find_local_model_file(model_name: str) -> Optional[str]:
     target_public = public_model_name(target).lower().replace("/", "--")
 
     try:
-        for name, blob, manifest in iter_all_sd_models():
+        for name, blob, _manifest in iter_all_sd_models():
             candidate_public = public_model_name(name).lower().replace("/", "--")
             if candidate_public == target_public:
                 return blob
         # Fallback: case-insensitive substring match on the public name
-        for name, blob, manifest in iter_all_sd_models():
+        for name, blob, _manifest in iter_all_sd_models():
             candidate_public = public_model_name(name).lower().replace("/", "--")
             if candidate_public and (candidate_public in target_public or target_public in candidate_public):
                 return blob
@@ -2518,7 +2651,7 @@ def find_local_model_file(model_name: str) -> Optional[str]:
     return None
 
 
-def resolve_companion_path(filename: str) -> Optional[str]:
+def resolve_companion_path(filename: str) -> str | None:
     """Resolves the absolute path of a companion file (VAE/CLIP) in the system."""
     if not filename:
         return None
@@ -2538,44 +2671,67 @@ def resolve_companion_path(filename: str) -> Optional[str]:
     return None
 
 
-def get_model_profile(model_path: str) -> Dict[str, Any]:
+def get_model_profile(model_path: str) -> dict[str, Any]:
     """Loads a model's companion profile if it exists."""
     if not model_path:
         return {}
-    profile_path = model_path + ".profile.json"
-    if not os.path.exists(profile_path) and "/blobs/" in model_path:
-        real_blob = os.path.realpath(model_path)
-        for entry in os.scandir(ROUTER_MODELS_DIR):
-            if entry.is_symlink():
-                try:
-                    target = os.readlink(entry.path)
-                    abs_target = os.path.abspath(os.path.join(ROUTER_MODELS_DIR, target))
-                    if os.path.realpath(abs_target) == real_blob:
-                        cand_profile = entry.path + ".profile.json"
-                        if os.path.exists(cand_profile):
-                            profile_path = cand_profile
-                            break
-                except Exception:
-                    pass
 
-    if os.path.exists(profile_path):
+    # Try both with and without the GGML/Safetensors extension
+    profile_paths = [model_path + ".profile.json"]
+    base, ext = os.path.splitext(model_path)
+    if ext:
+        profile_paths.append(base + ".profile.json")
+
+    if "/blobs/" in model_path:
         try:
-            with open(profile_path, "r") as f:
+            real_blob = os.path.realpath(model_path)
+            for entry in os.scandir(ROUTER_MODELS_DIR):
+                if entry.is_symlink():
+                    try:
+                        target = os.readlink(entry.path)
+                        abs_target = os.path.abspath(os.path.join(ROUTER_MODELS_DIR, target))
+                        if os.path.realpath(abs_target) == real_blob:
+                            profile_paths.append(entry.path + ".profile.json")
+                            if "." in entry.name:
+                                profile_paths.append(entry.path.rsplit(".", 1)[0] + ".profile.json")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    resolved_paths = []
+    for p in profile_paths:
+        abs_p = os.path.abspath(p)
+        if abs_p not in resolved_paths and os.path.exists(abs_p):
+            resolved_paths.append(abs_p)
+
+    # Sort paths so that base files (with .gguf or .safetensors) come before overrides
+    def get_sort_key(path_str):
+        if path_str.endswith(".gguf.profile.json") or path_str.endswith(".safetensors.profile.json"):
+            return 0
+        return 1
+
+    resolved_paths.sort(key=get_sort_key)
+
+    merged_profile = {}
+    for p in resolved_paths:
+        try:
+            with open(p) as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    return data
+                    merged_profile.update(data)
         except Exception as e:
-            logger.error(f"Failed to read model profile {profile_path}: {e}")
-    return {}
+            logger.error(f"Failed to read model profile {p}: {e}")
+    return merged_profile
 
 
-def get_active_model_config() -> Optional[Dict[str, Any]]:
+def get_active_model_config() -> dict[str, Any] | None:
     """Reads the current active model JSON config if it exists."""
     config_path = os.path.join(ROUTER_MODELS_DIR, "sd_active_model.json")
     if not os.path.exists(config_path):
         return None
     try:
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             data = json.load(f)
             if isinstance(data, dict):
                 return data
@@ -2586,12 +2742,16 @@ def get_active_model_config() -> Optional[Dict[str, Any]]:
 
 def write_active_model_config(
     model_path: str,
-    vae_path: Optional[str] = None,
-    clip_l_path: Optional[str] = None,
-    t5xxl_path: Optional[str] = None,
-    llm_path: Optional[str] = None,
-    model_family: Optional[str] = None,
-    extra_args: Optional[str] = None,
+    vae_path: str | None = None,
+    clip_l_path: str | None = None,
+    t5xxl_path: str | None = None,
+    llm_path: str | None = None,
+    model_family: str | None = None,
+    extra_args: str | None = None,
+    gpu_layers: str | None = None,
+    threads: str | None = None,
+    cache_mode: str | None = None,
+    cache_option: str | None = None,
 ) -> None:
     """Writes the active model and companion configuration to the router models directory."""
     config_path = os.path.join(ROUTER_MODELS_DIR, "sd_active_model.json")
@@ -2605,6 +2765,10 @@ def write_active_model_config(
         "host": "0.0.0.0",
         "port": "8081",
         "extra_args": extra_args,
+        "gpu_layers": gpu_layers,
+        "threads": threads,
+        "cache_mode": cache_mode,
+        "cache_option": cache_option,
     }
     try:
         temp_path = config_path + ".tmp"
@@ -2677,6 +2841,8 @@ async def unload_sd_model() -> bool:
             "host": "0.0.0.0",
             "port": "8081",
             "extra_args": "",
+            "gpu_layers": "",
+            "threads": "",
         }
         temp_path = config_path + ".tmp"
         with open(temp_path, "w") as f:
@@ -2687,28 +2853,28 @@ async def unload_sd_model() -> bool:
         return False
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "restart",
-            "sd-server",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-        if proc.returncode == 0:
-            logger.info("sd-server container successfully restarted/idle.")
-            for _ in range(30):
-                sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
-                try:
-                    if client_sd_httpx:
-                        resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
-                        if resp.status_code == 200 and not resp.json().get("data"):
-                            logger.info("SD model unload verified.")
-                            break
-                except Exception:
-                    pass
-                await asyncio.sleep(0.5)
-            return True
+        # Gracefully tear down sd-server (SIGTERM -> SIGKILL), then start fresh with
+        # the empty config so the LLM backend can reclaim the VRAM.
+        if not await _stop_container_gracefully(_SD_CONTAINER):
+            logger.warning(
+                "sd-server did not stop cleanly; starting with empty config anyway."
+            )
+        if not await _start_container(_SD_CONTAINER):
+            logger.error("Failed to (re)start sd-server container.")
+            return False
+        logger.info("sd-server container restarted with idle (empty) config.")
+        for _ in range(30):
+            sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+            try:
+                if client_sd_httpx:
+                    resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
+                    if resp.status_code == 200 and not resp.json().get("data"):
+                        logger.info("SD model unload verified.")
+                        break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return True
     except Exception as e:
         logger.error(f"Error restarting sd-server: {e}")
     return False
@@ -2759,6 +2925,19 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
             detail=f"Model '{requested_model}' not found in router models repository.",
         )
 
+    # Resolve settings from the model profile overlay (.profile.json)
+    profile = get_model_profile(target_path)
+    vae_path = resolve_companion_path(profile.get("vae", ""))
+    clip_l_path = resolve_companion_path(profile.get("clip_l", ""))
+    t5xxl_path = resolve_companion_path(profile.get("t5xxl", ""))
+    llm_path = resolve_companion_path(profile.get("llm", ""))
+    model_family = profile.get("model_family", "")
+    extra_args = profile.get("extra_args") or profile.get("extra-args") or ""
+
+    # Read gpu_layers and threads config overrides
+    gpu_layers = profile.get("n-gpu-layers") or profile.get("n_gpu_layers") or profile.get("gpu_layers")
+    threads = profile.get("n-cpu-moe") or profile.get("n_cpu_moe") or profile.get("threads")
+
     # Observe active LLM model state
     async with vram_monitoring_lock:
         llama_active = active_llama_model
@@ -2766,11 +2945,17 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
     # Use backend_swap_lock to atomicize model swaps and prevent concurrent swaps/evictions
     async with backend_swap_lock:
         if llama_active is not None:
-            # Wait until there are no active LLM requests
+            # Wait until there are no active OR queued LLM requests. Queued
+            # requests have been admitted (and may be mid-load / mid-queue) but
+            # are not yet in-flight; evicting their model now would force a
+            # thrash reload when they proceed.
             async with active_requests_lock:
-                while any(count > 0 for count in active_requests.values()):
+                while (
+                    any(count > 0 for count in active_requests.values())
+                    or any(count > 0 for count in queued_requests.values())
+                ):
                     logger.info(
-                        "Active LLM requests in progress, waiting before clearing LLM VRAM..."
+                        "Active or queued LLM requests in progress, waiting before clearing LLM VRAM..."
                     )
                     await active_requests_lock.wait()
 
@@ -2803,18 +2988,23 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
         active_config = get_active_model_config()
         if active_config and target_path:
             active_path = active_config.get("model_path", "")
-            if os.path.abspath(target_path) == os.path.abspath(active_path) and sd_healthy:
+            active_gpu = str(active_config.get("gpu_layers") or "")
+            active_threads = str(active_config.get("threads") or "")
+            active_extra = str(active_config.get("extra_args") or "")
+
+            profile_gpu = str(gpu_layers or "")
+            profile_threads = str(threads or "")
+            profile_extra = str(extra_args or "")
+
+            if (os.path.abspath(target_path) == os.path.abspath(active_path)
+                and sd_healthy
+                and active_gpu == profile_gpu
+                and active_threads == profile_threads
+                and active_extra == profile_extra):
                 is_sd_loaded = True
 
         if not is_sd_loaded:
-            logger.info(f"Loading SD model: {target_path}")
-            profile = get_model_profile(target_path)
-            vae_path = resolve_companion_path(profile.get("vae", ""))
-            clip_l_path = resolve_companion_path(profile.get("clip_l", ""))
-            t5xxl_path = resolve_companion_path(profile.get("t5xxl", ""))
-            llm_path = resolve_companion_path(profile.get("llm", ""))
-            model_family = profile.get("model_family", "")
-            extra_args = profile.get("extra_args", "")
+            logger.info(f"Loading SD model: {target_path} (GPU layers: {gpu_layers or 'auto'}, Threads: {threads or 'auto'})")
 
             write_active_model_config(
                 model_path=target_path,
@@ -2824,22 +3014,30 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
                 llm_path=llm_path,
                 model_family=model_family,
                 extra_args=extra_args,
+                gpu_layers=gpu_layers,
+                threads=threads,
+                cache_mode=profile.get("cache-mode") or profile.get("cache_mode"),
+                cache_option=profile.get("cache-option") or profile.get("cache_option"),
             )
 
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "docker",
-                    "restart",
-                    "sd-server",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await proc.communicate()
+                # Gracefully stop any prior SD model (freeing VRAM) before starting
+                # fresh with the new config, then verify the container is up.
+                if not await _stop_container_gracefully(_SD_CONTAINER):
+                    logger.warning(
+                        "sd-server did not stop cleanly; attempting start with new config."
+                    )
+                if not await _start_container(_SD_CONTAINER):
+                    raise HTTPException(
+                        status_code=503, detail="Failed to restart sd-server container."
+                    )
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"Failed to restart sd-server: {e}")
                 raise HTTPException(
                     status_code=503, detail="Failed to restart sd-server container."
-                )
+                ) from e
 
             # Wait for sd-server to become responsive
             healthy = False
@@ -2873,7 +3071,7 @@ async def list_sd_models() -> JSONResponse:
     """Returns the list of locally available Stable Diffusion / image models."""
     models = []
     try:
-        for name, blob, meta in iter_all_sd_models():
+        for name, _blob, meta in iter_all_sd_models():
             family = "stable-diffusion"
             if isinstance(meta, dict):
                 family = meta.get("model_family") or meta.get("config", {}).get("model_family") or "stable-diffusion"
@@ -2894,17 +3092,33 @@ async def load_sd_model_endpoint(request: Request) -> JSONResponse:
     try:
         payload = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from None
     requested_model = payload.get("model", "")
     if not requested_model:
         raise HTTPException(status_code=400, detail="`model` is required.")
+
+    # Architecture guardrail: reject LLM / chat models before we touch VRAM or
+    # restart any container.  This prevents Qwen/Llama GGUF models from being
+    # accidentally routed to the Stable Diffusion backend (causes OOM / thermal trips).
+    _manifest_path, _manifest = load_local_manifest(requested_model, require_complete=False)
+    if _manifest is not None and not is_image_model_manifest(_manifest):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Model '{requested_model}' does not appear to be an image-generation model "
+                f"(Stable Diffusion / Flux / SDXL). Loading a language model into the "
+                f"stable-diffusion.cpp backend is not supported and can crash the system. "
+                f"Use POST /api/chat or /v1/chat/completions for language models."
+            ),
+        )
+
     try:
         target_path = await ensure_sd_model_loaded(requested_model)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to load SD model: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to load SD model: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to load SD model: {e!s}") from e
     return JSONResponse(content={"status": "loaded", "model": requested_model, "path": target_path})
 
 
@@ -2916,7 +3130,7 @@ async def edit_images(request: Request) -> Response:
     try:
         form = await request.form()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid multipart form data.")
+        raise HTTPException(status_code=400, detail="Invalid multipart form data.") from None
 
     requested_model = str(form.get("model", ""))
     if not requested_model:
@@ -2955,7 +3169,7 @@ async def edit_images(request: Request) -> Response:
         headers = {"Accept": "application/json", "User-Agent": "alpaca-proxy/1.0"}
         files = []
         data = {}
-        for key in form.keys():
+        for key in form:
             items = form.getlist(key)
             for item in items:
                 if isinstance(item, str):
@@ -2998,7 +3212,7 @@ async def edit_images(request: Request) -> Response:
                 raise
             except Exception as e:
                 logger.error(f"Failed to forward edit request to sd-server: {e}")
-                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.")
+                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.") from e
         else:
             raise HTTPException(status_code=503, detail="SD HTTP client is not initialized.")
     finally:
@@ -3038,7 +3252,7 @@ async def generate_images(request: Request) -> JSONResponse:
     try:
         payload = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from None
 
     # 1. Validate parameters first
     is_valid, err_msg = validate_sd_parameters(payload)
@@ -3046,118 +3260,7 @@ async def generate_images(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=err_msg)
 
     requested_model = payload.get("model", "")
-    target_path = find_local_model_file(requested_model)
-    if not target_path:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Model '{requested_model}' not found in router models repository.",
-        )
-
-    # Observe active LLM model state
-    async with vram_monitoring_lock:
-        llama_active = active_llama_model
-
-    # Use backend_swap_lock to atomicize model swaps and prevent concurrent swaps/evictions
-    async with backend_swap_lock:
-        if llama_active is not None:
-            # Wait until there are no active LLM requests
-            async with active_requests_lock:
-                while any(count > 0 for count in active_requests.values()):
-                    logger.info(
-                        "Active LLM requests in progress, waiting before clearing LLM VRAM..."
-                    )
-                    await active_requests_lock.wait()
-
-            # Recheck active LLM model after wait to ensure it hasn't self-evicted
-            async with vram_monitoring_lock:
-                llama_active_now = active_llama_model
-
-            if llama_active_now is not None:
-                logger.info(
-                    f"Evicting LLM model '{llama_active_now}' from VRAM before loading Stable Diffusion model."
-                )
-                try:
-                    await _evict_llama_vram()
-                    # Wait for VRAM to be freed by verifying loaded count is 0
-                    for _ in range(30):
-                        router_models = await fetch_router_models(reload=True)
-                        loaded = [m for m in router_models if router_entry_status(m) == "loaded"]
-                        if not loaded:
-                            logger.info("llama-server VRAM successfully cleared.")
-                            break
-                        await asyncio.sleep(0.5)
-                except Exception as e:
-                    logger.error(f"Error clearing llama-server VRAM: {e}")
-
-        # Check SD health dynamically after potential LLM eviction delay
-        sd_healthy = await check_sd_server_health()
-
-        # Swap model config, restart, and forward request
-        is_sd_loaded = False
-        active_config = get_active_model_config()
-        if active_config and target_path:
-            active_path = active_config.get("model_path", "")
-            if os.path.abspath(target_path) == os.path.abspath(active_path) and sd_healthy:
-                is_sd_loaded = True
-
-        if not is_sd_loaded:
-            logger.info(f"Loading SD model: {target_path}")
-            profile = get_model_profile(target_path)
-            vae_path = resolve_companion_path(profile.get("vae", ""))
-            clip_l_path = resolve_companion_path(profile.get("clip_l", ""))
-            t5xxl_path = resolve_companion_path(profile.get("t5xxl", ""))
-            llm_path = resolve_companion_path(profile.get("llm", ""))
-            model_family = profile.get("model_family", "")
-            extra_args = profile.get("extra_args", "")
-
-            write_active_model_config(
-                model_path=target_path,
-                vae_path=vae_path,
-                clip_l_path=clip_l_path,
-                t5xxl_path=t5xxl_path,
-                llm_path=llm_path,
-                model_family=model_family,
-                extra_args=extra_args,
-            )
-
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "docker",
-                    "restart",
-                    "sd-server",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await proc.communicate()
-            except Exception as e:
-                logger.error(f"Failed to restart sd-server: {e}")
-                raise HTTPException(
-                    status_code=503, detail="Failed to restart sd-server container."
-                )
-
-            # Wait for sd-server to become responsive
-            healthy = False
-            sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
-            sd_container = os.getenv("SD_CONTAINER_NAME", "sd-server")
-            for _ in range(60):
-                if not await is_container_running(sd_container):
-                    logger.error("sd-server container has stopped or crashed. Aborting swap wait.")
-                    break
-                try:
-                    if client_sd_httpx:
-                        resp = await client_sd_httpx.get(f"{sd_url}/v1/models", timeout=1.0)
-                        if resp.status_code == 200:
-                            healthy = True
-                            break
-                except Exception:
-                    pass
-                await asyncio.sleep(1.5)
-
-            if not healthy:
-                raise HTTPException(
-                    status_code=503,
-                    detail="stable-diffusion.cpp server failed to become responsive after model swap.",
-                )
+    await ensure_sd_model_loaded(requested_model)
 
     # Track this request in the Active Requests UI (so SD generations are visible
     # alongside LLM chat/completion requests).
@@ -3197,7 +3300,7 @@ async def generate_images(request: Request) -> JSONResponse:
                 return JSONResponse(content=result_data)
             except Exception as e:
                 logger.error(f"Failed to forward request to sd-server: {e}")
-                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.")
+                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.") from e
         else:
             raise HTTPException(status_code=503, detail="SD HTTP client is not initialized.")
     finally:
@@ -3235,7 +3338,7 @@ async def generate_images(request: Request) -> JSONResponse:
             )
 
 
-async def _get_gpu_vram_telemetry() -> Tuple[int, int, int]:
+async def _get_gpu_vram_telemetry() -> tuple[int, int, int]:
     """Queries GPU VRAM metrics from nvidia-smi on llama-server."""
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -3829,19 +3932,42 @@ async def admin_slots(fail_on_no_slot: int = 0):
         if proc.returncode != 0:
             raise Exception(f"Failed to fetch slots from child: {stderr.decode()}")
 
-        slots = json.loads(stdout.decode().strip())
+        raw = json.loads(stdout.decode().strip())
 
-        # Enhance with Alpaca metadata
-        for slot in slots:
-            slot["alpaca"] = {
-                "is_busy": slot.get("is_processing", False),
-                "has_prompt_cache": bool(slot.get("prompt", [])),
-                "context_used_pct": round(
-                    slot.get("n_ctx", 0) / max(slot.get("n_ctx", 1), 1) * 100, 1
+        # llama-server /slots may return a dict (e.g. {"error": {...}} when the
+        # model param is missing) or a list of slot objects. Normalize to a list
+        # of slot dicts so the enhancement loop never iterates strings/scalars.
+        if isinstance(raw, dict):
+            if "error" in raw:
+                return {
+                    "slots": [],
+                    "total": 0,
+                    "status": "error",
+                    "message": f"llama-server slot query failed: {raw['error']}",
+                }
+            raw = raw.get("data") or raw.get("slots") or []
+        if not isinstance(raw, list):
+            raw = []
+
+        slots = []
+        for s in raw:
+            if isinstance(s, dict):
+                s["alpaca"] = {
+                    "is_busy": s.get("is_processing", False),
+                    "has_prompt_cache": bool(s.get("prompt", [])),
+                    "context_used_pct": round(
+                        s.get("n_ctx", 0) / max(s.get("n_ctx", 1), 1) * 100, 1
+                    )
+                    if s.get("n_ctx")
+                    else 0,
+                }
+                slots.append(s)
+            elif isinstance(s, str):
+                # Bare slot-id string: wrap minimally and treat as unavailable.
+                slots.append(
+                    {"id": s, "alpaca": {"is_busy": True, "has_prompt_cache": False}}
                 )
-                if slot.get("n_ctx")
-                else 0,
-            }
+            # Other scalar types are dropped (not interpretable as slots).
 
         return {"slots": slots, "total": len(slots)}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as e:
@@ -3887,9 +4013,9 @@ async def admin_lora_update(request: Request):
         resp.raise_for_status()
         return {"status": "updated", "adapters": body}
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to update LoRA adapters: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to update LoRA adapters: {e}") from e
 
 
 @app.get("/admin/config")
@@ -4023,20 +4149,20 @@ async def admin_model_delete(request: Request):
                     logger.error(f"Failed to remove manifest file {manifest_path}: {me}")
                     raise HTTPException(
                         status_code=500, detail=f"Failed to remove manifest file: {me}"
-                    )
+                    ) from me
 
                 # Clean up orphaned blobs
-                for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
+                for layer in [*manifest.get("layers", []), manifest.get("config", {})]:
                     digest = layer.get("digest")
                     if digest:
                         blob_path = blob_path_for_digest(digest)
                         if os.path.exists(blob_path):
                             # Check if any other manifest references this blob
                             referenced = False
-                            for mb, mp, m in iter_local_manifests():
+                            for _mb, mp, m in iter_local_manifests():
                                 if mp == manifest_path:
                                     continue
-                                for l in m.get("layers", []) + [m.get("config", {})]:
+                                for l in [*m.get("layers", []), m.get("config", {})]:
                                     if l.get("digest") == digest:
                                         referenced = True
                                         break
@@ -4051,22 +4177,57 @@ async def admin_model_delete(request: Request):
                                         f"Failed to remove orphaned blob {blob_path}: {be}"
                                     )
 
+        # Resolve the weights blob target BEFORE removing the symlink so we can
+        # still reclaim disk space for models that have no Ollama manifest
+        # (e.g. Hugging Face GGUF imports), whose blob is only reachable via
+        # the router symlink.
+        blob_target = None
+        try:
+            if os.path.islink(router_path) or os.path.exists(router_path):
+                blob_target = os.path.realpath(router_path)
+        except Exception:
+            blob_target = None
+
         # Clean up router symlink or GGUF file
         try:
-            if os.path.islink(router_path):
-                os.remove(router_path)
-            elif os.path.exists(router_path):
+            if os.path.islink(router_path) or os.path.exists(router_path):
                 os.remove(router_path)
         except Exception as re:
             logger.warning(f"Failed to remove router path {router_path}: {re}")
 
-        # Clean up profile.json and models.ini section for the deleted model
-        try:
-            profile_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.profile.json")
+        # Delete the weights blob if nothing else references it. For manifest
+        # models this is handled by the block above; here we cover manifest-less
+        # (Hugging Face) imports whose blob is not tracked by any manifest.
+        if not (manifest_path and os.path.exists(manifest_path)):
+            if blob_target and os.path.exists(blob_target) and "blobs" in blob_target.replace("\\", "/"):
+                referenced = False
+                try:
+                    for entry in os.scandir(ROUTER_MODELS_DIR):
+                        if entry.is_symlink():
+                            try:
+                                if os.path.realpath(entry.path) == blob_target:
+                                    referenced = True
+                                    break
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                if not referenced:
+                    try:
+                        os.remove(blob_target)
+                        deleted_blobs.append(os.path.basename(blob_target))
+                    except Exception as be:
+                        logger.warning(f"Failed to remove blob {blob_target}: {be}")
+
+        # Clean up EVERY profile.json variant for the deleted model so no
+        # orphaned per-model overlay files remain after deletion.
+        for profile_candidate in (f"{alias}.profile.json", f"{alias}.gguf.profile.json"):
+            profile_path = os.path.join(ROUTER_MODELS_DIR, profile_candidate)
             if os.path.exists(profile_path):
-                os.remove(profile_path)
-        except Exception as pe:
-            logger.warning(f"Failed to clean up profile json for deleted model {alias}: {pe}")
+                try:
+                    os.remove(profile_path)
+                except Exception as pe:
+                    logger.warning(f"Failed to clean up profile json {profile_path}: {pe}")
 
         try:
             ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
@@ -4079,10 +4240,8 @@ async def admin_model_delete(request: Request):
                     config.remove_section(alias)
                     with open(ini_path, "w") as f:
                         config.write(f)
-                    try:
+                    with suppress(Exception):
                         os.chmod(ini_path, 0o666)
-                    except Exception:
-                        pass
                     logger.info(f"Removed section [{alias}] from models.ini for deleted model")
         except Exception as ie:
             logger.warning(f"Failed to clean up models.ini section for deleted model {alias}: {ie}")
@@ -4097,7 +4256,7 @@ async def admin_model_delete(request: Request):
         raise
     except Exception as e:
         logger.exception(f"Unhandled error during model delete: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal Server Error during deletion: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error during deletion: {e}") from e
 
 
 @app.post("/admin/models/switch")
@@ -4120,7 +4279,7 @@ async def admin_model_switch(request: Request):
             raise
         except Exception as e:
             logger.error(f"Failed to load SD model {model}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to load SD model: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to load SD model: {e!s}") from e
         return {"status": "loaded", "model": public_model_name(model), "backend": "sd-server"}
 
     # Check if model exists
@@ -4160,7 +4319,7 @@ async def admin_model_switch(request: Request):
     except Exception as e:
         mark_model_loaded(model)  # Clear loading state even on failure
         logger.error(f"Failed to switch to model {model}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to load model: {e!s}") from e
 
 
 @app.post("/admin/models/unload")
@@ -4202,7 +4361,7 @@ async def admin_model_unload(request: Request):
         raise
     except Exception as e:
         logger.error(f"Failed to unload model {model}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to unload model: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to unload model: {e!s}") from e
 
 
 @app.get("/admin/errors")
@@ -4312,7 +4471,7 @@ async def admin_vram_clear():
         }
     except Exception as e:
         logger.error(f"Failed to clear VRAM: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to clear VRAM: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear VRAM: {e!s}") from e
 
 
 @app.post("/admin/models/copy")
@@ -4366,9 +4525,9 @@ async def admin_tokenize(text: str, add_special: bool = True, parse_special: boo
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Tokenization failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Tokenization failed: {e}") from e
 
 
 @app.get("/admin/props")
@@ -4379,9 +4538,9 @@ async def admin_props():
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch props: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch props: {e}") from e
 
 
 @app.get("/api/logs")
@@ -4402,7 +4561,7 @@ def load_mtp_incompatible_models():
     global MTP_INCOMPATIBLE_MODELS
     try:
         if os.path.exists(MTP_INCOMPATIBLE_FILE):
-            with open(MTP_INCOMPATIBLE_FILE, "r") as f:
+            with open(MTP_INCOMPATIBLE_FILE) as f:
                 data = json.load(f)
                 if isinstance(data, list):
                     MTP_INCOMPATIBLE_MODELS = set(data)
@@ -4430,7 +4589,7 @@ def load_safe_settings_models():
     global SAFE_SETTINGS_MODELS
     try:
         if os.path.exists(SAFE_SETTINGS_FILE):
-            with open(SAFE_SETTINGS_FILE, "r") as f:
+            with open(SAFE_SETTINGS_FILE) as f:
                 data = json.load(f)
                 if isinstance(data, list):
                     SAFE_SETTINGS_MODELS = set(data)
@@ -4472,7 +4631,7 @@ async def save_loaded_models_state(loaded_models):
 async def load_loaded_models_state():
     try:
         if os.path.exists(LOADED_MODELS_STATE_FILE):
-            with open(LOADED_MODELS_STATE_FILE, "r") as f:
+            with open(LOADED_MODELS_STATE_FILE) as f:
                 return json.load(f)
     except Exception as e:
         logger.warning(f"Failed to load loaded models state: {e}")
@@ -4567,6 +4726,90 @@ async def wait_for_llama_server(timeout=300.0):
 llama_server_restart_lock = asyncio.Lock()
 last_llama_server_restart_time = 0.0
 
+# Container names and graceful-stop timeout (seconds) used for VRAM eviction.
+_LLAMA_CONTAINER = os.getenv("LLAMA_DOCKER_CONTAINER", "llama-server")
+_SD_CONTAINER = os.getenv("SD_CONTAINER_NAME", "sd-server")
+_CONTAINER_STOP_TIMEOUT = float(os.getenv("CONTAINER_STOP_TIMEOUT", "30"))
+
+
+async def _run_docker(args, timeout=60.0):
+    """Run a docker CLI command, returning (returncode, stdout, stderr)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        logger.error("docker command not found — cannot manage containers.")
+        return (-1, b"", b"docker not found")
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return (-1, b"", b"docker command timed out")
+    return (proc.returncode or 0, stdout or b"", stderr or b"")
+
+
+async def _container_running(name: str) -> bool:
+    """Return True if the container exists and is currently running."""
+    rc, stdout, _ = await _run_docker(
+        ["inspect", "-f", "{{.State.Running}}", name], timeout=10.0
+    )
+    if rc != 0:
+        # Container missing or inspect failed — treat as not running.
+        return False
+    return stdout.decode().strip().lower() == "true"
+
+
+async def _wait_container_exited(name: str, timeout: float = 30.0) -> bool:
+    """Poll until the container is fully stopped.
+
+    When the container (and its cgroup) is gone, the NVIDIA container runtime has
+    released the GPU device, so VRAM is actually reclaimed by the driver.
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        if not await _container_running(name):
+            logger.info(f"Container '{name}' is fully stopped; GPU resources reclaimed.")
+            return True
+        await asyncio.sleep(0.5)
+    logger.warning(f"Container '{name}' did not exit within {timeout}s.")
+    return False
+
+
+async def _stop_container_gracefully(name: str, timeout: float | None = None) -> bool:
+    """Stop a container with graceful SIGTERM, then SIGKILL fallback, reaping zombies.
+
+    Returns True only once the container is confirmed fully exited (so the OS/GPU
+    driver has reclaimed its memory). This guarantees no lingering child/slot
+    processes hold VRAM before the peer backend is started.
+    """
+    if timeout is None:
+        timeout = _CONTAINER_STOP_TIMEOUT
+    logger.info(f"Gracefully stopping container '{name}' (SIGTERM, {timeout}s timeout)...")
+    rc, _, _stderr = await _run_docker(
+        ["stop", f"--time={int(timeout)}", name], timeout=timeout + 15.0
+    )
+    if rc == 0 and await _wait_container_exited(name, timeout=10.0):
+        return True
+    # Fallback: force kill (SIGKILL) any lingering process / zombie children.
+    logger.warning(f"Graceful stop of '{name}' failed; issuing docker kill (SIGKILL)...")
+    await _run_docker(["kill", name], timeout=15.0)
+    # Reap: confirm the container is fully gone before the caller proceeds.
+    return await _wait_container_exited(name, timeout=15.0)
+
+
+async def _start_container(name: str) -> bool:
+    rc, _, stderr = await _run_docker(["start", name], timeout=60.0)
+    if rc == 0:
+        logger.info(f"Container '{name}' started.")
+        return True
+    logger.error(f"Failed to start container '{name}': {stderr.decode().strip()}")
+    return False
+
 
 async def restart_llama_server():
     global last_llama_server_restart_time
@@ -4577,31 +4820,20 @@ async def restart_llama_server():
             logger.info("llama-server was restarted very recently. Skipping redundant restart.")
             return True
 
-        logger.info("Initiating single synchronized restart of llama-server...")
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "restart",
-                "llama-server",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        logger.info("Initiating robust restart of llama-server (stop -> verify -> start)...")
+        # 1. Stop gracefully and VERIFY the process + GPU state are fully gone
+        #    before anything else tries to claim the VRAM.
+        stopped = await _stop_container_gracefully(_LLAMA_CONTAINER)
+        if not stopped:
+            logger.error(
+                "llama-server did not stop cleanly; GPU memory may still be held. "
+                "Proceeding with start to avoid leaving the service dead."
             )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode == 0:
-                logger.info("llama-server restart command succeeded.")
-                last_llama_server_restart_time = time.time()
-                return True
-            else:
-                logger.error(
-                    f"llama-server restart command failed (exit {proc.returncode}): {stderr.decode().strip()}"
-                )
-                return False
-        except FileNotFoundError:
-            logger.error("docker command not found — cannot restart llama-server.")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to restart llama-server: {e}")
-            return False
+        # 2. Start the container fresh (model reload happens lazily on next request).
+        if await _start_container(_LLAMA_CONTAINER):
+            last_llama_server_restart_time = time.time()
+            return True
+        return False
 
 
 async def _fetch_llama_server_logs(tail=30) -> str:
@@ -4778,7 +5010,7 @@ async def is_child_model_healthy(backend_model: str) -> bool:
     return False
 
 
-def is_model_over_9b(model_name: str, manifest: dict = None) -> bool:
+def is_model_over_9b(model_name: str, manifest: dict | None = None) -> bool:
     """Check if a model's size/parameter count is higher than 9B."""
     import re
 
@@ -4804,7 +5036,7 @@ def is_model_over_9b(model_name: str, manifest: dict = None) -> bool:
     return False
 
 
-def is_model_moe(model_name: str, meta: dict = None) -> bool:
+def is_model_moe(model_name: str, meta: dict | None = None) -> bool:
     """Check if the model is a Mixture of Experts (MoE) model."""
     if meta:
         return _is_moe(meta)
@@ -4894,9 +5126,7 @@ def _is_moe(meta: dict) -> bool:
         if key.endswith(".expert_used_count") and isinstance(val, int) and val > 0:
             return True
     arch = meta.get("general.architecture", "")
-    if isinstance(arch, str) and "moe" in arch.lower():
-        return True
-    return False
+    return bool(isinstance(arch, str) and "moe" in arch.lower())
 
 
 def _supports_flash_attn(meta: dict) -> bool:
@@ -5069,7 +5299,7 @@ def _write_ini_model_setting(backend_model, key, value):
                 profile = {}
                 if os.path.exists(profile_path):
                     try:
-                        with open(profile_path, "r") as pf:
+                        with open(profile_path) as pf:
                             profile = json.load(pf)
                     except Exception:
                         pass
@@ -5132,7 +5362,7 @@ async def get_child_model_props(backend_model: str) -> dict:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     )
-                    stdout, stderr = await proc.communicate()
+                    stdout, _stderr = await proc.communicate()
                     if proc.returncode == 0:
                         return json.loads(stdout.decode().strip())
     except Exception as e:
@@ -5184,7 +5414,7 @@ async def ensure_sd_unloaded():
                 logger.error(f"Failed to unload Stable Diffusion model: {e}")
 
 
-async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = False):
+async def ensure_model(model_name: str, options: dict | None = None, skip_swap: bool = False):
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
 
@@ -5195,16 +5425,15 @@ async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = 
         entry = resolved["entry"]
         status = router_entry_status(entry)
 
-        if status == "loaded":
-            if await is_child_model_healthy(backend_model):
-                mark_model_loaded(model_name)
-                await record_model_loaded(model_name)
-                return {
-                    "model_name": model_name,
-                    "backend_model": backend_model,
-                    "manifest_path": resolved["manifest_path"],
-                    "manifest": resolved["manifest"],
-                }
+        if status == "loaded" and await is_child_model_healthy(backend_model):
+            mark_model_loaded(model_name)
+            await record_model_loaded(model_name)
+            return {
+                "model_name": model_name,
+                "backend_model": backend_model,
+                "manifest_path": resolved["manifest_path"],
+                "manifest": resolved["manifest"],
+            }
 
         if status == "loading":
             logger.info(
@@ -5249,7 +5478,7 @@ async def ensure_model(model_name: str, options: dict = None, skip_swap: bool = 
 
 
 async def _ensure_model_impl(
-    model_name: str, options: dict = None, resolved: dict = None, skip_swap: bool = False
+    model_name: str, options: dict | None = None, resolved: dict | None = None, skip_swap: bool = False
 ):
     if skip_swap:
         # During mid-stream crash recovery, don't try to load the crashed model.
@@ -5301,27 +5530,36 @@ async def _ensure_model_impl(
                 is_crashed = crashed_models.get(other_id, False)
 
                 if not is_crashed:
-                    # Wait for active requests on the model we are about to unload
+                    # Wait for active requests (in-flight) AND queued requests on
+                    # the model we are about to unload. A queued request has
+                    # already been admitted but not yet gone in-flight; swapping
+                    # its model away would force a reload and thrash the queue.
                     async with active_requests_lock:
                         deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
-                        while active_requests.get(other_id, 0) > 0:
+                        while (
+                            active_requests.get(other_id, 0) > 0
+                            or queued_requests.get(other_id, 0) > 0
+                        ):
                             remaining = deadline - asyncio.get_event_loop().time()
                             if remaining <= 0:
                                 logger.warning(
-                                    f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
+                                    f"Timeout waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish. Forcing unload."
                                 )
                                 break
                             logger.info(
-                                f"Waiting for {active_requests[other_id]} active requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
+                                f"Waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
                             )
                             try:
                                 await asyncio.wait_for(
                                     active_requests_lock.wait(), timeout=remaining
                                 )
-                            except asyncio.TimeoutError:
-                                if active_requests.get(other_id, 0) > 0:
+                            except TimeoutError:
+                                if (
+                                    active_requests.get(other_id, 0) > 0
+                                    or queued_requests.get(other_id, 0) > 0
+                                ):
                                     logger.warning(
-                                        f"Timeout waiting for {active_requests[other_id]} active requests on {other_id} to finish. Forcing unload."
+                                        f"Timeout waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish. Forcing unload."
                                     )
                                 break
 
@@ -5346,9 +5584,34 @@ async def _ensure_model_impl(
     # If already loading, wait transparently for it to finish loading
     status = router_entry_status(entry)
     if status == "loading":
-        logger.info(f"Model {backend_model} is currently loading. Waiting for load to finish...")
-        for _ in range(120):
+        # Scale the load grace by model size: large (>=9b) models take much
+        # longer to map weights into VRAM. The old flat 120s cap force-unloaded
+        # 35b models mid-load, producing a reload/thrash loop.
+        _large = is_model_over_9b(
+            backend_model, resolved.get("manifest") if resolved else None
+        )
+        _load_grace = 360 if _large else 120
+        logger.info(
+            f"Model {backend_model} is currently loading "
+            f"(large={_large}, grace={_load_grace}s). Waiting for load to finish..."
+        )
+        _proceed = False
+        for _ in range(_load_grace):
             await asyncio.sleep(1.0)
+            # If a request is already in-flight or queued for this model, it is
+            # genuinely being used: do NOT force-unload it. Let the caller
+            # proceed and rely on llama-server's own internal queueing.
+            async with active_requests_lock:
+                if (
+                    active_requests.get(backend_model, 0) > 0
+                    or queued_requests.get(backend_model, 0) > 0
+                ):
+                    logger.info(
+                        f"Model {backend_model} has in-flight/queued requests; "
+                        "proceeding without further load-wait."
+                    )
+                    _proceed = True
+                    break
             try:
                 resolved = await resolve_router_model(model_name, reload=True)
                 entry = resolved["entry"]
@@ -5358,15 +5621,22 @@ async def _ensure_model_impl(
                     break
             except Exception as poll_exc:
                 logger.warning(f"Error polling model loading status: {poll_exc}")
-        else:
+        if _proceed:
+            return {
+                "model_name": model_name,
+                "backend_model": backend_model,
+                "manifest_path": resolved.get("manifest_path"),
+                "manifest": resolved.get("manifest"),
+            }
+        if status == "loading":
+            # Grace period elapsed with no active/queued request and still not
+            # loaded. Treat as a stuck load and force a reload.
             logger.warning(
-                f"Model {backend_model} did not finish loading after 120s. "
+                f"Model {backend_model} did not finish loading after {_load_grace}s. "
                 "Force-unloading and retrying..."
             )
-            try:
+            with suppress(Exception):
                 await post_router_model_action("unload", backend_model)
-            except Exception:
-                pass
             await asyncio.sleep(2.0)
             resolved = await resolve_router_model(model_name, reload=True)
             entry = resolved["entry"]
@@ -5819,10 +6089,8 @@ async def _ensure_model_impl(
                 f"Recovery: unloading {backend_model} and "
                 "restarting llama-server to release GPU memory..."
             )
-            try:
+            with suppress(Exception):
                 await post_router_model_action("unload", backend_model)
-            except Exception:
-                pass
 
             # Before restarting, write VRAM-safe n_gpu_layers to models.ini.
             # The router only reads n_gpu_layers from the INI at startup, so
@@ -6019,7 +6287,7 @@ async def _ensure_model_impl(
                 failed_list = []
                 if os.path.exists(failed_configs_file):
                     try:
-                        with open(failed_configs_file, "r") as f:
+                        with open(failed_configs_file) as f:
                             failed_list = json.load(f)
                             if not isinstance(failed_list, list):
                                 failed_list = []
@@ -6063,19 +6331,34 @@ async def _ensure_model_impl(
     }
 
 
-async def wait_for_slot(timeout: float = 120.0) -> bool:
-    """Wait for a llama-server slot to become available.
+async def wait_for_slot(backend_model: str, timeout: float = 120.0) -> bool:
+    """Wait for a slot on the *requested* model to become available.
 
-    Returns True if a slot opened, False on timeout.
+    Model-aware admission: an open slot is only usable by a request for the
+    same model. This prevents a request from being admitted to a slot that
+    belongs to a different (currently loaded) model, which would force an
+    unnecessary model swap and thrash the queue.
+
+    With a single model resident in VRAM (``MAX_LOADED_MODELS == 1``) every slot
+    serves that one model, so two requests for the same model run in parallel on
+    separate slots while a request for a different model waits for the swap.
+
+    Returns True if a slot for ``backend_model`` opened, False on timeout.
     """
+    if not backend_model:
+        # No specific model to scope to; nothing to wait on.
+        return True
     start = asyncio.get_event_loop().time()
     while True:
-        slot_info = await get_llama_server_slots()
-        if slot_info and slot_info["available"] > 0:
+        slots = await _fetch_model_slots(backend_model)
+        # An open slot is one that is not currently processing.
+        if slots and not all(s.get("is_processing", False) for s in slots):
             return True
         elapsed = asyncio.get_event_loop().time() - start
         if elapsed >= timeout:
-            logger.warning(f"Timeout waiting for slot after {elapsed:.0f}s")
+            logger.warning(
+                f"Timeout waiting for slot on {backend_model} after {elapsed:.0f}s"
+            )
             return False
         await asyncio.sleep(0.5)
 
@@ -6083,12 +6366,12 @@ async def wait_for_slot(timeout: float = 120.0) -> bool:
 SLOTS_CACHE_DIR = os.getenv("SLOTS_CACHE_DIR", "/slots-cache")
 
 
-def get_prefix_hash(model_name: str, messages: list, options: dict = None) -> str:
+def get_prefix_hash(model_name: str, messages: list, options: dict | None = None) -> str:
     import hashlib
 
     if not messages:
         return ""
-    payload = {
+    payload: dict = {
         "model": model_name,
         "messages": messages,
     }
@@ -6250,7 +6533,25 @@ async def chat(request: Request):
         client_ip=get_client_ip(request),
     )
 
-    # Ensure model is loaded and healthy (triggers recovery if crashed/dead)
+    # Ensure model is loaded and healthy (triggers recovery if crashed/dead).
+    # Wake-on-LAN: if both LLM and SD backends are idle and this is the first
+    # incoming request, log the intercept trigger so it's visible in proxy logs.
+    async with vram_monitoring_lock:
+        _llm_idle = active_llama_model is None
+    _req_idle = not any(c > 0 for c in active_requests.values())
+    if model_name and _llm_idle and _req_idle:
+        logger.info(
+            f"[AUTO-LOAD] Idle intercept — /api/chat received for '{model_name}'. "
+            f"Triggering auto-load (Wake-on-LAN)."
+        )
+
+    # Admit this request into the shared queue: mark it "queued" for its target
+    # backend model so a concurrent request for a *different* model waits
+    # (rather than swapping this model away) during the load/queue window.
+    # Released when the request finishes (see stream_proxy / non-stream finally
+    # and the queue-timeout path below).
+    _queued_backend = await mark_request_queued(model_name)
+
     resolved = await ensure_model(model_name, options=body.get("options"))
     resolved_backend = resolved["backend_model"]
 
@@ -6263,8 +6564,9 @@ async def chat(request: Request):
 
     # Queue-and-wait: if all llama-server slots are busy, wait for one to open
     wait_timeout = body.get("queue_timeout", 120.0)
-    slot_available = await wait_for_slot(timeout=wait_timeout)
+    slot_available = await wait_for_slot(resolved_backend, timeout=wait_timeout)
     if not slot_available:
+        await release_request_queued(_queued_backend)
         return JSONResponse(
             {"error": "No llama-server slots available within timeout", "status": "queue_timeout"},
             status_code=503,
@@ -6371,9 +6673,7 @@ async def chat(request: Request):
                                         "role": message.get("role", "assistant"),
                                         "content": out_content,
                                     }
-                                    if thinking_chunk and think_val is True:
-                                        client_message["thinking"] = thinking_chunk
-                                    elif thinking_chunk and think_val is None:
+                                    if (thinking_chunk and think_val is True) or (thinking_chunk and think_val is None):
                                         client_message["thinking"] = thinking_chunk
                                 else:
                                     client_message = {"role": "assistant", "content": ""}
@@ -6414,7 +6714,7 @@ async def chat(request: Request):
                         raise HTTPException(
                             status_code=502,
                             detail="Failed to restore llama-server after mid-stream crash",
-                        )
+                        ) from e
 
                     resolved = await ensure_model(model_name, options=body.get("options"))
                     resolved_backend = resolved["backend_model"]
@@ -6422,17 +6722,13 @@ async def chat(request: Request):
                         await restore_slot_cache(resolved_backend, prefix_hash)
 
                     if full_response_content:
-                        current_payload["messages"] = body.get("messages", []) + [
-                            {"role": "assistant", "content": full_response_content}
-                        ]
+                        current_payload["messages"] = [*body.get("messages", []), {"role": "assistant", "content": full_response_content}]
                     else:
                         current_payload["messages"] = body.get("messages", [])
 
             # Save the new slot cache checkpoint
             if full_response_content:
-                new_messages = list(messages) + [
-                    {"role": "assistant", "content": full_response_content}
-                ]
+                new_messages = [*list(messages), {"role": "assistant", "content": full_response_content}]
                 new_prefix_hash = get_prefix_hash(
                     model_name, new_messages, options=body.get("options")
                 )
@@ -6485,6 +6781,7 @@ async def chat(request: Request):
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
                     active_requests_lock.notify_all()
+            await release_request_queued(_queued_backend)
             complete_active_request(request_id)
 
     if should_stream(body):
@@ -6605,7 +6902,7 @@ async def chat(request: Request):
 
         # Save the new slot cache checkpoint
         if client_message and client_message.get("content"):
-            new_messages = list(messages) + [client_message]
+            new_messages = [*list(messages), client_message]
             new_prefix_hash = get_prefix_hash(model_name, new_messages, options=body.get("options"))
             slot_id = await find_slot_for_request(resolved_backend, new_messages)
             await save_slot_cache(resolved_backend, new_prefix_hash, slot_id)
@@ -6614,13 +6911,13 @@ async def chat(request: Request):
         return JSONResponse(chunk)
     except httpx.HTTPStatusError as e:
         logger.error(f"Chat error: {e}")
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except httpx.TimeoutException as e:
         logger.error(f"Chat upstream timeout: {e}")
-        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out") from e
     except httpx.RequestError as e:
         logger.error(f"Chat upstream request error: {e}")
-        raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
         if resolved_backend:
             async with active_requests_lock:
@@ -6631,6 +6928,7 @@ async def chat(request: Request):
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
                 active_requests_lock.notify_all()
+        await release_request_queued(_queued_backend)
         complete_active_request(request_id)
 
 
@@ -6655,6 +6953,9 @@ async def generate(request: Request):
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
     )
+    # Admit into the shared request queue (paired with release_request_queued in
+    # the finally blocks below and on the early-return paths).
+    queued_backend = await mark_request_queued(model_name)
 
     async def stream_proxy():
         resolved_backend = None
@@ -6663,6 +6964,17 @@ async def generate(request: Request):
             load_started_ns = now_ns()
             resolved = await ensure_model(model_name, options=body.get("options"))
             resolved_backend = resolved["backend_model"]
+
+            # Shared queue: only proceed once a slot on this (same) model is
+            # available, so the request never runs on a slot serving a different
+            # model (which would force a swap + thrash).
+            if not await wait_for_slot(
+                resolved_backend, timeout=body.get("queue_timeout", 120.0)
+            ):
+                yield (
+                    f"data: {json.dumps({'error': {'message': 'No llama-server slots available within timeout', 'type': 'rate_limit_error', 'code': 'queue_timeout'}})}\n\n"
+                )
+                return
 
             # Increment reference count
             async with active_requests_lock:
@@ -6840,7 +7152,7 @@ async def generate(request: Request):
                         raise HTTPException(
                             status_code=502,
                             detail="Failed to restore llama-server after mid-stream crash",
-                        )
+                        ) from e
 
                     resolved = await ensure_model(model_name, options=body.get("options"))
                     resolved_backend = resolved["backend_model"]
@@ -6890,6 +7202,7 @@ async def generate(request: Request):
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
                     active_requests_lock.notify_all()
+            await release_request_queued(queued_backend)
             complete_active_request(request_id)
 
     if should_stream(body):
@@ -6901,6 +7214,19 @@ async def generate(request: Request):
         load_started_ns = now_ns()
         resolved = await ensure_model(model_name, options=body.get("options"))
         resolved_backend = resolved["backend_model"]
+
+        # Shared queue: only admit once a slot on this (same) model is available.
+        # The request's queued count is released in the finally block below.
+        if not await wait_for_slot(
+            resolved_backend, timeout=body.get("queue_timeout", 120.0)
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "No llama-server slots available within timeout",
+                    "status": "queue_timeout",
+                },
+            )
 
         async with active_requests_lock:
             active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
@@ -7034,13 +7360,13 @@ async def generate(request: Request):
         return JSONResponse(chunk)
     except httpx.HTTPStatusError as e:
         logger.error(f"Generate error: {e}")
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except httpx.TimeoutException as e:
         logger.error(f"Generate upstream timeout: {e}")
-        raise HTTPException(status_code=504, detail="Upstream llama-server timed out")
+        raise HTTPException(status_code=504, detail="Upstream llama-server timed out") from e
     except httpx.RequestError as e:
         logger.error(f"Generate upstream request error: {e}")
-        raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
         if resolved_backend:
             async with active_requests_lock:
@@ -7051,6 +7377,7 @@ async def generate(request: Request):
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
                 active_requests_lock.notify_all()
+        await release_request_queued(queued_backend)
         complete_active_request(request_id)
 
 
@@ -7103,28 +7430,79 @@ async def loaded_models_from_router():
     return loaded
 
 
-async def get_llama_server_slots():
-    """Fetch slot status from llama-server /slots endpoint."""
+async def _fetch_model_slots(model_id: str) -> list:
+    """Return a normalized list of slot dicts for a single loaded model id.
+
+    Robust against the llama-server ``/slots`` response shape (a list of slot
+    objects, a list of slot-id strings, or an error dict). Returns ``[]`` when
+    the model is not loaded or the query fails, so callers treat it as "no
+    usable slot information" rather than assuming an idle slot.
+    """
+    if not model_id:
+        return []
     try:
-        # Get router model ID for loaded models - /slots requires the router model ID (with -- separators)
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(
+                f"{LLAMA_SERVER_URL}/slots", params={"model": model_id}, timeout=3.0
+            )
+        if resp.status_code != 200:
+            return []
+        slots_data = resp.json()
+    except Exception:
+        return []
+    if isinstance(slots_data, dict):
+        if "error" in slots_data:
+            # Missing/unknown model param -> error dict, not slot data.
+            return []
+        slots_data = slots_data.get("data") or slots_data.get("slots") or []
+    if not isinstance(slots_data, list):
+        return []
+    normalized = []
+    for s in slots_data:
+        if isinstance(s, dict):
+            normalized.append(s)
+        elif isinstance(s, str):
+            # Bare slot-id string: unknown processing state -> treat as busy.
+            normalized.append({"id": s, "is_processing": True})
+    return normalized
+
+
+async def get_llama_server_slots():
+    """Fetch aggregate slot status across all currently-loaded models.
+
+    Returns a dict ``{"total", "busy", "available"}`` or ``None`` when slot state
+    genuinely cannot be determined (no model loaded, or every ``/slots`` query
+    failed). A bare id / unparseable slot is treated conservatively as busy so
+    we never assume an idle slot we cannot introspect.
+    """
+    total = 0
+    busy = 0
+    saw_any_loaded = False
+    try:
+        # Get router model IDs for loaded models - /slots requires the router
+        # model ID (with -- separators).
         router_models = await fetch_router_models(reload=False)
         for entry in router_models:
             if router_entry_status(entry) != "loaded":
                 continue
+            saw_any_loaded = True
             model_id = entry.get("id")
-            if model_id:
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.get(
-                        f"{LLAMA_SERVER_URL}/slots", params={"model": model_id}, timeout=3.0
-                    )
-                    if resp.status_code == 200:
-                        slots_data = resp.json()
-                        total = len(slots_data) if isinstance(slots_data, list) else 0
-                        busy = sum(1 for s in (slots_data or []) if s.get("is_processing", False))
-                        return {"total": total, "busy": busy, "available": total - busy}
+            if not model_id:
+                continue
+            for s in await _fetch_model_slots(model_id):
+                total += 1
+                if s.get("is_processing", False):
+                    busy += 1
     except Exception:
         pass
-    return None
+    if not saw_any_loaded:
+        return None
+    if total == 0:
+        # Loaded models exist but no slot info could be retrieved. Report
+        # unknown (None) rather than a misleading "0 available", which would
+        # make wait_for_slot block every request.
+        return None
+    return {"total": total, "busy": busy, "available": total - busy}
 
 
 @app.get("/api/ps")
