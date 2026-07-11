@@ -1781,21 +1781,38 @@ async def openai_models():
                         }
                         break
             data.setdefault("data", []).extend(sd_entries)
+            # A model may appear under more than one id (e.g. a router
+            # alias). List each model once under its canonical id so
+            # clients don't see a duplicate/alias entry to request.
+            seen_ids = set()
+            deduped = []
+            for m in data.get("data", []):
+                mid = m.get("id")
+                if mid in seen_ids:
+                    continue
+                seen_ids.add(mid)
+                deduped.append(m)
+            data["data"] = deduped
             return data
     except Exception:
         pass
 
     # Fallback: build from local manifests
     models = []
+    seen_ids = set()
     for manifest_base, path, manifest in iter_local_manifests():
         if is_image_model_manifest(manifest):
             continue
         mn = manifest_model_name(manifest_base, path)
         if mn:
+            mid = mn.replace(":", "--")
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
             info = manifest_stats(path, manifest)
             models.append(
                 {
-                    "id": mn.replace(":", "--"),
+                    "id": mid,
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "alpaca",
@@ -7384,10 +7401,17 @@ async def generate(request: Request):
 @app.get("/api/tags")
 async def tags():
     models = []
+    # A model can be discoverable via more than one manifest path (e.g. a
+    # router symlink alias). List each model once under its correct
+    # public name so clients never see a duplicate/alias entry.
+    seen = set()
     for manifest_base, path, manifest in iter_local_manifests():
         model_name = manifest_model_name(manifest_base, path)
         if not model_name:
             continue
+        if model_name in seen:
+            continue
+        seen.add(model_name)
         info = manifest_stats(path, manifest)
         entry = {
             "name": model_name,
@@ -7508,9 +7532,16 @@ async def get_llama_server_slots():
 @app.get("/api/ps")
 async def ps():
     models = []
+    # loaded_models_from_router() can return both a model and an alias that
+    # resolves to the same public name. List each model once, under its
+    # single correct public name, so we don't emit a duplicate alias.
+    seen = set()
     for record in await loaded_models_from_router():
         info = record["info"]
         public_name = public_model_name(record["name"])
+        if public_name in seen:
+            continue
+        seen.add(public_name)
         models.append(
             {
                 "name": public_name,
