@@ -243,17 +243,34 @@ document.addEventListener('DOMContentLoaded', () => {
             // Populate Vision & Synthesis model selectors in Image-to-Prompt Assistant
             const visionSel = document.getElementById('sd-promptgen-vision-model');
             const synthSel = document.getElementById('sd-promptgen-synth-model');
-            if (visionSel || synthSel) {
+
+            // Humanize router alias names (e.g. "qwen2.5-vl--3b" → "qwen2.5-vl:3b")
+            const humanizeModelName = (id) => id.replace(/--/g, ':');
+
+            if (visionSel) {
+                // Vision: includes VL multimodal models from router + Ollama models
                 try {
-                    const llmRes = await fetch('/api/models/text');
-                    const llmData = await llmRes.json();
-                    const textModels = llmData.models || [];
-                    const optionsHtml = '<option value="auto">⚡ Auto (Active GPU Model)</option>' +
-                        textModels.map(m => `<option value="${m}">${m}</option>`).join('');
-                    if (visionSel) visionSel.innerHTML = optionsHtml;
-                    if (synthSel) synthSel.innerHTML = optionsHtml;
+                    const res = await fetch('/api/models/text');
+                    const data = await res.json();
+                    const models = data.models || [];
+                    visionSel.innerHTML = '<option value="auto">⚡ Auto (Active GPU Model)</option>' +
+                        models.map(m => `<option value="${m}">${humanizeModelName(m)}</option>`).join('');
                 } catch(err) {
-                    console.warn('Could not populate promptgen model selectors:', err);
+                    console.warn('Could not populate vision model selector:', err);
+                }
+            }
+
+            if (synthSel) {
+                // Synthesis: only Ollama-registered text models (VL models excluded —
+                // they're optimised for image understanding, not creative prompt writing)
+                try {
+                    const res = await fetch('/api/models');
+                    const data = await res.json();
+                    const models = (data.models || []).filter(m => !m.includes('vl') && !m.includes('VL'));
+                    synthSel.innerHTML = '<option value="auto">⚡ Auto (Active GPU Model)</option>' +
+                        models.map(m => `<option value="${m}">${humanizeModelName(m)}</option>`).join('');
+                } catch(err) {
+                    console.warn('Could not populate synthesis model selector:', err);
                 }
             }
         } catch (e) {
