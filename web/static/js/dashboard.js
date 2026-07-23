@@ -239,6 +239,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             sel.innerHTML = imageModels.map(m => `<option value="${m.name}">${m.name}</option>`).join('');
+
+            // Populate Vision & Synthesis model selectors in Image-to-Prompt Assistant
+            const visionSel = document.getElementById('sd-promptgen-vision-model');
+            const synthSel = document.getElementById('sd-promptgen-synth-model');
+            if (visionSel || synthSel) {
+                try {
+                    const llmRes = await fetch('/api/models');
+                    const llmData = await llmRes.json();
+                    const textModels = llmData.models || [];
+                    const optionsHtml = '<option value="auto">⚡ Auto (Active GPU Model)</option>' +
+                        textModels.map(m => `<option value="${m}">${m}</option>`).join('');
+                    if (visionSel) visionSel.innerHTML = optionsHtml;
+                    if (synthSel) synthSel.innerHTML = optionsHtml;
+                } catch(err) {
+                    console.warn('Could not populate promptgen model selectors:', err);
+                }
+            }
         } catch (e) {
             sel.innerHTML = '<option value="">Error loading models</option>';
             logToTerminal('Failed to load SD models: ' + e.message, 'error');
@@ -646,6 +663,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const formData = new FormData();
                 formData.append('image', currentPromptgenFile);
 
+                const visionModel = document.getElementById('sd-promptgen-vision-model')?.value;
+                if (visionModel && visionModel !== 'auto') {
+                    formData.append('model', visionModel);
+                }
+
                 const res = await fetch('/api/vision/describe', {
                     method: 'POST',
                     body: formData
@@ -671,6 +693,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const baseDesc = promptgenDescTextarea ? promptgenDescTextarea.value.trim() : '';
             const changes = promptgenChangesTextarea ? promptgenChangesTextarea.value.trim() : '';
             const preset = promptgenPresetSelect ? promptgenPresetSelect.value : 'Photorealistic Retouch';
+            const synthModel = document.getElementById('sd-promptgen-synth-model')?.value;
 
             if (!baseDesc || !changes) {
                 alert('Please provide both the base image description and desired modifications.');
@@ -681,14 +704,19 @@ document.addEventListener('DOMContentLoaded', () => {
             promptgenSynthBtn.disabled = true;
 
             try {
+                const payload = {
+                    base_description: baseDesc,
+                    desired_changes: changes,
+                    style_preset: preset
+                };
+                if (synthModel && synthModel !== 'auto') {
+                    payload.model = synthModel;
+                }
+
                 const res = await fetch('/api/vision/synthesize_edit_prompt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        base_description: baseDesc,
-                        desired_changes: changes,
-                        style_preset: preset
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 const data = await res.json();
