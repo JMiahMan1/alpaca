@@ -14,6 +14,7 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 | Service | Image | Role | Network | Port |
 |---------|-------|------|---------|------|
 | `llama-server` | `Dockerfile.llama-server` (llama.cpp CUDA) | Direct GPU inference server | Compose network | 8080 |
+| `sd-server` | `Dockerfile.sd-server` (stable-diffusion.cpp CUDA) | Direct GPU image generation server | Compose network | 8081 |
 | `alpaca-proxy` | `Dockerfile.proxy` (FastAPI/Uvicorn) | Model router, proxy, slot management | **host** | 11434 |
 | `alpaca-web` | `Dockerfile.web` (Flask/SocketIO) | Web dashboard, benchmark runner | Compose network | 5000 |
 | `alpaca-telemetry` | `Dockerfile.proxy` (async daemon) | Polls metrics, writes telemetry logs | Compose network | — |
@@ -145,20 +146,21 @@ mypy web/shared_llm_benchmark.py         # lenient (web.* exempt)
 
 ## Common Workflows
 
-### Rebuild & Restart Services
+### Rebuild & Restart Services (Use `sudo` for full model directory & docker socket access)
 ```bash
-docker compose up -d --build alpaca-web    # rebuild web
-docker compose up -d --build alpaca-telemetry  # rebuild telemetry
-docker compose up -d --build alpaca-proxy    # rebuild proxy
-docker compose up -d                         # all services
+sudo docker compose up -d --build alpaca-web       # rebuild web
+sudo docker compose up -d --build alpaca-telemetry # rebuild telemetry
+sudo docker compose up -d --build alpaca-proxy     # rebuild proxy
+sudo docker compose up -d                          # all services
 ```
 
 ### View Logs
 ```bash
-docker compose logs -f alpaca-web
-docker compose logs -f alpaca-telemetry
-docker compose logs -f alpaca-proxy
-docker compose logs -f llama-server
+sudo docker compose logs -f alpaca-web
+sudo docker compose logs -f alpaca-telemetry
+sudo docker compose logs -f alpaca-proxy
+sudo docker compose logs -f llama-server
+sudo docker compose logs -f sd-server
 ```
 
 ### Clean Stop Markers (if stuck)

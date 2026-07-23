@@ -829,6 +829,10 @@
                                               <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Extra Args (extra_args)</label>
                                               <input type="text" name="extra_args" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. --offload-to-cpu --max-vram 6">
                                           </div>
+                                          <div>
+                                              <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">LoRA Adapters & Finetunes (lora)</label>
+                                              <input type="text" name="lora" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. /models/loras/photorealism_v2.safetensors">
+                                          </div>
                                           <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
                                               <div>
                                                   <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Diffusion Cache Mode (cache-mode)</label>
@@ -849,131 +853,596 @@
                                           </div>
                                       </div><!-- /sd-fields -->
 
+                                      <div class="flex-space" style="margin-top: 1rem; gap:1rem;">
+                                         <button type="submit" class="btn btn-primary" style="flex:1;">💾 Save Settings</button>
+                                         <button id="btn-restart-services" type="button" class="btn btn-danger" style="flex:1;">🔄 Save & Restart Backend</button>
+                                     </div>
+                                 </form>
+                             </div><!-- /card -->
+                         </div><!-- /grid-2 -->
+                 </div><!-- /view-profiles -->
 
-                                    <div class="flex-space" style="margin-top: 1rem; gap:1rem;">
-                                        <button type="submit" class="btn btn-primary" style="flex:1;">💾 Save Settings</button>
-                                        <button id="btn-restart-services" type="button" class="btn btn-danger" style="flex:1;">🔄 Save & Restart Backend</button>
-                                    </div>
-                                </form>
-                            </div>
-                        </div>
-
-                </div>
-
-                <!-- VIEW 4.5: IMAGE STUDIO (Stable Diffusion) -->
-                <div id="view-image-studio" class="tab-view d-none">
-                    <div class="card" style="margin-bottom: 1.5rem; border-left: 4px solid var(--color-primary);">
-                        <div class="flex-space">
+                 <!-- VIEW 4.5: IMAGE STUDIO (Stable Diffusion) -->
+                 <div id="view-image-studio" class="tab-view d-none">
+                    <!-- Glassmorphism Top Header & Mode Switcher -->
+                    <div class="card" style="margin-bottom: 1.25rem; border-left: 4px solid #38bdf8; background: linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(30, 41, 59, 0.7) 100%);">
+                        <div class="flex-space" style="align-items:center; flex-wrap:wrap; gap:1rem;">
                             <div>
-                                <h3 style="color: white; font-size: 1.1rem; margin-bottom:0.25rem;">🎨 Image Studio — Stable Diffusion</h3>
-                                <p style="font-size: 0.75rem; color: var(--text-muted);">Load an image-generation model into the stable-diffusion.cpp backend and generate images from text or edit existing photos.</p>
+                                <h3 style="color: white; font-size: 1.2rem; margin-bottom:0.25rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span>🎨 Image Studio</span>
+                                    <span style="font-size:0.7rem; padding:0.15rem 0.5rem; border-radius:12px; background:rgba(56, 189, 248, 0.2); color:#38bdf8; border:1px solid rgba(56, 189, 248, 0.3);">Stable Diffusion Suite</span>
+                                </h3>
+                                <p style="font-size: 0.78rem; color: #94a3b8; margin:0;">Create promotional flyers, retouch photos, or generate high-res graphics with intuitive controls.</p>
+                            </div>
+                            <!-- Interactive Mode Navigation Pills -->
+                            <div style="display:flex; gap:0.4rem; background:#090d16; padding:0.3rem; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">
+                                <button id="sd-mode-tab-gen" class="sd-mode-tab active" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.85rem; border-radius:8px; background:var(--color-primary); color:white; border:none; cursor:pointer; transition:all 0.2s ease;">🎨 Text-to-Image</button>
+                                <button id="sd-mode-tab-flyer" class="sd-mode-tab" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.85rem; border-radius:8px; background:transparent; color:#94a3b8; border:none; cursor:pointer; transition:all 0.2s ease;">📢 Flyer & Poster Creator</button>
+                                <button id="sd-mode-tab-photo" class="sd-mode-tab" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.85rem; border-radius:8px; background:transparent; color:#94a3b8; border:none; cursor:pointer; transition:all 0.2s ease;">📷 Realistic Photo Editor</button>
+                                <button id="sd-mode-tab-canvas" class="sd-mode-tab" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.85rem; border-radius:8px; background:transparent; color:#94a3b8; border:none; cursor:pointer; transition:all 0.2s ease;">✏️ Canvas Text Studio</button>
+                                <button id="sd-mode-tab-ocr" class="sd-mode-tab" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.85rem; border-radius:8px; background:transparent; color:#94a3b8; border:none; cursor:pointer; transition:all 0.2s ease;">🔍 OCR & Document Extractor</button>
+                                <button id="sd-mode-tab-promptgen" class="sd-mode-tab" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.85rem; border-radius:8px; background:transparent; color:#94a3b8; border:none; cursor:pointer; transition:all 0.2s ease;">🎨 Image-to-Prompt Assistant</button>
                             </div>
                         </div>
                     </div>
 
-                    <div class="grid-2" style="grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; display: grid;">
-                        <!-- Left: model management -->
-                        <div class="card">
-                            <div class="card-title">Model Management</div>
-                            <div style="display:flex; flex-direction:column; gap:0.75rem;">
-                                <div>
-                                    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Select Image Model</label>
-                                    <select id="sd-model-select" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                        <option value="">Loading models...</option>
-                                    </select>
-                                </div>
-                                <div style="display:flex; gap:0.5rem;">
-                                    <button id="sd-load-btn" class="btn btn-primary" style="font-size:0.8rem; padding:0.5rem 1rem;">⬇️ Load into Stable Diffusion</button>
-                                    <button id="sd-unload-btn" class="btn btn-secondary" style="font-size:0.8rem; padding:0.5rem 1rem; background:#334155; border-color:#334155; color:white;">⏏️ Unload</button>
-                                </div>
-                                <div id="sd-status" style="font-size:0.78rem; color:var(--text-muted); min-height:1.2rem;">Idle.</div>
+                    <!-- Model Selector & Status Bar -->
+                    <div class="card" style="margin-bottom:1.25rem; background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                        <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;">
+                            <div style="display:flex; align-items:center; gap:0.75rem; flex:1; min-width:280px;">
+                                <span style="font-size:1rem;">🤖</span>
+                                <label class="control-label" style="font-size:0.8rem; font-weight:600; white-space:nowrap; margin-bottom:0; color:#e2e8f0;">Active Image Model:</label>
+                                <select id="sd-model-select" class="form-control" style="flex:1; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.75rem; border-radius:8px; font-size:0.82rem;">
+                                    <option value="">Loading models...</option>
+                                </select>
                             </div>
-                        </div>
-
-                        <!-- Middle: generate (text-to-image, no source photo) -->
-                        <div class="card">
-                            <div class="card-title">Generate Image</div>
-                            <div style="display:flex; flex-direction:column; gap:0.6rem;">
-                                <div>
-                                    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Prompt</label>
-                                    <textarea id="sd-gen-prompt" rows="3" placeholder="e.g. a photograph of an alien in a field of flowers" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem; resize:vertical;"></textarea>
-                                </div>
-                                <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                                    <div style="flex:1; min-width:120px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Size (WxH)</label>
-                                        <input type="text" id="sd-gen-size" value="1024x1024" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                    <div style="flex:1; min-width:90px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;"># Images</label>
-                                        <input type="number" id="sd-gen-n" value="1" min="1" max="4" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                </div>
-                                <div>
-                                    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Negative Prompt</label>
-                                    <input type="text" id="sd-gen-negative" value="blurry, low quality, deformed, face distortion" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                </div>
-                                <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                                    <div style="flex:1; min-width:120px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Steps</label>
-                                        <input type="number" id="sd-gen-steps" value="20" min="1" max="150" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                    <div style="flex:1; min-width:120px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Guidance Scale</label>
-                                        <input type="number" id="sd-gen-guidance" value="7.5" step="0.5" min="1" max="30" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                    <div style="flex:1; min-width:100px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Seed</label>
-                                        <input type="number" id="sd-gen-seed" value="-1" min="-1" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                </div>
-                                <button id="sd-gen-btn" class="btn btn-primary" style="font-size:0.8rem; padding:0.5rem 1rem;">🎨 Generate Image</button>
-                                <div id="sd-gen-status" style="font-size:0.78rem; color:var(--text-muted); min-height:1.2rem;"></div>
+                            <div style="display:flex; gap:0.5rem; align-items:center;">
+                                <button id="sd-load-btn" class="btn btn-primary" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.9rem; border-radius:8px;">⬇️ Load Model</button>
+                                <button id="sd-unload-btn" class="btn btn-secondary" style="font-size:0.78rem; font-weight:600; padding:0.45rem 0.9rem; border-radius:8px; background:#334155; border-color:#334155; color:white;">⏏️ Unload</button>
                             </div>
+                            <div id="sd-status" style="font-size:0.78rem; font-weight:500; color:#38bdf8; background:rgba(56, 189, 248, 0.1); padding:0.35rem 0.75rem; border-radius:6px; border:1px solid rgba(56, 189, 248, 0.2); min-width:140px; text-align:center;">Idle.</div>
                         </div>
+                    </div>
 
-                        <!-- Right: edit form -->
-                        <div class="card">
-                            <div class="card-title">Edit Image</div>
-                            <div style="display:flex; flex-direction:column; gap:0.6rem;">
-                                <div>
-                                    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Source Image</label>
-                                    <input type="file" id="sd-edit-image" accept="image/*" style="font-size:0.78rem; color:white;">
-                                </div>
-                                <div>
-                                    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Edit Prompt</label>
-                                    <textarea id="sd-edit-prompt" rows="2" placeholder="e.g. a beautiful woman wearing a clean white shirt" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem; resize:vertical;"></textarea>
-                                </div>
-                                <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                                    <div style="flex:1; min-width:120px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Size (WxH)</label>
-                                        <input type="text" id="sd-edit-size" value="1024x1024" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                    <div style="flex:1; min-width:90px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;"># Images</label>
-                                        <input type="number" id="sd-edit-n" value="1" min="1" max="4" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                    <div style="flex:1; min-width:120px;">
-                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Strength</label>
-                                        <input type="number" id="sd-edit-strength" value="0.45" step="0.05" min="0" max="1" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                    </div>
-                                </div>
-                                <div>
-                                    <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem;">Negative Prompt</label>
-                                    <input type="text" id="sd-edit-negative" value="blurry, low quality, deformed, face distortion" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
-                                </div>
-                                <button id="sd-edit-btn" class="btn btn-primary" style="font-size:0.8rem; padding:0.5rem 1rem;">✨ Edit Image</button>
-                                <div id="sd-edit-status" style="font-size:0.78rem; color:var(--text-muted); min-height:1.2rem;"></div>
+                    <!-- Interactive Step-by-Step Workflow Guide -->
+                    <div class="sd-guide-card" style="margin-bottom:1.25rem; padding:0.85rem 1.25rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+                            <div style="display:flex; align-items:center; gap:0.6rem;">
+                                <span class="sd-step-badge">1</span>
+                                <span style="font-size:0.8rem; font-weight:600; color:white;">Select Active Model</span>
+                                <span style="font-size:0.72rem; color:#94a3b8;">(Auto-loads if idle)</span>
+                            </div>
+                            <div style="color:#475569; font-size:0.8rem;">➔</div>
+                            <div style="display:flex; align-items:center; gap:0.6rem;">
+                                <span class="sd-step-badge">2</span>
+                                <span style="font-size:0.8rem; font-weight:600; color:white;">Pick Mode & Tweak Parameters</span>
+                                <span style="font-size:0.72rem; color:#94a3b8;">(Flyer, Photo Edit, Canvas)</span>
+                            </div>
+                            <div style="color:#475569; font-size:0.8rem;">➔</div>
+                            <div style="display:flex; align-items:center; gap:0.6rem;">
+                                <span class="sd-step-badge">3</span>
+                                <span style="font-size:0.8rem; font-weight:600; color:white;">Render & Export PNG</span>
+                                <span style="font-size:0.72rem; color:#94a3b8;">(High-res 1-click download)</span>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Results -->
-                    <div class="card" style="margin-top:1.5rem;">
-                        <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
-                            <span>Results</span>
-                            <button id="sd-clear-results" class="btn btn-secondary" style="font-size:0.7rem; padding:0.25rem 0.6rem; background:#334155; border-color:#334155; color:white;">🗑️ Clear</button>
+                    <div class="grid-2" style="grid-template-columns: 1fr; gap: 1.5rem; display: grid;">
+                        <!-- MODE 1: Standard Text-to-Image Generation -->
+                        <div id="sd-panel-gen" class="sd-mode-panel">
+                            <div class="card" style="background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                                <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.6rem; margin-bottom:1rem;">
+                                    <span style="color:white; font-weight:600; font-size:0.95rem; display:flex; align-items:center; gap:0.5rem;">🎨 Text-to-Image Generation</span>
+                                    <span style="font-size:0.75rem; color:#94a3b8;">Generate original artworks, scenes, or product concepts</span>
+                                </div>
+                                <div style="display:flex; flex-direction:column; gap:0.85rem;">
+                                    <div>
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+                                            <label class="control-label" style="font-size:0.78rem; font-weight:600; color:#e2e8f0; margin:0;">Prompt Description</label>
+                                            <span style="font-size:0.72rem; color:#94a3b8;">Tip: Be descriptive for best quality</span>
+                                        </div>
+                                        <textarea id="sd-gen-prompt" rows="3" placeholder="e.g. An 8k RAW photorealistic portrait of a woman in studio lighting, soft natural textures, 85mm lens" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.6rem; border-radius:8px; font-size:0.83rem; resize:vertical; line-height:1.4;"></textarea>
+
+                                        <!-- Quick Inspiration Chips -->
+                                        <div style="display:flex; gap:0.4rem; flex-wrap:wrap; margin-top:0.5rem; align-items:center;">
+                                            <span style="font-size:0.7rem; color:#64748b; font-weight:600;">✨ Quick Prompts:</span>
+                                            <button type="button" class="sd-quick-chip" data-prompt="An 8k RAW photorealistic portrait photograph of a confident professional, natural skin texture, soft studio directional lighting, 85mm lens f/1.8" style="font-size:0.7rem; padding:0.2rem 0.55rem; border-radius:12px; background:#1e293b; color:#cbd5e1; border:1px solid rgba(255,255,255,0.1); cursor:pointer;">👤 Studio Portrait</button>
+                                            <button type="button" class="sd-quick-chip" data-prompt="High-end commercial product photography of a modern luxury perfume bottle on a reflective marble pedestal, soft ambient lighting, cinematic, 8k resolution" style="font-size:0.7rem; padding:0.2rem 0.55rem; border-radius:12px; background:#1e293b; color:#cbd5e1; border:1px solid rgba(255,255,255,0.1); cursor:pointer;">🛍️ Luxury Product</button>
+                                            <button type="button" class="sd-quick-chip" data-prompt="A futuristic cyberpunk city street at night with neon lights, glowing reflections in rain puddles, high detail, cinematic atmosphere, 8k resolution" style="font-size:0.7rem; padding:0.2rem 0.55rem; border-radius:12px; background:#1e293b; color:#cbd5e1; border:1px solid rgba(255,255,255,0.1); cursor:pointer;">🌆 Cyberpunk City</button>
+                                            <button type="button" class="sd-quick-chip" data-prompt="A serene mountain lake at golden hour sunset, dramatic sky reflections, vibrant nature photography, ultra detailed 8k" style="font-size:0.7rem; padding:0.2rem 0.55rem; border-radius:12px; background:#1e293b; color:#cbd5e1; border:1px solid rgba(255,255,255,0.1); cursor:pointer;">🌄 Golden Hour Nature</button>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Dimensions (WxH)</label>
+                                            <select id="sd-gen-size-preset" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem 0.6rem; border-radius:8px; font-size:0.8rem; margin-bottom:0.25rem;">
+                                                <option value="1024x1024">🔲 Square (1024x1024)</option>
+                                                <option value="832x1216">📜 Portrait (832x1216)</option>
+                                                <option value="1216x832">🖼️ Landscape (1216x832)</option>
+                                                <option value="768x1344">📱 Story (768x1344)</option>
+                                                <option value="512x512">⚡ Fast Preview (512x512)</option>
+                                            </select>
+                                            <input type="text" id="sd-gen-size" value="1024x1024" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Negative Prompt (Avoid)</label>
+                                            <input type="text" id="sd-gen-negative" value="blurry, low quality, deformed, face distortion, plastic skin, cgi" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem 0.6rem; border-radius:8px; font-size:0.8rem;">
+                                            <div style="font-size:0.68rem; color:#64748b; margin-top:0.25rem;">Filters unwanted rendering artifacts</div>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:0.75rem; flex-wrap:wrap; background:#090d16; padding:0.6rem 0.75rem; border-radius:8px; border:1px solid rgba(255,255,255,0.05);">
+                                        <div style="flex:1; min-width:90px;">
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;"># Images</label>
+                                            <input type="number" id="sd-gen-n" value="1" min="1" max="4" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+                                        <div style="flex:1; min-width:110px;">
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;">Steps</label>
+                                            <input type="number" id="sd-gen-steps" value="25" min="1" max="150" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+                                        <div style="flex:1; min-width:110px;">
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;">CFG Scale</label>
+                                            <input type="number" id="sd-gen-guidance" value="7.5" step="0.5" min="1" max="30" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+                                        <div style="flex:1; min-width:100px;">
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;">Seed</label>
+                                            <input type="number" id="sd-gen-seed" value="-1" min="-1" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+                                    </div>
+
+                                    <!-- ComfyUI-Capability Advanced Pro Settings Drawer -->
+                                    <details style="background:#090d16; border:1px solid rgba(139, 92, 246, 0.2); border-radius:8px; padding:0.5rem 0.75rem;">
+                                        <summary style="font-size:0.78rem; font-weight:600; color:#c084fc; cursor:pointer; list-style:none; display:flex; align-items:center; justify-space-between;">
+                                            <span>⚡ Advanced Engine Pipeline Settings (ComfyUI Features)</span>
+                                            <span style="font-size:0.7rem; color:#94a3b8;">▼</span>
+                                        </summary>
+                                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-top:0.6rem;">
+                                            <div>
+                                                <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Sampling Algorithm</label>
+                                                <select id="sd-gen-sampler" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                    <option value="euler_a">Euler Ancestral (Default)</option>
+                                                    <option value="euler">Euler</option>
+                                                    <option value="dpmpp_2m">DPM++ 2M Karras (Ultra Detail)</option>
+                                                    <option value="dpmpp_sde">DPM++ SDE Karras</option>
+                                                    <option value="unipc">UniPC (Fast convergence)</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Scheduler Schedule</label>
+                                                <select id="sd-gen-scheduler" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                    <option value="discrete">Discrete / Karras</option>
+                                                    <option value="exponential">Exponential</option>
+                                                    <option value="normal">Normal</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">DiT Diffusion Cache</label>
+                                                <select id="sd-gen-cache" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                    <option value="easycache">EasyCache (30% Speedup)</option>
+                                                    <option value="ucache">UCache (UNET)</option>
+                                                    <option value="none">Disabled</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </details>
+
+                                    <div style="display:flex; gap:0.75rem; align-items:center; margin-top:0.25rem;">
+                                        <button id="sd-gen-btn" class="btn btn-primary" style="font-size:0.85rem; font-weight:600; padding:0.6rem 1.5rem; border-radius:8px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);">🎨 Generate Image</button>
+                                        <div id="sd-gen-status" style="font-size:0.78rem; color:#94a3b8; min-height:1.2rem;"></div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        <div id="sd-results" style="display:flex; flex-wrap:wrap; gap:1rem;"></div>
+
+                        <!-- MODE 2: Flyer & Poster Creator -->
+                        <div id="sd-panel-flyer" class="sd-mode-panel d-none">
+                            <div class="card" style="background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                                <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.6rem; margin-bottom:1rem;">
+                                    <span style="color:white; font-weight:600; font-size:0.95rem; display:flex; align-items:center; gap:0.5rem;">📢 Flyer & Graphic Poster Creator</span>
+                                    <span style="font-size:0.75rem; color:#94a3b8;">Design event & promotional flyers with clear headline text control</span>
+                                </div>
+                                <div style="display:flex; flex-direction:column; gap:0.85rem;">
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Category Theme & Preset</label>
+                                            <select id="sd-flyer-preset-select" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                                <option value="music_event">🎵 Music & Party Event Poster</option>
+                                                <option value="corporate_business">💼 Corporate & Business Flyer</option>
+                                                <option value="product_sale">🏷️ Retail Product Sale & Offer</option>
+                                                <option value="restaurant_menu">🍕 Restaurant & Food Menu Poster</option>
+                                                <option value="minimalist_modern">✨ Minimalist Modern Graphic</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Layout / Aspect Ratio</label>
+                                            <select id="sd-flyer-aspect-select" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                                <option value="832x1216">📜 3:4 Standard Portrait Flyer (832x1216)</option>
+                                                <option value="768x1344">📱 9:16 Mobile Poster / Story (768x1344)</option>
+                                                <option value="1024x1024">🔲 1:1 Square Social Post (1024x1024)</option>
+                                                <option value="1216x832">🖼️ 4:3 Landscape Banner (1216x832)</option>
+                                                <option value="1344x768">🖥️ 16:9 Header Banner (1344x768)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Main Title / Headline</label>
+                                            <input type="text" id="sd-flyer-headline" value="SUMMER MUSIC FESTIVAL 2026" placeholder="e.g. GRAND OPENING" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Subtitle / Event Details</label>
+                                            <input type="text" id="sd-flyer-subtext" value="AUGUST 15 • DOORS OPEN AT 8 PM" placeholder="e.g. UP TO 50% OFF" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Badge / Call-to-Action Tag</label>
+                                            <input type="text" id="sd-flyer-badge" value="GET TICKETS NOW" placeholder="e.g. LIMITED OFFER" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                        </div>
+                                    </div>
+
+                                    <!-- QR Code Integration Box -->
+                                    <div style="background:#090d16; padding:0.75rem; border-radius:8px; border:1px solid rgba(168, 85, 247, 0.3);">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                                            <label class="control-label" style="font-size:0.78rem; font-weight:600; color:#c084fc; margin:0; display:flex; align-items:center; gap:0.4rem;">
+                                                <span>📱 Embed Scannable QR Code</span>
+                                            </label>
+                                            <label style="font-size:0.72rem; color:#94a3b8; cursor:pointer; display:flex; align-items:center; gap:0.3rem;">
+                                                <input type="checkbox" id="sd-flyer-qr-enable" checked style="accent-color:#a855f7;"> Enable QR Embedding
+                                            </label>
+                                        </div>
+                                        
+                                        <div id="sd-flyer-qr-inputs" style="display:grid; grid-template-columns: 2fr 1fr 1fr; gap:0.75rem; margin-top:0.35rem;">
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Target URL / Text</label>
+                                                <input type="text" id="sd-flyer-qr-url" value="https://example.com/tickets" placeholder="e.g. https://mywebsite.com/event" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem 0.6rem; border-radius:6px; font-size:0.78rem;">
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Badge Position</label>
+                                                <select id="sd-flyer-qr-position" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                                    <option value="bottom_right">Bottom Right</option>
+                                                    <option value="bottom_left">Bottom Left</option>
+                                                    <option value="bottom_center">Bottom Center</option>
+                                                    <option value="top_right">Top Right</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Card Label</label>
+                                                <input type="text" id="sd-flyer-qr-label" value="SCAN ME" placeholder="e.g. SCAN ME" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem 0.6rem; border-radius:6px; font-size:0.78rem;">
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Background Theme & Details</label>
+                                        <input type="text" id="sd-flyer-visuals" value="neon stage spotlights, crowd silhouette, dark moody atmosphere" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                    </div>
+
+                                    <div style="background:#090d16; padding:0.75rem; border-radius:8px; border:1px solid rgba(56, 189, 248, 0.2);">
+                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#38bdf8;">✨ Synthesized Prompt Preview</label>
+                                        <div id="sd-flyer-prompt-preview" style="font-size:0.78rem; color:#e2e8f0; font-family:monospace; min-height:1.5rem; word-break:break-word; line-height:1.4;">
+                                            Generating prompt...
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:0.75rem; justify-content:space-between; align-items:center; margin-top:0.25rem;">
+                                        <button id="sd-flyer-gen-btn" class="btn btn-primary" style="font-size:0.85rem; font-weight:600; padding:0.6rem 1.5rem; border-radius:8px; background:linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);">🚀 Generate Flyer Image</button>
+                                        <div id="sd-flyer-status" style="font-size:0.78rem; color:#94a3b8;">Ready to synthesize flyer.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- MODE 3: Realistic Photo Editor -->
+                        <div id="sd-panel-photo" class="sd-mode-panel d-none">
+                            <div class="card" style="background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                                <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.6rem; margin-bottom:1rem;">
+                                    <span style="color:white; font-weight:600; font-size:0.95rem; display:flex; align-items:center; gap:0.5rem;">📷 Realistic Photo Editor & Retoucher</span>
+                                    <span style="font-size:0.75rem; color:#94a3b8;">Edit existing photos with camera presets & denoising strength control</span>
+                                </div>
+                                <div style="display:flex; flex-direction:column; gap:0.85rem;">
+                                    <!-- Source Photo Drag & Drop Dropzone -->
+                                    <div id="sd-photo-dropzone" style="border:2px dashed rgba(56, 189, 248, 0.4); background:#090d16; border-radius:10px; padding:1.25rem; text-align:center; cursor:pointer; transition:all 0.2s ease;">
+                                        <div id="sd-photo-dropzone-empty">
+                                            <div style="font-size:2rem; margin-bottom:0.25rem;">📁</div>
+                                            <div style="font-size:0.85rem; font-weight:600; color:white; margin-bottom:0.2rem;">Drag & drop your source photo here</div>
+                                            <div style="font-size:0.75rem; color:#94a3b8;">or click to browse from disk</div>
+                                            <input type="file" id="sd-edit-image" accept="image/*" style="display:none;">
+                                        </div>
+                                        <div id="sd-photo-dropzone-preview" class="d-none" style="display:flex; align-items:center; justify-content:center; gap:1rem;">
+                                            <img id="sd-photo-preview-img" style="max-height:90px; border-radius:6px; border:1px solid var(--border-color);">
+                                            <div style="text-align:left;">
+                                                <div id="sd-photo-preview-name" style="font-size:0.8rem; font-weight:600; color:white;">photo.jpg</div>
+                                                <div id="sd-photo-preview-info" style="font-size:0.72rem; color:#94a3b8;">Ready for editing</div>
+                                                <button type="button" id="sd-photo-remove-btn" class="btn btn-secondary" style="font-size:0.7rem; padding:0.2rem 0.5rem; margin-top:0.35rem; background:#334155; border:none; color:white;">Change Photo</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Photo Retouch Preset</label>
+                                            <select id="sd-photo-preset-select" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                                <option value="portrait">👤 Photorealistic Portrait & Skin Texture</option>
+                                                <option value="studio_product">🛍️ Studio Product Photography</option>
+                                                <option value="outdoor_retouch">🌄 Outdoor & Landscape Retouch</option>
+                                                <option value="tone_color_grade">🎨 Cinematic Tone & Color Grade</option>
+                                                <option value="restore_polish">🔍 Photo Restoration & Polish</option>
+                                                <option value="custom">✏️ Custom Edit Prompt</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Dimensions (WxH)</label>
+                                            <input type="text" id="sd-edit-size" value="512x512" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Edit Instructions / Prompt</label>
+                                        <textarea id="sd-edit-prompt" rows="2" placeholder="e.g. a beautiful woman wearing a clean white shirt, soft studio lighting" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.6rem; border-radius:8px; font-size:0.83rem; resize:vertical; line-height:1.4;"></textarea>
+                                    </div>
+
+                                    <!-- Intuitive Denoising Control Box -->
+                                    <div style="background:#090d16; padding:0.75rem; border-radius:8px; border:1px solid rgba(255,255,255,0.08);">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+                                            <label class="control-label" style="font-size:0.78rem; font-weight:600; color:#e2e8f0; margin:0;">
+                                                Denoising Strength: <span id="sd-strength-val" style="color:#38bdf8; font-weight:700;">0.45</span>
+                                            </label>
+                                            <span id="sd-strength-guide" style="font-size:0.72rem; color:#94a3b8;">Balanced Edit (Enhance skin & lighting)</span>
+                                        </div>
+                                        <input type="range" id="sd-edit-strength" value="0.45" step="0.05" min="0.10" max="0.95" style="width:100%; margin-bottom:0.5rem; accent-color:#38bdf8;">
+                                        
+                                        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:0.35rem;">
+                                            <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.25" style="font-size:0.72rem; font-weight:600; padding:0.35rem; background:#1e293b; border:1px solid var(--border-color); color:white; cursor:pointer; border-radius:6px;">Subtle 0.25</button>
+                                            <button type="button" class="btn btn-secondary sd-strength-preset active" data-strength="0.45" style="font-size:0.72rem; font-weight:600; padding:0.35rem; background:#38bdf8; border:1px solid #38bdf8; color:white; cursor:pointer; border-radius:6px;">Balanced 0.45</button>
+                                            <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.65" style="font-size:0.72rem; font-weight:600; padding:0.35rem; background:#1e293b; border:1px solid var(--border-color); color:white; cursor:pointer; border-radius:6px;">Medium 0.65</button>
+                                            <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.85" style="font-size:0.72rem; font-weight:600; padding:0.35rem; background:#1e293b; border:1px solid var(--border-color); color:white; cursor:pointer; border-radius:6px;">Heavy 0.85</button>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:0.75rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;"># Images</label>
+                                            <input type="number" id="sd-edit-n" value="1" min="1" max="4" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;">Negative Prompt</label>
+                                            <input type="text" id="sd-edit-negative" value="blurry, low quality, deformed, face distortion, cgi, plastic skin" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:0.75rem; align-items:center; margin-top:0.25rem;">
+                                        <button id="sd-edit-btn" class="btn btn-primary" style="font-size:0.85rem; font-weight:600; padding:0.6rem 1.5rem; border-radius:8px; background:linear-gradient(135deg, #10b981 0%, #059669 100%);">✨ Edit & Enhance Photo</button>
+                                        <div id="sd-edit-status" style="font-size:0.78rem; color:#94a3b8; min-height:1.2rem;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- MODE 4: Canvas Text Studio -->
+                        <div id="sd-panel-canvas" class="sd-mode-panel d-none">
+                            <div class="card" style="background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                                <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.6rem; margin-bottom:1rem;">
+                                    <span style="color:white; font-weight:600; font-size:0.95rem; display:flex; align-items:center; gap:0.5rem;">✏️ Interactive Canvas Text & Typography Studio</span>
+                                    <span style="font-size:0.75rem; color:#94a3b8;">Overlay 100% sharp vector typography & badges onto any graphic</span>
+                                </div>
+                                <div style="display:grid; grid-template-columns: 1fr 340px; gap:1.25rem;">
+                                    <!-- Canvas Viewport -->
+                                    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; background:#090d16; border:2px dashed rgba(255,255,255,0.1); border-radius:10px; padding:1rem; min-height:400px; position:relative;">
+                                        <canvas id="sd-text-canvas" style="max-width:100%; max-height:540px; border-radius:8px; box-shadow: 0 12px 30px rgba(0,0,0,0.6);"></canvas>
+                                        <div id="sd-canvas-empty-hint" style="text-align:center; color:#94a3b8; font-size:0.85rem;">
+                                            🖼️ No image loaded in canvas.<br><span style="font-size:0.75rem; color:#64748b;">Generate an image above and click "✏️ Text Canvas", or load a local file below:</span>
+                                            <div style="margin-top:0.75rem;">
+                                                <input type="file" id="sd-canvas-upload" accept="image/*" style="display:none;">
+                                                <button type="button" class="btn btn-secondary" id="sd-canvas-upload-trigger-btn" style="font-size:0.78rem; font-weight:600; padding:0.4rem 0.8rem;">📁 Open Image File</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Canvas Text Controls -->
+                                    <div style="display:flex; flex-direction:column; gap:0.75rem; background:#090d16; padding:1rem; border-radius:8px; border:1px solid var(--border-color);">
+                                        <h4 style="color:white; font-size:0.85rem; font-weight:600; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.4rem; margin:0;">Text & Overlay Controls</h4>
+
+                                        <div>
+                                            <label class="control-label" style="font-size:0.72rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Main Headline</label>
+                                            <input type="text" id="sd-canvas-text1" value="SUMMER MUSIC FESTIVAL" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+
+                                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem;">
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Font Family</label>
+                                                <select id="sd-canvas-font1" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                    <option value="Impact, sans-serif">Impact (Bold Promo)</option>
+                                                    <option value="system-ui, sans-serif">Clean Sans-Serif</option>
+                                                    <option value="Georgia, serif">Elegant Serif</option>
+                                                    <option value="'Courier New', monospace">Retro Monospace</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Text Color</label>
+                                                <input type="color" id="sd-canvas-color1" value="#ffffff" style="width:100%; height:32px; border-radius:6px; border:none; background:none; cursor:pointer;">
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label class="control-label" style="font-size:0.72rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Subtitle / Details</label>
+                                            <input type="text" id="sd-canvas-text2" value="SATURDAY AUG 15 • DOORS OPEN AT 8 PM" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+
+                                        <div>
+                                            <label class="control-label" style="font-size:0.72rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Badge Tag</label>
+                                            <input type="text" id="sd-canvas-text3" value="GET TICKETS NOW" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                        </div>
+
+                                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem;">
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Badge Pill Color</label>
+                                                <input type="color" id="sd-canvas-badge-bg" value="#3b82f6" style="width:100%; height:32px; border-radius:6px; border:none; background:none; cursor:pointer;">
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Position Layout</label>
+                                                <select id="sd-canvas-layout" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                    <option value="top">Top Header</option>
+                                                    <option value="center">Centered Overlay</option>
+                                                    <option value="bottom">Bottom Title Card</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <button id="sd-canvas-export-btn" class="btn btn-primary" style="font-size:0.82rem; font-weight:600; padding:0.55rem 0.8rem; margin-top:0.4rem; border-radius:6px; background:linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);">💾 Export High-Res Graphic (PNG)</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- MODE 5: OCR Document & Image Scanner -->
+                        <div id="sd-panel-ocr" class="sd-mode-panel d-none">
+                            <div class="card" style="background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                                <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.6rem; margin-bottom:1rem;">
+                                    <span style="color:white; font-weight:600; font-size:0.95rem; display:flex; align-items:center; gap:0.5rem;">🔍 OCR & Document Text Extractor (Qwen2.5-VL)</span>
+                                    <span style="font-size:0.75rem; color:#94a3b8;">Extract text, headlines & price badges from images and PDF pages</span>
+                                </div>
+                                <div style="display:flex; flex-direction:column; gap:0.85rem;">
+                                    <!-- OCR Dropzone -->
+                                    <div id="sd-ocr-dropzone" style="border:2px dashed rgba(168, 85, 247, 0.4); background:#090d16; border-radius:10px; padding:1.25rem; text-align:center; cursor:pointer; transition:all 0.2s ease;">
+                                        <div id="sd-ocr-dropzone-empty">
+                                            <div style="font-size:2rem; margin-bottom:0.25rem;">📄</div>
+                                            <div style="font-size:0.85rem; font-weight:600; color:white; margin-bottom:0.2rem;">Drag & drop an Image or PDF document here</div>
+                                            <div style="font-size:0.75rem; color:#94a3b8;">Supports JPG, PNG, WEBP and PDF files</div>
+                                            <input type="file" id="sd-ocr-file" accept="image/*,.pdf" style="display:none;">
+                                        </div>
+                                        <div id="sd-ocr-dropzone-preview" class="d-none" style="display:flex; align-items:center; justify-content:center; gap:1rem;">
+                                            <img id="sd-ocr-preview-img" style="max-height:90px; border-radius:6px; border:1px solid var(--border-color);">
+                                            <div style="text-align:left;">
+                                                <div id="sd-ocr-preview-name" style="font-size:0.8rem; font-weight:600; color:white;">document.pdf</div>
+                                                <div id="sd-ocr-preview-info" style="font-size:0.72rem; color:#94a3b8;">Ready for OCR extraction</div>
+                                                <button type="button" id="sd-ocr-remove-btn" class="btn btn-secondary" style="font-size:0.7rem; padding:0.2rem 0.5rem; margin-top:0.35rem; background:#334155; border:none; color:white;">Change File</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:0.75rem; align-items:center; margin-top:0.25rem;">
+                                        <button id="sd-ocr-run-btn" class="btn btn-primary" style="font-size:0.85rem; font-weight:600; padding:0.6rem 1.5rem; border-radius:8px; background:linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);">🔍 Extract Text & Layout</button>
+                                        <div id="sd-ocr-status" style="font-size:0.78rem; color:#94a3b8;">Ready to analyze document.</div>
+                                    </div>
+
+                                    <!-- OCR Results Panel -->
+                                    <div id="sd-ocr-results-container" class="d-none" style="background:#090d16; padding:1rem; border-radius:8px; border:1px solid rgba(168, 85, 247, 0.3); margin-top:0.5rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.5rem;">
+                                            <span style="font-size:0.85rem; font-weight:600; color:#c084fc;">✨ Extracted Document Structure</span>
+                                            <button id="sd-ocr-transfer-btn" class="btn btn-secondary" style="font-size:0.75rem; font-weight:600; background:#3b82f6; border:none; color:white; padding:0.35rem 0.75rem; border-radius:6px; cursor:pointer;">📥 Transfer Text to Flyer Creator</button>
+                                        </div>
+                                        
+                                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-bottom:0.85rem;">
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; color:#94a3b8;">Extracted Headline</label>
+                                                <input type="text" id="sd-ocr-res-headline" readonly style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; color:#94a3b8;">Extracted Subtext</label>
+                                                <input type="text" id="sd-ocr-res-subtext" readonly style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                            </div>
+                                            <div>
+                                                <label class="control-label" style="font-size:0.7rem; color:#94a3b8;">Extracted Badge / CTA</label>
+                                                <input type="text" id="sd-ocr-res-badge" readonly style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label class="control-label" style="font-size:0.7rem; color:#94a3b8; margin-bottom:0.25rem;">Full Raw Text Content</label>
+                                            <textarea id="sd-ocr-res-full" readonly rows="4" style="width:100%; background:#1e293b; color:#e2e8f0; border:1px solid var(--border-color); padding:0.5rem; border-radius:6px; font-size:0.8rem; font-family:monospace; line-height:1.4; resize:vertical;"></textarea>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- PANEL 5: Picture-to-Text Prompt Generator Studio -->
+                    <div id="sd-panel-promptgen" class="sd-mode-panel d-none" style="margin-top:1.25rem;">
+                        <div class="card" style="background:#0f172a; border:1px solid rgba(168, 85, 247, 0.2);">
+                            <h4 style="margin:0 0 1rem 0; font-size:1.05rem; font-weight:700; color:#e2e8f0; display:flex; align-items:center; gap:0.5rem;">
+                                <span>🎨 Image-to-Prompt Assistant</span>
+                                <span style="font-size:0.7rem; background:rgba(168, 85, 247, 0.15); color:#c084fc; padding:0.2rem 0.6rem; border-radius:12px; font-weight:600;">Vision AI + Prompt Engineering</span>
+                            </h4>
+
+                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.25rem;">
+                                <!-- Left Column: Upload & Description -->
+                                <div>
+                                    <label class="control-label" style="display:block; margin-bottom:0.35rem; font-size:0.8rem; font-weight:600; color:#e2e8f0;">1. Upload Target Image</label>
+                                    <div id="sd-promptgen-dropzone" style="border:2px dashed rgba(168, 85, 247, 0.4); border-radius:10px; padding:1.25rem; text-align:center; background:#090d16; cursor:pointer; transition:all 0.2s ease;">
+                                        <input type="file" id="sd-promptgen-file-input" accept="image/*" style="display:none;">
+                                        <div id="sd-promptgen-empty-state">
+                                            <div style="font-size:2rem; margin-bottom:0.5rem;">🖼️</div>
+                                            <div style="font-size:0.85rem; font-weight:600; color:#e2e8f0;">Drop Image Here or Click to Browse</div>
+                                            <div style="font-size:0.75rem; color:#94a3b8; margin-top:0.25rem;">Supports PNG, JPG, WebP</div>
+                                        </div>
+                                        <div id="sd-promptgen-preview-state" class="d-none">
+                                            <img id="sd-promptgen-preview-img" style="max-height:160px; max-width:100%; border-radius:8px; margin-bottom:0.5rem; object-fit:contain; border:1px solid rgba(255,255,255,0.1);">
+                                            <div style="font-size:0.78rem; font-weight:600; color:#c084fc;" id="sd-promptgen-preview-name">image.jpg</div>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-top:0.85rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+                                            <label class="control-label" style="font-size:0.78rem; font-weight:600; color:#e2e8f0; margin:0;">2. Vision AI Image Analysis & Scene Description</label>
+                                            <button id="sd-promptgen-analyze-btn" class="btn btn-secondary" style="font-size:0.72rem; padding:0.25rem 0.65rem; background:#7e22ce; color:white; border:none; border-radius:6px; cursor:pointer;">🔍 Analyze with Vision AI</button>
+                                        </div>
+                                        <textarea id="sd-promptgen-desc" rows="4" placeholder="Click 'Analyze with Vision AI' or type a description of the source image..." style="width:100%; background:#090d16; color:#e2e8f0; border:1px solid var(--border-color); padding:0.5rem; border-radius:8px; font-size:0.8rem; line-height:1.4; resize:vertical;"></textarea>
+                                    </div>
+                                </div>
+
+                                <!-- Right Column: Desired Changes & Synthesized Prompt -->
+                                <div style="display:flex; flex-direction:column; gap:0.85rem;">
+                                    <div>
+                                        <label class="control-label" style="display:block; margin-bottom:0.35rem; font-size:0.8rem; font-weight:600; color:#e2e8f0;">3. Describe Desired Modifications</label>
+                                        <textarea id="sd-promptgen-changes" rows="3" placeholder="e.g. Change her hair to neon purple, replace background with a futuristic cyberpunk city at night with neon reflections..." style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.5rem; border-radius:8px; font-size:0.8rem; line-height:1.4; resize:vertical;"></textarea>
+                                    </div>
+
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Editing Style Preset</label>
+                                            <select id="sd-promptgen-preset" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                                <option value="Photorealistic Retouch">Photorealistic Retouch</option>
+                                                <option value="Background & Lighting Swap">Background & Lighting Swap</option>
+                                                <option value="Outfit & Style Transformation">Outfit & Style Transformation</option>
+                                                <option value="Cyberpunk Sci-Fi">Cyberpunk Sci-Fi</option>
+                                                <option value="Anime Fantasy">Anime Fantasy</option>
+                                                <option value="Oil Painting Classic Art">Oil Painting Classic Art</option>
+                                            </select>
+                                        </div>
+                                        <div style="display:flex; align-items:flex-end;">
+                                            <button id="sd-promptgen-synth-btn" class="btn btn-primary" style="width:100%; font-size:0.8rem; font-weight:600; padding:0.45rem; border-radius:6px; background:linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);">✨ Synthesize Master Prompt</button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Synthesized Master Prompt Result -->
+                                    <div style="background:#090d16; padding:0.85rem; border-radius:8px; border:1px solid rgba(56, 189, 248, 0.3); flex:1; display:flex; flex-direction:column; justify-content:space-between;">
+                                        <div>
+                                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+                                                <span style="font-size:0.78rem; font-weight:600; color:#38bdf8;">✨ Master Image Edit Prompt</span>
+                                                <span id="sd-promptgen-status" style="font-size:0.72rem; color:#94a3b8;">Ready to synthesize</span>
+                                            </div>
+                                            <div id="sd-promptgen-result-prompt" style="font-size:0.78rem; color:#e2e8f0; font-family:monospace; word-break:break-word; min-height:3rem; line-height:1.4;">
+                                                Synthesized master prompt will appear here...
+                                            </div>
+                                        </div>
+
+                                        <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:0.75rem;">
+                                            <button id="sd-promptgen-send-photo-btn" class="btn btn-primary" style="font-size:0.78rem; font-weight:600; background:#3b82f6; border:none; color:white; padding:0.4rem 0.85rem; border-radius:6px; cursor:pointer;">🚀 Send to Photo Editor Studio</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Results Gallery -->
+                    <div class="card" style="margin-top:1.5rem; background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                        <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.5rem;">
+                            <span style="color:white; font-weight:600; font-size:0.95rem;">🖼️ Results Gallery</span>
+                            <button id="sd-clear-results" class="btn btn-secondary" style="font-size:0.72rem; font-weight:600; padding:0.25rem 0.65rem; background:#334155; border-color:#334155; color:white; border-radius:6px;">🗑️ Clear Gallery</button>
+                        </div>
+                        <div id="sd-results" style="display:flex; flex-wrap:wrap; gap:1.25rem; margin-top:1rem;"></div>
                     </div>
                 </div>
 
@@ -995,9 +1464,11 @@
                         <div class="card" style="min-height: 400px; display: flex; flex-direction: column; max-height: 700px;">
                             <div class="card-title" style="margin-bottom: 0.5rem; flex-shrink: 0;">Requests Buffer</div>
                             
-                            <!-- Search & Clear Controls -->
-                            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-shrink: 0;">
-                                <input id="requests-search-input" type="text" placeholder="Search by model or prompt..." style="flex: 1; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.75rem;">
+                            <!-- Search, Timezone & Clear Controls -->
+                            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-shrink: 0; align-items: center; flex-wrap: wrap;">
+                                <input id="requests-search-input" type="text" placeholder="Search by model or prompt..." style="flex: 2; min-width: 150px; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.75rem;">
+                                <select id="requests-timezone-select" style="flex: 1; min-width: 130px; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.75rem; color-scheme: dark;">
+                                </select>
                                 <button id="btn-clear-requests" class="btn btn-danger" style="font-size: 0.75rem; padding: 0.4rem 0.6rem; background: var(--color-danger); border-color: var(--color-danger); margin: 0; line-height: 1;">🗑️ Clear</button>
                             </div>
                             
@@ -1033,6 +1504,7 @@
                                         <div><strong>Request ID:</strong> <span id="inspect-id" style="font-family:monospace;">-</span></div>
                                         <div><strong>Type:</strong> <span id="inspect-type" class="badge badge-secondary" style="font-size:0.65rem;">-</span></div>
                                         <div><strong>Model:</strong> <span id="inspect-model" style="color:white;">-</span></div>
+                                        <div><strong>Initiated:</strong> <span id="inspect-initiated" style="color:white; font-family:monospace;">-</span></div>
                                         <div><strong>Duration:</strong> <span id="inspect-duration" style="color:var(--color-secondary); font-weight:600;">-</span></div>
                                         <div><strong>Origin / Caller:</strong> <span id="inspect-origin" style="color:var(--color-info); font-weight:600;">-</span></div>
                                         <div><strong>Client IP:</strong> <span id="inspect-ip" style="font-family:monospace;">-</span></div>

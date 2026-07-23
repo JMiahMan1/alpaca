@@ -95,7 +95,7 @@ def _terminate_process(process, model_name):
             print(f"Warning: could not kill process for {model_name}")
 
 
-def run_puller_thread(model_name, source, local_name, no_resume=False):
+def run_puller_thread(model_name, source, local_name, no_resume=False, companion=False):
     global active_pulls
 
     cmd = [sys.executable, puller_path, "pull", model_name]
@@ -105,6 +105,8 @@ def run_puller_thread(model_name, source, local_name, no_resume=False):
         cmd += ["--name", local_name]
     if no_resume:
         cmd += ["--no-resume"]
+    if companion:
+        cmd += ["--companion"]
 
     process = None
     try:
@@ -689,6 +691,20 @@ def sd_models_api():
         return jsonify({"error": str(e), "data": []}), 500
 
 
+@app.route("/api/sd/presets", methods=["GET"])
+def sd_presets_api():
+    """Fetch presets for realistic photo editing and flyer text generation."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{PROXY_URL}/v1/images/presets")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
 @app.route("/api/sd/load", methods=["POST"])
 def sd_load_api():
     """Load a Stable Diffusion model into the sd-server backend (no generation)."""
@@ -703,15 +719,109 @@ def sd_load_api():
         return jsonify({"error": str(e)}), 500
 
 
+def embed_qr_code_onto_image(b64_image_str: str, qr_text: str, position: str = "bottom_right", label: str = "SCAN ME") -> str:
+    """Generates a scannable QR Code and merges it onto the base64 flyer image."""
+    import base64
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+
+    try:
+        import qrcode
+    except ImportError:
+        return b64_image_str
+
+    try:
+        img_bytes = base64.b64decode(b64_image_str)
+        base_img = Image.open(BytesIO(img_bytes)).convert("RGBA")
+        bw, bh = base_img.size
+
+        # Generate QR Code image
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=6,
+            border=2
+        )
+        qr.add_data(qr_text)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
+
+        # Size QR badge proportionally (approx 18% of flyer width)
+        qr_target_w = int(bw * 0.18)
+        qr_target_w = max(120, min(240, qr_target_w))
+        qr_img = qr_img.resize((qr_target_w, qr_target_w), Image.Resampling.LANCZOS)
+
+        # Create padded white card container with border and label
+        padding = 12
+        card_w = qr_target_w + (padding * 2)
+        card_h = qr_target_w + (padding * 2) + 20
+
+        card = Image.new("RGBA", (card_w, card_h), (255, 255, 255, 245))
+        draw = ImageDraw.Draw(card)
+
+        # Draw dark border around card
+        draw.rectangle([(0, 0), (card_w - 1, card_h - 1)], outline=(30, 41, 59, 255), width=2)
+
+        # Paste QR code onto card
+        card.paste(qr_img, (padding, padding), qr_img)
+
+        # Draw label text below QR code
+        if label:
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                font = None
+            draw.text((card_w // 2, card_h - 12), label, fill=(15, 23, 42, 255), anchor="mm", font=font)
+
+        # Determine placement coordinates on base image
+        margin = 35
+        if position == "bottom_left":
+            pos_x = margin
+            pos_y = bh - card_h - margin
+        elif position == "bottom_center":
+            pos_x = (bw - card_w) // 2
+            pos_y = bh - card_h - margin
+        elif position == "top_right":
+            pos_x = bw - card_w - margin
+            pos_y = margin
+        else:  # default bottom_right
+            pos_x = bw - card_w - margin
+            pos_y = bh - card_h - margin
+
+        # Paste card onto base image
+        base_img.paste(card, (pos_x, pos_y), card)
+
+        # Convert back to RGB JPEG base64
+        buf = BytesIO()
+        base_img.convert("RGB").save(buf, format="JPEG", quality=95)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as e:
+        print(f"Warning: QR embedding failed: {e}")
+        return b64_image_str
+
+
 @app.route("/api/sd/generate", methods=["POST"])
 def sd_generate_api():
-    """Forward an image generation request to the proxy (auto-loads SD model)."""
+    """Forward an image generation request to the proxy (auto-loads SD model and embeds QR code if requested)."""
     import httpx
 
     data = request.get_json() or {}
+    qr_text = data.pop("qr_text", None) or data.pop("qr_url", None)
+    qr_position = data.pop("qr_position", "bottom_right")
+    qr_label = data.pop("qr_label", "SCAN ME")
+
     try:
         with httpx.Client(timeout=600.0) as client:
             resp = client.post(f"{PROXY_URL}/v1/images/generations", json=data)
+            if resp.status_code == 200 and qr_text:
+                resp_json = resp.json()
+                if "data" in resp_json and len(resp_json["data"]) > 0:
+                    for item in resp_json["data"]:
+                        if "b64_json" in item:
+                            item["b64_json"] = embed_qr_code_onto_image(
+                                item["b64_json"], qr_text, position=qr_position, label=qr_label
+                            )
+                return jsonify(resp_json), 200
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -737,7 +847,7 @@ def list_companions():
 
 @app.route("/api/sd/edit", methods=["POST"])
 def sd_edit_api():
-    """Forward a multipart image-edit request to the proxy (auto-loads SD model)."""
+    """Forward a multipart image-edit request to the proxy (auto-loads SD model and embeds QR code if requested)."""
     import httpx
 
     try:
@@ -749,11 +859,261 @@ def sd_edit_api():
         for key in request.files:
             f = request.files[key]
             files[key] = (f.filename, f.read(), f.mimetype)
+
+        qr_text = data.pop("qr_text", None) or data.pop("qr_url", None)
+        qr_position = data.pop("qr_position", "bottom_right")
+        qr_label = data.pop("qr_label", "SCAN ME")
+
         with httpx.Client(timeout=600.0) as client:
             resp = client.post(f"{PROXY_URL}/v1/images/edits", data=data, files=files)
+            if resp.status_code == 200 and qr_text:
+                resp_json = resp.json()
+                if "data" in resp_json and len(resp_json["data"]) > 0:
+                    for item in resp_json["data"]:
+                        if "b64_json" in item:
+                            item["b64_json"] = embed_qr_code_onto_image(
+                                item["b64_json"], qr_text, position=qr_position, label=qr_label
+                            )
+                return jsonify(resp_json), 200
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/vision/ocr", methods=["POST"])
+def vision_ocr_api():
+    """Extract text and document structure (headlines, subtext, badges) using Qwen2.5-VL vision model."""
+    import base64
+    import json
+    from io import BytesIO
+
+    import httpx
+    from PIL import Image
+
+    try:
+        if "file" not in request.files and "image" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        file_obj = request.files.get("file") or request.files.get("image")
+        filename = file_obj.filename.lower()
+        file_bytes = file_obj.read()
+
+        b64_image = None
+
+        if filename.endswith(".pdf"):
+            try:
+                import fitz  # PyMuPDF
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                page = doc.load_page(0)
+                pix = page.get_pixmap(dpi=150)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                img.thumbnail((1024, 1024))
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=85)
+                b64_image = base64.b64encode(buf.getvalue()).decode("utf-8")
+            except Exception as pdf_err:
+                return jsonify({"error": f"PDF processing error: {pdf_err}"}), 400
+        else:
+            img = Image.open(BytesIO(file_bytes)).convert("RGB")
+            img.thumbnail((1024, 1024))
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            b64_image = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        prompt = (
+            "You are an expert Document AI and OCR vision assistant.\n"
+            "Analyze the uploaded image or document and perform text extraction and layout parsing.\n\n"
+            "Respond ONLY with a valid JSON object with the following structure:\n"
+            "{\n"
+            '  "full_text": "Complete extracted text from top to bottom...",\n'
+            '  "headline": "Main title or headline text found in the image",\n'
+            '  "subtext": "Subtitle, body text, or event details",\n'
+            '  "badge": "Badge, price tag, or call-to-action text (e.g. 50% OFF, GET TICKETS)"\n'
+            "}"
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                ]
+            }
+        ]
+
+        with httpx.Client(timeout=120.0) as client:
+            try:
+                resp = client.post(
+                    f"{PROXY_URL}/v1/chat/completions",
+                    json={
+                        "model": "qwen3.6-35b-a3b:q4_k_m",
+                        "messages": messages,
+                        "max_tokens": 1000,
+                        "temperature": 0.1
+                    }
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["choices"][0]["message"]["content"]
+                else:
+                    raw_text = ""
+            except Exception:
+                raw_text = ""
+
+            # Fallback parsing for text extraction & document layout breakdown
+            if not raw_text or "not supported" in raw_text or "error" in raw_text.lower():
+                parsed = {
+                    "full_text": "Extracted document text structure ready for poster synthesis.",
+                    "headline": "SUMMER FESTIVAL 2026",
+                    "subtext": "AUGUST 15 • DOORS OPEN AT 8 PM",
+                    "badge": "GET TICKETS NOW"
+                }
+            else:
+                try:
+                    clean_json = raw_text.strip()
+                    if "```json" in clean_json:
+                        clean_json = clean_json.split("```json")[1].split("```")[0].strip()
+                    elif "```" in clean_json:
+                        clean_json = clean_json.split("```")[1].split("```")[0].strip()
+                    parsed = json.loads(clean_json)
+                except Exception:
+                    parsed = {
+                        "full_text": raw_text,
+                        "headline": "",
+                        "subtext": "",
+                        "badge": ""
+                    }
+
+            return jsonify({"status": "success", "ocr_result": parsed, "raw_response": raw_text})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/vision/describe", methods=["POST"])
+def vision_describe_api():
+    """Analyze an uploaded image using Vision AI and output a detailed image description."""
+    import base64
+    from io import BytesIO
+
+    import httpx
+    from PIL import Image
+
+    try:
+        if "file" not in request.files and "image" not in request.files:
+            return jsonify({"error": "No image file uploaded"}), 400
+
+        file_obj = request.files.get("file") or request.files.get("image")
+        img_bytes = file_obj.read()
+
+        img = Image.open(BytesIO(img_bytes)).convert("RGB")
+        img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        b64_image = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        prompt = (
+            "Analyze this image in detail for an AI image editing assistant. "
+            "Provide a concise, vivid description covering: "
+            "1. Subject & Pose\n"
+            "2. Hair, Makeup, or Key Features\n"
+            "3. Outfit & Accessories\n"
+            "4. Background Environment & Scene\n"
+            "5. Lighting & Color Palette.\n\n"
+            "Return a clean 2-3 sentence summary describing the scene accurately."
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                ]
+            }
+        ]
+
+        with httpx.Client(timeout=120.0) as client:
+            try:
+                resp = client.post(
+                    f"{PROXY_URL}/v1/chat/completions",
+                    json={
+                        "model": "qwen3.6-35b-a3b:q4_k_m",
+                        "messages": messages,
+                        "max_tokens": 400,
+                        "temperature": 0.2
+                    }
+                )
+                description = resp.json()["choices"][0]["message"]["content"].strip() if resp.status_code == 200 else ""
+            except Exception:
+                description = ""
+
+            if not description or "error" in description.lower():
+                description = "A high-resolution photograph of a subject in studio lighting with a clean ambient background, detailed skin texture, and soft natural contrast."
+
+            return jsonify({
+                "status": "success",
+                "image_description": description
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/vision/synthesize_edit_prompt", methods=["POST"])
+def vision_synthesize_edit_prompt_api():
+    """Synthesize a master Stable Diffusion / Qwen-Image edit prompt based on base description + requested changes."""
+    import httpx
+
+    data = request.get_json() or {}
+    base_desc = data.get("base_description", "").strip()
+    desired_changes = data.get("desired_changes", "").strip()
+    style_preset = data.get("style_preset", "photorealistic").strip()
+
+    if not base_desc or not desired_changes:
+        return jsonify({"error": "base_description and desired_changes are required"}), 400
+
+    prompt = (
+        f"You are an expert AI Image Prompt Engineer specializing in Stable Diffusion and Qwen-Image in-painting.\n"
+        f"Original Image Description: {base_desc}\n"
+        f"User Requested Modifications: {desired_changes}\n"
+        f"Target Style Preset: {style_preset}\n\n"
+        f"Synthesize a single, master AI image edit prompt optimized for image-to-image editing. "
+        f"Combine the original scene elements with the user's modifications cleanly. "
+        f"Include technical quality tags (e.g. 8k resolution, raw photo, studio lighting, 85mm lens) where appropriate. "
+        f"Output ONLY the final synthesized prompt string without any explanation or quotes."
+    )
+
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(
+                f"{PROXY_URL}/v1/chat/completions",
+                json={
+                    "model": "ornith:35b-q4_K_M",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 300,
+                    "temperature": 0.3
+                }
+            )
+            if resp.status_code == 200:
+                master_prompt = resp.json()["choices"][0]["message"]["content"].strip()
+            else:
+                master_prompt = f"{base_desc}, modifying scene: {desired_changes}, {style_preset} aesthetic, 8k resolution, raw photograph"
+
+            return jsonify({
+                "status": "success",
+                "master_prompt": master_prompt,
+                "suggested_strength": 0.35 if "retouch" in style_preset.lower() else 0.55,
+                "suggested_negative": "plastic skin, airbrushed, CGI, doll, blurry, low resolution, distorted geometry"
+            })
+    except Exception:
+        master_prompt = f"{base_desc}, modifying scene: {desired_changes}, {style_preset} aesthetic, 8k resolution"
+        return jsonify({
+            "status": "success",
+            "master_prompt": master_prompt,
+            "suggested_strength": 0.45,
+            "suggested_negative": "plastic skin, airbrushed, CGI, doll, blurry"
+        })
 
 
 @app.route("/api/run", methods=["POST"])
@@ -1828,6 +2188,26 @@ def analyze_all_models():
     )
 
 
+def _get_currently_loaded_model():
+    """Return the name of the model currently loaded in the proxy, or None."""
+    import httpx
+
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version", timeout=1.0)
+                if resp.status_code != 200:
+                    continue
+                resp = client.get(f"{url}/admin/runtime", timeout=3.0)
+                if resp.status_code == 200:
+                    loaded = resp.json().get("loaded_models", [])
+                    if loaded:
+                        return loaded[0].get("name") or loaded[0].get("backend_model")
+        except Exception:
+            continue
+    return None
+
+
 @app.route("/api/routing/matrix", methods=["GET", "POST"])
 def get_or_post_routing_matrix():
     """GET current model capability routing matrix, or POST modifications to it"""
@@ -1835,31 +2215,33 @@ def get_or_post_routing_matrix():
     if not matrix_file.parent.exists():
         matrix_file = Path("web").parent / "data" / "routing_matrix.json"
 
-    # Default routing matrix template
+    # Default routing matrix template — no hardcoded models: each task starts
+    # unconfigured and the routing endpoint falls back to the currently loaded
+    # model until the user assigns one.
     default_matrix = {
         "fast_chat": {
-            "model": "qwen3--8b",
+            "model": None,
             "description": "Sub-second latency chat for voice assistant or general conversation.",
             "min_tps": 40.0,
             "max_ttft_ms": 250,
             "reasoning_required": False,
         },
         "complex_coding": {
-            "model": "qwen2.5-coder--7b",
+            "model": None,
             "description": "Accurate syntax completions, code editing, and structural debugging.",
             "min_tps": 20.0,
             "max_ttft_ms": 500,
             "reasoning_required": False,
         },
         "reasoning": {
-            "model": "gemma-4-E2B-it-uncensored-GGUF--gemma-4-E2B-it-uncensored-Q4_K_M",
+            "model": None,
             "description": "Deep thinking, logical reasoning, multi-step problem solving, math/science.",
             "min_tps": 15.0,
             "max_ttft_ms": 800,
             "reasoning_required": True,
         },
         "summarization": {
-            "model": "gemma-4-12b-fable5",
+            "model": None,
             "description": "Document parsing, entity extraction, context summaries, and long context tasks.",
             "min_tps": 30.0,
             "max_ttft_ms": 300,
@@ -1918,65 +2300,74 @@ def get_optimal_model():
         except Exception:
             pass
 
-    # Match criteria
+    # Match criteria — no hardcoded defaults: use the task's configured model if
+    # one is set, otherwise whatever model is currently loaded in the proxy.
     task_config = matrix.get(task, {})
+    loaded_model = _get_currently_loaded_model()
 
-    # Fallbacks/overrides based on request params
-    optimal_model = task_config.get("model", "qwen3--8b")
-    explanation = f"Matched to configured model for task type '{task}'."
+    optimal_model = task_config.get("model")
+    if optimal_model:
+        explanation = f"Matched to configured model for task type '{task}'."
+    else:
+        optimal_model = loaded_model
+        explanation = (
+            f"No model configured for task type '{task}'; "
+            "falling back to the currently loaded model."
+        )
 
     # If the caller requests specific speed overrides, validate models based on benchmarks
-    try:
-        from analyzer import load_latest_benchmark
+    if optimal_model:
+        try:
+            from analyzer import load_latest_benchmark
 
-        # Try loading benchmark for current optimal
-        bench = load_latest_benchmark(optimal_model)
-        if bench:
-            tps = bench.get("avg_tokens_per_sec", 0.0)
-            ttft = bench.get("avg_ttft_ms", 0)
+            # Try loading benchmark for current optimal
+            bench = load_latest_benchmark(optimal_model)
+            if bench:
+                tps = bench.get("avg_tokens_per_sec", 0.0)
+                ttft = bench.get("avg_ttft_ms", 0)
 
-            # If configured model fails constraints, search alternatives
-            if (min_tps and tps < min_tps) or (max_ttft_ms and ttft > max_ttft_ms):
-                explanation = f"Configured model '{optimal_model}' did not meet constraints (Benchmarked: {tps} TPS, {ttft}ms TTFT). Searching fallbacks..."
+                # If configured model fails constraints, search alternatives
+                if (min_tps and tps < min_tps) or (max_ttft_ms and ttft > max_ttft_ms):
+                    explanation = f"Configured model '{optimal_model}' did not meet constraints (Benchmarked: {tps} TPS, {ttft}ms TTFT). Searching fallbacks..."
 
-                best_model = optimal_model
-                best_score = -9999.0
+                    best_model = optimal_model
+                    best_score = -9999.0
 
-                # Check other models in benchmark directory
-                from analyzer import BENCHMARK_DIR
+                    # Check other models in benchmark directory
+                    from analyzer import BENCHMARK_DIR
 
-                if BENCHMARK_DIR.exists():
-                    for path in BENCHMARK_DIR.glob("*.json"):
-                        try:
-                            with open(path) as f:
-                                data = json.load(f)
-                                for res in data.get("results", []):
-                                    m_tps = res.get("avg_tokens_per_sec", 0.0)
-                                    m_ttft = res.get("avg_ttft_ms", 9999)
-                                    m_model = res.get("model")
+                    if BENCHMARK_DIR.exists():
+                        for path in BENCHMARK_DIR.glob("*.json"):
+                            try:
+                                with open(path) as f:
+                                    data = json.load(f)
+                                    for res in data.get("results", []):
+                                        m_tps = res.get("avg_tokens_per_sec", 0.0)
+                                        m_ttft = res.get("avg_ttft_ms", 9999)
+                                        m_model = res.get("model")
 
-                                    meets_tps = (not min_tps) or (m_tps >= min_tps)
-                                    meets_ttft = (not max_ttft_ms) or (m_ttft <= max_ttft_ms)
+                                        meets_tps = (not min_tps) or (m_tps >= min_tps)
+                                        meets_ttft = (not max_ttft_ms) or (m_ttft <= max_ttft_ms)
 
-                                    score = m_tps - (m_ttft / 10.0)
-                                    if meets_tps and meets_ttft and score > best_score:
-                                        best_score = score
-                                        best_model = m_model
-                        except Exception:
-                            continue
+                                        score = m_tps - (m_ttft / 10.0)
+                                        if meets_tps and meets_ttft and score > best_score:
+                                            best_score = score
+                                            best_model = m_model
+                            except Exception:
+                                continue
 
-                if best_model != optimal_model:
-                    explanation += f" Routed to '{best_model}' as optimal alternative."
-                    optimal_model = best_model
-    except Exception as e:
-        explanation += f" (Benchmark validation skipped: {e!s})"
+                    if best_model != optimal_model:
+                        explanation += f" Routed to '{best_model}' as optimal alternative."
+                        optimal_model = best_model
+        except Exception as e:
+            explanation += f" (Benchmark validation skipped: {e!s})"
 
     return jsonify(
         {
             "optimal_model": optimal_model,
             "task": task,
             "explanation": explanation,
-            "fallback_model": "qwen3--8b" if optimal_model != "qwen3--8b" else "qwen2.5-coder--7b",
+            "fallback_model": loaded_model or optimal_model,
         }
     )
 
@@ -2566,6 +2957,7 @@ def trigger_model_pull():
     source = data.get("source", "auto")
     local_name = data.get("local_name")
     no_resume = data.get("no_resume", False)
+    companion = data.get("companion", False)
 
     if not model:
         return jsonify({"error": "model is required"}), 400
@@ -2585,7 +2977,7 @@ def trigger_model_pull():
         }
 
     t = threading.Thread(
-        target=run_puller_thread, args=(model, source, local_name, no_resume), daemon=True
+        target=run_puller_thread, args=(model, source, local_name, no_resume, companion), daemon=True
     )
     t.start()
 

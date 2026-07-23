@@ -4,6 +4,10 @@ set -e
 
 echo "[sd-entrypoint] Starting stable-diffusion.cpp container entrypoint..."
 
+# Ensure model and router directories exist with full access permissions
+mkdir -p /router-models/companions/lora /models/companions 2>/dev/null || true
+chmod -R 777 /router-models /models 2>/dev/null || true
+
 # 1. Hardware Detection
 HARDWARE="CPU"
 CMAKE_FLAGS=""
@@ -157,11 +161,11 @@ fi
 
 if [ -z "$MODEL_PATH" ]; then
     echo "[sd-entrypoint] Scanning for models in /router-models..."
-    MODEL_PATH=$(find /router-models -maxdepth 1 -type f \( -name "*.safetensors" -o -name "*.gguf" \) | head -n 1)
+    MODEL_PATH=$(find /router-models -maxdepth 1 \( -name "*.safetensors" -o -name "*.gguf" \) | head -n 1)
 fi
 
 # If still no model, wait in an idle loop
-if [ -z "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH" ]; then
+if [ -z "$MODEL_PATH" ] || [ ! -e "$MODEL_PATH" ]; then
     echo "[sd-entrypoint] WARNING: No stable-diffusion model file found. Entering idle loop. Please pull a model to start."
     while true; do
         sleep 10
@@ -173,7 +177,7 @@ fi
 # missing companions, so a bad load is easy to diagnose from `docker logs`.
 echo "[sd-entrypoint][check] ── Model Load Configuration Check ──────────────"
 echo "[sd-entrypoint][check]   Model path : $MODEL_PATH"
-if [ -f "$MODEL_PATH" ]; then
+if [ -e "$MODEL_PATH" ]; then
     echo "[sd-entrypoint][check]   Model file : present ($(du -h "$MODEL_PATH" 2>/dev/null | cut -f1))"
 else
     echo "[sd-entrypoint][check]   Model file : MISSING — sd-server load will fail"
@@ -233,6 +237,11 @@ fi
 if [ -n "$LLM_PATH" ] && [ -f "$LLM_PATH" ]; then
     echo "[sd-entrypoint] Using LLM (text encoder) companion file: $LLM_PATH"
     CMD+=("--llm" "$LLM_PATH")
+fi
+
+if [ -d "/router-models/companions/lora" ]; then
+    echo "[sd-entrypoint] Using LoRA directory: /router-models/companions/lora"
+    CMD+=("--lora-model-dir" "/router-models/companions/lora")
 fi
 
 # Limit CPU threads so diffusion doesn't peg every core at 100% (which can

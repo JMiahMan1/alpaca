@@ -79,6 +79,7 @@ model_expires_at = {}
 model_unload_tasks = {}
 router_management_supported = None
 router_model_lock = asyncio.Lock()
+sd_execution_lock = asyncio.Lock()
 
 # Configuration
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://llama-server:8080")
@@ -911,15 +912,16 @@ async def fetch_router_models(reload=False):
     params = {"reload": "1"} if reload else None
     try:
         resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
-    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        resp.raise_for_status()
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.HTTPStatusError, httpx.HTTPError) as exc:
         logger.warning(
-            f"Connection to llama-server failed: {exc}. Waiting for server to become responsive..."
+            f"Connection/request to llama-server failed: {exc}. Waiting for server to become responsive..."
         )
         if await wait_for_llama_server():
             resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
+            resp.raise_for_status()
         else:
             raise
-    resp.raise_for_status()
     data = resp.json()
     return data.get("data") or []
 
@@ -1318,7 +1320,7 @@ async def lifespan(app: FastAPI):
     global client_httpx, client_sd_httpx
     client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
     client_sd_httpx = httpx.AsyncClient(
-        timeout=httpx.Timeout(180.0, connect=5.0),
+        timeout=httpx.Timeout(600.0, connect=10.0),
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
     )
     await restore_models_on_recovery()
@@ -1882,6 +1884,7 @@ async def openai_chat_completions(request: Request):
                     )
                     if not slot_ok:
                         await release_request_queued(queued_backend)
+                        complete_active_request(request_id)
                         return JSONResponse(
                             status_code=503,
                             content={
@@ -1897,6 +1900,7 @@ async def openai_chat_completions(request: Request):
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
                     await release_request_queued(queued_backend)
+                    complete_active_request(request_id)
                     return JSONResponse(
                         status_code=e.status_code,
                         content={
@@ -1984,21 +1988,33 @@ async def openai_chat_completions(request: Request):
                                 await ensure_model(model_name)
                                 await asyncio.sleep(2.0)
                     finally:
+                        # Clear the detailed tracking entry FIRST (synchronous, cannot be
+                        # interrupted by a client disconnect / task cancellation). This is the
+                        # fix for "Active Requests" entries that get stuck on "counting":
+                        # when the client disconnects, Starlette cancels the streaming
+                        # generator and any `await` in this finally can raise CancelledError,
+                        # aborting the rest of the block. Running the sync cleanup up front
+                        # guarantees the entry is always removed.
+                        complete_active_request(request_id)
                         async with active_requests_lock:
                             active_requests[backend_model] = max(
                                 0, active_requests.get(backend_model, 0) - 1
                             )
-                        active_requests_lock.notify_all()
-                    await release_request_queued(queued_backend)
-                    req_data = complete_active_request(request_id)
-                    p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
-                    c_toks = req_data.get("completion_tokens", 0) if req_data else 0
-                    await record_metrics(
-                        "/v1/chat/completions",
-                            (now_ns() - started_ns) / 1e6,
-                            prompt_tokens=p_toks,
-                            gen_tokens=c_toks,
-                        )
+                            active_requests_lock.notify_all()
+                        # Best-effort cleanup below; guard against cancellation so a dropped
+                        # connection can't leave these un-run (the critical work is above).
+                        with suppress(BaseException):
+                            await release_request_queued(queued_backend)
+                        req_data = complete_active_request(request_id)
+                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                        with suppress(BaseException):
+                            await record_metrics(
+                                "/v1/chat/completions",
+                                (now_ns() - started_ns) / 1e6,
+                                prompt_tokens=p_toks,
+                                gen_tokens=c_toks,
+                            )
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
@@ -2072,13 +2088,17 @@ async def openai_chat_completions(request: Request):
                     await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
                     return JSONResponse(data)
                 finally:
+                    # Clear the detailed tracking entry FIRST (synchronous, cannot be
+                    # interrupted by a client disconnect / task cancellation). See the
+                    # chat-stream finally for the full rationale.
+                    complete_active_request(request_id)
                     async with active_requests_lock:
                         active_requests[backend_model] = max(
                             0, active_requests.get(backend_model, 0) - 1
                         )
                         active_requests_lock.notify_all()
-                    await release_request_queued(queued_backend)
-                    complete_active_request(request_id)
+                    with suppress(BaseException):
+                        await release_request_queued(queued_backend)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
                 logger.error(
@@ -2086,6 +2106,7 @@ async def openai_chat_completions(request: Request):
                 )
                 await record_metrics("/v1/chat/completions", 0, error=True)
                 await release_request_queued(queued_backend)
+                complete_active_request(request_id)
                 return JSONResponse(
                     status_code=502,
                     content={
@@ -2150,6 +2171,7 @@ async def openai_completions(request: Request):
                     )
                     if not slot_ok:
                         await release_request_queued(queued_backend)
+                        complete_active_request(request_id)
                         return JSONResponse(
                             status_code=503,
                             content={
@@ -2165,6 +2187,7 @@ async def openai_completions(request: Request):
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
                     await release_request_queued(queued_backend)
+                    complete_active_request(request_id)
                     return JSONResponse(
                         status_code=e.status_code,
                         content={
@@ -2253,21 +2276,27 @@ async def openai_completions(request: Request):
                                 await ensure_model(model_name)
                                 await asyncio.sleep(2.0)
                     finally:
+                        # Clear the detailed tracking entry FIRST (synchronous, cannot be
+                        # interrupted by a client disconnect / task cancellation). See the
+                        # chat-stream finally for the full rationale.
+                        complete_active_request(request_id)
                         async with active_requests_lock:
                             active_requests[backend_model] = max(
                                 0, active_requests.get(backend_model, 0) - 1
                             )
                             active_requests_lock.notify_all()
-                    await release_request_queued(queued_backend)
-                    req_data = complete_active_request(request_id)
-                    p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
-                    c_toks = req_data.get("completion_tokens", 0) if req_data else 0
-                    await record_metrics(
-                        "/v1/completions",
-                            (now_ns() - started_ns) / 1e6,
-                            prompt_tokens=p_toks,
-                            gen_tokens=c_toks,
-                        )
+                        with suppress(BaseException):
+                            await release_request_queued(queued_backend)
+                        req_data = complete_active_request(request_id)
+                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                        with suppress(BaseException):
+                            await record_metrics(
+                                "/v1/completions",
+                                (now_ns() - started_ns) / 1e6,
+                                prompt_tokens=p_toks,
+                                gen_tokens=c_toks,
+                            )
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
@@ -2323,13 +2352,17 @@ async def openai_completions(request: Request):
                     await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
                     return JSONResponse(data)
                 finally:
+                    # Clear the detailed tracking entry FIRST (synchronous, cannot be
+                    # interrupted by a client disconnect / task cancellation). See the
+                    # chat-stream finally for the full rationale.
+                    complete_active_request(request_id)
                     async with active_requests_lock:
                         active_requests[backend_model] = max(
                             0, active_requests.get(backend_model, 0) - 1
                         )
                         active_requests_lock.notify_all()
-                    await release_request_queued(queued_backend)
-                    complete_active_request(request_id)
+                    with suppress(BaseException):
+                        await release_request_queued(queued_backend)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
                 logger.error(
@@ -2337,6 +2370,7 @@ async def openai_completions(request: Request):
                 )
                 await record_metrics("/v1/completions", 0, error=True)
                 await release_request_queued(queued_backend)
+                complete_active_request(request_id)
                 return JSONResponse(
                     status_code=502,
                     content={
@@ -2673,6 +2707,8 @@ def resolve_companion_path(filename: str) -> str | None:
     if not filename:
         return None
 
+    clean_name = os.path.basename(filename)
+
     search_dirs = [
         os.path.join(OLLAMA_BASE, "companions"),
         os.path.join(ROUTER_MODELS_DIR, "companions"),
@@ -2681,7 +2717,7 @@ def resolve_companion_path(filename: str) -> str | None:
     ]
 
     for d in search_dirs:
-        candidate = os.path.join(d, filename)
+        candidate = os.path.join(d, clean_name)
         if os.path.exists(candidate):
             return os.path.abspath(candidate)
 
@@ -2792,6 +2828,10 @@ def write_active_model_config(
         with open(temp_path, "w") as f:
             json.dump(config, f, indent=2)
         os.replace(temp_path, config_path)
+        try:
+            os.chmod(config_path, 0o666)
+        except Exception:
+            pass
         logger.info(f"Wrote active model config: {config}")
     except Exception as e:
         logger.error(f"Failed to write active model configuration: {e}")
@@ -3139,6 +3179,86 @@ async def load_sd_model_endpoint(request: Request) -> JSONResponse:
     return JSONResponse(content={"status": "loaded", "model": requested_model, "path": target_path})
 
 
+SD_PRESETS = {
+    "photo_realism": {
+        "portrait": {
+            "name": "Photorealistic Portrait",
+            "prompt_suffix": ", 8k RAW photo, portrait photograph of subject, detailed skin texture, natural soft studio lighting, sharp focus, 85mm lens f/1.8",
+            "negative_prompt": "cgi, 3d render, illustration, smooth plastic skin, oversaturated, distorted features, overprocessed, low quality, noise",
+            "denoising_strength": 0.45
+        },
+        "studio_product": {
+            "name": "Studio Product Photography",
+            "prompt_suffix": ", commercial studio product photo, clean directional studio lighting, sharp details, professional color grade, 4k",
+            "negative_prompt": "blurry, dark, noisy, amateur photo, harsh reflections, low quality, distorted",
+            "denoising_strength": 0.35
+        },
+        "outdoor_retouch": {
+            "name": "Outdoor & Landscape Retouch",
+            "prompt_suffix": ", vibrant natural outdoor photo, golden hour sunlight, sharp detail, high dynamic range, photorealistic",
+            "negative_prompt": "overexposed, muddy, low contrast, heavy grain, cgi, unnatural colors",
+            "denoising_strength": 0.40
+        },
+        "tone_color_grade": {
+            "name": "Cinematic Tone & Color Grade",
+            "prompt_suffix": ", cinematic photo color grading, balanced lighting, deep contrast, natural skin tones, professional photography",
+            "negative_prompt": "flat color, oversaturated, washed out, noisy, artifact",
+            "denoising_strength": 0.30
+        },
+        "restore_polish": {
+            "name": "Photo Restoration & Polish",
+            "prompt_suffix": ", clean sharp photograph, noise reduction, crisp focus, enhanced clarity, realistic texture",
+            "negative_prompt": "blurry, pixelated, artifact, low resolution, noise, distortion",
+            "denoising_strength": 0.25
+        }
+    },
+    "flyer_design": {
+        "music_event": {
+            "name": "Music & Party Event",
+            "preset_prompt": "vibrant music event poster, energetic neon lighting, dynamic background graphic, high contrast layout, professional promo poster",
+            "negative_prompt": "garbled text, distorted letters, bad typography, misspelled text, blurry letters, low contrast, messy design",
+            "size": "832x1216",
+            "recommended_font": "neon"
+        },
+        "corporate_business": {
+            "name": "Corporate & Business Flyer",
+            "preset_prompt": "professional corporate business flyer, clean modern typography layout, sleek geometry, dark navy and white theme, corporate promo graphic",
+            "negative_prompt": "garbled text, distorted letters, childish font, cluttered layout, low quality, unprofessional",
+            "size": "832x1216",
+            "recommended_font": "sans-serif"
+        },
+        "product_sale": {
+            "name": "Product Sale & Promo Poster",
+            "preset_prompt": "retail promotional flyer, bold sale badge accents, sleek product display pedestal, crisp studio background, high contrast promotional design",
+            "negative_prompt": "garbled text, distorted typography, blurry image, low contrast, messy composition",
+            "size": "1024x1024",
+            "recommended_font": "display"
+        },
+        "restaurant_menu": {
+            "name": "Restaurant & Food Poster",
+            "preset_prompt": "gourmet restaurant food poster, delicious culinary styling, elegant menu border, rustic slate background, appetizing food photography layout",
+            "negative_prompt": "unappetizing, garbled text, blurry food, distorted typography, low contrast",
+            "size": "832x1216",
+            "recommended_font": "serif"
+        },
+        "minimalist_modern": {
+            "name": "Minimalist Modern Graphic",
+            "preset_prompt": "minimalist graphic design flyer, high contrast typography space, geometric aesthetic, subtle gradient background, sleek contemporary design",
+            "negative_prompt": "cluttered, busy background, garbled text, illegible letters, low quality, distorted",
+            "size": "768x1344",
+            "recommended_font": "sans-serif"
+        }
+    }
+}
+
+
+@app.get("/v1/images/presets")
+async def get_image_presets() -> JSONResponse:
+    """Returns curated presets for realistic photo editing and flyer text generation."""
+    return JSONResponse(content=SD_PRESETS)
+
+
+
 @app.post("/v1/images/edits")
 async def edit_images(request: Request) -> Response:
     """OpenAI-compatible image edits endpoint. Auto-loads the requested SD model,
@@ -3210,13 +3330,14 @@ async def edit_images(request: Request) -> Response:
 
         if client_sd_httpx:
             try:
-                resp = await client_sd_httpx.post(
-                    f"{sd_url}/v1/images/edits",
-                    data=data,
-                    files=files,
-                    headers=headers,
-                    timeout=600.0,
-                )
+                async with sd_execution_lock:
+                    resp = await client_sd_httpx.post(
+                        f"{sd_url}/v1/images/edits",
+                        data=data,
+                        files=files,
+                        headers=headers,
+                        timeout=600.0,
+                    )
                 if resp.status_code >= 400:
                     logger.error(f"sd-server edit error {resp.status_code}: {resp.text}")
                     raise HTTPException(status_code=502, detail=f"sd-server error: {resp.text}")
@@ -3307,9 +3428,10 @@ async def generate_images(request: Request) -> JSONResponse:
 
         if client_sd_httpx:
             try:
-                resp = await client_sd_httpx.post(
-                    f"{sd_url}/v1/images/generations", json=payload, headers=headers
-                )
+                async with sd_execution_lock:
+                    resp = await client_sd_httpx.post(
+                        f"{sd_url}/v1/images/generations", json=payload, headers=headers
+                    )
                 if resp.status_code >= 400:
                     logger.error(f"sd-server error {resp.status_code}: {resp.text}")
                     raise HTTPException(status_code=502, detail=f"sd-server error: {resp.text}")
@@ -6569,21 +6691,30 @@ async def chat(request: Request):
     # and the queue-timeout path below).
     _queued_backend = await mark_request_queued(model_name)
 
-    resolved = await ensure_model(model_name, options=body.get("options"))
-    resolved_backend = resolved["backend_model"]
+    try:
+        resolved = await ensure_model(model_name, options=body.get("options"))
+        resolved_backend = resolved["backend_model"]
 
-    # Restore slot cache if available (Turn K prefix is up to Turn K-1 assistant response)
-    prefix_hash = None
-    messages = body.get("messages", [])
-    if len(messages) > 1:
-        prefix_hash = get_prefix_hash(model_name, messages[:-1], options=body.get("options"))
-        await restore_slot_cache(resolved_backend, prefix_hash)
+        # Restore slot cache if available (Turn K prefix is up to Turn K-1 assistant response)
+        prefix_hash = None
+        messages = body.get("messages", [])
+        if len(messages) > 1:
+            prefix_hash = get_prefix_hash(model_name, messages[:-1], options=body.get("options"))
+            await restore_slot_cache(resolved_backend, prefix_hash)
 
-    # Queue-and-wait: if all llama-server slots are busy, wait for one to open
-    wait_timeout = body.get("queue_timeout", 120.0)
-    slot_available = await wait_for_slot(resolved_backend, timeout=wait_timeout)
+        # Queue-and-wait: if all llama-server slots are busy, wait for one to open
+        wait_timeout = body.get("queue_timeout", 120.0)
+        slot_available = await wait_for_slot(resolved_backend, timeout=wait_timeout)
+    except Exception:
+        # Never leak the queued count or the tracked request on load/pre-dispatch
+        # failures (e.g. unresolvable model) — otherwise the request stays in the
+        # Active Requests list forever.
+        await release_request_queued(_queued_backend)
+        complete_active_request(request_id)
+        raise
     if not slot_available:
         await release_request_queued(_queued_backend)
+        complete_active_request(request_id)
         return JSONResponse(
             {"error": "No llama-server slots available within timeout", "status": "queue_timeout"},
             status_code=503,
@@ -6629,7 +6760,6 @@ async def chat(request: Request):
 
             while attempt < max_attempts:
                 try:
-                    request_id = getattr(request.state, "request_id", "N/A")
                     request_source = getattr(request.state, "request_source", "unknown")
                     logger.info(
                         f"[CHAT] Sending payload to llama-server (attempt {attempt}): model={current_payload.get('model')}, stream=True | "
@@ -6825,7 +6955,6 @@ async def chat(request: Request):
         resp = None
         while attempt < max_attempts:
             try:
-                request_id = getattr(request.state, "request_id", "N/A")
                 request_source = getattr(request.state, "request_source", "unknown")
                 logger.info(
                     f"[CHAT] Sending payload to llama-server (attempt {attempt}): model={payload.get('model')}, stream=False | "
@@ -6982,6 +7111,14 @@ async def generate(request: Request):
             resolved = await ensure_model(model_name, options=body.get("options"))
             resolved_backend = resolved["backend_model"]
 
+            # Increment reference count (before wait_for_slot so the finally
+            # decrement always pairs exactly once with this increment).
+            async with active_requests_lock:
+                active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
+                logger.info(
+                    f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
+                )
+
             # Shared queue: only proceed once a slot on this (same) model is
             # available, so the request never runs on a slot serving a different
             # model (which would force a swap + thrash).
@@ -6992,13 +7129,6 @@ async def generate(request: Request):
                     f"data: {json.dumps({'error': {'message': 'No llama-server slots available within timeout', 'type': 'rate_limit_error', 'code': 'queue_timeout'}})}\n\n"
                 )
                 return
-
-            # Increment reference count
-            async with active_requests_lock:
-                active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
-                logger.info(
-                    f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                )
 
             load_duration = now_ns() - load_started_ns
 
@@ -7030,7 +7160,6 @@ async def generate(request: Request):
 
             while attempt < max_attempts:
                 try:
-                    request_id = getattr(request.state, "request_id", "N/A")
                     request_source = getattr(request.state, "request_source", "unknown")
                     logger.info(
                         f"[GENERATE] Sending payload to llama-server (attempt {attempt}): model={current_payload.get('model')} | "
@@ -7211,16 +7340,29 @@ async def generate(request: Request):
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
             if resolved_backend:
-                async with active_requests_lock:
-                    active_requests[resolved_backend] = max(
-                        0, active_requests.get(resolved_backend, 0) - 1
-                    )
-                    logger.info(
-                        f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                    )
-                    active_requests_lock.notify_all()
-            await release_request_queued(queued_backend)
-            complete_active_request(request_id)
+                # Clear the detailed tracking entry FIRST (synchronous, cannot be
+                # interrupted by a client disconnect / task cancellation). See the
+                # chat-stream finally for the full rationale.
+                complete_active_request(request_id)
+                # Do the counter decrement and the queued-slot release inside a
+                # SINGLE `async with` so we never re-enter the (non-reentrant)
+                # Condition while it is already held by this task -- that would
+                # deadlock on generator close (the prior split block left the lock
+                # held, then release_request_queued tried to re-acquire it).
+                with suppress(BaseException):
+                    async with active_requests_lock:
+                        active_requests[resolved_backend] = max(
+                            0, active_requests.get(resolved_backend, 0) - 1
+                        )
+                        logger.info(
+                            f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
+                        )
+                        active_requests_lock.notify_all()
+                        if queued_backend:
+                            queued_requests[queued_backend] = max(
+                                0, queued_requests.get(queued_backend, 0) - 1
+                            )
+                            active_requests_lock.notify_all()
 
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
@@ -7231,6 +7373,14 @@ async def generate(request: Request):
         load_started_ns = now_ns()
         resolved = await ensure_model(model_name, options=body.get("options"))
         resolved_backend = resolved["backend_model"]
+
+        # Increment reference count (before wait_for_slot so the finally
+        # decrement always pairs exactly once with this increment).
+        async with active_requests_lock:
+            active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
+            logger.info(
+                f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
+            )
 
         # Shared queue: only admit once a slot on this (same) model is available.
         # The request's queued count is released in the finally block below.
@@ -7243,12 +7393,6 @@ async def generate(request: Request):
                     "error": "No llama-server slots available within timeout",
                     "status": "queue_timeout",
                 },
-            )
-
-        async with active_requests_lock:
-            active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
-            logger.info(
-                f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
             )
 
         load_duration = now_ns() - load_started_ns
@@ -7278,7 +7422,6 @@ async def generate(request: Request):
         resp = None
         while attempt < max_attempts:
             try:
-                request_id = getattr(request.state, "request_id", "N/A")
                 request_source = getattr(request.state, "request_source", "unknown")
                 logger.info(
                     f"[GENERATE] Sending payload to llama-server (attempt {attempt}): model={payload.get('model')} | "
@@ -7386,16 +7529,27 @@ async def generate(request: Request):
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
         if resolved_backend:
-            async with active_requests_lock:
-                active_requests[resolved_backend] = max(
-                    0, active_requests.get(resolved_backend, 0) - 1
-                )
-                logger.info(
-                    f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                )
-                active_requests_lock.notify_all()
-        await release_request_queued(queued_backend)
-        complete_active_request(request_id)
+            # Clear the detailed tracking entry FIRST (synchronous, cannot be
+            # interrupted by a client disconnect / task cancellation). See the
+            # chat-stream finally for the full rationale.
+            complete_active_request(request_id)
+            # Decrement the in-flight counter and release the queued slot in a
+            # SINGLE `async with` so we never re-enter the (non-reentrant)
+            # Condition while it is already held by this task.
+            with suppress(BaseException):
+                async with active_requests_lock:
+                    active_requests[resolved_backend] = max(
+                        0, active_requests.get(resolved_backend, 0) - 1
+                    )
+                    logger.info(
+                        f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
+                    )
+                    active_requests_lock.notify_all()
+                    if queued_backend:
+                        queued_requests[queued_backend] = max(
+                            0, queued_requests.get(queued_backend, 0) - 1
+                        )
+                        active_requests_lock.notify_all()
 
 
 @app.get("/api/tags")

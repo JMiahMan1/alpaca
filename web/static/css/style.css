@@ -1070,3 +1070,75 @@ tr:last-child td {
     background: rgba(139, 92, 246, 0.05) !important;
 }
 
+/* ── Image Studio Modern Aesthetics & Micro-Animations ─────────────────── */
+.sd-mode-tab {
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+.sd-mode-tab:hover {
+    color: white !important;
+    background: rgba(56, 189, 248, 0.15) !important;
+    transform: translateY(-1px);
+}
+.sd-mode-tab.active {
+    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%) !important;
+    color: white !important;
+    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+}
+
+.sd-quick-chip {
+    transition: all 0.2s ease;
+}
+.sd-quick-chip:hover {
+    background: #334155 !important;
+    color: white !important;
+    border-color: #38bdf8 !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(56, 189, 248, 0.25);
+}
+
+#sd-photo-dropzone {
+    transition: all 0.25s ease;
+}
+#sd-photo-dropzone:hover {
+    border-color: #38bdf8 !important;
+    background: rgba(56, 189, 248, 0.06) !important;
+    box-shadow: 0 0 15px rgba(56, 189, 248, 0.15);
+}
+
+.sd-strength-preset {
+    transition: all 0.2s ease;
+}
+.sd-strength-preset:hover {
+    border-color: #38bdf8 !important;
+    color: #38bdf8 !important;
+}
+.sd-strength-preset.active {
+    background: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%) !important;
+    border-color: #38bdf8 !important;
+    color: white !important;
+    box-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
+}
+
+.sd-step-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #38bdf8, #8b5cf6);
+    color: white;
+    font-weight: 700;
+    font-size: 0.72rem;
+    box-shadow: 0 2px 6px rgba(56, 189, 248, 0.3);
+}
+
+.sd-guide-card {
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(30, 41, 59, 0.5) 100%);
+    border: 1px solid rgba(56, 189, 248, 0.2);
+    border-radius: 10px;
+    backdrop-filter: blur(10px);
+}
+
