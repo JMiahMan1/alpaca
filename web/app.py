@@ -991,6 +991,22 @@ def vision_ocr_api():
         return jsonify({"error": str(e)}), 500
 
 
+def _get_active_text_model() -> str:
+    """Helper to return the currently loaded model on proxy, or fallback to default text model."""
+    try:
+        import httpx
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{PROXY_URL}/admin/runtime")
+            if resp.status_code == 200:
+                data = resp.json()
+                active = data.get("active_model")
+                if active:
+                    return active
+    except Exception:
+        pass
+    return "qwen3.6-35b-a3b:q4_k_m"
+
+
 @app.route("/api/vision/describe", methods=["POST"])
 def vision_describe_api():
     """Analyze an uploaded image using Vision AI and output a detailed image description."""
@@ -1034,12 +1050,13 @@ def vision_describe_api():
             }
         ]
 
+        active_model = _get_active_text_model()
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
                     json={
-                        "model": "qwen3.6-35b-a3b:q4_k_m",
+                        "model": active_model,
                         "messages": messages,
                         "max_tokens": 400,
                         "temperature": 0.2
@@ -1084,12 +1101,13 @@ def vision_synthesize_edit_prompt_api():
         f"Output ONLY the final synthesized prompt string without any explanation or quotes."
     )
 
+    active_model = _get_active_text_model()
     try:
         with httpx.Client(timeout=60.0) as client:
             resp = client.post(
                 f"{PROXY_URL}/v1/chat/completions",
                 json={
-                    "model": "ornith:35b-q4_K_M",
+                    "model": active_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 300,
                     "temperature": 0.3
