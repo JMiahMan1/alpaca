@@ -927,6 +927,21 @@ async def fetch_router_models(reload=False):
 
 
 async def resolve_router_model(model_name, reload=True):
+    router_models = await fetch_router_models(reload=reload)
+    raw_name = model_name.strip()
+    colon_to_dash = raw_name.replace(":", "--")
+    for entry in router_models:
+        eid = entry.get("id", "")
+        if eid and eid in (raw_name, colon_to_dash, with_default_tag(raw_name)):
+            return {
+                "model_name": raw_name,
+                "backend_model": eid,
+                "entry": entry,
+                "manifest_path": "",
+                "manifest": {},
+                "router_models": router_models,
+            }
+
     resolved_name = with_default_tag(model_name)
     manifest_path, manifest = load_local_manifest(resolved_name, require_complete=True)
     if not manifest_path:
