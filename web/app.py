@@ -943,14 +943,15 @@ def vision_ocr_api():
             }
         ]
 
-        user_model = request.form.get("model") or request.args.get("model")
-        active_model = user_model.strip() if user_model else _get_active_text_model()
+        model = (request.form.get("model") or request.args.get("model", "")).strip()
+        if not model:
+            return jsonify({"error": "'model' parameter is required"}), 400
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
                     json={
-                        "model": active_model,
+                        "model": model,
                         "messages": messages,
                         "max_tokens": 1000,
                         "temperature": 0.1
@@ -1037,51 +1038,6 @@ def _get_active_text_model() -> str:
         return router_models[0]
     return "qwen3"
 
-
-def _get_best_vision_model() -> str:
-    """Return the best available VL/multimodal model for image understanding.
-
-    Discovers vision-language models dynamically by checking for common VL
-    architecture keywords in the model name. Prefers larger models by sorting
-    on the largest numeric parameter count found in the name (e.g. 72 > 7 > 3).
-    Falls back to the active text model if no VL model is available.
-    """
-    import re
-
-    # Keywords that indicate a vision-language / multimodal model
-    VL_KEYWORDS = ("vl", "vision", "llava", "cogvlm", "minicpm-v", "internvl", "phi-v", "pixtral")
-
-    all_models = _get_router_text_models()
-
-    # Also include Ollama-registered models with VL keywords
-    try:
-        import httpx
-        with httpx.Client(timeout=3.0) as client:
-            resp = client.get(f"{PROXY_URL}/api/tags")
-            if resp.status_code == 200:
-                for m in resp.json().get("models", []):
-                    name = m.get("name", "")
-                    if name not in all_models:
-                        all_models.append(name)
-    except Exception:
-        pass
-
-    vl_models = [
-        m for m in all_models
-        if any(kw in m.lower() for kw in VL_KEYWORDS)
-    ]
-
-    if not vl_models:
-        # No dedicated VL model — fall back to active GPU model
-        return _get_active_text_model()
-
-    def _param_count(name: str) -> float:
-        """Extract the largest numeric size hint (e.g. 72b → 72, 3b → 3)."""
-        hits = re.findall(r"(\d+(?:\.\d+)?)\s*b", name.lower())
-        return max((float(x) for x in hits), default=0.0)
-
-    vl_models.sort(key=_param_count, reverse=True)
-    return vl_models[0]
 
 
 @app.route("/api/models/text")
@@ -1209,21 +1165,17 @@ def vision_describe_api():
             }
         ]
 
-        user_model = request.form.get("model") or request.args.get("model")
-        # When "auto" is requested for a vision task, pick the best VL model —
-        # a pure text model cannot process image_url content.
-        if not user_model or user_model.strip().lower() == "auto":
-            active_model = _get_best_vision_model()
-        else:
-            active_model = user_model.strip()
+        model = (request.form.get("model") or request.args.get("model", "")).strip()
+        if not model:
+            return jsonify({"error": "'model' parameter is required"}), 400
 
-        model_used = active_model
+        model_used = model
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
                     json={
-                        "model": active_model,
+                        "model": model,
                         "messages": messages,
                         "max_tokens": 400,
                         "temperature": 0.2
@@ -1234,7 +1186,7 @@ def vision_describe_api():
                 else:
                     app.logger.warning(
                         "Vision describe: model %s returned %s — %s",
-                        active_model, resp.status_code, resp.text[:200]
+                        model, resp.status_code, resp.text[:200]
                     )
                     description = ""
             except Exception as exc:
@@ -1278,14 +1230,15 @@ def vision_synthesize_edit_prompt_api():
         f"Output ONLY the final synthesized prompt string without any explanation or quotes."
     )
 
-    user_model = data.get("model")
-    active_model = user_model.strip() if user_model else _get_active_text_model()
+    model = (data.get("model") or "").strip()
+    if not model:
+        return jsonify({"error": "'model' parameter is required"}), 400
     try:
         with httpx.Client(timeout=60.0) as client:
             resp = client.post(
                 f"{PROXY_URL}/v1/chat/completions",
                 json={
-                    "model": active_model,
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 300,
                     "temperature": 0.3

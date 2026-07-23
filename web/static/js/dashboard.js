@@ -248,27 +248,28 @@ document.addEventListener('DOMContentLoaded', () => {
             const humanizeModelName = (id) => id.replace(/--/g, ':');
 
             if (visionSel) {
-                // Vision: includes VL multimodal models from router + Ollama models
+                // Vision: VL multimodal models from router + Ollama models
                 try {
                     const res = await fetch('/api/models/text');
                     const data = await res.json();
                     const models = data.models || [];
-                    visionSel.innerHTML = '<option value="auto">⚡ Auto (Active GPU Model)</option>' +
-                        models.map(m => `<option value="${m}">${humanizeModelName(m)}</option>`).join('');
+                    visionSel.innerHTML = models.length
+                        ? models.map(m => `<option value="${m}">${humanizeModelName(m)}</option>`).join('')
+                        : '<option value="" disabled>No models available</option>';
                 } catch(err) {
                     console.warn('Could not populate vision model selector:', err);
                 }
             }
 
             if (synthSel) {
-                // Synthesis: only Ollama-registered text models (VL models excluded —
-                // they're optimised for image understanding, not creative prompt writing)
+                // Synthesis: Ollama text-only models (VL excluded — optimised for image understanding)
                 try {
                     const res = await fetch('/api/models');
                     const data = await res.json();
-                    const models = (data.models || []).filter(m => !m.includes('vl') && !m.includes('VL'));
-                    synthSel.innerHTML = '<option value="auto">⚡ Auto (Active GPU Model)</option>' +
-                        models.map(m => `<option value="${m}">${humanizeModelName(m)}</option>`).join('');
+                    const models = (data.models || []).filter(m => !m.toLowerCase().includes('vl'));
+                    synthSel.innerHTML = models.length
+                        ? models.map(m => `<option value="${m}">${humanizeModelName(m)}</option>`).join('')
+                        : '<option value="" disabled>No models available</option>';
                 } catch(err) {
                     console.warn('Could not populate synthesis model selector:', err);
                 }
@@ -681,9 +682,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('image', currentPromptgenFile);
 
                 const visionModel = document.getElementById('sd-promptgen-vision-model')?.value;
-                if (visionModel && visionModel !== 'auto') {
-                    formData.append('model', visionModel);
+                if (!visionModel) {
+                    if (promptgenStatus) promptgenStatus.textContent = '❌ Please select a Vision AI model first.';
+                    return;
                 }
+                formData.append('model', visionModel);
 
                 const res = await fetch('/api/vision/describe', {
                     method: 'POST',
@@ -726,9 +729,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     desired_changes: changes,
                     style_preset: preset
                 };
-                if (synthModel && synthModel !== 'auto') {
-                    payload.model = synthModel;
+                if (!synthModel) {
+                    if (promptgenStatus) promptgenStatus.textContent = '❌ Please select a Synthesis model first.';
+                    return;
                 }
+                payload.model = synthModel;
 
                 const res = await fetch('/api/vision/synthesize_edit_prompt', {
                     method: 'POST',
