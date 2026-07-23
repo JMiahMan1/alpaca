@@ -741,3 +741,104 @@ def test_api_errors_get_and_clear_proxy(client):
         assert res_clear.status_code == 200
         data_clear = json.loads(res_clear.data.decode("utf-8"))
         assert data_clear["status"] == "cleared"
+
+
+# ── Vision & Image-to-Prompt Assistant API Tests ─────────────────────────
+
+def test_vision_describe_api_missing_file(client):
+    """Test that /api/vision/describe returns 400 when no file is uploaded"""
+    res = client.post("/api/vision/describe", data={})
+    assert res.status_code == 400
+    data = json.loads(res.data.decode("utf-8"))
+    assert "error" in data
+    assert "No image file uploaded" in data["error"]
+
+
+def test_vision_describe_api_success(client):
+    """Test /api/vision/describe with a valid uploaded image file"""
+    from io import BytesIO
+    from PIL import Image
+
+    buf = BytesIO()
+    img = Image.new("RGB", (100, 100), color="blue")
+    img.save(buf, format="JPEG")
+    buf.seek(0)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": "A high-resolution photo of a blue studio background with soft lighting."
+                }
+            }
+        ]
+    }
+
+    with patch("httpx.Client.post", return_value=mock_resp):
+        res = client.post(
+            "/api/vision/describe",
+            data={"image": (buf, "test.jpg")},
+            content_type="multipart/form-data"
+        )
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "success"
+        assert "blue studio background" in data["image_description"]
+
+
+def test_vision_synthesize_edit_prompt_missing_params(client):
+    """Test that /api/vision/synthesize_edit_prompt returns 400 when required params are missing"""
+    res = client.post("/api/vision/synthesize_edit_prompt", json={})
+    assert res.status_code == 400
+    data = json.loads(res.data.decode("utf-8"))
+    assert "error" in data
+    assert "required" in data["error"]
+
+
+def test_vision_synthesize_edit_prompt_success(client):
+    """Test /api/vision/synthesize_edit_prompt with valid base description and desired changes"""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": "Master Edit Prompt: A person with purple neon hair in a cyberpunk city, 8k resolution, raw photo."
+                }
+            }
+        ]
+    }
+
+    payload = {
+        "base_description": "A woman wearing a white shirt in a studio",
+        "desired_changes": "Change her hair to purple neon and add cyberpunk city background",
+        "style_preset": "Cyberpunk Sci-Fi"
+    }
+
+    with patch("httpx.Client.post", return_value=mock_resp):
+        res = client.post("/api/vision/synthesize_edit_prompt", json=payload)
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "success"
+        assert "purple neon" in data["master_prompt"]
+        assert "suggested_strength" in data
+        assert "suggested_negative" in data
+
+
+def test_vision_synthesize_edit_prompt_fallback(client):
+    """Test /api/vision/synthesize_edit_prompt fallback logic when LLM call raises exception"""
+    payload = {
+        "base_description": "A portrait of a dog",
+        "desired_changes": "Add superhero cape",
+        "style_preset": "Anime Fantasy"
+    }
+
+    with patch("httpx.Client.post", side_effect=Exception("Connection error")):
+        res = client.post("/api/vision/synthesize_edit_prompt", json=payload)
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "success"
+        assert "superhero cape" in data["master_prompt"]
+

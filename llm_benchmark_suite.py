@@ -441,7 +441,7 @@ class LLMModelBenchmark:
         self, model: str, test: dict, sampler: ResourceSampler | None = None
     ) -> dict:
         """Test a model against a proxy endpoint."""
-        last_error = None
+        last_error: Exception | None = None
         for proxy_url in self.PROXY_SERVER_URLS:
             try:
                 async with httpx.AsyncClient(timeout=240.0) as client:
@@ -590,7 +590,7 @@ class LLMModelBenchmark:
         self, model: str, test: dict, sampler: ResourceSampler | None = None
     ) -> dict:
         """Test a model directly without proxy."""
-        last_error = None
+        last_error: Exception | None = None
         for ollama_url in self.OLLAMA_SERVER_URLS:
             try:
                 async with httpx.AsyncClient(timeout=240.0) as client:

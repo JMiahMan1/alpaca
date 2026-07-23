@@ -238,9 +238,12 @@ def _image_model_family_for_router_entry(entry):
                         cfg = {}
             family = cfg.get("model_family")
             families = cfg.get("families") or []
-            if family == "stable-diffusion" or "stable-diffusion" in families:
+            known_image_families = {"stable-diffusion", "qwen-image", "flux", "sdxl", "sd3", "wan"}
+            if family in known_image_families or any(f in known_image_families for f in families) or (family and ("image" in family.lower() or "diffusion" in family.lower())):
                 return family or "stable-diffusion"
-    except Exception:
+    except Exception as e:
+        if isinstance(e, PermissionError):
+            print(f"Warning: Manifest access permission denied ({e}). Ensure container/process has read access.", file=sys.stderr)
         return None
     return None
 
@@ -392,7 +395,7 @@ def update_models_ini():
                     else:
                         meta = _read_gguf_metadata(str(resolved))
                         arch = meta.get("general.architecture", "").lower()
-                        if arch in ("sd", "stable-diffusion", "flux") or any(
+                        if arch in ("sd", "stable-diffusion", "flux", "qwen-image", "qwen_image", "wan", "diffusion") or "image" in arch or "diffusion" in arch or any(
                             kw in entry.name.lower() or kw in alias.lower()
                             for kw in [
                                 "stable-diffusion",
@@ -405,6 +408,10 @@ def update_models_ini():
                                 "photoreal",
                                 "sd-",
                                 "illustrious",
+                                "qwen-image",
+                                "qwen_image",
+                                "wan-2",
+                                "wan_2",
                             ]
                         ):
                             is_sd = True
@@ -1246,6 +1253,8 @@ def pull_companion(model_name, no_resume=False):
             print(f"Error moving companion file: {e}")
             return 1
 
+        with contextlib.suppress(Exception):
+            os.chmod(output_path, 0o666)
         print(f"Successfully downloaded companion file: {output_path.name}")
         return 0
     except Exception as e:

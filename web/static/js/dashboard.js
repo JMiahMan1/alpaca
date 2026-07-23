@@ -301,6 +301,871 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // ── Helper to render SD result cards with Download & Send to Canvas ─────
+    function renderSDResultCard(item, container, filePrefix = 'result') {
+        if (item.b64_json) {
+            const card = document.createElement('div');
+            card.style.display = 'inline-block';
+            card.style.margin = '6px';
+            card.style.textAlign = 'center';
+            card.style.background = '#0f172a';
+            card.style.padding = '8px';
+            card.style.borderRadius = '8px';
+            card.style.border = '1px solid var(--border-color)';
+
+            const img = document.createElement('img');
+            img.src = 'data:image/png;base64,' + item.b64_json;
+            img.style.maxWidth = '320px';
+            img.style.borderRadius = '6px';
+            img.style.border = '1px solid var(--border-color)';
+            card.appendChild(img);
+
+            const btnBox = document.createElement('div');
+            btnBox.style.display = 'flex';
+            btnBox.style.gap = '0.5rem';
+            btnBox.style.justifyContent = 'center';
+            btnBox.style.marginTop = '6px';
+
+            const dl = document.createElement('a');
+            dl.textContent = '⬇ Download PNG';
+            dl.href = '#';
+            dl.title = 'Download this image';
+            dl.style.fontSize = '0.75rem';
+            dl.style.color = 'var(--color-primary)';
+            dl.style.textDecoration = 'none';
+            dl.style.cursor = 'pointer';
+            dl.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                const bin = atob(item.b64_json);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                const blob = new Blob([bytes], { type: 'image/png' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${filePrefix}_${Date.now()}.png`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            });
+            btnBox.appendChild(dl);
+
+            const canvasBtn = document.createElement('a');
+            canvasBtn.textContent = '✏️ Text Canvas';
+            canvasBtn.href = '#';
+            canvasBtn.title = 'Send image to interactive text canvas studio';
+            canvasBtn.style.fontSize = '0.75rem';
+            canvasBtn.style.color = '#38bdf8';
+            canvasBtn.style.textDecoration = 'none';
+            canvasBtn.style.cursor = 'pointer';
+            canvasBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                loadB64IntoCanvas(item.b64_json);
+            });
+            btnBox.appendChild(canvasBtn);
+
+            card.appendChild(btnBox);
+            container.appendChild(card);
+        } else if (item.url) {
+            const a = document.createElement('a');
+            a.href = item.url;
+            a.textContent = item.url;
+            a.target = '_blank';
+            container.appendChild(a);
+        }
+    }
+
+    // ── Image Studio Mode Tabs & Enhanced Presets / Canvas Logic ────────────
+    const modeTabs = {
+        gen: document.getElementById('sd-mode-tab-gen'),
+        flyer: document.getElementById('sd-mode-tab-flyer'),
+        photo: document.getElementById('sd-mode-tab-photo'),
+        canvas: document.getElementById('sd-mode-tab-canvas'),
+        ocr: document.getElementById('sd-mode-tab-ocr'),
+        promptgen: document.getElementById('sd-mode-tab-promptgen')
+    };
+
+    const modePanels = {
+        gen: document.getElementById('sd-panel-gen'),
+        flyer: document.getElementById('sd-panel-flyer'),
+        photo: document.getElementById('sd-panel-photo'),
+        canvas: document.getElementById('sd-panel-canvas'),
+        ocr: document.getElementById('sd-panel-ocr'),
+        promptgen: document.getElementById('sd-panel-promptgen')
+    };
+
+    function switchSDMode(modeKey) {
+        Object.keys(modeTabs).forEach(k => {
+            if (modeTabs[k]) {
+                if (k === modeKey) {
+                    modeTabs[k].classList.add('active');
+                    modeTabs[k].style.background = 'var(--color-primary)';
+                    modeTabs[k].style.color = 'white';
+                } else {
+                    modeTabs[k].classList.remove('active');
+                    modeTabs[k].style.background = 'transparent';
+                    modeTabs[k].style.color = 'var(--text-muted)';
+                }
+            }
+            if (modePanels[k]) {
+                if (k === modeKey) {
+                    modePanels[k].classList.remove('d-none');
+                } else {
+                    modePanels[k].classList.add('d-none');
+                }
+            }
+        });
+    }
+
+    if (modeTabs.gen) modeTabs.gen.addEventListener('click', () => switchSDMode('gen'));
+    if (modeTabs.flyer) modeTabs.flyer.addEventListener('click', () => switchSDMode('flyer'));
+    if (modeTabs.photo) modeTabs.photo.addEventListener('click', () => switchSDMode('photo'));
+    if (modeTabs.canvas) modeTabs.canvas.addEventListener('click', () => switchSDMode('canvas'));
+    if (modeTabs.ocr) modeTabs.ocr.addEventListener('click', () => switchSDMode('ocr'));
+    if (modeTabs.promptgen) modeTabs.promptgen.addEventListener('click', () => switchSDMode('promptgen'));
+
+    // --- OCR Document Extractor Handlers ---
+    const ocrDropzone = document.getElementById('sd-ocr-dropzone');
+    const ocrFileInput = document.getElementById('sd-ocr-file');
+    const ocrEmptyState = document.getElementById('sd-ocr-dropzone-empty');
+    const ocrPreviewState = document.getElementById('sd-ocr-dropzone-preview');
+    const ocrPreviewImg = document.getElementById('sd-ocr-preview-img');
+    const ocrPreviewName = document.getElementById('sd-ocr-preview-name');
+    const ocrPreviewInfo = document.getElementById('sd-ocr-preview-info');
+    const ocrRemoveBtn = document.getElementById('sd-ocr-remove-btn');
+    const ocrRunBtn = document.getElementById('sd-ocr-run-btn');
+    const ocrStatus = document.getElementById('sd-ocr-status');
+    const ocrResultsContainer = document.getElementById('sd-ocr-results-container');
+    const ocrResHeadline = document.getElementById('sd-ocr-res-headline');
+    const ocrResSubtext = document.getElementById('sd-ocr-res-subtext');
+    const ocrResBadge = document.getElementById('sd-ocr-res-badge');
+    const ocrResFull = document.getElementById('sd-ocr-res-full');
+    const ocrTransferBtn = document.getElementById('sd-ocr-transfer-btn');
+
+    let currentOcrFile = null;
+
+    if (ocrDropzone && ocrFileInput) {
+        ocrDropzone.addEventListener('click', (e) => {
+            if (e.target !== ocrRemoveBtn) ocrFileInput.click();
+        });
+
+        ocrFileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                handleOcrFileSelected(e.target.files[0]);
+            }
+        });
+
+        ocrDropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            ocrDropzone.style.borderColor = '#a855f7';
+        });
+
+        ocrDropzone.addEventListener('dragleave', () => {
+            ocrDropzone.style.borderColor = 'rgba(168, 85, 247, 0.4)';
+        });
+
+        ocrDropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            ocrDropzone.style.borderColor = 'rgba(168, 85, 247, 0.4)';
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                handleOcrFileSelected(e.dataTransfer.files[0]);
+            }
+        });
+    }
+
+    function handleOcrFileSelected(file) {
+        currentOcrFile = file;
+        if (ocrPreviewName) ocrPreviewName.textContent = file.name;
+        if (ocrPreviewInfo) ocrPreviewInfo.textContent = `${(file.size / 1024).toFixed(1)} KB • Ready for OCR`;
+
+        if (file.type.startsWith('image/')) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                if (ocrPreviewImg) {
+                    ocrPreviewImg.src = e.target.result;
+                    ocrPreviewImg.classList.remove('d-none');
+                }
+            };
+            reader.readAsDataURL(file);
+        } else {
+            if (ocrPreviewImg) ocrPreviewImg.classList.add('d-none');
+        }
+
+        if (ocrEmptyState) ocrEmptyState.classList.add('d-none');
+        if (ocrPreviewState) ocrPreviewState.classList.remove('d-none');
+    }
+
+    if (ocrRemoveBtn) {
+        ocrRemoveBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            currentOcrFile = null;
+            if (ocrFileInput) ocrFileInput.value = '';
+            if (ocrEmptyState) ocrEmptyState.classList.remove('d-none');
+            if (ocrPreviewState) ocrPreviewState.classList.add('d-none');
+            if (ocrResultsContainer) ocrResultsContainer.classList.add('d-none');
+        });
+    }
+
+    if (ocrRunBtn) {
+        ocrRunBtn.addEventListener('click', async () => {
+            if (!currentOcrFile) {
+                alert('Please upload an image or PDF file first.');
+                return;
+            }
+
+            ocrRunBtn.disabled = true;
+            if (ocrStatus) ocrStatus.textContent = '⏳ Extracting text & document structure via Qwen2.5-VL...';
+
+            const formData = new FormData();
+            formData.append('file', currentOcrFile);
+
+            try {
+                const resp = await fetch('/api/vision/ocr', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await resp.json();
+
+                if (resp.ok && data.status === 'success') {
+                    const res = data.ocr_result || {};
+                    if (ocrResHeadline) ocrResHeadline.value = res.headline || '';
+                    if (ocrResSubtext) ocrResSubtext.value = res.subtext || '';
+                    if (ocrResBadge) ocrResBadge.value = res.badge || '';
+                    if (ocrResFull) ocrResFull.value = res.full_text || data.raw_response || '';
+
+                    if (ocrResultsContainer) ocrResultsContainer.classList.remove('d-none');
+                    if (ocrStatus) ocrStatus.textContent = '✅ Text & Layout extracted successfully!';
+                } else {
+                    if (ocrStatus) ocrStatus.textContent = `❌ OCR failed: ${data.error || 'Unknown error'}`;
+                }
+            } catch (err) {
+                if (ocrStatus) ocrStatus.textContent = `❌ OCR request error: ${err.message}`;
+            } finally {
+                ocrRunBtn.disabled = false;
+            }
+        });
+    }
+
+    if (ocrTransferBtn) {
+        ocrTransferBtn.addEventListener('click', () => {
+            const headline = ocrResHeadline ? ocrResHeadline.value : '';
+            const subtext = ocrResSubtext ? ocrResSubtext.value : '';
+            const badge = ocrResBadge ? ocrResBadge.value : '';
+
+            const flyerHeadline = document.getElementById('sd-flyer-headline');
+            const flyerSubtext = document.getElementById('sd-flyer-subtext');
+            const flyerBadge = document.getElementById('sd-flyer-badge');
+
+            if (flyerHeadline && headline) flyerHeadline.value = headline;
+            if (flyerSubtext && subtext) flyerSubtext.value = subtext;
+            if (flyerBadge && badge) flyerBadge.value = badge;
+
+            switchSDMode('flyer');
+            if (typeof updateFlyerPromptPreview === 'function') updateFlyerPromptPreview();
+            alert('✅ Extracted text transferred to Flyer Creator!');
+        });
+    }
+
+    // ── Image-to-Prompt Assistant Logic ────────────────────────────────────
+    let currentPromptgenFile = null;
+    let synthesizedMasterPrompt = '';
+
+    const promptgenDropzone = document.getElementById('sd-promptgen-dropzone');
+    const promptgenFileInput = document.getElementById('sd-promptgen-file-input');
+    const promptgenEmptyState = document.getElementById('sd-promptgen-empty-state');
+    const promptgenPreviewState = document.getElementById('sd-promptgen-preview-state');
+    const promptgenPreviewImg = document.getElementById('sd-promptgen-preview-img');
+    const promptgenPreviewName = document.getElementById('sd-promptgen-preview-name');
+
+    const promptgenAnalyzeBtn = document.getElementById('sd-promptgen-analyze-btn');
+    const promptgenDescTextarea = document.getElementById('sd-promptgen-desc');
+    const promptgenChangesTextarea = document.getElementById('sd-promptgen-changes');
+    const promptgenPresetSelect = document.getElementById('sd-promptgen-preset');
+    const promptgenSynthBtn = document.getElementById('sd-promptgen-synth-btn');
+    const promptgenStatus = document.getElementById('sd-promptgen-status');
+    const promptgenResultPrompt = document.getElementById('sd-promptgen-result-prompt');
+    const promptgenSendPhotoBtn = document.getElementById('sd-promptgen-send-photo-btn');
+
+    if (promptgenDropzone && promptgenFileInput) {
+        promptgenDropzone.addEventListener('click', () => promptgenFileInput.click());
+
+        promptgenFileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                handlePromptgenFileSelected(e.target.files[0]);
+            }
+        });
+
+        promptgenDropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            promptgenDropzone.style.borderColor = '#a855f7';
+        });
+
+        promptgenDropzone.addEventListener('dragleave', () => {
+            promptgenDropzone.style.borderColor = 'rgba(168, 85, 247, 0.4)';
+        });
+
+        promptgenDropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            promptgenDropzone.style.borderColor = 'rgba(168, 85, 247, 0.4)';
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                handlePromptgenFileSelected(e.dataTransfer.files[0]);
+            }
+        });
+    }
+
+    function handlePromptgenFileSelected(file) {
+        currentPromptgenFile = file;
+        if (promptgenPreviewName) promptgenPreviewName.textContent = file.name;
+
+        if (file.type.startsWith('image/')) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                if (promptgenPreviewImg) {
+                    promptgenPreviewImg.src = e.target.result;
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+
+        if (promptgenEmptyState) promptgenEmptyState.classList.add('d-none');
+        if (promptgenPreviewState) promptgenPreviewState.classList.remove('d-none');
+    }
+
+    if (promptgenAnalyzeBtn) {
+        promptgenAnalyzeBtn.addEventListener('click', async () => {
+            if (!currentPromptgenFile) {
+                alert('Please upload an image first.');
+                return;
+            }
+
+            if (promptgenStatus) promptgenStatus.textContent = '⏳ Analyzing scene with Vision AI...';
+            promptgenAnalyzeBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('image', currentPromptgenFile);
+
+                const res = await fetch('/api/vision/describe', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await res.json();
+                if (res.ok && data.image_description) {
+                    if (promptgenDescTextarea) promptgenDescTextarea.value = data.image_description;
+                    if (promptgenStatus) promptgenStatus.textContent = '✅ Scene analysis complete!';
+                } else {
+                    if (promptgenStatus) promptgenStatus.textContent = `❌ Analysis error: ${data.error || 'Failed'}`;
+                }
+            } catch (err) {
+                if (promptgenStatus) promptgenStatus.textContent = `❌ Analysis error: ${err.message}`;
+            } finally {
+                promptgenAnalyzeBtn.disabled = false;
+            }
+        });
+    }
+
+    if (promptgenSynthBtn) {
+        promptgenSynthBtn.addEventListener('click', async () => {
+            const baseDesc = promptgenDescTextarea ? promptgenDescTextarea.value.trim() : '';
+            const changes = promptgenChangesTextarea ? promptgenChangesTextarea.value.trim() : '';
+            const preset = promptgenPresetSelect ? promptgenPresetSelect.value : 'Photorealistic Retouch';
+
+            if (!baseDesc || !changes) {
+                alert('Please provide both the base image description and desired modifications.');
+                return;
+            }
+
+            if (promptgenStatus) promptgenStatus.textContent = '✨ Synthesizing master prompt...';
+            promptgenSynthBtn.disabled = true;
+
+            try {
+                const res = await fetch('/api/vision/synthesize_edit_prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        base_description: baseDesc,
+                        desired_changes: changes,
+                        style_preset: preset
+                    })
+                });
+
+                const data = await res.json();
+                if (res.ok && data.master_prompt) {
+                    synthesizedMasterPrompt = data.master_prompt;
+                    if (promptgenResultPrompt) promptgenResultPrompt.textContent = data.master_prompt;
+                    if (promptgenStatus) promptgenStatus.textContent = '✅ Master prompt ready!';
+                } else {
+                    if (promptgenStatus) promptgenStatus.textContent = `❌ Error: ${data.error || 'Failed'}`;
+                }
+            } catch (err) {
+                if (promptgenStatus) promptgenStatus.textContent = `❌ Error: ${err.message}`;
+            } finally {
+                promptgenSynthBtn.disabled = false;
+            }
+        });
+    }
+
+    if (promptgenSendPhotoBtn) {
+        promptgenSendPhotoBtn.addEventListener('click', () => {
+            const masterPrompt = promptgenResultPrompt ? promptgenResultPrompt.textContent.trim() : '';
+            if (!masterPrompt || masterPrompt.includes('Synthesized master prompt will appear here')) {
+                alert('Please synthesize a master prompt first.');
+                return;
+            }
+
+            const photoPromptElem = document.getElementById('sd-edit-prompt') || document.getElementById('sd-photo-edit-prompt');
+            if (photoPromptElem) photoPromptElem.value = masterPrompt;
+
+            switchSDMode('photo');
+            alert('🚀 Master Edit Prompt transferred to Realistic Photo Editor!');
+        });
+    }
+
+    // ── Flyer Creator Synthesizer Logic ────────────────────────────────────
+    const flyerPresetSel = document.getElementById('sd-flyer-preset-select');
+    const flyerAspectSel = document.getElementById('sd-flyer-aspect-select');
+    const flyerHeadline = document.getElementById('sd-flyer-headline');
+    const flyerSubtext = document.getElementById('sd-flyer-subtext');
+    const flyerBadge = document.getElementById('sd-flyer-badge');
+    const flyerVisuals = document.getElementById('sd-flyer-visuals');
+    const flyerPromptPreview = document.getElementById('sd-flyer-prompt-preview');
+    const flyerGenBtn = document.getElementById('sd-flyer-gen-btn');
+    const flyerStatus = document.getElementById('sd-flyer-status');
+
+    const flyerPresets = {
+        music_event: {
+            name: 'Music & Party Event',
+            prompt: 'vibrant music event poster, energetic neon lighting, dynamic background graphic, high contrast layout',
+            size: '832x1216',
+            visuals: 'neon stage spotlights, crowd silhouette, dark moody atmosphere'
+        },
+        corporate_business: {
+            name: 'Corporate & Business',
+            prompt: 'professional corporate business flyer, clean modern typography layout, sleek geometry, dark navy theme',
+            size: '832x1216',
+            visuals: 'sleek office building, abstract geometric vector shapes, executive background'
+        },
+        product_sale: {
+            name: 'Product Sale & Offer',
+            prompt: 'retail promotional flyer, bold sale badge accents, sleek product display pedestal, crisp studio background',
+            size: '1024x1024',
+            visuals: 'floating promotional podium, golden confetti accents, studio lighting'
+        },
+        restaurant_menu: {
+            name: 'Restaurant & Food Menu',
+            prompt: 'gourmet restaurant food poster, delicious culinary styling, elegant menu border, rustic slate background',
+            size: '832x1216',
+            visuals: 'steaking hot gourmet burger, fresh ingredients, dark wooden tabletop'
+        },
+        minimalist_modern: {
+            name: 'Minimalist Modern',
+            prompt: 'minimalist graphic design flyer, high contrast typography space, geometric aesthetic, subtle gradient',
+            size: '768x1344',
+            visuals: 'abstract clean waves, pastel accent shapes, spacious aesthetic layout'
+        }
+    };
+
+    function updateFlyerPromptPreview() {
+        if (!flyerPromptPreview) return;
+        const presetKey = flyerPresetSel ? flyerPresetSel.value : 'music_event';
+        const preset = flyerPresets[presetKey] || flyerPresets.music_event;
+        const headline = (flyerHeadline ? flyerHeadline.value.trim() : '') || 'EVENT TITLE';
+        const subtext = (flyerSubtext ? flyerSubtext.value.trim() : '') || 'DATE & TIME';
+        const badge = (flyerBadge ? flyerBadge.value.trim() : '') || 'SPECIAL OFFER';
+        const visuals = (flyerVisuals ? flyerVisuals.value.trim() : '') || preset.visuals;
+
+        const synthesized = `flyer graphic design, main title text reading "${headline}", subtext reading "${subtext}", badge tag "${badge}", ${visuals}, ${preset.prompt}, sharp typography, clean professional layout, 8k resolution`;
+        flyerPromptPreview.textContent = synthesized;
+    }
+
+    if (flyerPresetSel) {
+        flyerPresetSel.addEventListener('change', () => {
+            const p = flyerPresets[flyerPresetSel.value];
+            if (p) {
+                if (flyerAspectSel) flyerAspectSel.value = p.size;
+                if (flyerVisuals) flyerVisuals.value = p.visuals;
+            }
+            updateFlyerPromptPreview();
+        });
+    }
+
+    [flyerHeadline, flyerSubtext, flyerBadge, flyerVisuals].forEach(elem => {
+        if (elem) elem.addEventListener('input', updateFlyerPromptPreview);
+    });
+
+    updateFlyerPromptPreview();
+
+    if (flyerGenBtn) {
+        flyerGenBtn.addEventListener('click', async () => {
+            const model = document.getElementById('sd-model-select').value;
+            if (!model) { flyerStatus.textContent = '❌ Load an image model first.'; return; }
+
+            const prompt = flyerPromptPreview ? flyerPromptPreview.textContent.trim() : '';
+            const size = flyerAspectSel ? flyerAspectSel.value : '832x1216';
+            const negative = 'garbled text, distorted letters, bad typography, misspelled text, blurry letters, low contrast, messy composition';
+
+            const payload = {
+                model,
+                prompt,
+                size,
+                n: 1,
+                negative_prompt: negative,
+                steps: 25,
+                guidance: 8.0
+            };
+
+            const qrEnable = document.getElementById('sd-flyer-qr-enable');
+            const qrUrl = document.getElementById('sd-flyer-qr-url');
+            const qrPosition = document.getElementById('sd-flyer-qr-position');
+            const qrLabel = document.getElementById('sd-flyer-qr-label');
+
+            if (qrEnable && qrEnable.checked && qrUrl && qrUrl.value.trim()) {
+                payload.qr_url = qrUrl.value.trim();
+                payload.qr_position = qrPosition ? qrPosition.value : 'bottom_right';
+                payload.qr_label = qrLabel ? qrLabel.value.trim() : 'SCAN ME';
+            }
+
+            flyerStatus.textContent = '🚀 Generating flyer graphic with QR Code embedding...';
+            flyerGenBtn.disabled = true;
+            try {
+                const res = await fetch('/api/sd/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+                if (res.ok && data.data) {
+                    sdResults.innerHTML = '';
+                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'flyer'));
+                    flyerStatus.textContent = '✅ Flyer generated successfully!';
+                } else {
+                    flyerStatus.textContent = `❌ ${data.error || 'Flyer generation failed'}`;
+                }
+            } catch (e) {
+                flyerStatus.textContent = `❌ ${e.message}`;
+            } finally {
+                flyerGenBtn.disabled = false;
+            }
+        });
+    }
+
+    // ── Photo Realism Retouch Controls ─────────────────────────────────────
+    const photoPresetSel = document.getElementById('sd-photo-preset-select');
+    const photoStrengthInput = document.getElementById('sd-edit-strength');
+    const photoStrengthVal = document.getElementById('sd-strength-val');
+    const photoPromptInput = document.getElementById('sd-edit-prompt');
+    const photoNegativeInput = document.getElementById('sd-edit-negative');
+    const strengthButtons = document.querySelectorAll('.sd-strength-preset');
+
+    const photoPresets = {
+        portrait: {
+            prompt: '8k RAW photo, portrait photograph of subject, detailed skin texture, natural soft studio lighting, sharp focus, 85mm lens f/1.8',
+            negative: 'cgi, 3d render, illustration, smooth plastic skin, oversaturated, distorted features, overprocessed, low quality, noise',
+            strength: 0.45
+        },
+        studio_product: {
+            prompt: 'commercial studio product photo, clean directional studio lighting, sharp details, professional color grade, 4k',
+            negative: 'blurry, dark, noisy, amateur photo, harsh reflections, low quality, distorted',
+            strength: 0.35
+        },
+        outdoor_retouch: {
+            prompt: 'vibrant natural outdoor photo, golden hour sunlight, sharp detail, high dynamic range, photorealistic',
+            negative: 'overexposed, muddy, low contrast, heavy grain, cgi, unnatural colors',
+            strength: 0.40
+        },
+        tone_color_grade: {
+            prompt: 'cinematic photo color grading, balanced lighting, deep contrast, natural skin tones, professional photography',
+            negative: 'flat color, oversaturated, washed out, noisy, artifact',
+            strength: 0.30
+        },
+        restore_polish: {
+            prompt: 'clean sharp photograph, noise reduction, crisp focus, enhanced clarity, realistic texture',
+            negative: 'blurry, pixelated, artifact, low resolution, noise, distortion',
+            strength: 0.25
+        }
+    };
+
+    if (photoPresetSel) {
+        photoPresetSel.addEventListener('change', () => {
+            const p = photoPresets[photoPresetSel.value];
+            if (p) {
+                if (photoPromptInput) photoPromptInput.value = p.prompt;
+                if (photoNegativeInput) photoNegativeInput.value = p.negative;
+                if (photoStrengthInput) {
+                    photoStrengthInput.value = p.strength;
+                    if (photoStrengthVal) photoStrengthVal.textContent = p.strength;
+                }
+                strengthButtons.forEach(btn => {
+                    if (parseFloat(btn.dataset.strength) === p.strength) btn.classList.add('active');
+                    else btn.classList.remove('active');
+                });
+            }
+        });
+    }
+
+    // ── Quick Inspiration Chips & Dimension Presets ────────────────────────
+    document.querySelectorAll('.sd-quick-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            const promptInput = document.getElementById('sd-gen-prompt');
+            if (promptInput && chip.dataset.prompt) {
+                promptInput.value = chip.dataset.prompt;
+                promptInput.focus();
+            }
+        });
+    });
+
+    const genSizePreset = document.getElementById('sd-gen-size-preset');
+    const genSizeInput = document.getElementById('sd-gen-size');
+    if (genSizePreset && genSizeInput) {
+        genSizePreset.addEventListener('change', () => {
+            genSizeInput.value = genSizePreset.value;
+        });
+    }
+
+    // ── Drag & Drop Photo Upload Zone ──────────────────────────────────────
+    const photoDropzone = document.getElementById('sd-photo-dropzone');
+    const photoInput = document.getElementById('sd-edit-image');
+    const photoEmpty = document.getElementById('sd-photo-dropzone-empty');
+    const photoPreview = document.getElementById('sd-photo-dropzone-preview');
+    const photoImg = document.getElementById('sd-photo-preview-img');
+    const photoName = document.getElementById('sd-photo-preview-name');
+    const photoRemoveBtn = document.getElementById('sd-photo-remove-btn');
+
+    if (photoDropzone && photoInput) {
+        photoDropzone.addEventListener('click', (e) => {
+            if (e.target !== photoRemoveBtn) photoInput.click();
+        });
+        photoDropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            photoDropzone.style.borderColor = '#38bdf8';
+            photoDropzone.style.background = 'rgba(56, 189, 248, 0.1)';
+        });
+        photoDropzone.addEventListener('dragleave', () => {
+            photoDropzone.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+            photoDropzone.style.background = '#090d16';
+        });
+        photoDropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            photoDropzone.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+            photoDropzone.style.background = '#090d16';
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                photoInput.files = e.dataTransfer.files;
+                showPhotoPreview(e.dataTransfer.files[0]);
+            }
+        });
+        photoInput.addEventListener('change', () => {
+            if (photoInput.files && photoInput.files[0]) {
+                showPhotoPreview(photoInput.files[0]);
+            }
+        });
+        if (photoRemoveBtn) {
+            photoRemoveBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                photoInput.value = '';
+                if (photoPreview) photoPreview.classList.add('d-none');
+                if (photoEmpty) photoEmpty.classList.remove('d-none');
+            });
+        }
+    }
+
+    function showPhotoPreview(file) {
+        if (!file || !photoImg || !photoName) return;
+        photoName.textContent = file.name;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            photoImg.src = e.target.result;
+            if (photoEmpty) photoEmpty.classList.add('d-none');
+            if (photoPreview) photoPreview.classList.remove('d-none');
+        };
+        reader.readAsDataURL(file);
+    }
+
+    const strengthGuide = document.getElementById('sd-strength-guide');
+    const strengthGuides = {
+        0.25: 'Subtle Retouch (Enhance skin & remove minor blemishes)',
+        0.45: 'Balanced Edit (Modify subject details, outfit, studio lighting)',
+        0.65: 'Medium Style Refresh (Change background, color style, theme)',
+        0.85: 'Heavy Reimagine (Transform photo composition & style)'
+    };
+
+    function updateStrengthLabel(val) {
+        if (photoStrengthVal) photoStrengthVal.textContent = val;
+        if (strengthGuide) {
+            const v = parseFloat(val);
+            let text = 'Custom Strength';
+            if (v <= 0.3) text = strengthGuides[0.25];
+            else if (v <= 0.55) text = strengthGuides[0.45];
+            else if (v <= 0.75) text = strengthGuides[0.65];
+            else text = strengthGuides[0.85];
+            strengthGuide.textContent = text;
+        }
+    }
+
+    if (photoStrengthInput) {
+        photoStrengthInput.addEventListener('input', () => {
+            updateStrengthLabel(photoStrengthInput.value);
+        });
+    }
+
+    strengthButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const val = parseFloat(btn.dataset.strength);
+            if (photoStrengthInput) photoStrengthInput.value = val;
+            updateStrengthLabel(val);
+            strengthButtons.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        });
+    });
+
+    // ── Interactive Canvas Text & Typography Studio Engine ─────────────────
+    const canvasElem = document.getElementById('sd-text-canvas');
+    const canvasHint = document.getElementById('sd-canvas-empty-hint');
+    const canvasUpload = document.getElementById('sd-canvas-upload');
+    const canvasUploadTriggerBtn = document.getElementById('sd-canvas-upload-trigger-btn');
+    const canvasText1 = document.getElementById('sd-canvas-text1');
+    const canvasFont1 = document.getElementById('sd-canvas-font1');
+    const canvasColor1 = document.getElementById('sd-canvas-color1');
+    const canvasText2 = document.getElementById('sd-canvas-text2');
+    const canvasText3 = document.getElementById('sd-canvas-text3');
+    const canvasBadgeBg = document.getElementById('sd-canvas-badge-bg');
+    const canvasLayout = document.getElementById('sd-canvas-layout');
+    const canvasExportBtn = document.getElementById('sd-canvas-export-btn');
+
+    let currentCanvasImage = null;
+
+    if (canvasUploadTriggerBtn && canvasUpload) {
+        canvasUploadTriggerBtn.addEventListener('click', () => canvasUpload.click());
+    }
+
+    if (canvasUpload) {
+        canvasUpload.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        currentCanvasImage = img;
+                        renderCanvasTextOverlay();
+                        switchSDMode('canvas');
+                    };
+                    img.src = ev.target.result;
+                };
+                reader.readAsDataURL(e.target.files[0]);
+            }
+        });
+    }
+
+    function loadB64IntoCanvas(b64Data) {
+        const img = new Image();
+        img.onload = () => {
+            currentCanvasImage = img;
+            renderCanvasTextOverlay();
+            switchSDMode('canvas');
+        };
+        img.src = 'data:image/png;base64,' + b64Data;
+    }
+
+    function renderCanvasTextOverlay() {
+        if (!canvasElem) return;
+        const ctx = canvasElem.getContext('2d');
+        if (!currentCanvasImage) {
+            if (canvasHint) canvasHint.style.display = 'block';
+            canvasElem.style.display = 'none';
+            return;
+        }
+
+        if (canvasHint) canvasHint.style.display = 'none';
+        canvasElem.style.display = 'block';
+
+        canvasElem.width = currentCanvasImage.width || 1024;
+        canvasElem.height = currentCanvasImage.height || 1024;
+
+        ctx.clearRect(0, 0, canvasElem.width, canvasElem.height);
+        ctx.drawImage(currentCanvasImage, 0, 0, canvasElem.width, canvasElem.height);
+
+        const w = canvasElem.width;
+        const h = canvasElem.height;
+
+        const t1 = canvasText1 ? canvasText1.value.trim() : '';
+        const t2 = canvasText2 ? canvasText2.value.trim() : '';
+        const t3 = canvasText3 ? canvasText3.value.trim() : '';
+        const font1 = canvasFont1 ? canvasFont1.value : 'Impact, sans-serif';
+        const color1 = canvasColor1 ? canvasColor1.value : '#ffffff';
+        const badgeBg = canvasBadgeBg ? canvasBadgeBg.value : '#3b82f6';
+        const layout = canvasLayout ? canvasLayout.value : 'top';
+
+        let startY = h * 0.15;
+        if (layout === 'center') startY = h * 0.40;
+        else if (layout === 'bottom') startY = h * 0.72;
+
+        ctx.textAlign = 'center';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+        ctx.shadowBlur = 12;
+        ctx.shadowOffsetX = 2;
+        ctx.shadowOffsetY = 4;
+
+        // Headline
+        if (t1) {
+            const size1 = Math.round(w * 0.058);
+            ctx.font = `900 ${size1}px ${font1}`;
+            ctx.fillStyle = color1;
+            ctx.fillText(t1, w / 2, startY);
+            startY += size1 * 1.15;
+        }
+
+        // Subtitle
+        if (t2) {
+            const size2 = Math.round(w * 0.032);
+            ctx.font = `600 ${size2}px system-ui, sans-serif`;
+            ctx.fillStyle = '#e2e8f0';
+            ctx.fillText(t2, w / 2, startY);
+            startY += size2 * 1.4;
+        }
+
+        // Badge Tag (Pill)
+        if (t3) {
+            const size3 = Math.round(w * 0.028);
+            ctx.font = `700 ${size3}px system-ui, sans-serif`;
+            const textMetrics = ctx.measureText(t3);
+            const padX = size3 * 1.2;
+            const padY = size3 * 0.5;
+            const bw = textMetrics.width + padX * 2;
+            const bh = size3 + padY * 2;
+            const bx = (w - bw) / 2;
+            const by = startY - bh + size3 * 0.2;
+
+            ctx.shadowColor = 'transparent';
+            ctx.fillStyle = badgeBg;
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, bh / 2);
+            else ctx.rect(bx, by, bw, bh);
+            ctx.fill();
+
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            ctx.shadowBlur = 4;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(t3, w / 2, by + bh / 2 + size3 * 0.35);
+        }
+    }
+
+    [canvasText1, canvasFont1, canvasColor1, canvasText2, canvasText3, canvasBadgeBg, canvasLayout].forEach(el => {
+        if (el) el.addEventListener('input', renderCanvasTextOverlay);
+    });
+
+    if (canvasExportBtn) {
+        canvasExportBtn.addEventListener('click', () => {
+            if (!canvasElem || !currentCanvasImage) return;
+            const link = document.createElement('a');
+            link.download = 'flyer_graphic_export.png';
+            link.href = canvasElem.toDataURL('image/png');
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        });
+    }
+
     if (sdEditBtn) {
         sdEditBtn.addEventListener('click', async () => {
             const model = document.getElementById('sd-model-select').value;
@@ -330,52 +1195,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const data = await res.json();
                 if (res.ok && data.data) {
                     sdResults.innerHTML = '';
-                    data.data.forEach(item => {
-                        if (item.b64_json) {
-                            const card = document.createElement('div');
-                            card.style.display = 'inline-block';
-                            card.style.margin = '6px';
-                            card.style.textAlign = 'center';
-                            const img = document.createElement('img');
-                            img.src = 'data:image/png;base64,' + item.b64_json;
-                            img.style.maxWidth = '320px';
-                            img.style.borderRadius = '8px';
-                            img.style.border = '1px solid var(--border-color)';
-                            card.appendChild(img);
-                            const dl = document.createElement('a');
-                            dl.textContent = '⬇ Download PNG';
-                            dl.href = '#';
-                            dl.title = 'Download this image';
-                            dl.style.display = 'block';
-                            dl.style.marginTop = '6px';
-                            dl.style.color = 'var(--color-primary)';
-                            dl.style.textDecoration = 'none';
-                            dl.style.cursor = 'pointer';
-                            dl.addEventListener('click', (ev) => {
-                                ev.preventDefault();
-                                const bin = atob(item.b64_json);
-                                const bytes = new Uint8Array(bin.length);
-                                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                                const blob = new Blob([bytes], { type: 'image/png' });
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = 'edit_result.png';
-                                document.body.appendChild(a);
-                                a.click();
-                                a.remove();
-                                URL.revokeObjectURL(url);
-                            });
-                            card.appendChild(dl);
-                            sdResults.appendChild(card);
-                        } else if (item.url) {
-                            const a = document.createElement('a');
-                            a.href = item.url;
-                            a.textContent = item.url;
-                            a.target = '_blank';
-                            sdResults.appendChild(a);
-                        }
-                    });
+                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'photo_edit'));
                     sdEditStatus.textContent = `✅ Edited ${data.data.length} image(s).`;
                 } else {
                     sdEditStatus.textContent = `❌ ${data.error || 'Edit failed'}`;
@@ -425,52 +1245,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const data = await res.json();
                 if (res.ok && data.data) {
                     sdResults.innerHTML = '';
-                    data.data.forEach(item => {
-                        if (item.b64_json) {
-                            const card = document.createElement('div');
-                            card.style.display = 'inline-block';
-                            card.style.margin = '6px';
-                            card.style.textAlign = 'center';
-                            const img = document.createElement('img');
-                            img.src = 'data:image/png;base64,' + item.b64_json;
-                            img.style.maxWidth = '320px';
-                            img.style.borderRadius = '8px';
-                            img.style.border = '1px solid var(--border-color)';
-                            card.appendChild(img);
-                            const dl = document.createElement('a');
-                            dl.textContent = '⬇ Download PNG';
-                            dl.href = '#';
-                            dl.title = 'Download this image';
-                            dl.style.display = 'block';
-                            dl.style.marginTop = '6px';
-                            dl.style.color = 'var(--color-primary)';
-                            dl.style.textDecoration = 'none';
-                            dl.style.cursor = 'pointer';
-                            dl.addEventListener('click', (ev) => {
-                                ev.preventDefault();
-                                const bin = atob(item.b64_json);
-                                const bytes = new Uint8Array(bin.length);
-                                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                                const blob = new Blob([bytes], { type: 'image/png' });
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = 'generated.png';
-                                document.body.appendChild(a);
-                                a.click();
-                                a.remove();
-                                URL.revokeObjectURL(url);
-                            });
-                            card.appendChild(dl);
-                            sdResults.appendChild(card);
-                        } else if (item.url) {
-                            const a = document.createElement('a');
-                            a.href = item.url;
-                            a.textContent = item.url;
-                            a.target = '_blank';
-                            sdResults.appendChild(a);
-                        }
-                    });
+                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'generation'));
                     sdGenStatus.textContent = `✅ Generated ${data.data.length} image(s).`;
                 } else {
                     sdGenStatus.textContent = `❌ ${data.error || 'Generation failed'}`;
@@ -482,6 +1257,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
 
     let docsMenuSetup = false;
     function setupDocsMenuHandlers() {
@@ -1302,9 +2078,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startRequestsPolling() {
         if (!requestsIntervalId) {
+            setupRequestsControls();
             pollRequestsStatus(); // immediate load
             requestsIntervalId = setInterval(pollRequestsStatus, 2000);
-            setupRequestsControls();
         }
     }
 
@@ -1366,6 +2142,41 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (err) {
             console.error("Requests Poller error:", err);
+        }
+    }
+
+    function formatInitiatedTime(unixTimestamp) {
+        const timezoneSelect = document.getElementById('requests-timezone-select');
+        const selectedTz = timezoneSelect ? timezoneSelect.value : 'local';
+        
+        const date = new Date(unixTimestamp * 1000);
+        
+        const options = {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+            hourCycle: 'h23'
+        };
+        
+        if (selectedTz !== 'local') {
+            options.timeZone = selectedTz;
+        }
+        
+        try {
+            const formatter = new Intl.DateTimeFormat('en-US', options);
+            const parts = formatter.formatToParts(date);
+            const partMap = {};
+            parts.forEach(p => {
+                partMap[p.type] = p.value;
+            });
+            return `${partMap.year}-${partMap.month}-${partMap.day} ${partMap.hour}:${partMap.minute}:${partMap.second}`;
+        } catch (e) {
+            // Fallback
+            return date.toISOString().replace('T', ' ').substring(0, 19);
         }
     }
 
@@ -1528,6 +2339,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         div.appendChild(idDiv);
+
+        const initTimeDiv = document.createElement('div');
+        initTimeDiv.style.cssText = 'font-size: 0.65rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.25rem; margin-top: 0.1rem;';
+        initTimeDiv.innerHTML = `<span>🕒</span> <span>Initiated: ${formatInitiatedTime(req.started_at)}</span>`;
+        div.appendChild(initTimeDiv);
+
         div.appendChild(detailsRow);
         const actionBtns = document.createElement('div');
         actionBtns.style.cssText = 'display:flex; gap:0.25rem; justify-content:flex-end; margin-top:0.25rem;';
@@ -1635,6 +2452,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (idEl) idEl.textContent = req.request_id;
         if (modelEl) modelEl.textContent = req.model;
+        
+        const initiatedEl = document.getElementById('inspect-initiated');
+        if (initiatedEl) initiatedEl.textContent = formatInitiatedTime(req.started_at);
+        
         if (typeEl) typeEl.textContent = req.type;
         if (originEl) originEl.textContent = req.request_source || 'unknown';
         if (ipEl) ipEl.textContent = req.client_ip || 'unknown';
@@ -1694,6 +2515,60 @@ document.addEventListener('DOMContentLoaded', () => {
     function setupRequestsControls() {
         if (requestsControlsSetup) return;
         requestsControlsSetup = true;
+
+        const timezoneSelect = document.getElementById('requests-timezone-select');
+        if (timezoneSelect && timezoneSelect.options.length === 0) {
+            // Add default browser local timezone
+            const localOption = document.createElement('option');
+            localOption.value = 'local';
+            localOption.textContent = `Local Time (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+            timezoneSelect.appendChild(localOption);
+
+            // Add UTC option
+            const utcOption = document.createElement('option');
+            utcOption.value = 'UTC';
+            utcOption.textContent = 'UTC';
+            timezoneSelect.appendChild(utcOption);
+
+            // Add all other supported timezones
+            try {
+                const timezones = Intl.supportedValuesOf('timeZone');
+                timezones.forEach(tz => {
+                    if (tz !== 'UTC') { // Already added UTC
+                        const opt = document.createElement('option');
+                        opt.value = tz;
+                        opt.textContent = tz;
+                        timezoneSelect.appendChild(opt);
+                    }
+                });
+            } catch (e) {
+                // Fallback common timezones if Intl.supportedValuesOf is not supported
+                const fallbackTz = [
+                    "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+                    "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata", "Australia/Sydney"
+                ];
+                fallbackTz.forEach(tz => {
+                    const opt = document.createElement('option');
+                    opt.value = tz;
+                    opt.textContent = tz;
+                    timezoneSelect.appendChild(opt);
+                });
+            }
+
+            // Restore selection from localStorage
+            const savedTz = localStorage.getItem('alpaca_requests_timezone');
+            if (savedTz) {
+                timezoneSelect.value = savedTz;
+            }
+            
+            timezoneSelect.addEventListener('change', () => {
+                localStorage.setItem('alpaca_requests_timezone', timezoneSelect.value);
+                renderRequestsLists(lastActiveList, lastCompletedList);
+                if (selectedRequestId && allRequestsMap[selectedRequestId]) {
+                    updateInspectorDetails(allRequestsMap[selectedRequestId]);
+                }
+            });
+        }
 
         document.getElementById('requests-search-input')?.addEventListener('input', () => {
             renderRequestsLists(lastActiveList, lastCompletedList);
@@ -4995,7 +5870,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial tab routing based on URL hash
     const initialHash = window.location.hash.substring(1);
-    const validTabs = ['monitor', 'general', 'shared', 'profiles', 'requests', 'docs'];
+    const validTabs = ['monitor', 'general', 'shared', 'profiles', 'requests', 'docs', 'sd'];
     if (validTabs.includes(initialHash)) {
         switchTab(initialHash);
     } else {

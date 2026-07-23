@@ -1970,3 +1970,191 @@ async def test_fetch_model_slots_non_200_is_empty():
         assert await alpaca_proxy._fetch_model_slots("sha256-abc") == []
     finally:
         alpaca_proxy.httpx.AsyncClient = saved
+
+
+def _snapshot_tracking_state():
+    return (
+        dict(alpaca_proxy.active_requests),
+        dict(alpaca_proxy.queued_requests),
+        dict(alpaca_proxy.active_request_details),
+    )
+
+
+def _clear_tracking_state():
+    alpaca_proxy.active_requests.clear()
+    alpaca_proxy.queued_requests.clear()
+    with alpaca_proxy.active_request_details_lock:
+        alpaca_proxy.active_request_details.clear()
+
+
+def _restore_tracking_state(saved):
+    active, queued, details = saved
+    alpaca_proxy.active_requests.clear()
+    alpaca_proxy.active_requests.update(active)
+    alpaca_proxy.queued_requests.clear()
+    alpaca_proxy.queued_requests.update(queued)
+    with alpaca_proxy.active_request_details_lock:
+        alpaca_proxy.active_request_details.clear()
+        alpaca_proxy.active_request_details.update(details)
+
+
+@pytest.mark.asyncio
+async def test_chat_queue_timeout_completes_request_and_releases_queue():
+    """/api/chat queue-timeout must not leave the request in Active Requests."""
+    saved_state = _snapshot_tracking_state()
+    saved_resolve = alpaca_proxy.resolve_router_model
+    _clear_tracking_state()
+    try:
+        alpaca_proxy.resolve_router_model = AsyncMock(
+            return_value={"backend_model": "router-backend"}
+        )
+        alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+        alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
+
+        response = await alpaca_proxy.chat(
+            make_request(
+                "/api/chat",
+                {
+                    "model": "tinyllama",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                },
+            )
+        )
+
+        assert response.status_code == 503
+        assert alpaca_proxy.active_request_details == {}
+        assert alpaca_proxy.queued_requests.get("router-backend", 0) == 0
+        assert alpaca_proxy.active_requests.get("router-backend", 0) == 0
+    finally:
+        alpaca_proxy.resolve_router_model = saved_resolve
+        _restore_tracking_state(saved_state)
+
+
+@pytest.mark.asyncio
+async def test_chat_pre_dispatch_failure_releases_tracking():
+    """/api/chat must release queue + request detail when model loading fails."""
+    saved_state = _snapshot_tracking_state()
+    saved_resolve = alpaca_proxy.resolve_router_model
+    _clear_tracking_state()
+    try:
+        alpaca_proxy.resolve_router_model = AsyncMock(
+            return_value={"backend_model": "router-backend"}
+        )
+        alpaca_proxy.ensure_model = AsyncMock(
+            side_effect=HTTPException(status_code=404, detail="model not found")
+        )
+
+        with pytest.raises(HTTPException) as excinfo:
+            await alpaca_proxy.chat(
+                make_request(
+                    "/api/chat",
+                    {
+                        "model": "missing-model",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": False,
+                    },
+                )
+            )
+
+        assert excinfo.value.status_code == 404
+        assert alpaca_proxy.active_request_details == {}
+        assert alpaca_proxy.queued_requests.get("router-backend", 0) == 0
+        assert alpaca_proxy.active_requests.get("router-backend", 0) == 0
+    finally:
+        alpaca_proxy.resolve_router_model = saved_resolve
+        _restore_tracking_state(saved_state)
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_queue_timeout_does_not_over_decrement():
+    """A queue-timeout on /api/generate (stream) must not eat another request's count."""
+    saved_state = _snapshot_tracking_state()
+    saved_resolve = alpaca_proxy.resolve_router_model
+    _clear_tracking_state()
+    try:
+        # Simulate one other legitimately in-flight request on this backend.
+        alpaca_proxy.active_requests["router-backend"] = 1
+        alpaca_proxy.resolve_router_model = AsyncMock(
+            return_value={"backend_model": "router-backend"}
+        )
+        alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+        alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
+
+        response = await alpaca_proxy.generate(
+            make_request(
+                "/api/generate",
+                {"model": "tinyllama", "prompt": "hi", "stream": True},
+            )
+        )
+        async for _chunk in response.body_iterator:
+            pass
+
+        assert alpaca_proxy.active_requests.get("router-backend", 0) == 1
+        assert alpaca_proxy.active_request_details == {}
+        assert alpaca_proxy.queued_requests.get("router-backend", 0) == 0
+    finally:
+        alpaca_proxy.resolve_router_model = saved_resolve
+        _restore_tracking_state(saved_state)
+
+
+@pytest.mark.asyncio
+async def test_generate_nonstream_queue_timeout_does_not_over_decrement():
+    """A queue-timeout on /api/generate (non-stream) must not eat another request's count."""
+    saved_state = _snapshot_tracking_state()
+    saved_resolve = alpaca_proxy.resolve_router_model
+    _clear_tracking_state()
+    try:
+        alpaca_proxy.active_requests["router-backend"] = 1
+        alpaca_proxy.resolve_router_model = AsyncMock(
+            return_value={"backend_model": "router-backend"}
+        )
+        alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+        alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
+
+        response = await alpaca_proxy.generate(
+            make_request(
+                "/api/generate",
+                {"model": "tinyllama", "prompt": "hi", "stream": False},
+            )
+        )
+
+        assert response.status_code == 503
+        assert alpaca_proxy.active_requests.get("router-backend", 0) == 1
+        assert alpaca_proxy.active_request_details == {}
+        assert alpaca_proxy.queued_requests.get("router-backend", 0) == 0
+    finally:
+        alpaca_proxy.resolve_router_model = saved_resolve
+        _restore_tracking_state(saved_state)
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_queue_timeout_completes_request():
+    """/v1/chat/completions queue-timeout must not leave the request in Active Requests."""
+    saved_state = _snapshot_tracking_state()
+    saved_resolve = alpaca_proxy.resolve_router_model
+    _clear_tracking_state()
+    try:
+        alpaca_proxy.resolve_router_model = AsyncMock(
+            return_value={"backend_model": "router-backend"}
+        )
+        alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+        alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
+
+        response = await alpaca_proxy.openai_chat_completions(
+            make_request(
+                "/v1/chat/completions",
+                {
+                    "model": "tinyllama",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                },
+            )
+        )
+
+        assert response.status_code == 503
+        assert alpaca_proxy.active_request_details == {}
+        assert alpaca_proxy.queued_requests.get("router-backend", 0) == 0
+    finally:
+        alpaca_proxy.resolve_router_model = saved_resolve
+        _restore_tracking_state(saved_state)
