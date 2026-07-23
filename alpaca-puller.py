@@ -1214,7 +1214,11 @@ def pull_companion(model_name, no_resume=False):
     url = huggingface_blob_url(repo, filename)
     headers = huggingface_headers()
 
-    companions_dir = Path(MODELS_DIR) / "companions"
+    # Companions always go into .alpaca-router/companions/ so the reindexer
+    # can discover them relative to the router directory, and so the container
+    # can access them at /router-models/companions/ without needing /models/.
+    router_dir = Path(ROUTER_MODELS_DIR)
+    companions_dir = router_dir / "companions"
     try:
         companions_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
@@ -1256,12 +1260,69 @@ def pull_companion(model_name, no_resume=False):
         with contextlib.suppress(Exception):
             os.chmod(output_path, 0o666)
         print(f"Successfully downloaded companion file: {output_path.name}")
+
+        # If this looks like a VL/LLM GGUF (not a projector/VAE), create a router
+        # symlink and profile.json so the reindexer wires up mmproj automatically.
+        fn_lower = filename.lower()
+        is_vl_model = (
+            fn_lower.endswith(".gguf")
+            and "mmproj" not in fn_lower
+            and "projector" not in fn_lower
+            and "vae" not in fn_lower
+            and "clip" not in fn_lower
+        )
+        if is_vl_model:
+            # Derive a clean router alias: keep only alphanumeric, dots, dashes
+            stem = Path(filename).stem
+            alias = re.sub(r"[^A-Za-z0-9._-]", "-", stem).lower()
+            # Collapse duplicate dashes and convert single dashes to double (router convention)
+            alias = re.sub(r"-+", "--", alias).strip("-")
+            symlink_path = router_dir / f"{alias}.gguf"
+            if not symlink_path.exists():
+                try:
+                    symlink_path.symlink_to(f"companions/{filename}")
+                    with contextlib.suppress(Exception):
+                        os.chmod(symlink_path, 0o666)
+                    print(f"Created router symlink: {symlink_path.name} -> companions/{filename}")
+                except Exception as e:
+                    print(f"Warning: could not create router symlink: {e}")
+
+            # Find the mmproj file in companions if one exists
+            mmproj_candidates = sorted(companions_dir.glob("*mmproj*.gguf")) + \
+                                sorted(companions_dir.glob("*projector*.gguf"))
+            mmproj_rel = None
+            if mmproj_candidates:
+                mmproj_rel = f"/router-models/companions/{mmproj_candidates[0].name}"
+
+            profile_path = router_dir / f"{alias}.profile.json"
+            if not profile_path.exists():
+                profile: dict = {
+                    "ctx-size": "8192",
+                    "n-gpu-layers": "99",
+                    "kv-unified": "false",
+                    "flash-attn": "on",
+                    "cache-type-k": "f16",
+                    "cache-type-v": "f16",
+                    "spec-type": "none",
+                    "spec-draft-n-max": "0",
+                }
+                if mmproj_rel:
+                    profile["mmproj"] = mmproj_rel
+                try:
+                    profile_path.write_text(json.dumps(profile, indent=2) + "\n")
+                    with contextlib.suppress(Exception):
+                        os.chmod(profile_path, 0o666)
+                    print(f"Created VL model profile: {profile_path.name}")
+                except Exception as e:
+                    print(f"Warning: could not write profile: {e}")
+
         return 0
     except Exception as e:
         print(f"Error downloading companion file: {e}")
         return 1
     finally:
         client.close()
+
 
 
 def pull_model(
