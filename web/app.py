@@ -1038,6 +1038,24 @@ def _get_active_text_model() -> str:
     return "qwen3"
 
 
+def _get_best_vision_model() -> str:
+    """Return the best available VL multimodal model for image understanding.
+
+    Preference order: qwen2.5-vl--7b > qwen2.5-vl--3b > any router VL model >
+    active text model (last resort if no dedicated VL model is loaded).
+    """
+    router_models = _get_router_text_models()
+    vl_models = [m for m in router_models if "vl" in m.lower()]
+    # Prefer larger VL model for better quality descriptions
+    for preferred in ("qwen2.5-vl--7b", "qwen2.5-vl--3b"):
+        if preferred in vl_models:
+            return preferred
+    if vl_models:
+        return vl_models[0]
+    # No dedicated VL model — fall back to active GPU model and hope it supports images
+    return _get_active_text_model()
+
+
 @app.route("/api/models/text")
 def get_text_models():
     """Return all available text and vision-language models suitable for chat/vision tasks.
@@ -1164,7 +1182,14 @@ def vision_describe_api():
         ]
 
         user_model = request.form.get("model") or request.args.get("model")
-        active_model = user_model.strip() if user_model else _get_active_text_model()
+        # When "auto" is requested for a vision task, pick the best VL model —
+        # a pure text model cannot process image_url content.
+        if not user_model or user_model.strip().lower() == "auto":
+            active_model = _get_best_vision_model()
+        else:
+            active_model = user_model.strip()
+
+        model_used = active_model
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
@@ -1176,16 +1201,26 @@ def vision_describe_api():
                         "temperature": 0.2
                     }
                 )
-                description = resp.json()["choices"][0]["message"]["content"].strip() if resp.status_code == 200 else ""
-            except Exception:
+                if resp.status_code == 200:
+                    description = resp.json()["choices"][0]["message"]["content"].strip()
+                else:
+                    app.logger.warning(
+                        "Vision describe: model %s returned %s — %s",
+                        active_model, resp.status_code, resp.text[:200]
+                    )
+                    description = ""
+            except Exception as exc:
+                app.logger.warning("Vision describe: request failed — %s", exc)
                 description = ""
 
             if not description or "error" in description.lower():
                 description = _extract_image_visual_features(img)
+                model_used = "pil-fallback"
 
             return jsonify({
                 "status": "success",
-                "image_description": description
+                "image_description": description,
+                "model_used": model_used,
             })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
