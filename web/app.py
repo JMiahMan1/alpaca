@@ -1039,21 +1039,49 @@ def _get_active_text_model() -> str:
 
 
 def _get_best_vision_model() -> str:
-    """Return the best available VL multimodal model for image understanding.
+    """Return the best available VL/multimodal model for image understanding.
 
-    Preference order: qwen2.5-vl--7b > qwen2.5-vl--3b > any router VL model >
-    active text model (last resort if no dedicated VL model is loaded).
+    Discovers vision-language models dynamically by checking for common VL
+    architecture keywords in the model name. Prefers larger models by sorting
+    on the largest numeric parameter count found in the name (e.g. 72 > 7 > 3).
+    Falls back to the active text model if no VL model is available.
     """
-    router_models = _get_router_text_models()
-    vl_models = [m for m in router_models if "vl" in m.lower()]
-    # Prefer larger VL model for better quality descriptions
-    for preferred in ("qwen2.5-vl--7b", "qwen2.5-vl--3b"):
-        if preferred in vl_models:
-            return preferred
-    if vl_models:
-        return vl_models[0]
-    # No dedicated VL model — fall back to active GPU model and hope it supports images
-    return _get_active_text_model()
+    import re
+
+    # Keywords that indicate a vision-language / multimodal model
+    VL_KEYWORDS = ("vl", "vision", "llava", "cogvlm", "minicpm-v", "internvl", "phi-v", "pixtral")
+
+    all_models = _get_router_text_models()
+
+    # Also include Ollama-registered models with VL keywords
+    try:
+        import httpx
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{PROXY_URL}/api/tags")
+            if resp.status_code == 200:
+                for m in resp.json().get("models", []):
+                    name = m.get("name", "")
+                    if name not in all_models:
+                        all_models.append(name)
+    except Exception:
+        pass
+
+    vl_models = [
+        m for m in all_models
+        if any(kw in m.lower() for kw in VL_KEYWORDS)
+    ]
+
+    if not vl_models:
+        # No dedicated VL model — fall back to active GPU model
+        return _get_active_text_model()
+
+    def _param_count(name: str) -> float:
+        """Extract the largest numeric size hint (e.g. 72b → 72, 3b → 3)."""
+        hits = re.findall(r"(\d+(?:\.\d+)?)\s*b", name.lower())
+        return max((float(x) for x in hits), default=0.0)
+
+    vl_models.sort(key=_param_count, reverse=True)
+    return vl_models[0]
 
 
 @app.route("/api/models/text")
