@@ -78,6 +78,7 @@ puller_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py"
 )
 PROXY_URL = os.environ.get("PROXY_URL", "http://host.docker.internal:11434")
+LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://llama-server:8080")
 active_pulls: dict[str, dict[str, Any]] = {}
 active_pulls_lock = threading.Lock()
 
@@ -993,8 +994,27 @@ def vision_ocr_api():
         return jsonify({"error": str(e)}), 500
 
 
+def _get_router_text_models() -> list[str]:
+    """Return all text/VL model IDs from llama-server router (includes standalone GGUFs without Ollama manifests)."""
+    try:
+        import httpx
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{LLAMA_SERVER_URL}/models")
+            if resp.status_code == 200:
+                # Filter out image-generation models (SD/flux/image-edit)
+                sd_keywords = ["image-edit", "qwen-image", "qwen_image", "sd", "flux", "diffusion"]
+                models = resp.json().get("data", [])
+                return [
+                    m["id"] for m in models
+                    if not any(kw in m["id"].lower() for kw in sd_keywords)
+                ]
+    except Exception:
+        pass
+    return []
+
+
 def _get_active_text_model() -> str:
-    """Helper to return the currently loaded model on proxy, or first available text model."""
+    """Helper to return the currently loaded model on proxy, or first available text/VL model."""
     try:
         import httpx
         with httpx.Client(timeout=3.0) as client:
@@ -1011,7 +1031,43 @@ def _get_active_text_model() -> str:
                     return text_models[0]
     except Exception:
         pass
+    # Final fallback: query llama-server router directly for any text/VL model
+    router_models = _get_router_text_models()
+    if router_models:
+        return router_models[0]
     return "qwen3"
+
+
+@app.route("/api/models/text")
+def get_text_models():
+    """Return all available text and vision-language models suitable for chat/vision tasks.
+    Merges Ollama-registered models from proxy /api/tags with standalone router GGUFs
+    (e.g. Qwen2.5-VL models that have no Ollama manifest).
+    """
+    import httpx
+
+    try:
+        ollama_models: list[str] = []
+        with httpx.Client(timeout=5.0) as client:
+            tags_resp = client.get(f"{PROXY_URL}/api/tags")
+            if tags_resp.status_code == 200:
+                for m in tags_resp.json().get("models", []):
+                    if m.get("type") != "image":
+                        ollama_models.append(m["name"])
+    except Exception:
+        ollama_models = []
+
+    router_models = _get_router_text_models()
+
+    # Merge, preserving order and deduplicating
+    seen: set[str] = set()
+    combined: list[str] = []
+    for name in ollama_models + router_models:
+        if name not in seen:
+            seen.add(name)
+            combined.append(name)
+
+    return jsonify({"models": combined})
 
 
 def _extract_image_visual_features(img) -> str:
