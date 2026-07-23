@@ -245,7 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const synthSel = document.getElementById('sd-promptgen-synth-model');
             if (visionSel || synthSel) {
                 try {
-                    const llmRes = await fetch('/api/models');
+                    const llmRes = await fetch('/api/models/text');
                     const llmData = await llmRes.json();
                     const textModels = llmData.models || [];
                     const optionsHtml = '<option value="auto">⚡ Auto (Active GPU Model)</option>' +
