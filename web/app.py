@@ -946,12 +946,14 @@ def vision_ocr_api():
         model = (request.form.get("model") or request.args.get("model", "")).strip()
         if not model:
             return jsonify({"error": "'model' parameter is required"}), 400
+
+        proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
                     json={
-                        "model": model,
+                        "model": proxy_model,
                         "messages": messages,
                         "max_tokens": 1000,
                         "temperature": 0.1
@@ -1169,13 +1171,14 @@ def vision_describe_api():
         if not model:
             return jsonify({"error": "'model' parameter is required"}), 400
 
+        proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
         model_used = model
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
                     json={
-                        "model": model,
+                        "model": proxy_model,
                         "messages": messages,
                         "max_tokens": 400,
                         "temperature": 0.2
@@ -1233,12 +1236,14 @@ def vision_synthesize_edit_prompt_api():
     model = (data.get("model") or "").strip()
     if not model:
         return jsonify({"error": "'model' parameter is required"}), 400
+
+    proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
     try:
         with httpx.Client(timeout=60.0) as client:
             resp = client.post(
                 f"{PROXY_URL}/v1/chat/completions",
                 json={
-                    "model": model,
+                    "model": proxy_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 300,
                     "temperature": 0.3
