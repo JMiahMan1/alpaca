@@ -1387,6 +1387,12 @@
                                             <label class="control-label" style="font-size:0.78rem; font-weight:600; color:#e2e8f0; margin:0;">2. Vision AI Image Analysis & Scene Description</label>
                                             <button id="sd-promptgen-analyze-btn" class="btn btn-secondary" style="font-size:0.72rem; padding:0.25rem 0.65rem; background:#7e22ce; color:white; border:none; border-radius:6px; cursor:pointer;">🔍 Analyze with Vision AI</button>
                                         </div>
+                                        <div style="margin-bottom:0.4rem;">
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;">Vision AI Model</label>
+                                            <select id="sd-promptgen-vision-model" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.35rem 0.6rem; border-radius:6px; font-size:0.78rem;">
+                                                <option value="auto">⚡ Auto (Active GPU Model)</option>
+                                            </select>
+                                        </div>
                                         <textarea id="sd-promptgen-desc" rows="4" placeholder="Click 'Analyze with Vision AI' or type a description of the source image..." style="width:100%; background:#090d16; color:#e2e8f0; border:1px solid var(--border-color); padding:0.5rem; border-radius:8px; font-size:0.8rem; line-height:1.4; resize:vertical;"></textarea>
                                     </div>
                                 </div>
@@ -1398,9 +1404,15 @@
                                         <textarea id="sd-promptgen-changes" rows="3" placeholder="e.g. Change her hair to neon purple, replace background with a futuristic cyberpunk city at night with neon reflections..." style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.5rem; border-radius:8px; font-size:0.8rem; line-height:1.4; resize:vertical;"></textarea>
                                     </div>
 
-                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.6rem;">
                                         <div>
-                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Editing Style Preset</label>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem; font-weight:600; color:#e2e8f0;">Synthesis Model</label>
+                                            <select id="sd-promptgen-synth-model" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                                <option value="auto">⚡ Auto (Active GPU)</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem; font-weight:600; color:#e2e8f0;">Editing Style Preset</label>
                                             <select id="sd-promptgen-preset" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
                                                 <option value="Photorealistic Retouch">Photorealistic Retouch</option>
                                                 <option value="Background & Lighting Swap">Background & Lighting Swap</option>
@@ -1411,7 +1423,7 @@
                                             </select>
                                         </div>
                                         <div style="display:flex; align-items:flex-end;">
-                                            <button id="sd-promptgen-synth-btn" class="btn btn-primary" style="width:100%; font-size:0.8rem; font-weight:600; padding:0.45rem; border-radius:6px; background:linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);">✨ Synthesize Master Prompt</button>
+                                            <button id="sd-promptgen-synth-btn" class="btn btn-primary" style="width:100%; font-size:0.78rem; font-weight:600; padding:0.45rem; border-radius:6px; background:linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);">✨ Synthesize</button>
                                         </div>
                                     </div>
 

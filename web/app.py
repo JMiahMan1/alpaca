@@ -942,12 +942,14 @@ def vision_ocr_api():
             }
         ]
 
+        user_model = request.form.get("model") or request.args.get("model")
+        active_model = user_model.strip() if user_model else _get_active_text_model()
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
                     json={
-                        "model": "qwen3.6-35b-a3b:q4_k_m",
+                        "model": active_model,
                         "messages": messages,
                         "max_tokens": 1000,
                         "temperature": 0.1
@@ -992,19 +994,24 @@ def vision_ocr_api():
 
 
 def _get_active_text_model() -> str:
-    """Helper to return the currently loaded model on proxy, or fallback to default text model."""
+    """Helper to return the currently loaded model on proxy, or first available text model."""
     try:
         import httpx
         with httpx.Client(timeout=3.0) as client:
             resp = client.get(f"{PROXY_URL}/admin/runtime")
             if resp.status_code == 200:
-                data = resp.json()
-                active = data.get("active_model")
+                active = resp.json().get("active_model")
                 if active:
                     return active
+            tags_resp = client.get(f"{PROXY_URL}/api/tags")
+            if tags_resp.status_code == 200:
+                models = tags_resp.json().get("models", [])
+                text_models = [m["name"] for m in models if m.get("type") != "image"]
+                if text_models:
+                    return text_models[0]
     except Exception:
         pass
-    return "qwen3.6-35b-a3b:q4_k_m"
+    return "qwen3"
 
 
 def _extract_image_visual_features(img) -> str:
@@ -1100,7 +1107,8 @@ def vision_describe_api():
             }
         ]
 
-        active_model = _get_active_text_model()
+        user_model = request.form.get("model") or request.args.get("model")
+        active_model = user_model.strip() if user_model else _get_active_text_model()
         with httpx.Client(timeout=120.0) as client:
             try:
                 resp = client.post(
@@ -1151,7 +1159,8 @@ def vision_synthesize_edit_prompt_api():
         f"Output ONLY the final synthesized prompt string without any explanation or quotes."
     )
 
-    active_model = _get_active_text_model()
+    user_model = data.get("model")
+    active_model = user_model.strip() if user_model else _get_active_text_model()
     try:
         with httpx.Client(timeout=60.0) as client:
             resp = client.post(
