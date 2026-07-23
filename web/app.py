@@ -1177,6 +1177,9 @@ def vision_synthesize_edit_prompt_api():
             else:
                 master_prompt = f"{base_desc}, modifying scene: {desired_changes}, {style_preset} aesthetic, 8k resolution, raw photograph"
 
+            if not master_prompt:
+                master_prompt = f"{base_desc}, modifying scene: {desired_changes}, {style_preset} aesthetic, 8k resolution, raw photograph"
+
             return jsonify({
                 "status": "success",
                 "master_prompt": master_prompt,
