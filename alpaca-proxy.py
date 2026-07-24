@@ -4018,6 +4018,50 @@ async def admin_runtime():
                     "total_requests_processed": 0,
                 }
             )
+
+        # Fallback: include any loaded router models that do not have an Ollama manifest
+        seen_backends = {m["backend_model"] for m in loaded}
+        for entry in router_models:
+            if router_entry_status(entry) == "loaded":
+                eid = entry.get("id", "")
+                if eid and eid not in seen_backends:
+                    pub_name = public_model_name(eid).replace("--", ":")
+                    running_settings = {}
+                    try:
+                        import configparser
+
+                        ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+                        if os.path.exists(ini_path):
+                            cfg = configparser.ConfigParser(delimiters=("=",))
+                            cfg.read(ini_path)
+                            res_sec = _resolve_ini_section_name(cfg, eid)
+                            if cfg.has_section(res_sec):
+                                running_settings = dict(cfg[res_sec])
+                    except Exception:
+                        pass
+
+                    if live_props.get("n_ctx"):
+                        running_settings["ctx-size"] = str(live_props["n_ctx"])
+                    if live_props.get("n_gpu_layers") is not None:
+                        running_settings["n-gpu-layers"] = str(live_props["n_gpu_layers"])
+                    if live_props.get("flash_attn") is not None:
+                        running_settings["flash-attn"] = "on" if live_props["flash_attn"] else "off"
+
+                    loaded.append(
+                        {
+                            "name": pub_name,
+                            "backend_model": eid,
+                            "size": entry.get("meta", {}).get("size", 0),
+                            "digest": "",
+                            "details": {"format": "gguf", "family": pub_name.split(":")[0]},
+                            "context_length": live_props.get("n_ctx", 8192),
+                            "expires_at": model_expires_at.get(pub_name, "0001-01-01T00:00:00Z"),
+                            "active_requests": active.get(eid, 0),
+                            "running_settings": running_settings,
+                            "peak_active_requests": 0,
+                            "total_requests_processed": 0,
+                        }
+                    )
     except Exception:
         pass
 
