@@ -252,14 +252,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const humanizeModelName = (id) => id.replace(/--/g, ':');
 
             if (visionSel) {
-                // Vision: VL multimodal models from router + Ollama models
+                // Vision: Strictly VL multimodal vision models (e.g. qwen2.5-vl:7b)
                 try {
-                    const res = await fetch('/api/models/text');
+                    const res = await fetch('/api/models/vision');
                     const data = await res.json();
                     const models = data.models || [];
                     visionSel.innerHTML = models.length
                         ? models.map(m => `<option value="${m}">${humanizeModelName(m)}</option>`).join('')
-                        : '<option value="" disabled>No models available</option>';
+                        : '<option value="" disabled>No vision models available (load a VL model)</option>';
                 } catch(err) {
                     console.warn('Could not populate vision model selector:', err);
                 }
