@@ -605,6 +605,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // ── Image-to-Prompt Assistant Logic ────────────────────────────────────
     let currentPromptgenFile = null;
     let synthesizedMasterPrompt = '';
+    let synthesizedSuggestedStrength = 0.55;
+    let synthesizedSuggestedNegative = '';
 
     const promptgenDropzone = document.getElementById('sd-promptgen-dropzone');
     const promptgenFileInput = document.getElementById('sd-promptgen-file-input');
@@ -744,8 +746,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const data = await res.json();
                 if (res.ok && data.master_prompt) {
                     synthesizedMasterPrompt = data.master_prompt;
+                    synthesizedSuggestedStrength = data.suggested_strength ?? 0.55;
+                    synthesizedSuggestedNegative = data.suggested_negative ?? '';
                     if (promptgenResultPrompt) promptgenResultPrompt.textContent = data.master_prompt;
-                    if (promptgenStatus) promptgenStatus.textContent = '✅ Master prompt ready!';
+                    if (promptgenStatus) promptgenStatus.textContent = `✅ Master prompt ready! (strength: ${synthesizedSuggestedStrength})`;
                 } else {
                     if (promptgenStatus) promptgenStatus.textContent = `❌ Error: ${data.error || 'Failed'}`;
                 }
@@ -773,6 +777,32 @@ document.addEventListener('DOMContentLoaded', () => {
             const photoPresetSel = document.getElementById('sd-photo-preset-select');
             if (photoPresetSel) {
                 photoPresetSel.value = 'custom';
+            }
+
+            // 2b. Apply suggested strength from synthesis response
+            const photoStrengthInput = document.getElementById('sd-edit-strength');
+            const photoStrengthVal = document.getElementById('sd-strength-val');
+            if (photoStrengthInput && synthesizedSuggestedStrength) {
+                photoStrengthInput.value = synthesizedSuggestedStrength;
+                if (photoStrengthVal) photoStrengthVal.textContent = synthesizedSuggestedStrength;
+                // Update strength preset buttons
+                document.querySelectorAll('.sd-strength-preset').forEach(btn => {
+                    if (parseFloat(btn.dataset.strength) === parseFloat(synthesizedSuggestedStrength)) {
+                        btn.classList.add('active');
+                        btn.style.background = '#38bdf8';
+                        btn.style.borderColor = '#38bdf8';
+                    } else {
+                        btn.classList.remove('active');
+                        btn.style.background = '#1e293b';
+                        btn.style.borderColor = 'var(--border-color)';
+                    }
+                });
+            }
+
+            // 2c. Apply suggested negative prompt from synthesis response
+            const photoNegativeInput = document.getElementById('sd-edit-negative');
+            if (photoNegativeInput && synthesizedSuggestedNegative) {
+                photoNegativeInput.value = synthesizedSuggestedNegative;
             }
 
             // 3. Transfer uploaded source image file and update preview in Photo Editor Studio
