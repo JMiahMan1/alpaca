@@ -1038,7 +1038,7 @@ def _get_active_text_model() -> str:
     router_models = _get_router_text_models()
     if router_models:
         return router_models[0]
-    return "qwen3"
+    return ""
 
 
 
