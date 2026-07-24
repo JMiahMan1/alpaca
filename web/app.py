@@ -1237,9 +1237,9 @@ def vision_describe_api():
                 app.logger.warning("Vision describe: request failed — %s", exc)
 
             if not description or "error" in description.lower():
-                app.logger.warning("Vision describe: falling back to PIL feature extraction due to: %s", error_detail)
-                description = _extract_image_visual_features(img)
-                model_used = "pil-fallback"
+                err_msg = error_detail or "Vision AI model returned an empty response"
+                app.logger.error("Vision describe failed for model %s: %s", model, err_msg)
+                return jsonify({"error": f"Vision AI analysis failed ({model}): {err_msg}"}), 500
 
             return jsonify({
                 "status": "success",
