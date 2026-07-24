@@ -1223,7 +1223,7 @@ def vision_synthesize_edit_prompt_api():
 
     proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
 
-    target_image_model = data.get("target_image_model", "qwen-image-edit").lower()
+    target_image_model = (data.get("target_image_model") or "").lower()
     preserve_face = data.get("preserve_face", True)
     if "redesign" in style_preset.lower() or "change face" in style_preset.lower():
         preserve_face = False
