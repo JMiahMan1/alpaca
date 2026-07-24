@@ -1222,54 +1222,82 @@ def vision_synthesize_edit_prompt_api():
     if not base_desc or not desired_changes:
         return jsonify({"error": "base_description and desired_changes are required"}), 400
 
-    prompt = (
-        f"You are an expert AI Image Prompt Engineer specializing in Stable Diffusion and Qwen-Image in-painting.\n"
-        f"Original Image Description: {base_desc}\n"
-        f"User Requested Modifications: {desired_changes}\n"
-        f"Target Style Preset: {style_preset}\n\n"
-        f"Synthesize a single, master AI image edit prompt optimized for image-to-image editing. "
-        f"Combine the original scene elements with the user's modifications cleanly. "
-        f"Include technical quality tags (e.g. 8k resolution, raw photo, studio lighting, 85mm lens) where appropriate. "
-        f"Output ONLY the final synthesized prompt string without any explanation or quotes."
-    )
 
     model = (data.get("model") or "").strip()
     if not model:
         return jsonify({"error": "'model' parameter is required"}), 400
 
     proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
+
+    system_msg = (
+        "You are an expert AI image prompt engineer for Stable Diffusion and Qwen-Image image-to-image editing. "
+        "Your task is to write a single, cohesive Stable Diffusion img2img prompt. "
+        "Rules: "
+        "1. Preserve all original scene elements that are NOT being changed. "
+        "2. Integrate the requested modifications naturally into the scene. "
+        "3. Add technical quality tags: 8k resolution, RAW photo, sharp focus, professional photography. "
+        "4. Output ONLY the final prompt string — no explanations, no quotes, no numbering, no preamble."
+    )
+    user_msg = (
+        f"Original scene: {base_desc}\n"
+        f"Requested changes: {desired_changes}\n"
+        f"Style: {style_preset}\n\n"
+        f"Write the complete img2img prompt now:"
+    )
+
+    strength = 0.35 if "retouch" in style_preset.lower() else 0.55
+    negative = "plastic skin, airbrushed, CGI, doll, blurry, low resolution, distorted geometry, noise, grain, overexposed"
+
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=120.0) as client:
             resp = client.post(
                 f"{PROXY_URL}/v1/chat/completions",
                 json={
                     "model": proxy_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 300,
-                    "temperature": 0.3
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "max_tokens": 600,
+                    "temperature": 0.4,
+                    "think": False,
                 }
             )
             if resp.status_code == 200:
-                master_prompt = resp.json()["choices"][0]["message"]["content"].strip()
+                raw = resp.json()["choices"][0]["message"]["content"].strip()
+                # Strip any thinking blocks thinking models may emit
+                import re
+                master_prompt = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
             else:
-                master_prompt = f"{base_desc}, modifying scene: {desired_changes}, {style_preset} aesthetic, 8k resolution, raw photograph"
+                app.logger.warning(
+                    "Synthesis: model %s returned %s — %s",
+                    proxy_model, resp.status_code, resp.text[:300]
+                )
+                master_prompt = ""
 
             if not master_prompt:
-                master_prompt = f"{base_desc}, modifying scene: {desired_changes}, {style_preset} aesthetic, 8k resolution, raw photograph"
+                master_prompt = (
+                    f"{base_desc}, {desired_changes}, {style_preset} style, "
+                    f"8k resolution, RAW photo, sharp focus, professional photography"
+                )
 
             return jsonify({
                 "status": "success",
                 "master_prompt": master_prompt,
-                "suggested_strength": 0.35 if "retouch" in style_preset.lower() else 0.55,
-                "suggested_negative": "plastic skin, airbrushed, CGI, doll, blurry, low resolution, distorted geometry"
+                "suggested_strength": strength,
+                "suggested_negative": negative,
             })
-    except Exception:
-        master_prompt = f"{base_desc}, modifying scene: {desired_changes}, {style_preset} aesthetic, 8k resolution"
+    except Exception as exc:
+        app.logger.warning("Synthesis: request failed — %s", exc)
+        master_prompt = (
+            f"{base_desc}, {desired_changes}, {style_preset} style, "
+            f"8k resolution, RAW photo, sharp focus"
+        )
         return jsonify({
             "status": "success",
             "master_prompt": master_prompt,
-            "suggested_strength": 0.45,
-            "suggested_negative": "plastic skin, airbrushed, CGI, doll, blurry"
+            "suggested_strength": 0.55,
+            "suggested_negative": negative,
         })
 
 
