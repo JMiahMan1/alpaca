@@ -240,6 +240,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             sel.innerHTML = imageModels.map(m => `<option value="${m.name}">${m.name}</option>`).join('');
 
+            // Attach change listener to update UI options dynamically for Qwen vs Diffusion models
+            sel.addEventListener('change', () => updateSDUIForModel(sel.value));
+            if (sel.value) updateSDUIForModel(sel.value);
+
             // Populate Vision & Synthesis model selectors in Image-to-Prompt Assistant
             const visionSel = document.getElementById('sd-promptgen-vision-model');
             const synthSel = document.getElementById('sd-promptgen-synth-model');
@@ -279,6 +283,59 @@ document.addEventListener('DOMContentLoaded', () => {
             logToTerminal('Failed to load SD models: ' + e.message, 'error');
         }
     }
+
+    function updateSDUIForModel(modelName) {
+        if (!modelName) return;
+        const nameLower = modelName.toLowerCase();
+        const isQwen = nameLower.includes('qwen');
+        const isFlux = nameLower.includes('flux');
+
+        const badge = document.getElementById('sd-model-type-badge');
+        const editNeg = document.getElementById('sd-edit-negative');
+        const genNeg = document.getElementById('sd-gen-negative');
+        const targetModelSel = document.getElementById('sd-promptgen-target-model');
+
+        if (isQwen) {
+            if (badge) {
+                badge.textContent = 'Qwen Image Edit (Instruction VLM)';
+                badge.style.background = '#7e22ce';
+                badge.style.color = 'white';
+                badge.style.border = '1px solid #a855f7';
+            }
+            if (editNeg) {
+                editNeg.disabled = true;
+                editNeg.style.opacity = '0.4';
+                editNeg.title = 'Negative prompts are not used by Qwen Image Edit instruction models';
+            }
+            if (genNeg) {
+                genNeg.disabled = true;
+                genNeg.style.opacity = '0.4';
+                genNeg.title = 'Negative prompts are not used by Qwen Image Edit instruction models';
+            }
+            if (targetModelSel) targetModelSel.value = 'qwen-image-edit';
+        } else if (isFlux) {
+            if (badge) {
+                badge.textContent = 'Flux (Natural Description)';
+                badge.style.background = '#0284c7';
+                badge.style.color = 'white';
+                badge.style.border = '1px solid #38bdf8';
+            }
+            if (editNeg) { editNeg.disabled = false; editNeg.style.opacity = '1.0'; editNeg.title = ''; }
+            if (genNeg) { genNeg.disabled = false; genNeg.style.opacity = '1.0'; genNeg.title = ''; }
+            if (targetModelSel) targetModelSel.value = 'flux';
+        } else {
+            if (badge) {
+                badge.textContent = 'Diffusion Model (CFG + Negative)';
+                badge.style.background = 'rgba(56, 189, 248, 0.15)';
+                badge.style.color = '#38bdf8';
+                badge.style.border = '1px solid rgba(56, 189, 248, 0.3)';
+            }
+            if (editNeg) { editNeg.disabled = false; editNeg.style.opacity = '1.0'; editNeg.title = ''; }
+            if (genNeg) { genNeg.disabled = false; genNeg.style.opacity = '1.0'; genNeg.title = ''; }
+            if (targetModelSel) targetModelSel.value = 'stable-diffusion';
+        }
+    }
+
 
     const sdLoadBtn = document.getElementById('sd-load-btn');
     const sdUnloadBtn = document.getElementById('sd-unload-btn');
@@ -726,10 +783,15 @@ document.addEventListener('DOMContentLoaded', () => {
             promptgenSynthBtn.disabled = true;
 
             try {
+                const targetModel = document.getElementById('sd-promptgen-target-model')?.value || 'qwen-image-edit';
+                const preserveFace = document.getElementById('sd-promptgen-preserve-face')?.checked ?? true;
+
                 const payload = {
                     base_description: baseDesc,
                     desired_changes: changes,
-                    style_preset: preset
+                    style_preset: preset,
+                    target_image_model: targetModel,
+                    preserve_face: preserveFace
                 };
                 if (!synthModel) {
                     if (promptgenStatus) promptgenStatus.textContent = '❌ Please select a Synthesis model first.';

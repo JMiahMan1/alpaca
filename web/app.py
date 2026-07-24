@@ -1229,6 +1229,11 @@ def vision_synthesize_edit_prompt_api():
 
     proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
 
+    target_image_model = data.get("target_image_model", "qwen-image-edit").lower()
+    preserve_face = data.get("preserve_face", True)
+    if "redesign" in style_preset.lower() or "change face" in style_preset.lower():
+        preserve_face = False
+
     # Style-to-strength mapping: face/identity edits need low strength; outfit changes medium; full transformations higher
     _style_lower = style_preset.lower()
     if any(k in _style_lower for k in ("retouch", "restore", "polish", "tone", "color grade")):
@@ -1240,31 +1245,59 @@ def vision_synthesize_edit_prompt_api():
     else:
         strength = 0.55
 
+    if not preserve_face:
+        strength = max(strength, 0.65)
+
     negative = (
         "painting, illustration, cartoon, digital art, anime, drawing, sketch, watercolor, "
         "oil painting, rendered, CGI, 3D render, plastic skin, airbrushed, doll, "
-        "blurry, low resolution, distorted geometry, noise, grain, overexposed, "
-        "deformed face, changed identity, different person, altered face"
+        "blurry, low resolution, distorted geometry, noise, grain, overexposed"
     )
+    if preserve_face:
+        negative += ", deformed face, changed identity, different person, altered face"
 
-    system_msg = (
-        "You are an expert at writing image editing instructions for an AI image editor. "
-        "The AI editor understands plain English instructions — it does NOT use Stable Diffusion tag syntax. "
-        "Your task is to write a single, clear, natural language editing instruction. "
-        "Critical rules: "
-        "1. Write in natural language, like instructions to a human photo editor. "
-        "2. Start with what to CHANGE, then explicitly state what to KEEP the same. "
-        "3. Always include: 'Keep the face, identity, and skin texture exactly the same.' "
-        "4. Always include: 'The result should look like a real photograph, not a painting or digital art.' "
-        "5. Be specific and concise — one or two sentences maximum. "
-        "6. Output ONLY the final instruction — no explanations, no preamble, no quotes."
-    )
+    face_inst = "Keep the subject's face, facial features, identity, and skin texture exactly the same." if preserve_face else "Allow changing the subject's face and identity to match the new character style."
+
+    if "qwen" in target_image_model:
+        system_msg = (
+            "You are an expert at writing image editing instructions for Qwen Image Edit (an instruction-following VLM). "
+            "The AI editor understands plain English instructions — it does NOT use Stable Diffusion tag syntax. "
+            "Your task is to write a single, clear, natural language editing instruction. "
+            "Critical rules: "
+            "1. Write in natural language, like instructions to a human photo editor. "
+            "2. Start with what to CHANGE, then state what to KEEP the same. "
+            f"3. {face_inst} "
+            "4. Specify that the output should be a photorealistic photograph, not a painting or digital art. "
+            "5. Output ONLY the final instruction — no explanations, no preamble, no quotes."
+        )
+    elif "flux" in target_image_model:
+        system_msg = (
+            "You are an expert prompt engineer for Flux image generation models. "
+            "Your task is to write a rich, detailed natural-language description of the modified image. "
+            "Critical rules: "
+            "1. Describe the full scene in vivid visual detail. "
+            f"2. {face_inst} "
+            "3. Output ONLY the final prompt paragraph — no explanations, no quotes, no preamble."
+        )
+    else: # Stable Diffusion / SDXL
+        face_tag = "preserve exact face and identity, " if preserve_face else ""
+        system_msg = (
+            "You are an expert AI image prompt engineer for Stable Diffusion and SDXL in-painting. "
+            "Your task is to write a single, cohesive Stable Diffusion img2img prompt. "
+            "Critical rules: "
+            "1. Combine original scene elements with requested modifications cleanly using descriptive tags and keywords. "
+            f"2. {face_tag}Include quality tags: photorealistic photograph, 8k resolution, RAW photo, sharp focus, professional photography. "
+            "3. Output ONLY the final synthesized prompt string — no explanations, no quotes, no preamble."
+        )
+
     user_msg = (
         f"Original scene: {base_desc}\n"
         f"Requested changes: {desired_changes}\n"
-        f"Style goal: {style_preset}\n\n"
-        f"Write the editing instruction now:"
+        f"Style goal: {style_preset}\n"
+        f"Target Model: {target_image_model}\n\n"
+        f"Write the prompt now:"
     )
+
 
     try:
         with httpx.Client(timeout=120.0) as client:
