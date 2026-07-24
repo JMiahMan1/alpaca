@@ -1104,54 +1104,7 @@ def get_vision_models():
     return jsonify({"models": vision_models})
 
 
-def _extract_image_visual_features(img) -> str:
-    """Analyze image resolution, orientation, color statistics, brightness, and contrast."""
-    from PIL import ImageStat
-    w, h = img.size
-    aspect = "square"
-    if w / h > 1.2:
-        aspect = "landscape (horizontal)"
-    elif h / w > 1.2:
-        aspect = "portrait (vertical)"
 
-    stat_img = img.convert("L")
-    stat = ImageStat.Stat(stat_img)
-    mean_brightness = stat.mean[0]
-    std_contrast = stat.stddev[0]
-
-    lighting = "balanced studio lighting"
-    if mean_brightness < 85:
-        lighting = "dramatic low-key dark lighting with deep shadows"
-    elif mean_brightness > 170:
-        lighting = "bright high-key illumination with vibrant highlights"
-
-    contrast_desc = "soft natural contrast"
-    if std_contrast > 60:
-        contrast_desc = "sharp high contrast with strong definition"
-
-    rgb_img = img.convert("RGB")
-    rgb_img_small = rgb_img.resize((50, 50))
-    colors = rgb_img_small.getcolors(maxcolors=2500)
-    if colors:
-        colors.sort(key=lambda x: x[0], reverse=True)
-        top_r, top_g, top_b = colors[0][1]
-
-        if top_r > top_g + 30 and top_r > top_b + 30:
-            color_tone = "warm red and crimson tones"
-        elif top_b > top_r + 30 and top_b > top_g + 30:
-            color_tone = "cool blue and cyan tones"
-        elif top_g > top_r + 30 and top_g > top_b + 30:
-            color_tone = "natural green and forest tones"
-        elif top_r > 180 and top_g > 180 and top_b > 180:
-            color_tone = "clean white and neutral aesthetic"
-        elif top_r < 60 and top_g < 60 and top_b < 60:
-            color_tone = "dark moody palette with rich shadow detail"
-        else:
-            color_tone = "harmonious mixed color palette"
-    else:
-        color_tone = "balanced color palette"
-
-    return f"A high-resolution {aspect} photograph ({w}x{h}) featuring a subject set against a {color_tone}, illuminated by {lighting} with {contrast_desc}."
 
 
 @app.route("/api/vision/describe", methods=["POST"])
