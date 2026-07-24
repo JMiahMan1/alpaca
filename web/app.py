@@ -948,7 +948,7 @@ def vision_ocr_api():
             return jsonify({"error": "'model' parameter is required"}), 400
 
         proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=300.0) as client:
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
@@ -1203,7 +1203,20 @@ def vision_describe_api():
 
         proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
         model_used = model
-        with httpx.Client(timeout=120.0) as client:
+        description = ""
+        error_detail = None
+
+        with httpx.Client(timeout=300.0) as client:
+            # Pre-warm / ensure model is loaded in proxy first
+            try:
+                client.post(
+                    f"{PROXY_URL}/admin/models/switch",
+                    json={"model": proxy_model},
+                    timeout=300.0
+                )
+            except Exception:
+                pass
+
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
@@ -1217,16 +1230,14 @@ def vision_describe_api():
                 if resp.status_code == 200:
                     description = resp.json()["choices"][0]["message"]["content"].strip()
                 else:
-                    app.logger.warning(
-                        "Vision describe: model %s returned %s — %s",
-                        model, resp.status_code, resp.text[:200]
-                    )
-                    description = ""
+                    error_detail = f"Proxy returned HTTP {resp.status_code}: {resp.text[:200]}"
+                    app.logger.warning("Vision describe: model %s returned %s — %s", model, resp.status_code, resp.text[:200])
             except Exception as exc:
+                error_detail = f"Connection error: {exc}"
                 app.logger.warning("Vision describe: request failed — %s", exc)
-                description = ""
 
             if not description or "error" in description.lower():
+                app.logger.warning("Vision describe: falling back to PIL feature extraction due to: %s", error_detail)
                 description = _extract_image_visual_features(img)
                 model_used = "pil-fallback"
 
