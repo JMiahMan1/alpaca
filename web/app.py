@@ -1074,6 +1074,36 @@ def get_text_models():
     return jsonify({"models": combined})
 
 
+@app.route("/api/models/vision")
+def get_vision_models():
+    """Return only multimodal Vision-Language (VL) models capable of image analysis."""
+    vl_keywords = ("vl", "vision", "llava", "mmproj", "moondream", "cogvlm", "minicpm-v")
+
+    # Get all text/VL models
+    all_models_resp = get_text_models()
+    all_models = all_models_resp.get_json().get("models", [])
+
+    # Filter strictly for Vision/VL models
+    vision_models = [
+        m for m in all_models
+        if any(k in m.lower() for k in vl_keywords)
+    ]
+
+    # Sort vision models by parameter count descending (7b > 3b)
+    def _sort_key(name: str) -> int:
+        name_lower = name.lower()
+        if "70b" in name_lower: return 70
+        if "35b" in name_lower or "32b" in name_lower: return 35
+        if "14b" in name_lower or "13b" in name_lower: return 14
+        if "7b" in name_lower or "8b" in name_lower: return 7
+        if "3b" in name_lower: return 3
+        if "2b" in name_lower or "1.5b" in name_lower: return 2
+        return 1
+
+    vision_models.sort(key=_sort_key, reverse=True)
+    return jsonify({"models": vision_models})
+
+
 def _extract_image_visual_features(img) -> str:
     """Analyze image resolution, orientation, color statistics, brightness, and contrast."""
     from PIL import ImageStat
