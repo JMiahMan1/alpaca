@@ -1364,9 +1364,15 @@
                     <!-- PANEL 5: Picture-to-Text Prompt Generator Studio -->
                     <div id="sd-panel-promptgen" class="sd-mode-panel d-none" style="margin-top:1.25rem;">
                         <div class="card" style="background:#0f172a; border:1px solid rgba(168, 85, 247, 0.2);">
-                            <h4 style="margin:0 0 1rem 0; font-size:1.05rem; font-weight:700; color:#e2e8f0; display:flex; align-items:center; gap:0.5rem;">
-                                <span>🎨 Image-to-Prompt Assistant</span>
-                                <span style="font-size:0.7rem; background:rgba(168, 85, 247, 0.15); color:#c084fc; padding:0.2rem 0.6rem; border-radius:12px; font-weight:600;">Vision AI + Prompt Engineering</span>
+                            <h4 style="margin:0 0 1rem 0; font-size:1.05rem; font-weight:700; color:#e2e8f0; display:flex; align-items:center; justify-content:space-between;">
+                                <div style="display:flex; align-items:center; gap:0.5rem;">
+                                    <span>🎨 Image-to-Prompt Assistant</span>
+                                    <span style="font-size:0.7rem; background:rgba(168, 85, 247, 0.15); color:#c084fc; padding:0.2rem 0.6rem; border-radius:12px; font-weight:600;">Vision AI + Prompt Engineering</span>
+                                </div>
+                                <label style="font-size:0.78rem; color:#e2e8f0; cursor:pointer; display:flex; align-items:center; gap:0.4rem; font-weight:600; background:rgba(168,85,247,0.1); padding:0.3rem 0.6rem; border-radius:8px; border:1px solid rgba(168,85,247,0.25);">
+                                    <input type="checkbox" id="sd-promptgen-preserve-face" checked style="accent-color:#a855f7; cursor:pointer;">
+                                    <span>👤 Preserve Face & Identity</span>
+                                </label>
                             </h4>
 
                             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.25rem;">
@@ -1416,19 +1422,28 @@
                                             </select>
                                         </div>
                                         <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem; font-weight:600; color:#e2e8f0;">Target Image Model</label>
+                                            <select id="sd-promptgen-target-model" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                                <option value="qwen-image-edit">Qwen Image Edit (Instruction Format)</option>
+                                                <option value="stable-diffusion">Stable Diffusion / SDXL (Tag Format)</option>
+                                                <option value="flux">Flux (Natural Description)</option>
+                                            </select>
+                                        </div>
+                                        <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem; font-weight:600; color:#e2e8f0;">Editing Style Preset</label>
                                             <select id="sd-promptgen-preset" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
                                                 <option value="Photorealistic Retouch">Photorealistic Retouch</option>
                                                 <option value="Background & Lighting Swap">Background & Lighting Swap</option>
                                                 <option value="Outfit & Style Transformation">Outfit & Style Transformation</option>
+                                                <option value="Character & Identity Redesign">Character Redesign (Allow Face Change)</option>
                                                 <option value="Cyberpunk Sci-Fi">Cyberpunk Sci-Fi</option>
                                                 <option value="Anime Fantasy">Anime Fantasy</option>
                                                 <option value="Oil Painting Classic Art">Oil Painting Classic Art</option>
                                             </select>
                                         </div>
-                                        <div style="display:flex; align-items:flex-end;">
-                                            <button id="sd-promptgen-synth-btn" class="btn btn-primary" style="width:100%; font-size:0.78rem; font-weight:600; padding:0.45rem; border-radius:6px; background:linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);">✨ Synthesize</button>
-                                        </div>
+                                    </div>
+                                    <div style="display:flex; justify-content:flex-end;">
+                                        <button id="sd-promptgen-synth-btn" class="btn btn-primary" style="width:100%; font-size:0.78rem; font-weight:600; padding:0.45rem; border-radius:6px; background:linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);">✨ Synthesize Master Prompt</button>
                                     </div>
 
                                     <!-- Synthesized Master Prompt Result -->
