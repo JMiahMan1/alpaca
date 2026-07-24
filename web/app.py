@@ -1229,14 +1229,34 @@ def vision_synthesize_edit_prompt_api():
 
     proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
 
+    # Style-to-strength mapping: face/identity edits need low strength; outfit changes medium; full transformations higher
+    _style_lower = style_preset.lower()
+    if any(k in _style_lower for k in ("retouch", "restore", "polish", "tone", "color grade")):
+        strength = 0.25
+    elif any(k in _style_lower for k in ("outfit", "style transform", "hair", "makeup", "accessory")):
+        strength = 0.40
+    elif any(k in _style_lower for k in ("background", "scene", "environment", "lighting")):
+        strength = 0.50
+    else:
+        strength = 0.55
+
+    negative = (
+        "painting, illustration, cartoon, digital art, anime, drawing, sketch, watercolor, "
+        "oil painting, rendered, CGI, 3D render, plastic skin, airbrushed, doll, "
+        "blurry, low resolution, distorted geometry, noise, grain, overexposed, "
+        "deformed face, changed identity, different person, altered face"
+    )
+
     system_msg = (
         "You are an expert AI image prompt engineer for Stable Diffusion and Qwen-Image image-to-image editing. "
-        "Your task is to write a single, cohesive Stable Diffusion img2img prompt. "
-        "Rules: "
-        "1. Preserve all original scene elements that are NOT being changed. "
-        "2. Integrate the requested modifications naturally into the scene. "
-        "3. Add technical quality tags: 8k resolution, RAW photo, sharp focus, professional photography. "
-        "4. Output ONLY the final prompt string — no explanations, no quotes, no numbering, no preamble."
+        "Your task is to write a single, cohesive Stable Diffusion img2img prompt that produces a photorealistic photograph. "
+        "Critical rules: "
+        "1. The output MUST look like a real photograph, NOT a painting, illustration, cartoon, or digital art. "
+        "2. Preserve the subject's exact face, identity, skin texture, and facial features — do NOT alter the face. "
+        "3. Preserve all original scene elements that are NOT explicitly being changed. "
+        "4. Integrate the requested modifications naturally and realistically. "
+        "5. Always include: photorealistic photograph, 8k resolution, RAW photo, DSLR camera, natural lighting, sharp focus, real skin texture, film grain. "
+        "6. Output ONLY the final prompt string — no explanations, no quotes, no numbering, no preamble."
     )
     user_msg = (
         f"Original scene: {base_desc}\n"
@@ -1244,9 +1264,6 @@ def vision_synthesize_edit_prompt_api():
         f"Style: {style_preset}\n\n"
         f"Write the complete img2img prompt now:"
     )
-
-    strength = 0.35 if "retouch" in style_preset.lower() else 0.55
-    negative = "plastic skin, airbrushed, CGI, doll, blurry, low resolution, distorted geometry, noise, grain, overexposed"
 
     try:
         with httpx.Client(timeout=120.0) as client:
@@ -1277,8 +1294,9 @@ def vision_synthesize_edit_prompt_api():
 
             if not master_prompt:
                 master_prompt = (
-                    f"{base_desc}, {desired_changes}, {style_preset} style, "
-                    f"8k resolution, RAW photo, sharp focus, professional photography"
+                    f"photorealistic photograph, {base_desc}, {desired_changes}, preserve exact face and identity, "
+                    f"{style_preset} style, 8k resolution, RAW photo, DSLR camera, natural lighting, "
+                    f"sharp focus, real skin texture, professional photography"
                 )
 
             return jsonify({
@@ -1290,13 +1308,13 @@ def vision_synthesize_edit_prompt_api():
     except Exception as exc:
         app.logger.warning("Synthesis: request failed — %s", exc)
         master_prompt = (
-            f"{base_desc}, {desired_changes}, {style_preset} style, "
-            f"8k resolution, RAW photo, sharp focus"
+            f"photorealistic photograph, {base_desc}, {desired_changes}, preserve exact face and identity, "
+            f"{style_preset} style, 8k resolution, RAW photo, DSLR camera, natural lighting, sharp focus"
         )
         return jsonify({
             "status": "success",
             "master_prompt": master_prompt,
-            "suggested_strength": 0.55,
+            "suggested_strength": strength,
             "suggested_negative": negative,
         })
 

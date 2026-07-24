@@ -785,9 +785,15 @@ document.addEventListener('DOMContentLoaded', () => {
             if (photoStrengthInput && synthesizedSuggestedStrength) {
                 photoStrengthInput.value = synthesizedSuggestedStrength;
                 if (photoStrengthVal) photoStrengthVal.textContent = synthesizedSuggestedStrength;
-                // Update strength preset buttons
-                document.querySelectorAll('.sd-strength-preset').forEach(btn => {
-                    if (parseFloat(btn.dataset.strength) === parseFloat(synthesizedSuggestedStrength)) {
+                // Highlight the closest strength preset button
+                const presetBtns = Array.from(document.querySelectorAll('.sd-strength-preset'));
+                let closest = null, closestDist = Infinity;
+                presetBtns.forEach(btn => {
+                    const dist = Math.abs(parseFloat(btn.dataset.strength) - parseFloat(synthesizedSuggestedStrength));
+                    if (dist < closestDist) { closestDist = dist; closest = btn; }
+                });
+                presetBtns.forEach(btn => {
+                    if (btn === closest) {
                         btn.classList.add('active');
                         btn.style.background = '#38bdf8';
                         btn.style.borderColor = '#38bdf8';
