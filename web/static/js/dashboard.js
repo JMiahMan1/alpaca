@@ -765,11 +765,35 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            // 1. Transfer master edit prompt to Photo Editor prompt input
             const photoPromptElem = document.getElementById('sd-edit-prompt') || document.getElementById('sd-photo-edit-prompt');
             if (photoPromptElem) photoPromptElem.value = masterPrompt;
 
+            // 2. Auto-select "Custom Edit Prompt" preset so it won't be overwritten by defaults
+            const photoPresetSel = document.getElementById('sd-photo-preset-select');
+            if (photoPresetSel) {
+                photoPresetSel.value = 'custom';
+            }
+
+            // 3. Transfer uploaded source image file and update preview in Photo Editor Studio
+            if (currentPromptgenFile) {
+                const photoInput = document.getElementById('sd-edit-image');
+                if (photoInput) {
+                    try {
+                        const dt = new DataTransfer();
+                        dt.items.add(currentPromptgenFile);
+                        photoInput.files = dt.files;
+                    } catch (e) {
+                        console.warn('Could not set DataTransfer on photoInput:', e);
+                    }
+                }
+                if (typeof showPhotoPreview === 'function') {
+                    showPhotoPreview(currentPromptgenFile);
+                }
+            }
+
+            // 4. Switch active panel to Photo Editor Studio
             switchSDMode('photo');
-            alert('🚀 Master Edit Prompt transferred to Realistic Photo Editor!');
         });
     }
 
