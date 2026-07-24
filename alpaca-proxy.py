@@ -3343,6 +3343,30 @@ async def edit_images(request: Request) -> Response:
             # Force b64_json from sd-server so we can decode it into a raw file.
             data["response_format"] = "b64_json"
 
+        # Strip <sd_cpp_extra_args> tag from prompt and apply as separate form fields.
+        # The UI embeds strength + negative_prompt as JSON inside the prompt string so they
+        # survive the multipart encoding, but sd-server (and especially Qwen Image Edit)
+        # must receive a clean prompt without this tag.
+        import re as _re
+        import json as _json
+        raw_prompt = data.get("prompt", "")
+        extra_args_match = _re.search(r"<sd_cpp_extra_args>(.*?)</sd_cpp_extra_args>", raw_prompt, _re.DOTALL)
+        if extra_args_match:
+            clean_prompt = _re.sub(r"<sd_cpp_extra_args>.*?</sd_cpp_extra_args>", "", raw_prompt, flags=_re.DOTALL).strip()
+            data["prompt"] = clean_prompt
+            try:
+                extra = _json.loads(extra_args_match.group(1))
+                if "strength" in extra and "strength" not in data:
+                    data["strength"] = str(extra["strength"])
+                if "negative_prompt" in extra and "negative_prompt" not in data:
+                    data["negative_prompt"] = extra["negative_prompt"]
+                logger.info(
+                    "sd_cpp_extra_args parsed — strength=%s negative=%s",
+                    extra.get("strength"), bool(extra.get("negative_prompt")),
+                )
+            except Exception:
+                logger.warning("Failed to parse sd_cpp_extra_args JSON: %s", extra_args_match.group(1)[:200])
+
         if client_sd_httpx:
             try:
                 async with sd_execution_lock:

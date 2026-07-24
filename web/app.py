@@ -1248,21 +1248,22 @@ def vision_synthesize_edit_prompt_api():
     )
 
     system_msg = (
-        "You are an expert AI image prompt engineer for Stable Diffusion and Qwen-Image image-to-image editing. "
-        "Your task is to write a single, cohesive Stable Diffusion img2img prompt that produces a photorealistic photograph. "
+        "You are an expert at writing image editing instructions for an AI image editor. "
+        "The AI editor understands plain English instructions — it does NOT use Stable Diffusion tag syntax. "
+        "Your task is to write a single, clear, natural language editing instruction. "
         "Critical rules: "
-        "1. The output MUST look like a real photograph, NOT a painting, illustration, cartoon, or digital art. "
-        "2. Preserve the subject's exact face, identity, skin texture, and facial features — do NOT alter the face. "
-        "3. Preserve all original scene elements that are NOT explicitly being changed. "
-        "4. Integrate the requested modifications naturally and realistically. "
-        "5. Always include: photorealistic photograph, 8k resolution, RAW photo, DSLR camera, natural lighting, sharp focus, real skin texture, film grain. "
-        "6. Output ONLY the final prompt string — no explanations, no quotes, no numbering, no preamble."
+        "1. Write in natural language, like instructions to a human photo editor. "
+        "2. Start with what to CHANGE, then explicitly state what to KEEP the same. "
+        "3. Always include: 'Keep the face, identity, and skin texture exactly the same.' "
+        "4. Always include: 'The result should look like a real photograph, not a painting or digital art.' "
+        "5. Be specific and concise — one or two sentences maximum. "
+        "6. Output ONLY the final instruction — no explanations, no preamble, no quotes."
     )
     user_msg = (
         f"Original scene: {base_desc}\n"
         f"Requested changes: {desired_changes}\n"
-        f"Style: {style_preset}\n\n"
-        f"Write the complete img2img prompt now:"
+        f"Style goal: {style_preset}\n\n"
+        f"Write the editing instruction now:"
     )
 
     try:
