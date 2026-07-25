@@ -514,11 +514,9 @@ def analyze_telemetry(
         if max_vram < 60.0 and vram_headroom_mb > 3000 and curr_ctx <= 16384:
             # Suggest doubling context, capped at 32768
             suggested_ctx = min(curr_ctx * 2, 32768)
-            if suggested_ctx > curr_ctx:
-                # Don't add if already recommended something that conflicts
-                if "ctx-size" not in recommendations:
-                    recommendations["ctx-size"] = str(suggested_ctx)
-                    actions.append(
+            if suggested_ctx > curr_ctx and "ctx-size" not in recommendations:
+                recommendations["ctx-size"] = str(suggested_ctx)
+                actions.append(
                         f"Expand context window (ctx-size: {curr_ctx} → {suggested_ctx}): "
                         f"VRAM headroom ({vram_headroom_mb}MB free) is sufficient to support a larger context, "
                         f"enabling longer document processing and multi-turn conversations."

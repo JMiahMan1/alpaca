@@ -8,6 +8,7 @@ This tracks the memory 'creep' that leads to self-healing triggers.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -101,7 +102,7 @@ async def get_gpu_metrics():
         proc = await asyncio.create_subprocess_exec(
             *cmd_docker, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        out, err = await proc.communicate()
+        out, _err = await proc.communicate()
         if proc.returncode == 0:
             stdout = out.decode().strip()
     except Exception:
@@ -348,10 +349,8 @@ async def main():
             # Sleep the remainder of the interval, but wake early on stop
             elapsed = time.time() - loop_start
             sleep_time = max(0.1, POLL_INTERVAL - elapsed)
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(_stop_event.wait(), timeout=sleep_time)
-            except TimeoutError:
-                pass  # Normal path — timeout means we keep looping
 
     logger.info("Telemetry Monitor Daemon stopped.")
 
