@@ -158,7 +158,7 @@ async def run_benchmark_payload(
         except Exception as e:
             logger.error(f"Run {run_idx} failed: {e}")
             await sampler.stop()
-            raise RuntimeError(f"Benchmark run {run_idx} failed: {e!s}") from e from e
+            raise RuntimeError(f"Benchmark run {run_idx} failed: {e!s}") from e
 
         end_time = time.perf_counter()
         await sampler.stop()

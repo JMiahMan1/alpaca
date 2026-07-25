@@ -15,6 +15,17 @@ import time
 from pathlib import Path
 from typing import Any
 
+from flask import Flask, jsonify, render_template, request
+from flask_cors import CORS
+from flask_socketio import SocketIO
+
+# Add project root to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import contextlib
+
+from llm_benchmark_suite import LLMModelBenchmark
+from web.shared_llm_benchmark import SharedLLMModelBenchmark
+
 
 # Load .env file if present
 def load_dotenv_custom():
@@ -41,17 +52,6 @@ DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.ge
 if not DEBUG_LOGGING:
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-
-from flask import Flask, jsonify, render_template, request
-from flask_cors import CORS
-from flask_socketio import SocketIO
-
-# Add project root to path if needed to import llm_benchmark_suite
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import contextlib
-
-from llm_benchmark_suite import LLMModelBenchmark
-from web.shared_llm_benchmark import SharedLLMModelBenchmark
 
 app = Flask(__name__)
 CORS(app)

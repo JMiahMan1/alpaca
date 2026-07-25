@@ -90,7 +90,7 @@ def run_llama_bench_sweep(
             end = proc.stdout.rfind("]") + 1
             if start != -1 and end > start:
                 return json.loads(proc.stdout[start:end])
-            raise ValueError(f"No JSON array found in llama-bench output:\n{proc.stdout[:500]}") from None from None
+            raise ValueError(f"No JSON array found in llama-bench output:\n{proc.stdout[:500]}") from None
 
     except subprocess.CalledProcessError as e:
         logger.error(f"llama-bench execution failed: {e.stderr}")

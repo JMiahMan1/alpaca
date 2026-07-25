@@ -440,7 +440,7 @@ def is_model_complete(manifest):
             if os.path.getsize(blob_path) != layer.get("size", 0):
                 return False
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -1929,14 +1929,14 @@ async def openai_chat_completions(request: Request):
                     )
             if stream:
 
-                async def stream_proxy():
+                async def stream_proxy(_bm=backend_model, _cl=client_httpx):
                     stream_started = False
                     async with active_requests_lock:
-                        active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
+                        active_requests[_bm] = active_requests.get(_bm, 0) + 1
                     try:
                         for s_attempt in range(max_retries):
                             try:
-                                async with client_httpx.stream(
+                                async with _cl.stream(
                                     "POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body
                                 ) as resp:
                                     if resp.status_code != 200:
@@ -2012,8 +2012,8 @@ async def openai_chat_completions(request: Request):
                         # guarantees the entry is always removed.
                         complete_active_request(request_id)
                         async with active_requests_lock:
-                            active_requests[backend_model] = max(
-                                0, active_requests.get(backend_model, 0) - 1
+                            active_requests[_bm] = max(
+                                0, active_requests.get(_bm, 0) - 1
                             )
                             active_requests_lock.notify_all()
                         # Best-effort cleanup below; guard against cancellation so a dropped
@@ -2216,14 +2216,14 @@ async def openai_completions(request: Request):
                     )
             if stream:
 
-                async def stream_proxy():
+                async def stream_proxy(_bm=backend_model, _cl=client_httpx):
                     stream_started = False
                     async with active_requests_lock:
-                        active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
+                        active_requests[_bm] = active_requests.get(_bm, 0) + 1
                     try:
                         for s_attempt in range(max_retries):
                             try:
-                                async with client_httpx.stream(
+                                async with _cl.stream(
                                     "POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body
                                 ) as resp:
                                     if resp.status_code != 200:
@@ -2296,8 +2296,8 @@ async def openai_completions(request: Request):
                         # chat-stream finally for the full rationale.
                         complete_active_request(request_id)
                         async with active_requests_lock:
-                            active_requests[backend_model] = max(
-                                0, active_requests.get(backend_model, 0) - 1
+                            active_requests[_bm] = max(
+                                0, active_requests.get(_bm, 0) - 1
                             )
                             active_requests_lock.notify_all()
                         with suppress(BaseException):
@@ -4396,8 +4396,8 @@ async def admin_model_delete(request: Request):
                             for _mb, mp, m in iter_local_manifests():
                                 if mp == manifest_path:
                                     continue
-                                for l in [*m.get("layers", []), m.get("config", {})]:
-                                    if l.get("digest") == digest:
+                                for layer in [*m.get("layers", []), m.get("config", {})]:
+                                    if layer.get("digest") == digest:
                                         referenced = True
                                         break
                                 if referenced:
@@ -4432,26 +4432,25 @@ async def admin_model_delete(request: Request):
         # Delete the weights blob if nothing else references it. For manifest
         # models this is handled by the block above; here we cover manifest-less
         # (Hugging Face) imports whose blob is not tracked by any manifest.
-        if not (manifest_path and os.path.exists(manifest_path)):
-            if blob_target and os.path.exists(blob_target) and "blobs" in blob_target.replace("\\", "/"):
-                referenced = False
+        if not (manifest_path and os.path.exists(manifest_path)) and blob_target and os.path.exists(blob_target) and "blobs" in blob_target.replace("\\", "/"):
+            referenced = False
+            try:
+                for entry in os.scandir(ROUTER_MODELS_DIR):
+                    if entry.is_symlink():
+                        try:
+                            if os.path.realpath(entry.path) == blob_target:
+                                referenced = True
+                                break
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if not referenced:
                 try:
-                    for entry in os.scandir(ROUTER_MODELS_DIR):
-                        if entry.is_symlink():
-                            try:
-                                if os.path.realpath(entry.path) == blob_target:
-                                    referenced = True
-                                    break
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-                if not referenced:
-                    try:
-                        os.remove(blob_target)
-                        deleted_blobs.append(os.path.basename(blob_target))
-                    except Exception as be:
-                        logger.warning(f"Failed to remove blob {blob_target}: {be}")
+                    os.remove(blob_target)
+                    deleted_blobs.append(os.path.basename(blob_target))
+                except Exception as be:
+                    logger.warning(f"Failed to remove blob {blob_target}: {be}")
 
         # Clean up EVERY profile.json variant for the deleted model so no
         # orphaned per-model overlay files remain after deletion.
@@ -4607,9 +4606,9 @@ async def get_model_errors(
     """Return recent model errors from the in-memory buffer.
 
     Query params:
-      model      – filter to a specific model alias (substring match)
-      error_type – filter by canonical error type (e.g. context_overflow, oom)
-      limit      – max records to return (default 100, max 500)
+      model      - filter to a specific model alias (substring match)
+      error_type - filter by canonical error type (e.g. context_overflow, oom)
+      limit      - max records to return (default 100, max 500)
     """
     with _model_errors_lock:
         records = list(_model_errors_buffer)
@@ -5677,17 +5676,16 @@ async def ensure_model(model_name: str, options: dict | None = None, skip_swap: 
                     resolved = await resolve_router_model(model_name, reload=True)
                     backend_model = resolved["backend_model"]
                     entry = resolved["entry"]
-                    if router_entry_status(entry) == "loaded":
-                        if await is_child_model_healthy(backend_model):
-                            logger.info(f"Model {backend_model} finished loading successfully.")
-                            mark_model_loaded(model_name)
-                            await record_model_loaded(model_name)
-                            return {
-                                "model_name": model_name,
-                                "backend_model": backend_model,
-                                "manifest_path": resolved["manifest_path"],
-                                "manifest": resolved["manifest"],
-                            }
+                    if router_entry_status(entry) == "loaded" and await is_child_model_healthy(backend_model):
+                        logger.info(f"Model {backend_model} finished loading successfully.")
+                        mark_model_loaded(model_name)
+                        await record_model_loaded(model_name)
+                        return {
+                            "model_name": model_name,
+                            "backend_model": backend_model,
+                            "manifest_path": resolved["manifest_path"],
+                            "manifest": resolved["manifest"],
+                        }
                 except Exception as poll_exc:
                     logger.warning(f"Error polling model loading status: {poll_exc}")
     except Exception as e:
@@ -7858,7 +7856,6 @@ async def queue_wait(request: Request):
 async def show(request: Request):
     body = await request.json()
     model_name = body.get("model")
-    verbose = body.get("verbose", False)
     if not model_name:
         raise HTTPException(status_code=400, detail="model is required")
 
@@ -7885,7 +7882,7 @@ async def show(request: Request):
         "capabilities": info["capabilities"],
         "modified_at": info["modified_at"],
         "details": info["details"],
-        "model_info": info["model_info"] if verbose else info["model_info"],
+        "model_info": info["model_info"],
     }
     return JSONResponse(response)
 
