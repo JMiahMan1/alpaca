@@ -49,9 +49,9 @@ def check_files_exist(model_name):
     if not found:
         return False, f"manifest missing: {manifest_path}"
 
-    with open(manifest_path, "r", encoding="utf-8") as handle:
+    with open(manifest_path, encoding="utf-8") as handle:
         manifest = json.load(handle)
-    for layer in manifest.get("layers", []) + [manifest.get("config", {})]:
+    for layer in [*manifest.get("layers", []), manifest.get("config", {})]:
         digest = layer.get("digest")
         if not digest:
             continue

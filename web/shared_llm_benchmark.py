@@ -11,8 +11,9 @@ import ast
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any
 
 import httpx
 
@@ -47,7 +48,7 @@ class SharedLLMModelBenchmark:
         cleaned = re.sub(r"<(think|thinking)>[\s\S]*?</\1>", "", text, flags=re.IGNORECASE)
         return cleaned.strip()
 
-    def validate_code(self, code: str) -> Dict:
+    def validate_code(self, code: str) -> dict:
         """Parse generated code via AST to verify structural correctness."""
         try:
             # Strip thinking blocks before parsing
@@ -96,7 +97,7 @@ class SharedLLMModelBenchmark:
 
     async def query_model(
         self, model: str, use_proxy: bool, prompt: str, max_tokens: int = 250
-    ) -> Dict:
+    ) -> dict:
         """Execute request against proxy or direct llama-server.
 
         Thinking mode is explicitly disabled (think=false) so that thinking models
@@ -255,7 +256,7 @@ class SharedLLMModelBenchmark:
         }
 
     @classmethod
-    def get_all_tasks(cls) -> List[Dict]:
+    def get_all_tasks(cls) -> list[dict]:
         """Return all available SharedLLM task definitions."""
         return [
             {
@@ -283,17 +284,17 @@ class SharedLLMModelBenchmark:
 
     async def run_shared_llm_benchmarks(
         self,
-        models: List[str],
+        models: list[str],
         use_proxy: bool,
         progress_callback: Callable[..., Any] | None = None,
         cancel_event=None,
-        task_ids: List[str] | None = None,
-    ) -> Dict:
+        task_ids: list[str] | None = None,
+    ) -> dict:
         """Run tasks for FastPath, Tool Use, and Code Gen validation.
 
         task_ids: optional list of task IDs to run. If None or empty, all tasks run.
         """
-        all_results: Dict[str, Any] = {
+        all_results: dict[str, Any] = {
             "benchmark_version": "SharedLLM-v1",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "benchmark_type": "proxy" if use_proxy else "direct",
@@ -347,7 +348,7 @@ class SharedLLMModelBenchmark:
                 except Exception as e:
                     print(f"Callback error: {e}")
 
-            model_record: Dict[str, Any] = {
+            model_record: dict[str, Any] = {
                 "model": model,
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "tasks": [],

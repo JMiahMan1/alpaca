@@ -8,13 +8,14 @@ and peak RAM/VRAM utilization under standardized workloads.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 import psutil
@@ -37,7 +38,7 @@ class ResourceSampler:
         self.peak_vram_mb: int = 0
         self.vram_total_mb: int = 0
         self.active: bool = False
-        self.loop_task: Optional[asyncio.Task[None]] = None
+        self.loop_task: asyncio.Task[None] | None = None
 
     async def _sample_loop(self) -> None:
         while self.active:
@@ -96,10 +97,8 @@ class ResourceSampler:
         self.active = False
         if self.loop_task:
             self.loop_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self.loop_task
-            except (asyncio.CancelledError, Exception):
-                pass
 
 
 def locate_model_file(model_alias: str) -> Path:
@@ -112,9 +111,8 @@ def locate_model_file(model_alias: str) -> Path:
 
     # Try substring matches
     for path in ROUTER_MODELS_DIR.iterdir():
-        if path.suffix in (".safetensors", ".gguf"):
-            if model_alias.lower() in path.name.lower():
-                return path.resolve()
+        if path.suffix in (".safetensors", ".gguf") and model_alias.lower() in path.name.lower():
+            return path.resolve()
 
     raise FileNotFoundError(
         f"Could not find model file for alias: {model_alias} in {ROUTER_MODELS_DIR}"
@@ -123,7 +121,7 @@ def locate_model_file(model_alias: str) -> Path:
 
 async def run_benchmark_payload(
     model_alias: str, prompt: str, size: str, steps: int, runs: int = 3
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Runs a series of generation queries against the proxy and profiles resource usage."""
     logger.info(
         f"Initiating benchmark sweep for model '{model_alias}' ({size}, {steps} steps, {runs} runs)..."
@@ -160,7 +158,7 @@ async def run_benchmark_payload(
         except Exception as e:
             logger.error(f"Run {run_idx} failed: {e}")
             await sampler.stop()
-            raise RuntimeError(f"Benchmark run {run_idx} failed: {str(e)}")
+            raise RuntimeError(f"Benchmark run {run_idx} failed: {e!s}")
 
         end_time = time.perf_counter()
         await sampler.stop()

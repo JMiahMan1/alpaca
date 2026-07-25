@@ -19,13 +19,13 @@ async def test_dynamic_tests_loading(tmp_path):
     }
     with open(tests_file, "w") as f:
         json.dump(custom_tests, f)
-        
+
     with patch.dict(os.environ, {"BENCHMARK_TESTS_JSON": str(tests_file)}):
         benchmark = LLMModelBenchmark()
         assert benchmark.tests_config["coding"][0]["id"] == "custom_coding"
         assert benchmark._coding_tests("")[0]["id"] == "custom_coding"
         assert benchmark._reasoning_tests("")[0]["id"] == "custom_reasoning"
-        
+
         assert benchmark.get_total_tests_per_model("functional") == 5
         assert benchmark.get_total_tests_per_model("all") == 7
 
@@ -40,19 +40,19 @@ async def test_fallback_tests_loading():
 async def test_test_ids_filtering(tmp_path):
     benchmark = LLMModelBenchmark()
     benchmark.RESULTS_DIR = tmp_path
-    
+
     async def dummy_test(model, test, sampler=None):
         return {"success": True, "tokens_generated": 50, "latency": 1.0, "response": "Dummy response"}
-    
+
     benchmark.test_model_proxy = dummy_test
-    
+
     results = await benchmark.run_model_benchmarks(
         models=["qwen3:8b"],
         use_proxy=True,
         mode="functional",
         test_ids=["debug_fix"]
     )
-    
+
     assert len(results["results"]) == 1
     model_res = results["results"][0]
     assert "category_coding" in model_res
@@ -66,44 +66,44 @@ async def test_test_ids_filtering(tmp_path):
 async def test_incremental_merging(tmp_path):
     benchmark = LLMModelBenchmark()
     benchmark.RESULTS_DIR = tmp_path
-    
+
     async def dummy_test(model, test, sampler=None):
         return {"success": True, "tokens_generated": 50, "latency": 1.0, "response": f"Response for {test['id']}"}
-    
+
     benchmark.test_model_proxy = dummy_test
-    
+
     await benchmark.run_model_benchmarks(
         models=["qwen3:8b"],
         use_proxy=True,
         mode="functional",
         test_ids=["debug_fix"]
     )
-    
+
     await benchmark.run_model_benchmarks(
         models=["qwen3:8b"],
         use_proxy=True,
         mode="functional",
         test_ids=["logic_puzzle"]
     )
-    
+
     latest_file = tmp_path / "functional_benchmarks_latest.json"
     assert latest_file.exists()
-    with open(latest_file, "r") as f:
+    with open(latest_file) as f:
         latest_data = json.load(f)
-        
+
     results = latest_data["results"]
     assert len(results) == 1
     model_res = results[0]
-    
+
     assert "category_coding" in model_res
     assert "category_reasoning" in model_res
-    
+
     coding_tests = model_res["category_coding"]["tests"]
     reasoning_tests = model_res["category_reasoning"]["tests"]
     assert len(coding_tests) == 1
     assert coding_tests[0]["test_id"] == "debug_fix"
     assert "last_run" in coding_tests[0]
-    
+
     assert len(reasoning_tests) == 1
     assert reasoning_tests[0]["test_id"] == "logic_puzzle"
     assert "last_run" in reasoning_tests[0]
@@ -113,11 +113,11 @@ async def test_incremental_merging(tmp_path):
 async def test_two_phase_token_generation_and_nudge_injection():
     """Test that both test_model_proxy and test_model_direct trigger a two-phase request when tokens reach 4000."""
     benchmark = LLMModelBenchmark()
-    
+
     # We mock Client.post to simulate hitting the 4000 token limit in phase 1,
     # followed by a successful phase 2.
     calls = []
-    
+
     class MockResponse:
         def __init__(self, data, status_code=200):
             self.data = data
@@ -130,7 +130,7 @@ async def test_two_phase_token_generation_and_nudge_injection():
         # Determine if it's phase 1 or phase 2 based on json payload structure
         options = json.get("options", {})
         assert options.get("num_predict") == 4000
-        
+
         if "messages" in json:
             # Chat endpoint (proxy)
             messages = json["messages"]
