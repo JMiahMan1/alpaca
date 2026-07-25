@@ -2843,10 +2843,8 @@ def write_active_model_config(
         with open(temp_path, "w") as f:
             json.dump(config, f, indent=2)
         os.replace(temp_path, config_path)
-        try:
+        with suppress(Exception):
             os.chmod(config_path, 0o666)
-        except Exception:
-            pass
         logger.info(f"Wrote active model config: {config}")
     except Exception as e:
         logger.error(f"Failed to write active model configuration: {e}")
@@ -3347,8 +3345,8 @@ async def edit_images(request: Request) -> Response:
         # The UI embeds strength + negative_prompt as JSON inside the prompt string so they
         # survive the multipart encoding, but sd-server (and especially Qwen Image Edit)
         # must receive a clean prompt without this tag.
-        import re as _re
         import json as _json
+        import re as _re
         raw_prompt = data.get("prompt", "")
         extra_args_match = _re.search(r"<sd_cpp_extra_args>(.*?)</sd_cpp_extra_args>", raw_prompt, _re.DOTALL)
         if extra_args_match:
@@ -4131,8 +4129,22 @@ async def get_active_child_port() -> int | None:
 async def admin_slots(fail_on_no_slot: int = 0):
     """llama-server slot status with enhanced Alpaca metadata."""
     try:
-        port = await get_active_child_port()
-        if not port:
+        # Determine which backend model is currently loaded so we can pass
+        # the required ?model= query param to /slots (omitting it returns 400).
+        backend_model: str | None = None
+        try:
+            models_resp = await client_httpx.get(
+                f"{LLAMA_SERVER_URL}/models", timeout=httpx.Timeout(3.0)
+            )
+            if models_resp.status_code == 200:
+                for m in models_resp.json().get("data", []):
+                    if m.get("status", {}).get("value") == "loaded":
+                        backend_model = m.get("id")
+                        break
+        except Exception as e:
+            logger.warning(f"admin_slots: could not determine loaded model: {e}")
+
+        if not backend_model:
             return {
                 "slots": [],
                 "total": 0,
@@ -4140,25 +4152,26 @@ async def admin_slots(fail_on_no_slot: int = 0):
                 "message": "No model loaded in llama-server",
             }
 
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "exec",
-            "llama-server",
-            "curl",
-            "-s",
-            f"http://127.0.0.1:{port}/slots",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        # Query /slots directly via httpx — never use docker exec curl here.
+        # docker exec curl is slow (subprocess overhead + no ?model= param),
+        # caused 400 Bad Request from llama-server, and blocked during inference.
+        resp = await client_httpx.get(
+            f"{LLAMA_SERVER_URL}/slots",
+            params={"model": backend_model},
+            timeout=httpx.Timeout(5.0),
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise Exception(f"Failed to fetch slots from child: {stderr.decode()}")
+        if resp.status_code != 200:
+            return {
+                "slots": [],
+                "total": 0,
+                "status": "error",
+                "message": f"llama-server /slots returned HTTP {resp.status_code}",
+            }
 
-        raw = json.loads(stdout.decode().strip())
+        raw = resp.json()
 
-        # llama-server /slots may return a dict (e.g. {"error": {...}} when the
-        # model param is missing) or a list of slot objects. Normalize to a list
-        # of slot dicts so the enhancement loop never iterates strings/scalars.
+        # llama-server /slots may return a dict (e.g. {"error": {...}}) or a
+        # list of slot objects. Normalize to a list.
         if isinstance(raw, dict):
             if "error" in raw:
                 return {
@@ -4174,14 +4187,13 @@ async def admin_slots(fail_on_no_slot: int = 0):
         slots = []
         for s in raw:
             if isinstance(s, dict):
+                n_past = s.get("n_past", 0) or 0
+                n_ctx = s.get("n_ctx", 0) or 1
                 s["alpaca"] = {
                     "is_busy": s.get("is_processing", False),
                     "has_prompt_cache": bool(s.get("prompt", [])),
-                    "context_used_pct": round(
-                        s.get("n_ctx", 0) / max(s.get("n_ctx", 1), 1) * 100, 1
-                    )
-                    if s.get("n_ctx")
-                    else 0,
+                    # n_past / n_ctx gives the true context fill percentage
+                    "context_used_pct": round((n_past / n_ctx) * 100, 1),
                 }
                 slots.append(s)
             elif isinstance(s, str):
@@ -5190,7 +5202,12 @@ async def is_child_model_healthy(backend_model: str) -> bool:
                     if status == "loading":
                         return True
                     if status == "loaded":
-                        # Perform active direct port probe to ensure the child process is alive and responsive
+                        # Probe the child's /health endpoint directly via HTTP.
+                        # Previously this used `docker exec curl` which blocked for
+                        # up to 3 s during active inference (CPU-bound child), causing
+                        # this function to return False and pushing every concurrent
+                        # request through the exclusive router_model_lock — serialising
+                        # all traffic even when a free slot was available.
                         args = model.get("status", {}).get("args", [])
                         try:
                             port_idx = args.index("--port")
@@ -5202,25 +5219,18 @@ async def is_child_model_healthy(backend_model: str) -> bool:
                             return False
 
                         try:
-                            proc = await asyncio.create_subprocess_exec(
-                                "docker",
-                                "exec",
-                                "llama-server",
-                                "curl",
-                                "-s",
-                                "-m",
-                                "3",
-                                f"http://127.0.0.1:{port}/health",
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            stdout, stderr = await proc.communicate()
-                            if proc.returncode == 0:
-                                res = json.loads(stdout.decode().strip())
-                                if res.get("status") == "ok":
+                            async with httpx.AsyncClient(timeout=5.0) as probe:
+                                health_resp = await probe.get(
+                                    f"{LLAMA_SERVER_URL.rstrip('/')}/health",
+                                    params={"model": backend_model},
+                                )
+                            if health_resp.status_code == 200:
+                                res = health_resp.json()
+                                if res.get("status") in ("ok", "no slot available"):
+                                    # "no slot available" still means the child is alive and running
                                     return True
                             logger.warning(
-                                f"Health probe to child port {port} failed with returncode {proc.returncode}: {stdout.decode().strip()} {stderr.decode().strip()}"
+                                f"Health probe to child port {port} returned HTTP {health_resp.status_code}"
                             )
                         except Exception as e:
                             logger.warning(
@@ -6803,15 +6813,22 @@ async def chat(request: Request):
             status_code=503,
         )
 
+    # Capture the already-resolved backend for use inside stream_proxy via closure.
+    # DO NOT call ensure_model() again inside stream_proxy — it was already called
+    # above to verify the model is loaded and a slot is available. A second call
+    # acquires router_model_lock unnecessarily and serializes cross-endpoint requests
+    # (e.g. an OpenAI client + an Ollama client targeting the same model) through a
+    # single exclusive lock even when both slots are free.
+    _resolved_for_stream = resolved
+    _resolved_backend_for_stream = resolved_backend
+
     async def stream_proxy():
-        resolved_backend = None
+        resolved_backend = _resolved_backend_for_stream
         try:
             started_ns = now_ns()
             load_started_ns = now_ns()
-            resolved = await ensure_model(model_name, options=body.get("options"))
-            resolved_backend = resolved["backend_model"]
 
-            # Increment reference count
+            # Increment reference count using the already-resolved backend.
             async with active_requests_lock:
                 active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
                 logger.info(

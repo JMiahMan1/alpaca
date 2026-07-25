@@ -5,6 +5,7 @@ Flask server for LLM benchmark dashboard with SocketIO
 
 import asyncio
 import json
+import logging
 import os
 import select
 import subprocess
@@ -33,8 +34,6 @@ def load_dotenv_custom():
 
 
 load_dotenv_custom()
-
-import logging
 
 DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv(
     "DEBUG_LOGGING", "0"
@@ -724,6 +723,7 @@ def embed_qr_code_onto_image(b64_image_str: str, qr_text: str, position: str = "
     """Generates a scannable QR Code and merges it onto the base64 flyer image."""
     import base64
     from io import BytesIO
+
     from PIL import Image, ImageDraw, ImageFont
 
     try:
@@ -1092,12 +1092,18 @@ def get_vision_models():
     # Sort vision models by parameter count descending (7b > 3b)
     def _sort_key(name: str) -> int:
         name_lower = name.lower()
-        if "70b" in name_lower: return 70
-        if "35b" in name_lower or "32b" in name_lower: return 35
-        if "14b" in name_lower or "13b" in name_lower: return 14
-        if "7b" in name_lower or "8b" in name_lower: return 7
-        if "3b" in name_lower: return 3
-        if "2b" in name_lower or "1.5b" in name_lower: return 2
+        if "70b" in name_lower:
+            return 70
+        if "35b" in name_lower or "32b" in name_lower:
+            return 35
+        if "14b" in name_lower or "13b" in name_lower:
+            return 14
+        if "7b" in name_lower or "8b" in name_lower:
+            return 7
+        if "3b" in name_lower:
+            return 3
+        if "2b" in name_lower or "1.5b" in name_lower:
+            return 2
         return 1
 
     vision_models.sort(key=_sort_key, reverse=True)
@@ -1161,14 +1167,12 @@ def vision_describe_api():
 
         with httpx.Client(timeout=300.0) as client:
             # Pre-warm / ensure model is loaded in proxy first
-            try:
+            with contextlib.suppress(Exception):
                 client.post(
                     f"{PROXY_URL}/admin/models/switch",
                     json={"model": proxy_model},
                     timeout=300.0
                 )
-            except Exception:
-                pass
 
             try:
                 resp = client.post(

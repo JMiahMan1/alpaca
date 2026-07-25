@@ -230,7 +230,7 @@ mlock = true
     # Verify profile.json is created
     profile_json_path = tmp_path / "new-model.profile.json"
     assert profile_json_path.exists()
-    with open(profile_json_path, "r") as pf:
+    with open(profile_json_path) as pf:
         pf_data = json.load(pf)
     assert pf_data["ctx-size"] == 4096
     assert pf_data["flash-attn"] == "on"
@@ -757,6 +757,7 @@ def test_vision_describe_api_missing_file(client):
 def test_vision_describe_api_success(client):
     """Test /api/vision/describe with a valid uploaded image file"""
     from io import BytesIO
+
     from PIL import Image
 
     buf = BytesIO()

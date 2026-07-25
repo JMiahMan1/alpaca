@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -46,8 +46,8 @@ def locate_model_file(model_alias: str) -> Path:
 
 
 def run_llama_bench_sweep(
-    model_path: Path, gpu_layers: List[int], kv_cache_types: List[str], batch_sizes: List[int]
-) -> List[Dict[str, Any]]:
+    model_path: Path, gpu_layers: list[int], kv_cache_types: list[str], batch_sizes: list[int]
+) -> list[dict[str, Any]]:
     """Execute llama-bench with comma-separated sweeps and parse the JSON output."""
 
     # Map arguments
@@ -76,7 +76,7 @@ def run_llama_bench_sweep(
 
     try:
         proc = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+            cmd, capture_output=True, text=True, check=True
         )
 
         # Parse the JSON array from stdout
@@ -94,15 +94,15 @@ def run_llama_bench_sweep(
 
     except subprocess.CalledProcessError as e:
         logger.error(f"llama-bench execution failed: {e.stderr}")
-        raise e
+        raise
     except Exception as e:
         logger.error(f"An unexpected error occurred during benchmarking: {e}")
-        raise e
+        raise
 
 
-def process_bench_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+def process_bench_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Structure raw llama-bench results into an actionable tuning profile."""
-    profile = {"model": "", "configurations": []}
+    profile: dict[str, Any] = {"model": "", "configurations": []}
 
     if not results:
         return profile

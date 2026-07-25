@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Constants
 TELEMETRY_DIR = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
@@ -29,7 +29,7 @@ logger = logging.getLogger("analyzer")
 
 def load_telemetry(
     model_alias: str, limit: int = 500, max_age_seconds: int = 3600
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Load the latest telemetry data points for a specific model.
 
     Filters to the most recent *max_age_seconds* window so that stale data
@@ -42,7 +42,7 @@ def load_telemetry(
 
     points = []
     try:
-        with open(log_file, "r", encoding="utf-8") as f:
+        with open(log_file, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     points.append(json.loads(line))
@@ -55,7 +55,7 @@ def load_telemetry(
         return []
 
 
-def read_current_config(model_alias: str) -> Dict[str, str]:
+def read_current_config(model_alias: str) -> dict[str, str]:
     """Read the current model settings from models.ini or profile.json."""
     config_dict = {}
 
@@ -115,7 +115,7 @@ def read_current_config(model_alias: str) -> Dict[str, str]:
 
     if profile_path.exists():
         try:
-            with open(profile_path, "r") as f:
+            with open(profile_path) as f:
                 profile_data = json.load(f)
                 config_dict.update({str(k): str(v) for k, v in profile_data.items()})
                 logger.info(f"Loaded config overlays from profile {profile_path.name}")
@@ -125,7 +125,7 @@ def read_current_config(model_alias: str) -> Dict[str, str]:
     return config_dict
 
 
-def load_latest_benchmark(model_alias: str) -> Optional[Dict[str, Any]]:
+def load_latest_benchmark(model_alias: str) -> dict[str, Any] | None:
     """Load latest performance benchmark data for baseline comparison."""
     if not BENCHMARK_DIR.exists():
         return None
@@ -143,7 +143,7 @@ def load_latest_benchmark(model_alias: str) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        with open(newest_file, "r") as f:
+        with open(newest_file) as f:
             data = json.load(f)
             # Find the entry for our model
             for res in data.get("results", []):
@@ -160,9 +160,9 @@ def load_latest_benchmark(model_alias: str) -> Optional[Dict[str, Any]]:
 
 def analyze_telemetry(
     model_alias: str,
-    current_config: Optional[Dict[str, str]] = None,
+    current_config: dict[str, str] | None = None,
     performance_first: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Analyze telemetry data and return tuning recommendations."""
     points = load_telemetry(model_alias)
     if not points:
@@ -304,7 +304,7 @@ def analyze_telemetry(
     failed_configs = []
     if failed_configs_file.exists():
         try:
-            with open(failed_configs_file, "r") as f:
+            with open(failed_configs_file) as f:
                 failed_configs = json.load(f)
         except Exception:
             pass
@@ -314,14 +314,13 @@ def analyze_telemetry(
         ctx_val = str(ctx) if ctx is not None else str(curr_ctx)
         for fc in failed_configs:
             fc_model = fc.get("model", "")
-            if model_alias in fc_model or fc_model in model_alias:
-                if (
-                    fc.get("cache-type-k") == cache_k
-                    and fc.get("cache-type-v") == cache_v
-                    and fc.get("n-gpu-layers") == ngl_val
-                    and fc.get("ctx-size") == ctx_val
-                ):
-                    return True
+            if (model_alias in fc_model or fc_model in model_alias) and (
+                fc.get("cache-type-k") == cache_k
+                and fc.get("cache-type-v") == cache_v
+                and fc.get("n-gpu-layers") == ngl_val
+                and fc.get("ctx-size") == ctx_val
+            ):
+                return True
         return False
 
     current_is_failed = is_blacklisted(curr_cache_k, curr_cache_v, curr_ngl, curr_ctx)
@@ -449,13 +448,12 @@ def analyze_telemetry(
 
         # 3. VRAM OOM Warning, but System RAM has headroom
         # Suggest shifting layers back to CPU
-        elif (max_vram > vram_critical) and (final_ram < ram_warning):
-            if curr_ngl > 0:
-                suggested_ngl = max(0, curr_ngl - 10)
-                recommendations["n-gpu-layers"] = str(suggested_ngl)
-                actions.append(
-                    f"Reduce GPU offloaded layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to prevent CUDA OOM."
-                )
+        elif (max_vram > vram_critical) and (final_ram < ram_warning) and curr_ngl > 0:
+            suggested_ngl = max(0, curr_ngl - 10)
+            recommendations["n-gpu-layers"] = str(suggested_ngl)
+            actions.append(
+                f"Reduce GPU offloaded layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to prevent CUDA OOM."
+            )
 
         # 4. VRAM Underutilization: GPU Layer Offload Opportunity
         # If VRAM is underutilized and the model is running with less than full GPU offload,
@@ -608,7 +606,7 @@ def main():
         try:
             profile_data = {}
             if profile_path.exists():
-                with open(profile_path, "r") as f:
+                with open(profile_path) as f:
                     profile_data = json.load(f)
 
             # Apply recommendations

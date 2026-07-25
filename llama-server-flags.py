@@ -111,9 +111,7 @@ def _is_moe(meta: dict) -> bool:
         if key.endswith(".expert_used_count") and isinstance(val, int) and val > 0:
             return True
     arch = meta.get("general.architecture", "")
-    if "moe" in arch.lower():
-        return True
-    return False
+    return "moe" in arch.lower()
 
 
 def _find_active_model() -> str | None:

@@ -113,7 +113,7 @@ async def get_gpu_metrics():
             proc = await asyncio.create_subprocess_exec(
                 *cmd_host, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            out, err = await proc.communicate()
+            out, _err = await proc.communicate()
             if proc.returncode == 0:
                 stdout = out.decode().strip()
         except Exception as e:
@@ -302,7 +302,7 @@ async def main():
             )
             stop_task = asyncio.ensure_future(_stop_event.wait())
 
-            done, pending = await asyncio.wait(
+            _done, pending = await asyncio.wait(
                 {gather_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
             )
 
@@ -350,7 +350,7 @@ async def main():
             sleep_time = max(0.1, POLL_INTERVAL - elapsed)
             try:
                 await asyncio.wait_for(_stop_event.wait(), timeout=sleep_time)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # Normal path — timeout means we keep looping
 
     logger.info("Telemetry Monitor Daemon stopped.")
