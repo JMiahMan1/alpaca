@@ -1184,13 +1184,13 @@ def pull_ollama_model(model_name, insecure=False, no_resume=False):
                 continue
             if _should_stop():
                 print(
-                    f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes)."
+                    f"\nInterrupted: {model_name} (downloaded {sum(layer.get('size', 0) for layer in manifest.get('layers', []))} bytes)."
                 )
                 return 1
             download_blob(client, repo, digest, layer.get("size", 0), headers)
             if _should_stop():
                 print(
-                    f"\nInterrupted: {model_name} (downloaded {sum(l.get('size', 0) for l in manifest.get('layers', []))} bytes)."
+                    f"\nInterrupted: {model_name} (downloaded {sum(layer.get('size', 0) for layer in manifest.get('layers', []))} bytes)."
                 )
                 return 1
         write_manifest_atomic(manifest_path, manifest)
