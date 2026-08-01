@@ -317,6 +317,59 @@ async def test_resolve_router_model_falls_back_to_router_alias_when_symlink_exis
     assert resolved["entry"]["path"] == str(router_path)
 
 
+def test_with_default_tag_does_not_double_tag_router_ids():
+    assert alpaca_proxy.with_default_tag("model") == "model:latest"
+    assert alpaca_proxy.with_default_tag("model:tag") == "model:tag"
+    assert alpaca_proxy.with_default_tag("model--latest") == "model--latest"
+    assert (
+        alpaca_proxy.with_default_tag("qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest")
+        == "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_accepts_router_id_with_double_dash_latest(tmp_path):
+    """Regression: 'family--latest' router ids must resolve without double-tagging.
+
+    with_default_tag appended ':latest' to any name lacking ':', so
+    'qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest' became '...--latest:latest', which
+    matched no router id and no manifest — 404 on every inference for flattened
+    router models (the bug behind SharedLLM mission failures).
+    """
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
+    alpaca_proxy.OLLAMA_BASE = str(tmp_path / "models")
+    alpaca_proxy.ROUTER_MODELS_DIR = str(tmp_path / "router-models")
+    router_path = (
+        tmp_path
+        / "router-models"
+        / "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest.gguf"
+    )
+    router_path.parent.mkdir(parents=True)
+    router_path.write_text("stub")
+    router_id = "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest"
+    alpaca_proxy.fetch_router_models = AsyncMock(
+        return_value=[
+            {
+                "id": router_id,
+                "path": str(router_path),
+                "status": {"value": "unloaded"},
+            }
+        ]
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+    props_resp = AsyncMock()
+    props_resp.status_code = 200
+    props_resp.json = MagicMock(return_value={"n_gpu_layers": -1})
+    alpaca_proxy.client_httpx = AsyncMock()
+    alpaca_proxy.client_httpx.get = AsyncMock(return_value=props_resp)
+
+    resolved = await alpaca_proxy.ensure_model(router_id)
+
+    assert resolved["backend_model"] == router_id
+    alpaca_proxy.post_router_model_action.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_unload_model_ignores_router_400_model_not_found():
     response = httpx.Response(
@@ -1465,51 +1518,32 @@ def test_resolve_ini_section_name():
 
 @pytest.mark.asyncio
 async def test_admin_slots_direct_child_query():
-    """Test /admin/slots resolving the active child port and querying it via docker exec"""
-    import asyncio
-
-    # 1. Mock /models response to return a ready model with --port 37825
-    mock_get = AsyncMock()
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "data": [{"id": "test-model", "status": {"args": ["--port", "37825", "-m", "test.gguf"]}}]
+    """Test /admin/slots resolving the active loaded model and querying /slots via httpx."""
+    # 1. Mock /models response to return a ready model
+    mock_models_resp = MagicMock()
+    mock_models_resp.status_code = 200
+    mock_models_resp.json.return_value = {
+        "data": [{"id": "test-model", "status": {"value": "loaded", "args": ["--port", "37825", "-m", "test.gguf"]}}]
     }
-    mock_get.return_value = mock_resp
 
-    # 2. Mock subprocess command to return slots JSON
-    mock_subproc = AsyncMock()
-    mock_process = MagicMock()
-    mock_process.returncode = 0
-    mock_process.communicate = AsyncMock(
-        return_value=(b'[{"id": 0, "is_processing": true, "n_ctx": 4096, "prompt": [1, 2]}]', b"")
-    )
-    mock_subproc.return_value = mock_process
+    # 2. Mock /slots response
+    mock_slots_resp = MagicMock()
+    mock_slots_resp.status_code = 200
+    mock_slots_resp.json.return_value = [{"id": 0, "is_processing": True, "n_ctx": 4096, "prompt": [1, 2]}]
+
+    mock_get = AsyncMock(side_effect=[mock_models_resp, mock_slots_resp])
 
     # Apply patches directly on alpaca_proxy
     original_client = alpaca_proxy.client_httpx
     alpaca_proxy.client_httpx = MagicMock()
     alpaca_proxy.client_httpx.get = mock_get
 
-    with patch("asyncio.create_subprocess_exec", mock_subproc):
-        # Call slots
-        response = await alpaca_proxy.admin_slots()
-        assert response["total"] == 1
-        assert response["slots"][0]["id"] == 0
-        assert response["slots"][0]["alpaca"]["is_busy"] is True
-        assert response["slots"][0]["alpaca"]["has_prompt_cache"] is True
-
-        # Verify subprocess called with port 37825
-        mock_subproc.assert_called_once_with(
-            "docker",
-            "exec",
-            "llama-server",
-            "curl",
-            "-s",
-            "http://127.0.0.1:37825/slots",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    # Call slots
+    response = await alpaca_proxy.admin_slots()
+    assert response["total"] == 1
+    assert response["slots"][0]["id"] == 0
+    assert response["slots"][0]["alpaca"]["is_busy"] is True
+    assert response["slots"][0]["alpaca"]["has_prompt_cache"] is True
 
     # Restore original client
     alpaca_proxy.client_httpx = original_client

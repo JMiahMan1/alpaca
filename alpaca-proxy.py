@@ -145,6 +145,37 @@ async def release_request_queued(backend: str | None) -> None:
             queued_requests[backend] = max(0, queued_requests.get(backend, 0) - 1)
             active_requests_lock.notify_all()
 
+
+async def acquire_slot(
+    model_name: str, body: dict, default_timeout: float = 120.0,
+) -> tuple[str | None, float | None]:
+    """Resolve model, acquire a slot, and release the queued count.
+
+    Returns ``(backend_model, load_start_ns)`` on success or ``(None, None)``
+    when no slot is available within the timeout window.
+
+    This helper encapsulates the ``ensure_model`` → ``wait_for_slot`` →
+    ``release_request_queued`` sequence used by all four entry-points so that
+        * the queued count is released *immediately* after the slot is confirmed
+          (enabling cross-model swaps during the request lifetime), and
+        * both OpenAI and Ollama endpoints share the same admission logic.
+    """
+    if not model_name:
+        return None, None
+    try:
+        resolved = await ensure_model(model_name)
+        backend_model = resolved["backend_model"]
+    except HTTPException:
+        raise
+    timeout = body.get("queue_timeout", default_timeout)
+    slot_ok = await wait_for_slot(backend_model, timeout=timeout)
+    if not slot_ok:
+        return None, None
+    # Slot confirmed — release the queued count immediately.
+    # The active_requests count will protect the slot for the request lifetime.
+    await release_request_queued(model_name)
+    return backend_model, None
+
 # Thread-safe detailed request tracking (for user query/summary)
 
 active_request_details = {}
@@ -373,7 +404,7 @@ def model_manifest_base():
 
 
 def with_default_tag(model_name):
-    if ":" not in model_name:
+    if ":" not in model_name and not model_name.endswith("--latest"):
         return f"{model_name}:latest"
     return model_name
 
@@ -1911,6 +1942,9 @@ async def openai_chat_completions(request: Request):
                                 }
                             },
                         )
+                    # Slot confirmed — release the queue counter NOW so other models
+                    # aren't blocked from swapping while this request is in-flight.
+                    await release_request_queued(queued_backend)
                     body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
@@ -2018,8 +2052,6 @@ async def openai_chat_completions(request: Request):
                             active_requests_lock.notify_all()
                         # Best-effort cleanup below; guard against cancellation so a dropped
                         # connection can't leave these un-run (the critical work is above).
-                        with suppress(BaseException):
-                            await release_request_queued(queued_backend)
                         req_data = complete_active_request(request_id)
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                         c_toks = req_data.get("completion_tokens", 0) if req_data else 0
@@ -2112,8 +2144,6 @@ async def openai_chat_completions(request: Request):
                             0, active_requests.get(backend_model, 0) - 1
                         )
                         active_requests_lock.notify_all()
-                    with suppress(BaseException):
-                        await release_request_queued(queued_backend)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
                 logger.error(
@@ -2198,6 +2228,9 @@ async def openai_completions(request: Request):
                                 }
                             },
                         )
+                    # Slot confirmed — release the queue counter NOW so other models
+                    # aren't blocked from swapping while this request is in-flight.
+                    await release_request_queued(queued_backend)
                     body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
@@ -2300,8 +2333,6 @@ async def openai_completions(request: Request):
                                 0, active_requests.get(_bm, 0) - 1
                             )
                             active_requests_lock.notify_all()
-                        with suppress(BaseException):
-                            await release_request_queued(queued_backend)
                         req_data = complete_active_request(request_id)
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                         c_toks = req_data.get("completion_tokens", 0) if req_data else 0
@@ -2376,8 +2407,6 @@ async def openai_completions(request: Request):
                             0, active_requests.get(backend_model, 0) - 1
                         )
                         active_requests_lock.notify_all()
-                    with suppress(BaseException):
-                        await release_request_queued(queued_backend)
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
                 logger.error(
@@ -6811,6 +6840,10 @@ async def chat(request: Request):
             status_code=503,
         )
 
+    # Slot confirmed — release the queue counter NOW so other models
+    # aren't blocked from swapping while this request is in-flight.
+    await release_request_queued(_queued_backend)
+
     # Capture the already-resolved backend for use inside stream_proxy via closure.
     # DO NOT call ensure_model() again inside stream_proxy — it was already called
     # above to verify the model is loaded and a slot is available. A second call
@@ -7026,7 +7059,6 @@ async def chat(request: Request):
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
                     active_requests_lock.notify_all()
-            await release_request_queued(_queued_backend)
             complete_active_request(request_id)
 
     if should_stream(body):
@@ -7172,7 +7204,6 @@ async def chat(request: Request):
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
                 active_requests_lock.notify_all()
-        await release_request_queued(_queued_backend)
         complete_active_request(request_id)
 
 
@@ -7223,10 +7254,17 @@ async def generate(request: Request):
             if not await wait_for_slot(
                 resolved_backend, timeout=body.get("queue_timeout", 120.0)
             ):
+                # Timeout — release the queued counter so the count doesn't
+                # leak when the generator exits without ever acquiring a slot.
+                await release_request_queued(queued_backend)
                 yield (
                     f"data: {json.dumps({'error': {'message': 'No llama-server slots available within timeout', 'type': 'rate_limit_error', 'code': 'queue_timeout'}})}\n\n"
                 )
                 return
+
+            # Slot confirmed — release the queue counter NOW so other models
+            # aren't blocked from swapping while this request is in-flight.
+            await release_request_queued(queued_backend)
 
             load_duration = now_ns() - load_started_ns
 
@@ -7442,11 +7480,9 @@ async def generate(request: Request):
                 # interrupted by a client disconnect / task cancellation). See the
                 # chat-stream finally for the full rationale.
                 complete_active_request(request_id)
-                # Do the counter decrement and the queued-slot release inside a
-                # SINGLE `async with` so we never re-enter the (non-reentrant)
-                # Condition while it is already held by this task -- that would
-                # deadlock on generator close (the prior split block left the lock
-                # held, then release_request_queued tried to re-acquire it).
+                # Only decrement the active counter — the queued-slot was
+                # released right after wait_for_slot returned (see stream setup
+                # above), so it is already 0 here.
                 with suppress(BaseException):
                     async with active_requests_lock:
                         active_requests[resolved_backend] = max(
@@ -7456,11 +7492,6 @@ async def generate(request: Request):
                             f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                         )
                         active_requests_lock.notify_all()
-                        if queued_backend:
-                            queued_requests[queued_backend] = max(
-                                0, queued_requests.get(queued_backend, 0) - 1
-                            )
-                            active_requests_lock.notify_all()
 
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
@@ -7481,10 +7512,14 @@ async def generate(request: Request):
             )
 
         # Shared queue: only admit once a slot on this (same) model is available.
-        # The request's queued count is released in the finally block below.
+        # The request's queued count is released right after this point (on
+        # success) or here (on timeout).
         if not await wait_for_slot(
             resolved_backend, timeout=body.get("queue_timeout", 120.0)
         ):
+            # Timeout — release the queued counter so it doesn't leak.
+            if queued_backend:
+                await release_request_queued(queued_backend)
             return JSONResponse(
                 status_code=503,
                 content={
@@ -7492,6 +7527,11 @@ async def generate(request: Request):
                     "status": "queue_timeout",
                 },
             )
+
+        # Slot confirmed — release the queue counter NOW so other models
+        # aren't blocked from swapping while this request is in-flight.
+        if queued_backend:
+            await release_request_queued(queued_backend)
 
         load_duration = now_ns() - load_started_ns
 
@@ -7631,9 +7671,9 @@ async def generate(request: Request):
             # interrupted by a client disconnect / task cancellation). See the
             # chat-stream finally for the full rationale.
             complete_active_request(request_id)
-            # Decrement the in-flight counter and release the queued slot in a
-            # SINGLE `async with` so we never re-enter the (non-reentrant)
-            # Condition while it is already held by this task.
+            # Only decrement the active counter — the queued-slot was
+            # released right after wait_for_slot returned (see above), so it is
+            # already 0 here.
             with suppress(BaseException):
                 async with active_requests_lock:
                     active_requests[resolved_backend] = max(
@@ -7643,11 +7683,6 @@ async def generate(request: Request):
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
                     active_requests_lock.notify_all()
-                    if queued_backend:
-                        queued_requests[queued_backend] = max(
-                            0, queued_requests.get(queued_backend, 0) - 1
-                        )
-                        active_requests_lock.notify_all()
 
 
 @app.get("/api/tags")
