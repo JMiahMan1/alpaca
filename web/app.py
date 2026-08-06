@@ -46,9 +46,11 @@ def load_dotenv_custom():
 
 load_dotenv_custom()
 
-DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv(
-    "DEBUG_LOGGING", "0"
-).lower() in ("1", "true", "yes")
+DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv("DEBUG_LOGGING", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 if not DEBUG_LOGGING:
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -62,9 +64,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 @app.after_request
 def add_cache_headers(response):
     """Prevent caching of static JS/CSS and API endpoints to avoid stale data/code."""
-    if (
-        request.path.startswith("/static/") and request.path.endswith((".js", ".css"))
-    ) or request.path.startswith("/api/"):
+    if (request.path.startswith("/static/") and request.path.endswith((".js", ".css"))) or request.path.startswith(
+        "/api/"
+    ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -73,9 +75,7 @@ def add_cache_headers(response):
 benchmark = LLMModelBenchmark()
 shared_llm_benchmark = SharedLLMModelBenchmark()
 
-puller_path = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py"
-)
+puller_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py")
 PROXY_URL = os.environ.get("PROXY_URL", "http://host.docker.internal:11434")
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://llama-server:8080")
 active_pulls: dict[str, dict[str, Any]] = {}
@@ -129,9 +129,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False, companion
         assert process.stdout is not None, "subprocess stdout should not be None with stdout=PIPE"
 
         print(f"Pull started: {model_name} (PID: {process.pid})")
-        socketio.emit(
-            "pull_log", {"model": model_name, "line": f"[alpaca] Pull started (PID: {process.pid})"}
-        )
+        socketio.emit("pull_log", {"model": model_name, "line": f"[alpaca] Pull started (PID: {process.pid})"})
 
         while True:
             # Use select() with 1s timeout instead of blocking readline() forever
@@ -168,10 +166,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False, companion
                     _terminate_process(process, model_name)
                     active_pulls[model_name]["status"] = "stopped"
                     socketio.emit("pull_status", {"model": model_name, "status": "stopped"})
-                    stop_dir = (
-                        Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router"))
-                        / ".alpaca-stop"
-                    )
+                    stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
                     stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
                     stop_file.unlink(missing_ok=True)
                     return
@@ -183,10 +178,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False, companion
                 if status == "stopping":
                     active_pulls[model_name]["status"] = "stopped"
                     socketio.emit("pull_status", {"model": model_name, "status": "stopped"})
-                    stop_dir = (
-                        Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router"))
-                        / ".alpaca-stop"
-                    )
+                    stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
                     stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
                     stop_file.unlink(missing_ok=True)
                     return
@@ -195,10 +187,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False, companion
             socketio.emit("pull_status", {"model": model_name, "status": "success"})
         else:
             # Clean up stop marker on failure so it doesn't block future pulls
-            stop_dir = (
-                Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router"))
-                / ".alpaca-stop"
-            )
+            stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
             stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
             stop_file.unlink(missing_ok=True)
             socketio.emit(
@@ -293,18 +282,14 @@ def get_progress_callback(run_type):
                         "progress": {
                             "completed": active_run["tests_completed"],
                             "total": active_run["total_tests"],
-                            "percentage": round(
-                                (active_run["tests_completed"] / active_run["total_tests"]) * 100
-                            ),
+                            "percentage": round((active_run["tests_completed"] / active_run["total_tests"]) * 100),
                         },
                     },
                 )
 
             elif event == "model_complete":
                 active_run["results"].append(data["results"])
-                socketio.emit(
-                    "model_complete", {"model": data["model"], "results": data["results"]}
-                )
+                socketio.emit("model_complete", {"model": data["model"], "results": data["results"]})
 
             elif event == "benchmark_complete":
                 active_run["status"] = data.get("status", "completed")
@@ -350,9 +335,7 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_id
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
-                    print(
-                        "[benchmark] Thread exiting with status still 'running' — forcing to 'completed'"
-                    )
+                    print("[benchmark] Thread exiting with status still 'running' — forcing to 'completed'")
                     active_run["status"] = "completed"
                     active_run["current_model"] = None
                     active_run["current_test"] = None
@@ -392,9 +375,7 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
-                    print(
-                        "[benchmark] SharedLLM thread exiting with status still 'running' — forcing to 'completed'"
-                    )
+                    print("[benchmark] SharedLLM thread exiting with status still 'running' — forcing to 'completed'")
                     active_run["status"] = "completed"
                     active_run["current_model"] = None
                     active_run["current_test"] = None
@@ -424,7 +405,11 @@ def get_status():
 
 @app.route("/api/models")
 def get_models():
-    """Return available models from proxies and direct ollama instances"""
+    """Return available models from proxies and direct ollama instances.
+    Includes router GGUF models (standalone files without Ollama manifests)
+    by merging with _get_router_text_models(), matching the approach used
+    by /api/models/text and /api/models/vision.
+    """
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -437,10 +422,10 @@ def get_models():
         if proxy_models and proxy_models != fallback and direct_models == fallback:
             direct_models = []
 
-        combined = list(dict.fromkeys(direct_models + proxy_models))
-        return jsonify(
-            {"models": combined, "direct_models": direct_models, "proxy_models": proxy_models}
-        )
+        router_models = _get_router_text_models()
+
+        combined = list(dict.fromkeys(direct_models + proxy_models + router_models))
+        return jsonify({"models": combined, "direct_models": direct_models, "proxy_models": proxy_models})
     except Exception as e:
         fallback = benchmark._get_fallback_models()
         return jsonify(
@@ -612,9 +597,7 @@ def get_proxy_status():
                     "metrics": metrics_resp.json() if metrics_resp.status_code == 200 else {},
                     "runtime": runtime_resp.json() if runtime_resp.status_code == 200 else {},
                     "slots": slots_resp.json() if slots_resp.status_code == 200 else {},
-                    "logs": logs_resp.json().get("logs", [])
-                    if logs_resp.status_code == 200
-                    else [],
+                    "logs": logs_resp.json().get("logs", []) if logs_resp.status_code == 200 else [],
                 }
             )
     except Exception as e:
@@ -704,7 +687,6 @@ def sd_presets_api():
         return jsonify({"error": str(e)}), 500
 
 
-
 @app.route("/api/sd/load", methods=["POST"])
 def sd_load_api():
     """Load a Stable Diffusion model into the sd-server backend (no generation)."""
@@ -719,7 +701,9 @@ def sd_load_api():
         return jsonify({"error": str(e)}), 500
 
 
-def embed_qr_code_onto_image(b64_image_str: str, qr_text: str, position: str = "bottom_right", label: str = "SCAN ME") -> str:
+def embed_qr_code_onto_image(
+    b64_image_str: str, qr_text: str, position: str = "bottom_right", label: str = "SCAN ME"
+) -> str:
     """Generates a scannable QR Code and merges it onto the base64 flyer image."""
     import base64
     from io import BytesIO
@@ -737,12 +721,7 @@ def embed_qr_code_onto_image(b64_image_str: str, qr_text: str, position: str = "
         bw, bh = base_img.size
 
         # Generate QR Code image
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_M,
-            box_size=6,
-            border=2
-        )
+        qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=2)
         qr.add_data(qr_text)
         qr.make(fit=True)
         qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
@@ -904,6 +883,7 @@ def vision_ocr_api():
         if filename.endswith(".pdf"):
             try:
                 import fitz  # PyMuPDF
+
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
                 page = doc.load_page(0)
                 pix = page.get_pixmap(dpi=150)
@@ -938,8 +918,8 @@ def vision_ocr_api():
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
-                ]
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                ],
             }
         ]
 
@@ -952,12 +932,7 @@ def vision_ocr_api():
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
-                    json={
-                        "model": proxy_model,
-                        "messages": messages,
-                        "max_tokens": 1000,
-                        "temperature": 0.1
-                    }
+                    json={"model": proxy_model, "messages": messages, "max_tokens": 1000, "temperature": 0.1},
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -973,7 +948,7 @@ def vision_ocr_api():
                     "full_text": "Extracted document text structure ready for poster synthesis.",
                     "headline": "SUMMER FESTIVAL 2026",
                     "subtext": "AUGUST 15 • DOORS OPEN AT 8 PM",
-                    "badge": "GET TICKETS NOW"
+                    "badge": "GET TICKETS NOW",
                 }
             else:
                 try:
@@ -984,12 +959,7 @@ def vision_ocr_api():
                         clean_json = clean_json.split("```")[1].split("```")[0].strip()
                     parsed = json.loads(clean_json)
                 except Exception:
-                    parsed = {
-                        "full_text": raw_text,
-                        "headline": "",
-                        "subtext": "",
-                        "badge": ""
-                    }
+                    parsed = {"full_text": raw_text, "headline": "", "subtext": "", "badge": ""}
 
             return jsonify({"status": "success", "ocr_result": parsed, "raw_response": raw_text})
 
@@ -1001,16 +971,14 @@ def _get_router_text_models() -> list[str]:
     """Return all text/VL model IDs from llama-server router (includes standalone GGUFs without Ollama manifests)."""
     try:
         import httpx
+
         with httpx.Client(timeout=3.0) as client:
             resp = client.get(f"{LLAMA_SERVER_URL}/models")
             if resp.status_code == 200:
                 # Filter out image-generation models (SD/flux/image-edit)
                 sd_keywords = ["image-edit", "qwen-image", "qwen_image", "sd", "flux", "diffusion"]
                 models = resp.json().get("data", [])
-                return [
-                    m["id"] for m in models
-                    if not any(kw in m["id"].lower() for kw in sd_keywords)
-                ]
+                return [m["id"] for m in models if not any(kw in m["id"].lower() for kw in sd_keywords)]
     except Exception:
         pass
     return []
@@ -1020,6 +988,7 @@ def _get_active_text_model() -> str:
     """Helper to return the currently loaded model on proxy, or first available text/VL model."""
     try:
         import httpx
+
         with httpx.Client(timeout=3.0) as client:
             resp = client.get(f"{PROXY_URL}/admin/runtime")
             if resp.status_code == 200:
@@ -1039,7 +1008,6 @@ def _get_active_text_model() -> str:
     if router_models:
         return router_models[0]
     return ""
-
 
 
 @app.route("/api/models/text")
@@ -1084,10 +1052,7 @@ def get_vision_models():
     all_models = all_models_resp.get_json().get("models", [])
 
     # Filter strictly for Vision/VL models
-    vision_models = [
-        m for m in all_models
-        if any(k in m.lower() for k in vl_keywords)
-    ]
+    vision_models = [m for m in all_models if any(k in m.lower() for k in vl_keywords)]
 
     # Sort vision models by parameter count descending (7b > 3b)
     def _sort_key(name: str) -> int:
@@ -1108,9 +1073,6 @@ def get_vision_models():
 
     vision_models.sort(key=_sort_key, reverse=True)
     return jsonify({"models": vision_models})
-
-
-
 
 
 @app.route("/api/vision/describe", methods=["POST"])
@@ -1151,8 +1113,8 @@ def vision_describe_api():
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
-                ]
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                ],
             }
         ]
 
@@ -1168,27 +1130,20 @@ def vision_describe_api():
         with httpx.Client(timeout=300.0) as client:
             # Pre-warm / ensure model is loaded in proxy first
             with contextlib.suppress(Exception):
-                client.post(
-                    f"{PROXY_URL}/admin/models/switch",
-                    json={"model": proxy_model},
-                    timeout=300.0
-                )
+                client.post(f"{PROXY_URL}/admin/models/switch", json={"model": proxy_model}, timeout=300.0)
 
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
-                    json={
-                        "model": proxy_model,
-                        "messages": messages,
-                        "max_tokens": 400,
-                        "temperature": 0.2
-                    }
+                    json={"model": proxy_model, "messages": messages, "max_tokens": 400, "temperature": 0.2},
                 )
                 if resp.status_code == 200:
                     description = resp.json()["choices"][0]["message"]["content"].strip()
                 else:
                     error_detail = f"Proxy returned HTTP {resp.status_code}: {resp.text[:200]}"
-                    app.logger.warning("Vision describe: model %s returned %s — %s", model, resp.status_code, resp.text[:200])
+                    app.logger.warning(
+                        "Vision describe: model %s returned %s — %s", model, resp.status_code, resp.text[:200]
+                    )
             except Exception as exc:
                 error_detail = f"Connection error: {exc}"
                 app.logger.warning("Vision describe: request failed — %s", exc)
@@ -1198,11 +1153,13 @@ def vision_describe_api():
                 app.logger.error("Vision describe failed for model %s: %s", model, err_msg)
                 return jsonify({"error": f"Vision AI analysis failed ({model}): {err_msg}"}), 500
 
-            return jsonify({
-                "status": "success",
-                "image_description": description,
-                "model_used": model_used,
-            })
+            return jsonify(
+                {
+                    "status": "success",
+                    "image_description": description,
+                    "model_used": model_used,
+                }
+            )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1219,7 +1176,6 @@ def vision_synthesize_edit_prompt_api():
 
     if not base_desc or not desired_changes:
         return jsonify({"error": "base_description and desired_changes are required"}), 400
-
 
     model = (data.get("model") or "").strip()
     if not model:
@@ -1254,7 +1210,11 @@ def vision_synthesize_edit_prompt_api():
     if preserve_face:
         negative += ", deformed face, changed identity, different person, altered face"
 
-    face_inst = "Keep the subject's face, facial features, identity, and skin texture exactly the same." if preserve_face else "Allow changing the subject's face and identity to match the new character style."
+    face_inst = (
+        "Keep the subject's face, facial features, identity, and skin texture exactly the same."
+        if preserve_face
+        else "Allow changing the subject's face and identity to match the new character style."
+    )
 
     if "qwen" in target_image_model:
         system_msg = (
@@ -1277,7 +1237,7 @@ def vision_synthesize_edit_prompt_api():
             f"2. {face_inst} "
             "3. Output ONLY the final prompt paragraph — no explanations, no quotes, no preamble."
         )
-    else: # Stable Diffusion / SDXL
+    else:  # Stable Diffusion / SDXL
         face_tag = "preserve exact face and identity, " if preserve_face else ""
         system_msg = (
             "You are an expert AI image prompt engineer for Stable Diffusion and SDXL in-painting. "
@@ -1296,7 +1256,6 @@ def vision_synthesize_edit_prompt_api():
         f"Write the prompt now:"
     )
 
-
     try:
         with httpx.Client(timeout=120.0) as client:
             resp = client.post(
@@ -1310,17 +1269,17 @@ def vision_synthesize_edit_prompt_api():
                     "max_tokens": 600,
                     "temperature": 0.4,
                     "think": False,
-                }
+                },
             )
             if resp.status_code == 200:
                 raw = resp.json()["choices"][0]["message"]["content"].strip()
                 # Strip any thinking blocks thinking models may emit
                 import re
+
                 master_prompt = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
             else:
                 app.logger.warning(
-                    "Synthesis: model %s returned %s — %s",
-                    proxy_model, resp.status_code, resp.text[:300]
+                    "Synthesis: model %s returned %s — %s", proxy_model, resp.status_code, resp.text[:300]
                 )
                 master_prompt = ""
 
@@ -1331,24 +1290,28 @@ def vision_synthesize_edit_prompt_api():
                     f"sharp focus, real skin texture, professional photography"
                 )
 
-            return jsonify({
-                "status": "success",
-                "master_prompt": master_prompt,
-                "suggested_strength": strength,
-                "suggested_negative": negative,
-            })
+            return jsonify(
+                {
+                    "status": "success",
+                    "master_prompt": master_prompt,
+                    "suggested_strength": strength,
+                    "suggested_negative": negative,
+                }
+            )
     except Exception as exc:
         app.logger.warning("Synthesis: request failed — %s", exc)
         master_prompt = (
             f"photorealistic photograph, {base_desc}, {desired_changes}, preserve exact face and identity, "
             f"{style_preset} style, 8k resolution, RAW photo, DSLR camera, natural lighting, sharp focus"
         )
-        return jsonify({
-            "status": "success",
-            "master_prompt": master_prompt,
-            "suggested_strength": strength,
-            "suggested_negative": negative,
-        })
+        return jsonify(
+            {
+                "status": "success",
+                "master_prompt": master_prompt,
+                "suggested_strength": strength,
+                "suggested_negative": negative,
+            }
+        )
 
 
 @app.route("/api/run", methods=["POST"])
@@ -1459,9 +1422,7 @@ def get_results_list():
 
         # Load SharedLLM results
         shared_dir = shared_llm_benchmark.RESULTS_DIR
-        shared_files = (
-            list(shared_dir.glob("shared_llm_benchmarks_*.json")) if shared_dir.exists() else []
-        )
+        shared_files = list(shared_dir.glob("shared_llm_benchmarks_*.json")) if shared_dir.exists() else []
 
         results_list = []
 
@@ -1478,9 +1439,7 @@ def get_results_list():
                         "benchmark_type": data.get("benchmark_type"),
                         "models_tested": data.get("models_tested"),
                         "status": data.get("status", "completed"),
-                        "models": [
-                            r.get("model") for r in data.get("results", []) if r.get("model")
-                        ],
+                        "models": [r.get("model") for r in data.get("results", []) if r.get("model")],
                         "saved_as": str(file_path),
                     }
                 )
@@ -1500,9 +1459,7 @@ def get_results_list():
                         "benchmark_type": data.get("benchmark_type"),
                         "models_tested": data.get("models_tested"),
                         "status": data.get("status", "completed"),
-                        "models": [
-                            r.get("model") for r in data.get("results", []) if r.get("model")
-                        ],
+                        "models": [r.get("model") for r in data.get("results", []) if r.get("model")],
                         "saved_as": str(file_path),
                     }
                 )
@@ -1744,9 +1701,7 @@ def save_profile():
             except Exception as pe:
                 print(f"Failed to save profile json overlay: {pe}")
 
-        return jsonify(
-            {"status": "success", "message": f"Successfully updated section [{section}]"}
-        )
+        return jsonify({"status": "success", "message": f"Successfully updated section [{section}]"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1808,9 +1763,7 @@ def delete_profile():
                 print(f"Failed to remove profile json file: {pe}")
 
         if removed or removed_any_profile:
-            return jsonify(
-                {"status": "success", "message": f"Successfully deleted profile [{section}]"}
-            )
+            return jsonify({"status": "success", "message": f"Successfully deleted profile [{section}]"})
         else:
             return jsonify({"error": f"Section [{section}] not found"}), 404
     except Exception as e:
@@ -1898,9 +1851,7 @@ def restart_proxy_services():
             print(f"Subprocess restart failed: {e}")
 
     threading.Thread(target=run_restart_subprocess, daemon=True).start()
-    return jsonify(
-        {"status": "success", "message": "Backend restart sequence initiated via fallback."}
-    )
+    return jsonify({"status": "success", "message": "Backend restart sequence initiated via fallback."})
 
 
 @app.route("/api/requests")
@@ -1928,9 +1879,7 @@ def get_active_requests():
             if resp.status_code == 200:
                 return jsonify(resp.json())
             else:
-                return jsonify(
-                    {"error": f"Proxy returned status {resp.status_code}"}
-                ), resp.status_code
+                return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
     except Exception as e:
         return jsonify({"error": f"Failed to fetch requests telemetry from proxy: {e!s}"}), 500
 
@@ -1960,9 +1909,7 @@ def clear_completed_requests():
             if resp.status_code == 200:
                 return jsonify(resp.json())
             else:
-                return jsonify(
-                    {"error": f"Proxy returned status {resp.status_code}"}
-                ), resp.status_code
+                return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
     except Exception as e:
         return jsonify({"error": f"Failed to clear requests history in proxy: {e!s}"}), 500
 
@@ -2016,9 +1963,7 @@ def resubmit_stuck_request(request_id):
                     if resp.status_code != 200:
                         continue
                     all_data = resp.json()
-                    all_requests = all_data.get("active_requests", []) + all_data.get(
-                        "completed_requests", []
-                    )
+                    all_requests = all_data.get("active_requests", []) + all_data.get("completed_requests", [])
                     req = None
                     for r in all_requests:
                         if r.get("request_id") == request_id:
@@ -2086,9 +2031,7 @@ def resubmit_stuck_request(request_id):
 
                 resp = client.post(endpoint, json=body, timeout=60.0)
                 if resp.status_code != 200:
-                    return jsonify(
-                        {"error": f"Proxy returned status {resp.status_code}"}
-                    ), resp.status_code
+                    return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
 
                 result = resp.json()
 
@@ -2545,10 +2488,7 @@ def get_optimal_model():
         explanation = f"Matched to configured model for task type '{task}'."
     else:
         optimal_model = loaded_model
-        explanation = (
-            f"No model configured for task type '{task}'; "
-            "falling back to the currently loaded model."
-        )
+        explanation = f"No model configured for task type '{task}'; falling back to the currently loaded model."
 
     # If the caller requests specific speed overrides, validate models based on benchmarks
     if optimal_model:
@@ -2632,9 +2572,7 @@ def get_model_usage():
             if resp.status_code == 200:
                 return jsonify(resp.json())
             else:
-                return jsonify(
-                    {"error": f"Proxy returned status {resp.status_code}"}
-                ), resp.status_code
+                return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
     except Exception as e:
         return jsonify({"error": f"Failed to fetch model usage stats: {e!s}"}), 500
 
@@ -2973,9 +2911,7 @@ def search_models():
                 likes = model_item.get("likes", 0)
                 author = model_item.get("author", "")
                 display_tags = [
-                    t
-                    for t in tags
-                    if t not in ("gguf", "diffusers", "transformers", "pytorch", "safetensors")
+                    t for t in tags if t not in ("gguf", "diffusers", "transformers", "pytorch", "safetensors")
                 ][:5]
                 desc = f"Repository by {author}. Downloads: {downloads:,} | Likes: {likes:,}"
                 return {
@@ -3024,9 +2960,7 @@ def search_models():
                     likes = model_item.get("likes", 0)
                     author = model_item.get("author", "")
                     display_tags = [
-                        t
-                        for t in tags
-                        if t not in ("gguf", "diffusers", "transformers", "pytorch", "safetensors")
+                        t for t in tags if t not in ("gguf", "diffusers", "transformers", "pytorch", "safetensors")
                     ][:5]
                     results.insert(
                         0,
@@ -3098,9 +3032,7 @@ def get_hf_files():
             "illustrious",
             "diffusion",
         ]
-        is_sd_repo = any(t in _SD_HF_TAGS for t in tags) or any(
-            kw in repo.lower() for kw in _SD_NAME_KW
-        )
+        is_sd_repo = any(t in _SD_HF_TAGS for t in tags) or any(kw in repo.lower() for kw in _SD_NAME_KW)
 
         siblings = model_info.get("siblings", [])
         model_files = []
@@ -3116,7 +3048,7 @@ def get_hf_files():
             size = s.get("size")
             size_str = ""
             if size:
-                size_str = f"{size / 1024 ** 3:.2f} GB" if size > 1024 ** 3 else f"{size / 1024 ** 2:.1f} MB"
+                size_str = f"{size / 1024**3:.2f} GB" if size > 1024**3 else f"{size / 1024**2:.1f} MB"
 
             file_type = "stable-diffusion" if (is_safetensors or is_sd_repo) else "llm"
             model_files.append(
@@ -3128,9 +3060,7 @@ def get_hf_files():
                 }
             )
 
-        return jsonify(
-            {"files": model_files, "repo_type": "stable-diffusion" if is_sd_repo else "llm"}
-        )
+        return jsonify({"files": model_files, "repo_type": "stable-diffusion" if is_sd_repo else "llm"})
     except Exception as e:
         return jsonify({"error": f"Error fetching Hugging Face files: {e!s}"}), 500
 
@@ -3211,9 +3141,7 @@ def trigger_model_pull():
             "logs": [],
         }
 
-    t = threading.Thread(
-        target=run_puller_thread, args=(model, source, local_name, no_resume, companion), daemon=True
-    )
+    t = threading.Thread(target=run_puller_thread, args=(model, source, local_name, no_resume, companion), daemon=True)
     t.start()
 
     return jsonify(
@@ -3280,9 +3208,7 @@ def cancel_pull(model_id):
     stop_dir = Path(os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
     stop_file = stop_dir / f"{model_id.replace('/', '_').replace(':', '_')}"
     stop_file.unlink(missing_ok=True)
-    print(
-        f"Cancelled pull for {pull['model']}, partial downloads will be cleaned up on next restart."
-    )
+    print(f"Cancelled pull for {pull['model']}, partial downloads will be cleaned up on next restart.")
 
     return jsonify({"status": "cancelled", "message": f"Pull for {pull['model']} cancelled."})
 
