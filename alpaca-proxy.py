@@ -21,9 +21,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 LOG_BUFFER = deque(maxlen=1000)
 
 
-DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv(
-    "DEBUG_LOGGING", "0"
-).lower() in ("1", "true", "yes")
+DEBUG_LOGGING = os.getenv("DEBUG", "0").lower() in ("1", "true", "yes") or os.getenv("DEBUG_LOGGING", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 class DequeHandler(logging.Handler):
@@ -56,7 +58,9 @@ if not logger.handlers:
         os.makedirs(_log_dir, exist_ok=True)
         _fh = RotatingFileHandler(
             os.path.join(_log_dir, "alpaca-proxy.log"),
-            maxBytes=5_000_000, backupCount=3, encoding="utf-8",
+            maxBytes=5_000_000,
+            backupCount=3,
+            encoding="utf-8",
         )
         _fh.setFormatter(formatter)
         logger.addHandler(_fh)
@@ -91,12 +95,8 @@ DEFAULT_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
 MAX_LOADED_MODELS = int(os.getenv("MAX_LOADED_MODELS", "1"))
 ROUTER_MODELS_URL = f"{LLAMA_SERVER_URL}/models"
 ROUTER_MODELS_DIR = os.getenv("ROUTER_MODELS_DIR", "/router-models")
-LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS = float(
-    os.getenv("LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS", "60")
-)
-LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv(
-    "LLAMA_SERVER_READ_TIMEOUT_SECONDS", "600"
-).strip()  # Default to 600s
+LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS = float(os.getenv("LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS", "60"))
+LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv("LLAMA_SERVER_READ_TIMEOUT_SECONDS", "600").strip()  # Default to 600s
 FOREVER_EXPIRES_AT = "9999-12-31T23:59:59Z"
 LOADED_MODELS_STATE_FILE = os.path.join(ROUTER_MODELS_DIR, ".loaded-models.json")
 
@@ -147,7 +147,9 @@ async def release_request_queued(backend: str | None) -> None:
 
 
 async def acquire_slot(
-    model_name: str, body: dict, default_timeout: float = 120.0,
+    model_name: str,
+    body: dict,
+    default_timeout: float = 120.0,
 ) -> tuple[str | None, float | None]:
     """Resolve model, acquire a slot, and release the queued count.
 
@@ -175,6 +177,7 @@ async def acquire_slot(
     # The active_requests count will protect the slot for the request lifetime.
     await release_request_queued(model_name)
     return backend_model, None
+
 
 # Thread-safe detailed request tracking (for user query/summary)
 
@@ -265,9 +268,7 @@ def sanitize_prompt(text: str) -> str:
     return text
 
 
-def register_active_request(
-    request_id, model, req_type, payload, request_source="unknown", client_ip="unknown"
-):
+def register_active_request(request_id, model, req_type, payload, request_source="unknown", client_ip="unknown"):
     prompt_str = ""
     if "messages" in payload:
         msgs = payload["messages"]
@@ -309,9 +310,7 @@ def update_active_request_progress(request_id, response_chunk=None, thinking_chu
                 req["ttft_seconds"] = round(time.time() - req["started_at"], 3)
 
 
-def complete_active_request(
-    request_id, final_response=None, final_thinking=None, prompt_tokens=0, completion_tokens=0
-):
+def complete_active_request(request_id, final_response=None, final_thinking=None, prompt_tokens=0, completion_tokens=0):
     req = None
     with active_request_details_lock:
         if request_id in active_request_details:
@@ -323,9 +322,7 @@ def complete_active_request(
 
             # Extract thinking block if embedded in response
             if not req.get("thinking") and req.get("response"):
-                match = re.search(
-                    r"<(think|thinking)>([\s\S]*?)</\1>", req["response"], flags=re.IGNORECASE
-                )
+                match = re.search(r"<(think|thinking)>([\s\S]*?)</\1>", req["response"], flags=re.IGNORECASE)
                 if match:
                     req["thinking"] = match.group(2).strip()
                     req["response"] = re.sub(
@@ -412,7 +409,10 @@ def with_default_tag(model_name):
 def public_model_name(model_name):
     resolved = with_default_tag(model_name)
     if resolved.endswith(":latest"):
-        return resolved[:-7]
+        resolved = resolved[:-7]
+    if "--" in resolved:
+        family, tag = resolved.rsplit("--", 1)
+        resolved = f"{family}:{tag}"
     return resolved
 
 
@@ -652,11 +652,7 @@ def router_model_candidates(model_name, manifest):
             with_default_tag(model_name),
         ]
     )
-    return [
-        candidate
-        for i, candidate in enumerate(candidates)
-        if candidate and candidate not in candidates[:i]
-    ]
+    return [candidate for i, candidate in enumerate(candidates) if candidate and candidate not in candidates[:i]]
 
 
 def router_entry_status(entry):
@@ -858,9 +854,7 @@ def apply_thinking_override(payload, body):
         think_val = body.get("enable_thinking")
     if think_val is None and isinstance(body.get("options"), dict):
         opts = body["options"]
-        think_val = (
-            opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
-        )
+        think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
     if think_val is False:
         original_n_predict = payload.get("n_predict")
@@ -945,9 +939,7 @@ async def fetch_router_models(reload=False):
         resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
         resp.raise_for_status()
     except (httpx.ConnectError, httpx.ConnectTimeout, httpx.HTTPStatusError, httpx.HTTPError) as exc:
-        logger.warning(
-            f"Connection/request to llama-server failed: {exc}. Waiting for server to become responsive..."
-        )
+        logger.warning(f"Connection/request to llama-server failed: {exc}. Waiting for server to become responsive...")
         if await wait_for_llama_server():
             resp = await client_httpx.get(ROUTER_MODELS_URL, params=params)
             resp.raise_for_status()
@@ -978,9 +970,7 @@ async def resolve_router_model(model_name, reload=True):
     if not manifest_path:
         raise HTTPException(status_code=404, detail=f"Model {resolved_name} not found")
     if manifest is None:
-        raise HTTPException(
-            status_code=409, detail=f"Model {resolved_name} is still downloading or incomplete."
-        )
+        raise HTTPException(status_code=409, detail=f"Model {resolved_name} is still downloading or incomplete.")
 
     if is_image_model_manifest(manifest):
         raise HTTPException(
@@ -1029,9 +1019,7 @@ async def resolve_router_model(model_name, reload=True):
             "router_models": router_models,
         }
 
-    raise HTTPException(
-        status_code=404, detail=f"Router could not discover backend model for {resolved_name}"
-    )
+    raise HTTPException(status_code=404, detail=f"Router could not discover backend model for {resolved_name}")
 
 
 def effective_keep_alive(keep_alive):
@@ -1060,9 +1048,7 @@ async def post_router_model_action(action, payload):
     try:
         resp = await client_httpx.post(url, json=json_body)
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-        logger.warning(
-            f"Connection to llama-server failed: {exc}. Waiting for server to become responsive..."
-        )
+        logger.warning(f"Connection to llama-server failed: {exc}. Waiting for server to become responsive...")
         if await wait_for_llama_server():
             resp = await client_httpx.post(url, json=json_body)
         else:
@@ -1139,9 +1125,7 @@ async def unload_model(model_name):
             logger.warning("Router model unload endpoint unavailable; skipping explicit unload.")
             return
         except httpx.HTTPStatusError as exc:
-            if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(
-                backend_model
-            ):
+            if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(backend_model):
                 logger.info(f"Router ignored unload for {backend_model}: {exc}")
             else:
                 raise
@@ -1225,9 +1209,7 @@ async def apply_keep_alive_policy(model_name, keep_alive):
         await unload_model(model_name)
         return
 
-    model_expires_at[public_name] = (
-        datetime.fromtimestamp(time.time() + seconds).astimezone().isoformat()
-    )
+    model_expires_at[public_name] = datetime.fromtimestamp(time.time() + seconds).astimezone().isoformat()
     model_unload_tasks[public_name] = asyncio.create_task(unload_model_later(model_name, seconds))
 
 
@@ -1250,9 +1232,7 @@ def timing_stats(data, fallback_total_duration=None, fallback_load_duration=0):
 
     timings = data.get("timings") or {}
     total_duration = total_duration if total_duration is not None else fallback_total_duration
-    prompt_eval_duration = (
-        prompt_eval_duration if prompt_eval_duration is not None else timings.get("prompt_ms")
-    )
+    prompt_eval_duration = prompt_eval_duration if prompt_eval_duration is not None else timings.get("prompt_ms")
     eval_duration = eval_duration if eval_duration is not None else timings.get("predicted_ms")
 
     if isinstance(prompt_eval_duration, (int, float)) and prompt_eval_duration < 10_000_000:
@@ -1457,10 +1437,7 @@ async def log_requests(request: Request, call_next):
         # 3. Browser UI / CORS requests from web page
         elif sec_fetch_mode == "cors" or origin or referer:
             # If it's a browser request, distinguish between the dashboard/web UI and general browser calls
-            if any(
-                h in referer
-                for h in ("localhost:5000", "127.0.0.1:5000", "jarvis.sumemail.com", "/dashboard")
-            ):
+            if any(h in referer for h in ("localhost:5000", "127.0.0.1:5000", "jarvis.sumemail.com", "/dashboard")):
                 request_source = "browser/ui"
             else:
                 request_source = "browser/web-page"
@@ -1491,8 +1468,7 @@ async def log_requests(request: Request, call_next):
 
     if DEBUG_LOGGING:
         logger.info(
-            f"Hit: {request.method} {request.url.path} | "
-            f"Origin: {request_source} | IP: {client_ip} | UA: {user_agent}",
+            f"Hit: {request.method} {request.url.path} | Origin: {request_source} | IP: {client_ip} | UA: {user_agent}",
             extra={"request_id": request_id, "request_source": request_source},
         )
     else:
@@ -1546,9 +1522,7 @@ metrics_lock = asyncio.Lock()
 async def record_metrics(endpoint, latency_ms, prompt_tokens=0, gen_tokens=0, error=False):
     async with metrics_lock:
         metrics["requests_total"] += 1
-        metrics["requests_by_endpoint"][endpoint] = (
-            metrics["requests_by_endpoint"].get(endpoint, 0) + 1
-        )
+        metrics["requests_by_endpoint"][endpoint] = metrics["requests_by_endpoint"].get(endpoint, 0) + 1
         metrics["tokens_prompted"] += prompt_tokens
         metrics["tokens_generated"] += gen_tokens
         if error:
@@ -1556,9 +1530,7 @@ async def record_metrics(endpoint, latency_ms, prompt_tokens=0, gen_tokens=0, er
         metrics["latency_samples"].append(latency_ms)
         if len(metrics["latency_samples"]) > 1000:
             metrics["latency_samples"] = metrics["latency_samples"][-500:]
-        metrics["avg_latency_ms"] = sum(metrics["latency_samples"]) / len(
-            metrics["latency_samples"]
-        )
+        metrics["avg_latency_ms"] = sum(metrics["latency_samples"]) / len(metrics["latency_samples"])
 
 
 # ─── Grammar/Schema Registry ──────────────────────────────────────────────────
@@ -1755,9 +1727,7 @@ async def embed(request: Request):
         if not body.get("truncate", True):
             result["truncated"] = False
 
-        await record_metrics(
-            "/api/embed", total_duration / 1e6, prompt_tokens=result["prompt_eval_count"]
-        )
+        await record_metrics("/api/embed", total_duration / 1e6, prompt_tokens=result["prompt_eval_count"])
         return JSONResponse(result)
     except httpx.HTTPStatusError as e:
         await record_metrics("/api/embed", 0, error=True)
@@ -1799,10 +1769,7 @@ def _sd_openai_model_entry(name: str, manifest: dict) -> dict:
 @app.get("/v1/models")
 async def openai_models():
     """OpenAI-compatible model listing. Proxies to llama-server /v1/models or builds from local manifests."""
-    sd_entries = [
-        _sd_openai_model_entry(name, manifest)
-        for name, _blob, manifest in iter_local_sd_models()
-    ]
+    sd_entries = [_sd_openai_model_entry(name, manifest) for name, _blob, manifest in iter_local_sd_models()]
     try:
         resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/v1/models")
         if resp.status_code == 200:
@@ -1925,9 +1892,7 @@ async def openai_chat_completions(request: Request):
                     # different model (which would force a swap + thrash). Model
                     # switching is still permitted when no slots are taken (idle)
                     # or the request targets the same already-loaded model.
-                    slot_ok = await wait_for_slot(
-                        backend_model, timeout=body.get("queue_timeout", 120.0)
-                    )
+                    slot_ok = await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0))
                     if not slot_ok:
                         await release_request_queued(queued_backend)
                         complete_active_request(request_id)
@@ -1997,19 +1962,13 @@ async def openai_chat_completions(request: Request):
                                                 if payload_str and payload_str != "[DONE]":
                                                     payload_json = json.loads(payload_str)
                                                     choices = payload_json.get("choices")
-                                                    if (
-                                                        choices
-                                                        and isinstance(choices, list)
-                                                        and len(choices) > 0
-                                                    ):
+                                                    if choices and isinstance(choices, list) and len(choices) > 0:
                                                         delta = choices[0].get("delta")
                                                         if delta:
                                                             update_active_request_progress(
                                                                 request_id,
                                                                 response_chunk=delta.get("content"),
-                                                                thinking_chunk=delta.get(
-                                                                    "reasoning_content"
-                                                                )
+                                                                thinking_chunk=delta.get("reasoning_content")
                                                                 or delta.get("thinking"),
                                                             )
                                             except Exception:
@@ -2025,15 +1984,11 @@ async def openai_chat_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        task = asyncio.create_task(
-                                            _ensure_model_skip_swap(model_name)
-                                        )
+                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
                                         task.set_name(f"midstream-recovery-chat-{model_name}")
                                         task.add_done_callback(handle_background_task_result)
                                     return
-                                logger.warning(
-                                    f"Connection lost during stream init: {exc}. Retrying recovery/load..."
-                                )
+                                logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
                                 await ensure_model(model_name)
                                 await asyncio.sleep(2.0)
                     finally:
@@ -2046,9 +2001,7 @@ async def openai_chat_completions(request: Request):
                         # guarantees the entry is always removed.
                         complete_active_request(request_id)
                         async with active_requests_lock:
-                            active_requests[_bm] = max(
-                                0, active_requests.get(_bm, 0) - 1
-                            )
+                            active_requests[_bm] = max(0, active_requests.get(_bm, 0) - 1)
                             active_requests_lock.notify_all()
                         # Best-effort cleanup below; guard against cancellation so a dropped
                         # connection can't leave these un-run (the critical work is above).
@@ -2068,9 +2021,7 @@ async def openai_chat_completions(request: Request):
                 async with active_requests_lock:
                     active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
                 try:
-                    resp = await client_httpx.post(
-                        f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body
-                    )
+                    resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
                     if resp.status_code != 200:
                         err_msg = resp.text
                         if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
@@ -2119,9 +2070,7 @@ async def openai_chat_completions(request: Request):
                         if choices and len(choices) > 0:
                             message_obj = choices[0].get("message", {})
                             content_val = message_obj.get("content")
-                            thinking_val = message_obj.get("reasoning_content") or message_obj.get(
-                                "thinking"
-                            )
+                            thinking_val = message_obj.get("reasoning_content") or message_obj.get("thinking")
                             complete_active_request(
                                 request_id,
                                 final_response=content_val,
@@ -2140,9 +2089,7 @@ async def openai_chat_completions(request: Request):
                     # chat-stream finally for the full rationale.
                     complete_active_request(request_id)
                     async with active_requests_lock:
-                        active_requests[backend_model] = max(
-                            0, active_requests.get(backend_model, 0) - 1
-                        )
+                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
                         active_requests_lock.notify_all()
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
@@ -2211,9 +2158,7 @@ async def openai_completions(request: Request):
                     # Shared queue: only admit this request once a slot on its own
                     # model is available, so it never lands on a slot serving a
                     # different model (which would force a swap + thrash).
-                    slot_ok = await wait_for_slot(
-                        backend_model, timeout=body.get("queue_timeout", 120.0)
-                    )
+                    slot_ok = await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0))
                     if not slot_ok:
                         await release_request_queued(queued_backend)
                         complete_active_request(request_id)
@@ -2256,9 +2201,7 @@ async def openai_completions(request: Request):
                     try:
                         for s_attempt in range(max_retries):
                             try:
-                                async with _cl.stream(
-                                    "POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body
-                                ) as resp:
+                                async with _cl.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
                                     if resp.status_code != 200:
                                         err_body = await resp.aread()
                                         err_msg = err_body.decode(errors="ignore")
@@ -2283,15 +2226,11 @@ async def openai_completions(request: Request):
                                                 if payload_str and payload_str != "[DONE]":
                                                     payload_json = json.loads(payload_str)
                                                     choices = payload_json.get("choices")
-                                                    if (
-                                                        choices
-                                                        and isinstance(choices, list)
-                                                        and len(choices) > 0
-                                                    ):
+                                                    if choices and isinstance(choices, list) and len(choices) > 0:
                                                         text_val = choices[0].get("text")
-                                                        thinking_val = choices[0].get(
-                                                            "thinking"
-                                                        ) or choices[0].get("reasoning_content")
+                                                        thinking_val = choices[0].get("thinking") or choices[0].get(
+                                                            "reasoning_content"
+                                                        )
                                                         update_active_request_progress(
                                                             request_id,
                                                             response_chunk=text_val,
@@ -2310,17 +2249,11 @@ async def openai_completions(request: Request):
                                         logger.warning(
                                             f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
                                         )
-                                        task = asyncio.create_task(
-                                            _ensure_model_skip_swap(model_name)
-                                        )
-                                        task.set_name(
-                                            f"midstream-recovery-completions-{model_name}"
-                                        )
+                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
+                                        task.set_name(f"midstream-recovery-completions-{model_name}")
                                         task.add_done_callback(handle_background_task_result)
                                     return
-                                logger.warning(
-                                    f"Connection lost during stream init: {exc}. Retrying recovery/load..."
-                                )
+                                logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
                                 await ensure_model(model_name)
                                 await asyncio.sleep(2.0)
                     finally:
@@ -2329,9 +2262,7 @@ async def openai_completions(request: Request):
                         # chat-stream finally for the full rationale.
                         complete_active_request(request_id)
                         async with active_requests_lock:
-                            active_requests[_bm] = max(
-                                0, active_requests.get(_bm, 0) - 1
-                            )
+                            active_requests[_bm] = max(0, active_requests.get(_bm, 0) - 1)
                             active_requests_lock.notify_all()
                         req_data = complete_active_request(request_id)
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
@@ -2382,9 +2313,7 @@ async def openai_completions(request: Request):
                         choices = data.get("choices", [])
                         if choices and len(choices) > 0:
                             content_val = choices[0].get("text")
-                            thinking_val = choices[0].get("thinking") or choices[0].get(
-                                "reasoning_content"
-                            )
+                            thinking_val = choices[0].get("thinking") or choices[0].get("reasoning_content")
                             complete_active_request(
                                 request_id,
                                 final_response=content_val,
@@ -2403,15 +2332,11 @@ async def openai_completions(request: Request):
                     # chat-stream finally for the full rationale.
                     complete_active_request(request_id)
                     async with active_requests_lock:
-                        active_requests[backend_model] = max(
-                            0, active_requests.get(backend_model, 0) - 1
-                        )
+                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
                         active_requests_lock.notify_all()
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
-                logger.error(
-                    f"Completions proxy failed after {max_retries} attempts due to connection error: {exc}"
-                )
+                logger.error(f"Completions proxy failed after {max_retries} attempts due to connection error: {exc}")
                 await record_metrics("/v1/completions", 0, error=True)
                 await release_request_queued(queued_backend)
                 complete_active_request(request_id)
@@ -2523,6 +2448,8 @@ active_sd_requests = 0
 active_sd_requests_lock = asyncio.Condition()
 client_sd_httpx: httpx.AsyncClient | None = None
 backend_swap_lock = asyncio.Lock()
+
+
 async def is_container_running(name: str) -> bool:
     """Checks if a Docker container is currently in the running state."""
     try:
@@ -2543,7 +2470,6 @@ async def is_container_running(name: str) -> bool:
     return True  # Fallback to True to avoid aborting prematurely on docker API issues
 
 
-
 async def sd_vram_poll_loop() -> None:
     """Periodically poll both llama-server and sd-server to track loaded models in VRAM."""
     global active_llama_model, active_sd_model
@@ -2555,11 +2481,7 @@ async def sd_vram_poll_loop() -> None:
                     resp = await client_httpx.get(ROUTER_MODELS_URL, timeout=1.0)
                     if resp.status_code == 200:
                         data = resp.json().get("data", [])
-                        loaded = [
-                            m
-                            for m in data
-                            if router_entry_status(m) in ("loaded", "loading")
-                        ]
+                        loaded = [m for m in data if router_entry_status(m) in ("loaded", "loading")]
                         async with vram_monitoring_lock:
                             active_llama_model = loaded[0].get("id") if loaded else None
                 except Exception:
@@ -2909,9 +2831,7 @@ async def _evict_llama_vram() -> None:
                 await post_router_model_action("unload", backend_model)
                 await record_model_unloaded_by_backend_id(backend_model)
             except Exception as unload_err:
-                logger.warning(
-                    f"Failed to unload {backend_model} during LLM eviction: {unload_err}"
-                )
+                logger.warning(f"Failed to unload {backend_model} during LLM eviction: {unload_err}")
 
     async with active_requests_lock:
         active_requests.clear()
@@ -2955,9 +2875,7 @@ async def unload_sd_model() -> bool:
         # Gracefully tear down sd-server (SIGTERM -> SIGKILL), then start fresh with
         # the empty config so the LLM backend can reclaim the VRAM.
         if not await _stop_container_gracefully(_SD_CONTAINER):
-            logger.warning(
-                "sd-server did not stop cleanly; starting with empty config anyway."
-            )
+            logger.warning("sd-server did not stop cleanly; starting with empty config anyway.")
         if not await _start_container(_SD_CONTAINER):
             logger.error("Failed to (re)start sd-server container.")
             return False
@@ -3049,13 +2967,10 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
             # are not yet in-flight; evicting their model now would force a
             # thrash reload when they proceed.
             async with active_requests_lock:
-                while (
-                    any(count > 0 for count in active_requests.values())
-                    or any(count > 0 for count in queued_requests.values())
+                while any(count > 0 for count in active_requests.values()) or any(
+                    count > 0 for count in queued_requests.values()
                 ):
-                    logger.info(
-                        "Active or queued LLM requests in progress, waiting before clearing LLM VRAM..."
-                    )
+                    logger.info("Active or queued LLM requests in progress, waiting before clearing LLM VRAM...")
                     await active_requests_lock.wait()
 
             # Recheck active LLM model after wait to ensure it hasn't self-evicted
@@ -3063,9 +2978,7 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
                 llama_active_now = active_llama_model
 
             if llama_active_now is not None:
-                logger.info(
-                    f"Evicting LLM model '{llama_active_now}' from VRAM before loading Stable Diffusion model."
-                )
+                logger.info(f"Evicting LLM model '{llama_active_now}' from VRAM before loading Stable Diffusion model.")
                 try:
                     await _evict_llama_vram()
                     # Wait for VRAM to be freed by verifying loaded count is 0
@@ -3095,15 +3008,19 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
             profile_threads = str(threads or "")
             profile_extra = str(extra_args or "")
 
-            if (os.path.abspath(target_path) == os.path.abspath(active_path)
+            if (
+                os.path.abspath(target_path) == os.path.abspath(active_path)
                 and sd_healthy
                 and active_gpu == profile_gpu
                 and active_threads == profile_threads
-                and active_extra == profile_extra):
+                and active_extra == profile_extra
+            ):
                 is_sd_loaded = True
 
         if not is_sd_loaded:
-            logger.info(f"Loading SD model: {target_path} (GPU layers: {gpu_layers or 'auto'}, Threads: {threads or 'auto'})")
+            logger.info(
+                f"Loading SD model: {target_path} (GPU layers: {gpu_layers or 'auto'}, Threads: {threads or 'auto'})"
+            )
 
             write_active_model_config(
                 model_path=target_path,
@@ -3123,20 +3040,14 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
                 # Gracefully stop any prior SD model (freeing VRAM) before starting
                 # fresh with the new config, then verify the container is up.
                 if not await _stop_container_gracefully(_SD_CONTAINER):
-                    logger.warning(
-                        "sd-server did not stop cleanly; attempting start with new config."
-                    )
+                    logger.warning("sd-server did not stop cleanly; attempting start with new config.")
                 if not await _start_container(_SD_CONTAINER):
-                    raise HTTPException(
-                        status_code=503, detail="Failed to restart sd-server container."
-                    )
+                    raise HTTPException(status_code=503, detail="Failed to restart sd-server container.")
             except HTTPException:
                 raise
             except Exception as e:
                 logger.error(f"Failed to restart sd-server: {e}")
-                raise HTTPException(
-                    status_code=503, detail="Failed to restart sd-server container."
-                ) from e
+                raise HTTPException(status_code=503, detail="Failed to restart sd-server container.") from e
 
             # Wait for sd-server to become responsive
             healthy = False
@@ -3174,12 +3085,14 @@ async def list_sd_models() -> JSONResponse:
             family = "stable-diffusion"
             if isinstance(meta, dict):
                 family = meta.get("model_family") or meta.get("config", {}).get("model_family") or "stable-diffusion"
-            models.append({
-                "id": name,
-                "name": name,
-                "family": family,
-                "object": "model",
-            })
+            models.append(
+                {
+                    "id": name,
+                    "name": name,
+                    "family": family,
+                    "object": "model",
+                }
+            )
     except Exception as e:
         logger.error(f"Failed to list SD models: {e}")
     return JSONResponse(content={"object": "list", "data": models})
@@ -3227,32 +3140,32 @@ SD_PRESETS = {
             "name": "Photorealistic Portrait",
             "prompt_suffix": ", 8k RAW photo, portrait photograph of subject, detailed skin texture, natural soft studio lighting, sharp focus, 85mm lens f/1.8",
             "negative_prompt": "cgi, 3d render, illustration, smooth plastic skin, oversaturated, distorted features, overprocessed, low quality, noise",
-            "denoising_strength": 0.45
+            "denoising_strength": 0.45,
         },
         "studio_product": {
             "name": "Studio Product Photography",
             "prompt_suffix": ", commercial studio product photo, clean directional studio lighting, sharp details, professional color grade, 4k",
             "negative_prompt": "blurry, dark, noisy, amateur photo, harsh reflections, low quality, distorted",
-            "denoising_strength": 0.35
+            "denoising_strength": 0.35,
         },
         "outdoor_retouch": {
             "name": "Outdoor & Landscape Retouch",
             "prompt_suffix": ", vibrant natural outdoor photo, golden hour sunlight, sharp detail, high dynamic range, photorealistic",
             "negative_prompt": "overexposed, muddy, low contrast, heavy grain, cgi, unnatural colors",
-            "denoising_strength": 0.40
+            "denoising_strength": 0.40,
         },
         "tone_color_grade": {
             "name": "Cinematic Tone & Color Grade",
             "prompt_suffix": ", cinematic photo color grading, balanced lighting, deep contrast, natural skin tones, professional photography",
             "negative_prompt": "flat color, oversaturated, washed out, noisy, artifact",
-            "denoising_strength": 0.30
+            "denoising_strength": 0.30,
         },
         "restore_polish": {
             "name": "Photo Restoration & Polish",
             "prompt_suffix": ", clean sharp photograph, noise reduction, crisp focus, enhanced clarity, realistic texture",
             "negative_prompt": "blurry, pixelated, artifact, low resolution, noise, distortion",
-            "denoising_strength": 0.25
-        }
+            "denoising_strength": 0.25,
+        },
     },
     "flyer_design": {
         "music_event": {
@@ -3260,37 +3173,37 @@ SD_PRESETS = {
             "preset_prompt": "vibrant music event poster, energetic neon lighting, dynamic background graphic, high contrast layout, professional promo poster",
             "negative_prompt": "garbled text, distorted letters, bad typography, misspelled text, blurry letters, low contrast, messy design",
             "size": "832x1216",
-            "recommended_font": "neon"
+            "recommended_font": "neon",
         },
         "corporate_business": {
             "name": "Corporate & Business Flyer",
             "preset_prompt": "professional corporate business flyer, clean modern typography layout, sleek geometry, dark navy and white theme, corporate promo graphic",
             "negative_prompt": "garbled text, distorted letters, childish font, cluttered layout, low quality, unprofessional",
             "size": "832x1216",
-            "recommended_font": "sans-serif"
+            "recommended_font": "sans-serif",
         },
         "product_sale": {
             "name": "Product Sale & Promo Poster",
             "preset_prompt": "retail promotional flyer, bold sale badge accents, sleek product display pedestal, crisp studio background, high contrast promotional design",
             "negative_prompt": "garbled text, distorted typography, blurry image, low contrast, messy composition",
             "size": "1024x1024",
-            "recommended_font": "display"
+            "recommended_font": "display",
         },
         "restaurant_menu": {
             "name": "Restaurant & Food Poster",
             "preset_prompt": "gourmet restaurant food poster, delicious culinary styling, elegant menu border, rustic slate background, appetizing food photography layout",
             "negative_prompt": "unappetizing, garbled text, blurry food, distorted typography, low contrast",
             "size": "832x1216",
-            "recommended_font": "serif"
+            "recommended_font": "serif",
         },
         "minimalist_modern": {
             "name": "Minimalist Modern Graphic",
             "preset_prompt": "minimalist graphic design flyer, high contrast typography space, geometric aesthetic, subtle gradient background, sleek contemporary design",
             "negative_prompt": "cluttered, busy background, garbled text, illegible letters, low quality, distorted",
             "size": "768x1344",
-            "recommended_font": "sans-serif"
-        }
-    }
+            "recommended_font": "sans-serif",
+        },
+    },
 }
 
 
@@ -3298,7 +3211,6 @@ SD_PRESETS = {
 async def get_image_presets() -> JSONResponse:
     """Returns curated presets for realistic photo editing and flyer text generation."""
     return JSONResponse(content=SD_PRESETS)
-
 
 
 @app.post("/v1/images/edits")
@@ -3376,10 +3288,13 @@ async def edit_images(request: Request) -> Response:
         # must receive a clean prompt without this tag.
         import json as _json
         import re as _re
+
         raw_prompt = data.get("prompt", "")
         extra_args_match = _re.search(r"<sd_cpp_extra_args>(.*?)</sd_cpp_extra_args>", raw_prompt, _re.DOTALL)
         if extra_args_match:
-            clean_prompt = _re.sub(r"<sd_cpp_extra_args>.*?</sd_cpp_extra_args>", "", raw_prompt, flags=_re.DOTALL).strip()
+            clean_prompt = _re.sub(
+                r"<sd_cpp_extra_args>.*?</sd_cpp_extra_args>", "", raw_prompt, flags=_re.DOTALL
+            ).strip()
             data["prompt"] = clean_prompt
             try:
                 extra = _json.loads(extra_args_match.group(1))
@@ -3389,7 +3304,8 @@ async def edit_images(request: Request) -> Response:
                     data["negative_prompt"] = extra["negative_prompt"]
                 logger.info(
                     "sd_cpp_extra_args parsed — strength=%s negative=%s",
-                    extra.get("strength"), bool(extra.get("negative_prompt")),
+                    extra.get("strength"),
+                    bool(extra.get("negative_prompt")),
                 )
             except Exception:
                 logger.warning("Failed to parse sd_cpp_extra_args JSON: %s", extra_args_match.group(1)[:200])
@@ -3439,13 +3355,17 @@ async def edit_images(request: Request) -> Response:
                 detail["images"] = images
         if result_data is not None:
             complete_active_request(
-                request_id, final_response=f"Edited {len(images)} image(s).",
-                prompt_tokens=0, completion_tokens=0,
+                request_id,
+                final_response=f"Edited {len(images)} image(s).",
+                prompt_tokens=0,
+                completion_tokens=0,
             )
         else:
             complete_active_request(
-                request_id, final_response="Image edit failed.",
-                prompt_tokens=0, completion_tokens=0,
+                request_id,
+                final_response="Image edit failed.",
+                prompt_tokens=0,
+                completion_tokens=0,
             )
 
 
@@ -3495,9 +3415,7 @@ async def generate_images(request: Request) -> JSONResponse:
         if client_sd_httpx:
             try:
                 async with sd_execution_lock:
-                    resp = await client_sd_httpx.post(
-                        f"{sd_url}/v1/images/generations", json=payload, headers=headers
-                    )
+                    resp = await client_sd_httpx.post(f"{sd_url}/v1/images/generations", json=payload, headers=headers)
                 if resp.status_code >= 400:
                     logger.error(f"sd-server error {resp.status_code}: {resp.text}")
                     raise HTTPException(status_code=502, detail=f"sd-server error: {resp.text}")
@@ -3678,9 +3596,7 @@ async def admin_system():
             }
             info["cpu_usage"] = {
                 "percent": psutil.cpu_percent(interval=None),
-                "load_avg": [round(x, 2) for x in os.getloadavg()]
-                if hasattr(os, "getloadavg")
-                else [],
+                "load_avg": [round(x, 2) for x in os.getloadavg()] if hasattr(os, "getloadavg") else [],
             }
         except Exception as e:
             logger.warning(f"Failed to fetch psutil system metrics: {e}")
@@ -3744,9 +3660,7 @@ async def admin_system():
             props = resp.json()
             info["llama_server_props"] = {
                 "model_path": props.get("model_path"),
-                "chat_template": props.get("chat_template", "")[:100] + "..."
-                if props.get("chat_template")
-                else None,
+                "chat_template": props.get("chat_template", "")[:100] + "..." if props.get("chat_template") else None,
                 "n_ctx": props.get("n_ctx"),
                 "n_gpu_layers": props.get("n_gpu_layers"),
                 "flash_attn": props.get("flash_attn"),
@@ -3973,9 +3887,9 @@ async def get_resubmit_data(request_id: str):
 @app.get("/admin/runtime")
 async def admin_runtime():
     """Runtime state: loaded models, active requests, keep-alive timers, queue depth."""
-    # Active requests
+    # Active requests (convert backend -- IDs to public : names)
     async with active_requests_lock:
-        active = dict(active_requests)
+        active = {public_model_name(k): v for k, v in active_requests.items()}
 
     # Model expiry timers
     expiry_info = {}
@@ -4005,9 +3919,7 @@ async def admin_runtime():
             candidates = router_model_candidates(model_name, manifest)
             matched_entry = None
             for entry in router_models:
-                if router_entry_status(entry) == "loaded" and router_entry_matches(
-                    entry, candidates
-                ):
+                if router_entry_status(entry) == "loaded" and router_entry_matches(entry, candidates):
                     matched_entry = entry
                     break
             if not matched_entry:
@@ -4121,9 +4033,7 @@ async def admin_runtime():
     current_time = time.time()
     for name, entry in list(model_loading.items()):
         if current_time - entry["start_time"] <= MODEL_LOADING_TIMEOUT:
-            loading.append(
-                {"name": name, "elapsed_seconds": int(current_time - entry["start_time"])}
-            )
+            loading.append({"name": name, "elapsed_seconds": int(current_time - entry["start_time"])})
 
     return {
         "loaded_models": loaded,
@@ -4162,9 +4072,7 @@ async def admin_slots(fail_on_no_slot: int = 0):
         # the required ?model= query param to /slots (omitting it returns 400).
         backend_model: str | None = None
         try:
-            models_resp = await client_httpx.get(
-                f"{LLAMA_SERVER_URL}/models", timeout=httpx.Timeout(3.0)
-            )
+            models_resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models", timeout=httpx.Timeout(3.0))
             if models_resp.status_code == 200:
                 for m in models_resp.json().get("data", []):
                     if m.get("status", {}).get("value") == "loaded":
@@ -4227,9 +4135,7 @@ async def admin_slots(fail_on_no_slot: int = 0):
                 slots.append(s)
             elif isinstance(s, str):
                 # Bare slot-id string: wrap minimally and treat as unavailable.
-                slots.append(
-                    {"id": s, "alpaca": {"is_busy": True, "has_prompt_cache": False}}
-                )
+                slots.append({"id": s, "alpaca": {"is_busy": True, "has_prompt_cache": False}})
             # Other scalar types are dropped (not interpretable as slots).
 
         return {"slots": slots, "total": len(slots)}
@@ -4249,9 +4155,7 @@ async def admin_slots(fail_on_no_slot: int = 0):
 async def admin_lora():
     """LoRA adapter status and scale control."""
     try:
-        resp = await client_httpx.get(
-            f"{LLAMA_SERVER_URL}/lora-adapters", timeout=httpx.Timeout(5.0)
-        )
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/lora-adapters", timeout=httpx.Timeout(5.0))
         resp.raise_for_status()
         adapters = resp.json()
         return {"adapters": adapters, "total": len(adapters)}
@@ -4270,9 +4174,7 @@ async def admin_lora_update(request: Request):
     if not isinstance(body, list):
         raise HTTPException(status_code=400, detail="Body must be a list of {id, scale} objects")
     try:
-        resp = await client_httpx.post(
-            f"{LLAMA_SERVER_URL}/lora-adapters", json=body, timeout=httpx.Timeout(5.0)
-        )
+        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/lora-adapters", json=body, timeout=httpx.Timeout(5.0))
         resp.raise_for_status()
         return {"status": "updated", "adapters": body}
     except httpx.HTTPStatusError as e:
@@ -4378,11 +4280,7 @@ async def admin_model_delete(request: Request):
             router_path = os.path.join(ROUTER_MODELS_DIR, f"{alias}.gguf")
 
         # If neither manifest nor router GGUF file/symlink exists, then 404
-        if (
-            not manifest_path
-            and not os.path.exists(router_path)
-            and not os.path.islink(router_path)
-        ):
+        if not manifest_path and not os.path.exists(router_path) and not os.path.islink(router_path):
             raise HTTPException(status_code=404, detail=f"Model {model} not found")
 
         # Unload from router if loaded
@@ -4410,9 +4308,7 @@ async def admin_model_delete(request: Request):
                     os.remove(manifest_path)
                 except Exception as me:
                     logger.error(f"Failed to remove manifest file {manifest_path}: {me}")
-                    raise HTTPException(
-                        status_code=500, detail=f"Failed to remove manifest file: {me}"
-                    ) from me
+                    raise HTTPException(status_code=500, detail=f"Failed to remove manifest file: {me}") from me
 
                 # Clean up orphaned blobs
                 for layer in [*manifest.get("layers", []), manifest.get("config", {})]:
@@ -4436,9 +4332,7 @@ async def admin_model_delete(request: Request):
                                     os.remove(blob_path)
                                     deleted_blobs.append(normalize_digest(digest))
                                 except Exception as be:
-                                    logger.warning(
-                                        f"Failed to remove orphaned blob {blob_path}: {be}"
-                                    )
+                                    logger.warning(f"Failed to remove orphaned blob {blob_path}: {be}")
 
         # Resolve the weights blob target BEFORE removing the symlink so we can
         # still reclaim disk space for models that have no Ollama manifest
@@ -4461,7 +4355,12 @@ async def admin_model_delete(request: Request):
         # Delete the weights blob if nothing else references it. For manifest
         # models this is handled by the block above; here we cover manifest-less
         # (Hugging Face) imports whose blob is not tracked by any manifest.
-        if not (manifest_path and os.path.exists(manifest_path)) and blob_target and os.path.exists(blob_target) and "blobs" in blob_target.replace("\\", "/"):
+        if (
+            not (manifest_path and os.path.exists(manifest_path))
+            and blob_target
+            and os.path.exists(blob_target)
+            and "blobs" in blob_target.replace("\\", "/")
+        ):
             referenced = False
             try:
                 for entry in os.scandir(ROUTER_MODELS_DIR):
@@ -4686,9 +4585,7 @@ async def admin_vram_clear():
     # Wait until there are no active Stable Diffusion requests
     async with active_sd_requests_lock:
         while active_sd_requests > 0:
-            logger.info(
-                "Active Stable Diffusion requests in progress, waiting before VRAM clear..."
-            )
+            logger.info("Active Stable Diffusion requests in progress, waiting before VRAM clear...")
             await active_sd_requests_lock.wait()
 
     # Also unload SD model if active
@@ -4707,9 +4604,7 @@ async def admin_vram_clear():
                     await record_model_unloaded_by_backend_id(backend_model)
                     unloaded_count += 1
                 except Exception as unload_err:
-                    logger.warning(
-                        f"Failed to unload {backend_model} during VRAM clear: {unload_err}"
-                    )
+                    logger.warning(f"Failed to unload {backend_model} during VRAM clear: {unload_err}")
 
         # 2. Force reset active requests counter to prevent stuck locks
         async with active_requests_lock:
@@ -4722,9 +4617,7 @@ async def admin_vram_clear():
 
         # 4. Wait for it to come back online
         if not await wait_for_llama_server_or_restart(timeout=30.0):
-            raise HTTPException(
-                status_code=502, detail="llama-server failed to recover after VRAM clear restart"
-            )
+            raise HTTPException(status_code=502, detail="llama-server failed to recover after VRAM clear restart")
 
         return {
             "status": "success",
@@ -4948,17 +4841,14 @@ async def restore_models_on_recovery():
         return
     # Only preload the last loaded model to conserve VRAM and avoid concurrent loading OOMs
     last_model = loaded_models[-1]
-    logger.info(
-        f"Restoring only the last loaded model after recovery: {last_model} (out of {loaded_models})"
-    )
+    logger.info(f"Restoring only the last loaded model after recovery: {last_model} (out of {loaded_models})")
     try:
         # Never auto-load an image-generation (Stable Diffusion) model into
         # llama.cpp on startup. Those are handled exclusively by the sd-server.
         _, last_manifest = load_local_manifest(last_model, require_complete=False)
         if last_manifest and is_image_model_manifest(last_manifest):
             logger.info(
-                f"Skipping auto-restore of image-generation model {last_model} "
-                f"(handled by sd-server, not llama.cpp)."
+                f"Skipping auto-restore of image-generation model {last_model} (handled by sd-server, not llama.cpp)."
             )
             return
         logger.info(f"Auto-loading model on recovery: {last_model}")
@@ -5017,9 +4907,7 @@ async def _run_docker(args, timeout=60.0):
 
 async def _container_running(name: str) -> bool:
     """Return True if the container exists and is currently running."""
-    rc, stdout, _ = await _run_docker(
-        ["inspect", "-f", "{{.State.Running}}", name], timeout=10.0
-    )
+    rc, stdout, _ = await _run_docker(["inspect", "-f", "{{.State.Running}}", name], timeout=10.0)
     if rc != 0:
         # Container missing or inspect failed — treat as not running.
         return False
@@ -5052,9 +4940,7 @@ async def _stop_container_gracefully(name: str, timeout: float | None = None) ->
     if timeout is None:
         timeout = _CONTAINER_STOP_TIMEOUT
     logger.info(f"Gracefully stopping container '{name}' (SIGTERM, {timeout}s timeout)...")
-    rc, _, _stderr = await _run_docker(
-        ["stop", f"--time={int(timeout)}", name], timeout=timeout + 15.0
-    )
+    rc, _, _stderr = await _run_docker(["stop", f"--time={int(timeout)}", name], timeout=timeout + 15.0)
     if rc == 0 and await _wait_container_exited(name, timeout=10.0):
         return True
     # Fallback: force kill (SIGKILL) any lingering process / zombie children.
@@ -5109,27 +4995,17 @@ async def _fetch_llama_server_logs(tail=30) -> str:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
-        return (
-            stdout.decode("utf-8", errors="replace")
-            + "\n"
-            + stderr.decode("utf-8", errors="replace")
-        )
+        return stdout.decode("utf-8", errors="replace") + "\n" + stderr.decode("utf-8", errors="replace")
     except Exception as e:
         return f"Failed to get container logs: {e}"
 
 
-async def raise_model_load_failure_exception(
-    model_name: str, backend_model: str, original_error: str
-):
+async def raise_model_load_failure_exception(model_name: str, backend_model: str, original_error: str):
     logs = await _fetch_llama_server_logs(tail=30)
     logs_lower = logs.lower()
 
     suggested_fix = ""
-    if (
-        "out of memory" in logs_lower
-        or "cudamalloc failed" in logs_lower
-        or "unable to allocate" in logs_lower
-    ):
+    if "out of memory" in logs_lower or "cudamalloc failed" in logs_lower or "unable to allocate" in logs_lower:
         suggested_fix = (
             "Suggested Fixes:\n"
             "1. Decrease the KV cache quantization level (e.g. from q8_0 to q4_0) in Model Profiles.\n"
@@ -5160,9 +5036,7 @@ async def wait_for_llama_server_or_restart(timeout=300.0):
             if resp.status_code == 200:
                 # Active verification: Check if any loaded models are actually healthy/responsive
                 try:
-                    models_resp = await client_httpx.get(
-                        f"{LLAMA_SERVER_URL}/models", timeout=httpx.Timeout(2.0)
-                    )
+                    models_resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models", timeout=httpx.Timeout(2.0))
                     if models_resp.status_code == 200:
                         loaded_models = []
                         data = models_resp.json().get("data", [])
@@ -5173,37 +5047,25 @@ async def wait_for_llama_server_or_restart(timeout=300.0):
                         all_healthy = True
                         for m_id in loaded_models:
                             if not await is_child_model_healthy(m_id):
-                                logger.warning(
-                                    f"Active health check failed: loaded model {m_id} is unresponsive."
-                                )
+                                logger.warning(f"Active health check failed: loaded model {m_id} is unresponsive.")
                                 all_healthy = False
                                 break
 
                         if all_healthy:
-                            logger.info(
-                                "llama-server and all loaded models are responsive and healthy."
-                            )
+                            logger.info("llama-server and all loaded models are responsive and healthy.")
                             return True
                     else:
-                        logger.warning(
-                            f"Failed to fetch models list during health check: {models_resp.status_code}"
-                        )
+                        logger.warning(f"Failed to fetch models list during health check: {models_resp.status_code}")
                 except Exception as check_exc:
-                    logger.warning(
-                        f"Error checking child model health during recovery: {check_exc}"
-                    )
+                    logger.warning(f"Error checking child model health during recovery: {check_exc}")
         except Exception:
             pass
 
         if not restart_triggered and time.time() - start_time > 15.0:
-            logger.info(
-                "llama-server or child model not responding after 15s — attempting docker restart..."
-            )
+            logger.info("llama-server or child model not responding after 15s — attempting docker restart...")
             restart_triggered = True
             if await restart_llama_server():
-                logger.info(
-                    "llama-server restart command succeeded, waiting 5s for GPU memory release..."
-                )
+                logger.info("llama-server restart command succeeded, waiting 5s for GPU memory release...")
                 await asyncio.sleep(5.0)
                 # Reset start_time to give it a full timeout window to boot up
                 start_time = time.time()
@@ -5241,9 +5103,7 @@ async def is_child_model_healthy(backend_model: str) -> bool:
                             port_idx = args.index("--port")
                             port = args[port_idx + 1]
                         except (ValueError, IndexError):
-                            logger.warning(
-                                f"Could not find port in status args for model {backend_model}"
-                            )
+                            logger.warning(f"Could not find port in status args for model {backend_model}")
                             return False
 
                         try:
@@ -5257,13 +5117,9 @@ async def is_child_model_healthy(backend_model: str) -> bool:
                                 if res.get("status") in ("ok", "no slot available"):
                                     # "no slot available" still means the child is alive and running
                                     return True
-                            logger.warning(
-                                f"Health probe to child port {port} returned HTTP {health_resp.status_code}"
-                            )
+                            logger.warning(f"Health probe to child port {port} returned HTTP {health_resp.status_code}")
                         except Exception as e:
-                            logger.warning(
-                                f"Health probe to child port {port} raised exception: {e}"
-                            )
+                            logger.warning(f"Health probe to child port {port} raised exception: {e}")
                         return False
     except Exception as e:
         logger.warning(f"Failed to check child model health for {backend_model}: {e}")
@@ -5454,9 +5310,7 @@ def _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, n_gpu_la
         return _VRAM_OVERHEAD_MIB
     # Weights: proportional to n_gpu_layers / n_layers
     weights_mib = (
-        file_size_mib * (n_gpu_layers / n_layers)
-        if n_layers > 0 and n_gpu_layers < n_layers
-        else file_size_mib
+        file_size_mib * (n_gpu_layers / n_layers) if n_layers > 0 and n_gpu_layers < n_layers else file_size_mib
     )
     # KV cache: only for layers on GPU (proportional to n_gpu_layers / n_layers)
     kv_cache_mib = 0
@@ -5696,9 +5550,7 @@ async def ensure_model(model_name: str, options: dict | None = None, skip_swap: 
             }
 
         if status == "loading":
-            logger.info(
-                f"Model {backend_model} is currently loading. Waiting for load to finish..."
-            )
+            logger.info(f"Model {backend_model} is currently loading. Waiting for load to finish...")
             for _ in range(120):
                 await asyncio.sleep(1.0)
                 try:
@@ -5795,10 +5647,7 @@ async def _ensure_model_impl(
                     # its model away would force a reload and thrash the queue.
                     async with active_requests_lock:
                         deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
-                        while (
-                            active_requests.get(other_id, 0) > 0
-                            or queued_requests.get(other_id, 0) > 0
-                        ):
+                        while active_requests.get(other_id, 0) > 0 or queued_requests.get(other_id, 0) > 0:
                             remaining = deadline - asyncio.get_event_loop().time()
                             if remaining <= 0:
                                 logger.warning(
@@ -5809,14 +5658,9 @@ async def _ensure_model_impl(
                                 f"Waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
                             )
                             try:
-                                await asyncio.wait_for(
-                                    active_requests_lock.wait(), timeout=remaining
-                                )
+                                await asyncio.wait_for(active_requests_lock.wait(), timeout=remaining)
                             except TimeoutError:
-                                if (
-                                    active_requests.get(other_id, 0) > 0
-                                    or queued_requests.get(other_id, 0) > 0
-                                ):
+                                if active_requests.get(other_id, 0) > 0 or queued_requests.get(other_id, 0) > 0:
                                     logger.warning(
                                         f"Timeout waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish. Forcing unload."
                                     )
@@ -5827,14 +5671,10 @@ async def _ensure_model_impl(
                     await post_router_model_action("unload", other_id)
                     await record_model_unloaded_by_backend_id(other_id)
                 except RouterManagementUnsupported:
-                    logger.warning(
-                        "Router unload endpoint unavailable; relying on router autoload behavior."
-                    )
+                    logger.warning("Router unload endpoint unavailable; relying on router autoload behavior.")
                     break
                 except httpx.HTTPStatusError as exc:
-                    if is_ignorable_router_unload_error(
-                        exc
-                    ) or not await router_model_is_still_resident(other_id):
+                    if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(other_id):
                         logger.info(f"Router ignored unload for {other_id}: {exc}")
                         await record_model_unloaded_by_backend_id(other_id)
                         continue
@@ -5846,9 +5686,7 @@ async def _ensure_model_impl(
         # Scale the load grace by model size: large (>=9b) models take much
         # longer to map weights into VRAM. The old flat 120s cap force-unloaded
         # 35b models mid-load, producing a reload/thrash loop.
-        _large = is_model_over_9b(
-            backend_model, resolved.get("manifest") if resolved else None
-        )
+        _large = is_model_over_9b(backend_model, resolved.get("manifest") if resolved else None)
         _load_grace = 360 if _large else 120
         logger.info(
             f"Model {backend_model} is currently loading "
@@ -5861,13 +5699,9 @@ async def _ensure_model_impl(
             # genuinely being used: do NOT force-unload it. Let the caller
             # proceed and rely on llama-server's own internal queueing.
             async with active_requests_lock:
-                if (
-                    active_requests.get(backend_model, 0) > 0
-                    or queued_requests.get(backend_model, 0) > 0
-                ):
+                if active_requests.get(backend_model, 0) > 0 or queued_requests.get(backend_model, 0) > 0:
                     logger.info(
-                        f"Model {backend_model} has in-flight/queued requests; "
-                        "proceeding without further load-wait."
+                        f"Model {backend_model} has in-flight/queued requests; proceeding without further load-wait."
                     )
                     _proceed = True
                     break
@@ -5891,8 +5725,7 @@ async def _ensure_model_impl(
             # Grace period elapsed with no active/queued request and still not
             # loaded. Treat as a stuck load and force a reload.
             logger.warning(
-                f"Model {backend_model} did not finish loading after {_load_grace}s. "
-                "Force-unloading and retrying..."
+                f"Model {backend_model} did not finish loading after {_load_grace}s. Force-unloading and retrying..."
             )
             with suppress(Exception):
                 await post_router_model_action("unload", backend_model)
@@ -5922,9 +5755,7 @@ async def _ensure_model_impl(
             )
             await restart_llama_server()
             if not await wait_for_llama_server_or_restart(timeout=60.0):
-                raise HTTPException(
-                    status_code=502, detail="Failed to restore llama-server after child crash"
-                )
+                raise HTTPException(status_code=502, detail="Failed to restore llama-server after child crash")
             status = "unloaded"
 
     # Need to load — attempt load with optimized parameters
@@ -5947,9 +5778,7 @@ async def _ensure_model_impl(
     if entry and entry.get("path"):
         model_path = entry.get("path")
     elif backend_model:
-        bm_filename = (
-            backend_model if backend_model.endswith(".gguf") else (backend_model + ".gguf")
-        )
+        bm_filename = backend_model if backend_model.endswith(".gguf") else (backend_model + ".gguf")
         model_path = os.path.join(ROUTER_MODELS_DIR, bm_filename)
 
     meta = None
@@ -5967,29 +5796,21 @@ async def _ensure_model_impl(
         if is_moe and backend_model not in MTP_INCOMPATIBLE_MODELS:
             load_payload["spec_type"] = "draft-mtp"
             load_payload["spec_draft_n_max"] = 3
-            logger.info(
-                f"Detected MoE model {backend_model} supporting MTP. Enabling speculative decoding."
-            )
+            logger.info(f"Detected MoE model {backend_model} supporting MTP. Enabling speculative decoding.")
         else:
             load_payload["spec_type"] = "none"
             load_payload["spec_draft_n_max"] = 0
             if is_moe:
-                logger.info(
-                    f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
-                )
+                logger.info(f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding.")
             else:
-                logger.info(
-                    f"Detected dense model {backend_model}. Disabling speculative decoding."
-                )
+                logger.info(f"Detected dense model {backend_model}. Disabling speculative decoding.")
     else:
         # Fallback when GGUF file is not found (e.g. in unit tests)
         load_payload["flash_attn"] = True
         if backend_model in MTP_INCOMPATIBLE_MODELS:
             load_payload["spec_type"] = "none"
             load_payload["spec_draft_n_max"] = 0
-            logger.info(
-                f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding."
-            )
+            logger.info(f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding.")
 
     if backend_model in SAFE_SETTINGS_MODELS:
         load_payload["flash_attn"] = False
@@ -6015,10 +5836,7 @@ async def _ensure_model_impl(
     if is_dense and model_path and os.path.exists(model_path):
         available_vram = await _get_available_vram_mib()
         if available_vram is not None:
-            eff_ctx = int(
-                load_payload.get("n_ctx")
-                or _read_ini_model_setting(backend_model, "ctx-size", "32768")
-            )
+            eff_ctx = int(load_payload.get("n_ctx") or _read_ini_model_setting(backend_model, "ctx-size", "32768"))
             eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
             safe_ngl = _compute_safe_n_gpu_layers(
                 model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
@@ -6028,9 +5846,7 @@ async def _ensure_model_impl(
                 logger.info("Restarting llama-server to pick up VRAM-safe n_gpu_layers preset...")
                 await restart_llama_server()
                 if not await wait_for_llama_server_or_restart(timeout=60.0):
-                    raise HTTPException(
-                        status_code=502, detail="Failed to restart llama-server for VRAM budgeting"
-                    )
+                    raise HTTPException(status_code=502, detail="Failed to restart llama-server for VRAM budgeting")
                 n_gpu_layers_preset = safe_ngl
 
     try:
@@ -6064,9 +5880,7 @@ async def _ensure_model_impl(
 
                 status = router_entry_status(entry)
                 if status == "loading":
-                    logger.info(
-                        f"Model {backend_model} is loading after restart. Waiting for load to finish..."
-                    )
+                    logger.info(f"Model {backend_model} is loading after restart. Waiting for load to finish...")
                     for _ in range(120):
                         await asyncio.sleep(1.0)
                         try:
@@ -6145,9 +5959,7 @@ async def _ensure_model_impl(
                 logger.info(f"Retrying load of {backend_model} with spec_type='none'...")
                 try:
                     await post_router_model_action("load", load_payload)
-                    logger.info(
-                        f"Model {backend_model} loaded successfully after disabling speculative decoding."
-                    )
+                    logger.info(f"Model {backend_model} loaded successfully after disabling speculative decoding.")
                     mark_model_loaded(model_name)
                     await record_model_loaded(model_name)
                     return {
@@ -6162,9 +5974,7 @@ async def _ensure_model_impl(
                         model_name, resolved.get("manifest") if resolved else None
                     )
                     if is_moe:
-                        logger.info(
-                            f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
-                        )
+                        logger.info(f"Model {model_name} is an MoE model. Skipping Safe Settings escalation.")
                         raise
                     if backend_model not in SAFE_SETTINGS_MODELS:
                         logger.warning(
@@ -6197,9 +6007,7 @@ async def _ensure_model_impl(
                             logger.info(f"Retrying load of {backend_model} with Safe Settings...")
                             try:
                                 await post_router_model_action("load", load_payload)
-                                logger.info(
-                                    f"Model {backend_model} loaded successfully with Safe Settings."
-                                )
+                                logger.info(f"Model {backend_model} loaded successfully with Safe Settings.")
                                 mark_model_loaded(model_name)
                                 await record_model_loaded(model_name)
                                 return {
@@ -6209,9 +6017,7 @@ async def _ensure_model_impl(
                                     "manifest": resolved["manifest"],
                                 }
                             except Exception as safe_exc:
-                                logger.error(
-                                    f"Failed to load model even with Safe Settings: {safe_exc}"
-                                )
+                                logger.error(f"Failed to load model even with Safe Settings: {safe_exc}")
                                 raise
                     raise
             else:
@@ -6224,9 +6030,7 @@ async def _ensure_model_impl(
                 model_name, resolved.get("manifest") if resolved else None
             )
             if is_moe:
-                logger.info(
-                    f"Model {model_name} is an MoE model. Skipping Safe Settings escalation."
-                )
+                logger.info(f"Model {model_name} is an MoE model. Skipping Safe Settings escalation.")
                 raise
             logger.warning(
                 f"Failed to load model {backend_model} under spec_type='none': {exc}. "
@@ -6275,11 +6079,7 @@ async def _ensure_model_impl(
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
             try:
                 payload = exc.response.json()
-                msg = (
-                    str(payload.get("error", {}).get("message", ""))
-                    if isinstance(payload, dict)
-                    else ""
-                )
+                msg = str(payload.get("error", {}).get("message", "")) if isinstance(payload, dict) else ""
             except Exception:
                 msg = exc.response.text
             if "already running" in msg.lower() or "model is already running" in msg.lower():
@@ -6296,9 +6096,7 @@ async def _ensure_model_impl(
 
     # Load succeeded — check for OOM or startup crash (post-load verification)
     preset_info = get_model_preset_info(backend_model)
-    logger.info(
-        f"Model {backend_model} loaded successfully{preset_info}. Checking for OOM or startup crash..."
-    )
+    logger.info(f"Model {backend_model} loaded successfully{preset_info}. Checking for OOM or startup crash...")
     await asyncio.sleep(1.0)
     oom_detected = False
     crash_detected = False
@@ -6307,8 +6105,7 @@ async def _ensure_model_impl(
     if not await is_child_model_healthy(backend_model):
         crash_detected = True
         logger.warning(
-            f"Crash detected: model {backend_model} is not "
-            "running or failed after load. Triggering recovery."
+            f"Crash detected: model {backend_model} is not running or failed after load. Triggering recovery."
         )
     elif not is_model_moe(backend_model, meta):
         # For <= 9B models, if it's running, we also check if it OOM'ed to CPU (n_gpu_layers=0)
@@ -6334,9 +6131,7 @@ async def _ensure_model_impl(
         try:
             # Mark model as crashed so other models don't try to unload it (prevents deadlock)
             crashed_models[backend_model] = True
-            logger.info(
-                f"Model {backend_model} marked as crashed. Other models will skip unload wait."
-            )
+            logger.info(f"Model {backend_model} marked as crashed. Other models will skip unload wait.")
             # Clear active requests for this model — the requests are dead (server crashed)
             # and need to be retried, not waited on forever
             async with active_requests_lock:
@@ -6344,10 +6139,7 @@ async def _ensure_model_impl(
                 active_requests_lock.notify_all()
                 logger.info(f"Cleared active_requests for crashed model {backend_model}")
 
-            logger.info(
-                f"Recovery: unloading {backend_model} and "
-                "restarting llama-server to release GPU memory..."
-            )
+            logger.info(f"Recovery: unloading {backend_model} and restarting llama-server to release GPU memory...")
             with suppress(Exception):
                 await post_router_model_action("unload", backend_model)
 
@@ -6381,9 +6173,7 @@ async def _ensure_model_impl(
                     applied = {}
                     for key, val in analysis["recommendations"].items():
                         if key in _ANALYZER_SKIP_KEYS:
-                            logger.debug(
-                                f"Auto-tuning: skipping '{key}' (managed by VRAM budget logic)"
-                            )
+                            logger.debug(f"Auto-tuning: skipping '{key}' (managed by VRAM budget logic)")
                             continue
                         _write_ini_model_setting(backend_model, key, val)
                         applied[key] = val
@@ -6416,10 +6206,7 @@ async def _ensure_model_impl(
                     if n_ctx:
                         load_payload["n_ctx"] = int(n_ctx)
                 await post_router_model_action("load", load_payload)
-                logger.info(
-                    f"Model {backend_model} successfully loaded "
-                    "with original settings after clean restart."
-                )
+                logger.info(f"Model {backend_model} successfully loaded with original settings after clean restart.")
             else:
                 # Tiered recovery/escalation for <= 9B models
                 if oom_detected:
@@ -6443,9 +6230,7 @@ async def _ensure_model_impl(
 
                     logger.info(f"Retrying load of {backend_model} with OOM-safe settings...")
                     await post_router_model_action("load", load_payload)
-                    logger.info(
-                        f"Model {backend_model} loaded successfully with OOM-safe settings."
-                    )
+                    logger.info(f"Model {backend_model} loaded successfully with OOM-safe settings.")
                 else:
                     # crash_detected: Check if speculative decoding (MTP) was active and caused the crash
                     if load_payload.get("spec_type") != "none":
@@ -6474,9 +6259,7 @@ async def _ensure_model_impl(
 
                         logger.info(f"Retrying load of {backend_model} with spec_type='none'...")
                         await post_router_model_action("load", load_payload)
-                        logger.info(
-                            f"Model {backend_model} loaded successfully after disabling speculative decoding."
-                        )
+                        logger.info(f"Model {backend_model} loaded successfully after disabling speculative decoding.")
                     # If MTP is already disabled, check if we can escalate to Safe Settings
                     elif backend_model not in SAFE_SETTINGS_MODELS:
                         logger.warning(
@@ -6501,9 +6284,7 @@ async def _ensure_model_impl(
 
                         logger.info(f"Retrying load of {backend_model} with Safe Settings...")
                         await post_router_model_action("load", load_payload)
-                        logger.info(
-                            f"Model {backend_model} loaded successfully with Safe Settings."
-                        )
+                        logger.info(f"Model {backend_model} loaded successfully with Safe Settings.")
                     # If already using Safe Settings, fall back to OOM-safe settings (n_gpu_layers=0)
                     else:
                         logger.warning(
@@ -6526,9 +6307,7 @@ async def _ensure_model_impl(
 
                         logger.info(f"Retrying load of {backend_model} with OOM-safe settings...")
                         await post_router_model_action("load", load_payload)
-                        logger.info(
-                            f"Model {backend_model} loaded successfully with OOM-safe settings."
-                        )
+                        logger.info(f"Model {backend_model} loaded successfully with OOM-safe settings.")
         except Exception as recovery_err:
             logger.error(f"Recovery failed for {model_name}: {recovery_err}. Raising.")
             try:
@@ -6536,9 +6315,7 @@ async def _ensure_model_impl(
                     "model": backend_model,
                     "cache-type-k": _read_ini_model_setting(backend_model, "cache-type-k", "f16"),
                     "cache-type-v": _read_ini_model_setting(backend_model, "cache-type-v", "f16"),
-                    "n-gpu-layers": str(
-                        _read_ini_model_setting(backend_model, "n-gpu-layers", "-1")
-                    ),
+                    "n-gpu-layers": str(_read_ini_model_setting(backend_model, "n-gpu-layers", "-1")),
                     "ctx-size": str(_read_ini_model_setting(backend_model, "ctx-size", "4096")),
                     "timestamp": time.time(),
                 }
@@ -6565,9 +6342,7 @@ async def _ensure_model_impl(
                     os.makedirs("data", exist_ok=True)
                     with open(failed_configs_file, "w") as f:
                         json.dump(failed_list, f, indent=2)
-                    logger.info(
-                        f"Recorded failed model configuration in failed_configs.json: {failed_config}"
-                    )
+                    logger.info(f"Recorded failed model configuration in failed_configs.json: {failed_config}")
             except Exception as rec_err:
                 logger.warning(f"Failed to record failed configuration: {rec_err}")
             await raise_model_load_failure_exception(model_name, backend_model, str(recovery_err))
@@ -6615,9 +6390,7 @@ async def wait_for_slot(backend_model: str, timeout: float = 120.0) -> bool:
             return True
         elapsed = asyncio.get_event_loop().time() - start
         if elapsed >= timeout:
-            logger.warning(
-                f"Timeout waiting for slot on {backend_model} after {elapsed:.0f}s"
-            )
+            logger.warning(f"Timeout waiting for slot on {backend_model} after {elapsed:.0f}s")
             return False
         await asyncio.sleep(0.5)
 
@@ -6643,9 +6416,7 @@ def get_prefix_hash(model_name: str, messages: list, options: dict | None = None
 async def find_idle_slot(backend_model: str) -> int:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(
-                f"{LLAMA_SERVER_URL}/slots", params={"model": backend_model}, timeout=3.0
-            )
+            resp = await client.get(f"{LLAMA_SERVER_URL}/slots", params={"model": backend_model}, timeout=3.0)
             if resp.status_code == 200:
                 slots = resp.json()
                 for slot in slots:
@@ -6678,9 +6449,7 @@ async def restore_slot_cache(backend_model: str, prefix_hash: str) -> bool:
                 logger.info(f"Successfully restored KV Cache {filename} into slot {target_slot_id}")
                 return True
             else:
-                logger.warning(
-                    f"Failed to restore slot {target_slot_id}: status {resp.status_code} {resp.text}"
-                )
+                logger.warning(f"Failed to restore slot {target_slot_id}: status {resp.status_code} {resp.text}")
     except Exception as e:
         logger.warning(f"Error during slot restore: {e}")
     return False
@@ -6689,9 +6458,7 @@ async def restore_slot_cache(backend_model: str, prefix_hash: str) -> bool:
 async def find_slot_for_request(backend_model: str, messages: list) -> int:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(
-                f"{LLAMA_SERVER_URL}/slots", params={"model": backend_model}, timeout=3.0
-            )
+            resp = await client.get(f"{LLAMA_SERVER_URL}/slots", params={"model": backend_model}, timeout=3.0)
             if resp.status_code == 200:
                 slots = resp.json()
                 best_slot_id = None
@@ -6741,9 +6508,7 @@ async def save_slot_cache(backend_model: str, new_prefix_hash: str, slot_id: int
                 prune_slots_cache()
                 return True
             else:
-                logger.warning(
-                    f"Failed to save slot {slot_id}: status {resp.status_code} {resp.text}"
-                )
+                logger.warning(f"Failed to save slot {slot_id}: status {resp.status_code} {resp.text}")
     except Exception as e:
         logger.warning(f"Error during slot save: {e}")
     return False
@@ -6800,8 +6565,7 @@ async def chat(request: Request):
     _req_idle = not any(c > 0 for c in active_requests.values())
     if model_name and _llm_idle and _req_idle:
         logger.info(
-            f"[AUTO-LOAD] Idle intercept — /api/chat received for '{model_name}'. "
-            f"Triggering auto-load (Wake-on-LAN)."
+            f"[AUTO-LOAD] Idle intercept — /api/chat received for '{model_name}'. Triggering auto-load (Wake-on-LAN)."
         )
 
     # Admit this request into the shared queue: mark it "queued" for its target
@@ -6873,11 +6637,7 @@ async def chat(request: Request):
                 think_val = body.get("enable_thinking")
             if think_val is None and isinstance(body.get("options"), dict):
                 opts = body["options"]
-                think_val = (
-                    opts.get("think")
-                    if opts.get("think") is not None
-                    else opts.get("enable_thinking")
-                )
+                think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
             # Better Origin override: if request origin is voice assistant, default think_val to False
             request_source = getattr(request.state, "request_source", "unknown")
@@ -6958,14 +6718,10 @@ async def chat(request: Request):
 
                                 done = choice.get("finish_reason") is not None
                                 if done and in_thinking and think_val is None:
-                                    client_message["content"] = (
-                                        client_message.get("content") or ""
-                                    ) + "\n</think>"
+                                    client_message["content"] = (client_message.get("content") or "") + "\n</think>"
                                     in_thinking = False
 
-                                chunk = ollama_chat_chunk(
-                                    model_name, client_message, done, choice.get("finish_reason")
-                                )
+                                chunk = ollama_chat_chunk(model_name, client_message, done, choice.get("finish_reason"))
                                 if done:
                                     apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
                                 yield json.dumps(chunk) + "\n"
@@ -6984,9 +6740,7 @@ async def chat(request: Request):
                         logger.error(f"Stream failed after {attempt} attempts: {e}")
                         raise
 
-                    logger.warning(
-                        f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery..."
-                    )
+                    logger.warning(f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery...")
                     await restart_llama_server()
                     if not await wait_for_llama_server_or_restart(timeout=60.0):
                         raise HTTPException(
@@ -7000,16 +6754,17 @@ async def chat(request: Request):
                         await restore_slot_cache(resolved_backend, prefix_hash)
 
                     if full_response_content:
-                        current_payload["messages"] = [*body.get("messages", []), {"role": "assistant", "content": full_response_content}]
+                        current_payload["messages"] = [
+                            *body.get("messages", []),
+                            {"role": "assistant", "content": full_response_content},
+                        ]
                     else:
                         current_payload["messages"] = body.get("messages", [])
 
             # Save the new slot cache checkpoint
             if full_response_content:
                 new_messages = [*list(messages), {"role": "assistant", "content": full_response_content}]
-                new_prefix_hash = get_prefix_hash(
-                    model_name, new_messages, options=body.get("options")
-                )
+                new_prefix_hash = get_prefix_hash(model_name, new_messages, options=body.get("options"))
                 slot_id = await find_slot_for_request(resolved_backend, new_messages)
                 await save_slot_cache(resolved_backend, new_prefix_hash, slot_id)
 
@@ -7052,9 +6807,7 @@ async def chat(request: Request):
         finally:
             if resolved_backend:
                 async with active_requests_lock:
-                    active_requests[resolved_backend] = max(
-                        0, active_requests.get(resolved_backend, 0) - 1
-                    )
+                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
@@ -7091,18 +6844,14 @@ async def chat(request: Request):
                     f"Origin: {request_source}",
                     extra={"request_id": request_id, "request_source": request_source},
                 )
-                resp = await client_httpx.post(
-                    f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload
-                )
+                resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload)
                 resp.raise_for_status()
                 break
             except (httpx.RequestError, httpx.HTTPStatusError) as e:
                 attempt += 1
                 if attempt >= max_attempts:
                     raise
-                logger.warning(
-                    f"Upstream request failed (attempt {attempt}): {e}. Retrying recovery..."
-                )
+                logger.warning(f"Upstream request failed (attempt {attempt}): {e}. Retrying recovery...")
                 await restart_llama_server()
                 await wait_for_llama_server_or_restart()
                 resolved = await ensure_model(model_name, options=body.get("options"))
@@ -7123,9 +6872,7 @@ async def chat(request: Request):
             think_val = body.get("enable_thinking")
         if think_val is None and isinstance(body.get("options"), dict):
             opts = body["options"]
-            think_val = (
-                opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
-            )
+            think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
         # Better Origin override: if request origin is voice assistant, default think_val to False
         request_source = getattr(request.state, "request_source", "unknown")
@@ -7151,9 +6898,7 @@ async def chat(request: Request):
                 if think_val is None:
                     # Default: blend/wrap
                     if "<think>" not in final_content:
-                        client_message["content"] = (
-                            f"<think>\n{final_thinking}\n</think>\n{final_content}"
-                        )
+                        client_message["content"] = f"<think>\n{final_thinking}\n</think>\n{final_content}"
                     client_message["thinking"] = final_thinking
                 elif think_val is True:
                     # Explicit True: separate
@@ -7197,9 +6942,7 @@ async def chat(request: Request):
     finally:
         if resolved_backend:
             async with active_requests_lock:
-                active_requests[resolved_backend] = max(
-                    0, active_requests.get(resolved_backend, 0) - 1
-                )
+                active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
@@ -7251,9 +6994,7 @@ async def generate(request: Request):
             # Shared queue: only proceed once a slot on this (same) model is
             # available, so the request never runs on a slot serving a different
             # model (which would force a swap + thrash).
-            if not await wait_for_slot(
-                resolved_backend, timeout=body.get("queue_timeout", 120.0)
-            ):
+            if not await wait_for_slot(resolved_backend, timeout=body.get("queue_timeout", 120.0)):
                 # Timeout — release the queued counter so the count doesn't
                 # leak when the generator exits without ever acquiring a slot.
                 await release_request_queued(queued_backend)
@@ -7273,11 +7014,7 @@ async def generate(request: Request):
                 think_val = body.get("enable_thinking")
             if think_val is None and isinstance(body.get("options"), dict):
                 opts = body["options"]
-                think_val = (
-                    opts.get("think")
-                    if opts.get("think") is not None
-                    else opts.get("enable_thinking")
-                )
+                think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
             # Better Origin override: if request origin is voice assistant, default think_val to False
             request_source = getattr(request.state, "request_source", "unknown")
@@ -7358,14 +7095,10 @@ async def generate(request: Request):
                                     if thinking_chunk is not None and think_val is True:
                                         chunk["thinking"] = thinking_chunk
                                     if done:
-                                        apply_metrics(
-                                            chunk, data, now_ns() - started_ns, load_duration
-                                        )
+                                        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
                                 else:
                                     done = data.get("stop", False)
-                                    done_reason = data.get("finish_reason") or (
-                                        "stop" if done else None
-                                    )
+                                    done_reason = data.get("finish_reason") or ("stop" if done else None)
                                     response_chunk = data.get("content") or ""
                                     thinking_chunk = data.get("thinking")
 
@@ -7394,15 +7127,11 @@ async def generate(request: Request):
                                             in_thinking = False
                                         out_content = response_chunk
 
-                                    chunk = ollama_generate_chunk(
-                                        model_name, out_content, done, done_reason
-                                    )
+                                    chunk = ollama_generate_chunk(model_name, out_content, done, done_reason)
                                     if thinking_chunk is not None and think_val is True:
                                         chunk["thinking"] = thinking_chunk
                                     if done:
-                                        apply_metrics(
-                                            chunk, data, now_ns() - started_ns, load_duration
-                                        )
+                                        apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
                                 if out_content:
                                     full_response_content += out_content
                                 update_active_request_progress(
@@ -7426,9 +7155,7 @@ async def generate(request: Request):
                         logger.error(f"Stream failed after {attempt} attempts: {e}")
                         raise
 
-                    logger.warning(
-                        f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery..."
-                    )
+                    logger.warning(f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery...")
                     await restart_llama_server()
                     if not await wait_for_llama_server_or_restart(timeout=60.0):
                         raise HTTPException(
@@ -7441,25 +7168,20 @@ async def generate(request: Request):
 
                     if use_chat_backend:
                         if full_response_content:
-                            current_payload["messages"] = build_generate_chat_payload(
-                                body, resolved_backend
-                            )["messages"] + [
-                                {"role": "assistant", "content": full_response_content}
-                            ]
+                            current_payload["messages"] = build_generate_chat_payload(body, resolved_backend)[
+                                "messages"
+                            ] + [{"role": "assistant", "content": full_response_content}]
                         else:
-                            current_payload["messages"] = build_generate_chat_payload(
-                                body, resolved_backend
-                            )["messages"]
+                            current_payload["messages"] = build_generate_chat_payload(body, resolved_backend)[
+                                "messages"
+                            ]
                     else:
                         if full_response_content:
                             current_payload["prompt"] = (
-                                build_generate_payload(body, resolved_backend)["prompt"]
-                                + full_response_content
+                                build_generate_payload(body, resolved_backend)["prompt"] + full_response_content
                             )
                         else:
-                            current_payload["prompt"] = build_generate_payload(
-                                body, resolved_backend
-                            )["prompt"]
+                            current_payload["prompt"] = build_generate_payload(body, resolved_backend)["prompt"]
 
             await apply_keep_alive_policy(model_name, keep_alive)
         except httpx.HTTPStatusError as e:
@@ -7485,9 +7207,7 @@ async def generate(request: Request):
                 # above), so it is already 0 here.
                 with suppress(BaseException):
                     async with active_requests_lock:
-                        active_requests[resolved_backend] = max(
-                            0, active_requests.get(resolved_backend, 0) - 1
-                        )
+                        active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                         logger.info(
                             f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                         )
@@ -7514,9 +7234,7 @@ async def generate(request: Request):
         # Shared queue: only admit once a slot on this (same) model is available.
         # The request's queued count is released right after this point (on
         # success) or here (on timeout).
-        if not await wait_for_slot(
-            resolved_backend, timeout=body.get("queue_timeout", 120.0)
-        ):
+        if not await wait_for_slot(resolved_backend, timeout=body.get("queue_timeout", 120.0)):
             # Timeout — release the queued counter so it doesn't leak.
             if queued_backend:
                 await release_request_queued(queued_backend)
@@ -7540,9 +7258,7 @@ async def generate(request: Request):
             think_val = body.get("enable_thinking")
         if think_val is None and isinstance(body.get("options"), dict):
             opts = body["options"]
-            think_val = (
-                opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
-            )
+            think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
         # Better Origin override: if request origin is voice assistant, default think_val to False
         request_source = getattr(request.state, "request_source", "unknown")
@@ -7573,9 +7289,7 @@ async def generate(request: Request):
                 attempt += 1
                 if attempt >= max_attempts:
                     raise
-                logger.warning(
-                    f"Upstream request failed (attempt {attempt}): {e}. Retrying recovery..."
-                )
+                logger.warning(f"Upstream request failed (attempt {attempt}): {e}. Retrying recovery...")
                 await restart_llama_server()
                 await wait_for_llama_server_or_restart()
                 resolved = await ensure_model(model_name, options=body.get("options"))
@@ -7602,16 +7316,12 @@ async def generate(request: Request):
                     if think_val is None:
                         # Default: blend/wrap
                         if "<think>" not in final_response:
-                            client_content = (
-                                f"<think>\n{final_thinking}\n</think>\n{final_response}"
-                            )
+                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
                     elif think_val is True:
                         # Explicit True: separate
                         client_content = final_response
 
-            chunk = ollama_generate_chunk(
-                model_name, client_content, True, choice.get("finish_reason")
-            )
+            chunk = ollama_generate_chunk(model_name, client_content, True, choice.get("finish_reason"))
             if final_thinking is not None and think_val is not False:
                 chunk["thinking"] = final_thinking
         else:
@@ -7631,9 +7341,7 @@ async def generate(request: Request):
                     if think_val is None:
                         # Default: blend/wrap
                         if "<think>" not in final_response:
-                            client_content = (
-                                f"<think>\n{final_thinking}\n</think>\n{final_response}"
-                            )
+                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
                     elif think_val is True:
                         # Explicit True: separate
                         client_content = final_response
@@ -7676,9 +7384,7 @@ async def generate(request: Request):
             # already 0 here.
             with suppress(BaseException):
                 async with active_requests_lock:
-                    active_requests[resolved_backend] = max(
-                        0, active_requests.get(resolved_backend, 0) - 1
-                    )
+                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
@@ -7753,9 +7459,7 @@ async def _fetch_model_slots(model_id: str) -> list:
         return []
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(
-                f"{LLAMA_SERVER_URL}/slots", params={"model": model_id}, timeout=3.0
-            )
+            resp = await client.get(f"{LLAMA_SERVER_URL}/slots", params={"model": model_id}, timeout=3.0)
         if resp.status_code != 200:
             return []
         slots_data = resp.json()
@@ -7845,9 +7549,9 @@ async def ps():
     # Add slot/busy info from llama-server
     slot_info = await get_llama_server_slots()
 
-    # Add active request counts per model
+    # Add active request counts per model (convert backend -- IDs to public : names)
     async with active_requests_lock:
-        current_active = dict(active_requests)
+        current_active = {public_model_name(k): v for k, v in active_requests.items()}
 
     result = {"models": models}
     if slot_info:
@@ -7904,9 +7608,7 @@ async def show(request: Request):
 
     manifest = read_manifest(manifest_path)
     if manifest is None or not is_model_complete(manifest):
-        raise HTTPException(
-            status_code=409, detail=f"Model {model_name} is still downloading or incomplete."
-        )
+        raise HTTPException(status_code=409, detail=f"Model {model_name} is still downloading or incomplete.")
 
     info = manifest_stats(manifest_path, manifest)
     response = {

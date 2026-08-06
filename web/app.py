@@ -967,6 +967,14 @@ def vision_ocr_api():
         return jsonify({"error": str(e)}), 500
 
 
+def _router_id_to_public(model_id: str) -> str:
+    """Convert router model ID (with -- separator) to public name (with : separator)."""
+    if "--" in model_id:
+        family, tag = model_id.rsplit("--", 1)
+        return f"{family}:{tag}"
+    return model_id
+
+
 def _get_router_text_models() -> list[str]:
     """Return all text/VL model IDs from llama-server router (includes standalone GGUFs without Ollama manifests)."""
     try:
@@ -978,7 +986,11 @@ def _get_router_text_models() -> list[str]:
                 # Filter out image-generation models (SD/flux/image-edit)
                 sd_keywords = ["image-edit", "qwen-image", "qwen_image", "sd", "flux", "diffusion"]
                 models = resp.json().get("data", [])
-                return [m["id"] for m in models if not any(kw in m["id"].lower() for kw in sd_keywords)]
+                return [
+                    _router_id_to_public(m["id"])
+                    for m in models
+                    if not any(kw in m["id"].lower() for kw in sd_keywords)
+                ]
     except Exception:
         pass
     return []
