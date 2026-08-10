@@ -429,8 +429,10 @@ def blob_path_for_digest(digest):
 
 
 def router_filename_for_model_name(model_name):
-    normalized = with_default_tag(model_name)
-    name, tag = normalized.rsplit(":", 1)
+    public = public_model_name(model_name)
+    if ":" not in public:
+        public = with_default_tag(public)
+    name, tag = public.rsplit(":", 1)
     flattened = f"{name}--{tag}".replace("/", "--")
     sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", flattened).strip("-.") or "model"
     return f"{sanitized}.gguf"
@@ -1795,6 +1797,11 @@ async def openai_models():
                             "context_length": info["context_length"],
                         }
                         break
+                # Storage/router ids use "--" but the public API must expose
+                # the canonical "family:tag" form (e.g. qwen2.5-vl--7b ->
+                # qwen2.5-vl:7b). Convert after enrichment, which matches on
+                # the raw id above.
+                obj["id"] = public_model_name(obj.get("id", ""))
             data.setdefault("data", []).extend(sd_entries)
             # A model may appear under more than one id (e.g. a router
             # alias). List each model once under its canonical id so
@@ -1820,7 +1827,7 @@ async def openai_models():
             continue
         mn = manifest_model_name(manifest_base, path)
         if mn:
-            mid = mn.replace(":", "--")
+            mid = public_model_name(mn)
             if mid in seen_ids:
                 continue
             seen_ids.add(mid)

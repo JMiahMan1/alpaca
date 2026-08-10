@@ -327,6 +327,26 @@ def test_with_default_tag_does_not_double_tag_router_ids():
     )
 
 
+def test_router_filename_for_model_name_handles_dash_and_colon_forms():
+    assert (
+        alpaca_proxy.router_filename_for_model_name("qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest")
+        == "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest.gguf"
+    )
+    assert (
+        alpaca_proxy.router_filename_for_model_name("qwen2.5-vl--7b")
+        == "qwen2.5-vl--7b.gguf"
+    )
+    assert (
+        alpaca_proxy.router_filename_for_model_name("qwen2.5-vl:7b")
+        == "qwen2.5-vl--7b.gguf"
+    )
+    assert (
+        alpaca_proxy.router_filename_for_model_name("ornith:9b-q4_K_M")
+        == "ornith--9b-q4_K_M.gguf"
+    )
+    assert alpaca_proxy.router_filename_for_model_name("llama3") == "llama3--latest.gguf"
+
+
 @pytest.mark.asyncio
 async def test_ensure_model_accepts_router_id_with_double_dash_latest(tmp_path):
     """Regression: 'family--latest' router ids must resolve without double-tagging.
@@ -1740,6 +1760,95 @@ def test_iter_local_sd_models_only_lists_image_models():
     finally:
         alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
         alpaca_proxy.iter_local_manifests = orig_iter
+        alpaca_proxy.manifest_model_name = orig_mn
+
+
+@pytest.mark.asyncio
+async def test_openai_models_converts_router_ids_to_colon():
+    orig_client = alpaca_proxy.client_httpx
+    orig_iter = alpaca_proxy.iter_local_manifests
+    orig_sd = alpaca_proxy.iter_local_sd_models
+    orig_stats = alpaca_proxy.manifest_stats
+    try:
+        client = AsyncMock()
+        client.get = AsyncMock(
+            return_value=MockResponse(
+                {
+                    "object": "list",
+                    "data": [
+                        {"id": "qwen2.5-vl--7b", "object": "model"},
+                        {"id": "ornith--35b-q4_K_M", "object": "model"},
+                        {"id": "qwen3-6-35b-a3b-ud-iq4-nl--latest", "object": "model"},
+                        {"id": "qwen-image-edit-rapid-aio:q4_k", "object": "model"},
+                    ],
+                }
+            )
+        )
+        alpaca_proxy.client_httpx = client
+        alpaca_proxy.iter_local_manifests = lambda: iter([])
+        alpaca_proxy.iter_local_sd_models = lambda: iter([])
+        alpaca_proxy.manifest_stats = lambda path, manifest: {
+            "size": 1,
+            "digest": "d",
+            "details": {},
+            "context_length": 4096,
+        }
+
+        response = await alpaca_proxy.openai_models()
+
+        ids = [obj["id"] for obj in response["data"]]
+        assert "qwen2.5-vl:7b" in ids
+        assert "ornith:35b-q4_K_M" in ids
+        assert "qwen3-6-35b-a3b-ud-iq4-nl:latest" in ids
+        assert "qwen-image-edit-rapid-aio:q4_k" in ids
+        assert not any("--" in mid for mid in ids)
+    finally:
+        alpaca_proxy.client_httpx = orig_client
+        alpaca_proxy.iter_local_manifests = orig_iter
+        alpaca_proxy.iter_local_sd_models = orig_sd
+        alpaca_proxy.manifest_stats = orig_stats
+
+
+@pytest.mark.asyncio
+async def test_openai_models_fallback_uses_colon_form():
+    orig_client = alpaca_proxy.client_httpx
+    orig_iter = alpaca_proxy.iter_local_manifests
+    orig_sd = alpaca_proxy.iter_local_sd_models
+    orig_stats = alpaca_proxy.manifest_stats
+    orig_mn = alpaca_proxy.manifest_model_name
+    try:
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=Exception("llama-server down"))
+        alpaca_proxy.client_httpx = client
+        alpaca_proxy.iter_local_manifests = lambda: iter(
+            [
+                ("base", "/tmp/vl", make_manifest(digest="sha256:aaaa")),
+                ("base", "/tmp/ornith", make_manifest(digest="sha256:bbbb")),
+            ]
+        )
+        alpaca_proxy.manifest_model_name = lambda base, path: (
+            "qwen2.5-vl:7b" if "vl" in path else "ornith:35b-q4_K_M"
+        )
+        alpaca_proxy.iter_local_sd_models = lambda: iter([])
+        alpaca_proxy.manifest_stats = lambda path, manifest: {
+            "size": 1,
+            "digest": "d",
+            "details": {},
+            "capabilities": [],
+            "context_length": 4096,
+        }
+
+        response = await alpaca_proxy.openai_models()
+
+        ids = [obj["id"] for obj in response["data"]]
+        assert "qwen2.5-vl:7b" in ids
+        assert "ornith:35b-q4_K_M" in ids
+        assert not any("--" in mid for mid in ids)
+    finally:
+        alpaca_proxy.client_httpx = orig_client
+        alpaca_proxy.iter_local_manifests = orig_iter
+        alpaca_proxy.iter_local_sd_models = orig_sd
+        alpaca_proxy.manifest_stats = orig_stats
         alpaca_proxy.manifest_model_name = orig_mn
 
 
