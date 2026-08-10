@@ -967,6 +967,86 @@ def vision_ocr_api():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/images/text_compose", methods=["POST"])
+def text_compose_api():
+    """Deterministic text-line editing: erase a horizontal text band and/or
+    draw replacement text. Pure PIL/numpy - no diffusion model, pixel-exact.
+
+    Form params: image (file), band ('y0:y1' inclusive), gap_above, gap_below,
+    text (omit for erase-only), font, font_size, color ('r,g,b'),
+    post (none|vintage), output_format (png|jpeg).
+    """
+    import base64
+    import sys
+    from io import BytesIO
+
+    from PIL import Image as PILImage
+
+    try:
+        if "image" not in request.files:
+            return jsonify({"error": "No image uploaded"}), 400
+
+        file_obj = request.files["image"]
+        image = PILImage.open(BytesIO(file_obj.read())).convert("RGB")
+
+        band = (request.form.get("band") or request.args.get("band", "")).strip()
+        if not band:
+            return jsonify({"error": "'band' parameter is required, format y0:y1 (inclusive)"}), 400
+        try:
+            y0, y1 = (int(v) for v in band.split(":"))
+        except ValueError:
+            return jsonify({"error": "'band' must be 'y0:y1' (inclusive)"}), 400
+
+        from imageops import draw_text, fill_band_deterministic
+
+        gap_above = request.form.get("gap_above")
+        gap_below = request.form.get("gap_below")
+        gap_above = int(gap_above) if gap_above else y0 - 1
+        gap_below = int(gap_below) if gap_below else y1 + 1
+
+        result = fill_band_deterministic(image, y0, y1 + 1, gap_above, gap_below)
+        text = request.form.get("text", "")
+        if text:
+            color_str = request.form.get("color", "255,255,255")
+            color = tuple(int(v) for v in color_str.split(","))
+            result = draw_text(result, text, (y0, y1 + 1), request.form.get("font"), None, color)
+
+        post = (request.form.get("post") or "none").strip()
+        if post == "vintage":
+            import numpy as np
+
+            a = np.asarray(result.convert("RGB")).astype(float)
+            sepia = np.array([[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]])
+            r = a @ sepia.T
+            r[:, :, 0] += 42.0
+            r[:, :, 1] = r[:, :, 1] * 0.88 + 18.0
+            r[:, :, 2] = r[:, :, 2] * 0.66 - 6.0
+            r += np.random.default_rng(7).normal(0.0, 12.0, r.shape)
+            r = np.clip(r, 0, 255)
+            h, w, _ = r.shape
+            yy, xx = np.mgrid[0:h, 0:w]
+            d = np.sqrt(((yy - h / 2) / (h / 2)) ** 2 + ((xx - w / 2) / (w / 2)) ** 2)
+            r = r * (1.0 - 0.30 * np.clip(d - 0.35, 0, 1) ** 2)[:, :, None]
+            result = PILImage.fromarray(np.clip(r, 0, 255).astype("uint8"))
+
+        out_format = (request.form.get("output_format") or "png").lower()
+        buf = BytesIO()
+        result.save(buf, format="JPEG" if out_format == "jpeg" else "PNG")
+        return jsonify(
+            {
+                "status": "success",
+                "image_b64": base64.b64encode(buf.getvalue()).decode("utf-8"),
+                "band": [y0, y1],
+                "text": text,
+                "post": post,
+                "width": result.width,
+                "height": result.height,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def _router_id_to_public(model_id: str) -> str:
     """Convert router model ID (with -- separator) to public name (with : separator)."""
     if "--" in model_id:

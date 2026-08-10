@@ -159,7 +159,7 @@ services:
     environment:
       # Cap sd.cpp CPU threads so CPU-bound diffusion doesn't peg every core
       # and thermally shut down weak-cooled hosts. Tune to your thermals.
-      - SD_CPU_THREADS=8
+      - SD_CPU_THREADS=6
       # GPU layer configuration (highly recommended for RTX 4060 8GB).
       # Controls default layers offloaded to GPU for Qwen models.
       - SD_GPU_LAYERS=40
