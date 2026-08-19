@@ -13,7 +13,7 @@ from fastapi import HTTPException, Request
 with tempfile.TemporaryDirectory() as tmpdir:
     os.environ["GRAMMAR_REGISTRY_DIR"] = os.path.join(tmpdir, "grammars")
     os.environ["SCHEMA_REGISTRY_DIR"] = os.path.join(tmpdir, "schemas")
-    MODULE_PATH = pathlib.Path(__file__).with_name("alpaca-proxy.py")
+    MODULE_PATH = pathlib.Path(__file__).resolve().parent.parent / "alpaca-proxy.py"
     SPEC = importlib.util.spec_from_file_location("alpaca_proxy", MODULE_PATH)
     alpaca_proxy = importlib.util.module_from_spec(SPEC)
     SPEC.loader.exec_module(alpaca_proxy)

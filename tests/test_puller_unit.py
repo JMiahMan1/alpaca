@@ -4,7 +4,7 @@ import os
 import pathlib
 import tempfile
 
-MODULE_PATH = pathlib.Path(__file__).with_name("alpaca-puller.py")
+MODULE_PATH = pathlib.Path(__file__).resolve().parent.parent / "alpaca-puller.py"
 SPEC = importlib.util.spec_from_file_location("alpaca_puller", MODULE_PATH)
 alpaca_puller = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(alpaca_puller)
