@@ -30,7 +30,7 @@ This means Alpaca can behave like Ollama from the client perspective while still
 
 ## Screenshots
 
-The web dashboard renders screenshots of every benchmark's output — UI games (pygame), HTML5 canvas, three.js, and raw WebGL apps are captured headless in Chromium and shown inline on each test card. Click any thumbnail to open a full-screen lightbox.
+The web dashboard renders screenshots of every benchmark's output - UI games (pygame), HTML5 canvas, three.js, and raw WebGL apps are captured headless in Chromium and shown inline on each test card. Click any thumbnail to open a full-screen lightbox.
 
 ### Dashboard home (▶ Run General / ⚠ Run Outdated controls, model grid, monitor)
 
@@ -40,24 +40,24 @@ The web dashboard renders screenshots of every benchmark's output — UI games (
 
 ![Alpaca Test Browser](docs/screenshots/dashboard_tests.png)
 
-### Rendered benchmark output — real screenshots from actual runs
+### Rendered benchmark output - real screenshots from actual runs
 
 | Screenshot | Source |
 |---|---|
-| `game_pong.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` — pygame Pong |
-| `retro_space_invaders.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` — retro Space Invaders |
-| `game_falling_sand.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` — falling-sand simulation |
+| `game_pong.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` - pygame Pong |
+| `retro_space_invaders.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` - retro Space Invaders |
+| `game_falling_sand.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` - falling-sand simulation |
 
 ![Game pong rendered output](docs/screenshots/game_pong.png)
 
 ### Other screenshot features
 
-- **Benchmark results** — each test card shows a rendered screenshot (when available) plus the model score, pass/fail status, and code execution details.
-- **Test Browser** — browse all 213 tests by category/kind/status, filter by model, and preview a test's prompt, expected output, and live-rendered HTML/3D output in a sandboxed iframe (with an "Open in new tab" option).
-- **Live monitor** — real-time VRAM/RAM/context telemetry per model with slot allocation and request queueing.
-- **Human aesthetic ratings** — give each model a 1–5 star rating per test from the test preview modal; each card shows the highest-rated model (name, score, and rating), and a **Top Rated** board ranks winners per category and overall.
+- **Benchmark results** - each test card shows a rendered screenshot (when available) plus the model score, pass/fail status, and code execution details.
+- **Test Browser** - browse all 213 tests by category/kind/status, filter by model, and preview a test's prompt, expected output, and live-rendered HTML/3D output in a sandboxed iframe (with an "Open in new tab" option).
+- **Live monitor** - real-time VRAM/RAM/context telemetry per model with slot allocation and request queueing.
+- **Human aesthetic ratings** - give each model a 1 - 5 star rating per test from the test preview modal; each card shows the highest-rated model (name, score, and rating), and a **Top Rated** board ranks winners per category and overall.
 
-To capture screenshots yourself, run a benchmark from the dashboard (▶ Run General / ⚠ Run Outdated) — rendered output is stored alongside each result in `data/llm_benchmarks/models/general_<model>.json`. New dashboard screenshots can be taken with Playwright (`node_modules/playwright-core`):
+To capture screenshots yourself, run a benchmark from the dashboard (▶ Run General / ⚠ Run Outdated) - rendered output is stored alongside each result in `data/llm_benchmarks/models/general_<model>.json`. New dashboard screenshots can be taken with Playwright (`node_modules/playwright-core`):
 
 ```bash
 node -e "
@@ -97,16 +97,16 @@ flowchart LR
         Start([Client Request])
     end
 
-    subgraph L0 ["⚡ Layer 0 — Default Optimized"]
+    subgraph L0 ["⚡ Layer 0 - Default Optimized"]
         L0Check{MTP<br/>Compatible?}
         L0Ok{Load<br/>Success?}
     end
 
-    subgraph L1 ["🔄 Layer 1 — Speculative Off"]
+    subgraph L1 ["🔄 Layer 1 - Speculative Off"]
         L1Check{Load<br/>Success?}
     end
 
-    subgraph L2 ["🛡️ Layer 2 — Safe Settings"]
+    subgraph L2 ["🛡️ Layer 2 - Safe Settings"]
         L2Check{Load<br/>Success?}
     end
 
@@ -193,8 +193,8 @@ On admission each request calls `mark_request_queued(model_name)`, incrementing
 `queued_requests[backend_model]`. The request is admitted only when `wait_for_slot()`
 reports a free slot for that exact model, then it increments `active_requests` and
 decrements `queued_requests` once it actually begins executing. The queued count is
-released on **every** exit path — `503` timeout, model-not-found, streaming `finally`,
-non-streaming `finally`, and the connection-error `502` path — so `queued_requests` can
+released on **every** exit path - `503` timeout, model-not-found, streaming `finally`,
+non-streaming `finally`, and the connection-error `502` path - so `queued_requests` can
 never leak and a stale count can never block a legitimate model switch.
 
 This matters because `ensure_model()` consults `queued_requests` as well as
@@ -204,7 +204,7 @@ a model that still has admitted-but-not-yet-in-flight requests is never force-un
 ### Load-timeout protection
 
 If a model is still loading past its timeout, the proxy force-unloads it only when doing
-so is safe — there must be no active **or** queued requests for that model. The timeout
+so is safe - there must be no active **or** queued requests for that model. The timeout
 scales with model size (`is_model_over_9b()` → 360s, otherwise 120s) so large models are
 not killed mid-load by an aggressive timer.
 
