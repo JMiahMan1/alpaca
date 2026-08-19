@@ -133,35 +133,29 @@ Create a cron job for periodic benchmarking:
 
 ### 2. On-Demand Benchmarking
 
-Trigger benchmarks via API:
+Trigger benchmarks via Web Dashboard API:
 
 ```bash
-# Trigger benchmarks via Alpaca proxy API
-curl -X POST http://localhost:11434/api/v1/benchmarks \
+# Trigger benchmarks via Alpaca Web Dashboard API (port 5000)
+curl -X POST http://localhost:5000/api/run \
   -H "Content-Type: application/json" \
-  -d '{"models": ["qwen3:8b", "qwen2.5-coder:7b"], "type": "proxy"}'
+  -d '{
+    "models": ["qwen3:8b", "qwen2.5-coder:7b"],
+    "use_proxy": true,
+    "resume": true
+  }'
 ```
 
 ### 3. Service Status Monitoring
 
-Add Alpaca proxy health endpoint for benchmarks:
+Query real-time status and active progress from the dashboard:
 
-```python
-# in alpaca-proxy.py
-@app.get("/admin/benchmarks")
-async def run_benchmarks():
-    """Trigger LLM benchmarking suite."""
-    models = ["qwen3:8b", "qwen2.5-coder:7b", "qwen3.5:9b"]
-    
-    benchmark = LLMModelBenchmark()
-    results = asyncio.run(benchmark.run_optimization_pipeline(models))
-    
-    return {
-        "status": "started",
-        "message": "Benchmarking started",
-        "results_dir": results["results_dir"],
-        "models_tested": len(models)
-    }
+```bash
+# Get active benchmark status
+curl http://localhost:5000/api/status
+
+# Get current model list
+curl http://localhost:5000/api/models
 ```
 
 ## Results Management
@@ -170,29 +164,28 @@ async def run_benchmarks():
 
 ```
 data/llm_benchmarks/
-├── direct_benchmarks_latest.json
-├── proxy_benchmarks_latest.json
-├── benchmarks_20250622_153045_direct.json
-├── benchmarks_20250622_153045_proxy.json
-└── models/
-    ├── qwen3.8b.profile.json
-    ├── qwen2.5-coder.7b.profile.json
-    └── qwen3.5.9b.profile.json
+├── merged_results.json
+├── models/
+│   ├── general_qwen3_8b.json
+│   ├── general_qwen2_5-coder_7b.json
+│   └── general_qwen3_5_9b.json
+└── shared_llm/
+    └── shared_llm_benchmarks_latest.json
 ```
 
 ### 2. Results API
 
-Access results via Alpaca proxy:
+Access results via the Web Dashboard API:
 
 ```bash
-# Get latest benchmark results
-curl http://localhost:11434/api/v1/benchmarks/latest
+# Get latest benchmark results summary
+curl http://localhost:5000/api/results
 
-# Get specific model profile
-curl http://localhost:11434/api/v1/benchmarks/model/qwen3.8b/profile
+# Export full results in CSV format
+curl "http://localhost:5000/api/benchmarks/export?format=csv"
 
-# Get best performing model
-curl http://localhost:11434/api/v1/benchmarks/recommendations
+# Export full results in JSON format
+curl "http://localhost:5000/api/benchmarks/export?format=json"
 ```
 
 ### 3. Result Processing Script

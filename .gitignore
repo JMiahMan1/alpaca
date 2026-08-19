@@ -14,3 +14,4 @@ venv/
 # build artifacts / runtime caches
 .sd-build/
 .slots-cache/
+node_modules/

@@ -21,9 +21,7 @@ from PIL import Image
 
 from imageops import draw_text, fill_band_deterministic
 
-SEPIA = np.array(
-    [[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]]
-)
+SEPIA = np.array([[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]])
 
 
 def vintage(img: Image.Image, seed: int = 7) -> Image.Image:
@@ -51,8 +49,12 @@ def main() -> int:
     parser.add_argument("--font", default=None, help="TTF font path")
     parser.add_argument("--font-size", type=int, default=None, help="Font size in px")
     parser.add_argument("--color", default="255,255,255", help="Text color 'r,g,b'")
-    parser.add_argument("--method", choices=["model", "fill"], default="model",
-                        help="model = qwen-image-edit via sd-server (default); fill = deterministic PIL fallback")
+    parser.add_argument(
+        "--method",
+        choices=["model", "fill"],
+        default="model",
+        help="model = qwen-image-edit via sd-server (default); fill = deterministic PIL fallback",
+    )
     parser.add_argument("--post", choices=["none", "vintage"], default="none")
     parser.add_argument("--output", type=Path, default=None, help="Output path")
     parser.add_argument("--verify", action="store_true", help="Print pixel containment stats")
@@ -86,10 +88,7 @@ def main() -> int:
         r = np.asarray(result).astype(int)
         d = np.abs(o - r).sum(axis=2) > 15
         rows = np.where(d.any(axis=1))[0]
-        print(
-            f"[verify] changed rows {(rows.min(), rows.max()) if len(rows) else None}, "
-            f"{int(d.sum())} px"
-        )
+        print(f"[verify] changed rows {(rows.min(), rows.max()) if len(rows) else None}, {int(d.sum())} px")
 
     if args.post == "vintage":
         result = vintage(result)

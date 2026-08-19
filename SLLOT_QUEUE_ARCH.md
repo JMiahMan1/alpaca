@@ -32,7 +32,7 @@
 ### `wait_for_slot(backend_model)` (line 6564)
 - Polls llama-server `GET /slots?model={backend_model}`
 - Returns `True` when at least one slot exists and not all are `is_processing=True`
-- Waits 0.5s between polls, timeout default 120s
+- Uses exponential backoff (0.1s to 1.0s) between polls, timeout default 120s
 
 ### `_fetch_model_slots(model_id)` (line 7709)
 - Queries llama-server `GET /slots?model={model_id}`

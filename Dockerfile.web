@@ -6,12 +6,14 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
-RUN pip install --no-cache-dir flask flask-cors flask-socketio simple-websocket httpx requests psutil pillow PyMuPDF qrcode numpy
+RUN pip install --no-cache-dir flask flask-cors flask-socketio simple-websocket httpx requests psutil pillow PyMuPDF qrcode numpy docker
 
 # Copy required files into container
 COPY llm_benchmark_suite.py /app/
+COPY sandbox_exec.py /app/
 COPY alpaca-puller.py /app/
 COPY alpaca_puller.py /app/
+COPY online_providers.py /app/
 COPY imageops.py /app/
 COPY web/ /app/web/
 
@@ -20,5 +22,16 @@ EXPOSE 5000
 
 ENV PYTHONUNBUFFERED=1
 
-# Run the flask application
+# Set up non-root runtime user
+RUN (groupadd -g 999 docker 2>/dev/null || true) && \
+    (useradd -u 1000 -m -s /bin/bash -G docker alpaca 2>/dev/null || useradd -u 1000 -m -s /bin/bash alpaca) && \
+    mkdir -p /app/data && \
+    chown -R alpaca:alpaca /app
+
+# Entrypoint runs as root to repair bind-mount ownership, then drops to the
+# alpaca runtime user before starting the dashboard.
+COPY web-entrypoint.sh /app/web-entrypoint.sh
+RUN chmod +x /app/web-entrypoint.sh
+
+ENTRYPOINT ["/app/web-entrypoint.sh"]
 CMD ["python", "web/app.py"]

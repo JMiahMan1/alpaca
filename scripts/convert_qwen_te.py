@@ -60,5 +60,6 @@ def convert_qwen_te():
     writer.close()
     print(f"✅ Successfully converted {mapped} tensors to {dst_path}!")
 
+
 if __name__ == "__main__":
     convert_qwen_te()

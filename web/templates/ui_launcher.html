@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alpaca UI Launcher</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Ctext x='16' y='23' font-size='20' font-weight='bold' text-anchor='middle' fill='%2338bdf8' font-family='system-ui,sans-serif'%3EA%3C/text%3E%3C/svg%3E">
+    <style>
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --text-primary: #e2e8f0;
+            --text-muted: #94a3b8;
+            --border-color: #1e293b;
+            --accent: #38bdf8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            height: 100%;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: system-ui, sans-serif;
+            overflow: hidden;
+        }
+        #launcher-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 0.9rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            flex-wrap: wrap;
+        }
+        #launcher-toolbar .brand {
+            font-weight: 600;
+            font-size: 0.95rem;
+            margin-right: 0.5rem;
+            white-space: nowrap;
+        }
+        #launcher-toolbar button {
+            background: rgba(56, 189, 248, 0.12);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.35rem 0.8rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        #launcher-toolbar button:hover {
+            background: rgba(56, 189, 248, 0.25);
+        }
+        #launcher-status {
+            margin-left: auto;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            max-width: 320px;
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #launcher-main {
+            display: flex;
+            height: calc(100% - 46px);
+        }
+        #vnc-frame-wrap {
+            flex: 1 1 auto;
+            padding: 0.75rem;
+            min-width: 0;
+        }
+        #vnc-frame {
+            width: 100%;
+            height: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            background: #000;
+        }
+        #launcher-panel {
+            flex: 0 0 380px;
+            max-width: 380px;
+            border-left: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            padding: 0.9rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+            overflow-y: auto;
+        }
+        #launcher-panel h3 {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+        #launcher-panel pre {
+            background: #0b1120;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.6rem;
+            font-family: ui-monospace, monospace;
+            font-size: 0.75rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 200px;
+            overflow: auto;
+        }
+        #launcher-panel input {
+            width: 100%;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.45rem 0.6rem;
+            font-family: ui-monospace, monospace;
+            font-size: 0.78rem;
+        }
+        #shot-img {
+            max-width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="launcher-toolbar">
+        <span class="brand">🖥 UI Launcher</span>
+        <button id="btn-restart">🔄 Restart App</button>
+        <button id="btn-log">📜 App Log</button>
+        <button id="btn-shot">📷 Screenshot</button>
+        <button id="btn-stop">⏹ Stop UI</button>
+        <button id="btn-close">✕ Close</button>
+        <span id="launcher-status"></span>
+    </div>
+    <div id="launcher-main">
+        <div id="vnc-frame-wrap">
+            <iframe id="vnc-frame" allowfullscreen="true" allow="fullscreen" src=""></iframe>
+        </div>
+        <div id="launcher-panel">
+            <h3>Terminal</h3>
+            <input id="term-input" placeholder="e.g. ls /tmp; cat /tmp/ui_stdout.txt; DISPLAY=:99 xdpyinfo | head" />
+            <button id="btn-term-run">▶ Run</button>
+            <pre id="term-out"># sandbox terminal (sandbox user, DISPLAY=:99)</pre>
+            <h3>App Log</h3>
+            <button id="btn-log-refresh">🔄 Refresh Log</button>
+            <pre id="log-out"># app runtime state</pre>
+            <h3>Screenshot</h3>
+            <button id="btn-shot-capture">📷 Capture</button>
+            <img id="shot-img" style="display:none;" alt="Xvfb screenshot" />
+        </div>
+    </div>
+    <script>
+        const CONTAINER_ID = {{ container_id|tojson }};
+        const HOST_PORT = {{ host_port|tojson }};
+        const statusEl = document.getElementById('launcher-status');
+        const setStatus = (m) => { statusEl.textContent = m; };
+        const uiFetch = (path, body) =>
+            fetch(path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            }).then((r) => r.json().then((j) => ({ ok: r.ok, j })));
+
+        const frame = document.getElementById('vnc-frame');
+        if (HOST_PORT) {
+            // Tunnel the noVNC client page AND its WebSocket through the dashboard
+            // origin (port 5000) so it works from a LAN, VPN, or external network.
+            // The published sandbox port is random and not reachable off-box.
+            frame.src = `/serve/${CONTAINER_ID}/vnc.html?autoconnect=true&resize=scale&path=/serve/ws/${CONTAINER_ID}/websockify`;
+            setStatus('Connected to noVNC stream.');
+        } else {
+            setStatus('No VNC port found for container.');
+        }
+
+        const termInput = document.getElementById('term-input');
+        const termOut = document.getElementById('term-out');
+        const runTerm = () => {
+            const cmd = termInput.value.trim();
+            if (!cmd) return;
+            termOut.textContent += `\n$ ${cmd}\n`;
+            termOut.scrollTop = termOut.scrollHeight;
+            uiFetch('/api/sandbox/ui/exec', { container_id: CONTAINER_ID, command: cmd })
+                .then(({ ok, j }) => {
+                    if (!ok || j.error) throw new Error(j.error || 'exec failed');
+                    termOut.textContent += (j.output || '(no output)') + '\n';
+                    termOut.scrollTop = termOut.scrollHeight;
+                })
+                .catch((e) => { termOut.textContent += `[error] ${e.message}\n`; });
+        };
+        document.getElementById('btn-term-run').addEventListener('click', runTerm);
+        termInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') runTerm(); });
+
+        const logOut = document.getElementById('log-out');
+        document.getElementById('btn-log').addEventListener('click', () => {
+            uiFetch('/api/sandbox/ui/status', { container_id: CONTAINER_ID })
+                .then(({ ok, j }) => {
+                    if (!ok || j.error) throw new Error(j.error || 'status failed');
+                    logOut.textContent =
+                        `running: ${j.running}\n` +
+                        `app_pid: ${j.app_pid || 'n/a'}\n` +
+                        `app_exitcode: ${j.app_exitcode === null ? 'still running' : j.app_exitcode}\n` +
+                        `\n--- stdout (tail) ---\n${j.stdout_tail || '(no output)'}`;
+                })
+                .catch((e) => { logOut.textContent += `\n[error] ${e.message}\n`; });
+        });
+        document.getElementById('btn-log-refresh').addEventListener('click', () => {
+            document.getElementById('btn-log').click();
+        });
+
+        const shotImg = document.getElementById('shot-img');
+        document.getElementById('btn-shot').addEventListener('click', capture);
+        document.getElementById('btn-shot-capture').addEventListener('click', capture);
+        function capture() {
+            shotImg.style.display = 'none';
+            uiFetch('/api/sandbox/ui/screenshot', { container_id: CONTAINER_ID })
+                .then(({ ok, j }) => {
+                    if (!ok || j.error) throw new Error(j.error || 'screenshot failed');
+                    if (!j.image) throw new Error('no image returned');
+                    shotImg.src = 'data:image/png;base64,' + j.image;
+                    shotImg.style.display = 'block';
+                })
+                .catch((e) => { setStatus('Screenshot failed: ' + e.message); });
+        }
+
+        document.getElementById('btn-restart').addEventListener('click', () => {
+            setStatus('Restarting app…');
+            uiFetch('/api/sandbox/ui/restart', { container_id: CONTAINER_ID })
+                .then(({ ok, j }) => {
+                    if (!ok || j.error) throw new Error(j.error || 'restart failed');
+                    setStatus('App relaunched.');
+                })
+                .catch((e) => { setStatus('Restart failed: ' + e.message); });
+        });
+
+        document.getElementById('btn-stop').addEventListener('click', () => {
+            setStatus('Stopping UI…');
+            uiFetch('/api/sandbox/stop_serve', { container_id: CONTAINER_ID })
+                .then(() => {
+                    setStatus('UI stopped.');
+                    frame.src = 'about:blank';
+                })
+                .catch((e) => { setStatus('Stop failed: ' + e.message); });
+        });
+
+        document.getElementById('btn-close').addEventListener('click', () => {
+            window.close();
+        });
+    </script>
+</body>
+</html>

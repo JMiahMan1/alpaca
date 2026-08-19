@@ -19,11 +19,14 @@ This means Alpaca can behave like Ollama from the client perspective while still
 
 ## Components
 
-- `alpaca-proxy.py`: FastAPI proxy on port `11434`
-- `alpaca-puller.py`: standalone pull/remove utility for Ollama-format model storage
-- `docker-compose.yml`: router-mode `llama-server` plus proxy wiring
-- `alpaca-indexer`: sidecar scanner that mirrors local Ollama-discovered models into Alpaca's router index
-- `test_proxy_unit.py`: unit coverage for router resolution and keep-alive lifecycle
+- `alpaca-proxy.py`: FastAPI router proxy on port `11434` (Ollama and OpenAI API compatibility, slot allocation, smart request queueing)
+- `web/app.py`: Web Dashboard, live monitor, model manager, and benchmark orchestrator on port `5000`
+- `llm_benchmark_suite.py`: Comprehensive 213-test benchmark runner with unified 0-100 scoring, AST syntax verification, AI watermark analysis, and out-of-date test detection
+- `sandbox_exec.py`: Secure non-root containerized execution and live web app serving engine (`alpaca-sandbox`)
+- `online_providers.py`: Multi-provider adapter querying OpenRouter, Hugging Face, Cloudflare Workers AI, and OpenCode Zen
+- `telemetry_monitor.py`: Async daemon monitoring real-time VRAM, DRAM, and slot allocations
+- `alpaca-puller.py`: Standalone CLI and backend tool for pulling from the Ollama Registry and Hugging Face GGUF repositories
+- `docker-compose.yml`: Multi-service deployment definition (llama-server, sd-server, alpaca-proxy, alpaca-web, alpaca-telemetry, alpaca-indexer)
 
 ## Model Lifecycle
 
@@ -170,14 +173,18 @@ in-flight or queued LLM request still depends on (cross-backend safety).
 
 ## Supported API Surface
 
-The proxy currently implements:
+### Ollama & OpenAI Compatibility (Port 11434)
+- `POST /api/chat`, `POST /api/generate`, `GET /api/tags`, `GET /api/ps`, `POST /api/show`, `GET /api/version`
+- `POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/completions`, `POST /v1/embeddings`
+- `GET /admin/system`, `GET /admin/runtime`, `GET /admin/slots`, `GET /admin/metrics`, `GET /admin/requests`
 
-- `POST /api/chat`
-- `POST /api/generate`
-- `GET /api/tags`
-- `GET /api/ps`
-- `POST /api/show`
-- `GET /api/version`
+### Web Dashboard & Management APIs (Port 5000)
+- `GET /api/models`, `POST /api/models/pull`, `POST /api/models/unload`, `DELETE /api/models/<model>`
+- `POST /api/run` (supports `test_ids`, `resume`, `groups`, `tiers`, and `outdated_only`),
+  `POST /api/cancel`, `GET /api/results`, `GET /api/benchmarks/export`, `DELETE /api/benchmarks/model/<model>`
+- `POST /api/sandbox/run`, `POST /api/sandbox/serve`, `POST /api/sandbox/stop`
+- `GET /api/online/models/search`, `GET /api/online/models/selected`, `POST /api/online/models/selected`
+- `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/status`
 
 ## Request Compatibility
 

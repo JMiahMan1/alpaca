@@ -8,4 +8,7 @@ COPY alpaca_puller.py .
 COPY benchmark-configs.py .
 COPY analyzer.py .
 COPY telemetry_monitor.py .
+COPY online_providers.py .
+RUN useradd -u 1000 -m -s /bin/bash alpaca && chown -R alpaca:alpaca /app
+USER alpaca
 CMD ["python", "alpaca-proxy.py"]

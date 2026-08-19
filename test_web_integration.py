@@ -619,9 +619,7 @@ def test_get_telemetry_history_with_file(mock_open, mock_exists, client):
     """Test telemetry history returns data when file exists"""
     import json as json_mod
 
-    mock_open.return_value.__enter__.return_value.read.return_value = json_mod.dumps(
-        {"epoch_time": 1}
-    )
+    mock_open.return_value.__enter__.return_value.read.return_value = json_mod.dumps({"epoch_time": 1})
     res = client.get("/api/telemetry/history?model=test-model")
     assert res.status_code == 200
     data = json.loads(res.data.decode("utf-8"))
@@ -743,7 +741,8 @@ def test_api_errors_get_and_clear_proxy(client):
         assert data_clear["status"] == "cleared"
 
 
-# ── Vision & Image-to-Prompt Assistant API Tests ─────────────────────────
+# Vision & Image-to-Prompt Assistant API Tests
+
 
 def test_vision_describe_api_missing_file(client):
     """Test that /api/vision/describe returns 400 when no file is uploaded"""
@@ -768,21 +767,11 @@ def test_vision_describe_api_success(client):
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
-        "choices": [
-            {
-                "message": {
-                    "content": "A high-resolution photo of a blue studio background with soft lighting."
-                }
-            }
-        ]
+        "choices": [{"message": {"content": "A high-resolution photo of a blue studio background with soft lighting."}}]
     }
 
     with patch("httpx.Client.post", return_value=mock_resp):
-        res = client.post(
-            "/api/vision/describe",
-            data={"image": (buf, "test.jpg")},
-            content_type="multipart/form-data"
-        )
+        res = client.post("/api/vision/describe", data={"image": (buf, "test.jpg")}, content_type="multipart/form-data")
         assert res.status_code == 200
         data = json.loads(res.data.decode("utf-8"))
         assert data["status"] == "success"
@@ -815,7 +804,7 @@ def test_vision_synthesize_edit_prompt_success(client):
     payload = {
         "base_description": "A woman wearing a white shirt in a studio",
         "desired_changes": "Change her hair to purple neon and add cyberpunk city background",
-        "style_preset": "Cyberpunk Sci-Fi"
+        "style_preset": "Cyberpunk Sci-Fi",
     }
 
     with patch("httpx.Client.post", return_value=mock_resp):
@@ -833,7 +822,7 @@ def test_vision_synthesize_edit_prompt_fallback(client):
     payload = {
         "base_description": "A portrait of a dog",
         "desired_changes": "Add superhero cape",
-        "style_preset": "Anime Fantasy"
+        "style_preset": "Anime Fantasy",
     }
 
     with patch("httpx.Client.post", side_effect=Exception("Connection error")):
@@ -843,3 +832,360 @@ def test_vision_synthesize_edit_prompt_fallback(client):
         assert data["status"] == "success"
         assert "superhero cape" in data["master_prompt"]
 
+
+def test_api_online_providers_get(client):
+    """Test GET /api/online/providers returns provider configuration status."""
+    res = client.get("/api/online/providers")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert "providers" in data
+    assert "alpaca" in data["providers"]
+    assert "openrouter" in data["providers"]
+    assert "huggingface" in data["providers"]
+    assert "cloudflare" in data["providers"]
+    assert "opencode_zen" in data["providers"]
+    assert "groq" in data["providers"]
+    assert "gemini" in data["providers"]
+
+
+def test_api_online_providers_alpaca_generate(client):
+    """Test POST /api/online/providers/alpaca/generate produces a valid alpaca-sk- token."""
+    res = client.post("/api/online/providers/alpaca/generate")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert data["success"] is True
+    assert data["token"].startswith("alpaca-sk-")
+    assert len(data["token"]) >= 20
+
+
+def test_api_online_providers_save_and_test(client):
+    """Test saving credentials and testing provider connection."""
+    with patch(
+        "online_providers.online_model_provider.save_credentials",
+        return_value={"success": True, "configured": {"alpaca": True}},
+    ):
+        res = client.post("/api/online/providers/save", json={"alpaca_api_key": "alpaca-sk-test-token"})
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True
+
+    with patch(
+        "online_providers.online_model_provider.test_connection",
+        return_value={"success": True, "message": "Test successful"},
+    ):
+        res = client.post(
+            "/api/online/providers/test", json={"provider": "openrouter", "keys": {"openrouter_api_key": "sk-or-test"}}
+        )
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True
+        assert data["message"] == "Test successful"
+
+
+def test_api_online_models_search_and_selected(client):
+    """Test searching online models and persisting user selection."""
+    mock_models = [
+        {
+            "id": "openrouter:google/gemini-2.0-flash-exp:free",
+            "name": "gemini-2.0-flash",
+            "label": "Gemini 2.0 Flash",
+            "provider": "openrouter",
+            "free": True,
+        }
+    ]
+    with patch("online_providers.online_model_provider.fetch_live_models", return_value=mock_models):
+        res = client.get("/api/online/models/search?provider=openrouter&free_only=true")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True
+        assert len(data["models"]) == 1
+        assert data["models"][0]["id"] == "openrouter:google/gemini-2.0-flash-exp:free"
+
+    # Test saving selection
+    with patch(
+        "online_providers.online_model_provider.save_selected_models", return_value={"success": True, "count": 1}
+    ):
+        res = client.post("/api/online/models/selected", json={"models": mock_models})
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True
+        assert data["count"] == 1
+
+
+def test_api_models_tracking(client):
+    """Test GET /api/models/tracking returns structured new vs benchmarked lists."""
+    res = client.get("/api/models/tracking")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert data["success"] is True
+    assert "newly_added" in data
+    assert "previously_benchmarked" in data
+    assert "counts" in data
+    assert "all_tracked" in data
+    assert data["counts"]["total"] >= 0
+
+
+def test_delete_model_benchmarks_comprehensive(client, tmp_path):
+    """Test DELETE /api/benchmarks/model/<model> completely purges per-model files, shared files, and snapshots."""
+    from web.app import benchmark, shared_llm_benchmark
+
+    # Setup mock dirs
+    gen_models_dir = tmp_path / "general_models"
+    gen_results_dir = tmp_path / "general_results"
+    shared_models_dir = tmp_path / "shared_models"
+    shared_results_dir = tmp_path / "shared_results"
+
+    gen_models_dir.mkdir(parents=True, exist_ok=True)
+    gen_results_dir.mkdir(parents=True, exist_ok=True)
+    shared_models_dir.mkdir(parents=True, exist_ok=True)
+    shared_results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create dummy general and shared per-model files
+    (gen_models_dir / "general_qwen_test.json").write_text(json.dumps({"model": "qwen_test", "results": []}))
+    (shared_models_dir / "shared_qwen_test.json").write_text(json.dumps({"model": "qwen_test", "results": []}))
+
+    # Create dummy snapshots
+    (gen_results_dir / "benchmarks_1.json").write_text(
+        json.dumps(
+            {
+                "models_tested": ["qwen_test", "other_model"],
+                "results": [{"model": "qwen_test"}, {"model": "other_model"}],
+            }
+        )
+    )
+    (shared_results_dir / "shared_llm_benchmarks_1.json").write_text(
+        json.dumps({"models_tested": ["qwen_test"], "results": [{"model": "qwen_test"}]})
+    )
+
+    with (
+        patch.object(benchmark, "MODELS_DIR", gen_models_dir),
+        patch.object(benchmark, "RESULTS_DIR", gen_results_dir),
+        patch.object(shared_llm_benchmark, "MODELS_DIR", shared_models_dir),
+        patch.object(shared_llm_benchmark, "RESULTS_DIR", shared_results_dir),
+    ):
+        res = client.delete("/api/benchmarks/model/qwen_test")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "deleted"
+        assert data["removed"] is True
+
+        # Verify per-model files deleted
+        assert not (gen_models_dir / "general_qwen_test.json").exists()
+        assert not (shared_models_dir / "shared_qwen_test.json").exists()
+
+        # Verify multi-model snapshot was updated (qwen_test removed, other_model kept)
+        assert (gen_results_dir / "benchmarks_1.json").exists()
+        updated_snap = json.loads((gen_results_dir / "benchmarks_1.json").read_text())
+        assert updated_snap["models_tested"] == ["other_model"]
+        assert len(updated_snap["results"]) == 1
+
+        # Verify single-model snapshot was unlinked
+        assert not (shared_results_dir / "shared_llm_benchmarks_1.json").exists()
+
+
+def test_clear_all_benchmarks(client, tmp_path):
+    """Test POST /api/benchmarks/clear removes all benchmark data, models, and resets tracker."""
+    from web.app import benchmark, model_tracker, shared_llm_benchmark
+
+    gen_models_dir = tmp_path / "g_models"
+    gen_results_dir = tmp_path / "g_results"
+    gen_art_dir = tmp_path / "g_artifacts"
+    shared_models_dir = tmp_path / "s_models"
+    shared_results_dir = tmp_path / "s_results"
+    shared_art_dir = tmp_path / "s_artifacts"
+
+    for d in [gen_models_dir, gen_results_dir, gen_art_dir, shared_models_dir, shared_results_dir, shared_art_dir]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    (gen_models_dir / "general_m1.json").write_text("{}")
+    (gen_results_dir / "benchmarks_1.json").write_text("{}")
+    (shared_models_dir / "shared_m1.json").write_text("{}")
+    (shared_results_dir / "shared_llm_benchmarks_1.json").write_text("{}")
+
+    with (
+        patch.object(benchmark, "MODELS_DIR", gen_models_dir),
+        patch.object(benchmark, "RESULTS_DIR", gen_results_dir),
+        patch.object(benchmark, "ARTIFACTS_DIR", gen_art_dir),
+        patch.object(shared_llm_benchmark, "MODELS_DIR", shared_models_dir),
+        patch.object(shared_llm_benchmark, "RESULTS_DIR", shared_results_dir),
+        patch.object(shared_llm_benchmark, "ARTIFACTS_DIR", shared_art_dir),
+        patch.object(model_tracker, "clear_all", return_value=True) as mock_clear,
+    ):
+        res = client.post("/api/benchmarks/clear")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["status"] == "cleared"
+        assert data["files_removed"] == 4
+        mock_clear.assert_called_once()
+
+
+def test_api_tests_run_stats_and_currency(client, tmp_path):
+    """Test GET /api/tests returns model run counts and accurately detects out-of-date tests."""
+    from web.app import _compute_test_hash, benchmark
+
+    gen_models_dir = tmp_path / "models"
+    gen_models_dir.mkdir(parents=True, exist_ok=True)
+
+    cur_hash = _compute_test_hash({
+        "id": "debug_fix",
+        "prompt": "Find and fix the bug in this function:\n\n```\ndef sum_list(items):\n    total = 0\n    for i in range(1, len(items)):\n        total += items[i]\n    return total\n```\nThe function should sum all list items, not skip the first one.",
+    })
+
+    m1_data = {
+        "model": "model1",
+        "results": [
+            {
+                "category_coding": {
+                    "tests": [
+                        {
+                            "test_id": "debug_fix",
+                            "success": True,
+                            "score": 100,
+                            "test_hash": cur_hash,
+                            "last_run": "2026-08-17T01:00:00",
+                        },
+                        {
+                            "test_id": "guess_game",
+                            "success": False,
+                            "score": 0,
+                            "test_hash": "old_stale_hash",
+                            "last_run": "2026-08-16T01:00:00",
+                        },
+                    ]
+                }
+            }
+        ],
+    }
+    (gen_models_dir / "general_model1.json").write_text(json.dumps(m1_data))
+
+    with patch.object(benchmark, "MODELS_DIR", gen_models_dir), patch.object(
+        benchmark, "RESULTS_DIR", tmp_path
+    ):
+        res = client.get("/api/tests")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert "tests" in data
+        tests_by_id = {t["id"]: t for t in data["tests"]}
+
+        # debug_fix has 1 run, passed, up to date
+        assert "debug_fix" in tests_by_id
+        df = tests_by_id["debug_fix"]
+        assert df["models_tested_count"] == 1
+        assert df["models_passed_count"] == 1
+        assert df["models_failed_count"] == 0
+        assert df["is_out_of_date"] is False
+
+        # guess_game has 1 run, failed, out of date
+        assert "guess_game" in tests_by_id
+        gg = tests_by_id["guess_game"]
+        assert gg["models_tested_count"] == 1
+        assert gg["models_passed_count"] == 0
+        assert gg["models_failed_count"] == 1
+        assert gg["is_out_of_date"] is True
+        assert "model1" in gg["out_of_date_models"]
+
+        # logic_puzzle has 0 runs
+        assert "logic_puzzle" in tests_by_id
+        lp = tests_by_id["logic_puzzle"]
+        assert lp["models_tested_count"] == 0
+        assert lp["is_out_of_date"] is False
+
+
+
+def test_sandbox_serve_proxy_forwards_to_upstream(client):
+    """Serve proxy tunnels through the dashboard origin, never assuming localhost."""
+    from unittest.mock import Mock
+
+    with patch("web.app._serve_container_host_port", return_value="39876"), patch(
+        "web.app.httpx.Client"
+    ) as mock_client_cls:
+        mock_resp = Mock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"<html><body>hello sandbox</body></html>"
+        mock_resp.headers = {"content-type": "text/html", "content-length": "44"}
+        mock_client = Mock()
+        mock_client.request.return_value = mock_resp
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+
+        res = client.get("/serve/abc123def/")
+
+    assert res.status_code == 200
+    assert b"hello sandbox" in res.data
+    # Request must go to host.docker.internal (NOT localhost) with the container port
+    call_url = mock_client.request.call_args[0][1]
+    assert call_url.startswith("http://host.docker.internal:39876/")
+    # Method is preserved
+    assert mock_client.request.call_args[0][0] == "GET"
+
+
+def test_sandbox_serve_proxy_preserves_subpath_and_method(client):
+    from unittest.mock import Mock
+
+    with patch("web.app._serve_container_host_port", return_value="50001"), patch(
+        "web.app.httpx.Client"
+    ) as mock_client_cls:
+        mock_resp = Mock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"ok"
+        mock_resp.headers = {"content-type": "text/plain"}
+        mock_client = Mock()
+        mock_client.request.return_value = mock_resp
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+
+        res = client.post("/serve/cid123/static/style.css?x=1", json={"a": 1})
+
+    assert res.status_code == 200
+    call_url = mock_client.request.call_args[0][1]
+    assert call_url == "http://host.docker.internal:50001/static/style.css?x=1"
+    assert mock_client.request.call_args[0][0] == "POST"
+
+
+def test_sandbox_serve_proxy_unknown_container(client):
+    with patch("web.app._serve_container_host_port", return_value=None):
+        res = client.get("/serve/nope/")
+    assert res.status_code == 404
+    assert b"Serving container not found" in res.data
+
+
+def test_sandbox_serve_proxy_upstream_unreachable(client):
+    from unittest.mock import Mock
+
+    import httpx
+
+    with patch("web.app._serve_container_host_port", return_value="50002"), patch(
+        "web.app.httpx.Client"
+    ) as mock_client_cls:
+        mock_client = Mock()
+        mock_client.request.side_effect = httpx.ConnectError("connect failed")
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+
+        res = client.get("/serve/cid123/")
+
+    assert res.status_code == 502
+
+
+def test_sandbox_serve_ws_proxy_unknown_container(client):
+    """WS tunnel returns 404 when the container is gone or has no published port."""
+    with patch("web.app._serve_container_host_port", return_value=None):
+        res = client.get("/serve/ws/nope/websockify")
+    assert res.status_code == 404
+    assert b"Serving container not found" in res.data
+
+
+def test_sandbox_serve_ws_proxy_handshake_failure(client):
+    """WS tunnel fails with 400 when the browser handshake cannot be accepted."""
+    with patch("web.app._serve_container_host_port", return_value="39876"):
+        # Send a WebSocket upgrade request. The Flask test client does not
+        # provide a real socket (no werkzeug.socket in environ), so
+        # simple_websocket.Server raises during the handshake.
+        res = client.get(
+            "/serve/ws/abc123/websockify",
+            headers={
+                "Connection": "Upgrade",
+                "Upgrade": "websocket",
+                "Sec-WebSocket-Version": "13",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            },
+        )
+    assert res.status_code == 400
+    assert b"WebSocket handshake failed" in res.data

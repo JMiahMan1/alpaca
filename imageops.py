@@ -8,6 +8,8 @@ fill_band_deterministic: seamless blank-panel synthesis for text-line removal.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -35,7 +37,7 @@ def fill_band_deterministic(
         raise ValueError("gap rows must bracket the band")
 
     tr0, tr1 = texture_rows or (gap_below, min(gap_below + 6, h))
-    rows = a[y1:y1 + (y1 - y0)] if y1 + (y1 - y0) <= h else a[tr0:tr1]
+    rows = a[y1 : y1 + (y1 - y0)] if y1 + (y1 - y0) <= h else a[tr0:tr1]
     band_h = y1 - y0
 
     base = np.empty((band_h, w, 3), dtype=float)
@@ -80,10 +82,9 @@ def draw_text(
     y0, y1 = band
     band_h = y1 - y0
     size = font_size or max(10, int(band_h * 0.85))
+    font: Any
     try:
-        font: ImageFont.ImageFont = ImageFont.truetype(
-            font_path or "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", size
-        )
+        font = ImageFont.truetype(font_path or "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", size)
     except OSError:
         font = ImageFont.load_default()
     bbox = draw.textbbox((0, 0), text, font=font)

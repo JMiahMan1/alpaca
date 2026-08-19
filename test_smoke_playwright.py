@@ -100,11 +100,14 @@ def test_image_to_prompt_assistant_tab():
         browser, page = get_dashboard_page(p)
 
         # Intercept route for prompt synthesis API to return deterministic response
-        page.route(re.compile(r".*/api/vision/synthesize_edit_prompt"), lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"status":"success", "master_prompt":"A futuristic city street at night, neon purple hovering car, cyan rain reflections, Cyberpunk Sci-Fi aesthetic, 8k resolution, raw photo"}'
-        ))
+        page.route(
+            re.compile(r".*/api/vision/synthesize_edit_prompt"),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status":"success", "master_prompt":"A futuristic city street at night, neon purple hovering car, cyan rain reflections, Cyberpunk Sci-Fi aesthetic, 8k resolution, raw photo"}',
+            ),
+        )
 
         # Navigate to Image Studio and open Image-to-Prompt tab
         page.locator("#tab-btn-sd").click()
@@ -129,7 +132,9 @@ def test_image_to_prompt_assistant_tab():
 
         # Wait for master prompt output container to update
         page.wait_for_selector("#sd-promptgen-result-prompt", timeout=5000)
-        page.wait_for_function("document.getElementById('sd-promptgen-result-prompt').textContent.includes('neon purple')")
+        page.wait_for_function(
+            "document.getElementById('sd-promptgen-result-prompt').textContent.includes('neon purple')"
+        )
         result_text = page.locator("#sd-promptgen-result-prompt").text_content()
         assert "neon purple hovering car" in result_text
 
@@ -143,5 +148,3 @@ def test_image_to_prompt_assistant_tab():
         assert "neon purple hovering car" in photo_input_val
 
         browser.close()
-
-

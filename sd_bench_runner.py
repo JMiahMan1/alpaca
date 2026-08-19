@@ -114,18 +114,12 @@ def locate_model_file(model_alias: str) -> Path:
         if path.suffix in (".safetensors", ".gguf") and model_alias.lower() in path.name.lower():
             return path.resolve()
 
-    raise FileNotFoundError(
-        f"Could not find model file for alias: {model_alias} in {ROUTER_MODELS_DIR}"
-    )
+    raise FileNotFoundError(f"Could not find model file for alias: {model_alias} in {ROUTER_MODELS_DIR}")
 
 
-async def run_benchmark_payload(
-    model_alias: str, prompt: str, size: str, steps: int, runs: int = 3
-) -> dict[str, Any]:
+async def run_benchmark_payload(model_alias: str, prompt: str, size: str, steps: int, runs: int = 3) -> dict[str, Any]:
     """Runs a series of generation queries against the proxy and profiles resource usage."""
-    logger.info(
-        f"Initiating benchmark sweep for model '{model_alias}' ({size}, {steps} steps, {runs} runs)..."
-    )
+    logger.info(f"Initiating benchmark sweep for model '{model_alias}' ({size}, {steps} steps, {runs} runs)...")
 
     url = f"{PROXY_URL}/v1/images/generations"
     payload = {"model": model_alias, "prompt": prompt, "size": size, "n": 1, "steps": steps}
@@ -221,9 +215,7 @@ def main() -> None:
 
         # Run benchmark
         results = asyncio.run(
-            run_benchmark_payload(
-                model_alias=model_alias, prompt=prompt, size=resolution, steps=steps, runs=runs
-            )
+            run_benchmark_payload(model_alias=model_alias, prompt=prompt, size=resolution, steps=steps, runs=runs)
         )
 
         # Save results
