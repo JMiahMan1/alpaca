@@ -3264,6 +3264,8 @@ document.addEventListener('DOMContentLoaded', () => {
             ? `<span class="test-card-outdated" title="Test was updated since previous benchmark runs (${escapeHtml((t.out_of_date_models || []).join(', '))})">⚠️ Outdated</span>`
             : '';
 
+        const ratingsHtml = _testCardRatingsHtml(t);
+
         return `<div class="test-card" data-test-id="${t.id}" role="button" tabindex="0">
             <div class="test-card-top">
                 <span class="kind-badge kind-${kind}">${icon} ${kind}</span>
@@ -3271,11 +3273,192 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${outdatedBadge}
             </div>
             <div class="test-card-label" title="${escapeHtml(t.label)}">${escapeHtml(t.label)}</div>
+            ${ratingsHtml}
             <div class="test-card-footer">
                 <div class="test-card-cat">${escapeHtml((t.category || '').toUpperCase())}</div>
                 ${runsBadge}
             </div>
         </div>`;
+    }
+
+    function _testCardRatingsHtml(t) {
+        const tested = t.models_tested || [];
+        const scores = t.models_scores || {};
+        if (!tested.length) return '';
+        const saved = _loadHumanRatings(t.id) || {};
+        const rated = tested
+            .filter((m) => (saved[m] || 0) > 0)
+            .sort((a, b) => (saved[b] || 0) - (saved[a] || 0) || (scores[b] || 0) - (scores[a] || 0));
+        if (!rated.length) return '';
+        const best = rated[0];
+        const bestScore = scores[best] != null ? Math.round(Number(scores[best])) : '—';
+        return `<div class="test-card-ratings">
+            <div class="top-rated" title="Highest human-rated model — click to rate/view all models">
+                <span class="top-rated-label">🏆 ${escapeHtml(truncateModelName(best))}</span>
+                <span class="top-rated-score">score ${bestScore}</span>
+                <span class="top-rated-human">${'★'.repeat(saved[best])}</span>
+            </div>
+        </div>`;
+    }
+
+    function _loadHumanRatings(testId) {
+        try {
+            const raw = localStorage.getItem('alpaca_human_ratings');
+            if (!raw) return {};
+            const all = JSON.parse(raw);
+            return all[testId] || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function _saveHumanRating(testId, model, val) {
+        try {
+            let all = {};
+            const raw = localStorage.getItem('alpaca_human_ratings');
+            if (raw) all = JSON.parse(raw) || {};
+            if (!all[testId]) all[testId] = {};
+            all[testId][model] = val;
+            localStorage.setItem('alpaca_human_ratings', JSON.stringify(all));
+        } catch (e) { /* storage unavailable — ignore */ }
+    }
+
+    function _loadAllHumanRatings() {
+        try {
+            const raw = localStorage.getItem('alpaca_human_ratings');
+            return raw ? JSON.parse(raw) || {} : {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function renderTestPreviewRatings(t) {
+        const el = document.getElementById('test-preview-ratings');
+        if (!el) return;
+        const tested = t.models_tested || [];
+        const scores = t.models_scores || {};
+        if (!tested.length) {
+            el.innerHTML = '';
+            return;
+        }
+        const saved = _loadHumanRatings(t.id) || {};
+        const rows = tested.map((m) => {
+            const rating = saved[m] || 0;
+            const score = scores[m] != null ? `${Math.round(Number(scores[m]))}` : '—';
+            const stars = [1, 2, 3, 4, 5].map((n) => {
+                const filled = n <= rating;
+                const cls = filled ? 'star filled' : 'star';
+                return `<span class="star" data-model="${escapeHtml(m)}" data-val="${n}" role="button" tabindex="0" title="${escapeHtml(m)}: ${n} star${n === 1 ? '' : 's'}">★</span>`;
+            }).join('');
+            return `<div class="rating-row" data-model="${escapeHtml(m)}">
+                <span class="rating-model" title="${escapeHtml(m)}">${escapeHtml(m)}</span>
+                <span class="rating-stars">${stars}</span>
+                <span class="rating-score">${score}</span>
+            </div>`;
+        }).join('');
+        el.innerHTML = `<div class="modal-section-title">Human Aesthetic Rating (per model)</div>
+            <div class="rating-list">${rows}</div>`;
+        el.querySelectorAll('.rating-stars .star').forEach((star) => {
+            const click = () => {
+                const model = star.dataset.model;
+                const val = Number(star.dataset.val);
+                _saveHumanRating(t.id, model, val);
+                renderTestPreviewRatings(t);
+                renderRatingsBoard();
+                renderTestBrowser();
+            };
+            star.addEventListener('click', click);
+            star.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    click();
+                }
+            });
+        });
+    }
+
+    function renderRatingsBoard() {
+        const board = document.getElementById('test-ratings-board');
+        if (!board) return;
+        const all = _loadAllHumanRatings();
+        const catAcc = {};  // category -> { model -> {sum, count, scoreSum} }
+        let ratedAny = false;
+
+        ALL_TESTS.forEach((t) => {
+            const perTest = all[t.id];
+            if (!perTest) return;
+            const cat = (t.category || 'other').toUpperCase();
+            const scores = t.models_scores || {};
+            Object.entries(perTest).forEach(([model, val]) => {
+                const r = Number(val);
+                if (!r) return;
+                ratedAny = true;
+                if (!catAcc[cat]) catAcc[cat] = {};
+                if (!catAcc[cat][model]) catAcc[cat][model] = { sum: 0, count: 0, scoreSum: 0 };
+                catAcc[cat][model].sum += r;
+                catAcc[cat][model].count += 1;
+                const sc = Number(scores[model]);
+                if (!Number.isNaN(sc)) catAcc[cat][model].scoreSum += sc;
+            });
+        });
+
+        if (!ratedAny) {
+            board.innerHTML = `<h4>🏆 Top Rated</h4>
+                <div class="ratings-board-overall"><span class="overall-label">No human ratings yet</span>
+                <span class="overall-count">Click the ★ stars on any test card to rate each model's output.</span></div>`;
+            return;
+        }
+
+        const catWinners = Object.entries(catAcc).map(([cat, models]) => {
+            const best = Object.entries(models)
+                .map(([model, a]) => ({
+                    model,
+                    rating: a.sum / a.count,
+                    score: a.count ? a.scoreSum / a.count : null,
+                    count: a.count,
+                }))
+                .sort((x, y) => y.rating - x.rating || (y.score || 0) - (x.score || 0))[0];
+            return { cat, ...best };
+        }).sort((a, b) => b.rating - a.rating || (b.score || 0) - (a.score || 0));
+
+        const overall = (() => {
+            const agg = {};
+            Object.values(catAcc).forEach((models) => {
+                Object.entries(models).forEach(([model, a]) => {
+                    if (!agg[model]) agg[model] = { sum: 0, count: 0, scoreSum: 0 };
+                    agg[model].sum += a.sum;
+                    agg[model].count += a.count;
+                    agg[model].scoreSum += a.scoreSum;
+                });
+            });
+            return Object.entries(agg).map(([model, a]) => ({
+                model,
+                rating: a.sum / a.count,
+                score: a.count ? a.scoreSum / a.count : null,
+                count: a.count,
+            })).sort((x, y) => y.rating - x.rating || (y.score || 0) - (x.score || 0))[0];
+        })();
+
+        const starsFor = (rating) => '★'.repeat(Math.round(rating));
+        const scoreFor = (s) => (s != null ? `${Math.round(s)}` : '—');
+
+        board.innerHTML = `<h4>🏆 Top Rated</h4>
+            <div class="ratings-board-overall">
+                <span class="overall-label">🏆 Overall: ${escapeHtml(truncateModelName(overall.model))}</span>
+                <span class="top-rated-score">score ${scoreFor(overall.score)}</span>
+                <span class="top-rated-human">${starsFor(overall.rating)} (${overall.rating.toFixed(1)})</span>
+                <span class="overall-count">${overall.count} rated across ${catWinners.length} categories</span>
+            </div>
+            <div class="ratings-board-cats">
+                ${catWinners.map((w) => `<div class="ratings-board-cat">
+                    <span class="ratings-board-cat-name">${escapeHtml(w.cat)}</span>
+                    <span class="ratings-board-cat-entry">
+                        <span class="top-rated-label" title="${escapeHtml(w.model)}">${escapeHtml(truncateModelName(w.model))}</span>
+                        <span class="top-rated-score">score ${scoreFor(w.score)}</span>
+                        <span class="top-rated-human">${starsFor(w.rating)}</span>
+                    </span>
+                </div>`).join('')}
+            </div>`;
     }
 
     function renderTestBrowser() {
@@ -3304,6 +3487,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         const countEl = document.getElementById('test-browser-count');
         if (countEl) countEl.textContent = `${filtered.length} test${filtered.length === 1 ? '' : 's'}`;
+        renderRatingsBoard();
         if (!filtered.length) {
             grid.innerHTML = `<div class="empty-state">No tests match your filter.</div>`;
             return;
@@ -3440,6 +3624,28 @@ document.addEventListener('DOMContentLoaded', () => {
             return best;
         }
         return text;
+    }
+
+    // Pull the actual HTML document out of a model response. Model responses
+    // frequently wrap the page in prose, markdown fences and stray comments
+    // (e.g. "Here's the code:" or ```html fences); dumping that raw text into
+    // an iframe srcdoc makes the page render with the preamble visible and the
+    // markup in quirks mode. This finds the block that contains the real
+    // <!doctype/<html> (or falls back to a <script>/<canvas> block) and trims
+    // everything before the document start and after </html>.
+    function extractHtmlDocument(text) {
+        if (!text) return '';
+        const fences = [...text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)];
+        let candidates = fences.map((f) => f[1].trim());
+        if (!candidates.length) candidates = [text];
+        let doc = candidates.find((c) => /<!doctype|<\s*html[\s>]/i.test(c)) || '';
+        if (!doc) doc = candidates.find((c) => /<script|<\s*canvas/i.test(c)) || '';
+        if (!doc) return '';
+        const start = doc.search(/<!doctype|<\s*html[\s>]/i);
+        if (start > 0) doc = doc.slice(start);
+        const end = doc.search(/<\/html>[\s\S]*$/i);
+        if (end >= 0) doc = doc.slice(0, end + 7);
+        return doc.trim();
     }
 
     // Categories whose model responses typically contain runnable code/UI output.
@@ -3632,11 +3838,23 @@ document.addEventListener('DOMContentLoaded', () => {
             note.className = 'test-preview-note';
             note.textContent = '▶ Running live HTML/3js output';
             stage.appendChild(note);
+            const htmlDoc = extractHtmlDocument(txt) || extractRunnableCode(txt);
             const frame = document.createElement('iframe');
             frame.className = 'test-preview-iframe';
-            frame.setAttribute('sandbox', 'allow-scripts');
-            frame.srcdoc = txt;
+            frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
+            frame.srcdoc = htmlDoc;
             stage.appendChild(frame);
+            const openTabBtn = document.createElement('button');
+            openTabBtn.className = 'btn btn-secondary btn-sm';
+            openTabBtn.textContent = '↗ Open in new tab';
+            openTabBtn.style.marginTop = '0.5rem';
+            openTabBtn.addEventListener('click', () => {
+                const blob = new Blob([htmlDoc], { type: 'text/html' });
+                const url = URL.createObjectURL(blob);
+                window.open(url, '_blank');
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+            });
+            stage.appendChild(openTabBtn);
         } else {
             const wrap = document.createElement('div');
             wrap.className = 'att-run-wrap';
@@ -3960,6 +4178,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 runsDetails.innerHTML = `<span style="color:var(--text-muted);">⚪ This test has not been executed on any models yet.</span>`;
             }
         }
+
+        renderTestPreviewRatings(t);
 
         meta.innerHTML = `<span class="kind-badge kind-${kind}">${kind}</span>` +
             `<span class="test-meta-cat">${escapeHtml((t.category || '').toUpperCase())}</span>` +
@@ -5389,7 +5609,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         // Inline rendered HTML preview for webdev responses.
                         if (catKey === 'webdev' && test.response) {
-                            const htmlCode = extractRunnableCode(test.response);
+                            const htmlCode = extractHtmlDocument(test.response) || extractRunnableCode(test.response);
                             if (htmlCode && /<!doctype|<html|<script/i.test(htmlCode)) {
                                 const htmlNote = document.createElement('div');
                                 htmlNote.style.cssText = 'font-weight:600; font-size:0.72rem; color: var(--color-secondary); margin-top:0.25rem;';

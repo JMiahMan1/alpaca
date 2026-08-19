@@ -1845,6 +1845,202 @@ tr:last-child td {
     letter-spacing: 0.03em;
 }
 
+.test-card-ratings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.1rem;
+}
+
+.top-rated {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    background: rgba(250, 204, 21, 0.12);
+    border: 1px solid rgba(250, 204, 21, 0.25);
+    color: #fde047;
+    flex-wrap: wrap;
+}
+
+.top-rated-label {
+    font-weight: 700;
+}
+
+.top-rated-score {
+    color: var(--text-muted, #94a3b8);
+}
+
+.top-rated-human {
+    color: #fbbf24;
+    letter-spacing: 0.05em;
+}
+
+.rating-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.rating-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+}
+
+.rating-model {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-main, #e2e8f0);
+}
+
+.rating-stars {
+    display: flex;
+    gap: 1px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.rating-stars .star {
+    color: #475569;
+    font-size: 0.85rem;
+    line-height: 1;
+    transition: color 0.12s ease, transform 0.12s ease;
+    padding: 0 1px;
+}
+
+.rating-stars .star.filled {
+    color: #fbbf24;
+}
+
+.rating-stars .star:hover {
+    transform: scale(1.2);
+    color: #fde047;
+}
+
+.rating-score {
+    min-width: 2.4em;
+    text-align: right;
+    color: var(--text-muted, #94a3b8);
+    font-variant-numeric: tabular-nums;
+}
+
+.test-ratings-board {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+    padding: 1rem;
+    border: 1px solid var(--border-color, #1e293b);
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.4);
+}
+
+.test-ratings-board h4 {
+    margin: 0 0 0.5rem;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted, #94a3b8);
+}
+
+.ratings-board-cats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 0.5rem;
+}
+
+.ratings-board-cat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.ratings-board-cat-name {
+    font-size: 0.66rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted, #94a3b8);
+}
+
+.ratings-board-cat-entry {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    flex-wrap: wrap;
+}
+
+.ratings-board-cat-entry .top-rated-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ratings-board-overall {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.6rem 0.7rem;
+    border-radius: 8px;
+    background: rgba(250, 204, 21, 0.1);
+    border: 1px solid rgba(250, 204, 21, 0.3);
+    font-size: 0.82rem;
+}
+
+.ratings-board-overall .overall-label {
+    font-weight: 700;
+    color: #fde047;
+}
+
+.ratings-board-overall .overall-count {
+    margin-left: auto;
+    color: var(--text-muted, #94a3b8);
+    font-size: 0.72rem;
+}
+
+.test-preview-ratings {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.test-preview-ratings .rating-list {
+    margin-top: 0.4rem;
+}
+
+.test-preview-ratings .rating-row {
+    padding: 0.25rem 0;
+}
+
+.test-preview-ratings .rating-model {
+    font-size: 0.8rem;
+}
+
+.test-preview-ratings .rating-score {
+    min-width: 3em;
+}
+
+.test-preview-ratings .rating-stars .star {
+    font-size: 1.1rem;
+}
+
 .test-preview-outdated-alert {
     background: rgba(245, 158, 11, 0.12);
     border: 1px solid rgba(245, 158, 11, 0.4);
