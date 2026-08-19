@@ -16,6 +16,7 @@ import re
 import signal
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -35,7 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telemetry_monitor")
 
-# Global asyncio stop event — set by signal handler to unblock the main loop
+# Global asyncio stop event - set by signal handler to unblock the main loop
 # Using asyncio.Event instead of a plain bool so that signal delivery is picked
 # up promptly even while the event loop is blocked inside asyncio.gather().
 _stop_event: asyncio.Event | None = None
@@ -142,9 +143,7 @@ async def get_gpu_metrics():
                                     "vram_total_mb": total,
                                     "vram_used_mb": used,
                                     "vram_free_mb": free,
-                                    "vram_used_pct": round(used / total * 100, 1)
-                                    if total > 0
-                                    else 0.0,
+                                    "vram_used_pct": round(used / total * 100, 1) if total > 0 else 0.0,
                                     "gpu_util_pct": util,
                                 }
                             )
@@ -181,16 +180,18 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
 
     # Detect the active model name and backend model from the proxy runtime status
     proxy_url = os.getenv("PROXY_URL", "http://host.docker.internal:11434")
+    api_key = os.getenv("ALPACA_API_KEY", "").strip()
+    proxy_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        resp = await client.get(f"{proxy_url}/admin/runtime", timeout=1.0)
+        resp = await client.get(f"{proxy_url}/admin/runtime", headers=proxy_headers, timeout=1.0)
         if resp.status_code == 200:
             data = resp.json()
             loaded = data.get("loaded_models", [])
             if loaded:
                 public_name = loaded[0]["name"]
                 backend_model = loaded[0]["backend_model"]
-                # Sanitize the public name (e.g. replacing '/' with '_') to match the web app's expectation
-                model_alias = re.sub(r"[^\w\-.\.]", "_", public_name)
+                # Sanitize the public name to match the web app expectation
+                model_alias = re.sub(r"[/:.]", "_", public_name)
     except Exception as e:
         logger.debug(f"Could not reach alpaca-proxy for runtime info: {e}")
 
@@ -207,7 +208,7 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
         model_path = props.get("model_path")
         if model_path and model_path != "none":
             raw_stem = Path(model_path).stem
-            model_alias = re.sub(r"[^\w\-.\.]", "_", raw_stem)
+            model_alias = re.sub(r"[/:.]", "_", raw_stem)
         else:
             model_alias = "system_idle"
 
@@ -247,9 +248,7 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
 
     # Calculate average utilization
     kv_cache_used_pct = (
-        round(total_tokens_cached / (n_ctx * total_slots) * 100, 1)
-        if (n_ctx > 0 and total_slots > 0)
-        else 0.0
+        round(total_tokens_cached / (n_ctx * total_slots) * 100, 1) if (n_ctx > 0 and total_slots > 0) else 0.0
     )
 
     return {
@@ -303,9 +302,7 @@ async def main():
             )
             stop_task = asyncio.ensure_future(_stop_event.wait())
 
-            _done, pending = await asyncio.wait(
-                {gather_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
-            )
+            _done, pending = await asyncio.wait({gather_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
 
             # Cancel whichever task is still running
             for t in pending:
@@ -321,7 +318,7 @@ async def main():
 
             # Aggregate payload
             payload = {
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "epoch_time": time.time(),
                 "model_alias": model_alias,
                 "system": sys_metrics,

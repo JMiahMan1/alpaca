@@ -47,7 +47,8 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 | `alpaca-proxy.py` | FastAPI proxy/router managing llama-server lifecycle, model switching, slot allocation, KV cache checkpoints |
 | `alpaca_puller.py` | (Secondary) Puller module — check if different from `alpaca-puller.py` |
 | `llm_benchmark_suite.py` | `LLMModelBenchmark` class — functional + performance benchmarks for llama.cpp models |
-| `web/shared_llm_benchmark.py` | `SharedLLMModelBenchmark` class — benchmark runner for SharedLLM task categories |
+| `online_providers.py` | `OnlineModelProvider` adapter — queries OpenRouter, Hugging Face, Cloudflare Workers AI, OpenCode Zen |
+| `web/shared_llm_benchmark.py` | `SharedLLMModelBenchmark` class — benchmark runner for SharedLLM task categories (FastPath, Librarian tools, Raven code AST, DAG planning, needle retrieval) |
 | `telemetry_monitor.py` | Async daemon polling llama-server metrics, writes `data/telemetry/{model}.jsonl` |
 | `analyzer.py` | Benchmark result analyzer |
 | `benchmark-configs.py` | Benchmark test configurations |
@@ -104,10 +105,27 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 
 ### Benchmark Suite
 - `llm_benchmark_suite.py` (`LLMModelBenchmark`) — benchmarks llama.cpp models directly via `/completion`
-- `web/shared_llm_benchmark.py` (`SharedLLMModelBenchmark`) — benchmarks via Ollama proxy
+- `web/shared_llm_benchmark.py` (`SharedLLMModelBenchmark`) — benchmarks via Ollama proxy and online model providers (`openrouter:`, `huggingface:`, `cloudflare:`, `opencode_zen:`)
+- **Game conventions**: games are UI-first (pygame / HTML5 canvas / three.js / raw WebGL). Only
+  three CLI games exist — `guess_game`, `text_adventure` (story-driven), `game_checkers_cli`
+  (terminal TUI). Every arcade/board game prompt requires scoring + name/initials entry +
+  persistent top-5 high-score board (JSON file or localStorage) + score reset to 0 on new game;
+  `_has_persistent_scoreboard` enforces all four during grading.
+- **Outdated-only runs**: `POST /api/run` with `"outdated_only": true` computes stale test ids
+  (hash/prompt mismatch vs `benchmark_tests.json` via `_compute_test_hash`) for the selected
+  models and runs only those. Returns `{"status": "No outdated benchmarks"}` when nothing is
+  stale. Dashboard button: **⚠ Run Outdated**.
+- **Sandbox stdin**: CLI games calling `input()` get a scripted `/tmp/stdin.txt` redirect in
+  `run_code_once` so they don't EOFError; `pids_limit` is 1024 for UI runs (Chromium), 128 for CLI.
+- **SharedLLM Evaluation Tiers**:
+  1. FastPath Intent Routing (HA lights, Life360/Geo location, Music Assistant playback, Climate, Raven dispatch)
+  2. Librarian Structured Tool Use (Nextcloud directory listing, RAG knowledge search, Geofence checking)
+  3. Raven Autonomous Coding (Redis MultiTenantLock, FastAPI async router with Pydantic AST validation, self-healing bug fixes)
+  4. Raven Planning & Troubleshooting (Multi-step DAG plan JSON, Music Assistant stream error diagnosis)
+  5. Context Retention (Needle in haystack secret token retrieval)
 - **Thinking model handling**: Both proxy and direct paths must set `"think": False` in request payload and strip `<think>...</think>` blocks from responses
 - `strip_thinking()` regex: `r'<think>.*?</think>\s*'` (non-greedy)
-- Results saved to `data/llm_benchmarks/shared_llm_benchmarks_{timestamp}_{proxy|direct}.json`
+- Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{proxy|direct}.json`
 
 ### Web Dashboard
 - Uses SocketIO for real-time pull logs and benchmark progress
@@ -127,11 +145,21 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 | Browser shows stale search results | Cached `dashboard.js` | Add `Cache-Control: no-store` via `@app.after_request` |
 | Benchmark returns empty for thinking models | Model outputs `<think>` block with no content | Add `"think": False` + `strip_thinking()` |
 | Download hangs/stuck | `readline()` blocks forever | Use `select.select()` with 1s timeout |
+| CLI games crash with EOFError in sandbox | `input()` gets no stdin | `run_code_once` redirects `/tmp/stdin.txt` for non-SQL langs |
+| `outdated_only` runs ALL tests | Empty `test_ids` list is falsy at `if test_ids:` | Return `{"status":"No outdated benchmarks"}` early instead of falling through |
+| `_outdated_test_ids` misses models | Sanitized filename vs public model name | Compare both `model` and `re.sub(r"[/:.]","_",model)` forms |
 
 ## Testing
-- **Unit/Integration tests**: `test_web_integration.py` (49 tests), `test_puller_unit.py`, `test_proxy_unit.py`
+- **Comprehensive Test Suite**: 228 automated tests across:
+  - `test_sandbox_and_security.py` (Non-root execution, path traversal guards, port isolation)
+  - `test_proxy_unit.py` (Slot allocation, request queueing, thinking overrides, keep-alive)
+  - `test_puller_unit.py` (Ollama & Hugging Face GGUF imports, stop markers, resume)
+  - `test_web_integration.py` (Dashboard REST APIs, authentication bypass, attachments)
+  - `test_online_providers_and_benchmarks.py` (OpenRouter, HF, Cloudflare, OpenCode Zen, scoring)
+  - `test_benchmark_dynamic.py` (Group filters, category test execution, incremental merging, persistent-scoreboard grading, gamedev_alt UI verify)
+  - `test_live_services.py` (Live proxy/web/sandbox smoke tests)
 - Run tests: `pytest` (uses `pytest-asyncio`)
-- Tests run against live Docker services — ensure `docker compose up` first
+- All tests pass locally and in CI.
 
 ## Linting & Type Checking
 ```bash

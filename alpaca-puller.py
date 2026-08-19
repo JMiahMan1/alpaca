@@ -106,6 +106,23 @@ def _should_stop():
     return False
 
 
+def _clear_stop_marker(model_name):
+    """Remove any lingering stop-marker so a previous cancel/stop does not
+    permanently block future pulls of this model. See AGENTS.md 'Clean Stop
+    Markers' gotcha. Safe to call when no marker exists."""
+    safe_name = model_name.replace("/", "_").replace(":", "_")
+    stop_dirs = [
+        Path.cwd() / ".alpaca-stop",
+        Path(__file__).resolve().parent / ".alpaca-stop",
+    ]
+    router_dir = os.getenv("ROUTER_MODELS_DIR")
+    if router_dir:
+        stop_dirs.append(Path(router_dir) / ".alpaca-stop")
+    for stop_dir in stop_dirs:
+        with contextlib.suppress(OSError):
+            (stop_dir / safe_name).unlink(missing_ok=True)
+
+
 MODEL_LAYER_MEDIA_TYPE = "application/vnd.ollama.image.model"
 MODEL_GGUF_MEDIA_TYPE = "application/vnd.ollama.image.model+gguf"
 MANIFEST_MEDIA_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
@@ -157,7 +174,7 @@ def _read_gguf_metadata(path: str) -> dict:
             elif val_type == 9:  # array
                 arr_type = struct.unpack("<I", f.read(4))[0]
                 arr_len = struct.unpack("<Q", f.read(8))[0]
-                # Skip array contents — we only care about scalar metadata
+                # Skip array contents - we only care about scalar metadata
                 if arr_type == 8:  # array of strings
                     for _ in range(arr_len):
                         sl = struct.unpack("<Q", f.read(8))[0]
@@ -167,7 +184,7 @@ def _read_gguf_metadata(path: str) -> dict:
                     skip = arr_len * sizes.get(arr_type, 0)
                     f.read(skip)
             else:
-                # Unknown type — skip conservatively
+                # Unknown type - skip conservatively
                 break
 
     return meta
@@ -215,7 +232,7 @@ def _image_model_family_for_router_entry(entry):
     """Return the model_family for a router .gguf entry if it is an image model, else None.
 
     Matches the router filename against local Ollama manifests and inspects the
-    config blob's ``model_family``/``families`` — the authoritative signal written by
+    config blob's ``model_family``/``families`` - the authoritative signal written by
     the puller for Stable Diffusion imports (e.g. ``stable-diffusion``). This reliably
     catches models like ``qwen-image`` whose GGUF architecture is not literally "sd".
     """
@@ -239,11 +256,18 @@ def _image_model_family_for_router_entry(entry):
             family = cfg.get("model_family")
             families = cfg.get("families") or []
             known_image_families = {"stable-diffusion", "qwen-image", "flux", "sdxl", "sd3", "wan"}
-            if family in known_image_families or any(f in known_image_families for f in families) or (family and ("image" in family.lower() or "diffusion" in family.lower())):
+            if (
+                family in known_image_families
+                or any(f in known_image_families for f in families)
+                or (family and ("image" in family.lower() or "diffusion" in family.lower()))
+            ):
                 return family or "stable-diffusion"
     except Exception as e:
         if isinstance(e, PermissionError):
-            print(f"Warning: Manifest access permission denied ({e}). Ensure container/process has read access.", file=sys.stderr)
+            print(
+                f"Warning: Manifest access permission denied ({e}). Ensure container/process has read access.",
+                file=sys.stderr,
+            )
         return None
     return None
 
@@ -382,7 +406,7 @@ def update_models_ini():
                     continue
 
                 # Skip stable-diffusion / image-generation models in the llama-server
-                # models.ini. These must never be registered as llama.cpp LLMs — they
+                # models.ini. These must never be registered as llama.cpp LLMs - they
                 # are handled exclusively by the sd-server. The authoritative signal is
                 # the model's Ollama manifest `model_family` (set to "stable-diffusion"
                 # by the puller for SD imports); we fall back to a GGUF arch/keyword
@@ -395,24 +419,29 @@ def update_models_ini():
                     else:
                         meta = _read_gguf_metadata(str(resolved))
                         arch = meta.get("general.architecture", "").lower()
-                        if arch in ("sd", "stable-diffusion", "flux", "qwen-image", "qwen_image", "wan", "diffusion") or "image" in arch or "diffusion" in arch or any(
-                            kw in entry.name.lower() or kw in alias.lower()
-                            for kw in [
-                                "stable-diffusion",
-                                "sdxl",
-                                "sd1.",
-                                "sd2.",
-                                "sd3",
-                                "flux",
-                                "pony",
-                                "photoreal",
-                                "sd-",
-                                "illustrious",
-                                "qwen-image",
-                                "qwen_image",
-                                "wan-2",
-                                "wan_2",
-                            ]
+                        if (
+                            arch in ("sd", "stable-diffusion", "flux", "qwen-image", "qwen_image", "wan", "diffusion")
+                            or "image" in arch
+                            or "diffusion" in arch
+                            or any(
+                                kw in entry.name.lower() or kw in alias.lower()
+                                for kw in [
+                                    "stable-diffusion",
+                                    "sdxl",
+                                    "sd1.",
+                                    "sd2.",
+                                    "sd3",
+                                    "flux",
+                                    "pony",
+                                    "photoreal",
+                                    "sd-",
+                                    "illustrious",
+                                    "qwen-image",
+                                    "qwen_image",
+                                    "wan-2",
+                                    "wan_2",
+                                ]
+                            )
                         ):
                             is_sd = True
                 except Exception:
@@ -430,11 +459,7 @@ def update_models_ini():
                     if p_entry.suffix == ".gguf" and p_entry != entry:
                         p_name = p_entry.name.lower()
                         if "projector" in p_name or "mmproj" in p_name:
-                            stem_clean = (
-                                entry.stem.lower()
-                                .replace("--latest", "")
-                                .replace("--latest-gguf", "")
-                            )
+                            stem_clean = entry.stem.lower().replace("--latest", "").replace("--latest-gguf", "")
                             p_clean = p_entry.stem.lower()
                             if (
                                 stem_clean in p_clean
@@ -522,6 +547,10 @@ def update_models_ini():
                 content.append("")
 
     temp_ini = ini_path.with_suffix(".ini.tmp")
+    # Ensure the router directory exists so the atomic replace below cannot
+    # fail when the directory is missing (e.g. a fresh checkout or a removed
+    # model whose router dir was deleted).
+    ini_path.parent.mkdir(parents=True, exist_ok=True)
     with open(temp_ini, "w", encoding="utf-8") as f:
         f.write("\n".join(content))
     with contextlib.suppress(Exception):
@@ -561,11 +590,7 @@ def normalized_model_parts(model_name):
 def router_filename_for_model_name(model_name):
     name, tag = normalized_model_parts(model_name)
     flattened = f"{name}--{tag}".replace("/", "--")
-    ext = (
-        ".safetensors"
-        if "safetensors" in model_name.lower() or "safetensors" in tag.lower()
-        else ".gguf"
-    )
+    ext = ".safetensors" if "safetensors" in model_name.lower() or "safetensors" in tag.lower() else ".gguf"
     return f"{sanitize_model_component(flattened)}{ext}"
 
 
@@ -733,9 +758,7 @@ def download_blob(client, repo, digest, expected_size, headers):
             ):
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(
-                            f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)"
-                        )
+                        print(f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)")
                         return
                     handle.write(chunk)
                     bar.update(len(chunk))
@@ -744,24 +767,18 @@ def download_blob(client, repo, digest, expected_size, headers):
             with open(blob_path, mode) as handle:
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(
-                            f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)"
-                        )
+                        print(f"\nDownload interrupted: {digest[:12]} ({blob_path.stat().st_size} bytes)")
                         return
                     handle.write(chunk)
                     downloaded += len(chunk)
                     if total > 0:
-                        sys.stdout.write(
-                            f"\rProgress {digest[:12]}: {downloaded / total * 100:.1f}%"
-                        )
+                        sys.stdout.write(f"\rProgress {digest[:12]}: {downloaded / total * 100:.1f}%")
                         sys.stdout.flush()
             print()
 
     final_size = blob_path.stat().st_size
     if final_size != expected_size:
-        raise RuntimeError(
-            f"Layer {digest[:12]} downloaded with size {final_size}, expected {expected_size}."
-        )
+        raise RuntimeError(f"Layer {digest[:12]} downloaded with size {final_size}, expected {expected_size}.")
 
 
 def choose_source(model_name, source):
@@ -818,15 +835,19 @@ def huggingface_headers():
 
 
 def download_with_progress(client, url, headers, label, output_path, expected_total=None):
-    current_size = output_path.stat().st_size if output_path.exists() else 0
-    if current_size > 0:
-        headers["Range"] = f"bytes={current_size}-"
-        print(f"Resuming {label} from {current_size // 1024 // 1024} MB...")
-
     max_retries = 3
     for attempt in range(max_retries):
+        # Re-read the actual on-disk size at the start of each attempt so a
+        # partial download from a previous (failed) attempt resumes from the
+        # correct offset instead of corrupting the file.
+        current_size = output_path.stat().st_size if output_path.exists() else 0
+        request_headers = dict(headers)
+        if current_size > 0:
+            request_headers["Range"] = f"bytes={current_size}-"
+            print(f"Resuming {label} from {current_size // 1024 // 1024} MB...")
+
         try:
-            with client.stream("GET", url, headers=headers) as response:
+            with client.stream("GET", url, headers=request_headers) as response:
                 if response.status_code == 416:
                     print(f"{label} already complete according to server.")
                     return output_path
@@ -859,9 +880,7 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
                     ):
                         for chunk in response.iter_bytes():
                             if _should_stop():
-                                print(
-                                    f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)"
-                                )
+                                print(f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)")
                                 return None
                             handle.write(chunk)
                             bar.update(len(chunk))
@@ -870,16 +889,12 @@ def download_with_progress(client, url, headers, label, output_path, expected_to
                     with open(output_path, mode) as handle:
                         for chunk in response.iter_bytes():
                             if _should_stop():
-                                print(
-                                    f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)"
-                                )
+                                print(f"\nDownload interrupted: {label} ({output_path.stat().st_size} bytes)")
                                 return None
                             handle.write(chunk)
                             downloaded += len(chunk)
                             if total > 0:
-                                sys.stdout.write(
-                                    f"\rProgress {label}: {downloaded / total * 100:.1f}%"
-                                )
+                                sys.stdout.write(f"\rProgress {label}: {downloaded / total * 100:.1f}%")
                                 sys.stdout.flush()
                     if total > 0:
                         print()
@@ -910,9 +925,7 @@ def resolve_huggingface_filename(repo, requested_filename):
     if not model_info or not isinstance(model_info, dict):
         return requested_filename
     siblings = model_info.get("siblings", [])
-    files = [
-        s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(supported_exts)
-    ]
+    files = [s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(supported_exts)]
     if not files:
         return requested_filename
     target_stem = requested_filename.replace(" ", "").replace("_", "").lower()
@@ -1019,9 +1032,7 @@ def download_to_partial_file(client, url, headers, label, partial_path):
             ):
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(
-                            f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)"
-                        )
+                        print(f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)")
                         return None
                     handle.write(chunk)
                     bar.update(len(chunk))
@@ -1030,9 +1041,7 @@ def download_to_partial_file(client, url, headers, label, partial_path):
             with open(partial_path, mode) as handle:
                 for chunk in response.iter_bytes():
                     if _should_stop():
-                        print(
-                            f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)"
-                        )
+                        print(f"\nDownload interrupted: {label} ({partial_path.stat().st_size} bytes)")
                         return None
                     handle.write(chunk)
                     downloaded += len(chunk)
@@ -1068,9 +1077,7 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resu
     )
 
     try:
-        download_with_progress(
-            client, url, headers, f"Importing {Path(filename).name}", partial_path
-        )
+        download_with_progress(client, url, headers, f"Importing {Path(filename).name}", partial_path)
         if _should_stop():
             print(f"\nInterrupted: {local_name} ({partial_path.stat().st_size} bytes downloaded).")
             return 1
@@ -1242,9 +1249,7 @@ def pull_companion(model_name, no_resume=False):
     try:
         download_with_progress(client, url, headers, f"Companion {filename}", partial_path)
         if _should_stop():
-            print(
-                f"\nInterrupted: companion download ({partial_path.stat().st_size} bytes downloaded)."
-            )
+            print(f"\nInterrupted: companion download ({partial_path.stat().st_size} bytes downloaded).")
             return 1
 
         # Move partial file to final companion location
@@ -1288,8 +1293,9 @@ def pull_companion(model_name, no_resume=False):
                     print(f"Warning: could not create router symlink: {e}")
 
             # Find the mmproj file in companions if one exists
-            mmproj_candidates = sorted(companions_dir.glob("*mmproj*.gguf")) + \
-                                sorted(companions_dir.glob("*projector*.gguf"))
+            mmproj_candidates = sorted(companions_dir.glob("*mmproj*.gguf")) + sorted(
+                companions_dir.glob("*projector*.gguf")
+            )
             mmproj_rel = None
             if mmproj_candidates:
                 mmproj_rel = f"/router-models/companions/{mmproj_candidates[0].name}"
@@ -1324,21 +1330,19 @@ def pull_companion(model_name, no_resume=False):
         client.close()
 
 
-
-def pull_model(
-    model_name, source="auto", local_name=None, insecure=False, no_resume=False, companion=False
-):
+def pull_model(model_name, source="auto", local_name=None, insecure=False, no_resume=False, companion=False):
     global _CURRENT_MODEL
     _CURRENT_MODEL = model_name
-    if companion:
-        return pull_companion(model_name, no_resume=no_resume)
-
-    resolved_source = choose_source(model_name, source)
+    # Defensive: clear any stale stop marker left by a previous cancel so this
+    # pull is not immediately aborted (AGENTS.md stop-marker gotcha).
     try:
+        _clear_stop_marker(model_name)
+        if companion:
+            return pull_companion(model_name, no_resume=no_resume)
+
+        resolved_source = choose_source(model_name, source)
         if resolved_source == "huggingface":
-            result = import_huggingface_gguf(
-                model_name, local_name=local_name, insecure=insecure, no_resume=no_resume
-            )
+            result = import_huggingface_gguf(model_name, local_name=local_name, insecure=insecure, no_resume=no_resume)
         else:
             result = pull_ollama_model(model_name, insecure=insecure, no_resume=no_resume)
         if result == 0:
@@ -1356,6 +1360,9 @@ def pull_model(
         return 1
     finally:
         _CURRENT_MODEL = ""
+        # Clean up the stop marker on completion/cancel/failure so it cannot
+        # block a future pull of the same model.
+        _clear_stop_marker(model_name)
 
 
 def blob_referenced_elsewhere(digest, current_manifest_path):
@@ -1416,7 +1423,11 @@ def remove_model(model_name):
             if prof_path.exists():
                 prof_path.unlink()
                 print(f"Deleted router profile: {prof_path}")
-        update_models_ini()
+
+    # Always regenerate models.ini from the current router dir so a deleted
+    # model's section cannot linger as a stale entry (whether or not its
+    # symlink was still present).
+    update_models_ini()
 
     for digest in model_blobs(manifest):
         blob_path = blob_path_for_digest(digest)
@@ -1435,15 +1446,28 @@ def remove_model(model_name):
     return 0
 
 
+def remove_model_benchmarks(model_name):
+    """Delete per-model benchmark result files for a removed model (general + SharedLLM)."""
+    normalized = normalize_model_name(model_name)
+    sanitized = re.sub(r"[/:.]", "_", normalized)
+    removed = []
+    for suite_dir, prefix in (
+        (Path("data/llm_benchmarks/models"), "general"),
+        (Path("data/shared_llm_benchmarks/models"), "shared"),
+    ):
+        file_path = suite_dir / f"{prefix}_{sanitized}.json"
+        if file_path.exists():
+            file_path.unlink()
+            removed.append(str(file_path))
+            print(f"Deleted benchmark results: {file_path}")
+    return removed
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(
-        description="Pull, reindex, or remove models in Ollama storage format."
-    )
+    parser = argparse.ArgumentParser(description="Pull, reindex, or remove models in Ollama storage format.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    pull_parser = subparsers.add_parser(
-        "pull", help="Download a model into the local Ollama store."
-    )
+    pull_parser = subparsers.add_parser("pull", help="Download a model into the local Ollama store.")
     pull_parser.add_argument(
         "model",
         help=(
@@ -1477,11 +1501,12 @@ def build_parser():
         help="Download as a companion file (VAE, CLIP, etc.) and save to companion directory.",
     )
 
-    remove_parser = subparsers.add_parser(
-        "remove", help="Remove a local model manifest and unshared blobs."
-    )
+    remove_parser = subparsers.add_parser("remove", help="Remove a local model manifest and unshared blobs.")
+    remove_parser.add_argument("model", help="Local model name, for example tinyllama or qwen3:35b-q4.")
     remove_parser.add_argument(
-        "model", help="Local model name, for example tinyllama or qwen3:35b-q4."
+        "--remove-benchmarks",
+        action="store_true",
+        help="Also delete the model's saved benchmark result files (general and SharedLLM per-model files).",
     )
 
     subparsers.add_parser(
@@ -1505,7 +1530,10 @@ def main(argv=None):
     if args.command == "reindex":
         return reindex_models()
     if args.command == "remove":
-        return remove_model(args.model)
+        result = remove_model(args.model)
+        if args.remove_benchmarks:
+            remove_model_benchmarks(args.model)
+        return result
     return 1
 
 

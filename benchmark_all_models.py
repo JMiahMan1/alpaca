@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-alpaca-benchmark — Multi-model benchmark suite for alpaca-proxy / llama-server
+alpaca-benchmark - Multi-model benchmark suite for alpaca-proxy / llama-server
 Usage:
   python3 benchmark_all_models.py                  # benchmark all models
   python3 benchmark_all_models.py gemma-4-12b-fable5:latest qwen3:8b
@@ -21,9 +21,7 @@ import time
 import urllib.request
 
 BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OUTPUT_DIR = os.getenv(
-    "BENCHMARK_OUTPUT", os.path.join(os.path.dirname(__file__), ".alpaca-router")
-)
+OUTPUT_DIR = os.getenv("BENCHMARK_OUTPUT", os.path.join(os.path.dirname(__file__), ".alpaca-router"))
 
 TESTS = [
     {
@@ -176,16 +174,16 @@ def call_model(model, prompt, num_predict, system=None):
 
 
 def benchmark_model(model):
-    print(f"\n{'─' * 62}")
+    print(f"\n{'-' * 62}")
     print(f"  MODEL: {model}")
     print(f"  Time:  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'─' * 62}")
+    print(f"{'-' * 62}")
 
     # Warmup ping
     print("  Warming up... ", end="", flush=True)
     _, err = call_model(model, "Hi", 5)
     if err:
-        print(f"FAILED — cannot reach model: {err}")
+        print(f"FAILED - cannot reach model: {err}")
         return None
     print("OK")
 
@@ -230,10 +228,7 @@ def build_profile(model, results):
             "min_ttft_ms": round(min(ttft), 1),
             "max_ttft_ms": round(max(ttft), 1),
         },
-        "by_category": {
-            cat: {"avg_tokens_per_sec": round(statistics.mean(vals), 2)}
-            for cat, vals in by_cat.items()
-        },
+        "by_category": {cat: {"avg_tokens_per_sec": round(statistics.mean(vals), 2)} for cat, vals in by_cat.items()},
         "tests": [
             {
                 "id": r["id"],
@@ -268,7 +263,7 @@ def print_comparison(all_profiles):
     print("  COMPARISON TABLE")
     print(f"{'=' * 62}")
     print(f"  {'Model':<35} {'Avg tok/s':>10} {'Peak':>8} {'TTFT ms':>9}")
-    print(f"  {'─' * 35} {'─' * 10} {'─' * 8} {'─' * 9}")
+    print(f"  {'-' * 35} {'-' * 10} {'-' * 8} {'-' * 9}")
     ranked = sorted(valid, key=lambda p: p["summary"]["avg_tokens_per_sec"], reverse=True)
     for p in ranked:
         s = p["summary"]

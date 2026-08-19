@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alpaca LLM Benchmark Suite</title>
+    <!-- Inline SVG favicon (avoids /favicon.ico 404) -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Ctext x='16' y='23' font-size='20' font-weight='bold' text-anchor='middle' fill='%2338bdf8' font-family='system-ui,sans-serif'%3EA%3C/text%3E%3C/svg%3E">
     <!-- Stylesheet -->
     <link rel="stylesheet" href="/static/css/style.css">
     <!-- Chart.js CDN -->
@@ -27,6 +29,9 @@
                 <div id="runner-status-badge" class="badge badge-success">
                     <span class="badge-dot"></span> IDLE
                 </div>
+                <a id="header-logout-btn" href="/logout" class="badge badge-secondary" style="text-decoration:none; display:none; cursor:pointer;" title="Log out of session">
+                    <span>🚪 Log out</span>
+                </a>
             </div>
         </header>
 
@@ -35,6 +40,7 @@
             <button id="tab-btn-monitor" class="nav-tab active">⚡ System Monitor</button>
             <button id="tab-btn-general" class="nav-tab">🎯 General Benchmarks</button>
             <button id="tab-btn-shared" class="nav-tab">⚙️ SharedLLM Benchmarks</button>
+            <button id="tab-btn-tests" class="nav-tab">🧪 Test Browser</button>
             <button id="tab-btn-profiles" class="nav-tab">🔧 Model Profiles</button>
             <button id="tab-btn-requests" class="nav-tab">🔍 Request Monitor</button>
             <button id="tab-btn-sd" class="nav-tab">🎨 Image Studio</button>
@@ -59,16 +65,16 @@
                             <select id="model-switcher-select" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem; margin-bottom:0.5rem;">
                                 <option value="">Loading models...</option>
                             </select>
-                            <div style="display:flex; gap:0.5rem;">
-                                <button id="btn-switch-model" class="btn btn-primary" style="font-size:0.75rem; padding:0.4rem; flex:1;">Load Model</button>
-                                <button id="btn-unload-current" class="btn btn-danger" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: var(--color-danger); border-color: var(--color-danger);">Unload</button>
+                            <div class="grid-2">
+                                <button id="btn-switch-model" class="btn btn-primary btn-sm">Load Model</button>
+                                <button id="btn-unload-current" class="btn btn-danger btn-sm">Unload</button>
                             </div>
-                            <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
-                                <button id="btn-delete-model" class="btn btn-danger" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: #991b1b; border-color: #991b1b; color: white;">Delete Model</button>
-                                <button id="btn-clear-vram" class="btn btn-warning" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: var(--color-warning); border-color: var(--color-warning); color: black;">Force Clear VRAM</button>
+                            <div class="grid-2" style="margin-top:0.5rem;">
+                                <button id="btn-delete-model" class="btn btn-danger btn-sm" style="background: linear-gradient(135deg, #991b1b, #7f1d1d); box-shadow: 0 2px 6px rgba(153,27,27,0.3);">Delete Model</button>
+                                <button id="btn-clear-vram" class="btn btn-warning btn-sm">Force Clear VRAM</button>
                             </div>
-                             <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
-                                <button id="btn-open-search-modal" class="btn btn-success" style="font-size:0.75rem; padding:0.4rem; flex:1; background-color: #059669; border-color: #059669; color: white;">🔍 Find & Pull Models</button>
+                             <div style="margin-top:0.5rem;">
+                                <button id="btn-open-search-modal" class="btn btn-success btn-sm">🔍 Find & Pull Models</button>
                              </div>
                         </div>
                         <div id="model-switcher-status" style="font-size:0.75rem; color:var(--text-muted); padding:0.5rem; background:#0f172a; border-radius:6px; min-height:2rem;">
@@ -93,37 +99,65 @@
                     </div>
                     
                     <div class="control-group">
-                        <div class="flex-space" style="margin-bottom: 0.5rem;">
+                        <div class="flex-space" style="margin-bottom: 0.35rem;">
                             <span class="control-label">Target Models</span>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <span id="btn-select-all" style="font-size:0.7rem; color:var(--color-primary); cursor:pointer; font-weight:600;">All</span>
-                                <span id="btn-deselect-all" style="font-size:0.7rem; color:var(--text-muted); cursor:pointer; font-weight:600;">None</span>
+                            <div class="quick-select">
+                                <span id="btn-select-all" class="qs-all" title="Select all models">All</span>
+                                <span id="btn-select-new" class="qs-new" title="Select all newly added models awaiting benchmarks">🆕 New</span>
+                                <span id="btn-deselect-all" class="qs-none">None</span>
                             </div>
+                        </div>
+                        <div class="model-filter-tabs">
+                            <button id="filter-models-all" class="model-filter-btn active">All (<span id="cnt-models-all">0</span>)</button>
+                            <button id="filter-models-new" class="model-filter-btn">🆕 New (<span id="cnt-models-new">0</span>)</button>
+                            <button id="filter-models-benchmarked" class="model-filter-btn">📊 Tested (<span id="cnt-models-benchmarked">0</span>)</button>
                         </div>
                         <div id="model-checkboxes" class="model-list-container">
                             <div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Loading models...</div>
+                        </div>
+                        <div class="grid-2" style="margin-top:0.6rem;">
+                            <button id="btn-open-online-models" class="btn btn-secondary btn-sm" title="Discover & choose live online models (OpenRouter, HF, Cloudflare, etc.)">
+                                🌐 Add Online
+                            </button>
+                            <button id="btn-open-api-keys" class="btn btn-secondary btn-sm" title="Configure & test provider API keys">
+                                🔑 API Keys
+                            </button>
                         </div>
                     </div>
 
                     <div class="control-group">
                         <div class="flex-space" style="margin-bottom: 0.5rem;">
                             <span class="control-label">Target Tests (General Run only)</span>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <span id="btn-select-all-tests" style="font-size:0.7rem; color:var(--color-primary); cursor:pointer; font-weight:600;">All</span>
-                                <span id="btn-deselect-all-tests" style="font-size:0.7rem; color:var(--text-muted); cursor:pointer; font-weight:600;">None</span>
+                            <div class="quick-select">
+                                <span id="btn-select-all-tests" class="qs-all">All</span>
+                                <span id="btn-deselect-all-tests" class="qs-none">None</span>
                             </div>
                         </div>
                         <div id="test-checkboxes" class="model-list-container" style="max-height: 150px; overflow-y: auto;">
                             <div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Loading tests...</div>
                         </div>
                     </div>
-                    
+
+                    <div class="control-group">
+                        <div class="flex-space" style="margin-bottom: 0.5rem;">
+                            <span class="control-label">Benchmark Groups (General Run only)</span>
+                            <div class="quick-select">
+                                <span id="btn-select-all-groups" class="qs-all">All</span>
+                                <span id="btn-deselect-all-groups" class="qs-none">None</span>
+                            </div>
+                        </div>
+                        <div id="group-checkboxes" class="model-list-container" style="max-height: 150px; overflow-y: auto;">
+                            <div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Loading groups...</div>
+                        </div>
+                        <div style="color:var(--text-muted);font-size:0.68rem;margin-top:0.35rem;">Leave all unchecked to run every group.</div>
+                    </div>
+
                     <div class="control-group">
                         <div class="flex-space" style="margin-bottom: 0.5rem;">
                             <span class="control-label">Target Tests (SharedLLM Run only)</span>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <span id="btn-select-all-shared-tests" style="font-size:0.7rem; color:var(--color-secondary); cursor:pointer; font-weight:600;">All</span>
-                                <span id="btn-deselect-all-shared-tests" style="font-size:0.7rem; color:var(--text-muted); cursor:pointer; font-weight:600;">None</span>
+                            <div class="quick-select">
+                                <span id="btn-select-all-shared-tests" class="qs-all">All</span>
+                                <span id="btn-deselect-all-shared-tests" class="qs-none">None</span>
                             </div>
                         </div>
                         <div id="shared-test-checkboxes" class="model-list-container" style="max-height: 100px; overflow-y: auto;">
@@ -131,20 +165,35 @@
                         </div>
                     </div>
 
-                    <div class="control-group grid-2" style="margin-bottom: 0.5rem;">
-                        <button id="btn-run" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.5rem 0.25rem;">Run General</button>
-                        <button id="btn-run-shared" class="btn btn-primary" style="background: linear-gradient(135deg, var(--color-secondary), #0891b2); font-size: 0.75rem; padding: 0.5rem 0.25rem;">Run SharedLLM</button>
+                    <div class="control-group" style="margin-bottom: 0.5rem;">
+                        <label class="checkbox-item" style="cursor:pointer;">
+                            <input type="checkbox" id="chk-resume" checked />
+                            <span class="checkbox-label">Resume: skip already-completed tests (uncheck to re-run everything selected)</span>
+                        </label>
+                    </div>
+
+                    <div class="control-group" style="margin-bottom: 0.5rem;">
+                        <label class="checkbox-item" style="cursor:pointer;">
+                            <input type="checkbox" id="chk-advanced" />
+                            <span class="checkbox-label">Include advanced (long-running / complex) tests — these take significantly longer and exercise deep reasoning, context retention and multi-step agents</span>
+                        </label>
+                    </div>
+
+                    <div class="control-group grid-3" style="margin-bottom: 0.5rem;">
+                        <button id="btn-run" class="btn btn-primary btn-sm">▶ Run General</button>
+                        <button id="btn-run-outdated" class="btn btn-primary btn-sm" style="background: linear-gradient(135deg, #d97706, #b45309); box-shadow: 0 4px 10px rgba(217,119,6,0.2);" title="Re-run only benchmarks whose test definitions have changed since the last run">⚠ Run Outdated</button>
+                        <button id="btn-run-shared" class="btn btn-primary btn-sm" style="background: linear-gradient(135deg, var(--color-secondary), #0891b2); box-shadow: 0 4px 10px rgba(6,182,212,0.2);">⚙ Run SharedLLM</button>
                     </div>
                     <div class="control-group">
-                        <button id="btn-cancel" class="btn btn-danger" disabled>Cancel Run</button>
+                        <button id="btn-cancel" class="btn btn-danger btn-sm" disabled>■ Cancel Run</button>
                     </div>
                 </div>
 
                 <!-- Historical Runs Sidebar -->
                 <div class="card">
-                    <div class="card-title">
-                        <span>Past Benchmarks</span>
-                        <span class="card-title-icon">📊</span>
+                    <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="display:flex; align-items:center; gap:0.4rem;"><span>Past Benchmarks</span> <span class="card-title-icon">📊</span></span>
+                        <button id="btn-clear-all-history" class="btn btn-secondary btn-sm" style="font-size:0.65rem; padding:0.2rem 0.5rem; background:transparent; border-color:var(--border-color); color:var(--text-muted); line-height:1;" title="Clear all benchmark history reports">🗑️ Clear All</button>
                     </div>
                     <div id="history-list" class="history-list">
                         <div style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding:1rem;">Loading reports...</div>
@@ -304,7 +353,7 @@
                     </div>
 
                     <!-- Telemetry & Auto-Tuning Grid -->
-                    <div class="monitor-grid" style="margin-top: 1.5rem; display: grid; grid-template-columns: 2fr 1.2fr; gap: 1.5rem;">
+                    <div class="monitor-grid" style="margin-top: 1.5rem;">
                         <!-- Memory Creep & Exhaustion Chart -->
                         <div class="card" style="display: flex; flex-direction: column;">
                             <div class="card-title">Memory Telemetry (OOM Prevention & Creep Monitor)</div>
@@ -408,6 +457,21 @@
                 <!-- VIEW 2: GENERAL BENCHMARKS VIEW -->
                 <div id="view-general" class="tab-view d-none">
                     
+                    <!-- Page Header -->
+                    <div class="view-header">
+                        <div class="view-header-title">
+                            <div class="view-header-icon">🎯</div>
+                            <div>
+                                <h2>General Benchmarks</h2>
+                                <p>Functional &amp; performance evaluation of local and online models across coding, reasoning, instruction, creative, and home-automation tasks.</p>
+                            </div>
+                        </div>
+                        <div class="view-header-actions">
+                            <button id="btn-export-csv" class="btn btn-secondary btn-sm btn-auto" title="Export all benchmark data as CSV">⬇ CSV</button>
+                            <button id="btn-export-general" class="btn btn-primary btn-sm btn-auto" title="Download the current benchmark report">⬇ Export Report</button>
+                        </div>
+                    </div>
+
                     <!-- Performance Summary Overhead Cards -->
                     <div class="metrics-summary-grid">
                         <div class="metric-card primary">
@@ -432,31 +496,86 @@
                         </div>
                     </div>
 
+                    <!-- Compare Models Filter -->
+                    <div class="card section-gap">
+                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.6rem;">
+                            <span>Compare Models</span>
+                            <span class="card-sub">Toggle models (or Local/Online groups) to control what appears in the graphs &amp; stats below</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+                            <button class="btn btn-secondary btn-sm model-filter-group" data-filter-type="general" data-group="all">All</button>
+                            <button class="btn btn-secondary btn-sm model-filter-group" data-filter-type="general" data-group="local">Local</button>
+                            <button class="btn btn-secondary btn-sm model-filter-group" data-filter-type="general" data-group="online">Online</button>
+                            <span id="model-filter-count-general" class="card-sub" style="margin-left:0.25rem;"></span>
+                        </div>
+                        <div id="model-filter-models-general" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.75rem;">
+                            <span class="model-filter-placeholder card-sub">No benchmark results loaded.</span>
+                        </div>
+                    </div>
+
+                    <!-- Model Leaderboard -->
+                    <div class="card section-gap">
+                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.6rem;">
+                            <span>Model Leaderboard</span>
+                            <span class="card-sub">Click a column to sort · Check models to compare side-by-side</span>
+                            <div class="lb-view-toggle">
+                                <button class="btn btn-secondary btn-sm lb-show-top active" data-lb="general" data-mode="top">Top 10</button>
+                                <button class="btn btn-secondary btn-sm lb-show-all" data-lb="general" data-mode="all">Show All</button>
+                            </div>
+                        </div>
+                        <div class="lb-compare-bar" id="general-lb-compare-bar" style="display:none;">
+                            <span class="card-sub" id="general-lb-compare-count">0 selected</span>
+                            <button class="btn btn-secondary btn-sm" id="general-lb-compare-clear">Clear</button>
+                            <button class="btn btn-primary btn-sm" id="general-lb-compare-go">⇄ Compare (0)</button>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="general-leaderboard" class="leaderboard-table">
+                                <thead>
+                                    <tr>
+                                        <th class="lb-check-col" title="Select to compare"></th>
+                                        <th data-sort="rank" class="sortable">Rank</th>
+                                        <th data-sort="model" class="sortable">Model</th>
+                                        <th data-sort="score" class="sortable">Score</th>
+                                        <th data-sort="tps" class="sortable">Tokens/s</th>
+                                        <th data-sort="ttft" class="sortable">TTFT (ms)</th>
+                                        <th data-sort="success" class="sortable">Success %</th>
+                                        <th data-sort="tokens" class="sortable">Avg Tokens</th>
+                                        <th data-sort="tests" class="sortable">Tests</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="general-leaderboard-body">
+                                    <tr class="empty-state"><td colspan="9">No benchmark results loaded.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="general-lb-compare-panel"></div>
+                    </div>
+
                     <!-- Interactive Charts -->
-                    <div class="charts-grid" style="margin-top: 1.5rem;">
+                    <div class="charts-grid section-gap">
                         <div class="card">
-                            <div class="card-title">Throughput Speed (Higher is better)</div>
+                            <div class="card-title">Throughput Speed <span class="card-sub">(Higher is better)</span></div>
                             <div class="chart-wrapper">
                                 <canvas id="tps-chart"></canvas>
                             </div>
                         </div>
                         <div class="card">
-                            <div class="card-title">First Token Latency (Lower is better)</div>
+                            <div class="card-title">First Token Latency <span class="card-sub">(Lower is better)</span></div>
                             <div class="chart-wrapper">
                                 <canvas id="ttft-chart"></canvas>
                             </div>
                         </div>
                     </div>
 
-                    <div class="card" style="margin-top: 1.5rem;">
-                        <div class="card-title">Category Success Rate (%)</div>
+                    <div class="card section-gap">
+                        <div class="card-title">Category Success Rate <span class="card-sub">(%)</span></div>
                         <div class="chart-wrapper" style="height: 300px;">
                             <canvas id="category-chart"></canvas>
                         </div>
                     </div>
 
                     <!-- Logging Console Panel -->
-                    <div class="card console-card" style="margin-top: 1.5rem;">
+                    <div class="card console-card section-gap">
                         <div class="card-title">
                             <span>Stdout Pipeline Stream</span>
                             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-dark);">console.log</span>
@@ -466,16 +585,41 @@
                         </div>
                     </div>
 
+                    <!-- Benchmark Results Summary -->
+                    <div id="results-summary-card" class="card section-gap" style="display:none;">
+                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+                            <span>Benchmark Results Summary</span>
+                            <span class="card-sub" id="results-summary-model"></span>
+                        </div>
+                        <div id="results-overall" class="results-overall"></div>
+                        <div class="table-wrapper">
+                            <table class="group-summary-table">
+                                <thead>
+                                    <tr>
+                                        <th>Group</th>
+                                        <th>Score %</th>
+                                        <th>Letter</th>
+                                        <th>Stars</th>
+                                        <th>Passed / Run</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="results-group-scores"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- Audits and Details Table -->
-                    <div class="card" style="margin-top: 1.5rem;">
-                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="card section-gap">
+                        <div class="card-title">
                             <span>Detailed Evaluation Results</span>
-                            <button id="btn-export-general" class="btn" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; background: var(--color-primary); color: var(--color-bg); border: none; font-weight: 600;">Export Report</button>
                         </div>
                         <div class="results-details-section">
-                            <!-- Model selector tabs -->
-                            <div id="model-tabs" class="model-tabs">
-                                <!-- Populated via javascript -->
+                            <!-- Model selector dropdown -->
+                            <div class="model-select-row">
+                                <span class="control-label">Model</span>
+                                <select id="model-tabs" class="form-control model-select">
+                                    <!-- Populated via javascript -->
+                                </select>
                             </div>
                             <!-- Detailed Results Table -->
                             <div class="table-wrapper">
@@ -485,17 +629,17 @@
                                             <th>Category</th>
                                             <th>Test Scenario</th>
                                             <th>Status</th>
+                                            <th>Score</th>
                                             <th>Last Run Date</th>
                                             <th>Latency (s)</th>
                                             <th>Speed (TPS)</th>
                                             <th>Payload Action</th>
+                                            <th>Artifacts</th>
                                         </tr>
                                     </thead>
                                     <tbody id="detailed-results-body">
-                                        <tr>
-                                            <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
-                                                Select a past benchmark or start a new run to load raw evaluation details.
-                                            </td>
+                                        <tr class="empty-state">
+                                            <td colspan="9">Select a past benchmark or start a new run to load raw evaluation details.</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -508,6 +652,20 @@
                 <!-- VIEW 3: SHAREDLLM BENCHMARKS VIEW -->
                 <div id="view-shared" class="tab-view d-none">
                     
+                    <!-- Page Header -->
+                    <div class="view-header">
+                        <div class="view-header-title">
+                            <div class="view-header-icon">⚙️</div>
+                            <div>
+                                <h2>SharedLLM Benchmarks</h2>
+                                <p>Agentic evaluation across SharedLLM tiers: FastPath intent routing, Librarian tool use, Raven autonomous coding, troubleshooting, media, word processing, chaining, and context retention.</p>
+                            </div>
+                        </div>
+                        <div class="view-header-actions">
+                            <button id="btn-export-shared" class="btn btn-primary btn-sm btn-auto" title="Download the current SharedLLM report">⬇ Export Report</button>
+                        </div>
+                    </div>
+
                     <!-- SharedLLM specific summary metrics cards -->
                     <div class="metrics-summary-grid">
                         <div class="metric-card primary">
@@ -532,16 +690,70 @@
                         </div>
                     </div>
 
+                    <!-- Compare Models Filter -->
+                    <div class="card section-gap">
+                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.6rem;">
+                            <span>Compare Models</span>
+                            <span class="card-sub">Toggle models (or Local/Online groups) to control what appears in the graphs &amp; stats below</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+                            <button class="btn btn-secondary btn-sm model-filter-group" data-filter-type="shared" data-group="all">All</button>
+                            <button class="btn btn-secondary btn-sm model-filter-group" data-filter-type="shared" data-group="local">Local</button>
+                            <button class="btn btn-secondary btn-sm model-filter-group" data-filter-type="shared" data-group="online">Online</button>
+                            <span id="model-filter-count-shared" class="card-sub" style="margin-left:0.25rem;"></span>
+                        </div>
+                        <div id="model-filter-models-shared" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.75rem;">
+                            <span class="model-filter-placeholder card-sub">No benchmark results loaded.</span>
+                        </div>
+                    </div>
+
+                    <!-- SharedLLM Model Leaderboard -->
+                    <div class="card section-gap">
+                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.6rem;">
+                            <span>SharedLLM Model Leaderboard</span>
+                            <span class="card-sub">Click a column to sort · Check models to compare side-by-side</span>
+                            <div class="lb-view-toggle">
+                                <button class="btn btn-secondary btn-sm lb-show-top active" data-lb="shared" data-mode="top">Top 10</button>
+                                <button class="btn btn-secondary btn-sm lb-show-all" data-lb="shared" data-mode="all">Show All</button>
+                            </div>
+                        </div>
+                        <div class="lb-compare-bar" id="shared-lb-compare-bar" style="display:none;">
+                            <span class="card-sub" id="shared-lb-compare-count">0 selected</span>
+                            <button class="btn btn-secondary btn-sm" id="shared-lb-compare-clear">Clear</button>
+                            <button class="btn btn-primary btn-sm" id="shared-lb-compare-go">⇄ Compare (0)</button>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="shared-leaderboard" class="leaderboard-table">
+                                <thead>
+                                    <tr>
+                                        <th class="lb-check-col" title="Select to compare"></th>
+                                        <th data-sort="rank" class="sortable">Rank</th>
+                                        <th data-sort="model" class="sortable">Model</th>
+                                        <th data-sort="score" class="sortable">Score</th>
+                                        <th data-sort="success" class="sortable">Pass %</th>
+                                        <th data-sort="latency" class="sortable">Avg Latency (s)</th>
+                                        <th data-sort="tokens" class="sortable">Avg Tokens</th>
+                                        <th data-sort="tests" class="sortable">Tasks</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="shared-leaderboard-body">
+                                    <tr class="empty-state"><td colspan="8">No SharedLLM benchmark results loaded.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="shared-lb-compare-panel"></div>
+                    </div>
+
                     <!-- Interactive Charts -->
-                    <div class="charts-grid" style="margin-top: 1.5rem;">
+                    <div class="charts-grid section-gap">
                         <div class="card">
-                            <div class="card-title">SharedLLM Tier Latency (Seconds, lower is better)</div>
+                            <div class="card-title">SharedLLM Tier Latency <span class="card-sub">(Seconds, lower is better)</span></div>
                             <div class="chart-wrapper">
                                 <canvas id="shared-latency-chart"></canvas>
                             </div>
                         </div>
                         <div class="card">
-                            <div class="card-title">AST Compliance Rate (%)</div>
+                            <div class="card-title">AST Compliance Rate <span class="card-sub">(%)</span></div>
                             <div class="chart-wrapper">
                                 <canvas id="shared-ast-chart"></canvas>
                             </div>
@@ -549,12 +761,12 @@
                     </div>
 
                     <!-- Future-proofing: Task Routing Capability Matrix -->
-                    <div class="card" style="margin-top: 1.5rem;">
-                        <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="card section-gap">
+                        <div class="card-title">
                             <span>Model Capability vs. Performance Routing Matrix</span>
-                            <button id="btn-save-routing-matrix" class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.6rem; margin: 0;">💾 Save Matrix Mappings</button>
+                            <button id="btn-save-routing-matrix" class="btn btn-secondary btn-sm" style="margin: 0;">💾 Save Matrix Mappings</button>
                         </div>
-                        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
+                        <p class="card-sub" style="margin-bottom: 1rem;">
                             Map specific task categories to optimal models based on the benchmark data gathered. SharedLLM will query this matrix to make routing decisions.
                         </p>
                         <div class="table-wrapper">
@@ -578,7 +790,7 @@
                     </div>
 
                     <!-- Logging Console Panel -->
-                    <div class="card console-card" style="margin-top: 1.5rem;">
+                    <div class="card console-card section-gap">
                         <div class="card-title">
                             <span>SharedLLM Agentic Harness Output</span>
                             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-dark);">console.log</span>
@@ -589,14 +801,16 @@
                     </div>
 
                     <!-- SharedLLM detailed verification table -->
-                    <div class="card" style="margin-top: 1.5rem;">
-                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="card section-gap">
+                        <div class="card-title">
                             <span>SharedLLM Evaluation Audits</span>
-                            <button id="btn-export-shared" class="btn" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; background: var(--color-primary); color: var(--color-bg); border: none; font-weight: 600;">Export Report</button>
                         </div>
                         <div class="results-details-section">
-                            <div id="shared-model-tabs" class="model-tabs">
-                                <!-- Populated via javascript -->
+                            <div class="model-select-row">
+                                <span class="control-label">Model</span>
+                                <select id="shared-model-tabs" class="form-control model-select">
+                                    <!-- Populated via javascript -->
+                                </select>
                             </div>
                             <div class="table-wrapper">
                                 <table>
@@ -611,15 +825,57 @@
                                         </tr>
                                     </thead>
                                     <tbody id="shared-detailed-results-body">
-                                        <tr>
-                                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
-                                                Start a SharedLLM task benchmark run or select a saved SharedLLM report.
-                                            </td>
+                                        <tr class="empty-state">
+                                            <td colspan="6">Start a SharedLLM task benchmark run or select a saved SharedLLM report.</td>
                                         </tr>
                                     </tbody>
                                 </table>
                             </div>
                         </div>
+                    </div>
+
+                </div>
+
+                <!-- VIEW 3B: TEST BROWSER VIEW -->
+                <div id="view-tests" class="tab-view d-none">
+
+                    <div class="view-header">
+                        <div class="view-header-title">
+                            <div class="view-header-icon">🧪</div>
+                            <div>
+                                <h2>Test Browser</h2>
+                                <p>Browse benchmark tests. Preview image / HTML / Node-based tests inline, or download any test to run locally.</p>
+                            </div>
+                        </div>
+                        <div class="view-header-actions">
+                            <span id="test-browser-count" class="badge badge-soft">0 tests</span>
+                        </div>
+                    </div>
+
+                    <div class="test-browser-toolbar">
+                        <input id="test-search" class="form-input" type="text" placeholder="Search tests by label, category, or id…" autocomplete="off">
+                        <div class="test-kind-filters" id="test-kind-filters">
+                            <button class="kind-filter active" data-kind="all">All Types</button>
+                            <button class="kind-filter" data-kind="text">Text</button>
+                            <button class="kind-filter" data-kind="image">Image</button>
+                            <button class="kind-filter" data-kind="html">HTML</button>
+                            <button class="kind-filter" data-kind="node">Node</button>
+                        </div>
+                        <div class="test-kind-filters" id="test-status-filters">
+                            <button class="kind-filter active" data-status="all">All Runs</button>
+                            <button class="kind-filter" data-status="tested">Tested</button>
+                            <button class="kind-filter" data-status="untested">No Runs</button>
+                            <button class="kind-filter" data-status="outdated">⚠️ Outdated</button>
+                        </div>
+                        <div class="test-model-filters" id="test-model-filters">
+                            <select id="test-model-select" class="form-control">
+                                <option value="">All Models</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="test-browser-grid" class="test-browser-grid">
+                        <div class="loading-spinner">Loading tests…</div>
                     </div>
 
                 </div>
@@ -636,9 +892,9 @@
                             </div>
                         </div>
 
-                        <!-- Profile cards overview grid — populated by JS -->
+                        <!-- Profile cards overview grid - populated by JS -->
                         <div class="card" style="margin-bottom: 1.5rem;">
-                            <div class="card-title">📋 Saved Profiles <span style="font-size:0.7rem;color:var(--text-muted);font-weight:400;">— click any card to load it in the editor</span></div>
+                            <div class="card-title">📋 Saved Profiles <span style="font-size:0.7rem;color:var(--text-muted);font-weight:400;">- click any card to load it in the editor</span></div>
                             <div id="profile-cards-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
                                 <div style="color:var(--text-muted);font-size:0.8rem;">Loading profiles...</div>
                             </div>
@@ -2040,8 +2296,45 @@
         </div>
     </div>
 
+    <!-- Test Preview Overlay -->
+    <div id="test-preview-overlay" class="modal-overlay">
+        <div class="modal-container" style="max-width: 760px; width: 92%;">
+            <div class="modal-header">
+                <div id="test-preview-title" class="modal-title">Test Preview</div>
+                <button id="test-preview-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="test-preview-outdated-alert" class="test-preview-outdated-alert d-none"></div>
+                <div class="test-preview-meta" id="test-preview-meta"></div>
+                <div id="test-preview-runs-details" class="test-preview-runs-details"></div>
+                <div class="test-preview-prompt">
+                    <div class="modal-section-title">Prompt</div>
+                    <pre id="test-preview-prompt" class="code-display-block"></pre>
+                </div>
+                <div class="test-preview-stage" id="test-preview-stage"></div>
+                <div class="test-preview-actions">
+                    <button id="btn-download-test" class="btn btn-primary btn-sm">⬇ Download Test</button>
+                    <span id="test-preview-expected" class="test-preview-expected"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Screenshot Lightbox Overlay -->
+    <div id="screenshot-lightbox" class="modal-overlay" style="z-index: 11000;">
+        <div class="modal-container" style="max-width: 92%; width: auto;">
+            <div class="modal-header">
+                <div class="modal-title">Rendered Output</div>
+                <button id="screenshot-lightbox-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align:center;">
+                <img id="screenshot-lightbox-img" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" alt="Rendered screenshot" style="max-width:100%; max-height:80vh; border-radius:8px; border:1px solid var(--border-color);" />
+            </div>
+        </div>
+    </div>
+
     <!-- Restart Status Overlay -->
-    <div id="restart-overlay" class="modal-overlay" style="z-index: 10000; background: rgba(15, 23, 42, 0.95); display: none;">
+    <div id="restart-overlay" class="modal-overlay" style="z-index: 10000; background: rgba(15, 23, 42, 0.95);">
         <div class="modal-container" style="max-width: 400px; text-align: center; padding: 2rem;">
             <div style="margin-bottom: 1.5rem;">
                 <div class="loader" style="width: 40px; height: 40px; border-width: 4px; border-top-color: var(--color-danger); margin: 0 auto 1rem auto; display: block;"></div>
@@ -2127,6 +2420,236 @@
                         </div>
                     </div>
                     <pre id="pull-console-log" style="background:#090514; border:1px solid rgba(139,92,246,0.15); color:#a78bfa; font-family:monospace; font-size:0.7rem; padding:0.5rem; border-radius:4px; max-height:180px; overflow-y:auto; margin:0; white-space:pre-wrap;"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Keys & Provider Settings Overlay -->
+    <div id="api-keys-modal" class="modal-overlay" style="z-index: 9999;">
+        <div class="modal-container" style="max-width: 650px; width: 90%;">
+            <div class="modal-header">
+                <div class="modal-title">🔑 API Keys &amp; Provider Settings</div>
+                <button id="api-keys-close" class="modal-close" style="background:transparent; border:none; color:var(--text-muted); font-size:1.5rem; cursor:pointer;">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:1.25rem; max-height: 80vh; overflow-y: auto;">
+                <p style="font-size:0.8rem; color:var(--text-muted); margin:0;">
+                    Configure API keys for remote cloud model providers and manage authentication tokens for your local <strong>Alpaca Proxy</strong>. Keys are saved securely to your <code style="color:var(--color-primary); background:#0f172a; padding:0.1rem 0.3rem; border-radius:4px;">.env</code> configuration and loaded immediately.
+                </p>
+
+                <!-- Alpaca Proxy Access Control Section -->
+                <div style="background:#090d16; border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.65rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>🛡️</span> Alpaca Proxy Access Token
+                        </strong>
+                        <span id="badge-status-alpaca" class="badge badge-secondary" style="font-size:0.68rem;">Public / No Auth</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Secure your Alpaca Proxy (<code style="color:#a78bfa;">port 11434</code>) with Bearer token authentication. External OpenAI / Ollama callers must supply this token in the <code style="color:#a78bfa;">Authorization: Bearer &lt;token&gt;</code> header. Leave empty for open access.
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <input type="text" id="input-alpaca-key" placeholder="Open / Public (No token required)" style="flex:1; background:#0f172a; color:#a78bfa; border:1px solid rgba(139,92,246,0.3); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <button id="btn-generate-alpaca-token" class="btn btn-secondary" style="font-size:0.72rem; padding:0.45rem 0.65rem; white-space:nowrap; background:#4c1d95; border-color:#5b21b6; color:white;" title="Generate random secure key">🎲 Generate</button>
+                        <button id="btn-copy-alpaca-token" class="btn btn-secondary" style="font-size:0.72rem; padding:0.45rem 0.65rem; white-space:nowrap; background:#1e293b; border-color:#334155; color:white;" title="Copy to clipboard">📋 Copy</button>
+                        <button id="btn-clear-alpaca-token" class="btn btn-secondary" style="font-size:0.72rem; padding:0.45rem 0.65rem; white-space:nowrap; background:#334155; border-color:#334155; color:#f87171;" title="Clear token and make proxy public">🔓 Clear</button>
+                    </div>
+                    <div id="alpaca-token-snippet" style="background:#020617; border:1px solid #1e293b; border-radius:6px; padding:0.5rem 0.75rem; font-family:monospace; font-size:0.7rem; color:#94a3b8; line-height:1.4;">
+                        <span style="color:#64748b;"># OpenAI client usage example:</span><br>
+                        <span style="color:#38bdf8;">from</span> openai <span style="color:#38bdf8;">import</span> OpenAI<br>
+                        client = OpenAI(base_url=<span style="color:#a78bfa;">"http://localhost:11434/v1"</span>, api_key=<span id="snippet-api-key-val" style="color:#4ade80;">"YOUR_TOKEN_HERE"</span>)
+                    </div>
+                </div>
+
+                <!-- OpenRouter Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>⚡</span> OpenRouter
+                        </strong>
+                        <span id="badge-status-openrouter" class="badge badge-secondary" style="font-size:0.68rem;">Not Configured</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Access to hundreds of models (Gemini 2.0, DeepSeek R1, Llama 3.3, Claude, GPT-4o). Free tier models available.
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <input type="password" id="input-openrouter-key" placeholder="sk-or-v1-..." style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <button id="btn-test-openrouter" class="btn btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem; white-space:nowrap; background:#334155; border-color:#334155; color:white;">Test</button>
+                    </div>
+                    <div id="test-result-openrouter" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- Hugging Face Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>🤗</span> Hugging Face Serverless
+                        </strong>
+                        <span id="badge-status-huggingface" class="badge badge-secondary" style="font-size:0.68rem;">Not Configured</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Serverless Inference endpoints for open-weight models (Llama, Qwen, Mistral).
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <input type="password" id="input-huggingface-token" placeholder="hf_..." style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <button id="btn-test-huggingface" class="btn btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem; white-space:nowrap; background:#334155; border-color:#334155; color:white;">Test</button>
+                    </div>
+                    <div id="test-result-huggingface" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- Cloudflare Workers AI Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>☁️</span> Cloudflare Workers AI
+                        </strong>
+                        <span id="badge-status-cloudflare" class="badge badge-secondary" style="font-size:0.68rem;">Not Configured</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Serverless edge inference on Cloudflare global network.
+                    </p>
+                    <div style="display:flex; flex-direction:column; gap:0.4rem;">
+                        <input type="password" id="input-cloudflare-token" placeholder="API Token" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <div style="display:flex; gap:0.5rem; align-items:center;">
+                            <input type="text" id="input-cloudflare-account" placeholder="Account ID (32 hex characters)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                            <button id="btn-test-cloudflare" class="btn btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem; white-space:nowrap; background:#334155; border-color:#334155; color:white;">Test</button>
+                        </div>
+                    </div>
+                    <div id="test-result-cloudflare" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- OpenCode Zen / Custom OpenAI Gateway Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>⚙️</span> OpenCode Zen / Custom OpenAI Endpoint
+                        </strong>
+                        <span id="badge-status-opencode" class="badge badge-secondary" style="font-size:0.68rem;">Ready</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Custom OpenAI-compatible LLM gateway or local endpoint.
+                    </p>
+                    <div style="display:flex; flex-direction:column; gap:0.4rem;">
+                        <input type="text" id="input-opencode-base-url" placeholder="Base URL (e.g. https://opencode.ai/zen/v1)" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <div style="display:flex; gap:0.5rem; align-items:center;">
+                            <input type="password" id="input-opencode-key" placeholder="API Key (optional if local)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                            <button id="btn-test-opencode" class="btn btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem; white-space:nowrap; background:#334155; border-color:#334155; color:white;">Test</button>
+                        </div>
+                    </div>
+                    <div id="test-result-opencode" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- Groq Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>⚡</span> Groq
+                        </strong>
+                        <span id="badge-status-groq" class="badge badge-secondary" style="font-size:0.68rem;">Ready</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Ultra-fast inference on open models via Groq's free tier (no credit card required).
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <input type="password" id="input-groq-key" placeholder="API Key (gsk_...)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <button id="btn-test-groq" class="btn btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem; white-space:nowrap; background:#334155; border-color:#334155; color:white;">Test</button>
+                    </div>
+                    <div id="test-result-groq" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- Gemini Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>✨</span> Google Gemini (AI Studio)
+                        </strong>
+                        <span id="badge-status-gemini" class="badge badge-secondary" style="font-size:0.68rem;">Ready</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Google's Gemini models via the free Google AI Studio tier (rate-limited, no credit card required).
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <input type="password" id="input-gemini-key" placeholder="API Key (AQ...)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <button id="btn-test-gemini" class="btn btn-secondary" style="font-size:0.75rem; padding:0.45rem 0.75rem; white-space:nowrap; background:#334155; border-color:#334155; color:white;">Test</button>
+                    </div>
+                    <div id="test-result-gemini" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- Actions -->
+                <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:0.5rem;">
+                    <button id="btn-cancel-api-keys" class="btn btn-secondary" style="background:#334155; border-color:#334155; color:white; font-size:0.85rem; padding:0.5rem 1rem;">Cancel</button>
+                    <button id="btn-save-api-keys" class="btn btn-primary" style="font-size:0.85rem; padding:0.5rem 1.25rem;">💾 Save Credentials</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Live Online Models Explorer Overlay -->
+    <div id="online-models-modal" class="modal-overlay" style="z-index: 9999;">
+        <div class="modal-container" style="max-width: 900px; width: 92%;">
+            <div class="modal-header">
+                <div class="modal-title">🌐 Live Online Models Explorer</div>
+                <button id="online-models-close" class="modal-close" style="background:transparent; border:none; color:var(--text-muted); font-size:1.5rem; cursor:pointer;">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.85rem; max-height: 82vh; overflow-y: auto;">
+                <p style="font-size:0.8rem; color:var(--text-muted); margin:0;">
+                    Discover and pull the latest 2026 models from OpenRouter, Hugging Face, and Cloudflare in real-time. Check models to include them in your benchmark target list.
+                </p>
+
+                <!-- Search & Filters Toolbar -->
+                <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:0.65rem 0.85rem;">
+                    <div style="display:flex; align-items:center; gap:0.4rem;">
+                        <span style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap;">Provider:</span>
+                        <select id="online-provider-filter" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.8rem;">
+                            <option value="all">All Providers</option>
+                            <option value="openrouter">⚡ OpenRouter</option>
+                            <option value="huggingface">🤗 Hugging Face</option>
+                            <option value="cloudflare">☁️ Cloudflare</option>
+                            <option value="opencode_zen">⚙️ OpenCode Zen</option>
+                            <option value="groq">⚡ Groq</option>
+                            <option value="gemini">✨ Gemini</option>
+                        </select>
+                    </div>
+
+                    <input type="text" id="online-models-search-input" placeholder="Filter models (e.g. gemini, llama-3.3, deepseek, qwen-2.5)..." style="flex:1; min-width:180px; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem 0.65rem; border-radius:6px; font-size:0.8rem;">
+
+                    <label style="display:flex; align-items:center; gap:0.35rem; font-size:0.75rem; color:#86efac; cursor:pointer; margin:0; user-select:none;">
+                        <input type="checkbox" id="online-free-only-toggle" style="accent-color:#10b981;"> Free Only
+                    </label>
+
+                    <button id="btn-fetch-live-models" class="btn btn-primary" style="font-size:0.78rem; padding:0.4rem 0.85rem;">
+                        🔄 Fetch Live
+                    </button>
+                </div>
+
+                <!-- Selection Status Bar -->
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:0 0.25rem;">
+                    <div style="font-size:0.75rem; color:var(--text-muted);">
+                        <span id="online-results-count" style="font-weight:600; color:white;">0</span> models available | 
+                        <span id="online-selected-count" style="font-weight:600; color:var(--color-primary);">0</span> selected for benchmarking
+                    </div>
+                    <div style="display:flex; gap:0.5rem;">
+                        <button id="btn-select-all-online" class="btn btn-secondary" style="font-size:0.68rem; padding:0.2rem 0.5rem; background:#334155; border-color:#334155; color:white;">Select All Shown</button>
+                        <button id="btn-clear-online-selection" class="btn btn-secondary" style="font-size:0.68rem; padding:0.2rem 0.5rem; background:#334155; border-color:#334155; color:white;">Clear Selection</button>
+                    </div>
+                </div>
+
+                <!-- Results List Container -->
+                <div id="online-models-results-container" style="display:flex; flex-direction:column; gap:0.5rem; max-height: 380px; overflow-y:auto; padding-right:0.25rem;">
+                    <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:2.5rem;">
+                        Loading models catalog...
+                    </div>
+                </div>
+
+                <!-- Bottom Footer Actions -->
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem; border-top:1px solid var(--border-color); padding-top:0.75rem;">
+                    <div style="font-size:0.72rem; color:var(--text-muted);">
+                        Selected models will appear directly in your Target Models sidebar.
+                    </div>
+                    <div style="display:flex; gap:0.75rem;">
+                        <button id="btn-cancel-online-models" class="btn btn-secondary" style="background:#334155; border-color:#334155; color:white; font-size:0.85rem; padding:0.5rem 1rem;">Cancel</button>
+                        <button id="btn-save-online-selection" class="btn btn-primary" style="background:linear-gradient(135deg, var(--color-primary), #6366f1); font-size:0.85rem; padding:0.5rem 1.25rem;">✅ Save Benchmark Selection</button>
+                    </div>
                 </div>
             </div>
         </div>

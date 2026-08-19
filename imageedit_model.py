@@ -17,7 +17,6 @@ import sys
 import urllib.error
 import urllib.request
 from io import BytesIO
-from pathlib import Path
 
 from PIL import Image
 
@@ -70,14 +69,14 @@ def text_edit_model(
     boundary = "----alpacaTextCompose"
     body = b"".join(
         [
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"strip.png\"\r\n"
+            f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="strip.png"\r\n'
             f"Content-Type: image/png\r\n\r\n".encode(),
             buf.getvalue(),
             b"\r\n",
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n".encode(),
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n{prompt}\r\n".encode(),
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"size\"\r\n\r\n{strip.width}x{strip.height}\r\n".encode(),
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\nb64_json\r\n".encode(),
+            f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'.encode(),
+            f'--{boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n{prompt}\r\n'.encode(),
+            f'--{boundary}\r\nContent-Disposition: form-data; name="size"\r\n\r\n{strip.width}x{strip.height}\r\n'.encode(),
+            f'--{boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nb64_json\r\n'.encode(),
             f"--{boundary}--\r\n".encode(),
         ]
     )

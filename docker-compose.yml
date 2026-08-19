@@ -56,6 +56,8 @@ services:
     container_name: alpaca-proxy
     restart: always
     network_mode: "host"
+    group_add:
+      - "${DOCKER_GID}"
     volumes:
       - /usr/share/ollama/.ollama/models:/models
       - ./.alpaca-router:/router-models
@@ -66,6 +68,7 @@ services:
       - ./alpaca_puller.py:/app/alpaca_puller.py:ro
       - ./benchmark-configs.py:/app/benchmark-configs.py:ro
       - ./analyzer.py:/app/analyzer.py:ro
+      - ./online_providers.py:/app/online_providers.py:ro
       - ./data:/app/data
     environment:
       MODELS_DIR: /models
@@ -89,14 +92,19 @@ services:
       dockerfile: Dockerfile.web
     container_name: alpaca-web
     restart: always
+    group_add:
+      - "${DOCKER_GID}"
     ports:
       - "5000:5000"
     volumes:
       - ./data:/app/data
       - ./web:/app/web:ro
       - ./llm_benchmark_suite.py:/app/llm_benchmark_suite.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./benchmark_tests.json:/app/benchmark_tests.json:ro
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
       - ./alpaca_puller.py:/app/alpaca_puller.py:ro
+      - ./online_providers.py:/app/online_providers.py:ro
       - ./.alpaca-router:/router-models
       - ./analyzer.py:/app/analyzer.py:ro
       - /usr/share/ollama/.ollama/models:/models
@@ -124,7 +132,7 @@ services:
     command: python /app/telemetry_monitor.py
     mem_limit: 256m
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./.alpaca-router:/router-models
       - ./data:/app/data
       - ./telemetry_monitor.py:/app/telemetry_monitor.py:ro

@@ -22,9 +22,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-SEPIA = np.array(
-    [[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]]
-)
+SEPIA = np.array([[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]])
 
 
 def vintage(img: Image.Image, seed: int = 7) -> Image.Image:

@@ -4,9 +4,13 @@ Flask server for LLM benchmark dashboard with SocketIO
 """
 
 import asyncio
+import hashlib
+import ipaddress
 import json
 import logging
 import os
+import re
+import secrets
 import select
 import subprocess
 import sys
@@ -15,15 +19,23 @@ import time
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+import httpx
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
 # Add project root to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import contextlib
+import io
+import tarfile
+import uuid
+
+import docker
 
 from llm_benchmark_suite import LLMModelBenchmark
+from sandbox_exec import serve_app, serve_ui, stop_serve, ui_exec, ui_restart, ui_screenshot, ui_status
+from web.model_tracker import model_tracker
 from web.shared_llm_benchmark import SharedLLMModelBenchmark
 
 
@@ -57,7 +69,7 @@ if not DEBUG_LOGGING:
 
 app = Flask(__name__)
 CORS(app)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "alpaca-secret-key-12984")
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
@@ -78,6 +90,123 @@ shared_llm_benchmark = SharedLLMModelBenchmark()
 puller_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py")
 PROXY_URL = os.environ.get("PROXY_URL", "http://host.docker.internal:11434")
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://llama-server:8080")
+
+
+LOCAL_SUBNETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("fc00::/7"),
+)
+
+LOCAL_HOSTNAMES = frozenset(
+    {
+        "localhost",
+        "testclient",
+        "host.docker.internal",
+        "gateway.docker.internal",
+        "docker",
+        "unix",
+        "0.0.0.0",
+    }
+)
+
+
+def get_flask_client_ip(req) -> str:
+    """Extract client IP from Flask request considering forward headers."""
+    xff = req.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        parts = [ip.strip() for ip in xff.split(",")]
+        if parts and parts[0]:
+            return parts[0]
+    x_real = req.headers.get("x-real-ip", "").strip()
+    if x_real:
+        return x_real
+    if req.remote_addr:
+        return req.remote_addr.strip()
+    return ""
+
+
+def is_flask_client_local(req) -> bool:
+    """Check if the requesting client is from a local LAN / Docker subnet."""
+    raw_ip = get_flask_client_ip(req)
+    if not raw_ip or raw_ip == "unknown-ip":
+        return False
+    raw_clean = raw_ip.strip().lower()
+    if raw_clean in LOCAL_HOSTNAMES:
+        return True
+    if raw_clean.startswith("::ffff:"):
+        raw_clean = raw_clean[7:]
+    if "%" in raw_clean:
+        raw_clean = raw_clean.split("%")[0]
+    try:
+        ip_obj = ipaddress.ip_address(raw_clean)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return True
+        return any(ip_obj in subnet for subnet in LOCAL_SUBNETS)
+    except ValueError:
+        return False
+
+
+def is_flask_request_authenticated(req) -> bool:
+    """Check if request is authorized via local bypass, session, or API key."""
+    # Local LAN clients (192.168.0.0, 10.0.0.0, 172.16-31, loopback, docker) bypass auth
+    if is_flask_client_local(req):
+        return True
+
+    expected = os.environ.get("ALPACA_API_KEY", "").strip() or os.environ.get("ADMIN_PASSWORD", "").strip()
+    public_mode = os.environ.get("ALPACA_PUBLIC_MODE", "").strip().lower() in ("1", "true", "yes")
+
+    # If no key/password configured, allow external access ONLY if explicitly opted-in via ALPACA_PUBLIC_MODE=1
+    if not expected:
+        return public_mode
+
+    if session.get("authenticated") is True:
+        return True
+    auth = req.headers.get("authorization", "").strip()
+    if auth:
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
+        if token == expected:
+            return True
+    x_key = (req.headers.get("x-api-key") or req.headers.get("x-api-token") or "").strip()
+    return x_key == expected
+
+
+@app.before_request
+def enforce_auth_middleware():
+    """Redirect unauthenticated public browser requests to /login and return 401 for API calls."""
+    if request.path.startswith("/static/") or request.path in (
+        "/login",
+        "/logout",
+        "/api/auth/status",
+        "/health",
+        "/favicon.ico",
+    ):
+        return None
+
+    if is_flask_request_authenticated(request):
+        return None
+
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Unauthorized. Please authenticate."}), 401
+
+    return redirect(url_for("login_view"))
+
+
+def get_proxy_headers(extra_headers: dict[str, str] | None = None) -> dict[str, str]:
+    headers = dict(extra_headers or {})
+    key = os.environ.get("ALPACA_API_KEY", "").strip()
+    if key:
+        headers.setdefault("Authorization", f"Bearer {key}")
+        headers.setdefault("X-API-Key", key)
+    return headers
+
+
 active_pulls: dict[str, dict[str, Any]] = {}
 active_pulls_lock = threading.Lock()
 
@@ -147,7 +276,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False, companion
                                 active_pulls[model_name]["logs"].pop(0)
                     socketio.emit("pull_log", {"model": model_name, "line": line_str})
             else:
-                # Timeout from select() — check for stop/cancel
+                # Timeout from select() - check for stop/cancel
                 pass
 
             # Check for stop/cancel events on every loop iteration
@@ -167,8 +296,8 @@ def run_puller_thread(model_name, source, local_name, no_resume=False, companion
                     active_pulls[model_name]["status"] = "stopped"
                     socketio.emit("pull_status", {"model": model_name, "status": "stopped"})
                     stop_dir = Path(router_dir or os.getenv("ROUTER_MODELS_DIR", ".alpaca-router")) / ".alpaca-stop"
-                    stop_file = stop_dir / f"{model_name.replace('/', '_').replace(':', '_')}"
-                    stop_file.unlink(missing_ok=True)
+                    (stop_dir / re.sub(r"[/:.]", "_", model_name)).unlink(missing_ok=True)
+                    (stop_dir / model_name.replace("/", "_").replace(":", "_")).unlink(missing_ok=True)
                     return
 
         rc = process.poll()
@@ -184,6 +313,7 @@ def run_puller_thread(model_name, source, local_name, no_resume=False, companion
                     return
 
         if rc == 0:
+            model_tracker.record_model_seen(model_name, source="local")
             socketio.emit("pull_status", {"model": model_name, "status": "success"})
         else:
             # Clean up stop marker on failure so it doesn't block future pulls
@@ -246,6 +376,7 @@ def get_progress_callback(run_type):
                     {
                         "type": run_type,
                         "models": data["models"],
+                        "total_models": len(data.get("models", [])),
                         "use_proxy": data["use_proxy"],
                         "total_tests": data["total_tests"],
                         "timestamp": data["timestamp"],
@@ -289,6 +420,25 @@ def get_progress_callback(run_type):
 
             elif event == "model_complete":
                 active_run["results"].append(data["results"])
+                try:
+                    m_name = data.get("model")
+                    res_obj = data.get("results", {})
+                    tasks = (
+                        res_obj.get("tasks", [])
+                        if isinstance(res_obj, dict)
+                        else (res_obj.get("tests", []) if isinstance(res_obj, dict) else [])
+                    )
+                    tot = len(tasks)
+                    succ = sum(1 for t in tasks if isinstance(t, dict) and t.get("success"))
+                    pct = (succ / tot * 100.0) if tot > 0 else 0.0
+                    model_tracker.record_benchmark_result(
+                        model_id=m_name,
+                        score_pct=pct,
+                        run_type=run_type,
+                        result_file=active_run.get("saved_as") or "",
+                    )
+                except Exception:
+                    pass
                 socketio.emit("model_complete", {"model": data["model"], "results": data["results"]})
 
             elif event == "benchmark_complete":
@@ -296,7 +446,24 @@ def get_progress_callback(run_type):
                 active_run["current_model"] = None
                 active_run["current_test"] = None
                 active_run["current_category"] = None
-                active_run["saved_as"] = data.get("saved_as")
+                saved_path = data.get("saved_as") or ""
+                active_run["saved_as"] = saved_path
+                try:
+                    for res_item in data.get("results", []):
+                        if isinstance(res_item, dict) and res_item.get("model"):
+                            m_name = res_item.get("model")
+                            tasks = res_item.get("tasks") or res_item.get("tests") or []
+                            tot = len(tasks)
+                            succ = sum(1 for t in tasks if isinstance(t, dict) and t.get("success"))
+                            pct = (succ / tot * 100.0) if tot > 0 else 0.0
+                            model_tracker.record_benchmark_result(
+                                model_id=m_name,
+                                score_pct=pct,
+                                run_type=run_type,
+                                result_file=saved_path,
+                            )
+                except Exception:
+                    pass
                 socketio.emit("benchmark_complete", data)
 
             elif event == "benchmark_cancelled":
@@ -309,7 +476,7 @@ def get_progress_callback(run_type):
     return callback
 
 
-def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_ids=None):
+def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_ids=None, resume=False, groups=None, tiers=None):
     global active_run
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -322,6 +489,9 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_id
                 progress_callback=callback,
                 cancel_event=run_cancel_event,
                 test_ids=test_ids,
+                resume=resume,
+                groups=groups,
+                tiers=tiers,
             )
         except Exception as e:
             print(f"Error in benchmark execution: {e}")
@@ -335,7 +505,7 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_id
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
-                    print("[benchmark] Thread exiting with status still 'running' — forcing to 'completed'")
+                    print("[benchmark] Thread exiting with status still 'running' - forcing to 'completed'")
                     active_run["status"] = "completed"
                     active_run["current_model"] = None
                     active_run["current_test"] = None
@@ -349,7 +519,7 @@ def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_id
     loop.close()
 
 
-def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task_ids=None):
+def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task_ids=None, custom_keys=None):
     global active_run
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -362,6 +532,7 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task
                 progress_callback=callback,
                 cancel_event=run_cancel_event,
                 task_ids=task_ids,
+                custom_keys=custom_keys,
             )
         except Exception as e:
             print(f"Error in SharedLLM execution: {e}")
@@ -375,7 +546,7 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
-                    print("[benchmark] SharedLLM thread exiting with status still 'running' — forcing to 'completed'")
+                    print("[benchmark] SharedLLM thread exiting with status still 'running' - forcing to 'completed'")
                     active_run["status"] = "completed"
                     active_run["current_model"] = None
                     active_run["current_test"] = None
@@ -389,6 +560,53 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task
     loop.close()
 
 
+# Auth Routes
+@app.route("/login", methods=["GET", "POST"])
+def login_view():
+    """Render login page or authenticate submitted credentials."""
+    if request.method == "GET":
+        if is_flask_request_authenticated(request):
+            return redirect(url_for("index"))
+        return render_template("login.html")
+
+    data = request.get_json(silent=True) or request.form
+    submitted_key = (data.get("api_key") or data.get("password") or "").strip()
+    expected = os.environ.get("ALPACA_API_KEY", "").strip() or os.environ.get("ADMIN_PASSWORD", "").strip()
+
+    if not expected or submitted_key == expected:
+        session["authenticated"] = True
+        if request.is_json:
+            return jsonify({"success": True, "redirect": "/"})
+        return redirect(url_for("index"))
+
+    if request.is_json:
+        return jsonify({"success": False, "error": "Invalid API key or password."}), 401
+    return render_template("login.html", error="Invalid API key or password."), 401
+
+
+@app.route("/logout")
+def logout_view():
+    """Clear session and redirect to login page."""
+    session.pop("authenticated", None)
+    return redirect(url_for("login_view"))
+
+
+@app.route("/api/auth/status")
+def auth_status_api():
+    """Return origin type and authentication state."""
+    expected = os.environ.get("ALPACA_API_KEY", "").strip() or os.environ.get("ADMIN_PASSWORD", "").strip()
+    is_local = is_flask_client_local(request)
+    authenticated = is_flask_request_authenticated(request)
+    return jsonify(
+        {
+            "authenticated": authenticated,
+            "is_local": is_local,
+            "auth_required": bool(expected),
+            "client_ip": get_flask_client_ip(request),
+        }
+    )
+
+
 # Routes
 @app.route("/")
 def index():
@@ -396,11 +614,29 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/ui/launcher/<container_id>")
+def ui_launcher_page(container_id: str):
+    """Full-page launcher for a running UI sandbox container (opened by ⛶ Expand)."""
+    st = ui_status(container_id)
+    if st.get("error"):
+        return f"UI container not found: {container_id}", 404
+    host_port = st.get("host_port") or ""
+    return render_template("ui_launcher.html", container_id=container_id, host_port=host_port)
+
+
 @app.route("/api/status")
 def get_status():
     """Return the current active benchmark status"""
     with active_run_lock:
         return jsonify(dict(active_run))
+
+
+def _canonical_model_name(name: str) -> str:
+    """Drop the ':latest' tag so the same model isn't listed twice under both
+    its bare id (e.g. 'kwaipilot-...-iq4-nl') and its ':latest' form. The proxy's
+    router resolution treats both forms identically, so the bare id is canonical.
+    """
+    return name[:-7] if name.endswith(":latest") else name
 
 
 @app.route("/api/models")
@@ -424,7 +660,16 @@ def get_models():
 
         router_models = _get_router_text_models()
 
-        combined = list(dict.fromkeys(direct_models + proxy_models + router_models))
+        # Normalize + dedupe: router/GGUF and proxy-discovered sources can expose
+        # the same model under two id forms (bare vs ':latest'); keep the canonical
+        # (bare) form so the dashboard Target Models list shows each model once.
+        seen: set[str] = set()
+        combined: list[str] = []
+        for name in direct_models + proxy_models + router_models:
+            canonical = _canonical_model_name(name)
+            if canonical not in seen:
+                seen.add(canonical)
+                combined.append(canonical)
         return jsonify({"models": combined, "direct_models": direct_models, "proxy_models": proxy_models})
     except Exception as e:
         fallback = benchmark._get_fallback_models()
@@ -438,39 +683,394 @@ def get_models():
         )
 
 
+def _compute_test_hash(test_dict):
+    """Compute deterministic SHA-256 hash for a test definition."""
+    if not isinstance(test_dict, dict):
+        return ""
+    atts = [a.get("name", "") for a in test_dict.get("attachments", []) if isinstance(a, dict)]
+    canonical = {
+        "id": test_dict.get("id", ""),
+        "prompt": (test_dict.get("prompt") or "").strip(),
+        "expected": str(test_dict.get("expected") or "").strip(),
+        "expected_output": str(test_dict.get("expected_output") or "").strip(),
+        "type": test_dict.get("type", "functional"),
+        "kind": test_dict.get("kind", "text"),
+        "attachments": sorted(atts),
+    }
+    dumped = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(dumped.encode("utf-8")).hexdigest()[:12]
+
+
+def _get_test_benchmark_stats():
+    """Scan all model benchmark records and aggregate test run history and currency."""
+    stats: dict[str, dict] = {}
+
+    current_tests: dict[str, dict] = {}
+    for _cat, t in _iter_all_tests():
+        tid = t.get("id")
+        if tid:
+            current_tests[tid] = t
+
+    def _record_run(data, model_name, run):
+        """Aggregate a single run's category blocks into the stats table."""
+        if not isinstance(run, dict):
+            return
+        for cat_key, cat_val in run.items():
+            if not isinstance(cat_val, dict) or not cat_key.startswith("category_"):
+                continue
+            for t in cat_val.get("tests") or []:
+                if not isinstance(t, dict):
+                    continue
+                tid = t.get("test_id")
+                if not tid:
+                    continue
+
+                if tid not in stats:
+                    stats[tid] = {
+                        "models_tested": [],
+                        "models_passed": [],
+                        "models_failed": [],
+                        "models_tested_count": 0,
+                        "models_passed_count": 0,
+                        "models_failed_count": 0,
+                        "is_out_of_date": False,
+                        "out_of_date_count": 0,
+                        "out_of_date_models": [],
+                        "last_run": None,
+                    }
+
+                st = stats[tid]
+                if model_name not in st["models_tested"]:
+                    st["models_tested"].append(model_name)
+                    st["models_tested_count"] += 1
+
+                    passed = bool(t.get("success", False) or (t.get("score", 0) >= 50))
+                    if passed:
+                        st["models_passed"].append(model_name)
+                        st["models_passed_count"] += 1
+                    else:
+                        st["models_failed"].append(model_name)
+                        st["models_failed_count"] += 1
+
+                    run_time = t.get("last_run") or data.get("last_updated") or data.get("generated_at")
+                    if run_time and (not st["last_run"] or run_time > st["last_run"]):
+                        st["last_run"] = run_time
+
+                    cur_test = current_tests.get(tid)
+                    if cur_test:
+                        cur_hash = _compute_test_hash(cur_test)
+                        rec_hash = t.get("test_hash")
+                        rec_prompt = (t.get("prompt") or "").strip()
+                        cur_prompt = (cur_test.get("prompt") or "").strip()
+
+                        is_outdated = False
+                        if rec_hash:
+                            is_outdated = rec_hash != cur_hash
+                        elif cur_prompt:
+                            is_outdated = not (rec_prompt.startswith(cur_prompt) or rec_prompt == cur_prompt)
+
+                        if is_outdated:
+                            st["is_out_of_date"] = True
+                            if model_name not in st["out_of_date_models"]:
+                                st["out_of_date_models"].append(model_name)
+                                st["out_of_date_count"] += 1
+
+    # Source of truth: per-model records (most recent, incremental saves).
+    # Merged *_benchmarks_latest.json files are deliberately NOT scanned here —
+    # they can contain stale/restored data that predates the current test schema
+    # and inflates run counts on cards that were never actually benchmarked.
+    models_dir = benchmark.MODELS_DIR
+    if models_dir.exists():
+        for fp in sorted(models_dir.glob("general_*.json")):
+            try:
+                with open(fp, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                continue
+
+            model_name = data.get("model") or fp.stem.replace("general_", "")
+            for run in data.get("results") or []:
+                _record_run(data, model_name, run)
+
+    return stats
+
+
+def _outdated_test_ids(models: list[str]) -> list[str]:
+    """Return the test IDs whose definitions have changed for any of the given
+    models. Used by ``outdated_only`` runs so a model can redo just the
+    benchmarks whose prompts/config have been updated since its last run."""
+    stats = _get_test_benchmark_stats()
+    ids = []
+    for tid, st in stats.items():
+        if not st.get("is_out_of_date"):
+            continue
+        outdated_models = st.get("out_of_date_models", [])
+        if any(m in outdated_models for m in models):
+            ids.append(tid)
+        else:
+            outdated_sanitized = {re.sub(r"[/:.]", "_", x) for x in outdated_models}
+            if any(re.sub(r"[/:.]", "_", m) in outdated_sanitized for m in models):
+                ids.append(tid)
+    return ids
+
+
 @app.route("/api/tests")
 def get_tests():
-    """Return list of all available tests dynamically loaded from configs"""
+    """Return list of all available tests dynamically loaded from configs,
+    annotated with run statistics and currency (out-of-date status)."""
     try:
         all_tests = []
-        for cat in ["coding", "reasoning", "instruction", "creative", "home_automation"]:
-            cat_tests = getattr(benchmark, f"_{cat}_tests")("")
-            for t in cat_tests:
-                all_tests.append(
-                    {
-                        "id": t["id"],
-                        "category": cat,
-                        "label": t.get("label", t["id"]),
-                        "type": "functional",
-                    }
-                )
-        all_tests.append(
-            {
-                "id": "perf_medium",
-                "category": "performance",
-                "label": "Performance: Medium Load (800 tokens)",
-                "type": "performance",
-            }
-        )
-        all_tests.append(
-            {
-                "id": "perf_long",
-                "category": "performance",
-                "label": "Performance: Long Load (1000 tokens)",
-                "type": "performance",
-            }
-        )
+        run_stats = _get_test_benchmark_stats()
+
+        for cat, t in _iter_all_tests():
+            tid = t["id"]
+            st = run_stats.get(tid, {})
+            all_tests.append(
+                {
+                    "id": tid,
+                    "category": cat,
+                    "label": t.get("label", tid),
+                    "type": t.get("type", "functional"),
+                    "kind": t.get("kind", "text"),
+                    "prompt": t.get("prompt", ""),
+                    "expected": t.get("expected", ""),
+                    "attachments": _test_attachment_meta(t),
+                    "test_hash": _compute_test_hash(t),
+                    "models_tested_count": st.get("models_tested_count", 0),
+                    "models_passed_count": st.get("models_passed_count", 0),
+                    "models_failed_count": st.get("models_failed_count", 0),
+                    "models_tested": st.get("models_tested", []),
+                    "is_out_of_date": st.get("is_out_of_date", False),
+                    "out_of_date_count": st.get("out_of_date_count", 0),
+                    "out_of_date_models": st.get("out_of_date_models", []),
+                    "last_run": st.get("last_run"),
+                }
+            )
+        for perf_id, perf_label in [
+            ("perf_medium", "Performance: Medium Load (800 tokens)"),
+            ("perf_long", "Performance: Long Load (1000 tokens)"),
+        ]:
+            st = run_stats.get(perf_id, {})
+            all_tests.append(
+                {
+                    "id": perf_id,
+                    "category": "performance",
+                    "label": perf_label,
+                    "type": "performance",
+                    "kind": "text",
+                    "prompt": "",
+                    "expected": "",
+                    "attachments": [],
+                    "test_hash": perf_id,
+                    "models_tested_count": st.get("models_tested_count", 0),
+                    "models_passed_count": st.get("models_passed_count", 0),
+                    "models_failed_count": st.get("models_failed_count", 0),
+                    "models_tested": st.get("models_tested", []),
+                    "is_out_of_date": st.get("is_out_of_date", False),
+                    "out_of_date_count": st.get("out_of_date_count", 0),
+                    "out_of_date_models": st.get("out_of_date_models", []),
+                    "last_run": st.get("last_run"),
+                }
+            )
         return jsonify({"tests": all_tests})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _iter_all_tests():
+    """Yield (category, test) pairs from the dynamic tests config.
+
+    Iterates the loaded config directly so any category present in
+    benchmark_tests.json (including future ones) is browsable without a
+    hardcoded method lookup.
+    """
+    for cat, tests in benchmark.tests_config.items():
+        for t in tests:
+            entry = dict(t)
+            entry["category"] = cat
+            yield cat, entry
+
+
+def _find_test(test_id):
+    """Return (category, test) for the given test id or None."""
+    for cat, t in _iter_all_tests():
+        if t.get("id") == test_id:
+            return cat, t
+    return None, None
+
+
+def _test_attachment_meta(test):
+    """Return lightweight attachment metadata for a test (no file contents)."""
+    meta = []
+    for att in test.get("attachments", []):
+        meta.append(
+            {
+                "name": att.get("name", "attachment"),
+                "mime": att.get("mime", "application/octet-stream"),
+                "kind": att.get("kind", "file"),
+            }
+        )
+    return meta
+
+
+def _resolve_attachment(test, att_name):
+    """Resolve an attachment to bytes, or None if it cannot be found.
+
+    Supports three storage modes (fully dynamic, nothing hardcoded):
+      - inline base64: {"name": ..., "data_base64": "..."}
+      - file path relative to repo root: {"name": ..., "path": "data/..."}
+      - URL: {"name": ..., "url": "https://..."}
+    """
+    for att in test.get("attachments", []):
+        if att.get("name") != att_name:
+            continue
+        if att.get("data_base64"):
+            try:
+                import base64
+
+                return base64.b64decode(att["data_base64"]), att.get("mime", "application/octet-stream")
+            except Exception:
+                return None
+        if att.get("text") is not None:
+            return att["text"].encode("utf-8"), att.get("mime", "application/octet-stream")
+        if att.get("data"):
+            data = att["data"]
+            if isinstance(data, str):
+                try:
+                    import base64
+
+                    data = base64.b64decode(data)
+                except Exception:
+                    data = data.encode("utf-8")
+            return data, att.get("mime", "application/octet-stream")
+        if att.get("path"):
+            base_dir = Path(__file__).resolve().parent.parent
+            full = (base_dir / att["path"]).resolve()
+            if not full.is_relative_to(base_dir):
+                return None
+            try:
+                return full.read_bytes(), att.get("mime", "application/octet-stream")
+            except Exception:
+                return None
+        if att.get("url"):
+            try:
+                import httpx
+
+                resp = httpx.get(att["url"], timeout=15)
+                resp.raise_for_status()
+                return resp.content, att.get("mime", resp.headers.get("content-type", "application/octet-stream"))
+            except Exception:
+                return None
+    return None
+
+
+@app.route("/api/tests/<test_id>/attachment/<att_name>")
+def get_test_attachment(test_id, att_name):
+    """Serve a test attachment for inline preview or download (?download=1)."""
+    try:
+        _cat, test = _find_test(test_id)
+        if not test:
+            return jsonify({"error": "test not found"}), 404
+        result = _resolve_attachment(test, att_name)
+        if not result:
+            return jsonify({"error": "attachment not found"}), 404
+        data, mime = result
+        download = request.args.get("download") == "1"
+        from io import BytesIO
+
+        return send_file(
+            BytesIO(data),
+            mimetype=mime,
+            as_attachment=download,
+            download_name=att_name,
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tests/<test_id>/download")
+def download_test(test_id):
+    """Download a single test definition (id, kind, prompt, attachments metadata)."""
+    try:
+        _cat, test = _find_test(test_id)
+        if not test:
+            return jsonify({"error": "test not found"}), 404
+        payload = {
+            "id": test.get("id"),
+            "kind": test.get("kind", "text"),
+            "label": test.get("label", test.get("id")),
+            "category": _cat,
+            "prompt": test.get("prompt", ""),
+            "expected": test.get("expected"),
+            "num_predict": test.get("num_predict"),
+            "attachments": _test_attachment_meta(test),
+        }
+        from io import BytesIO
+
+        return send_file(
+            BytesIO(json.dumps(payload, indent=2).encode("utf-8")),
+            mimetype="application/json",
+            as_attachment=True,
+            download_name=f"{test.get('id', 'test')}.json",
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tests/<test_id>/responses")
+def get_test_responses(test_id):
+    """Return model-produced responses for a test (e.g. games) so they can be
+    downloaded or played directly from the Test Browser. Scans per-model result
+    files and returns every non-empty response keyed by model, keeping the
+    longest response per model.
+    """
+    try:
+        _cat, test = _find_test(test_id)
+        if not test:
+            return jsonify({"error": "test not found"}), 404
+        out = []
+        models_dir = benchmark.MODELS_DIR
+        if models_dir.exists():
+            for fp in sorted(models_dir.glob("general_*.json")):
+                try:
+                    with open(fp) as fh:
+                        data = json.load(fh)
+                except Exception:
+                    continue
+                model = data.get("model") or fp.stem
+                for run in data.get("results") or []:
+                    if not isinstance(run, dict):
+                        continue
+                    for cat in run.values():
+                        if not isinstance(cat, dict):
+                            continue
+                        for t in cat.get("tests") or []:
+                            if not isinstance(t, dict):
+                                continue
+                            if t.get("test_id") != test_id:
+                                continue
+                            resp = t.get("response") or ""
+                            if not resp.strip():
+                                continue
+                            is_html = bool(re.search(r"<!doctype|<html|<script|<canvas", resp, re.I))
+                            passed = t.get("success") if "success" in t else None
+                            out.append(
+                                {
+                                    "model": model,
+                                    "run_file": fp.name,
+                                    "response": resp,
+                                    "thinking": t.get("thinking") or None,
+                                    "response_len": len(resp),
+                                    "is_html": is_html,
+                                    "passed": passed,
+                                }
+                            )
+        best = {}
+        for o in out:
+            k = o["model"]
+            if k not in best or o["response_len"] > best[k]["response_len"]:
+                best[k] = o
+        return jsonify({"test_id": test_id, "responses": list(best.values())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -496,7 +1096,7 @@ def get_shared_llm_tests():
 
 def get_host_system_metrics():
     """Fetch CPU and RAM metrics from the host via psutil.
-    GPU/VRAM is intentionally omitted here — the web container has no GPU device
+    GPU/VRAM is intentionally omitted here - the web container has no GPU device
     access. GPU data comes from the proxy via `docker exec llama-server nvidia-smi`.
     """
     import platform
@@ -572,7 +1172,7 @@ def get_proxy_status():
             system_data = system_resp.json() if system_resp.status_code == 200 else {}
 
             # Overlay host CPU/RAM metrics (psutil in the web container).
-            # GPU is NOT fetched here — the proxy already has it via docker exec.
+            # GPU is NOT fetched here - the proxy already has it via docker exec.
             try:
                 host_metrics = get_host_system_metrics()
                 for k, v in host_metrics.items():
@@ -587,7 +1187,7 @@ def get_proxy_status():
             if isinstance(gpu_raw, list):
                 system_data["gpus"] = gpu_raw
             else:
-                # gpu_info is an error dict — leave gpus as empty list
+                # gpu_info is an error dict - leave gpus as empty list
                 system_data["gpus"] = []
 
             return jsonify(
@@ -616,7 +1216,7 @@ def get_sd_status():
 
     try:
         with httpx.Client(timeout=1.5) as client:
-            resp = client.get(f"{PROXY_URL}/admin/sd/health")
+            resp = client.get(f"{PROXY_URL}/admin/sd/health", headers=get_proxy_headers())
             if resp.status_code == 200:
                 data = resp.json()
                 return jsonify(
@@ -642,7 +1242,7 @@ def unload_sd_model_api():
 
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.post(f"{PROXY_URL}/admin/sd/unload")
+            resp = client.post(f"{PROXY_URL}/admin/sd/unload", headers=get_proxy_headers())
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -655,7 +1255,7 @@ def sd_health_api():
 
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{PROXY_URL}/admin/sd/health")
+            resp = client.get(f"{PROXY_URL}/admin/sd/health", headers=get_proxy_headers())
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e), "online": False}), 500
@@ -668,7 +1268,7 @@ def sd_models_api():
 
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{PROXY_URL}/v1/images/models")
+            resp = client.get(f"{PROXY_URL}/v1/images/models", headers=get_proxy_headers())
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e), "data": []}), 500
@@ -681,7 +1281,7 @@ def sd_presets_api():
 
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{PROXY_URL}/v1/images/presets")
+            resp = client.get(f"{PROXY_URL}/v1/images/presets", headers=get_proxy_headers())
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -695,7 +1295,7 @@ def sd_load_api():
     data = request.get_json() or {}
     try:
         with httpx.Client(timeout=120.0) as client:
-            resp = client.post(f"{PROXY_URL}/v1/images/models/load", json=data)
+            resp = client.post(f"{PROXY_URL}/v1/images/models/load", json=data, headers=get_proxy_headers())
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -792,7 +1392,7 @@ def sd_generate_api():
 
     try:
         with httpx.Client(timeout=600.0) as client:
-            resp = client.post(f"{PROXY_URL}/v1/images/generations", json=data)
+            resp = client.post(f"{PROXY_URL}/v1/images/generations", json=data, headers=get_proxy_headers())
             if resp.status_code == 200 and qr_text:
                 resp_json = resp.json()
                 if "data" in resp_json and len(resp_json["data"]) > 0:
@@ -845,7 +1445,7 @@ def sd_edit_api():
         qr_label = data.pop("qr_label", "SCAN ME")
 
         with httpx.Client(timeout=600.0) as client:
-            resp = client.post(f"{PROXY_URL}/v1/images/edits", data=data, files=files)
+            resp = client.post(f"{PROXY_URL}/v1/images/edits", data=data, files=files, headers=get_proxy_headers())
             if resp.status_code == 200 and qr_text:
                 resp_json = resp.json()
                 if "data" in resp_json and len(resp_json["data"]) > 0:
@@ -929,37 +1529,42 @@ def vision_ocr_api():
 
         proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
         with httpx.Client(timeout=300.0) as client:
+            error_details = ""
+            raw_text = ""
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
                     json={"model": proxy_model, "messages": messages, "max_tokens": 1000, "temperature": 0.1},
+                    headers=get_proxy_headers(),
                 )
                 if resp.status_code == 200:
                     data = resp.json()
                     raw_text = data["choices"][0]["message"]["content"]
                 else:
-                    raw_text = ""
-            except Exception:
-                raw_text = ""
+                    error_details = f"Vision proxy returned HTTP {resp.status_code}: {resp.text[:200]}"
+            except Exception as exc:
+                error_details = str(exc)
 
-            # Fallback parsing for text extraction & document layout breakdown
-            if not raw_text or "not supported" in raw_text or "error" in raw_text.lower():
-                parsed = {
-                    "full_text": "Extracted document text structure ready for poster synthesis.",
-                    "headline": "SUMMER FESTIVAL 2026",
-                    "subtext": "AUGUST 15 • DOORS OPEN AT 8 PM",
-                    "badge": "GET TICKETS NOW",
-                }
-            else:
-                try:
-                    clean_json = raw_text.strip()
-                    if "```json" in clean_json:
-                        clean_json = clean_json.split("```json")[1].split("```")[0].strip()
-                    elif "```" in clean_json:
-                        clean_json = clean_json.split("```")[1].split("```")[0].strip()
-                    parsed = json.loads(clean_json)
-                except Exception:
-                    parsed = {"full_text": raw_text, "headline": "", "subtext": "", "badge": ""}
+            if not raw_text or "not supported" in raw_text.lower():
+                return (
+                    jsonify(
+                        {
+                            "error": "Vision OCR extraction failed",
+                            "details": error_details or "Model produced empty or unsupported response.",
+                        }
+                    ),
+                    502,
+                )
+
+            try:
+                clean_json = raw_text.strip()
+                if "```json" in clean_json:
+                    clean_json = clean_json.split("```json")[1].split("```")[0].strip()
+                elif "```" in clean_json:
+                    clean_json = clean_json.split("```")[1].split("```")[0].strip()
+                parsed = json.loads(clean_json)
+            except Exception:
+                parsed = {"full_text": raw_text, "headline": "", "subtext": "", "badge": ""}
 
             return jsonify({"status": "success", "ocr_result": parsed, "raw_response": raw_text})
 
@@ -977,7 +1582,6 @@ def text_compose_api():
     post (none|vintage), output_format (png|jpeg).
     """
     import base64
-    import sys
     from io import BytesIO
 
     from PIL import Image as PILImage
@@ -1082,12 +1686,12 @@ def _get_active_text_model() -> str:
         import httpx
 
         with httpx.Client(timeout=3.0) as client:
-            resp = client.get(f"{PROXY_URL}/admin/runtime")
+            resp = client.get(f"{PROXY_URL}/admin/runtime", headers=get_proxy_headers())
             if resp.status_code == 200:
                 active = resp.json().get("active_model")
                 if active:
                     return active
-            tags_resp = client.get(f"{PROXY_URL}/api/tags")
+            tags_resp = client.get(f"{PROXY_URL}/api/tags", headers=get_proxy_headers())
             if tags_resp.status_code == 200:
                 models = tags_resp.json().get("models", [])
                 text_models = [m["name"] for m in models if m.get("type") != "image"]
@@ -1113,7 +1717,7 @@ def get_text_models():
     try:
         ollama_models: list[str] = []
         with httpx.Client(timeout=5.0) as client:
-            tags_resp = client.get(f"{PROXY_URL}/api/tags")
+            tags_resp = client.get(f"{PROXY_URL}/api/tags", headers=get_proxy_headers())
             if tags_resp.status_code == 200:
                 for m in tags_resp.json().get("models", []):
                     if m.get("type") != "image":
@@ -1123,13 +1727,14 @@ def get_text_models():
 
     router_models = _get_router_text_models()
 
-    # Merge, preserving order and deduplicating
+    # Merge, preserving order and deduplicating (':latest' form is canonicalized)
     seen: set[str] = set()
     combined: list[str] = []
     for name in ollama_models + router_models:
-        if name not in seen:
-            seen.add(name)
-            combined.append(name)
+        canonical = _canonical_model_name(name)
+        if canonical not in seen:
+            seen.add(canonical)
+            combined.append(canonical)
 
     return jsonify({"models": combined})
 
@@ -1165,6 +1770,165 @@ def get_vision_models():
 
     vision_models.sort(key=_sort_key, reverse=True)
     return jsonify({"models": vision_models})
+
+
+@app.route("/api/models/online")
+def get_online_models_api():
+    """Return configured online LLM providers and available catalog of online models."""
+    try:
+        from online_providers import online_model_provider
+
+        return jsonify(
+            {
+                "providers": online_model_provider.get_configured_providers(),
+                "models": online_model_provider.get_available_models(),
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/online/providers", methods=["GET"])
+def get_online_providers_credentials_api():
+    """Return configured status and masked keys for all online providers."""
+    try:
+        from online_providers import online_model_provider
+
+        return jsonify(
+            {
+                "providers": online_model_provider.get_masked_credentials(),
+                "configured": online_model_provider.get_configured_providers(),
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/online/providers/save", methods=["POST"])
+def save_online_providers_credentials_api():
+    """Save API credentials to .env and runtime."""
+    try:
+        from online_providers import online_model_provider
+
+        data = request.get_json() or {}
+        keys = {}
+        if "alpaca_api_key" in data:
+            keys["ALPACA_API_KEY"] = data["alpaca_api_key"].strip()
+        if "openrouter_api_key" in data:
+            keys["OPENROUTER_API_KEY"] = data["openrouter_api_key"].strip()
+        if "huggingface_token" in data:
+            keys["HUGGING_FACE_TOKEN"] = data["huggingface_token"].strip()
+        if "cloudflare_api_token" in data:
+            keys["CLOUDFLARE_API_TOKEN"] = data["cloudflare_api_token"].strip()
+        if "cloudflare_account_id" in data:
+            keys["CLOUDFLARE_ACCOUNT_ID"] = data["cloudflare_account_id"].strip()
+        if "opencode_zen_api_key" in data:
+            keys["OPENCODE_ZEN_API_KEY"] = data["opencode_zen_api_key"].strip()
+        if "opencode_zen_base_url" in data:
+            keys["OPENCODE_ZEN_BASE_URL"] = data["opencode_zen_base_url"].strip()
+        if "groq_api_key" in data:
+            keys["GROQ_API_KEY"] = data["groq_api_key"].strip()
+        if "gemini_api_key" in data:
+            keys["GEMINI_API_KEY"] = data["gemini_api_key"].strip()
+
+        result = online_model_provider.save_credentials(keys)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/online/providers/alpaca/generate", methods=["POST"])
+def generate_alpaca_token_api():
+    """Generate a cryptographically secure token for Alpaca proxy protection."""
+    try:
+        from online_providers import online_model_provider
+
+        token = online_model_provider.generate_alpaca_token()
+        return jsonify({"token": token, "success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/online/providers/test", methods=["POST"])
+def test_online_provider_connection_api():
+    """Test connection to an online provider with provided or saved credentials."""
+    try:
+        from online_providers import online_model_provider
+
+        data = request.get_json() or {}
+        provider = data.get("provider", "")
+        custom_keys = data.get("keys", {})
+
+        result = asyncio.run(online_model_provider.test_connection(provider=provider, custom_keys=custom_keys))
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/online/models/search", methods=["GET"])
+def search_online_models_api():
+    """Search and discover live online models from remote APIs."""
+    try:
+        from online_providers import online_model_provider
+
+        provider = request.args.get("provider", "all")
+        query = request.args.get("query", "")
+        free_only = request.args.get("free_only", "false").lower() in ("true", "1", "yes")
+
+        models = asyncio.run(
+            online_model_provider.fetch_live_models(provider=provider, query=query, free_only=free_only)
+        )
+        return jsonify({"success": True, "models": models, "count": len(models)})
+    except Exception as e:
+        return jsonify({"success": False, "models": [], "count": 0, "error": str(e)}), 500
+
+
+@app.route("/api/online/models/selected", methods=["GET", "POST"])
+def selected_online_models_api():
+    """Get or save user's custom selection of online models."""
+    try:
+        from online_providers import online_model_provider
+
+        if request.method == "POST":
+            data = request.get_json() or {}
+            models = data.get("models", [])
+            for m in models:
+                if isinstance(m, dict) and m.get("id"):
+                    model_tracker.record_model_seen(m["id"], source=m.get("provider", "online"))
+            result = online_model_provider.save_selected_models(models)
+            return jsonify(result)
+
+        models = online_model_provider.get_selected_models()
+        return jsonify({"success": True, "models": models, "count": len(models)})
+    except Exception as e:
+        return jsonify({"success": False, "models": [], "error": str(e)}), 500
+
+
+@app.route("/api/models/tracking")
+def get_models_tracking_api():
+    """Returns tracking summary for newly added models vs previously benchmarked items."""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            direct_models = loop.run_until_complete(benchmark.discover_all_models())
+            proxy_models = loop.run_until_complete(benchmark.discover_all_proxy_models())
+        finally:
+            loop.close()
+
+        router_models = _get_router_text_models()
+        combined_local = list(dict.fromkeys(direct_models + proxy_models + router_models))
+
+        from online_providers import online_model_provider
+
+        online_models = online_model_provider.get_selected_models()
+
+        summary = model_tracker.get_tracking_summary(
+            current_local_models=combined_local, current_online_models=online_models
+        )
+        return jsonify(summary)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/vision/describe", methods=["POST"])
@@ -1212,7 +1976,16 @@ def vision_describe_api():
 
         model = (request.form.get("model") or request.args.get("model", "")).strip()
         if not model:
-            return jsonify({"error": "'model' parameter is required"}), 400
+            v_resp = get_vision_models()
+            v_data = v_resp.get_json() if hasattr(v_resp, "get_json") else {}
+            v_models = v_data.get("models", []) if isinstance(v_data, dict) else []
+            if v_models:
+                model = v_models[0]
+            else:
+                t_resp = get_text_models()
+                t_data = t_resp.get_json() if hasattr(t_resp, "get_json") else {}
+                t_models = t_data.get("models", []) if isinstance(t_data, dict) else []
+                model = t_models[0] if t_models else "qwen2.5-vl:latest"
 
         proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
         model_used = model
@@ -1222,23 +1995,34 @@ def vision_describe_api():
         with httpx.Client(timeout=300.0) as client:
             # Pre-warm / ensure model is loaded in proxy first
             with contextlib.suppress(Exception):
-                client.post(f"{PROXY_URL}/admin/models/switch", json={"model": proxy_model}, timeout=300.0)
+                client.post(
+                    f"{PROXY_URL}/admin/models/switch",
+                    json={"model": proxy_model},
+                    headers=get_proxy_headers(),
+                    timeout=300.0,
+                )
 
             try:
                 resp = client.post(
                     f"{PROXY_URL}/v1/chat/completions",
-                    json={"model": proxy_model, "messages": messages, "max_tokens": 400, "temperature": 0.2},
+                    json={
+                        "model": proxy_model,
+                        "messages": messages,
+                        "max_tokens": 400,
+                        "temperature": 0.2,
+                    },
+                    headers=get_proxy_headers(),
                 )
                 if resp.status_code == 200:
                     description = resp.json()["choices"][0]["message"]["content"].strip()
                 else:
                     error_detail = f"Proxy returned HTTP {resp.status_code}: {resp.text[:200]}"
                     app.logger.warning(
-                        "Vision describe: model %s returned %s — %s", model, resp.status_code, resp.text[:200]
+                        "Vision describe: model %s returned %s - %s", model, resp.status_code, resp.text[:200]
                     )
             except Exception as exc:
                 error_detail = f"Connection error: {exc}"
-                app.logger.warning("Vision describe: request failed — %s", exc)
+                app.logger.warning("Vision describe: request failed - %s", exc)
 
             if not description or "error" in description.lower():
                 err_msg = error_detail or "Vision AI model returned an empty response"
@@ -1271,7 +2055,10 @@ def vision_synthesize_edit_prompt_api():
 
     model = (data.get("model") or "").strip()
     if not model:
-        return jsonify({"error": "'model' parameter is required"}), 400
+        t_resp = get_text_models()
+        t_data = t_resp.get_json() if hasattr(t_resp, "get_json") else {}
+        t_models = t_data.get("models", []) if isinstance(t_data, dict) else []
+        model = t_models[0] if t_models else "qwen2.5-coder:latest"
 
     proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
 
@@ -1311,14 +2098,14 @@ def vision_synthesize_edit_prompt_api():
     if "qwen" in target_image_model:
         system_msg = (
             "You are an expert at writing image editing instructions for Qwen Image Edit (an instruction-following VLM). "
-            "The AI editor understands plain English instructions — it does NOT use Stable Diffusion tag syntax. "
+            "The AI editor understands plain English instructions - it does NOT use Stable Diffusion tag syntax. "
             "Your task is to write a single, clear, natural language editing instruction. "
             "Critical rules: "
             "1. Write in natural language, like instructions to a human photo editor. "
             "2. Start with what to CHANGE, then state what to KEEP the same. "
             f"3. {face_inst} "
             "4. Specify that the output should be a photorealistic photograph, not a painting or digital art. "
-            "5. Output ONLY the final instruction — no explanations, no preamble, no quotes."
+            "5. Output ONLY the final instruction - no explanations, no preamble, no quotes."
         )
     elif "flux" in target_image_model:
         system_msg = (
@@ -1327,7 +2114,7 @@ def vision_synthesize_edit_prompt_api():
             "Critical rules: "
             "1. Describe the full scene in vivid visual detail. "
             f"2. {face_inst} "
-            "3. Output ONLY the final prompt paragraph — no explanations, no quotes, no preamble."
+            "3. Output ONLY the final prompt paragraph - no explanations, no quotes, no preamble."
         )
     else:  # Stable Diffusion / SDXL
         face_tag = "preserve exact face and identity, " if preserve_face else ""
@@ -1337,7 +2124,7 @@ def vision_synthesize_edit_prompt_api():
             "Critical rules: "
             "1. Combine original scene elements with requested modifications cleanly using descriptive tags and keywords. "
             f"2. {face_tag}Include quality tags: photorealistic photograph, 8k resolution, RAW photo, sharp focus, professional photography. "
-            "3. Output ONLY the final synthesized prompt string — no explanations, no quotes, no preamble."
+            "3. Output ONLY the final synthesized prompt string - no explanations, no quotes, no preamble."
         )
 
     user_msg = (
@@ -1362,6 +2149,7 @@ def vision_synthesize_edit_prompt_api():
                     "temperature": 0.4,
                     "think": False,
                 },
+                headers=get_proxy_headers(),
             )
             if resp.status_code == 200:
                 raw = resp.json()["choices"][0]["message"]["content"].strip()
@@ -1371,7 +2159,7 @@ def vision_synthesize_edit_prompt_api():
                 master_prompt = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
             else:
                 app.logger.warning(
-                    "Synthesis: model %s returned %s — %s", proxy_model, resp.status_code, resp.text[:300]
+                    "Synthesis: model %s returned %s - %s", proxy_model, resp.status_code, resp.text[:300]
                 )
                 master_prompt = ""
 
@@ -1391,7 +2179,7 @@ def vision_synthesize_edit_prompt_api():
                 }
             )
     except Exception as exc:
-        app.logger.warning("Synthesis: request failed — %s", exc)
+        app.logger.warning("Synthesis: request failed - %s", exc)
         master_prompt = (
             f"photorealistic photograph, {base_desc}, {desired_changes}, preserve exact face and identity, "
             f"{style_preset} style, 8k resolution, RAW photo, DSLR camera, natural lighting, sharp focus"
@@ -1418,9 +2206,20 @@ def start_benchmark():
     models = data.get("models", [])
     use_proxy = data.get("use_proxy", True)
     test_ids = data.get("test_ids", None)
+    resume = bool(data.get("resume", False))
+    groups = data.get("groups", None)
+    tiers = data.get("tiers", None)
+    outdated_only = bool(data.get("outdated_only", False))
 
     if not models:
         return jsonify({"error": "No models specified"}), 400
+
+    if outdated_only:
+        test_ids = _outdated_test_ids(models)
+        if not test_ids:
+            return jsonify(
+                {"status": "No outdated benchmarks", "message": "All benchmark definitions are up to date for the selected models — nothing to redo."}
+            ), 200
 
     with active_run_lock:
         cancel_event = threading.Event()
@@ -1435,15 +2234,227 @@ def start_benchmark():
         active_run["results"] = []
         active_run["start_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         active_run["saved_as"] = None
+        active_run["groups"] = groups
+        active_run["tiers"] = tiers
 
         benchmark_thread = threading.Thread(
             target=run_general_in_thread,
-            args=(models, use_proxy, cancel_event, callback, test_ids),
+            args=(models, use_proxy, cancel_event, callback, test_ids, resume, groups, tiers),
             daemon=True,
         )
         benchmark_thread.start()
 
     return jsonify({"status": "Benchmark started", "active_run": dict(active_run)})
+
+
+@app.route("/api/sandbox/serve", methods=["POST"])
+def sandbox_serve():
+    """Host benchmark-produced web/Node/Python code on a local port for viewing."""
+    data = request.get_json() or {}
+    code = data.get("code", "")
+    lang = data.get("lang", "html")
+    if not code:
+        return jsonify({"error": "No code provided"}), 400
+    res = serve_app(code, lang)
+    if res.get("error"):
+        return jsonify({"error": res["error"]}), 500
+    return jsonify(res)
+
+
+def _serve_container_host_port(container_id: str) -> str | None:
+    """Resolve a serving container's published host port via the docker socket."""
+    try:
+        client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+        try:
+            c = client.containers.get(container_id)
+            c.reload()
+            for ports in (c.ports or {}).values():
+                if ports:
+                    hp = ports[0].get("HostPort")
+                    if hp:
+                        return str(hp)
+        finally:
+            client.close()
+    except Exception:  # pragma: no cover - runtime dependent
+        return None
+    return None
+
+
+@app.route("/serve/<container_id>/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+@app.route("/serve/<container_id>/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+def sandbox_serve_proxy(container_id: str, subpath: str = ""):
+    """Reverse-proxy a sandboxed app through the dashboard origin.
+
+    The dashboard is reached over port 5000 (LAN, VPN, or a forwarded/external
+    host), while sandbox apps bind random ephemeral ports that external networks
+    cannot reach. This route tunnels the app through the dashboard's own origin so
+    it works from anywhere. The web container reaches the sandbox's published port
+    via ``host.docker.internal`` (compose ``extra_hosts`` host-gateway).
+    """
+    host_port = _serve_container_host_port(container_id)
+    if not host_port:
+        return jsonify({"error": "Serving container not found or no published port"}), 404
+
+    upstream = f"http://host.docker.internal:{host_port}"
+    url = f"{upstream}/{subpath}"
+    query = request.query_string.decode("utf-8") if request.query_string else ""
+    if query:
+        url = f"{url}?{query}"
+
+    fwd_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in ("host", "content-length", "connection", "transfer-encoding", "accept-encoding")
+    }
+    fwd_headers["Host"] = f"host.docker.internal:{host_port}"
+
+    body = request.get_data() if request.method in ("POST", "PUT", "PATCH") else None
+    try:
+        with httpx.Client(timeout=60.0, follow_redirects=False) as client:
+            resp = client.request(
+                request.method,
+                url,
+                headers=fwd_headers,
+                content=body,
+            )
+    except httpx.HTTPError as e:
+        return jsonify({"error": f"Upstream unreachable: {e}"}), 502
+
+    resp_headers = {}
+    for k, v in resp.headers.items():
+        if k.lower() in ("content-length", "connection", "transfer-encoding", "content-encoding"):
+            continue
+        resp_headers[k] = v
+    return Response(resp.content, status=resp.status_code, headers=resp_headers, content_type=resp.headers.get("content-type", "text/html"))
+
+
+def _ws_proxy_pump(src, dst):
+    """Relay WebSocket frames from ``src`` to ``dst`` until either side closes."""
+    try:
+        while True:
+            data = src.receive()
+            if data is None:
+                break
+            dst.send(data)
+    except Exception:  # pragma: no cover - transport dependent
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            dst.close()
+
+
+@app.route("/serve/ws/<container_id>/", methods=["GET"], websocket=True)
+@app.route("/serve/ws/<container_id>/<path:ws_path>", methods=["GET"], websocket=True)
+def sandbox_serve_ws_proxy(container_id: str, ws_path: str = ""):
+    """Tunnel a sandbox app's WebSocket endpoint through the dashboard origin.
+
+    noVNC connects to ``ws://<host>:<host_port>/websockify`` which is not
+    reachable from a remote machine — only port 5000 is forwarded. This route
+    terminates the browser's WebSocket on the dashboard and relays frames to the
+    sandbox container's websockify via ``host.docker.internal``.
+    """
+    host_port = _serve_container_host_port(container_id)
+    if not host_port:
+        return jsonify({"error": "Serving container not found or no published port"}), 404
+
+    from simple_websocket import Client, Server
+
+    try:
+        ws = Server(request.environ)
+    except Exception as e:  # pragma: no cover - transport dependent
+        return jsonify({"error": f"WebSocket handshake failed: {e}"}), 400
+
+    upstream = None
+    try:
+        upstream = Client.connect(f"ws://host.docker.internal:{host_port}/websockify")
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            ws.close()
+        return jsonify({"error": f"Upstream websocket unreachable: {e}"}), 502
+
+    t1 = threading.Thread(target=_ws_proxy_pump, args=(ws, upstream), daemon=True)
+    t2 = threading.Thread(target=_ws_proxy_pump, args=(upstream, ws), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    return ""
+
+
+@app.route("/api/sandbox/serve_ui", methods=["POST"])
+def sandbox_serve_ui():
+    """Run benchmark-produced X11/UI code (e.g. pygame) and stream it to a browser iframe."""
+    data = request.get_json() or {}
+    code = data.get("code", "")
+    lang = data.get("lang", "python")
+    if not code:
+        return jsonify({"error": "No code provided"}), 400
+    res = serve_ui(code, lang)
+    if res.get("error"):
+        return jsonify({"error": res["error"]}), 500
+    return jsonify(res)
+
+
+@app.route("/api/sandbox/stop_serve", methods=["POST"])
+def sandbox_stop_serve():
+    """Stop a serving container started by /api/sandbox/serve."""
+    data = request.get_json() or {}
+    cid = data.get("container_id")
+    if not cid:
+        return jsonify({"error": "No container_id provided"}), 400
+    return jsonify(stop_serve(cid))
+
+
+@app.route("/api/sandbox/ui/exec", methods=["POST"])
+def sandbox_ui_exec():
+    """Run an arbitrary shell command inside a UI container (launcher terminal)."""
+    data = request.get_json() or {}
+    cid = data.get("container_id")
+    command = (data.get("command") or "").strip()
+    if not cid:
+        return jsonify({"error": "No container_id provided"}), 400
+    if not command:
+        return jsonify({"error": "No command provided"}), 400
+    return jsonify(ui_exec(cid, command))
+
+
+@app.route("/api/sandbox/ui/status", methods=["POST"])
+def sandbox_ui_status():
+    """Report a UI container's runtime state (pid, exit code, stdout tail)."""
+    data = request.get_json() or {}
+    cid = data.get("container_id")
+    if not cid:
+        return jsonify({"error": "No container_id provided"}), 400
+    return jsonify(ui_status(cid))
+
+
+@app.route("/api/sandbox/ui/screenshot", methods=["POST"])
+def sandbox_ui_screenshot():
+    """Capture the current Xvfb framebuffer of a UI container as a PNG (base64)."""
+    data = request.get_json() or {}
+    cid = data.get("container_id")
+    if not cid:
+        return jsonify({"error": "No container_id provided"}), 400
+    return jsonify(ui_screenshot(cid))
+
+
+@app.route("/api/sandbox/ui/restart", methods=["POST"])
+def sandbox_ui_restart():
+    """Relaunch the app inside a UI container on the same X display."""
+    data = request.get_json() or {}
+    cid = data.get("container_id")
+    if not cid:
+        return jsonify({"error": "No container_id provided"}), 400
+    return jsonify(ui_restart(cid))
+
+
+@app.route("/api/benchmark/groups", methods=["GET"])
+def benchmark_groups():
+    """List the available benchmark groups (top-level categories)."""
+    try:
+        groups = sorted(benchmark.tests_config.keys())
+        return jsonify({"groups": groups})
+    except Exception as e:
+        return jsonify({"groups": [], "error": str(e)})
 
 
 @app.route("/api/run/shared_llm", methods=["POST"])
@@ -1458,6 +2469,7 @@ def start_shared_llm_benchmark():
     models = data.get("models", [])
     use_proxy = data.get("use_proxy", True)
     test_ids = data.get("test_ids") or None  # None means run all
+    custom_keys = data.get("custom_keys") or None
 
     if not models:
         return jsonify({"error": "No models specified"}), 400
@@ -1478,7 +2490,7 @@ def start_shared_llm_benchmark():
 
         benchmark_thread = threading.Thread(
             target=run_shared_llm_in_thread,
-            args=(models, use_proxy, cancel_event, callback, test_ids),
+            args=(models, use_proxy, cancel_event, callback, test_ids, custom_keys),
             daemon=True,
         )
         benchmark_thread.start()
@@ -1516,47 +2528,49 @@ def get_results_list():
         shared_dir = shared_llm_benchmark.RESULTS_DIR
         shared_files = list(shared_dir.glob("shared_llm_benchmarks_*.json")) if shared_dir.exists() else []
 
+        # Load per-model result files (results follow the model)
+        per_model_general = list(benchmark.MODELS_DIR.glob("general_*.json")) if benchmark.MODELS_DIR.exists() else []
+        per_model_shared = (
+            list(shared_llm_benchmark.MODELS_DIR.glob("shared_*.json"))
+            if shared_llm_benchmark.MODELS_DIR.exists()
+            else []
+        )
+
         results_list = []
+
+        def _append_result(file_path, type_name):
+            try:
+                with open(file_path) as f:
+                    data = json.load(f)
+                results_list.append(
+                    {
+                        "filename": file_path.name,
+                        "type": type_name,
+                        "generated_at": data.get("generated_at"),
+                        "benchmark_type": data.get("benchmark_type"),
+                        "models_tested": data.get("models_tested"),
+                        "status": data.get("status", "completed"),
+                        "models": [r.get("model") for r in data.get("results", []) if r.get("model")],
+                        "per_model": bool(data.get("per_model")),
+                        "saved_as": str(file_path),
+                    }
+                )
+            except Exception as fe:
+                print(f"Error reading file {file_path.name}: {fe}")
 
         # Process general files
         for file_path in general_files:
-            try:
-                with open(file_path) as f:
-                    data = json.load(f)
-                results_list.append(
-                    {
-                        "filename": file_path.name,
-                        "type": "general",
-                        "generated_at": data.get("generated_at"),
-                        "benchmark_type": data.get("benchmark_type"),
-                        "models_tested": data.get("models_tested"),
-                        "status": data.get("status", "completed"),
-                        "models": [r.get("model") for r in data.get("results", []) if r.get("model")],
-                        "saved_as": str(file_path),
-                    }
-                )
-            except Exception as fe:
-                print(f"Error reading file {file_path.name}: {fe}")
+            _append_result(file_path, "general")
 
         # Process SharedLLM files
         for file_path in shared_files:
-            try:
-                with open(file_path) as f:
-                    data = json.load(f)
-                results_list.append(
-                    {
-                        "filename": file_path.name,
-                        "type": "shared_llm",
-                        "generated_at": data.get("generated_at"),
-                        "benchmark_type": data.get("benchmark_type"),
-                        "models_tested": data.get("models_tested"),
-                        "status": data.get("status", "completed"),
-                        "models": [r.get("model") for r in data.get("results", []) if r.get("model")],
-                        "saved_as": str(file_path),
-                    }
-                )
-            except Exception as fe:
-                print(f"Error reading file {file_path.name}: {fe}")
+            _append_result(file_path, "shared_llm")
+
+        # Process per-model files last so per-model (latest per model) is authoritative on dedupe
+        for file_path in per_model_general:
+            _append_result(file_path, "general")
+        for file_path in per_model_shared:
+            _append_result(file_path, "shared_llm")
 
         # Sort files by timestamp (newest first)
         results_list.sort(key=lambda x: x.get("generated_at") or "", reverse=True)
@@ -1565,15 +2579,85 @@ def get_results_list():
         return jsonify({"error": str(e)}), 500
 
 
+def _rebuild_per_model_files():
+    """Prune per-model aggregate files that no longer have any backing run snapshot.
+
+    Run snapshots are the source of truth for benchmark history; per-model files
+    are derived aggregates. After a run snapshot is deleted, drop per-model files
+    for models that no longer appear in ANY remaining run snapshot so a deleted
+    run no longer lingers in the UI. Existing per-model files for models still
+    covered by a snapshot are left untouched (they are authoritative and may hold
+    newer data than any single snapshot).
+    """
+    try:
+        general_snapshots = (
+            sorted(benchmark.RESULTS_DIR.glob("benchmarks_*.json")) if benchmark.RESULTS_DIR.exists() else []
+        )
+        shared_snapshots = (
+            sorted(shared_llm_benchmark.RESULTS_DIR.glob("shared_llm_benchmarks_*.json"))
+            if shared_llm_benchmark.RESULTS_DIR.exists()
+            else []
+        )
+
+        # Models still covered by at least one remaining run snapshot.
+        general_models: set[str] = set()
+        shared_models: set[str] = set()
+        for snapshot_path in general_snapshots:
+            try:
+                with open(snapshot_path) as f:
+                    snapshot = json.load(f)
+            except Exception:
+                continue
+            general_models.update(r.get("model") for r in snapshot.get("results", []) if r.get("model"))
+        for snapshot_path in shared_snapshots:
+            try:
+                with open(snapshot_path) as f:
+                    snapshot = json.load(f)
+            except Exception:
+                continue
+            shared_models.update(r.get("model") for r in snapshot.get("results", []) if r.get("model"))
+
+        # Remove per-model files for models no longer covered by any run snapshot.
+        if benchmark.MODELS_DIR.exists():
+            for pm_path in benchmark.MODELS_DIR.glob("general_*.json"):
+                try:
+                    with open(pm_path) as f:
+                        pm = json.load(f)
+                except Exception:
+                    continue
+                model = pm.get("model")
+                if model and model not in general_models:
+                    os.remove(pm_path)
+        if shared_llm_benchmark.MODELS_DIR.exists():
+            for pm_path in shared_llm_benchmark.MODELS_DIR.glob("shared_*.json"):
+                try:
+                    with open(pm_path) as f:
+                        pm = json.load(f)
+                except Exception:
+                    continue
+                model = pm.get("model")
+                if model and model not in shared_models:
+                    os.remove(pm_path)
+    except Exception as e:
+        print(f"[results] _rebuild_per_model_files error: {e}")
+
+
 @app.route("/api/results/<filename>", methods=["GET", "DELETE"])
 def get_result_detail(filename):
     """Get or delete a specific benchmark result file"""
     try:
         filename = os.path.basename(filename)
 
-        # Determine directory based on name prefix
+        # Determine directory based on name prefix.
+        # NOTE: "shared_llm_" MUST be checked before "shared_" because run files
+        # are named "shared_llm_benchmarks_*.json" and would otherwise be
+        # misrouted to the per-model MODELS_DIR (which only holds "shared_<model>.json").
         if filename.startswith("shared_llm_"):
             file_path = shared_llm_benchmark.RESULTS_DIR / filename
+        elif filename.startswith("shared_"):
+            file_path = shared_llm_benchmark.MODELS_DIR / filename
+        elif filename.startswith("general_"):
+            file_path = benchmark.MODELS_DIR / filename
         else:
             file_path = benchmark.RESULTS_DIR / filename
 
@@ -1581,12 +2665,466 @@ def get_result_detail(filename):
             return jsonify({"error": "Result file not found"}), 404
 
         if request.method == "DELETE":
+            was_run_snapshot = bool(filename.startswith("benchmarks_") or filename.startswith("shared_llm_benchmarks_"))
+            was_per_model = bool(filename.startswith("general_") or filename.startswith("shared_"))
+            affected_models = set()
+            try:
+                with open(file_path) as f:
+                    doc = json.load(f)
+                if doc.get("model"):
+                    affected_models.add(doc.get("model"))
+                for r in doc.get("results", []):
+                    if r.get("model"):
+                        affected_models.add(r.get("model"))
+            except Exception:
+                pass
+
             os.remove(file_path)
+
+            # Run snapshots are the source of truth for per-model aggregates.
+            # If we just removed a run snapshot, rebuild the per-model files from the
+            # remaining snapshots so deleted runs no longer linger in the views.
+            if was_run_snapshot:
+                _rebuild_per_model_files()
+
+            # If a per-model file was removed directly, prune from latest snapshots
+            if was_per_model:
+                for am in affected_models:
+                    latest_gen = benchmark.RESULTS_DIR / "all_benchmarks_latest.json"
+                    if latest_gen.exists():
+                        try:
+                            with open(latest_gen) as f:
+                                ldoc = json.load(f)
+                            ldoc["results"] = [m for m in ldoc.get("results", []) if m.get("model") != am]
+                            with open(latest_gen, "w") as f:
+                                json.dump(ldoc, f, indent=2, default=str)
+                        except Exception:
+                            pass
+                    latest_sh = shared_llm_benchmark.RESULTS_DIR / "all_shared_benchmarks_latest.json"
+                    if latest_sh.exists():
+                        try:
+                            with open(latest_sh) as f:
+                                ldoc = json.load(f)
+                            ldoc["results"] = [m for m in ldoc.get("results", []) if m.get("model") != am]
+                            with open(latest_sh, "w") as f:
+                                json.dump(ldoc, f, indent=2, default=str)
+                        except Exception:
+                            pass
+
+            with contextlib.suppress(Exception):
+                model_tracker.scan_historical_benchmarks()
+
             return jsonify({"status": "deleted", "filename": filename})
 
         with open(file_path) as f:
             data = json.load(f)
         return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/benchmarks/export", methods=["GET"])
+def export_benchmarks():
+    """Export all general benchmark data for every model.
+
+    Query params:
+      format=json (default) -> full JSON document
+      format=csv           -> flat per-test CSV
+      model=<name>         -> restrict to a single model
+    """
+    try:
+        fmt = (request.args.get("format") or "json").lower()
+        model_filter = request.args.get("model")
+
+        # Aggregate every per-model general file + the latest merged snapshot.
+        rows = []
+        sources = []
+        latest = benchmark.RESULTS_DIR / "all_benchmarks_latest.json"
+        if latest.exists():
+            sources.append(latest)
+        sources.extend(sorted(benchmark.MODELS_DIR.glob("general_*.json")))
+
+        for src in sources:
+            try:
+                with open(src) as f:
+                    doc = json.load(f)
+            except Exception:
+                continue
+            models = doc.get("results", [])
+            if doc.get("per_model") and doc.get("model"):
+                models = doc["results"]
+            for m in models:
+                mname = m.get("model")
+                if model_filter and mname != model_filter:
+                    continue
+                for key, cat in m.items():
+                    if not key.startswith("category_") or not isinstance(cat, dict):
+                        continue
+                    for t in cat.get("tests", []):
+                        rows.append(
+                            {
+                                "model": mname,
+                                "category": key.replace("category_", ""),
+                                "test_id": t.get("test_id"),
+                                "label": t.get("test_label"),
+                                "success": bool(t.get("success")),
+                                "code_quality": (t.get("code_quality") or {}).get("score"),
+                                "syntax_valid": (t.get("code_quality") or {}).get("syntax_valid"),
+                                "watermark": (t.get("watermark") or {}).get("score"),
+                                "tokens_per_sec": cat.get("avg_tokens_per_sec"),
+                                "ttft_ms": cat.get("avg_ttft_ms"),
+                                "tokens_generated": cat.get("avg_tokens_generated"),
+                                "last_run": t.get("last_run"),
+                            }
+                        )
+
+        if fmt == "csv":
+            import csv
+            import io
+
+            buf = io.StringIO()
+            cols = [
+                "model",
+                "category",
+                "test_id",
+                "label",
+                "success",
+                "code_quality",
+                "syntax_valid",
+                "watermark",
+                "tokens_per_sec",
+                "ttft_ms",
+                "tokens_generated",
+                "last_run",
+            ]
+            w = csv.DictWriter(buf, fieldnames=cols)
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+            return Response(
+                buf.getvalue(),
+                mimetype="text/csv",
+                headers={"Content-Disposition": "attachment; filename=benchmarks_export.csv"},
+            )
+
+        return jsonify(
+            {
+                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "format": "json",
+                "test_count": len(rows),
+                "rows": rows,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/benchmarks/completed", methods=["GET"])
+def benchmarks_completed():
+    """Return the test_ids already completed (pass or fail) for a given model.
+
+    Used by the dashboard to pre-deselect finished tests when launching a resume run.
+    """
+    model = (request.args.get("model") or "").strip()
+    if not model:
+        return jsonify({"error": "model query param required"}), 400
+    pm_file = benchmark.MODELS_DIR / f"general_{benchmark._sanitize_model_filename(model)}.json"
+    completed = []
+    try:
+        if pm_file.exists():
+            with open(pm_file) as f:
+                doc = json.load(f)
+            for mres in doc.get("results", []):
+                for cat in mres:
+                    if cat.startswith("category_"):
+                        for t in mres[cat].get("tests", []):
+                            tid = t.get("test_id")
+                            if tid and tid not in completed:
+                                completed.append(tid)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"model": model, "completed": completed})
+
+
+def _purge_model_benchmarks(model: str) -> dict[str, Any]:
+    """Completely purge all benchmark history, per-model files, artifacts, snapshots, and tracker entries for a model."""
+    clean_model = (model or "").strip()
+    if not clean_model:
+        return {"removed": False, "general": False, "shared": False, "snapshots_pruned": 0}
+
+    variants = {
+        clean_model,
+        clean_model.replace("--", ":"),
+        clean_model.replace(":", "--"),
+        clean_model.replace("--", "_"),
+        clean_model.replace(":", "_"),
+        clean_model.removesuffix(":latest"),
+        clean_model + ":latest" if not clean_model.endswith(":latest") else clean_model,
+        clean_model.removesuffix(".gguf"),
+        clean_model.split("/")[-1],
+    }
+
+    # 1. Delete per-model files and artifacts from both suites
+    gen_removed = benchmark.delete_model_results(clean_model)
+    shared_removed = shared_llm_benchmark.delete_model_results(clean_model)
+
+    # 2. Prune from latest aggregate snapshots
+    for latest_path in [
+        benchmark.RESULTS_DIR / "all_benchmarks_latest.json",
+        shared_llm_benchmark.RESULTS_DIR / "all_shared_benchmarks_latest.json",
+    ]:
+        if latest_path.exists():
+            try:
+                with open(latest_path) as f:
+                    doc = json.load(f)
+                orig_len = len(doc.get("results", []))
+                doc["results"] = [m for m in doc.get("results", []) if m.get("model") not in variants]
+                if len(doc["results"]) != orig_len:
+                    with open(latest_path, "w") as f:
+                        json.dump(doc, f, indent=2, default=str)
+            except Exception:
+                pass
+
+    # 3. Prune from all run snapshot files
+    snapshots_pruned = 0
+    for res_dir in [benchmark.RESULTS_DIR, shared_llm_benchmark.RESULTS_DIR]:
+        if res_dir.exists():
+            for snap_path in list(res_dir.glob("*.json")):
+                if snap_path.name.startswith("all_"):
+                    continue
+                try:
+                    with open(snap_path) as f:
+                        doc = json.load(f)
+                    orig_len = len(doc.get("results", []))
+                    if orig_len == 0:
+                        continue
+                    doc["results"] = [r for r in doc.get("results", []) if r.get("model") not in variants]
+                    if len(doc["results"]) == 0:
+                        snap_path.unlink()
+                        snapshots_pruned += 1
+                    elif len(doc["results"]) != orig_len:
+                        doc["models_tested"] = [m for m in doc.get("models_tested", []) if m not in variants]
+                        with open(snap_path, "w") as f:
+                            json.dump(doc, f, indent=2, default=str)
+                        snapshots_pruned += 1
+                except Exception:
+                    pass
+
+    # 4. Remove from model tracker
+    with contextlib.suppress(Exception):
+        model_tracker.delete_model(clean_model)
+
+    # 5. Rebuild any dependent per-model files & resync tracker
+    _rebuild_per_model_files()
+    with contextlib.suppress(Exception):
+        model_tracker.scan_historical_benchmarks()
+
+    return {
+        "removed": bool(gen_removed or shared_removed or snapshots_pruned > 0),
+        "general": gen_removed,
+        "shared": shared_removed,
+        "snapshots_pruned": snapshots_pruned,
+    }
+
+
+@app.route("/api/benchmarks/model/<path:model>", methods=["DELETE"])
+def delete_model_benchmarks(model):
+    """Delete all benchmark data for a single model across general and SharedLLM suites."""
+    try:
+        purge_res = _purge_model_benchmarks(model)
+        return jsonify(
+            {
+                "status": "deleted" if purge_res["removed"] else "nothing",
+                "model": model,
+                **purge_res,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/benchmarks/clear", methods=["POST", "DELETE"])
+def clear_all_benchmarks():
+    """Clear all benchmark data across general and SharedLLM suites, artifacts, and tracker."""
+    try:
+        deleted_files = 0
+
+        # 1. Clean general benchmark results & models
+        if benchmark.RESULTS_DIR.exists():
+            for f in benchmark.RESULTS_DIR.glob("*.json"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+        if benchmark.MODELS_DIR.exists():
+            for f in benchmark.MODELS_DIR.glob("*.json"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+        if benchmark.ARTIFACTS_DIR.exists():
+            for f in benchmark.ARTIFACTS_DIR.glob("*"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+
+        # 2. Clean SharedLLM benchmark results & models
+        if shared_llm_benchmark.RESULTS_DIR.exists():
+            for f in shared_llm_benchmark.RESULTS_DIR.glob("*.json"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+        if shared_llm_benchmark.MODELS_DIR.exists():
+            for f in shared_llm_benchmark.MODELS_DIR.glob("*.json"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+        if shared_llm_benchmark.ARTIFACTS_DIR.exists():
+            for f in shared_llm_benchmark.ARTIFACTS_DIR.glob("*"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+
+        # 3. Reset Model Tracker
+        with contextlib.suppress(Exception):
+            model_tracker.clear_all()
+
+        return jsonify(
+            {
+                "status": "cleared",
+                "message": f"Successfully cleared all benchmark data ({deleted_files} files removed).",
+                "files_removed": deleted_files,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": f"Failed to clear benchmark data: {e}"}), 500
+
+
+@app.route("/api/artifacts", methods=["GET", "POST"])
+def manage_artifacts():
+    """List saved benchmark artifacts, or save a new artifact (overwrites on re-run)."""
+    artifacts_dir = benchmark.ARTIFACTS_DIR
+    try:
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            model = (body.get("model") or "").strip()
+            test_id = (body.get("test_id") or "").strip()
+            filename = (body.get("filename") or "").strip()
+            content = body.get("content") or ""
+            artifact_type = (body.get("type") or "python").strip().lower()
+
+            if not model or not test_id or not content:
+                return jsonify({"error": "model, test_id and content are required"}), 400
+
+            sanitized_model = re.sub(r"[/:.]", "_", model)
+            if not filename:
+                ext = "html" if artifact_type == "html" else "py"
+                filename = f"{sanitized_model}__{test_id}.{ext}"
+            else:
+                filename = os.path.basename(filename)
+
+            base_name = os.path.splitext(filename)[0]
+            file_path = artifacts_dir / filename
+
+            if artifact_type == "html":
+                file_path.write_text(content)
+                viewer_path = file_path
+            else:
+                file_path.write_text(content)
+                viewer_path = artifacts_dir / f"{base_name}.html"
+                escaped = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                viewer_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Benchmark Artifact: {filename}</title>
+<style>
+  body {{ background:#0f172a; color:#e2e8f0; font-family:'Segoe UI',system-ui,sans-serif; margin:0; padding:24px; }}
+  h1 {{ font-size:18px; color:#a5b4fc; margin:0 0 4px; }}
+  .meta {{ color:#64748b; font-size:13px; margin-bottom:16px; }}
+  .toolbar {{ margin-bottom:16px; }}
+  .toolbar a {{ display:inline-block; background:#6366f1; color:#fff; text-decoration:none; padding:8px 16px; border-radius:6px; font-size:13px; margin-right:8px; }}
+  pre {{ background:#0b1120; border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:16px; overflow:auto; font-family:'JetBrains Mono',Consolas,monospace; font-size:13px; line-height:1.5; color:#cbd5e1; }}
+</style>
+</head>
+<body>
+  <h1>Benchmark Artifact</h1>
+  <div class="meta">Model: {model} &middot; Test: {test_id}</div>
+  <div class="toolbar">
+    <a href="/api/artifacts/{base_name}.py?download=1" download>Download .py</a>
+    <a href="#" onclick="window.close();return false;">Close</a>
+  </div>
+  <pre>{escaped}</pre>
+</body>
+</html>
+"""
+                viewer_path.write_text(viewer_html)
+
+            return jsonify(
+                {
+                    "status": "saved",
+                    "filename": filename,
+                    "model": model,
+                    "test_id": test_id,
+                    "type": artifact_type,
+                    "download_url": f"/api/artifacts/{filename}?download=1",
+                    "host_url": f"/api/artifacts/{viewer_path.name}",
+                }
+            )
+
+        artifacts = []
+        for file_path in sorted(artifacts_dir.glob("*.py"), key=lambda p: p.stat().st_mtime, reverse=True):
+            artifacts.append(
+                {
+                    "filename": file_path.name,
+                    "type": "python",
+                    "size": file_path.stat().st_size,
+                    "modified": file_path.stat().st_mtime,
+                    "download_url": f"/api/artifacts/{file_path.name}",
+                }
+            )
+        for file_path in sorted(artifacts_dir.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True):
+            artifacts.append(
+                {
+                    "filename": file_path.name,
+                    "type": "html",
+                    "size": file_path.stat().st_size,
+                    "modified": file_path.stat().st_mtime,
+                    "download_url": f"/api/artifacts/{file_path.name}",
+                    "host_url": f"/api/artifacts/{file_path.name}",
+                }
+            )
+        artifacts.sort(key=lambda a: a.get("modified", 0), reverse=True)
+        return jsonify({"artifacts": artifacts})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/artifacts/<filename>", methods=["GET", "DELETE"])
+def get_artifact(filename):
+    """Download or delete a saved benchmark artifact."""
+    try:
+        filename = os.path.basename(filename)
+        file_path = benchmark.ARTIFACTS_DIR / filename
+        if not file_path.exists():
+            return jsonify({"error": "Artifact not found"}), 404
+
+        if request.method == "DELETE":
+            os.remove(file_path)
+            return jsonify({"status": "deleted", "filename": filename})
+
+        as_attachment = request.args.get("download", "0") == "1"
+        return send_file(str(file_path.resolve()), as_attachment=as_attachment, download_name=filename)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1969,7 +3507,13 @@ def get_active_requests():
         with httpx.Client(timeout=3.0) as client:
             resp = client.get(f"{proxy_url}/admin/requests")
             if resp.status_code == 200:
-                return jsonify(resp.json())
+                data = resp.json()
+                from online_providers import get_online_requests
+
+                online = get_online_requests()
+                data.setdefault("active_requests", []).extend(online.get("active_requests", []))
+                data.setdefault("completed_requests", []).extend(online.get("completed_requests", []))
+                return jsonify(data)
             else:
                 return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
     except Exception as e:
@@ -1999,6 +3543,9 @@ def clear_completed_requests():
         with httpx.Client(timeout=3.0) as client:
             resp = client.post(f"{proxy_url}/admin/requests/clear")
             if resp.status_code == 200:
+                from online_providers import clear_completed_online_requests
+
+                clear_completed_online_requests()
                 return jsonify(resp.json())
             else:
                 return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
@@ -2016,6 +3563,11 @@ def cancel_stuck_request():
 
     if not request_id:
         return jsonify({"error": "request_id is required"}), 400
+
+    from online_providers import cancel_online_request
+
+    if request_id.startswith("online-") and cancel_online_request(request_id):
+        return jsonify({"status": "cancelled", "request_id": request_id, "model": "online"})
 
     for url in benchmark.PROXY_SERVER_URLS:
         try:
@@ -2037,6 +3589,34 @@ def cancel_stuck_request():
 def resubmit_stuck_request(request_id):
     """Resubmit a stuck request by extracting its prompt and sending to the model (searches all proxies)"""
     import httpx
+
+    from online_providers import get_online_requests, online_model_provider
+
+    # Online requests live only in the in-process tracker (never reach any proxy)
+    online_data = get_online_requests()
+    online_req = None
+    for r in online_data.get("active_requests", []) + online_data.get("completed_requests", []):
+        if r.get("request_id") == request_id:
+            online_req = r
+            break
+    if online_req is not None:
+        prompt = online_req.get("prompt", "")
+        model = online_req.get("model", "")
+        if not prompt:
+            return jsonify({"error": "Online request has no prompt to resubmit"}), 400
+        try:
+            result = asyncio.run(
+                online_model_provider.query_online_model(
+                    model_identifier=model,
+                    prompt=prompt,
+                    max_tokens=4000,
+                    request_source="web",
+                    client_ip="web",
+                )
+            )
+            return jsonify({"status": "resubmitted", "result": result})
+        except Exception as e:
+            return jsonify({"error": f"Failed to resubmit online request: {e!s}"}), 500
 
     for url in benchmark.PROXY_SERVER_URLS:
         try:
@@ -2485,7 +4065,7 @@ def get_or_post_routing_matrix():
     if not matrix_file.parent.exists():
         matrix_file = Path("web").parent / "data" / "routing_matrix.json"
 
-    # Default routing matrix template — no hardcoded models: each task starts
+    # Default routing matrix template - no hardcoded models: each task starts
     # unconfigured and the routing endpoint falls back to the currently loaded
     # model until the user assigns one.
     default_matrix = {
@@ -2570,7 +4150,7 @@ def get_optimal_model():
         except Exception:
             pass
 
-    # Match criteria — no hardcoded defaults: use the task's configured model if
+    # Match criteria - no hardcoded defaults: use the task's configured model if
     # one is set, otherwise whatever model is currently loaded in the proxy.
     task_config = matrix.get(task, {})
     loaded_model = _get_currently_loaded_model()
@@ -2771,7 +4351,7 @@ def clear_vram():
 
 @app.route("/api/errors")
 def get_model_errors():
-    """Proxy to /admin/errors on the proxy — returns recent structured model error log."""
+    """Proxy to /admin/errors on the proxy - returns recent structured model error log."""
     import httpx
 
     model = request.args.get("model")
@@ -2883,7 +4463,17 @@ def delete_model():
         with httpx.Client(timeout=30.0) as client:
             resp = client.post(f"{proxy_url}/admin/models/delete", json={"model": model})
             if resp.status_code == 200:
-                return jsonify(resp.json())
+                response_data = dict(resp.json())
+                # The model is gone from disk, so its tracker entry is stale.
+                # Prune it unconditionally; if benchmark history files were kept,
+                # scan_historical_benchmarks() will still surface the model as
+                # "previously benchmarked" from the on-disk run snapshots.
+                with contextlib.suppress(Exception):
+                    model_tracker.delete_model(model)
+                if data.get("remove_benchmarks"):
+                    purge_info = _purge_model_benchmarks(model)
+                    response_data["benchmark_results_removed"] = purge_info
+                return jsonify(response_data)
             else:
                 try:
                     err_msg = resp.json().get("detail", resp.text)
@@ -2979,7 +4569,7 @@ def search_models():
         except Exception as e:
             print(f"Ollama search error: {e}")
 
-    # 2. Hugging Face Search — include both GGUF (LLM) and all types (for SD)
+    # 2. Hugging Face Search - include both GGUF (LLM) and all types (for SD)
     if source in ("huggingface", "all"):
         try:
             # Search GGUF models (primarily LLMs)
@@ -3312,5 +4902,205 @@ def handle_connect():
         socketio.emit("sync_status", dict(active_run))
 
 
+# ---------------------------------------------------------------------------
+# Code sandbox terminal (Test Browser "Run" for text-based languages)
+#
+# On Run we spin up a short-lived Docker container (alpaca-sandbox image,
+# locked down: no network, non-root, memory/pid limits) and stream a real
+# Python/Node process over a SocketIO channel so the browser gets a small
+# interactive terminal where multiple inputs/outputs can be exercised.
+# ---------------------------------------------------------------------------
+SANDBOX_IMAGE = "alpaca-sandbox:latest"
+SANDBOX_TIMEOUT = 600  # seconds before a run is force-killed
+
+_sandbox_runs: dict[str, "SandboxRun"] = {}
+_sandbox_lock = threading.Lock()
+
+
+def detect_language(code, lang_hint=None):
+    if lang_hint in ("python", "py"):
+        return "python"
+    if lang_hint in ("node", "js", "javascript"):
+        return "node"
+    low = code.lower()
+    py_score = low.count("def ") + low.count("import ") + low.count("print(") + low.count("self.")
+    js_score = (
+        low.count("console.log")
+        + low.count("function ")
+        + low.count("=>")
+        + low.count("require(")
+        + low.count("document.")
+    )
+    if py_score == 0 and js_score == 0:
+        return "python"
+    return "python" if py_score >= js_score else "node"
+
+
+class SandboxRun:
+    def __init__(self, sid, code, language, initial_input):
+        self.sid = sid
+        self.language = language
+        self.run_id = uuid.uuid4().hex[:12]
+        self.client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+        self.container = None
+        self.sock = None
+        self.reader = None
+        self.watchdog = None
+        self.alive = True
+        self.send_lock = threading.Lock()
+        ext = "py" if language == "python" else "js"
+        bin_ = "python3" if language == "python" else "node"
+        try:
+            self.container = self.client.containers.run(
+                SANDBOX_IMAGE,
+                command=["sleep", "3600"],
+                detach=True,
+                tty=False,
+                stdin_open=True,
+                network_mode="none",
+                mem_limit="256m",
+                pids_limit=128,
+                user="sandbox",
+                working_dir="/sandbox",
+                environment={"PYTHONUNBUFFERED": "1", "NODE_DISABLE_COLORS": "1"},
+                name=f"alpaca-sandbox-{self.run_id}",
+                remove=False,
+            )
+            # write the code file into the container
+            tar_bytes = io.BytesIO()
+            with tarfile.open(fileobj=tar_bytes, mode="w") as tf:
+                data = code.encode("utf-8")
+                info = tarfile.TarInfo(name=f"code.{ext}")
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+            self.container.put_archive("/sandbox", tar_bytes.getvalue())
+            # Run the code as an interactive exec. With socket=True the SDK
+            # returns a SocketIO over the hijacked connection: it is read-only
+            # for output, but the underlying socket is duplex, so writing to
+            # _sock delivers stdin to the process (tty=True, raw stream).
+            res = self.container.exec_run(
+                [bin_, f"/sandbox/code.{ext}"],
+                stdout=True,
+                stderr=True,
+                stdin=True,
+                tty=True,
+                socket=True,
+                stream=False,
+            )
+            self.sock = res.output
+            self.raw = self.sock._sock
+            self.reader = threading.Thread(target=self._pump, daemon=True)
+            self.reader.start()
+            self.watchdog = threading.Thread(target=self._watchdog, daemon=True)
+            self.watchdog.start()
+            if initial_input:
+                for line in initial_input.split("\n"):
+                    self.send(line + "\n")
+        except Exception as e:
+            self._emit("sandbox_error", f"Failed to start sandbox: {e}")
+            self.cleanup()
+
+    def _pump(self):
+        ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+        try:
+            while self.alive:
+                data = self.sock.read(4096)
+                if not data:
+                    break
+                text = data.decode("utf-8", "replace")
+                text = text.replace("\r", "")
+                text = ANSI_RE.sub("", text)
+                if text:
+                    self._emit("sandbox_out", text)
+        except Exception as e:
+            if self.alive:
+                app.logger.warning(f"Sandbox pump read error: {e}")
+                self._emit("sandbox_error", f"Sandbox stream error: {e}")
+        finally:
+            self._emit("sandbox_done", "")
+            self.cleanup()
+
+    def _watchdog(self):
+        deadline = time.time() + SANDBOX_TIMEOUT
+        while self.alive and time.time() < deadline:
+            time.sleep(2)
+        if self.alive:
+            self._emit("sandbox_error", "Sandbox timed out and was stopped.")
+            self.cleanup()
+
+    def send(self, text):
+        if not self.raw:
+            return
+        with contextlib.suppress(Exception), self.send_lock:
+            self.raw.send(text.encode("utf-8", "replace"))
+
+    def _emit(self, event, payload):
+        with contextlib.suppress(Exception):
+            socketio.emit(event, payload, to=self.sid)
+
+    def cleanup(self):
+        if not self.alive:
+            return
+        self.alive = False
+        with contextlib.suppress(Exception):
+            if self.raw:
+                self.raw.close()
+        with contextlib.suppress(Exception):
+            if self.container:
+                self.container.kill()
+        with contextlib.suppress(Exception):
+            if self.container:
+                self.container.remove(force=True)
+        with contextlib.suppress(Exception):
+            if self.client:
+                self.client.close()
+
+
+@socketio.on("sandbox_run")
+def on_sandbox_run(data):
+    data = data or {}
+    sid = request.sid
+    code = data.get("code") or ""
+    lang = detect_language(code, data.get("lang"))
+    initial = data.get("input") or ""
+    with _sandbox_lock:
+        prev = _sandbox_runs.get(sid)
+        if prev:
+            prev.cleanup()
+        run = SandboxRun(sid, code, lang, initial)
+        _sandbox_runs[sid] = run
+    socketio.emit("sandbox_started", {"lang": lang}, to=sid)
+
+
+@socketio.on("sandbox_input")
+def on_sandbox_input(data):
+    data = data or {}
+    sid = request.sid
+    run = _sandbox_runs.get(sid)
+    if run and run.alive:
+        run.send(str(data.get("text") or ""))
+
+
+@socketio.on("sandbox_kill")
+def on_sandbox_kill():
+    sid = request.sid
+    with _sandbox_lock:
+        run = _sandbox_runs.pop(sid, None)
+    if run:
+        run.cleanup()
+
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    sid = request.sid
+    with _sandbox_lock:
+        run = _sandbox_runs.pop(sid, None)
+    if run:
+        run.cleanup()
+
+
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, allow_unsafe_werkzeug=True)
+    # debug/use_reloader MUST stay off: the reloader restarts the process whenever a
+    # watched .py file changes, which would kill the in-process benchmark thread mid-run.
+    # Long-running benchmarks are protected by per-model incremental saves + resume instead.
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)

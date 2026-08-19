@@ -54,7 +54,7 @@ def _read_gguf_metadata(path: str) -> dict:
             elif val_type == 9:  # array
                 arr_type = struct.unpack("<I", f.read(4))[0]
                 arr_len = struct.unpack("<Q", f.read(8))[0]
-                # Skip array contents — we only care about scalar metadata
+                # Skip array contents - we only care about scalar metadata
                 if arr_type == 8:  # array of strings
                     for _ in range(arr_len):
                         sl = struct.unpack("<Q", f.read(8))[0]
@@ -64,7 +64,7 @@ def _read_gguf_metadata(path: str) -> dict:
                     skip = arr_len * sizes.get(arr_type, 0)
                     f.read(skip)
             else:
-                # Unknown type — skip conservatively
+                # Unknown type - skip conservatively
                 break
 
     return meta
@@ -99,7 +99,7 @@ _FA_UNSUPPORTED_ARCHS = {
 def _supports_flash_attn(meta: dict) -> bool:
     arch = meta.get("general.architecture", "").lower()
     if not arch:
-        return False  # unknown arch — don't risk it
+        return False  # unknown arch - don't risk it
     return arch not in _FA_UNSUPPORTED_ARCHS
 
 

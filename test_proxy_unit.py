@@ -75,19 +75,29 @@ class MockHTTPClient:
         return None
 
 
-def make_request(path, payload):
-    body = json.dumps(payload).encode()
+def make_request(path, payload=None, headers=None, client_ip=None):
+    body = json.dumps(payload or {}).encode()
 
     async def receive():
         return {"type": "http.request", "body": body, "more_body": False}
 
+    raw_headers = [(b"content-type", b"application/json")]
+    if headers:
+        for k, v in headers.items():
+            raw_headers.append((k.lower().encode(), v.encode()))
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "query_string": b"",
+        "headers": raw_headers,
+    }
+    if client_ip:
+        scope["client"] = (client_ip, 12345)
+
     return Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": path,
-            "headers": [(b"content-type", b"application/json")],
-        },
+        scope,
         receive,
     )
 
@@ -128,9 +138,7 @@ def test_load_local_manifest_rejects_incomplete_model():
         base = pathlib.Path(tmpdir)
         alpaca_proxy.OLLAMA_BASE = str(base)
 
-        manifest_path = (
-            base / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
-        )
+        manifest_path = base / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
         manifest_path.parent.mkdir(parents=True)
         manifest_path.write_text(
             '{"layers":[{"digest":"sha256:deadbeef","size":4}],"config":{"digest":"sha256:cfg","size":2}}'
@@ -239,9 +247,7 @@ async def test_ensure_model_unloads_other_loaded_model_before_load():
 
 @pytest.mark.asyncio
 async def test_post_router_model_action_marks_management_unsupported_when_router_endpoint_missing():
-    response = httpx.Response(
-        404, request=httpx.Request("POST", "http://llama-server:8080/models/load")
-    )
+    response = httpx.Response(404, request=httpx.Request("POST", "http://llama-server:8080/models/load"))
 
     alpaca_proxy.post_router_model_action = REAL_POST_ROUTER_MODEL_ACTION
     alpaca_proxy.router_management_supported = None
@@ -290,15 +296,7 @@ async def test_resolve_router_model_falls_back_to_router_alias_when_symlink_exis
     alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
     alpaca_proxy.OLLAMA_BASE = str(tmp_path / "models")
     alpaca_proxy.ROUTER_MODELS_DIR = str(tmp_path / "router-models")
-    manifest_path = (
-        tmp_path
-        / "models"
-        / "manifests"
-        / "registry.ollama.ai"
-        / "library"
-        / "tinyllama"
-        / "latest"
-    )
+    manifest_path = tmp_path / "models" / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(json.dumps(make_manifest(digest="sha256:deadbeef", size=4)))
     blob_path = tmp_path / "models" / "blobs" / "sha256-deadbeef"
@@ -332,18 +330,9 @@ def test_router_filename_for_model_name_handles_dash_and_colon_forms():
         alpaca_proxy.router_filename_for_model_name("qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest")
         == "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest.gguf"
     )
-    assert (
-        alpaca_proxy.router_filename_for_model_name("qwen2.5-vl--7b")
-        == "qwen2.5-vl--7b.gguf"
-    )
-    assert (
-        alpaca_proxy.router_filename_for_model_name("qwen2.5-vl:7b")
-        == "qwen2.5-vl--7b.gguf"
-    )
-    assert (
-        alpaca_proxy.router_filename_for_model_name("ornith:9b-q4_K_M")
-        == "ornith--9b-q4_K_M.gguf"
-    )
+    assert alpaca_proxy.router_filename_for_model_name("qwen2.5-vl--7b") == "qwen2.5-vl--7b.gguf"
+    assert alpaca_proxy.router_filename_for_model_name("qwen2.5-vl:7b") == "qwen2.5-vl--7b.gguf"
+    assert alpaca_proxy.router_filename_for_model_name("ornith:9b-q4_K_M") == "ornith--9b-q4_K_M.gguf"
     assert alpaca_proxy.router_filename_for_model_name("llama3") == "llama3--latest.gguf"
 
 
@@ -353,18 +342,14 @@ async def test_ensure_model_accepts_router_id_with_double_dash_latest(tmp_path):
 
     with_default_tag appended ':latest' to any name lacking ':', so
     'qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest' became '...--latest:latest', which
-    matched no router id and no manifest — 404 on every inference for flattened
+    matched no router id and no manifest - 404 on every inference for flattened
     router models (the bug behind SharedLLM mission failures).
     """
     alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
     alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
     alpaca_proxy.OLLAMA_BASE = str(tmp_path / "models")
     alpaca_proxy.ROUTER_MODELS_DIR = str(tmp_path / "router-models")
-    router_path = (
-        tmp_path
-        / "router-models"
-        / "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest.gguf"
-    )
+    router_path = tmp_path / "router-models" / "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest.gguf"
     router_path.parent.mkdir(parents=True)
     router_path.write_text("stub")
     router_id = "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest"
@@ -403,9 +388,7 @@ async def test_unload_model_ignores_router_400_model_not_found():
         }
     )
     alpaca_proxy.post_router_model_action = AsyncMock(
-        side_effect=httpx.HTTPStatusError(
-            "bad request", request=response.request, response=response
-        )
+        side_effect=httpx.HTTPStatusError("bad request", request=response.request, response=response)
     )
 
     await alpaca_proxy.unload_model("tinyllama")
@@ -424,9 +407,7 @@ async def test_unload_model_ignores_router_400_when_backend_is_already_not_resid
         }
     )
     alpaca_proxy.post_router_model_action = AsyncMock(
-        side_effect=httpx.HTTPStatusError(
-            "bad request", request=response.request, response=response
-        )
+        side_effect=httpx.HTTPStatusError("bad request", request=response.request, response=response)
     )
     alpaca_proxy.fetch_router_models = AsyncMock(
         return_value=[
@@ -459,9 +440,7 @@ async def test_loaded_models_from_router_returns_only_loaded_models():
             ("base", "/tmp/other", make_manifest(digest="sha256:other")),
         ]
     )
-    alpaca_proxy.manifest_model_name = lambda base, path: (
-        "tinyllama" if "tinyllama" in path else "other"
-    )
+    alpaca_proxy.manifest_model_name = lambda base, path: "tinyllama" if "tinyllama" in path else "other"
     alpaca_proxy.manifest_stats = lambda path, manifest: {
         "size": 1,
         "digest": "d",
@@ -741,9 +720,7 @@ async def test_admin_system_endpoint_returns_metrics():
     # Mock asyncio.create_subprocess_exec for nvidia-smi (used by GPU detection in admin_system)
     mock_proc = AsyncMock()
     mock_proc.returncode = 0
-    mock_proc.communicate = AsyncMock(
-        return_value=(b"NVIDIA GeForce RTX 4060, 8188, 1241, 6557\n", b"")
-    )
+    mock_proc.communicate = AsyncMock(return_value=(b"NVIDIA GeForce RTX 4060, 8188, 1241, 6557\n", b""))
 
     with (
         patch.dict("sys.modules", {"psutil": mock_psutil}),
@@ -1087,9 +1064,7 @@ async def test_ensure_model_skip_swap_true_does_not_unload_other_models():
 
     assert resolved["backend_model"] == "qwen3.5--9b.gguf"
     # Key assertion: with skip_swap=True, no unload should happen
-    unload_calls = [
-        a for a in alpaca_proxy.post_router_model_action.await_calls if a[0][0] == "unload"
-    ]
+    unload_calls = [a for a in alpaca_proxy.post_router_model_action.await_args_list if a[0][0] == "unload"]
     assert len(unload_calls) == 0
 
 
@@ -1573,9 +1548,7 @@ async def test_admin_slots_direct_child_query():
 async def test_admin_model_delete_conditional_unload():
     """Test that model delete only calls unload if status == loaded"""
     # Mock resolved model where status is loaded
-    mock_resolve = AsyncMock(
-        return_value={"backend_model": "test-backend", "entry": {"status": {"value": "loaded"}}}
-    )
+    mock_resolve = AsyncMock(return_value={"backend_model": "test-backend", "entry": {"status": {"value": "loaded"}}})
     mock_post_action = AsyncMock()
     mock_read_manifest = MagicMock(return_value={"layers": [], "config": {}})
 
@@ -1681,7 +1654,7 @@ async def test_admin_errors_endpoint():
     assert len(alpaca_proxy._model_errors_buffer) == 0
 
 
-# ─── Stable Diffusion vs Llama.cpp service routing ────────────────────────────
+# Stable Diffusion vs Llama.cpp service routing
 _ORIG_OLLAMA_BASE = alpaca_proxy.OLLAMA_BASE
 
 
@@ -1715,7 +1688,11 @@ def _write_complete_manifest(base, model_name, family, config_extra=None):
 
     manifest = {
         "schemaVersion": 2,
-        "config": {"mediaType": "application/vnd.ollama.image.model.config", "digest": cfg_digest, "size": len(cfg_bytes)},
+        "config": {
+            "mediaType": "application/vnd.ollama.image.model.config",
+            "digest": cfg_digest,
+            "size": len(cfg_bytes),
+        },
         "layers": [
             {"mediaType": "application/vnd.ollama.image.model", "digest": model_digest, "size": len(model_bytes)}
         ],
@@ -1799,7 +1776,7 @@ async def test_openai_models_converts_router_ids_to_colon():
         ids = [obj["id"] for obj in response["data"]]
         assert "qwen2.5-vl:7b" in ids
         assert "ornith:35b-q4_K_M" in ids
-        assert "qwen3-6-35b-a3b-ud-iq4-nl:latest" in ids
+        assert "qwen3-6-35b-a3b-ud-iq4-nl" in ids
         assert "qwen-image-edit-rapid-aio:q4_k" in ids
         assert not any("--" in mid for mid in ids)
     finally:
@@ -1826,9 +1803,7 @@ async def test_openai_models_fallback_uses_colon_form():
                 ("base", "/tmp/ornith", make_manifest(digest="sha256:bbbb")),
             ]
         )
-        alpaca_proxy.manifest_model_name = lambda base, path: (
-            "qwen2.5-vl:7b" if "vl" in path else "ornith:35b-q4_K_M"
-        )
+        alpaca_proxy.manifest_model_name = lambda base, path: "qwen2.5-vl:7b" if "vl" in path else "ornith:35b-q4_K_M"
         alpaca_proxy.iter_local_sd_models = lambda: iter([])
         alpaca_proxy.manifest_stats = lambda path, manifest: {
             "size": 1,
@@ -1859,9 +1834,7 @@ def test_find_local_model_file_resolves_sd_not_llm():
     alpaca_proxy.manifest_model_name = REAL_MANIFEST_MODEL_NAME
     try:
         with tempfile.TemporaryDirectory() as base:
-            _, sd_blob = _write_complete_manifest(
-                base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion"
-            )
+            _, sd_blob = _write_complete_manifest(base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion")
             _write_complete_manifest(base, "tinyllama:latest", "llama")
 
             resolved_sd = alpaca_proxy.find_local_model_file("stable-diffusion-xl-base-1.0")
@@ -1919,15 +1892,15 @@ async def test_images_generation_endpoint_routes_to_sd_server():
     alpaca_proxy.manifest_model_name = REAL_MANIFEST_MODEL_NAME
     try:
         with tempfile.TemporaryDirectory() as base:
-            sd_blob = _write_complete_manifest(
-                base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion"
-            )[1]
+            sd_blob = _write_complete_manifest(base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion")[1]
 
             sd_resp = AsyncMock()
             sd_resp.status_code = 200
             sd_resp.json = MagicMock(return_value={"data": [{"b64_json": "AAAA"}]})
             alpaca_proxy.client_sd_httpx = AsyncMock()
-            alpaca_proxy.client_sd_httpx.get = AsyncMock(return_value=AsyncMock(status_code=200, json=MagicMock(return_value={"data": []})))
+            alpaca_proxy.client_sd_httpx.get = AsyncMock(
+                return_value=AsyncMock(status_code=200, json=MagicMock(return_value={"data": []}))
+            )
             alpaca_proxy.client_sd_httpx.post = AsyncMock(return_value=sd_resp)
             alpaca_proxy.check_sd_server_health = AsyncMock(return_value=True)
             alpaca_proxy.get_active_model_config = MagicMock(return_value={"model_path": str(sd_blob)})
@@ -1971,9 +1944,7 @@ async def test_mark_release_request_queued_accounting():
     saved_resolve = alpaca_proxy.resolve_router_model
     try:
         alpaca_proxy.queued_requests.clear()
-        alpaca_proxy.resolve_router_model = AsyncMock(
-            return_value={"backend_model": "sha256-abc"}
-        )
+        alpaca_proxy.resolve_router_model = AsyncMock(return_value={"backend_model": "sha256-abc"})
         backend = await alpaca_proxy.mark_request_queued("my-model")
         assert backend == "sha256-abc"
         assert alpaca_proxy.queued_requests.get("sha256-abc") == 1
@@ -2010,9 +1981,7 @@ async def test_wait_for_slot_admits_on_free_slot():
     saved_wait = alpaca_proxy.wait_for_slot
     alpaca_proxy.wait_for_slot = REAL_WAIT_FOR_SLOT
     try:
-        alpaca_proxy._fetch_model_slots = AsyncMock(
-            return_value=[{"id": 0, "is_processing": False}]
-        )
+        alpaca_proxy._fetch_model_slots = AsyncMock(return_value=[{"id": 0, "is_processing": False}])
         assert await alpaca_proxy.wait_for_slot("sha256-abc", timeout=0.3) is True
     finally:
         alpaca_proxy._fetch_model_slots = saved
@@ -2025,9 +1994,7 @@ async def test_wait_for_slot_blocks_when_all_processing():
     saved_wait = alpaca_proxy.wait_for_slot
     alpaca_proxy.wait_for_slot = REAL_WAIT_FOR_SLOT
     try:
-        alpaca_proxy._fetch_model_slots = AsyncMock(
-            return_value=[{"id": 0, "is_processing": True}]
-        )
+        alpaca_proxy._fetch_model_slots = AsyncMock(return_value=[{"id": 0, "is_processing": True}])
         assert await alpaca_proxy.wait_for_slot("sha256-abc", timeout=0.3) is False
     finally:
         alpaca_proxy._fetch_model_slots = saved
@@ -2148,9 +2115,7 @@ async def test_chat_queue_timeout_completes_request_and_releases_queue():
     saved_resolve = alpaca_proxy.resolve_router_model
     _clear_tracking_state()
     try:
-        alpaca_proxy.resolve_router_model = AsyncMock(
-            return_value={"backend_model": "router-backend"}
-        )
+        alpaca_proxy.resolve_router_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
 
@@ -2181,12 +2146,8 @@ async def test_chat_pre_dispatch_failure_releases_tracking():
     saved_resolve = alpaca_proxy.resolve_router_model
     _clear_tracking_state()
     try:
-        alpaca_proxy.resolve_router_model = AsyncMock(
-            return_value={"backend_model": "router-backend"}
-        )
-        alpaca_proxy.ensure_model = AsyncMock(
-            side_effect=HTTPException(status_code=404, detail="model not found")
-        )
+        alpaca_proxy.resolve_router_model = AsyncMock(return_value={"backend_model": "router-backend"})
+        alpaca_proxy.ensure_model = AsyncMock(side_effect=HTTPException(status_code=404, detail="model not found"))
 
         with pytest.raises(HTTPException) as excinfo:
             await alpaca_proxy.chat(
@@ -2218,9 +2179,7 @@ async def test_generate_stream_queue_timeout_does_not_over_decrement():
     try:
         # Simulate one other legitimately in-flight request on this backend.
         alpaca_proxy.active_requests["router-backend"] = 1
-        alpaca_proxy.resolve_router_model = AsyncMock(
-            return_value={"backend_model": "router-backend"}
-        )
+        alpaca_proxy.resolve_router_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
 
@@ -2249,9 +2208,7 @@ async def test_generate_nonstream_queue_timeout_does_not_over_decrement():
     _clear_tracking_state()
     try:
         alpaca_proxy.active_requests["router-backend"] = 1
-        alpaca_proxy.resolve_router_model = AsyncMock(
-            return_value={"backend_model": "router-backend"}
-        )
+        alpaca_proxy.resolve_router_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
 
@@ -2278,9 +2235,7 @@ async def test_openai_chat_queue_timeout_completes_request():
     saved_resolve = alpaca_proxy.resolve_router_model
     _clear_tracking_state()
     try:
-        alpaca_proxy.resolve_router_model = AsyncMock(
-            return_value={"backend_model": "router-backend"}
-        )
+        alpaca_proxy.resolve_router_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
         alpaca_proxy.wait_for_slot = AsyncMock(return_value=False)
 
@@ -2301,3 +2256,71 @@ async def test_openai_chat_queue_timeout_completes_request():
     finally:
         alpaca_proxy.resolve_router_model = saved_resolve
         _restore_tracking_state(saved_state)
+
+
+@pytest.mark.asyncio
+async def test_alpaca_api_key_auth_verification():
+    """Verify authorization checks when ALPACA_API_KEY is configured vs open mode."""
+    with patch.dict(os.environ, {"ALPACA_API_KEY": "alpaca-sk-secret-test-token"}):
+        # 1. External unauthorized request with no token (empty IP defaults to non-local)
+        req_unauth = make_request("/v1/chat/completions", headers={})
+        assert not alpaca_proxy.is_request_authorized(req_unauth)
+
+        # 2. Public IP unauthorized request
+        req_public_unauth = make_request("/v1/chat/completions", headers={}, client_ip="93.184.216.34")
+        assert not alpaca_proxy.is_request_authorized(req_public_unauth)
+
+        # 3. Unauthorized request with wrong token on public IP
+        req_wrong = make_request(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer wrong-token"},
+            client_ip="93.184.216.34",
+        )
+        assert not alpaca_proxy.is_request_authorized(req_wrong)
+
+        # 4. Local network client (192.168.0.0/16) - NO API key required!
+        req_local_192_1 = make_request("/v1/chat/completions", headers={}, client_ip="192.168.1.50")
+        assert alpaca_proxy.is_request_authorized(req_local_192_1)
+
+        req_local_192_0 = make_request("/v1/chat/completions", headers={}, client_ip="192.168.0.10")
+        assert alpaca_proxy.is_request_authorized(req_local_192_0)
+
+        # 5. Loopback client (127.0.0.1, ::1) - NO API key required!
+        req_loopback = make_request("/v1/chat/completions", headers={}, client_ip="127.0.0.1")
+        assert alpaca_proxy.is_request_authorized(req_loopback)
+
+        # 6. Local client via X-Forwarded-For - NO API key required!
+        req_xff_local = make_request(
+            "/v1/chat/completions",
+            headers={"x-forwarded-for": "192.168.0.25, 10.0.0.1"},
+        )
+        assert alpaca_proxy.is_request_authorized(req_xff_local)
+
+        # 7. Authorized public client with Bearer header
+        req_bearer = make_request(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer alpaca-sk-secret-test-token"},
+            client_ip="93.184.216.34",
+        )
+        assert alpaca_proxy.is_request_authorized(req_bearer)
+
+        # 8. Authorized public client with direct Authorization header
+        req_direct = make_request(
+            "/v1/chat/completions",
+            headers={"authorization": "alpaca-sk-secret-test-token"},
+            client_ip="93.184.216.34",
+        )
+        assert alpaca_proxy.is_request_authorized(req_direct)
+
+        # 9. Authorized public client with X-API-Key header
+        req_x_key = make_request(
+            "/v1/chat/completions",
+            headers={"x-api-key": "alpaca-sk-secret-test-token"},
+            client_ip="93.184.216.34",
+        )
+        assert alpaca_proxy.is_request_authorized(req_x_key)
+
+    # When no ALPACA_API_KEY is configured, all requests should be authorized (open public mode)
+    with patch.dict(os.environ, {"ALPACA_API_KEY": ""}):
+        req_open = make_request("/v1/chat/completions", headers={}, client_ip="93.184.216.34")
+        assert alpaca_proxy.is_request_authorized(req_open)

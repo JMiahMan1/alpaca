@@ -27,9 +27,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("analyzer")
 
 
-def load_telemetry(
-    model_alias: str, limit: int = 500, max_age_seconds: int = 3600
-) -> list[dict[str, Any]]:
+def load_telemetry(model_alias: str, limit: int = 500, max_age_seconds: int = 3600) -> list[dict[str, Any]]:
     """Load the latest telemetry data points for a specific model.
 
     Filters to the most recent *max_age_seconds* window so that stale data
@@ -45,7 +43,10 @@ def load_telemetry(
         with open(log_file, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    points.append(json.loads(line))
+                    try:
+                        points.append(json.loads(line))
+                    except Exception:
+                        continue
         # Keep only recent points within the age window, then cap to limit
         cutoff = time.time() - max_age_seconds
         points = [p for p in points if p.get("epoch_time", 0) >= cutoff]
@@ -100,9 +101,7 @@ def read_current_config(model_alias: str) -> dict[str, str]:
             if matched_section:
                 for k, v in config[matched_section].items():
                     config_dict[k] = v
-                logger.info(
-                    f"Loaded config from models.ini [{matched_section}] for alias [{model_alias}]"
-                )
+                logger.info(f"Loaded config from models.ini [{matched_section}] for alias [{model_alias}]")
             else:
                 logger.warning(f"No matching section in models.ini found for [{model_alias}]")
         except Exception as e:
@@ -147,10 +146,7 @@ def load_latest_benchmark(model_alias: str) -> dict[str, Any] | None:
             data = json.load(f)
             # Find the entry for our model
             for res in data.get("results", []):
-                if (
-                    res.get("model") == model_alias
-                    or Path(res.get("model", "")).stem == model_alias
-                ):
+                if res.get("model") == model_alias or Path(res.get("model", "")).stem == model_alias:
                     return res
     except Exception as e:
         logger.warning(f"Failed to load benchmark baseline: {e}")
@@ -274,16 +270,14 @@ def analyze_telemetry(
         status = "warning"
 
     if max_vram > vram_critical:
-        issues.append(
-            f"CRITICAL: VRAM is fully exhausted (Peak VRAM usage: {max_vram}%). High risk of CUDA OOM."
-        )
+        issues.append(f"CRITICAL: VRAM is fully exhausted (Peak VRAM usage: {max_vram}%). High risk of CUDA OOM.")
         status = "critical"
     elif max_vram > vram_warning:
         issues.append(f"WARNING: VRAM is highly utilized (Peak VRAM usage: {max_vram}%).")
         if status != "critical":
             status = "warning"
 
-    # Analyze current config to base recommendations — all INI values are strings
+    # Analyze current config to base recommendations - all INI values are strings
     # so we guard each cast to avoid ValueError on malformed or float-formatted values.
     def _safe_int(val: str, fallback: int) -> int:
         try:
@@ -327,9 +321,7 @@ def analyze_telemetry(
 
     if current_is_failed:
         status = "critical"
-        issues.append(
-            f"CRITICAL: The current configuration of {model_alias} is known to have failed to load recently."
-        )
+        issues.append(f"CRITICAL: The current configuration of {model_alias} is known to have failed to load recently.")
 
     # Recommendation Logic
     if current_is_failed:
@@ -337,27 +329,19 @@ def analyze_telemetry(
         if curr_cache_k in ("f16", "f32"):
             recommendations["cache-type-k"] = "q8_0"
             recommendations["cache-type-v"] = "q8_0"
-            actions.append(
-                "Downgrade KV Cache quantization (f16 -> q8_0) to resolve model load failure."
-            )
+            actions.append("Downgrade KV Cache quantization (f16 -> q8_0) to resolve model load failure.")
         elif curr_cache_k == "q8_0":
             recommendations["cache-type-k"] = "q5_0"
             recommendations["cache-type-v"] = "q5_0"
-            actions.append(
-                "Downgrade KV Cache quantization (q8_0 -> q5_0) to resolve model load failure."
-            )
+            actions.append("Downgrade KV Cache quantization (q8_0 -> q5_0) to resolve model load failure.")
         elif curr_cache_k in ("q5_0", "q5_1"):
             recommendations["cache-type-k"] = "q4_0"
             recommendations["cache-type-v"] = "q4_0"
-            actions.append(
-                "Downgrade KV Cache quantization (q5_0 -> q4_0) to resolve model load failure."
-            )
+            actions.append("Downgrade KV Cache quantization (q5_0 -> q4_0) to resolve model load failure.")
         elif curr_ngl > 10:
             suggested_ngl = max(0, curr_ngl - 10)
             recommendations["n-gpu-layers"] = str(suggested_ngl)
-            actions.append(
-                f"Reduce GPU layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to free up VRAM."
-            )
+            actions.append(f"Reduce GPU layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to free up VRAM.")
         elif curr_ctx > 8192:
             recommendations["ctx-size"] = "8192"
             actions.append("Reduce context window to 8192 to resolve load failure.")
@@ -368,9 +352,7 @@ def analyze_telemetry(
         vram_limit = 95.0 if performance_first else 80.0
         vram_headroom_target = 600 if performance_first else 1500
 
-        if (final_ram > ram_warning) and (
-            max_vram < vram_limit or vram_headroom_mb > vram_headroom_target
-        ):
+        if (final_ram > ram_warning) and (max_vram < vram_limit or vram_headroom_mb > vram_headroom_target):
             if curr_ngl != 99 and curr_ngl >= 0:
                 step = 15 if performance_first else 10
                 suggested_ngl = min(curr_ngl + step, 99)
@@ -386,13 +368,9 @@ def analyze_telemetry(
 
         # 2. System RAM Exhaustion, and VRAM is ALSO exhausted (No Headroom)
         # We must reduce overall memory footprint.
-        elif (final_ram > ram_warning) and (
-            max_vram >= vram_limit or vram_headroom_mb <= vram_headroom_target
-        ):
+        elif (final_ram > ram_warning) and (max_vram >= vram_limit or vram_headroom_mb <= vram_headroom_target):
             # Performance strategy: try 8-bit cache (q8_0) first to protect quality
-            if performance_first and (
-                curr_cache_k in ("f16", "f32") or curr_cache_v in ("f16", "f32")
-            ):
+            if performance_first and (curr_cache_k in ("f16", "f32") or curr_cache_v in ("f16", "f32")):
                 if not is_blacklisted("q8_0", "q8_0"):
                     recommendations["cache-type-k"] = "q8_0"
                     recommendations["cache-type-v"] = "q8_0"
@@ -489,18 +467,16 @@ def analyze_telemetry(
                 target_cache_k = "f16"
                 target_cache_v = "f16"
 
-            # Resolve target against blacklist
-            while target_cache_k != curr_cache_k or target_cache_v != curr_cache_v:
-                if not is_blacklisted(target_cache_k, target_cache_v):
+            # Resolve highest priority non-blacklisted candidate
+            candidates = [("f16", "f16"), ("q8_0", "q8_0"), ("q5_0", "q5_0"), ("q4_0", "q4_0")]
+            if performance_first:
+                candidates = [("q8_0", "q8_0"), ("q5_0", "q5_0"), ("q4_0", "q4_0")]
+
+            target_cache_k, target_cache_v = curr_cache_k, curr_cache_v
+            for ck, cv in candidates:
+                if not is_blacklisted(ck, cv):
+                    target_cache_k, target_cache_v = ck, cv
                     break
-                if target_cache_k == "f16":
-                    target_cache_k, target_cache_v = "q8_0", "q8_0"
-                elif target_cache_k == "q8_0":
-                    target_cache_k, target_cache_v = "q5_0", "q5_0"
-                elif target_cache_k == "q5_0":
-                    target_cache_k, target_cache_v = "q4_0", "q4_0"
-                else:
-                    target_cache_k, target_cache_v = curr_cache_k, curr_cache_v
 
             if target_cache_k != curr_cache_k or target_cache_v != curr_cache_v:
                 recommendations["cache-type-k"] = target_cache_k
@@ -517,10 +493,10 @@ def analyze_telemetry(
             if suggested_ctx > curr_ctx and "ctx-size" not in recommendations:
                 recommendations["ctx-size"] = str(suggested_ctx)
                 actions.append(
-                        f"Expand context window (ctx-size: {curr_ctx} → {suggested_ctx}): "
-                        f"VRAM headroom ({vram_headroom_mb}MB free) is sufficient to support a larger context, "
-                        f"enabling longer document processing and multi-turn conversations."
-                    )
+                    f"Expand context window (ctx-size: {curr_ctx} → {suggested_ctx}): "
+                    f"VRAM headroom ({vram_headroom_mb}MB free) is sufficient to support a larger context, "
+                    f"enabling longer document processing and multi-turn conversations."
+                )
 
     # Try loading baseline benchmarks for comparison
     benchmark = load_latest_benchmark(model_alias)
@@ -535,7 +511,9 @@ def analyze_telemetry(
     if actions:
         explanation = " ".join(actions)
     else:
-        explanation = "No tuning adjustments required. System resources are operating within safe utilization thresholds."
+        explanation = (
+            "No tuning adjustments required. System resources are operating within safe utilization thresholds."
+        )
 
     return {
         "status": status,
@@ -567,9 +545,7 @@ def analyze_telemetry(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Analyze model telemetry logs and generate tuning recommendations."
-    )
+    parser = argparse.ArgumentParser(description="Analyze model telemetry logs and generate tuning recommendations.")
     parser.add_argument("model", help="The model alias to analyze (e.g. qwen3.5-9b)")
     parser.add_argument(
         "--strategy",

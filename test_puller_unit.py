@@ -49,9 +49,7 @@ def test_router_filename_for_model_name_flattens_name_and_tag():
 
 
 def test_parse_huggingface_ref_repo_and_file_syntax():
-    repo, filename = alpaca_puller.parse_huggingface_ref(
-        "Qwen/Qwen3.6-35B-A3B-GGUF:Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf"
-    )
+    repo, filename = alpaca_puller.parse_huggingface_ref("Qwen/Qwen3.6-35B-A3B-GGUF:Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf")
     assert repo == "Qwen/Qwen3.6-35B-A3B-GGUF"
     assert filename == "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf"
 
@@ -65,9 +63,7 @@ def test_parse_huggingface_ref_url_syntax():
 
 
 def test_parse_huggingface_ref_hf_prefix_single_segment():
-    repo, filename = alpaca_puller.parse_huggingface_ref(
-        "hf://username/repo.gguf"
-    )
+    repo, filename = alpaca_puller.parse_huggingface_ref("hf://username/repo.gguf")
     assert repo == "username"
     assert filename == "repo.gguf"
     constructed = f"https://huggingface.co/{repo}/resolve/main/{filename}"
@@ -81,13 +77,14 @@ def test_parse_huggingface_ref_hf_prefix_multi_segment():
     assert repo == "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
     assert filename == "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
     constructed = f"https://huggingface.co/{repo}/resolve/main/{filename}"
-    assert constructed == "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    assert (
+        constructed
+        == "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    )
 
 
 def test_parse_huggingface_ref_hf_prefix_deep_nested():
-    repo, filename = alpaca_puller.parse_huggingface_ref(
-        "hf://a/b/c/d/model.gguf"
-    )
+    repo, filename = alpaca_puller.parse_huggingface_ref("hf://a/b/c/d/model.gguf")
     assert repo == "a/b/c/d"
     assert filename == "model.gguf"
     constructed = f"https://huggingface.co/{repo}/resolve/main/{filename}"
@@ -179,6 +176,9 @@ def test_remove_model_keeps_shared_blobs():
     with tempfile.TemporaryDirectory() as tmpdir:
         base = pathlib.Path(tmpdir)
         alpaca_puller.MODELS_DIR = str(base)
+        router_dir = base / ".alpaca-router"
+        router_dir.mkdir(parents=True, exist_ok=True)
+        alpaca_puller.ROUTER_MODELS_DIR = str(router_dir)
         digest = "sha256:shared"
         blob_path = base / "blobs" / "sha256-shared"
         blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +201,9 @@ def test_remove_model_deletes_unshared_blobs():
     with tempfile.TemporaryDirectory() as tmpdir:
         base = pathlib.Path(tmpdir)
         alpaca_puller.MODELS_DIR = str(base)
+        router_dir = base / ".alpaca-router"
+        router_dir.mkdir(parents=True, exist_ok=True)
+        alpaca_puller.ROUTER_MODELS_DIR = str(router_dir)
         digest = "sha256:solo"
         blob_path = base / "blobs" / "sha256-solo"
         blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,9 +257,7 @@ def test_should_stop_returns_true_when_marker_file_exists_for_current_model(tmp_
     stop_file.write_text("1000000")
 
     original_model = alpaca_puller._CURRENT_MODEL
-    original_router_dir = (
-        alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
-    )
+    original_router_dir = alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
     original_env = os.environ.get("ROUTER_MODELS_DIR")
 
     try:
@@ -289,9 +290,7 @@ def test_should_stop_returns_false_when_marker_exists_but_wrong_model(tmp_path):
     stop_file.write_text("1000000")
 
     original_model = alpaca_puller._CURRENT_MODEL
-    original_router_dir = (
-        alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
-    )
+    original_router_dir = alpaca_puller.ROUTER_MODELS_DIR if hasattr(alpaca_puller, "ROUTER_MODELS_DIR") else None
     original_env = os.environ.get("ROUTER_MODELS_DIR")
 
     try:

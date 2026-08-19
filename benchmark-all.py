@@ -6,7 +6,7 @@ Orchestrator to run benchmarking sweeps sequentially for all available models
 in the alpaca-proxy router setup. It generates optimal profiles for each.
 
 Context sizes are chosen per model type:
-  - MoE models (qwen3.6-35b, MTP):   skip ctx sweep — already tuned at 98304
+  - MoE models (qwen3.6-35b, MTP):   skip ctx sweep - already tuned at 98304
   - Dense large (>=9B, non-MoE):     8192, 16384, 32768, 65536
   - Small (<9B):                      8192, 16384, 32768
 """
@@ -21,7 +21,7 @@ CTX_LOCKED_ALIASES = {
     "Qwen3.6-35B-A3B-MTP-GGUF--Qwen3.6-35B-A3B-UD-Q4_K_M--latest",
 }
 
-# Dense large models — can safely test larger ctx sizes
+# Dense large models - can safely test larger ctx sizes
 DENSE_LARGE_ALIASES = {
     "gemma-4-12b-fable5--latest",
 }
@@ -76,13 +76,13 @@ def main():
         # Pick ctx-sizes based on model type
         if alias in CTX_LOCKED_ALIASES:
             ctxs = CTX_LOCKED
-            print(f"  [ctx] MoE/locked model — using neutral ctx {ctxs} (quality test only)")
+            print(f"  [ctx] MoE/locked model - using neutral ctx {ctxs} (quality test only)")
         elif alias in DENSE_LARGE_ALIASES:
             ctxs = CTX_LARGE
-            print(f"  [ctx] Dense large model — sweeping {ctxs}")
+            print(f"  [ctx] Dense large model - sweeping {ctxs}")
         else:
             ctxs = CTX_SMALL
-            print(f"  [ctx] Small/unknown model — sweeping {ctxs}")
+            print(f"  [ctx] Small/unknown model - sweeping {ctxs}")
 
         cmd = [
             "docker",

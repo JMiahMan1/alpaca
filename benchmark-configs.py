@@ -9,7 +9,7 @@ and generation throughput (tokens/sec) via the alpaca-proxy.
 
 After finding the optimal config, runs a quality test suite covering coding, reasoning,
 instruction-following, and creative tasks. Results are written to the .profile.json file
-under a 'quality' key — the 4 config keys read by alpaca-puller.py are unaffected.
+under a 'quality' key - the 4 config keys read by alpaca-puller.py are unaffected.
 """
 
 import argparse
@@ -25,22 +25,18 @@ from pathlib import Path
 import httpx
 
 ROUTER_MODELS_DIR = os.getenv(
-    "ROUTER_MODELS_DIR", "/home/jeremiah/Summers Drive/Code/alpaca/.alpaca-router"
+    "ROUTER_MODELS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), ".alpaca-router")
 )
 INI_PATH = Path(ROUTER_MODELS_DIR) / "models.ini"
 PROXY_URL = "http://localhost:11434"
 BACKEND_URL = os.getenv(
     "LLAMA_SERVER_URL",
-    "http://llama-server:8080"
-    if ROUTER_MODELS_DIR == "/router-models"
-    else "http://localhost:8080",
+    "http://llama-server:8080" if ROUTER_MODELS_DIR == "/router-models" else "http://localhost:8080",
 )
-BENCHMARK_PROMPT = (
-    "List 5 primary colors and write a very short sentence for each describing its mood."
-)
+BENCHMARK_PROMPT = "List 5 primary colors and write a very short sentence for each describing its mood."
 
 # ---------------------------------------------------------------------------
-# Quality test suite — runs once after the optimal config is confirmed.
+# Quality test suite - runs once after the optimal config is confirmed.
 # These test real-world use cases that matter for Jarvis OS / SharedLLM:
 # coding assistance, reasoning, structured output, and instruction-following.
 # ---------------------------------------------------------------------------
@@ -253,10 +249,7 @@ def run_quality_tests(public_model_name):
         "min_ttft_ms": round(min(ttft_vals), 1),
         "benchmarked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    by_cat_summary = {
-        cat: {"avg_tokens_per_sec": round(statistics.mean(vals), 2)}
-        for cat, vals in by_category.items()
-    }
+    by_cat_summary = {cat: {"avg_tokens_per_sec": round(statistics.mean(vals), 2)} for cat, vals in by_category.items()}
 
     print(
         f"\n  Quality summary: {summary['avg_tokens_per_sec']:.1f} avg tok/s, {summary['avg_ttft_ms']:.0f}ms avg TTFT"
@@ -345,9 +338,7 @@ def main():
                     ok, ttft, tps, detail = run_test(args.public_name)
 
                     if ok and ttft is not None and tps is not None:
-                        print(
-                            f"SUCCESS: TTFT = {ttft:.2f}s, Generation Speed = {tps:.2f} tokens/sec"
-                        )
+                        print(f"SUCCESS: TTFT = {ttft:.2f}s, Generation Speed = {tps:.2f} tokens/sec")
                         results.append(
                             {
                                 "ctx": ctx,
@@ -411,9 +402,7 @@ def main():
         candidates = [r for r in max_ctx_runs if get_tps_val(r) >= tps_threshold]
 
         # 5. Sort by cache precision descending, then TPS descending
-        candidates.sort(
-            key=lambda r: (get_cache_precision(r["cache"]), get_tps_val(r)), reverse=True
-        )
+        candidates.sort(key=lambda r: (get_cache_precision(r["cache"]), get_tps_val(r)), reverse=True)
         best_run = candidates[0]
 
         print("\n[benchmark] Found optimal configuration:")
@@ -464,12 +453,8 @@ def main():
     # Print results table
     print("\n\n=== BENCHMARK RESULTS ===")
     print(f"Model: {args.model} ({args.public_name})\n")
-    print(
-        "| Context Size | Cache Type (K/V) | Flash Attn | Status | TTFT (s) | Generation Speed | Notes |"
-    )
-    print(
-        "|--------------|------------------|------------|--------|----------|------------------|-------|"
-    )
+    print("| Context Size | Cache Type (K/V) | Flash Attn | Status | TTFT (s) | Generation Speed | Notes |")
+    print("|--------------|------------------|------------|--------|----------|------------------|-------|")
     for r in results:
         print(
             f"| {r['ctx']} | {r['cache']} | {r['flash_attn']} | {r['status']} | {r['ttft']} | {r['tps']} | {r['detail']} |"

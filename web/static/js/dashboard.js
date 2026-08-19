@@ -1,4 +1,19 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Escape HTML helper for safe innerHTML interpolation
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // Online model prefix tester
+    function isOnlineModelName(model) {
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|gemini|openai|custom):/i.test(String(model || '').trim());
+    }
+
     // Socket initialization
     const socket = io();
 
@@ -6,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabBtnMonitor = document.getElementById('tab-btn-monitor');
     const tabBtnGeneral = document.getElementById('tab-btn-general');
     const tabBtnShared = document.getElementById('tab-btn-shared');
+    const tabBtnTests = document.getElementById('tab-btn-tests');
     const tabBtnProfiles = document.getElementById('tab-btn-profiles');
     const tabBtnRequests = document.getElementById('tab-btn-requests');
     const tabBtnDocs = document.getElementById('tab-btn-docs');
@@ -13,10 +29,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewMonitor = document.getElementById('view-monitor');
     const viewGeneral = document.getElementById('view-general');
     const viewShared = document.getElementById('view-shared');
+    const viewTests = document.getElementById('view-tests');
     const viewProfiles = document.getElementById('view-profiles');
     const viewRequests = document.getElementById('view-requests');
     const viewDocs = document.getElementById('view-docs');
     const viewImageStudio = document.getElementById('view-image-studio');
+
 
     // Controls Elements
     const connectionStatusBadge = document.getElementById('connection-status-badge');
@@ -30,10 +48,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const modeDirectBtn = document.getElementById('mode-direct-btn');
     const btnRun = document.getElementById('btn-run');
     const btnRunShared = document.getElementById('btn-run-shared');
+    const btnRunOutdated = document.getElementById('btn-run-outdated');
+    const headerLogoutBtn = document.getElementById('header-logout-btn');
+
+    if (headerLogoutBtn) {
+        fetch('/api/auth/status')
+            .then(res => res.json())
+            .then(data => {
+                if (data.authenticated && !data.is_local) {
+                    headerLogoutBtn.style.display = 'inline-flex';
+                }
+            })
+            .catch(() => {});
+    }
     const btnCancel = document.getElementById('btn-cancel');
      const selectAllBtn = document.getElementById('btn-select-all');
     const deselectAllBtn = document.getElementById('btn-deselect-all');
     const testCheckboxes = document.getElementById('test-checkboxes');
+    const groupCheckboxes = document.getElementById('group-checkboxes');
     const selectAllTestsBtn = document.getElementById('btn-select-all-tests');
     const deselectAllTestsBtn = document.getElementById('btn-deselect-all-tests');
     
@@ -115,20 +147,24 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentSharedResults = [];
     let monitorIntervalId = null;
 
+    // Model comparison filter state (per view type: 'general' | 'shared')
+    let filterAllModels = { general: [], shared: [] };              // every model id seen in each view
+    let filterSelection = { general: new Set(), shared: new Set() }; // selected model ids (empty until first results)
+    let filterInitialized = { general: false, shared: false };
+    let filterCheckboxInputs = { general: {}, shared: {} };          // model id -> <input> element
+
     // Utility function to truncate long model names
     function truncateModelName(name) {
         if (!name) return '';
-        if (name.length <= 25) return name;
-        
+        // Router ids use "--" as separator (e.g. family--quant); humanize to the
+        // public "family:quant" form so the model family stays visible, and drop
+        // the redundant Ollama ":latest" default tag (version is in the name).
         let cleanName = name.replace(/\.gguf$/i, '');
-        
-        if (cleanName.includes('--')) {
-            const parts = cleanName.split('--');
-            cleanName = parts[parts.length - 1];
-        }
-        
+        cleanName = cleanName.replace(/--/g, ':');
+        cleanName = cleanName.replace(/:latest$/, '');
+
         if (cleanName.length <= 25) return cleanName;
-        
+
         return cleanName.substring(0, 12) + '...' + cleanName.substring(cleanName.length - 10);
     }
 
@@ -145,6 +181,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tabBtnMonitor.classList.remove('active');
         tabBtnGeneral.classList.remove('active');
         tabBtnShared.classList.remove('active');
+        tabBtnTests.classList.remove('active');
         tabBtnProfiles.classList.remove('active');
         tabBtnRequests.classList.remove('active');
         tabBtnDocs.classList.remove('active');
@@ -154,6 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
         viewMonitor.classList.add('d-none');
         viewGeneral.classList.add('d-none');
         viewShared.classList.add('d-none');
+        viewTests.classList.add('d-none');
         viewProfiles.classList.add('d-none');
         viewRequests.classList.add('d-none');
         viewDocs.classList.add('d-none');
@@ -175,6 +213,10 @@ document.addEventListener('DOMContentLoaded', () => {
             tabBtnShared.classList.add('active');
             viewShared.classList.remove('d-none');
             loadRoutingMatrix();
+        } else if (tabName === 'tests') {
+            tabBtnTests.classList.add('active');
+            viewTests.classList.remove('d-none');
+            loadTestBrowser();
         } else if (tabName === 'profiles') {
             tabBtnProfiles.classList.add('active');
             viewProfiles.classList.remove('d-none');
@@ -199,12 +241,13 @@ document.addEventListener('DOMContentLoaded', () => {
     tabBtnMonitor.addEventListener('click', () => switchTab('monitor'));
     tabBtnGeneral.addEventListener('click', () => switchTab('general'));
     tabBtnShared.addEventListener('click', () => switchTab('shared'));
+    tabBtnTests.addEventListener('click', () => switchTab('tests'));
     tabBtnProfiles.addEventListener('click', () => switchTab('profiles'));
     tabBtnRequests.addEventListener('click', () => switchTab('requests'));
     tabBtnDocs.addEventListener('click', () => switchTab('docs'));
     tabBtnSd.addEventListener('click', () => switchTab('sd'));
 
-    // ─── Image Studio (Stable Diffusion) ───────────────────────────────────
+    // Image Studio (Stable Diffusion)
     async function loadSdModels() {
         const sel = document.getElementById('sd-model-select');
         if (!sel) return;
@@ -266,7 +309,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (synthSel) {
-                // Synthesis: Ollama text-only models (VL excluded — optimised for image understanding)
+                // Synthesis: Ollama text-only models (VL excluded - optimised for image understanding)
                 try {
                     const res = await fetch('/api/models');
                     const data = await res.json();
@@ -393,7 +436,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ── Helper to render SD result cards with Download & Send to Canvas ─────
+    // Helper to render SD result cards with Download & Send to Canvas
     function renderSDResultCard(item, container, filePrefix = 'result') {
         if (item.b64_json) {
             const card = document.createElement('div');
@@ -468,7 +511,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // ── Image Studio Mode Tabs & Enhanced Presets / Canvas Logic ────────────
+    // Image Studio Mode Tabs & Enhanced Presets / Canvas Logic
     const modeTabs = {
         gen: document.getElementById('sd-mode-tab-gen'),
         flyer: document.getElementById('sd-mode-tab-flyer'),
@@ -602,7 +645,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ocrRunBtn) {
         ocrRunBtn.addEventListener('click', async () => {
             if (!currentOcrFile) {
-                alert('Please upload an image or PDF file first.');
+                showToast('Please upload an image or PDF file first.', 'info');
                 return;
             }
 
@@ -655,11 +698,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             switchSDMode('flyer');
             if (typeof updateFlyerPromptPreview === 'function') updateFlyerPromptPreview();
-            alert('✅ Extracted text transferred to Flyer Creator!');
+            showToast('✅ Extracted text transferred to Flyer Creator!', 'success');
         });
     }
 
-    // ── Image-to-Prompt Assistant Logic ────────────────────────────────────
+    // Image-to-Prompt Assistant Logic
     let currentPromptgenFile = null;
     let synthesizedMasterPrompt = '';
     let synthesizedSuggestedStrength = 0.55;
@@ -729,7 +772,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (promptgenAnalyzeBtn) {
         promptgenAnalyzeBtn.addEventListener('click', async () => {
             if (!currentPromptgenFile) {
-                alert('Please upload an image first.');
+                showToast('Please upload an image first.', 'info');
                 return;
             }
 
@@ -775,7 +818,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const synthModel = document.getElementById('sd-promptgen-synth-model')?.value;
 
             if (!baseDesc || !changes) {
-                alert('Please provide both the base image description and desired modifications.');
+                showToast('Please provide both the base image description and desired modifications.', 'info');
                 return;
             }
 
@@ -827,7 +870,7 @@ document.addEventListener('DOMContentLoaded', () => {
         promptgenSendPhotoBtn.addEventListener('click', () => {
             const masterPrompt = promptgenResultPrompt ? promptgenResultPrompt.textContent.trim() : '';
             if (!masterPrompt || masterPrompt.includes('Synthesized master prompt will appear here')) {
-                alert('Please synthesize a master prompt first.');
+                showToast('Please synthesize a master prompt first.', 'info');
                 return;
             }
 
@@ -895,7 +938,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ── Flyer Creator Synthesizer Logic ────────────────────────────────────
+    // Flyer Creator Synthesizer Logic
     const flyerPresetSel = document.getElementById('sd-flyer-preset-select');
     const flyerAspectSel = document.getElementById('sd-flyer-aspect-select');
     const flyerHeadline = document.getElementById('sd-flyer-headline');
@@ -1023,7 +1066,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ── Photo Realism Retouch Controls ─────────────────────────────────────
+    // Photo Realism Retouch Controls
     const photoPresetSel = document.getElementById('sd-photo-preset-select');
     const photoStrengthInput = document.getElementById('sd-edit-strength');
     const photoStrengthVal = document.getElementById('sd-strength-val');
@@ -1077,7 +1120,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ── Quick Inspiration Chips & Dimension Presets ────────────────────────
+    // Quick Inspiration Chips & Dimension Presets
     document.querySelectorAll('.sd-quick-chip').forEach(chip => {
         chip.addEventListener('click', () => {
             const promptInput = document.getElementById('sd-gen-prompt');
@@ -1096,7 +1139,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ── Drag & Drop Photo Upload Zone ──────────────────────────────────────
+    // Drag & Drop Photo Upload Zone
     const photoDropzone = document.getElementById('sd-photo-dropzone');
     const photoInput = document.getElementById('sd-edit-image');
     const photoEmpty = document.getElementById('sd-photo-dropzone-empty');
@@ -1191,7 +1234,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // ── Interactive Canvas Text & Typography Studio Engine ─────────────────
+    // Interactive Canvas Text & Typography Studio Engine
     const canvasElem = document.getElementById('sd-text-canvas');
     const canvasHint = document.getElementById('sd-canvas-empty-hint');
     const canvasUpload = document.getElementById('sd-canvas-upload');
@@ -1567,23 +1610,26 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // SharedLLM latency comparison chart — uses legend instead of X-axis labels
+        // SharedLLM latency comparison chart - uses legend instead of X-axis labels
         // to avoid diagonal/overflowing model name text on the axis
         sharedLatencyChart = new Chart(ctxSharedLatency, {
             type: 'bar',
             data: {
                 labels: [],
                 datasets: [
-                    { label: 'FastPath (Intent)', data: [], backgroundColor: 'rgba(139, 92, 246, 0.6)', borderRadius: 4 },
-                    { label: 'Librarian (Tool)', data: [], backgroundColor: 'rgba(6, 182, 212, 0.6)', borderRadius: 4 },
-                    { label: 'Raven (Code Gen)', data: [], backgroundColor: 'rgba(16, 185, 129, 0.6)', borderRadius: 4 }
+                    { label: 'FastPath (Intent)', data: [], backgroundColor: 'rgba(139, 92, 246, 0.7)', borderRadius: 4 },
+                    { label: 'Librarian (Tools)', data: [], backgroundColor: 'rgba(6, 182, 212, 0.7)', borderRadius: 4 },
+                    { label: 'Raven (Coding)', data: [], backgroundColor: 'rgba(16, 185, 129, 0.7)', borderRadius: 4 },
+                    { label: 'Troubleshoot & Patch', data: [], backgroundColor: 'rgba(245, 158, 11, 0.7)', borderRadius: 4 },
+                    { label: 'Media & Docs', data: [], backgroundColor: 'rgba(236, 72, 153, 0.7)', borderRadius: 4 },
+                    { label: 'Composite Chaining', data: [], backgroundColor: 'rgba(59, 130, 246, 0.7)', borderRadius: 4 }
                 ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: { 
-                    legend: { position: 'top', labels: { boxWidth: 12, padding: 10 } },
+                    legend: { position: 'top', labels: { boxWidth: 12, padding: 8 } },
                     tooltip: {
                         callbacks: {
                             title: function(context) {
@@ -1591,15 +1637,17 @@ document.addEventListener('DOMContentLoaded', () => {
                                 const originalLabels = context[0].chart.data.originalLabels;
                                 return (originalLabels && originalLabels[index]) ? originalLabels[index] : context[0].label;
                             },
-                            afterTitle: function(context) {
-                                // Show model index as subtitle so bars are identifiable
-                                return `Model ${context[0].dataIndex + 1}`;
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) label += ': ';
+                                if (context.parsed.y !== null) label += context.parsed.y.toFixed(2) + 's';
+                                return label;
                             }
                         }
                     }
                 },
                 scales: {
-                    // Hide X labels — models are in the tooltip title and legend
+                    // Hide X labels - models are in the tooltip title and legend
                     x: {
                         ticks: { display: false },
                         grid: { display: false }
@@ -1609,17 +1657,17 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // SharedLLM AST Compliance Breakdown chart
+        // SharedLLM AST Compliance & Execution Breakdown chart
         sharedAstChart = new Chart(ctxSharedAst, {
             type: 'bar',
             data: {
-                labels: ['Class Match', 'Acquire Method', 'Release Method', 'Completed Code'],
+                labels: ['Syntax / Parsing', 'Schema / Structure', 'Contracts / Logic', 'Overall Pass Rate'],
                 datasets: []
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { position: 'top', labels: { boxWidth: 12 } } },
+                plugins: { legend: { position: 'top', labels: { boxWidth: 12, padding: 8 } } },
                 scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: 'Pass Rate (%)' } } }
             }
         });
@@ -1672,7 +1720,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Modal Control — supports thinking models with <think>...</think> blocks
+    // Modal Control - supports thinking models with <think>...</think> blocks
     const modalThinking = document.getElementById('modal-thinking');
     const modalThinkingSection = document.getElementById('modal-thinking-section');
 
@@ -1769,11 +1817,68 @@ document.addEventListener('DOMContentLoaded', () => {
         logToTerminal("All models selected");
     });
 
+    const selectNewBtn = document.getElementById('btn-select-new');
+    if (selectNewBtn) {
+        selectNewBtn.addEventListener('click', () => {
+            const items = modelCheckboxes.querySelectorAll('.checkbox-item');
+            let selectedCount = 0;
+            items.forEach(item => {
+                const box = item.querySelector('input[type="checkbox"]');
+                if (item.getAttribute('data-status') === 'new') {
+                    if (box) { box.checked = true; selectedCount++; }
+                } else if (box) {
+                    box.checked = false;
+                }
+            });
+            logToTerminal(`Selected ${selectedCount} newly added unbenchmarked model(s)`);
+        });
+    }
+
     deselectAllBtn.addEventListener('click', () => {
         const boxes = modelCheckboxes.querySelectorAll('input[type="checkbox"]');
         boxes.forEach(box => box.checked = false);
         logToTerminal("All models deselected");
     });
+
+    // Model Filter Tabs (All, New, Benchmarked)
+    function applyModelListFilter(filterType) {
+        const items = modelCheckboxes.querySelectorAll('.checkbox-item');
+        const sep = modelCheckboxes.querySelector('.online-models-separator');
+        
+        items.forEach(item => {
+            const status = item.getAttribute('data-status') || 'new';
+            if (filterType === 'all') {
+                item.style.display = 'flex';
+            } else if (filterType === 'new') {
+                item.style.display = status === 'new' ? 'flex' : 'none';
+            } else if (filterType === 'benchmarked') {
+                item.style.display = status === 'benchmarked' ? 'flex' : 'none';
+            }
+        });
+
+        // Update active tab button style
+        ['all', 'new', 'benchmarked'].forEach(type => {
+            const btn = document.getElementById(`filter-models-${type}`);
+            if (btn) {
+                if (type === filterType) {
+                    btn.classList.add('active');
+                    btn.style.background = '#1e293b';
+                    btn.style.borderColor = type === 'new' ? '#34d399' : (type === 'benchmarked' ? '#818cf8' : 'var(--color-primary)');
+                } else {
+                    btn.classList.remove('active');
+                    btn.style.background = '#090d16';
+                    btn.style.borderColor = 'var(--border-color)';
+                }
+            }
+        });
+    }
+
+    const filterAllBtn = document.getElementById('filter-models-all');
+    const filterNewBtn = document.getElementById('filter-models-new');
+    const filterBenchBtn = document.getElementById('filter-models-benchmarked');
+    if (filterAllBtn) filterAllBtn.addEventListener('click', () => applyModelListFilter('all'));
+    if (filterNewBtn) filterNewBtn.addEventListener('click', () => applyModelListFilter('new'));
+    if (filterBenchBtn) filterBenchBtn.addEventListener('click', () => applyModelListFilter('benchmarked'));
 
     selectAllTestsBtn.addEventListener('click', () => {
         const boxes = testCheckboxes.querySelectorAll('input[type="checkbox"]');
@@ -1789,6 +1894,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function getSelectedTests() {
         const boxes = testCheckboxes.querySelectorAll('input[type="checkbox"]:checked');
+        return Array.from(boxes).map(box => box.value);
+    }
+
+    function getSelectedGroups() {
+        if (!groupCheckboxes) return [];
+        const boxes = groupCheckboxes.querySelectorAll('input[type="checkbox"]:checked');
         return Array.from(boxes).map(box => box.value);
     }
 
@@ -1828,11 +1939,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            // Proxy is reachable — check if sd-server is still booting (model swap in progress)
+            // Proxy is reachable - check if sd-server is still booting (model swap in progress)
             if (data.online && !data.sd_server_healthy) {
                 sdStatusCard.style.borderLeftColor = 'var(--color-warning)';
                 sdConnectionTitle.textContent = "Stable Diffusion Backend [Loading...]";
-                sdConnectionSubtitle.textContent = "SD-Server is starting up — auto-loading a model. This may take up to 60 seconds.";
+                sdConnectionSubtitle.textContent = "SD-Server is starting up - auto-loading a model. This may take up to 60 seconds.";
                 sdActiveModelBadge.textContent = data.active_model ? `Loading: ${data.active_model.split('/').pop()}` : "Model: Loading...";
                 sdStatusBadge.className = "badge badge-warning";
                 sdStatusBadge.textContent = "Loading";
@@ -1854,7 +1965,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
         } catch (err) {
-            // Swallow fetch errors (timeout / network) — proxy may be momentarily busy during model swap
+            // Swallow fetch errors (timeout / network) - proxy may be momentarily busy during model swap
             if (err.name !== 'AbortError' && err.name !== 'TimeoutError') {
                 console.error("SD Poller error:", err);
             }
@@ -1980,7 +2091,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (peakReqs) peakReqs.textContent = activeModel.peak_active_requests || 0;
                 if (totalReqs) totalReqs.textContent = activeModel.total_requests_processed || 0;
                 
-                // Determine context length — prefer running_settings ctx-size over
+                // Determine context length - prefer running_settings ctx-size over
                 // the model record's context_length, which may be stale/default
                 const runningSettings = activeModel.running_settings || {};
                 let ctxLength = runningSettings['ctx-size'] || activeModel.context_length;
@@ -2451,6 +2562,14 @@ document.addEventListener('DOMContentLoaded', () => {
         typeBadge.style.padding = '0.1rem 0.3rem';
         typeBadge.textContent = req.type || 'unknown';
 
+        if (req.online) {
+            typeBadge.textContent = `ONLINE · ${req.type || 'online'}`;
+            typeBadge.style.background = 'rgba(139, 92, 246, 0.25)';
+            typeBadge.style.color = '#c4b5fd';
+            typeBadge.style.border = '1px solid rgba(139, 92, 246, 0.5)';
+            div.style.borderLeft = '3px solid rgba(139, 92, 246, 0.7)';
+        }
+
         const timeSpan = document.createElement('span');
         timeSpan.style.cssText = 'font-size: 0.65rem; color: var(--text-muted);';
         
@@ -2788,41 +2907,202 @@ document.addEventListener('DOMContentLoaded', () => {
         setupCopyButton('btn-copy-response', 'inspect-response');
     }
 
-    // Fetch and display available models in configurations sidebar
+    // Fetch and display available models in configurations sidebar with lifecycle tracking
     async function loadModels() {
         try {
-            logToTerminal("Fetching available models...");
-            const res = await fetch('/api/models');
-            const data = await res.json();
-            
-            availableModels = data.models || [];
+            logToTerminal("Fetching available models & benchmark tracking...");
+            const [modelsRes, trackingRes, onlineRes] = await Promise.allSettled([
+                fetch('/api/models'),
+                fetch('/api/models/tracking'),
+                fetch('/api/models/online')
+            ]);
+
+            const modelsData = modelsRes.status === 'fulfilled' ? await modelsRes.value.json() : { models: [] };
+            const trackingData = trackingRes.status === 'fulfilled' ? await trackingRes.value.json() : { all_tracked: {}, counts: {} };
+            const onlineData = onlineRes.status === 'fulfilled' ? await onlineRes.value.json() : { models: [] };
+
+            availableModels = modelsData.models || [];
+            const trackedMap = trackingData.all_tracked || {};
+            const onlineModels = onlineData.models || [];
+
             modelCheckboxes.innerHTML = '';
             
-            if (availableModels.length === 0) {
+            if (availableModels.length === 0 && onlineModels.length === 0) {
                 modelCheckboxes.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">No models detected</div>`;
                 return;
             }
 
-            availableModels.forEach((model, idx) => {
+            let newCount = 0;
+            let benchCount = 0;
+
+            function getTrackedMeta(modelId) {
+                if (!modelId) return {};
+                if (trackedMap[modelId]) return trackedMap[modelId];
+                const clean = String(modelId).trim();
+                const isOnline = isOnlineModelName(clean);
+
+                if (isOnline) {
+                    // For online models, strictly match online provider keys
+                    const withoutPrefix = clean.includes(':') ? clean.substring(clean.indexOf(':') + 1) : clean;
+                    for (const [k, v] of Object.entries(trackedMap)) {
+                        if (!isOnlineModelName(k)) continue;
+                        if (k === clean || k === withoutPrefix) return v;
+                        if (k.includes(':') && k.substring(k.indexOf(':') + 1) === withoutPrefix) return v;
+                    }
+                    return {};
+                }
+
+                // For local models, strictly match local keys
+                for (const [k, v] of Object.entries(trackedMap)) {
+                    if (isOnlineModelName(k)) continue;
+                    if (k === clean) return v;
+                    if (k.replace(/--/g, ':') === clean.replace(/--/g, ':')) return v;
+                    if (k.replace(/[:/.]/g, '_') === clean.replace(/[:/.]/g, '_')) return v;
+                    if (k.replace(/:latest$/, '') === clean.replace(/:latest$/, '')) return v;
+                }
+                return {};
+            }
+
+            function createModelCheckboxItem(id, displayName, isOnline = false, isFree = false) {
+                const meta = getTrackedMeta(id);
+                const isBenchmarked = !!(meta.benchmark_count && meta.benchmark_count > 0);
+                const isNew = !isBenchmarked;
+
+                if (isNew) newCount++;
+                if (isBenchmarked) benchCount++;
+
                 const item = document.createElement('label');
                 item.className = 'checkbox-item';
-                
+                item.setAttribute('data-status', isNew ? 'new' : 'benchmarked');
+
                 const input = document.createElement('input');
                 input.type = 'checkbox';
-                input.value = model;
+                input.value = id;
                 input.checked = false;
-                
+
                 const span = document.createElement('span');
                 span.className = 'checkbox-label';
-                span.textContent = model;
-                
+                span.style.display = 'flex';
+                span.style.alignItems = 'center';
+                span.style.justifyContent = 'space-between';
+                span.style.width = '100%';
+                span.style.gap = '0.5rem';
+
+                let badgesHtml = '';
+                if (isFree) {
+                    badgesHtml += '<span style="font-size:0.62rem; background:rgba(34,197,94,0.15); color:#22c55e; padding:1px 4px; border-radius:3px; margin-left:4px; font-weight:700;">FREE</span>';
+                }
+                if (isNew) {
+                    badgesHtml += '<span style="font-size:0.62rem; background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); padding:1px 4px; border-radius:3px; margin-left:4px; font-weight:700;" title="Newly added model awaiting benchmark">🆕 NEW</span>';
+                } else if (isBenchmarked) {
+                    const score = meta.latest_score !== undefined && meta.latest_score !== null ? `${meta.latest_score}%` : 'Done';
+                    badgesHtml += `<span class="badge-benchmarked-score" data-model="${id}" style="font-size:0.62rem; background:rgba(99,102,241,0.22); color:#a5b4fc; border:1px solid rgba(99,102,241,0.45); padding:1px 6px; border-radius:4px; margin-left:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Click to view latest test results for ${displayName} (${meta.benchmark_count}x runs | Last: ${meta.last_benchmarked_at || 'Unknown'})">📊 ${score} ↗</span>`;
+                    badgesHtml += `<span class="badge-delete-benchmarks" data-model="${id}" style="font-size:0.62rem; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); padding:1px 4px; border-radius:4px; margin-left:2px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Delete all saved benchmark results for ${displayName} (model is kept)">🗑</span>`;
+                }
+
+                span.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span><span style="display:flex; gap:2px; flex-shrink:0;">${badgesHtml}</span>`;
+
+                const badgeEl = span.querySelector('.badge-benchmarked-score');
+                if (badgeEl) {
+                    badgeEl.addEventListener('mouseenter', () => {
+                        badgeEl.style.background = 'rgba(99,102,241,0.45)';
+                        badgeEl.style.borderColor = '#818cf8';
+                        badgeEl.style.color = '#ffffff';
+                        badgeEl.style.transform = 'scale(1.05)';
+                    });
+                    badgeEl.addEventListener('mouseleave', () => {
+                        badgeEl.style.background = 'rgba(99,102,241,0.22)';
+                        badgeEl.style.borderColor = 'rgba(99,102,241,0.45)';
+                        badgeEl.style.color = '#a5b4fc';
+                        badgeEl.style.transform = 'none';
+                    });
+                    badgeEl.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        navigateToModelTests(id);
+                    });
+                }
+
+                const deleteBadge = span.querySelector('.badge-delete-benchmarks');
+                if (deleteBadge) {
+                    deleteBadge.addEventListener('mouseenter', () => {
+                        deleteBadge.style.background = 'rgba(239,68,68,0.35)';
+                        deleteBadge.style.borderColor = '#fca5a5';
+                        deleteBadge.style.color = '#fecaca';
+                        deleteBadge.style.transform = 'scale(1.05)';
+                    });
+                    deleteBadge.addEventListener('mouseleave', () => {
+                        deleteBadge.style.background = 'rgba(239,68,68,0.15)';
+                        deleteBadge.style.borderColor = 'rgba(239,68,68,0.4)';
+                        deleteBadge.style.color = '#f87171';
+                        deleteBadge.style.transform = 'none';
+                    });
+                    deleteBadge.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        deleteModelBenchmarks(id, displayName);
+                    });
+                }
+
                 item.appendChild(input);
                 item.appendChild(span);
+                return item;
+            }
+
+            // Local Models
+            availableModels.forEach((model) => {
+                const item = createModelCheckboxItem(model, model, false, false);
                 modelCheckboxes.appendChild(item);
             });
+
+            // Online Models (both active selected and any past benchmarked online models)
+            const activeOnlineIds = new Set(onlineModels.map((m) => m.id));
+            const pastOnlineModels = [];
+            for (const [trackedId, tMeta] of Object.entries(trackedMap)) {
+                if (
+                    isOnlineModelName(trackedId) &&
+                    !activeOnlineIds.has(trackedId) &&
+                    tMeta.benchmark_count > 0
+                ) {
+                    pastOnlineModels.push({
+                        id: trackedId,
+                        name: trackedId,
+                        label: trackedId,
+                        free: false,
+                    });
+                }
+            }
+
+            const allDisplayOnline = [...onlineModels, ...pastOnlineModels];
+            if (allDisplayOnline.length > 0) {
+                const sep = document.createElement('div');
+                sep.className = 'online-models-separator';
+                sep.style.fontSize = '0.7rem';
+                sep.style.fontWeight = '700';
+                sep.style.color = 'var(--color-primary)';
+                sep.style.margin = '0.75rem 0 0.35rem 0';
+                sep.style.textTransform = 'uppercase';
+                sep.style.letterSpacing = '0.05em';
+                sep.textContent = '- Online Provider Models -';
+                modelCheckboxes.appendChild(sep);
+
+                allDisplayOnline.forEach((m) => {
+                    const item = createModelCheckboxItem(m.id, m.label || m.name, true, !!m.free);
+                    modelCheckboxes.appendChild(item);
+                });
+            }
+
+            // Update UI count badges
+            const totalModels = availableModels.length + allDisplayOnline.length;
+            const cntAll = document.getElementById('cnt-models-all');
+            const cntNew = document.getElementById('cnt-models-new');
+            const cntBench = document.getElementById('cnt-models-benchmarked');
+            if (cntAll) cntAll.textContent = totalModels;
+            if (cntNew) cntNew.textContent = newCount;
+            if (cntBench) cntBench.textContent = benchCount;
             
             populateModelSwitcher(availableModels);
-            logToTerminal(`Discovered ${availableModels.length} models from servers`, 'success');
+            logToTerminal(`Discovered ${availableModels.length} local + ${onlineModels.length} online models (${newCount} new, ${benchCount} benchmarked)`, 'success');
         } catch (err) {
             logToTerminal(`Failed to discover models: ${err.message}`, 'error');
         }
@@ -2860,12 +3140,1027 @@ document.addEventListener('DOMContentLoaded', () => {
                 item.appendChild(span);
                 testCheckboxes.appendChild(item);
             });
-            
+
+            await applyResumeDeselect();
+
             logToTerminal(`Loaded ${tests.length} benchmark test cases`, 'success');
         } catch (err) {
             logToTerminal(`Failed to load tests: ${err.message}`, 'error');
         }
     }
+
+    // Populate the benchmark GROUP multi-select from the backend's universal grader.
+    async function loadBenchmarkGroups() {
+        if (!groupCheckboxes) return;
+        try {
+            const res = await fetch('/api/benchmark/groups', { signal: AbortSignal.timeout(5000) });
+            if (!res.ok) throw new Error(`status ${res.status}`);
+            const data = await res.json();
+            const groups = Array.isArray(data) ? data : (data.groups || []);
+            groupCheckboxes.innerHTML = '';
+            if (groups.length === 0) {
+                groupCheckboxes.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">No groups available</div>`;
+                return;
+            }
+            groups.forEach((grp) => {
+                const item = document.createElement('label');
+                item.className = 'checkbox-item';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = grp;
+                input.checked = false; // default: run all groups
+                const span = document.createElement('span');
+                span.className = 'checkbox-label';
+                span.textContent = grp.replace(/_/g, ' ');
+                item.appendChild(input);
+                item.appendChild(span);
+                groupCheckboxes.appendChild(item);
+            });
+            logToTerminal(`Loaded ${groups.length} benchmark groups`, 'success');
+        } catch (err) {
+            logToTerminal(`Failed to load benchmark groups: ${err.message}`, 'error');
+            groupCheckboxes.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Could not load groups</div>`;
+        }
+    }
+
+    // Pre-deselect tests already completed for the selected model(s) when Resume is on.
+    // Completed = present in the model's per-model result file (pass or fail). Re-checking
+    // a test (or turning Resume off) re-includes it for a (re)run that overwrites it.
+    async function applyResumeDeselect() {
+        const resumeChk = document.getElementById('chk-resume');
+        if (!resumeChk || !resumeChk.checked) return;
+        const selected = getSelectedModels();
+        if (selected.length !== 1) return; // only meaningful for a single-model run
+        const model = selected[0];
+        try {
+            const res = await fetch(`/api/benchmarks/completed?model=${encodeURIComponent(model)}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const done = new Set(data.completed || []);
+            if (done.size === 0) return;
+            let deselected = 0;
+            testCheckboxes.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+                if (done.has(box.value)) {
+                    box.checked = false;
+                    deselected++;
+                }
+            });
+            if (deselected > 0) {
+                logToTerminal(`Resume: pre-deselected ${deselected} already-completed tests for ${model}`, 'info');
+            }
+        } catch (err) {
+            /* non-fatal: resume still enforced server-side */
+        }
+    }
+
+    function wireResumeDeselect() {
+        const resumeChk = document.getElementById('chk-resume');
+        if (resumeChk) {
+            resumeChk.addEventListener('change', () => {
+                if (resumeChk.checked) {
+                    applyResumeDeselect();
+                } else {
+                    // Re-enable every test when resume is turned off.
+                    testCheckboxes.querySelectorAll('input[type="checkbox"]').forEach((box) => { box.checked = true; });
+                }
+            });
+            // Re-apply whenever the model selection changes.
+            modelCheckboxes.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+                box.addEventListener('change', () => applyResumeDeselect());
+            });
+        }
+    }
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    let ALL_TESTS = [];
+    let TEST_BROWSER_FILTER = { q: '', kind: 'all', status: 'all', model: '' };
+
+    const TEST_KIND_ICON = { text: '📝', image: '🖼️', html: '🌐', node: '⚡' };
+
+    function _testCardHtml(t) {
+        const kind = (t.kind || 'text').toLowerCase();
+        const icon = TEST_KIND_ICON[kind] || '📝';
+        const atts = t.attachments || [];
+        const attBadges = atts.length
+            ? `<span class="test-card-att">📎 ${atts.length}</span>`
+            : '';
+
+        let runsBadge = '';
+        if (t.models_tested_count > 0) {
+            const passedInfo = `${t.models_passed_count}/${t.models_tested_count} passed`;
+            runsBadge = `<span class="test-card-runs tested" title="Tested on ${t.models_tested_count} model(s): ${escapeHtml((t.models_tested || []).join(', '))}">⚡ ${t.models_tested_count} model${t.models_tested_count === 1 ? '' : 's'} (${passedInfo})</span>`;
+        } else {
+            runsBadge = `<span class="test-card-runs none" title="Not tested on any models yet">⚪ No runs</span>`;
+        }
+
+        const outdatedBadge = t.is_out_of_date
+            ? `<span class="test-card-outdated" title="Test was updated since previous benchmark runs (${escapeHtml((t.out_of_date_models || []).join(', '))})">⚠️ Outdated</span>`
+            : '';
+
+        return `<div class="test-card" data-test-id="${t.id}" role="button" tabindex="0">
+            <div class="test-card-top">
+                <span class="kind-badge kind-${kind}">${icon} ${kind}</span>
+                ${attBadges}
+                ${outdatedBadge}
+            </div>
+            <div class="test-card-label" title="${escapeHtml(t.label)}">${escapeHtml(t.label)}</div>
+            <div class="test-card-footer">
+                <div class="test-card-cat">${escapeHtml((t.category || '').toUpperCase())}</div>
+                ${runsBadge}
+            </div>
+        </div>`;
+    }
+
+    function renderTestBrowser() {
+        const grid = document.getElementById('test-browser-grid');
+        if (!grid) return;
+        const q = (TEST_BROWSER_FILTER.q || '').trim().toLowerCase();
+        const kind = TEST_BROWSER_FILTER.kind || 'all';
+        const status = TEST_BROWSER_FILTER.status || 'all';
+        const modelFilter = TEST_BROWSER_FILTER.model || '';
+        const filtered = ALL_TESTS.filter((t) => {
+            if (kind !== 'all' && (t.kind || 'text').toLowerCase() !== kind) return false;
+            if (status === 'tested' && (!t.models_tested_count || t.models_tested_count === 0)) return false;
+            if (status === 'untested' && (t.models_tested_count > 0)) return false;
+            if (status === 'outdated' && !t.is_out_of_date) return false;
+            if (modelFilter) {
+                const tested = (t.models_tested || []);
+                const hit = tested.some(m => m === modelFilter || m.includes(modelFilter) || modelFilter.includes(m));
+                if (!hit) return false;
+            }
+            if (!q) return true;
+            return (
+                (t.label || '').toLowerCase().includes(q) ||
+                (t.id || '').toLowerCase().includes(q) ||
+                (t.category || '').toLowerCase().includes(q)
+            );
+        });
+        const countEl = document.getElementById('test-browser-count');
+        if (countEl) countEl.textContent = `${filtered.length} test${filtered.length === 1 ? '' : 's'}`;
+        if (!filtered.length) {
+            grid.innerHTML = `<div class="empty-state">No tests match your filter.</div>`;
+            return;
+        }
+        grid.innerHTML = filtered.map(_testCardHtml).join('');
+        grid.querySelectorAll('.test-card').forEach((card) => {
+            const id = card.dataset.testId;
+            card.addEventListener('click', () => openTestPreview(id));
+            card.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openTestPreview(id);
+                }
+            });
+        });
+    }
+
+    async function loadTestBrowser() {
+        const grid = document.getElementById('test-browser-grid');
+        if (!grid) return;
+        grid.innerHTML = `<div class="loading-spinner">Loading tests…</div>`;
+        try {
+            const res = await fetch('/api/tests');
+            const data = await res.json();
+            ALL_TESTS = data.tests || [];
+            populateTestModelSelect();
+            renderTestBrowser();
+        } catch (err) {
+            grid.innerHTML = `<div class="empty-state">Failed to load tests: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    function populateTestModelSelect() {
+        const sel = document.getElementById('test-model-select');
+        if (!sel) return;
+        const models = new Set();
+        ALL_TESTS.forEach(t => (t.models_tested || []).forEach(m => models.add(m)));
+        const sorted = [...models].sort((a, b) => a.localeCompare(b));
+        const current = TEST_BROWSER_FILTER.model || '';
+        sel.innerHTML = '<option value="">All Models</option>' + sorted.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+        if (current && sorted.includes(current)) sel.value = current;
+    }
+
+    // Execute a code attachment (node/js) in a throwaway sandboxed iframe and pipe
+    // its console output back into outEl. This is what makes the Test Browser "run"
+    // complete code artifacts in the card, not just preview them statically.
+    // --- Code sandbox terminal -------------------------------------------------
+    // Text-based languages (Python/Node) run in a short-lived Docker container
+    // (alpaca-sandbox image) streamed over SocketIO, giving a small interactive
+    // terminal where multiple inputs/outputs can be exercised. HTML stays as a
+    // live iframe.
+    function detectLang(code) {
+        const low = (code || '').toLowerCase();
+        const py = (low.match(/def\s|import\s|print\(|self\./g) || []).length;
+        const js = (low.match(/console\.log|function\s|=>>|require\(|document\./g) || []).length;
+        if (py === 0 && js === 0) return 'python';
+        return py >= js ? 'python' : 'node';
+    }
+
+    let _termBuilt = false;
+    let _termOut = null;
+    let _termInput = null;
+    let _termLang = null;
+    let _termOpen = false;
+
+    function buildTerminal() {
+        if (_termBuilt) return;
+        const overlay = document.createElement('div');
+        overlay.id = 'sandbox-terminal-overlay';
+        overlay.className = 'overlay-hidden';
+        const panel = document.createElement('div');
+        panel.className = 'sandbox-terminal-panel';
+        const bar = document.createElement('div');
+        bar.className = 'sandbox-terminal-bar';
+        const title = document.createElement('span');
+        title.className = 'sandbox-terminal-title';
+        title.textContent = 'Terminal';
+        _termLang = document.createElement('span');
+        _termLang.className = 'sandbox-terminal-lang';
+        const stopBtn = document.createElement('button');
+        stopBtn.className = 'btn-run-code';
+        stopBtn.textContent = 'Stop';
+        stopBtn.addEventListener('click', () => { socket.emit('sandbox_kill'); appendTerm('\n[stopped]\n'); });
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'btn-run-code';
+        closeBtn.textContent = 'Close';
+        closeBtn.addEventListener('click', () => closeTerminal());
+        bar.appendChild(title);
+        bar.appendChild(_termLang);
+        bar.appendChild(stopBtn);
+        bar.appendChild(closeBtn);
+        _termOut = document.createElement('pre');
+        _termOut.className = 'sandbox-terminal-out';
+        _termInput = document.createElement('input');
+        _termInput.className = 'sandbox-terminal-in';
+        _termInput.type = 'text';
+        _termInput.placeholder = 'Type input and press Enter (multiple interactions supported)';
+        _termInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const v = _termInput.value;
+                _termInput.value = '';
+                appendTerm('> ' + v + '\n');
+                socket.emit('sandbox_input', { text: v + '\n' });
+            }
+        });
+        panel.appendChild(bar);
+        panel.appendChild(_termOut);
+        panel.appendChild(_termInput);
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+        _termBuilt = true;
+    }
+
+    function appendTerm(text, isErr) {
+        if (!_termOut) return;
+        const span = document.createElement('span');
+        span.textContent = text;
+        if (isErr) span.style.color = '#ff7b72';
+        _termOut.appendChild(span);
+        _termOut.scrollTop = _termOut.scrollHeight;
+    }
+
+    // Pull the real code out of a model response. Model outputs are frequently
+    // wrapped in markdown prose with a fenced code block; running the whole
+    // response as code fails. Extract the fenced block (longest match wins),
+    // falling back to the raw text when no fence is present.
+    function extractRunnableCode(text) {
+        const fences = [...text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)];
+        if (fences.length) {
+            let best = '';
+            for (const f of fences) {
+                if (f[1].trim().length > best.length) best = f[1].trim();
+            }
+            return best;
+        }
+        return text;
+    }
+
+    // Categories whose model responses typically contain runnable code/UI output.
+    const CODE_UI_CATEGORIES = ['coding', 'gamedev', 'appdev', 'webdev', 'debugging', 'cpp', 'java', 'linux_admin', 'database'];
+
+    function isCodeUiCategory(cat) {
+        return CODE_UI_CATEGORIES.includes(cat);
+    }
+
+    // Infer which sandbox language to serve a response under.
+    function inferServeLang(category, response) {
+        if (category === 'webdev') return 'html';
+        if (/\bdef\s|\bimport\s/.test(response)) return 'python';
+        if (/console\.log|\bfunction\s/.test(response)) return 'node';
+        return 'python';
+    }
+
+    // Graphical (X11) code — pygame/tkinter etc. — must be served through the noVNC
+    // UI path (Xvfb + websockify), not serve_app, which expects an HTTP server on the
+    // published port. serve_app on such code leaves nothing listening -> connection refused.
+    function isGraphicalUiCode(response) {
+        return /import\s+pygame|\bfrom\s+pygame\b|import\s+tkinter|\bfrom\s+tkinter\b|pygame\.init\s*\(|import\s+arcade|\bimport\s+pyglet/.test(response);
+    }
+
+    // Build a "Serve & View" button that launches the extracted code on a port and
+    // opens it in a new browser tab. Also wires a Stop control bound to the container id.
+    function createServeButton(response, category) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-secondary btn-sm serve-view-btn';
+        btn.textContent = '▶ Serve & View';
+        btn.style.cssText = 'padding: 3px 10px; font-size: 0.7rem; cursor:pointer;';
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const code = extractRunnableCode(response || '');
+            if (!code.trim()) {
+                showToast('No runnable code found in response', 'error');
+                return;
+            }
+            const lang = inferServeLang(category, code);
+            btn.disabled = true;
+            btn.textContent = '⏳ Serving...';
+            try {
+                const graphical = isGraphicalUiCode(code);
+                if (graphical) {
+                    // Pygame / other X11 apps: launch under Xvfb and stream via noVNC launcher.
+                    const res = await fetch('/api/sandbox/serve_ui', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code: code, lang: 'python' })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.error) {
+                        throw new Error(data.error || `status ${res.status}`);
+                    }
+                    const launcherUrl = `/ui/launcher/${data.container_id}`;
+                    showToast(`UI streaming on ${launcherUrl}`, 'success');
+                    window.open(launcherUrl, '_blank');
+                    addServeStopControl(btn, data.container_id);
+                } else {
+                    const res = await fetch('/api/sandbox/serve', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code: code, lang: lang })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.error) {
+                        throw new Error(data.error || `status ${res.status}`);
+                    }
+                    // Tunnel the app through the dashboard origin (port 5000) so it works
+                    // from the LAN, a VPN, or an external/forwarded hostname alike — never
+                    // assume a direct-to-sandbox-port URL (those are random and unreachable
+                    // off the local machine).
+                    const serveUrl = `/serve/${data.container_id}/`;
+                    showToast(`Serving on ${serveUrl}`, 'success');
+                    window.open(serveUrl, '_blank');
+                    addServeStopControl(btn, data.container_id);
+                }
+            } catch (err) {
+                showToast(`Serve failed: ${err.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '▶ Serve & View';
+            }
+        });
+        return btn;
+    }
+
+    function addServeStopControl(btn, containerId) {
+        const parent = btn.parentNode;
+        if (!parent) return;
+        const existing = parent.querySelector('.serve-stop-btn');
+        if (existing) existing.remove();
+        const stopBtn = document.createElement('button');
+        stopBtn.className = 'btn btn-danger btn-sm serve-stop-btn';
+        stopBtn.textContent = '■ Stop';
+        stopBtn.style.cssText = 'padding: 3px 10px; font-size: 0.7rem; cursor:pointer;';
+        stopBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            try {
+                const res = await fetch('/api/sandbox/stop_serve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ container_id: containerId })
+                });
+                const data = await res.json();
+                showToast(data.stopped ? 'Server stopped' : (`Stop failed: ${data.error || ''}`), data.stopped ? 'success' : 'error');
+            } catch (err) {
+                showToast(`Stop error: ${err.message}`, 'error');
+            }
+            stopBtn.remove();
+        });
+        parent.appendChild(stopBtn);
+    }
+
+    function openTerminal(code, langHint, initialInput) {
+        buildTerminal();
+        _termOut.textContent = '';
+        const lang = langHint || detectLang(code);
+        _termLang.textContent = lang;
+        const ov = document.getElementById('sandbox-terminal-overlay');
+        ov.classList.remove('overlay-hidden');
+        ov.classList.add('open');
+        _termOpen = true;
+        _termInput.focus();
+        socket.emit('sandbox_run', { code: code, lang: lang, input: initialInput || '' });
+    }
+
+    function closeTerminal() {
+        const ov = document.getElementById('sandbox-terminal-overlay');
+        if (ov) {
+            ov.classList.add('overlay-hidden');
+            ov.classList.remove('open');
+        }
+        _termOpen = false;
+        socket.emit('sandbox_kill');
+    }
+
+    socket.on('sandbox_started', (d) => {
+        if (_termLang && d && d.lang) _termLang.textContent = d.lang;
+        appendTerm('[connected - ' + (d ? d.lang : '') + ' sandbox ready]\n');
+    });
+    socket.on('sandbox_out', (txt) => { appendTerm(txt || ''); });
+    socket.on('sandbox_error', (txt) => { appendTerm('\n[error] ' + (txt || '') + '\n', true); });
+    socket.on('sandbox_done', () => { appendTerm('\n[process exited]\n'); });
+
+    // Run a model-produced response (finished code) directly in the browser. HTML/3js
+    // renders live in a sandboxed iframe; node/js executes in a sandbox and streams its
+    // console output. This satisfies "any finished code that is complete should be able
+    // to be ran" for benchmark outputs, not just static test attachments.
+    function openResponseRunner(responseText, label, thinkingText) {
+        const overlay = document.getElementById('test-preview-overlay');
+        const title = document.getElementById('test-preview-title');
+        const meta = document.getElementById('test-preview-meta');
+        const promptEl = document.getElementById('test-preview-prompt');
+        const stage = document.getElementById('test-preview-stage');
+        const expectedEl = document.getElementById('test-preview-expected');
+        const downloadBtn = document.getElementById('btn-download-test');
+        title.textContent = '▶ Run: ' + (label || 'response');
+        meta.innerHTML = '<span class="kind-badge kind-node">RUN</span>';
+        promptEl.textContent = 'Model-produced code (runnable in browser):';
+        expectedEl.textContent = '';
+        stage.innerHTML = '';
+        const txt = responseText || '';
+        const thinking = thinkingText || '';
+        if (thinking) {
+            const thWrap = document.createElement('div');
+            thWrap.className = 'att-run-wrap thinking-wrap';
+            const thBar = document.createElement('div');
+            thBar.className = 'att-run-bar';
+            const thBtn = document.createElement('button');
+            thBtn.className = 'btn-run-code';
+            thBtn.textContent = '🧠 Show thinking';
+            const thPre = document.createElement('pre');
+            thPre.className = 'code-display-block thinking-block';
+            thPre.style.display = 'none';
+            thPre.textContent = thinking;
+            thBtn.addEventListener('click', () => {
+                const hidden = thPre.style.display === 'none';
+                thPre.style.display = hidden ? 'block' : 'none';
+                thBtn.textContent = hidden ? '🧠 Hide thinking' : '🧠 Show thinking';
+            });
+            thBar.appendChild(thBtn);
+            thWrap.appendChild(thBar);
+            thWrap.appendChild(thPre);
+            stage.appendChild(thWrap);
+        }
+        const isHtml = /<!doctype|<html|<script/i.test(txt);
+        if (isHtml) {
+            const note = document.createElement('div');
+            note.className = 'test-preview-note';
+            note.textContent = '▶ Running live HTML/3js output';
+            stage.appendChild(note);
+            const frame = document.createElement('iframe');
+            frame.className = 'test-preview-iframe';
+            frame.setAttribute('sandbox', 'allow-scripts');
+            frame.srcdoc = txt;
+            stage.appendChild(frame);
+        } else {
+            const wrap = document.createElement('div');
+            wrap.className = 'att-run-wrap';
+            const bar = document.createElement('div');
+            bar.className = 'att-run-bar';
+            const runBtn = document.createElement('button');
+            runBtn.className = 'btn-run-code';
+            runBtn.textContent = '▶ Run';
+            const uiBtn = document.createElement('button');
+            uiBtn.className = 'btn-run-code';
+            uiBtn.style.marginLeft = '0.5rem';
+            uiBtn.textContent = '🖥 View UI';
+            const out = document.createElement('div');
+            out.className = 'code-run-output';
+            out.textContent = 'Output appears here after Run.';
+            const pre = document.createElement('pre');
+            pre.className = 'code-display-block test-preview-code';
+            const code = extractRunnableCode(txt);
+            pre.textContent = code;
+            const stdin = document.createElement('textarea');
+            stdin.className = 'code-input-stdin';
+            stdin.placeholder = 'Input (stdin) - one line per prompt()/input() call';
+            stdin.rows = 2;
+            bar.appendChild(runBtn);
+            bar.appendChild(uiBtn);
+            wrap.appendChild(bar);
+            wrap.appendChild(stdin);
+            wrap.appendChild(pre);
+            wrap.appendChild(out);
+            stage.appendChild(wrap);
+            runBtn.addEventListener('click', () => openTerminal(code, null, stdin.value));
+            uiBtn.addEventListener('click', () => openUiViewer(code, label, thinking));
+        }
+        if (downloadBtn) {
+            downloadBtn.onclick = () => {
+                const blob = new Blob([txt], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = (label || 'response') + '.txt';
+                a.click();
+                URL.revokeObjectURL(url);
+            };
+        }
+        overlay.classList.add('open');
+    }
+
+    function openUiViewer(responseText, label, thinkingText) {
+        const overlay = document.getElementById('test-preview-overlay');
+        const title = document.getElementById('test-preview-title');
+        const meta = document.getElementById('test-preview-meta');
+        const promptEl = document.getElementById('test-preview-prompt');
+        const stage = document.getElementById('test-preview-stage');
+        const expectedEl = document.getElementById('test-preview-expected');
+        const downloadBtn = document.getElementById('btn-download-test');
+        title.textContent = '🖥 UI Launcher: ' + (label || 'app');
+        meta.innerHTML = '<span class="kind-badge kind-node">UI</span>';
+        promptEl.textContent = 'Model-produced UI code running live in a sandbox container (noVNC). Use the tools below to troubleshoot.';
+        expectedEl.textContent = '';
+        stage.innerHTML = '';
+        const txt = responseText || '';
+        if (thinkingText) {
+            const thWrap = document.createElement('div');
+            thWrap.className = 'att-run-wrap thinking-wrap';
+            const thBar = document.createElement('div');
+            thBar.className = 'att-run-bar';
+            const thBtn = document.createElement('button');
+            thBtn.className = 'btn-run-code';
+            thBtn.textContent = '🧠 Show thinking';
+            const thPre = document.createElement('pre');
+            thPre.className = 'code-display-block thinking-block';
+            thPre.style.display = 'none';
+            thPre.textContent = thinkingText;
+            thBtn.addEventListener('click', () => {
+                const hidden = thPre.style.display === 'none';
+                thPre.style.display = hidden ? 'block' : 'none';
+                thBtn.textContent = hidden ? '🧠 Hide thinking' : '🧠 Show thinking';
+            });
+            thBar.appendChild(thBtn);
+            thWrap.appendChild(thBar);
+            thWrap.appendChild(thPre);
+            stage.appendChild(thWrap);
+        }
+        const code = extractRunnableCode(txt);
+        const note = document.createElement('div');
+        note.className = 'test-preview-note';
+        note.textContent = '▶ Starting X11 app in sandbox (Xvfb + x11vnc + websockify)…';
+        stage.appendChild(note);
+        const status = document.createElement('div');
+        status.className = 'code-run-output';
+        status.textContent = 'Contacting sandbox…';
+        stage.appendChild(status);
+        const frame = document.createElement('iframe');
+        frame.className = 'test-preview-iframe ui-live-iframe';
+        frame.setAttribute('allowfullscreen', 'true');
+        frame.setAttribute('allow', 'fullscreen');
+        frame.style.display = 'none';
+        stage.appendChild(frame);
+
+        const toolRow = document.createElement('div');
+        toolRow.className = 'ui-toolbar';
+        stage.appendChild(toolRow);
+        const termPanel = document.createElement('div');
+        termPanel.className = 'ui-tool-panel';
+        termPanel.style.display = 'none';
+        stage.appendChild(termPanel);
+        const logPanel = document.createElement('div');
+        logPanel.className = 'ui-tool-panel';
+        logPanel.style.display = 'none';
+        stage.appendChild(logPanel);
+        const shotPanel = document.createElement('div');
+        shotPanel.className = 'ui-tool-panel';
+        shotPanel.style.display = 'none';
+        stage.appendChild(shotPanel);
+
+        const modalContainer = overlay.querySelector('.modal-container');
+        const expandBtn = document.createElement('button');
+        expandBtn.className = 'btn-run-code ui-tool-btn';
+        expandBtn.textContent = '⛶ Expand';
+        expandBtn.title = 'Open the noVNC stream in a new tab (full screen)';
+        expandBtn.style.display = 'none';
+        expandBtn.addEventListener('click', () => {
+            if (containerId) {
+                window.open(`/ui/launcher/${containerId}`, '_blank');
+            }
+        });
+        toolRow.appendChild(expandBtn);
+
+        const pre = document.createElement('pre');
+        pre.className = 'code-display-block test-preview-code';
+        pre.textContent = code;
+        stage.appendChild(pre);
+
+        const stopBtn = document.createElement('button');
+        stopBtn.className = 'btn-run-code';
+        stopBtn.style.display = 'none';
+        stopBtn.textContent = '⏹ Stop UI';
+        stage.appendChild(stopBtn);
+
+        let containerId = null;
+        const uiFetch = (path, body) =>
+            fetch(path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            }).then((r) => r.json().then((j) => ({ ok: r.ok, j })));
+
+        const mkTool = (text, titleAttr, handler) => {
+            const b = document.createElement('button');
+            b.className = 'btn-run-code ui-tool-btn';
+            b.textContent = text;
+            b.title = titleAttr || '';
+            b.addEventListener('click', handler);
+            toolRow.appendChild(b);
+            return b;
+        };
+        const showPanel = (panel) => {
+            [termPanel, logPanel, shotPanel].forEach((p) => { p.style.display = p === panel ? 'block' : 'none'; });
+        };
+
+        fetch('/api/sandbox/serve_ui', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code, lang: 'python' }),
+        })
+            .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+            .then(({ ok, j }) => {
+                if (!ok || j.error) throw new Error(j.error || 'serve_ui failed');
+                containerId = j.container_id;
+                note.textContent = '▶ Live X11 app streaming below (noVNC).';
+                status.textContent = 'Connected. Interact via mouse/keyboard in the window.';
+                frame.style.display = 'block';
+                frame.src = `/serve/${j.container_id}/vnc.html?autoconnect=true&resize=scale&path=/serve/ws/${j.container_id}/websockify`;
+                stopBtn.style.display = 'inline-block';
+                expandBtn.style.display = 'inline-block';
+
+                mkTool('💻 Terminal', 'Run shell commands inside the container', () => showPanel(termPanel));
+                mkTool('📜 App Log', 'Show app stdout/exit code', () => showPanel(logPanel));
+                mkTool('📷 Screenshot', 'Capture the current Xvfb framebuffer', () => showPanel(shotPanel));
+                mkTool('🔄 Restart App', 'Kill and relaunch the app', () => {
+                    status.textContent = 'Restarting app…';
+                    uiFetch('/api/sandbox/ui/restart', { container_id: containerId })
+                        .then(({ ok, j }) => {
+                            if (!ok || j.error) throw new Error(j.error || 'restart failed');
+                            status.textContent = 'App relaunched.';
+                        })
+                        .catch((e) => { status.textContent = `Restart failed: ${e.message}`; });
+                });
+
+                const cmdInput = document.createElement('input');
+                cmdInput.className = 'ui-term-input';
+                cmdInput.placeholder = 'e.g. ls /tmp; cat /tmp/ui_stdout.txt; DISPLAY=:99 xdpyinfo | head';
+                cmdInput.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Enter') cmdRunBtn.click();
+                });
+                const cmdRunBtn = mkTool('▶ Run', 'Execute the command', () => {
+                    const cmd = cmdInput.value.trim();
+                    if (!cmd) return;
+                    const outPre = termPanel.querySelector('pre.ui-term-out');
+                    outPre.textContent += `\n$ ${cmd}\n`;
+                    outPre.scrollTop = outPre.scrollHeight;
+                    uiFetch('/api/sandbox/ui/exec', { container_id: containerId, command: cmd })
+                        .then(({ ok, j }) => {
+                            if (!ok || j.error) throw new Error(j.error || 'exec failed');
+                            outPre.textContent += (j.output || '(no output)') + '\n';
+                            outPre.scrollTop = outPre.scrollHeight;
+                        })
+                        .catch((e) => { outPre.textContent += `[error] ${e.message}\n`; });
+                });
+                cmdRunBtn.disabled = true;
+                cmdInput.disabled = true;
+                const outPre = document.createElement('pre');
+                outPre.className = 'code-display-block ui-term-out';
+                outPre.textContent = '# sandbox terminal (runs as sandbox user, DISPLAY=:99)\n';
+                termPanel.appendChild(cmdInput);
+                termPanel.appendChild(cmdRunBtn);
+                termPanel.appendChild(outPre);
+                cmdInput.disabled = false;
+                cmdRunBtn.disabled = false;
+                cmdInput.focus();
+
+                const logPre = document.createElement('pre');
+                logPre.className = 'code-display-block ui-term-out';
+                logPre.textContent = '# app runtime state\n';
+                logPanel.appendChild(logPre);
+                const logBtn = mkTool('🔄 Refresh Log', '', () => {
+                    uiFetch('/api/sandbox/ui/status', { container_id: containerId })
+                        .then(({ ok, j }) => {
+                            if (!ok || j.error) throw new Error(j.error || 'status failed');
+                            logPre.textContent =
+                                `running: ${j.running}\n` +
+                                `app_pid: ${j.app_pid || 'n/a'}\n` +
+                                `app_exitcode: ${j.app_exitcode === null ? 'still running' : j.app_exitcode}\n` +
+                                `\n--- stdout (tail) ---\n${j.stdout_tail || '(no output)'}`;
+                        })
+                        .catch((e) => { logPre.textContent += `\n[error] ${e.message}\n`; });
+                });
+
+                const shotImg = document.createElement('img');
+                shotImg.className = 'test-preview-image ui-shot-img';
+                shotPanel.appendChild(shotImg);
+                const shotBtn = mkTool('📷 Capture', '', () => {
+                    shotImg.removeAttribute('src');
+                    uiFetch('/api/sandbox/ui/screenshot', { container_id: containerId })
+                        .then(({ ok, j }) => {
+                            if (!ok || j.error) throw new Error(j.error || 'screenshot failed');
+                            if (!j.image) throw new Error('no image returned');
+                            shotImg.src = 'data:image/png;base64,' + j.image;
+                        })
+                        .catch((e) => { shotPanel.insertAdjacentHTML('beforeend', `<div class="code-run-output">[error] ${escapeHtml(e.message)}</div>`); });
+                });
+            })
+            .catch((e) => {
+                status.textContent = `UI launch failed: ${e.message}`;
+            });
+        stopBtn.addEventListener('click', () => {
+            stopBtn.disabled = true;
+            if (containerId) {
+                fetch('/api/sandbox/stop_serve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ container_id: containerId }),
+                }).catch(() => {});
+            }
+            status.textContent = 'UI stopped.';
+            frame.style.display = 'none';
+            expandBtn.style.display = 'none';
+        });
+        if (downloadBtn) {
+            downloadBtn.onclick = () => {
+                const blob = new Blob([txt], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = (label || 'response') + '.txt';
+                a.click();
+                URL.revokeObjectURL(url);
+            };
+        }
+        overlay.classList.add('open');
+    }
+
+    function openTestPreview(testId) {
+        const t = ALL_TESTS.find((x) => x.id === testId);
+        if (!t) return;
+        const kind = (t.kind || 'text').toLowerCase();
+        const icon = TEST_KIND_ICON[kind] || '📝';
+        const overlay = document.getElementById('test-preview-overlay');
+        const title = document.getElementById('test-preview-title');
+        const meta = document.getElementById('test-preview-meta');
+        const promptEl = document.getElementById('test-preview-prompt');
+        const stage = document.getElementById('test-preview-stage');
+        const expectedEl = document.getElementById('test-preview-expected');
+        const downloadBtn = document.getElementById('btn-download-test');
+        const outdatedAlert = document.getElementById('test-preview-outdated-alert');
+        const runsDetails = document.getElementById('test-preview-runs-details');
+
+        title.textContent = `${icon} ${t.label || t.id}`;
+
+        if (outdatedAlert) {
+            if (t.is_out_of_date) {
+                outdatedAlert.classList.remove('d-none');
+                outdatedAlert.innerHTML = `<strong>⚠️ Test Definition Modified (Results Out of Date)</strong>` +
+                    `<p>This test definition was modified after benchmarks were recorded on ${t.out_of_date_count || 'some'} model(s) (${escapeHtml((t.out_of_date_models || []).join(', '))}). Re-running the benchmark for these models will evaluate against the current test specification.</p>`;
+            } else {
+                outdatedAlert.classList.add('d-none');
+            }
+        }
+
+        if (runsDetails) {
+            if (t.models_tested_count > 0) {
+                runsDetails.classList.remove('d-none');
+                const modelList = (t.models_tested || []).map((m) => {
+                    const passed = (t.models_passed || []).includes(m);
+                    return `<span class="test-runs-pill ${passed ? 'passed' : 'failed'}">${passed ? '✓' : '✗'} ${escapeHtml(m)}</span>`;
+                }).join(' ');
+                runsDetails.innerHTML = `<div><strong>Tested on ${t.models_tested_count} model${t.models_tested_count === 1 ? '' : 's'}:</strong>${t.last_run ? ` <span style="color:var(--text-muted); margin-left:0.5rem;">(Last run: ${escapeHtml(t.last_run)})</span>` : ''}</div>` +
+                    `<div style="display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.35rem;">${modelList}</div>`;
+            } else {
+                runsDetails.classList.remove('d-none');
+                runsDetails.innerHTML = `<span style="color:var(--text-muted);">⚪ This test has not been executed on any models yet.</span>`;
+            }
+        }
+
+        meta.innerHTML = `<span class="kind-badge kind-${kind}">${kind}</span>` +
+            `<span class="test-meta-cat">${escapeHtml((t.category || '').toUpperCase())}</span>` +
+            (t.type ? `<span class="test-meta-type">${escapeHtml(t.type)}</span>` : '');
+        promptEl.textContent = t.prompt || '(no prompt)';
+
+        stage.innerHTML = '';
+        const atts = t.attachments || [];
+        if (kind === 'image' && atts.length) {
+            const note = document.createElement('div');
+            note.className = 'test-preview-note';
+            note.textContent = 'Source image (attachment) - shown to confirm it is a readable image';
+            stage.appendChild(note);
+            atts.forEach((a) => {
+                const img = document.createElement('img');
+                img.className = 'test-preview-image';
+                img.src = `/api/tests/${encodeURIComponent(t.id)}/attachment/${encodeURIComponent(a.name)}`;
+                img.alt = a.name;
+                stage.appendChild(img);
+            });
+        } else if (kind === 'html' && atts.length) {
+            const note = document.createElement('div');
+            note.className = 'test-preview-note';
+            note.textContent = '▶ Running live HTML/3js preview';
+            stage.appendChild(note);
+            const frame = document.createElement('iframe');
+            frame.className = 'test-preview-iframe';
+            frame.setAttribute('sandbox', 'allow-scripts');
+            frame.srcdoc = '';
+            stage.appendChild(frame);
+            fetch(`/api/tests/${encodeURIComponent(t.id)}/attachment/${encodeURIComponent(atts[0].name)}`)
+                .then((r) => r.text())
+                .then((txt) => { frame.srcdoc = txt; })
+                .catch(() => {});
+        } else if (atts.length) {
+            // code attachments (node/js): show source plus a Run button that executes
+            // the code in a sandbox and streams its console output back into the card.
+            atts.forEach((a) => {
+                const wrap = document.createElement('div');
+                wrap.className = 'att-run-wrap';
+                const bar = document.createElement('div');
+                bar.className = 'att-run-bar';
+                const runBtn = document.createElement('button');
+                runBtn.className = 'btn-run-code';
+                runBtn.textContent = '▶ Run';
+                const out = document.createElement('div');
+                out.className = 'code-run-output';
+                out.textContent = 'Output appears here after Run.';
+                const pre = document.createElement('pre');
+                pre.className = 'code-display-block test-preview-code';
+                pre.textContent = `Loading ${a.name}…`;
+                const stdin = document.createElement('textarea');
+                stdin.className = 'code-input-stdin';
+                stdin.placeholder = 'Input (stdin) - one line per prompt()/input() call';
+                stdin.rows = 2;
+                bar.appendChild(runBtn);
+                wrap.appendChild(bar);
+                wrap.appendChild(stdin);
+                wrap.appendChild(pre);
+                wrap.appendChild(out);
+                stage.appendChild(wrap);
+                fetch(`/api/tests/${encodeURIComponent(t.id)}/attachment/${encodeURIComponent(a.name)}`)
+                    .then((r) => r.text())
+                    .then((txt) => {
+                        pre.textContent = txt;
+                        runBtn.addEventListener('click', () => openTerminal(txt, null, stdin.value));
+                    })
+                    .catch((e) => { pre.textContent = `Failed to load ${a.name}: ${e.message}`; });
+            });
+        } else {
+            stage.innerHTML = `<div class="empty-state">This test has no attachments to preview.</div>`;
+        }
+
+        // Model-produced outputs (e.g. games the model wrote): every response is
+        // downloadable, and web-based ones (HTML/3js) are playable in the card.
+        fetch(`/api/tests/${encodeURIComponent(t.id)}/responses`)
+            .then((r) => r.json())
+            .then((data) => {
+                const responses = data.responses || [];
+                if (!responses.length) return;
+                const sec = document.createElement('div');
+                sec.className = 'model-outputs-section';
+                const h = document.createElement('div');
+                h.className = 'test-preview-note';
+                h.textContent = `Model-produced outputs (${responses.length}): download, or play if web-based`;
+                sec.appendChild(h);
+                responses.forEach((resp) => {
+                    const row = document.createElement('div');
+                    row.className = 'att-run-wrap';
+                    const bar = document.createElement('div');
+                    bar.className = 'att-run-bar';
+                    const lbl = document.createElement('span');
+                    lbl.className = 'model-output-label';
+                    lbl.textContent = `${resp.model}${resp.passed === false ? ' (failed)' : ''} - ${resp.response_len} chars`;
+                    if (resp.is_html) {
+                        const playBtn = document.createElement('button');
+                        playBtn.className = 'btn-run-code';
+                        playBtn.textContent = '▶ Play';
+                        playBtn.addEventListener('click', () => openResponseRunner(resp.response, resp.model, resp.thinking));
+                        bar.appendChild(playBtn);
+                    } else {
+                        const runBtn = document.createElement('button');
+                        runBtn.className = 'btn-run-code';
+                        runBtn.textContent = '▶ Run';
+                        runBtn.addEventListener('click', () => openResponseRunner(resp.response, resp.model, resp.thinking));
+                        bar.appendChild(runBtn);
+                        const uiBtn = document.createElement('button');
+                        uiBtn.className = 'btn-run-code';
+                        uiBtn.style.marginLeft = '0.5rem';
+                        uiBtn.textContent = '🖥 View UI';
+                        uiBtn.addEventListener('click', () => openUiViewer(resp.response, resp.model, resp.thinking));
+                        bar.appendChild(uiBtn);
+                    }
+                    const dlBtn = document.createElement('button');
+                    dlBtn.className = 'btn-run-code';
+                    dlBtn.style.marginLeft = '0.5rem';
+                    dlBtn.textContent = '⬇ Download';
+                    dlBtn.addEventListener('click', () => {
+                        const blob = new Blob([resp.response], { type: 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${t.id}_${resp.model.replace(/[^a-z0-9]/gi, '_')}.txt`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                    });
+                    bar.appendChild(dlBtn);
+                    bar.appendChild(lbl);
+                    const pre = document.createElement('pre');
+                    pre.className = 'code-display-block test-preview-code';
+                    pre.textContent = resp.response;
+                    row.appendChild(bar);
+                    row.appendChild(pre);
+                    sec.appendChild(row);
+                });
+                stage.appendChild(sec);
+            })
+            .catch(() => {});
+
+        expectedEl.textContent = t.expected ? `Expected: ${t.expected}` : '';
+        downloadBtn.onclick = () => {
+            window.location.href = `/api/tests/${encodeURIComponent(t.id)}/download`;
+        };
+        overlay.classList.add('open');
+    }
+
+    function closeTestPreview() {
+        const overlay = document.getElementById('test-preview-overlay');
+        if (overlay) overlay.classList.remove('open');
+    }
+
+    // Wire up Test Browser toolbar + preview modal
+    (function wireTestBrowser() {
+        const search = document.getElementById('test-search');
+        if (search) {
+            search.addEventListener('input', (e) => {
+                TEST_BROWSER_FILTER.q = e.target.value;
+                renderTestBrowser();
+            });
+        }
+        const filters = document.getElementById('test-kind-filters');
+        if (filters) {
+            filters.querySelectorAll('.kind-filter').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    filters.querySelectorAll('.kind-filter').forEach((b) => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    TEST_BROWSER_FILTER.kind = btn.dataset.kind;
+                    renderTestBrowser();
+                });
+            });
+        }
+        const statusFilters = document.getElementById('test-status-filters');
+        if (statusFilters) {
+            statusFilters.querySelectorAll('.kind-filter').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    statusFilters.querySelectorAll('.kind-filter').forEach((b) => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    TEST_BROWSER_FILTER.status = btn.dataset.status;
+                    renderTestBrowser();
+                });
+            });
+        }
+        const modelSelect = document.getElementById('test-model-select');
+        if (modelSelect) {
+            modelSelect.addEventListener('change', (e) => {
+                TEST_BROWSER_FILTER.model = e.target.value;
+                renderTestBrowser();
+            });
+        }
+        const closeBtn = document.getElementById('test-preview-close');
+        if (closeBtn) closeBtn.addEventListener('click', closeTestPreview);
+        const overlay = document.getElementById('test-preview-overlay');
+        if (overlay) {
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) closeTestPreview();
+            });
+        }
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeTestPreview();
+        });
+    })();
 
     async function loadSharedTests() {
         const container = document.getElementById('shared-test-checkboxes');
@@ -2931,7 +4226,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     const detail = await dr.json();
                     if (result.type === 'shared_llm') {
                         (detail.results || []).forEach(modelRecord => {
-                            if (!sharedResults.find(r => r.model === modelRecord.model)) {
+                            const existing = sharedResults.find(r => r.model === modelRecord.model);
+                            if (result.per_model) {
+                                // Per-model files are authoritative: overwrite stale run-file data
+                                if (existing) sharedResults[sharedResults.indexOf(existing)] = modelRecord;
+                                else sharedResults.push(modelRecord);
+                            } else if (!existing) {
                                 sharedResults.push(modelRecord);
                             }
                         });
@@ -2940,7 +4240,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     } else {
                         (detail.results || []).forEach(modelRecord => {
-                            if (!generalResults.find(r => r.model === modelRecord.model)) {
+                            const existing = generalResults.find(r => r.model === modelRecord.model);
+                            if (result.per_model) {
+                                // Per-model files are authoritative: overwrite stale run-file data
+                                if (existing) generalResults[generalResults.indexOf(existing)] = modelRecord;
+                                else generalResults.push(modelRecord);
+                            } else if (!existing) {
                                 generalResults.push(modelRecord);
                             }
                         });
@@ -2967,6 +4272,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             results.forEach(result => {
+                // Per-model files are an internal storage detail; only show run snapshots in history.
+                if (result.per_model) {
+                    return;
+                }
                 const item = document.createElement('div');
                 item.className = 'history-item active'; // all files contribute to merged view
                 
@@ -3004,16 +4313,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 item.style.position = 'relative';
                 const deleteBtn = document.createElement('span');
                 deleteBtn.textContent = 'Delete';
-                deleteBtn.style.cssText = 'position: absolute; right: 8px; top: 8px; cursor: pointer; font-size: 0.65rem; color: #ef4444; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); padding: 2px 6px; border-radius: 4px; font-weight: 600; text-transform: uppercase; transition: all 0.2s; z-index: 100;';
+                deleteBtn.className = 'history-delete-btn';
+                deleteBtn.style.cssText = 'position: absolute; right: 8px; top: 8px; z-index: 100; text-transform: uppercase;';
                 deleteBtn.title = 'Delete result file';
-                deleteBtn.addEventListener('mouseenter', () => {
-                    deleteBtn.style.background = '#ef4444';
-                    deleteBtn.style.color = '#ffffff';
-                });
-                deleteBtn.addEventListener('mouseleave', () => {
-                    deleteBtn.style.background = 'rgba(239, 68, 68, 0.1)';
-                    deleteBtn.style.color = '#ef4444';
-                });
                 deleteBtn.addEventListener('click', async (e) => {
                     e.stopPropagation();
                     if (!confirm(`Are you sure you want to permanently delete result file "${result.filename}"?`)) {
@@ -3047,6 +4349,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Wire Clear All History button
+    const btnClearAllHistory = document.getElementById('btn-clear-all-history');
+    if (btnClearAllHistory) {
+        btnClearAllHistory.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!confirm('Are you sure you want to permanently clear ALL benchmark history reports, result files, and artifacts across all models? This cannot be undone.')) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/benchmarks/clear', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    logToTerminal(data.message || 'All benchmark data cleared.', 'success');
+                    showToast(data.message || 'All benchmark data cleared.', 'success');
+                    await loadHistory();
+                    await loadModels();
+                    if (typeof loadRoutingMatrix === 'function') await loadRoutingMatrix();
+                } else {
+                    logToTerminal(`Failed to clear benchmarks: ${data.error || 'Unknown error'}`, 'error');
+                    showToast(`Failed to clear benchmarks: ${data.error || 'Unknown error'}`, 'error');
+                }
+            } catch (err) {
+                logToTerminal(`Clear all benchmarks error: ${err.message}`, 'error');
+                showToast(`Clear error: ${err.message}`, 'error');
+            }
+        });
+    }
+
     // Load details of selected file
     async function loadBenchmarkDetail(filename, type) {
         try {
@@ -3074,17 +4404,83 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Direct Navigation to Model's Latest Test Results
+    async function navigateToModelTests(modelId) {
+        logToTerminal(`Navigating to latest test results for "${modelId}"...`);
+        
+        // 1. Check if model is in currentSharedResults
+        const inShared = currentSharedResults.find(r => r.model === modelId || r.model.includes(modelId) || modelId.includes(r.model));
+        if (inShared) {
+            switchTab('shared');
+            renderSharedDetailsSection(currentSharedResults, inShared.model);
+            const targetSection = document.getElementById('shared-model-tabs') || document.querySelector('#view-shared .results-details-section');
+            if (targetSection) {
+                targetSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            return;
+        }
+
+        // 2. Check if model is in currentResults (General)
+        const inGeneral = currentResults.find(r => r.model === modelId || r.model.includes(modelId) || modelId.includes(r.model));
+        if (inGeneral) {
+            switchTab('general');
+            renderDetailsSection(currentResults, inGeneral.model);
+            const targetSection = document.getElementById('model-tabs') || document.querySelector('#view-general .results-details-section');
+            if (targetSection) {
+                targetSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            return;
+        }
+
+        // 3. Search history list for the most recent result file containing this model
+        try {
+            const res = await fetch('/api/results');
+            const historyData = await res.json();
+            const results = historyData.results || [];
+            
+            const matchingFile = results.find(r => (r.models || []).some(m => m === modelId || m.includes(modelId) || modelId.includes(m)));
+            if (matchingFile) {
+                await loadBenchmarkDetail(matchingFile.filename, matchingFile.type);
+                if (matchingFile.type === 'shared_llm') {
+                    switchTab('shared');
+                    const target = currentSharedResults.find(r => r.model === modelId || r.model.includes(modelId) || modelId.includes(r.model));
+                    if (target) renderSharedDetailsSection(currentSharedResults, target.model);
+                    const targetSection = document.getElementById('shared-model-tabs') || document.querySelector('#view-shared .results-details-section');
+                    if (targetSection) targetSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } else {
+                    switchTab('general');
+                    const target = currentResults.find(r => r.model === modelId || r.model.includes(modelId) || modelId.includes(r.model));
+                    if (target) renderDetailsSection(currentResults, target.model);
+                    const targetSection = document.getElementById('model-tabs') || document.querySelector('#view-general .results-details-section');
+                    if (targetSection) targetSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                return;
+            }
+        } catch (err) {
+            console.error('Error navigating to model tests:', err);
+        }
+
+        // Fallback: switch to SharedLLM tab
+        switchTab('shared');
+    }
+
     // Calculate General Overview card metrics
     function updateOverviewMetrics(fullData) {
-        const results = fullData.results || [];
-        if (results.length === 0) return;
+        const results = getFilteredResults(fullData.results || [], 'general');
+        if (results.length === 0) {
+            metricTps.textContent = '0 tok/s';
+            metricTtft.textContent = '0 ms';
+            metricSuccess.textContent = '0%';
+            metricCount.textContent = '0 Models';
+            return;
+        }
 
         let totalTps = 0, tpsCount = 0;
         let totalTtft = 0, ttftCount = 0;
         let totalPassed = 0, totalRun = 0;
 
         results.forEach(m => {
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(cat => {
                 const catData = m[`category_${cat}`];
                 if (catData) {
@@ -3114,8 +4510,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Calculate SharedLLM Overview card metrics
     function updateSharedOverviewMetrics(fullData) {
-        const results = fullData.results || [];
-        if (results.length === 0) return;
+        const results = getFilteredResults(fullData.results || [], 'shared');
+        if (results.length === 0) {
+            sharedMetricFastpath.textContent = '0 ms';
+            sharedMetricLibrarian.textContent = '0%';
+            sharedMetricRaven.textContent = '0%';
+            sharedMetricCount.textContent = '0 Models';
+            return;
+        }
 
         let fastPathTotalLat = 0, fastPathCount = 0;
         let toolSuccessCount = 0, toolTotalCount = 0;
@@ -3148,23 +4550,144 @@ document.addEventListener('DOMContentLoaded', () => {
         sharedMetricCount.textContent = `${results.length} Models`;
     }
 
+    // Model comparison filter (graphs & stats)
+    function isOnlineModelName(model) {
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|gemini):/i.test(model || '');
+    }
+
+    function getFilteredResults(results, type) {
+        if (!results || !filterInitialized[type]) return results;
+        const sel = filterSelection[type];
+        if (!sel || sel.size === 0) return [];
+        return results.filter(r => sel.has(r.model));
+    }
+
+    function setFilterGroupState(type, group, state) {
+        const btn = document.querySelector(`.model-filter-group[data-filter-type="${type}"][data-group="${group}"]`);
+        if (!btn) return;
+        btn.classList.remove('mf-active', 'mf-partial');
+        if (state === 'active') btn.classList.add('mf-active');
+        else if (state === 'partial') btn.classList.add('mf-partial');
+    }
+
+    function updateFilterGroupState(type) {
+        const all = filterAllModels[type] || [];
+        const sel = filterSelection[type] || new Set();
+        const local = all.filter(m => !isOnlineModelName(m));
+        const online = all.filter(m => isOnlineModelName(m));
+        const groupState = (list) => {
+            if (list.length === 0) return 'none';
+            if (list.every(m => sel.has(m))) return 'active';
+            if (list.some(m => sel.has(m))) return 'partial';
+            return 'none';
+        };
+        setFilterGroupState(type, 'all', groupState(all));
+        setFilterGroupState(type, 'local', groupState(local));
+        setFilterGroupState(type, 'online', groupState(online));
+        const countEl = document.getElementById(`model-filter-count-${type}`);
+        if (countEl) {
+            countEl.textContent = all.length > 0 ? `${sel.size} / ${all.length} models shown` : '';
+        }
+    }
+
+    function addFilterCheckbox(model, type, container) {
+        const label = document.createElement('label');
+        label.className = 'checkbox-item';
+        label.style.cssText = 'padding:0.15rem 0.5rem;margin:0;border-radius:4px;font-size:0.72rem;display:inline-flex;align-items:center;gap:0.3rem;';
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = true;
+        filterCheckboxInputs[type][model] = input;
+
+        input.addEventListener('change', () => {
+            if (input.checked) filterSelection[type].add(model);
+            else filterSelection[type].delete(model);
+            updateFilterGroupState(type);
+            onModelFilterChange(type);
+        });
+
+        const isOnline = isOnlineModelName(model);
+        const span = document.createElement('span');
+        span.textContent = truncateModelName(model);
+        if (isOnline) span.style.color = '#c4b5fd';
+
+        const badge = document.createElement('span');
+        badge.textContent = isOnline ? 'ONLINE' : 'LOCAL';
+        badge.style.cssText = `font-size:0.55rem;font-weight:700;padding:1px 4px;border-radius:3px;${
+            isOnline ? 'background:rgba(139,92,246,0.2);color:#c4b5fd;' : 'background:rgba(6,182,212,0.15);color:#67e8f9;'
+        }`;
+
+        label.appendChild(input);
+        label.appendChild(span);
+        label.appendChild(badge);
+        container.appendChild(label);
+    }
+
+    function ensureFilterModels(results, type) {
+        const container = document.getElementById(`model-filter-models-${type}`);
+        if (!container || !results || results.length === 0) return;
+        const all = filterAllModels[type];
+        const sel = filterSelection[type];
+        const known = new Set(all);
+        let changed = false;
+
+        results.forEach(r => {
+            if (!known.has(r.model)) {
+                known.add(r.model);
+                all.push(r.model);
+                sel.add(r.model);
+                changed = true;
+                const placeholder = container.querySelector('.model-filter-placeholder');
+                if (placeholder) placeholder.remove();
+                addFilterCheckbox(r.model, type, container);
+            }
+        });
+
+        if (!filterInitialized[type] && all.length > 0) {
+            filterInitialized[type] = true;
+            changed = true;
+        }
+        if (changed) updateFilterGroupState(type);
+    }
+
+    function syncFilterCheckboxUI(type) {
+        Object.entries(filterCheckboxInputs[type] || {}).forEach(([model, input]) => {
+            input.checked = filterSelection[type].has(model);
+        });
+    }
+
+    function onModelFilterChange(type) {
+        if (type === 'shared') {
+            updateSharedOverviewMetrics({ results: currentSharedResults });
+            renderSharedChartsFromData(currentSharedResults);
+        } else {
+            updateOverviewMetrics({ results: currentResults });
+            renderChartsFromData(currentResults);
+        }
+    }
+
     // Render General Charts
     function renderChartsFromData(results) {
-        if (results.length === 0) return;
+        ensureFilterModels(results, 'general');
+        results = getFilteredResults(results, 'general');
+        renderGeneralLeaderboard(results);
+        if (results.length === 0) {
+            tpsChart.data.datasets = [];
+            ttftChart.data.datasets = [];
+            categoryChart.data.datasets = [];
+            tpsChart.update();
+            ttftChart.update();
+            categoryChart.update();
+            return;
+        }
         const models = results.map(r => r.model);
         const displayNames = models.map(model => truncateModelName(model));
-        const colors = [
-            { bg: 'rgba(139, 92, 246, 0.6)', border: '#8b5cf6' },
-            { bg: 'rgba(6, 182, 212, 0.6)',   border: '#06b6d4' },
-            { bg: 'rgba(16, 185, 129, 0.6)',  border: '#10b981' },
-            { bg: 'rgba(245, 158, 11, 0.6)',  border: '#f59e0b' },
-            { bg: 'rgba(59, 130, 246, 0.6)',  border: '#3b82f6' },
-        ];
 
-        // TPS chart — one dataset per model so legend renders model names cleanly
+        // TPS chart - one dataset per model so legend renders model names cleanly
         const tpsDatasets = results.map((r, idx) => {
             let totalTps = 0, tpsCount = 0;
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(cat => {
                 const catData = r[`category_${cat}`];
                 if (catData && catData.avg_tokens_per_sec > 0) {
@@ -3177,8 +4700,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 label: displayNames[idx],
                 originalLabel: r.model,
                 data: [avgTps],
-                backgroundColor: colors[idx % colors.length].bg,
-                borderColor: colors[idx % colors.length].border,
+                backgroundColor: modelColor(idx, 0.6),
+                borderColor: modelColor(idx, 1),
                 borderWidth: 1,
                 borderRadius: 4
             };
@@ -3188,10 +4711,10 @@ document.addEventListener('DOMContentLoaded', () => {
         tpsChart.data.datasets = tpsDatasets;
         tpsChart.update();
 
-        // TTFT chart — one dataset per model
+        // TTFT chart - one dataset per model
         const ttftDatasets = results.map((r, idx) => {
             let totalTtft = 0, ttftCount = 0;
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(cat => {
                 const catData = r[`category_${cat}`];
                 if (catData && catData.avg_ttft_ms > 0) {
@@ -3204,8 +4727,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 label: displayNames[idx],
                 originalLabel: r.model,
                 data: [avgTtft],
-                backgroundColor: colors[idx % colors.length].bg,
-                borderColor: colors[idx % colors.length].border,
+                backgroundColor: modelColor(idx, 0.6),
+                borderColor: modelColor(idx, 1),
                 borderWidth: 1,
                 borderRadius: 4
             };
@@ -3215,11 +4738,10 @@ document.addEventListener('DOMContentLoaded', () => {
         ttftChart.data.datasets = ttftDatasets;
         ttftChart.update();
 
-        // Category success rate chart — one dataset per model, 5 categories
-        const catColors = ['rgba(139, 92, 246, 0.7)', 'rgba(6, 182, 212, 0.7)', 'rgba(16, 185, 129, 0.7)', 'rgba(245, 158, 11, 0.7)', 'rgba(59, 130, 246, 0.7)'];
+        // Category success rate chart - one dataset per model, 5 categories
         const datasets = [];
         results.forEach((r, idx) => {
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             const data = categories.map(c => {
                 const catData = r[`category_${c}`];
                 if (!catData) return 0;
@@ -3230,7 +4752,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 label: displayName,
                 originalLabel: r.model,
                 data: data,
-                backgroundColor: catColors[idx % catColors.length],
+                backgroundColor: modelColor(idx, 0.7),
                 borderRadius: 4,
                 borderWidth: 0
             });
@@ -3242,24 +4764,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Render SharedLLM Charts
     function renderSharedChartsFromData(results) {
-        if (results.length === 0) return;
+        ensureFilterModels(results, 'shared');
+        results = getFilteredResults(results, 'shared');
+        renderSharedLeaderboard(results);
+        if (results.length === 0) {
+            sharedLatencyChart.data.datasets.forEach(d => d.data = []);
+            sharedAstChart.data.datasets = [];
+            sharedLatencyChart.update();
+            sharedAstChart.update();
+            return;
+        }
         const models = results.map(r => r.model);
         
         // 1. Latency Chart per tier
         const fastpathLats = [];
         const librarianLats = [];
         const ravenLats = [];
+        const troubleshootLats = [];
+        const mediaDocsLats = [];
+        const chainingLats = [];
         
         results.forEach(m => {
-            let fp = 0, lib = 0, rav = 0;
-            m.tasks.forEach(t => {
-                if (t.test_id === 'fast_path') fp = t.latency;
-                else if (t.test_id === 'tool_use') lib = t.latency;
-                else if (t.test_id === 'code_gen') rav = t.latency;
-            });
-            fastpathLats.push(fp);
-            librarianLats.push(lib);
-            ravenLats.push(rav);
+            const getAvgLat = (catMatcher) => {
+                const matching = (m.tasks || []).filter(t => catMatcher(t.test_category || '', t.test_id || ''));
+                if (matching.length === 0) return 0;
+                const sum = matching.reduce((acc, cur) => acc + (cur.latency || 0), 0);
+                return +(sum / matching.length).toFixed(2);
+            };
+
+            fastpathLats.push(getAvgLat((cat) => cat.includes('FastPath')));
+            librarianLats.push(getAvgLat((cat) => cat.includes('Librarian')));
+            ravenLats.push(getAvgLat((cat) => cat.includes('Raven Code')));
+            troubleshootLats.push(getAvgLat((cat) => cat.includes('Troubleshoot') || cat.includes('Planning')));
+            mediaDocsLats.push(getAvgLat((cat) => cat.includes('Media') || cat.includes('Word Processing')));
+            chainingLats.push(getAvgLat((cat) => cat.includes('Chaining')));
         });
 
         const displayModels = models.map(m => truncateModelName(m));
@@ -3269,29 +4807,37 @@ document.addEventListener('DOMContentLoaded', () => {
         sharedLatencyChart.data.datasets[0].data = fastpathLats;
         sharedLatencyChart.data.datasets[1].data = librarianLats;
         sharedLatencyChart.data.datasets[2].data = ravenLats;
+        if (sharedLatencyChart.data.datasets[3]) sharedLatencyChart.data.datasets[3].data = troubleshootLats;
+        if (sharedLatencyChart.data.datasets[4]) sharedLatencyChart.data.datasets[4].data = mediaDocsLats;
+        if (sharedLatencyChart.data.datasets[5]) sharedLatencyChart.data.datasets[5].data = chainingLats;
         sharedLatencyChart.update();
 
         // 2. AST compliance rates
         const datasets = [];
-        const colors = ['rgba(139, 92, 246, 0.7)', 'rgba(6, 182, 212, 0.7)', 'rgba(16, 185, 129, 0.7)', 'rgba(245, 158, 11, 0.7)'];
-        
+
         results.forEach((m, idx) => {
-            let classMatch = 0, acquireMatch = 0, releaseMatch = 0, isComplete = 0;
-            m.tasks.forEach(t => {
-                if (t.test_id === 'code_gen') {
-                    const v = t.validation || {};
-                    classMatch = v.has_class ? 100 : 0;
-                    acquireMatch = v.has_acquire ? 100 : 0;
-                    releaseMatch = v.has_release ? 100 : 0;
-                    isComplete = v.is_complete ? 100 : 0;
-                }
+            let syntaxCount = 0, schemaCount = 0, contractCount = 0, totalPassCount = 0;
+            const tasks = m.tasks || [];
+            const totalTasks = tasks.length || 1;
+
+            tasks.forEach(t => {
+                const v = t.validation || {};
+                if (t.success || v.valid_syntax || v.valid_json || v.valid_patch_format || v.has_headings) syntaxCount++;
+                if (t.success || v.has_model || v.has_class || v.has_required_keys || v.has_table) schemaCount++;
+                if (t.success || v.correct_intent || v.has_func || v.tool_match || v.needle_found) contractCount++;
+                if (t.success) totalPassCount++;
             });
+
+            const syntaxPct = Math.round((syntaxCount / totalTasks) * 100);
+            const schemaPct = Math.round((schemaCount / totalTasks) * 100);
+            const contractPct = Math.round((contractCount / totalTasks) * 100);
+            const overallPct = Math.round((totalPassCount / totalTasks) * 100);
 
             datasets.push({
                 label: truncateModelName(m.model),
                 originalLabel: m.model,
-                data: [classMatch, acquireMatch, releaseMatch, isComplete],
-                backgroundColor: colors[idx % colors.length],
+                data: [syntaxPct, schemaPct, contractPct, overallPct],
+                backgroundColor: modelColor(idx, 0.75),
                 borderRadius: 4
             });
         });
@@ -3300,37 +4846,405 @@ document.addEventListener('DOMContentLoaded', () => {
         sharedAstChart.update();
     }
 
+    // Benchmark Leaderboard
+    // Sortable, color-coded comparison table inspired by common OSS LLM
+    // benchmark dashboards (leaderboard table, score classes, best-value
+    // highlighting).
+    const LEADERBOARD_SORTS = {};
+
+    // Procedurally generate a distinct color per model index so charts and
+    // leaderboards stay legible with dozens of benchmarked models (no fixed
+    // palette caps). Golden-angle hue spacing avoids adjacent similar hues.
+    function modelColor(idx, alpha) {
+        const hue = (idx * 137.508) % 360;
+        const sat = 68 + ((idx * 7) % 20);
+        const light = 58 + ((idx * 5) % 14);
+        return `hsla(${hue.toFixed(0)}, ${sat}%, ${light}%, ${alpha})`;
+    }
+
+    function scoreClass(score) {
+        if (score >= 80) return 'score-good';
+        if (score >= 60) return 'score-mid';
+        return 'score-bad';
+    }
+
+    function scoreBar(score, maxScore) {
+        const pct = maxScore > 0 ? Math.max(0, Math.min(100, (score / maxScore) * 100)) : 0;
+        let cls = 'lb-bar-bad';
+        if (pct >= 80) cls = 'lb-bar-good';
+        else if (pct >= 55) cls = 'lb-bar-mid';
+        return `<span class="mini-scorebar ${cls}" style="width:${Math.max(18, pct)}px;"></span>`;
+    }
+
+    function rankBadge(idx) {
+        if (idx === 0) return '<td class="rank-cell rank-gold">🥇</td>';
+        if (idx === 1) return '<td class="rank-cell rank-silver">🥈</td>';
+        if (idx === 2) return '<td class="rank-cell rank-bronze">🥉</td>';
+        return `<td class="rank-cell">${idx + 1}</td>`;
+    }
+
+    function computeGeneralRow(m) {
+        const cats = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+        let passed = 0, run = 0, tpsSum = 0, tpsN = 0, ttftSum = 0, ttftN = 0, tokSum = 0, tokN = 0;
+        cats.forEach(cat => {
+            const cd = m[`category_${cat}`];
+            if (!cd) return;
+            passed += cd.tests_passed || 0;
+            run += cd.tests_run || 0;
+            if (cd.avg_tokens_per_sec > 0) { tpsSum += cd.avg_tokens_per_sec; tpsN++; }
+            if (cd.avg_ttft_ms > 0) { ttftSum += cd.avg_ttft_ms; ttftN++; }
+            if (cd.avg_tokens_generated > 0) { tokSum += cd.avg_tokens_generated; tokN++; }
+        });
+        const success = run > 0 ? (passed / run) * 100 : 0;
+        const tps = tpsN > 0 ? tpsSum / tpsN : 0;
+        const ttft = ttftN > 0 ? ttftSum / ttftN : 0;
+        const tokens = tokN > 0 ? tokSum / tokN : 0;
+        const score = Math.round((success * 0.8) + (Math.min(100, tps / 10) * 0.2));
+        return { model: m.model, score, success, tps, ttft, tokens, tests: run };
+    }
+
+    function computeSharedRow(m) {
+        const tasks = m.tasks || [];
+        let passed = 0, latSum = 0, latN = 0, tokSum = 0, tokN = 0;
+        tasks.forEach(t => {
+            if (t.success) passed++;
+            if (typeof t.latency === 'number') { latSum += t.latency; latN++; }
+            if (t.tokens_generated > 0) { tokSum += t.tokens_generated; tokN++; }
+        });
+        const success = tasks.length > 0 ? (passed / tasks.length) * 100 : 0;
+        const latency = latN > 0 ? latSum / latN : 0;
+        const tokens = tokN > 0 ? tokSum / tokN : 0;
+        return { model: m.model, score: Math.round(success), success, latency, tokens, tests: tasks.length };
+    }
+
+    function bindLeaderboardSorts(tableEl, bodyEl, rows) {
+        const setSort = (th) => {
+            const key = th.dataset.sort;
+            const dir = LEADERBOARD_SORTS[key] === 'asc' ? 'desc' : 'asc';
+            LEADERBOARD_SORTS[key] = dir;
+            tableEl.querySelectorAll('th.sortable').forEach(h => {
+                h.classList.remove('sorted-asc', 'sorted-desc');
+            });
+            th.classList.add(dir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+            const sorted = [...rows].sort((a, b) => {
+                let av = a[key], bv = b[key];
+                if (key === 'rank' || key === 'model') {
+                    return dir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+                }
+                av = Number(av) || 0; bv = Number(bv) || 0;
+                return dir === 'asc' ? av - bv : bv - av;
+            });
+            renderLeaderboardRows(bodyEl, sorted, key);
+        };
+        tableEl.querySelectorAll('th.sortable').forEach(th => {
+            th.addEventListener('click', () => setSort(th));
+        });
+    }
+
+    function renderGeneralLeaderboard(results) {
+        const body = document.getElementById('general-leaderboard-body');
+        const table = document.getElementById('general-leaderboard');
+        if (!body || !table) return;
+        if (!results || results.length === 0) {
+            body.innerHTML = '<tr class="empty-state"><td colspan="9">No benchmark results loaded.</td></tr>';
+            return;
+        }
+        const rows = results.map(computeGeneralRow);
+        bindLeaderboardSorts(table, body, rows);
+        renderLeaderboardRows(body, rows, 'score', true);
+    }
+
+    function renderSharedLeaderboard(results) {
+        const body = document.getElementById('shared-leaderboard-body');
+        const table = document.getElementById('shared-leaderboard');
+        if (!body || !table) return;
+        if (!results || results.length === 0) {
+            body.innerHTML = '<tr class="empty-state"><td colspan="8">No SharedLLM benchmark results loaded.</td></tr>';
+            return;
+        }
+        const rows = results.map(computeSharedRow);
+        bindLeaderboardSorts(table, body, rows);
+        renderLeaderboardRows(body, rows, 'score', false);
+    }
+
+    // Per-leaderboard selection sets (model name -> row data) and view mode
+    const LB_SELECTION = { general: new Map(), shared: new Map() };
+    const LB_MODE = { general: 'top', shared: 'top' }; // 'top' (default) | 'all'
+    const LB_TOP_N = 10;
+
+    function lbViewMode(isGeneral) { return isGeneral ? LB_MODE.general : LB_MODE.shared; }
+
+    function lbRowsForBody(rows, isGeneral) {
+        const mode = lbViewMode(isGeneral);
+        return mode === 'all' ? rows : rows.slice(0, LB_TOP_N);
+    }
+
+    function lbSelectionKey(isGeneral) { return isGeneral ? 'general' : 'shared'; }
+
+    function updateLbCompareBar(isGeneral) {
+        const key = lbSelectionKey(isGeneral);
+        const bar = document.getElementById(`${key}-lb-compare-bar`);
+        const countEl = document.getElementById(`${key}-lb-compare-count`);
+        const goBtn = document.getElementById(`${key}-lb-compare-go`);
+        const n = LB_SELECTION[key].size;
+        if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
+        if (countEl) countEl.textContent = `${n} selected`;
+        if (goBtn) goBtn.textContent = `⇄ Compare (${n})`;
+    }
+
+    function renderLeaderboardComparePanel(isGeneral) {
+        const key = lbSelectionKey(isGeneral);
+        const panel = document.getElementById(`${key}-lb-compare-panel`);
+        if (!panel) return;
+        const selected = [...LB_SELECTION[key].values()];
+        if (selected.length === 0) { panel.innerHTML = ''; return; }
+
+        // Determine best value per metric for winner highlighting
+        const metrics = isGeneral
+            ? ['score', 'success', 'tps', 'ttft', 'tokens']
+            : ['score', 'success', 'latency', 'tokens'];
+        const best = {};
+        metrics.forEach(m => {
+            const lowerBetter = (m === 'ttft' || m === 'latency');
+            let val = lowerBetter ? Infinity : -Infinity;
+            selected.forEach(r => {
+                const v = Number(r[m]) || 0;
+                if (v <= 0) return;
+                if (lowerBetter ? v < val : v > val) val = v;
+            });
+            best[m] = val;
+        });
+        const topScore = Math.max(...selected.map(r => Number(r.score) || 0), 0);
+
+        const label = (m) => ({
+            score: 'Score', success: isGeneral ? 'Success %' : 'Pass %', tps: 'Tokens/s',
+            ttft: 'TTFT (ms)', tokens: 'Avg Tokens', latency: 'Avg Latency (s)'
+        })[m];
+        const fmt = (m, v) => {
+            v = Number(v) || 0;
+            if (m === 'score' || m === 'success') return `${Math.round(v)}`;
+            if (m === 'ttft') return `${Math.round(v)} ms`;
+            if (m === 'latency') return `${v.toFixed(2)}s`;
+            return v > 0 ? v.toFixed(1) : '-';
+        };
+
+        panel.innerHTML = `<div class="compare-grid">${selected.map(r => {
+            const isWinner = Number(r.score) === topScore && topScore > 0;
+            const cells = metrics.map(m => {
+                const v = Number(r[m]) || 0;
+                const isBest = v > 0 && v === best[m];
+                return `<div class="compare-metric">
+                    <span class="m-label">${label(m)}</span>
+                    <span class="m-value ${isBest ? 'best-value' : ''}">${fmt(m, v)}</span>
+                </div>`;
+            }).join('');
+            return `<div class="compare-card ${isWinner ? 'winner' : ''}">
+                <div class="compare-card-header">
+                    <span class="model-cell" title="${escapeHtml(r.model)}">${escapeHtml(truncateModelName(r.model))}</span>
+                    ${isWinner ? '<span class="compare-winner-badge">🏆 Best</span>' : ''}
+                </div>
+                ${cells}
+            </div>`;
+        }).join('')}</div>`;
+    }
+
+    function renderLeaderboardRows(body, rows, sortKey, isGeneral) {
+        const ordered = [...rows].sort((a, b) => (Number(b[sortKey]) || 0) - (Number(a[sortKey]) || 0));
+        const visibleRows = lbRowsForBody(ordered, isGeneral);
+        const maxScore = Math.max(...ordered.map(r => r.score), 1);
+        const maxTps = Math.max(...ordered.map(r => r.tps), 1);
+        const maxTokens = Math.max(...ordered.map(r => r.tokens), 1);
+
+        // Best (or for TTFT/latency: lowest) value per column for highlighting
+        let bestTps = maxTps, bestTokens = maxTokens;
+        let bestTtft = Infinity, bestLatency = Infinity;
+        ordered.forEach(r => {
+            if (r.ttft > 0 && r.ttft < bestTtft) bestTtft = r.ttft;
+            if (r.latency > 0 && r.latency < bestLatency) bestLatency = r.latency;
+        });
+
+        const key = lbSelectionKey(isGeneral);
+        body.innerHTML = visibleRows.map((r, idx) => {
+            const score = Math.round(r.score);
+            const checked = LB_SELECTION[key].has(r.model) ? 'checked' : '';
+            const scoreTxt = isGeneral
+                ? `${scoreBar(score, maxScore)}${score}`
+                : `${score}%`;
+            const tpsTxt = isGeneral
+                ? `${r.tps > 0 ? r.tps.toFixed(1) : '-'}`
+                : '';
+            const ttftTxt = isGeneral && r.ttft > 0 ? r.ttft.toFixed(0) : (isGeneral ? '-' : '');
+            const latencyTxt = !isGeneral ? (r.latency > 0 ? r.latency.toFixed(2) : '-') : '';
+            const successTxt = `${r.success.toFixed(0)}%`;
+            const tokensTxt = r.tokens > 0 ? r.tokens.toFixed(0) : '-';
+            const testsTxt = r.tests;
+
+            const tpsCls = r.tps >= bestTps && r.tps > 0 ? 'best-value' : '';
+            const tokensCls = r.tokens >= bestTokens && r.tokens > 0 ? 'best-value' : '';
+            const ttftCls = r.ttft === bestTtft && r.ttft > 0 ? 'best-value' : '';
+            const latencyCls = r.latency === bestLatency && r.latency > 0 ? 'best-value' : '';
+
+            const cells = isGeneral
+                ? `<td class="metric-cell ${tpsCls}">${tpsTxt}</td>
+                   <td class="metric-cell ${ttftCls}">${ttftTxt}</td>
+                   <td class="metric-cell">${successTxt}</td>
+                   <td class="metric-cell ${tokensCls}">${tokensTxt}</td>
+                   <td class="metric-cell">${testsTxt}</td>`
+                : `<td class="metric-cell">${successTxt}</td>
+                   <td class="metric-cell ${latencyCls}">${latencyTxt}</td>
+                   <td class="metric-cell ${tokensCls}">${tokensTxt}</td>
+                   <td class="metric-cell">${testsTxt}</td>`;
+
+            return `<tr class="lb-row ${checked ? 'selected' : ''}" data-model="${r.model.replace(/"/g, '&quot;')}" data-score="${score}">
+                <td class="lb-check-col"><input type="checkbox" class="lb-check" data-model="${r.model.replace(/"/g, '&quot;')}" ${checked}></td>
+                ${rankBadge(idx)}
+                <td class="model-cell" title="${r.model.replace(/"/g, '&quot;')}">${truncateModelName(r.model)}</td>
+                <td class="score-cell ${scoreClass(score)}">${scoreTxt}</td>
+                ${cells}
+            </tr>`;
+        }).join('');
+
+        const selected = body.querySelectorAll('.lb-check');
+        selected.forEach(cb => {
+            cb.addEventListener('change', () => {
+                const model = cb.dataset.model;
+                if (cb.checked) {
+                    const row = ordered.find(o => o.model === model);
+                    if (row) LB_SELECTION[key].set(model, row);
+                } else {
+                    LB_SELECTION[key].delete(model);
+                }
+                const tr = cb.closest('tr');
+                if (tr) tr.classList.toggle('selected', cb.checked);
+                updateLbCompareBar(isGeneral);
+                renderLeaderboardComparePanel(isGeneral);
+            });
+        });
+
+        body.querySelectorAll('tr.lb-row').forEach(row => {
+            row.addEventListener('click', (e) => {
+                if (e.target.closest('.lb-check')) return;
+                body.querySelectorAll('tr.lb-row').forEach(tr => tr.classList.remove('selected'));
+                row.classList.add('selected');
+                const model = row.dataset.model;
+                if (isOnlineModelName(model)) return;
+                const evt = new CustomEvent('leaderboard:select', { detail: { model, isGeneral } });
+                document.dispatchEvent(evt);
+            });
+        });
+    }
+
     // Render General Details section
-    function renderDetailsSection(results) {
+    function renderDetailsSection(results, activeModelName = null) {
         modelTabs.innerHTML = '';
         detailedResultsBody.innerHTML = '';
 
         if (results.length === 0) {
-            detailedResultsBody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No detailed data available.</td></tr>`;
+            detailedResultsBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);">No detailed data available.</td></tr>`;
             return;
         }
 
-        results.forEach((modelData, idx) => {
-            const btn = document.createElement('button');
-            btn.className = 'tab-btn';
-            const displayName = truncateModelName(modelData.model);
-            btn.textContent = displayName;
-            if (idx === 0) btn.classList.add('active');
+        let activeIdx = 0;
+        if (activeModelName) {
+            const foundIdx = results.findIndex(m => m.model === activeModelName || m.model.includes(activeModelName) || activeModelName.includes(m.model));
+            if (foundIdx !== -1) activeIdx = foundIdx;
+        }
 
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('#model-tabs .tab-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                renderModelDetailedTable(modelData);
-            });
-            modelTabs.appendChild(btn);
+        results.forEach((modelData, idx) => {
+            const opt = document.createElement('option');
+            opt.value = modelData.model;
+            opt.textContent = truncateModelName(modelData.model);
+            if (idx === activeIdx) opt.selected = true;
+            modelTabs.appendChild(opt);
         });
 
-        renderModelDetailedTable(results[0]);
+        const onSelect = () => {
+            const sel = results.find(m => m.model === modelTabs.value);
+            if (!sel) return;
+            renderModelDetailedTable(sel);
+            renderResultsSummary(sel);
+        };
+
+        modelTabs.addEventListener('change', onSelect);
+        renderModelDetailedTable(results[activeIdx]);
+        renderResultsSummary(results[activeIdx]);
+    }
+
+    // Render the overall + per-group benchmark summary for a single model record.
+    function renderResultsSummary(modelData) {
+        const card = document.getElementById('results-summary-card');
+        const overallEl = document.getElementById('results-overall');
+        const groupBody = document.getElementById('results-group-scores');
+        const modelLabel = document.getElementById('results-summary-model');
+        if (!card || !overallEl || !groupBody) return;
+
+        const hasSummary = !!modelData &&
+            ((modelData.overall_score !== undefined && modelData.overall_score !== null) ||
+             (modelData.group_scores && modelData.group_scores.length > 0));
+        if (!hasSummary) {
+            card.style.display = 'none';
+            return;
+        }
+
+        card.style.display = '';
+        if (modelLabel) modelLabel.textContent = modelData.model ? `Model: ${modelData.model}` : '';
+
+        // Overall card
+        overallEl.innerHTML = '';
+        const oCard = document.createElement('div');
+        oCard.className = 'overall-score-card';
+        const letterEl = document.createElement('div');
+        const letterVal = modelData.overall_letter || '-';
+        letterEl.className = `overall-letter letter-${String(letterVal).toLowerCase()}`;
+        letterEl.textContent = letterVal;
+        const infoEl = document.createElement('div');
+        infoEl.className = 'overall-info';
+        const scoreEl = document.createElement('div');
+        scoreEl.className = 'overall-score-value';
+        scoreEl.textContent = `${modelData.overall_score != null ? modelData.overall_score : '-'}%`;
+        const starsEl = document.createElement('div');
+        starsEl.className = 'overall-stars';
+        starsEl.textContent = modelData.overall_stars || '';
+        infoEl.appendChild(scoreEl);
+        infoEl.appendChild(starsEl);
+        oCard.appendChild(letterEl);
+        oCard.appendChild(infoEl);
+        overallEl.appendChild(oCard);
+
+        // Per-group table (sorted by group name for easy comparison)
+        groupBody.innerHTML = '';
+        const groups = (modelData.group_scores || []).slice()
+            .sort((a, b) => String(a.group).localeCompare(String(b.group)));
+        if (groups.length === 0) {
+            groupBody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">No group scores recorded.</td></tr>`;
+            return;
+        }
+        groups.forEach(g => {
+            const tr = document.createElement('tr');
+            const tdG = document.createElement('td');
+            tdG.textContent = String(g.group).replace(/_/g, ' ');
+            const tdS = document.createElement('td');
+            tdS.textContent = `${g.score != null ? g.score : '-'}%`;
+            const tdL = document.createElement('td');
+            tdL.className = `group-letter letter-${String(g.letter || '-').toLowerCase()}`;
+            tdL.textContent = g.letter || '-';
+            const tdSt = document.createElement('td');
+            tdSt.className = 'group-stars';
+            tdSt.textContent = g.stars || '';
+            const tdP = document.createElement('td');
+            tdP.textContent = `${g.tests_passed != null ? g.tests_passed : 0} / ${g.tests_run != null ? g.tests_run : 0}`;
+            tr.appendChild(tdG);
+            tr.appendChild(tdS);
+            tr.appendChild(tdL);
+            tr.appendChild(tdSt);
+            tr.appendChild(tdP);
+            groupBody.appendChild(tr);
+        });
     }
 
     function renderModelDetailedTable(modelData) {
         detailedResultsBody.innerHTML = '';
-        const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+        const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
         let hasRows = false;
 
         categories.forEach(catKey => {
@@ -3353,6 +5267,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 badge.className = `td-badge ${test.success ? 'success' : 'fail'}`;
                 badge.textContent = test.success ? 'Success' : 'Fail';
                 tdStatus.appendChild(badge);
+
+                const tdScore = document.createElement('td');
+                tdScore.style.fontWeight = '600';
+                tdScore.textContent = (test.score !== undefined && test.score !== null) ? `${test.score}` : '-';
 
                 const tdLastRun = document.createElement('td');
                 tdLastRun.style.color = 'var(--text-muted)';
@@ -3381,18 +5299,51 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 tdView.appendChild(promptLink);
 
+                const runLink = document.createElement('span');
+                runLink.className = 'prompt-text';
+                runLink.textContent = '▶ Run code';
+                runLink.style.marginLeft = '0.6rem';
+                runLink.addEventListener('click', () => {
+                    if (!test.response) { alert('No response to run.'); return; }
+                    openResponseRunner(test.response, test.test_label, test.thinking);
+                });
+                tdView.appendChild(runLink);
+
+                // Artifacts column: screenshot thumbnail + Serve & View for code/UI tests.
+                const tdArt = document.createElement('td');
+                tdArt.style.cssText = 'display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap;';
+                if (test.screenshot) {
+                    const img = document.createElement('img');
+                    img.src = `data:image/png;base64,${test.screenshot}`;
+                    img.className = 'screenshot-thumb';
+                    img.title = 'Click to enlarge';
+                    img.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        openScreenshotLightbox(img.src);
+                    });
+                    tdArt.appendChild(img);
+                }
+                if (isCodeUiCategory(catKey) && test.response && extractRunnableCode(test.response).trim()) {
+                    tdArt.appendChild(createServeButton(test.response, catKey));
+                }
+
                 tr.appendChild(tdCat);
                 tr.appendChild(tdLabel);
                 tr.appendChild(tdStatus);
+                tr.appendChild(tdScore);
                 tr.appendChild(tdLastRun);
                 tr.appendChild(tdLat);
                 tr.appendChild(tdSpeed);
                 tr.appendChild(tdView);
+                tr.appendChild(tdArt);
                 
                 let expandedRow = null;
                 tr.style.cursor = 'pointer';
                 tr.addEventListener('click', (e) => {
                     if (e.target.classList.contains('prompt-text')) return;
+                    if (e.target.classList.contains('screenshot-thumb')) return;
+                    if (e.target.classList.contains('serve-view-btn')) return;
+                    if (e.target.classList.contains('serve-stop-btn')) return;
                     
                     if (expandedRow) {
                         expandedRow.remove();
@@ -3402,7 +5353,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         expandedRow = document.createElement('tr');
                         expandedRow.className = 'expanded-row';
                         const tdFull = document.createElement('td');
-                        tdFull.colSpan = 6;
+                        tdFull.colSpan = 9;
                         tdFull.style.cssText = 'background: rgba(15, 23, 42, 0.4); padding: 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04);';
                         
                         const flex = document.createElement('div');
@@ -3415,9 +5366,44 @@ document.addEventListener('DOMContentLoaded', () => {
                         const codeBlock = document.createElement('pre');
                         codeBlock.style.cssText = 'margin: 0; background: rgba(9, 15, 29, 0.95); border: 1px solid rgba(255, 255, 255, 0.05); padding: 0.75rem; border-radius: 6px; font-family: monospace; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; color: #e2e8f0; max-height: 300px;';
                         codeBlock.textContent = test.response || test.error || 'No response recorded';
-                        
+
                         flex.appendChild(title);
                         flex.appendChild(codeBlock);
+
+                        // Sandbox run output (code_ran / code_output / code_error) if present.
+                        if (test.code_output || test.code_error || test.code_ran !== undefined) {
+                            const ranNote = document.createElement('div');
+                            ranNote.style.cssText = 'font-size:0.68rem; color:var(--text-muted);';
+                            ranNote.textContent = `Code executed: ${test.code_ran ? 'yes' : 'no'}${test.code_score != null ? ` | code score: ${test.code_score}` : ''}`;
+                            const sbTitle = document.createElement('div');
+                            sbTitle.style.cssText = 'font-weight:600; font-size:0.72rem; color: var(--color-secondary); margin-top:0.25rem;';
+                            sbTitle.textContent = 'Sandbox Output:';
+                            const sbPre = document.createElement('pre');
+                            sbPre.className = 'sandbox-output-pre';
+                            sbPre.style.cssText = 'margin:0; background: rgba(9,15,29,0.95); border:1px solid rgba(255,255,255,0.05); padding:0.6rem; border-radius:6px; font-family:monospace; font-size:0.72rem; white-space:pre-wrap; word-break:break-word; color:#cbd5e1; max-height:200px; overflow:auto;';
+                            sbPre.textContent = [test.code_output || '', test.code_error || ''].filter(Boolean).join('\n') || '(no output captured)';
+                            flex.appendChild(ranNote);
+                            flex.appendChild(sbTitle);
+                            flex.appendChild(sbPre);
+                        }
+
+                        // Inline rendered HTML preview for webdev responses.
+                        if (catKey === 'webdev' && test.response) {
+                            const htmlCode = extractRunnableCode(test.response);
+                            if (htmlCode && /<!doctype|<html|<script/i.test(htmlCode)) {
+                                const htmlNote = document.createElement('div');
+                                htmlNote.style.cssText = 'font-weight:600; font-size:0.72rem; color: var(--color-secondary); margin-top:0.25rem;';
+                                htmlNote.textContent = 'Inline Rendered Preview (webdev):';
+                                const frame = document.createElement('iframe');
+                                frame.className = 'test-preview-iframe';
+                                frame.setAttribute('sandbox', 'allow-scripts');
+                                frame.srcdoc = htmlCode;
+                                flex.appendChild(htmlNote);
+                                flex.appendChild(frame);
+                            }
+                        }
+
+                        addArtifactButtons(flex, modelData.model, test.test_id, test.response);
                         tdFull.appendChild(flex);
                         expandedRow.appendChild(tdFull);
                         
@@ -3431,12 +5417,12 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (!hasRows) {
-            detailedResultsBody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No test logs for this model</td></tr>`;
+            detailedResultsBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);">No test logs for this model</td></tr>`;
         }
     }
 
     // Render SharedLLM Details Section
-    function renderSharedDetailsSection(results) {
+    function renderSharedDetailsSection(results, activeModelName = null) {
         sharedModelTabs.innerHTML = '';
         sharedDetailedResultsBody.innerHTML = '';
 
@@ -3445,22 +5431,28 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        results.forEach((modelData, idx) => {
-            const btn = document.createElement('button');
-            btn.className = 'tab-btn';
-            const displayName = truncateModelName(modelData.model);
-            btn.textContent = displayName;
-            if (idx === 0) btn.classList.add('active');
+        let activeIdx = 0;
+        if (activeModelName) {
+            const foundIdx = results.findIndex(m => m.model === activeModelName || m.model.includes(activeModelName) || activeModelName.includes(m.model));
+            if (foundIdx !== -1) activeIdx = foundIdx;
+        }
 
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('#shared-model-tabs .tab-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                renderSharedModelDetailedTable(modelData);
-            });
-            sharedModelTabs.appendChild(btn);
+        results.forEach((modelData, idx) => {
+            const opt = document.createElement('option');
+            opt.value = modelData.model;
+            opt.textContent = truncateModelName(modelData.model);
+            if (idx === activeIdx) opt.selected = true;
+            sharedModelTabs.appendChild(opt);
         });
 
-        renderSharedModelDetailedTable(results[0]);
+        const onSelect = () => {
+            const sel = results.find(m => m.model === sharedModelTabs.value);
+            if (!sel) return;
+            renderSharedModelDetailedTable(sel);
+        };
+
+        sharedModelTabs.addEventListener('change', onSelect);
+        renderSharedModelDetailedTable(results[activeIdx]);
     }
 
     function renderSharedModelDetailedTable(modelData) {
@@ -3495,30 +5487,62 @@ document.addEventListener('DOMContentLoaded', () => {
             const tdPayload = document.createElement('td');
             const val = task.validation || {};
             
-            if (task.test_id === 'fast_path') {
-                tdPayload.textContent = `Intent parsed: "${val.actual || ''}" (${val.correct_intent ? 'Correct' : 'Incorrect'})`;
-            } else if (task.test_id === 'tool_use') {
-                tdPayload.textContent = `Valid JSON: ${val.valid_json ? 'Yes' : 'No'} | Tool: "${val.parsed?.tool || ''}"`;
-            } else if (task.test_id === 'code_gen') {
+            if (task.test_id.startsWith('fast_path')) {
+                tdPayload.textContent = `Intent: "${val.actual || ''}" (${val.correct_intent ? '✓ Match' : '✗ Expected: ' + (val.expected || '')})`;
+            } else if (task.test_id.startsWith('tool_')) {
+                tdPayload.textContent = `JSON: ${val.valid_json ? '✓' : '✗'} | Tool: "${val.parsed?.tool || 'None'}"`;
+            } else if (task.test_id.startsWith('code_')) {
                 const checks = document.createElement('div');
                 checks.className = 'ast-check-list';
                 
-                const classBadge = document.createElement('span');
-                classBadge.className = `ast-check-badge ${val.has_class ? 'checked' : 'failed'}`;
-                classBadge.textContent = val.has_class ? '✓ Class Defined' : '✗ No Class';
-                
-                const acqBadge = document.createElement('span');
-                acqBadge.className = `ast-check-badge ${val.has_acquire ? 'checked' : 'failed'}`;
-                acqBadge.textContent = val.has_acquire ? '✓ acquire()' : '✗ no acquire()';
-                
-                const relBadge = document.createElement('span');
-                relBadge.className = `ast-check-badge ${val.has_release ? 'checked' : 'failed'}`;
-                relBadge.textContent = val.has_release ? '✓ release()' : '✗ no release()';
-                
-                checks.appendChild(classBadge);
-                checks.appendChild(acqBadge);
-                checks.appendChild(relBadge);
+                const synBadge = document.createElement('span');
+                synBadge.className = `ast-check-badge ${val.valid_syntax ? 'checked' : 'failed'}`;
+                synBadge.textContent = val.valid_syntax ? '✓ Syntax' : '✗ Syntax';
+                checks.appendChild(synBadge);
+
+                if (val.has_class !== undefined) {
+                    const classBadge = document.createElement('span');
+                    classBadge.className = `ast-check-badge ${val.has_class ? 'checked' : 'failed'}`;
+                    classBadge.textContent = val.has_class ? '✓ Class' : '✗ No Class';
+                    checks.appendChild(classBadge);
+                }
+                if (val.has_acquire !== undefined) {
+                    const acqBadge = document.createElement('span');
+                    acqBadge.className = `ast-check-badge ${val.has_acquire ? 'checked' : 'failed'}`;
+                    acqBadge.textContent = val.has_acquire ? '✓ acquire()' : '✗ acquire()';
+                    checks.appendChild(acqBadge);
+                }
+                if (val.has_model !== undefined) {
+                    const modelBadge = document.createElement('span');
+                    modelBadge.className = `ast-check-badge ${val.has_model ? 'checked' : 'failed'}`;
+                    modelBadge.textContent = val.has_model ? '✓ Pydantic' : '✗ No Model';
+                    checks.appendChild(modelBadge);
+                }
+                if (val.has_func !== undefined) {
+                    const funcBadge = document.createElement('span');
+                    funcBadge.className = `ast-check-badge ${val.has_func ? 'checked' : 'failed'}`;
+                    funcBadge.textContent = val.has_func ? '✓ Function' : '✗ No Function';
+                    checks.appendChild(funcBadge);
+                }
                 tdPayload.appendChild(checks);
+            } else if (task.test_id.startsWith('troubleshoot') || task.test_id.startsWith('chaining') || task.test_id.startsWith('media') || task.test_id.startsWith('raven')) {
+                if (val.valid_patch_format !== undefined) {
+                    tdPayload.textContent = `Unified Git Diff: ${val.valid_patch_format ? '✓ Valid Patch' : '✗ Invalid Patch Header'}`;
+                } else if (val.valid_json) {
+                    tdPayload.textContent = `Structured Schema: ✓ Complete (${Object.keys(val.parsed || {}).length} keys)`;
+                } else {
+                    tdPayload.textContent = `Validation: ${task.success ? '✓ Passed' : '✗ Incomplete'}`;
+                }
+            } else if (task.test_id.startsWith('wordproc')) {
+                if (val.has_headings !== undefined) {
+                    tdPayload.textContent = `Markdown: ${val.has_headings ? '✓ Headings' : '✗ Headings'} | ${val.has_table ? '✓ Table' : '✗ Table'}`;
+                } else {
+                    tdPayload.textContent = `Validation: ${task.success ? '✓ Passed' : '✗ Incomplete'}`;
+                }
+            } else if (task.test_id.startsWith('needle')) {
+                tdPayload.textContent = `Secret Token: ${val.needle_found ? '✓ Found: ' + (val.expected || '') : '✗ Not Found'}`;
+            } else {
+                tdPayload.textContent = `Status: ${task.success ? '✓ Pass' : '✗ Fail'}`;
             }
 
             const tdView = document.createElement('td');
@@ -3567,6 +5591,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     flex.appendChild(title);
                     flex.appendChild(codeBlock);
+                    addArtifactButtons(flex, modelData.model, task.test_id, task.response);
                     tdFull.appendChild(flex);
                     expandedRow.appendChild(tdFull);
                     
@@ -3582,32 +5607,45 @@ document.addEventListener('DOMContentLoaded', () => {
     // Trigger General Benchmarks
     btnRun.addEventListener('click', () => triggerBenchmark('/api/run'));
 
+    // Trigger Outdated-Only Benchmarks: re-run just the tests whose
+    // definitions have changed since each model's last run.
+    btnRunOutdated.addEventListener('click', () => triggerBenchmark('/api/run', { outdatedOnly: true }));
+
     // Trigger SharedLLM Benchmarks
     btnRunShared.addEventListener('click', () => triggerBenchmark('/api/run/shared_llm'));
 
-    async function triggerBenchmark(endpoint) {
+    async function triggerBenchmark(endpoint, options = {}) {
         const selected = getSelectedModels();
         if (selected.length === 0) {
-            alert('Please select at least one model to benchmark.');
+            showToast('Please select at least one model to benchmark.', 'error');
             return;
         }
 
-        const isShared = endpoint.endsWith('shared_llm');
-        const selectedTests = isShared ? getSelectedSharedTests() : getSelectedTests();
-        if (!isShared && selectedTests.length === 0) {
-            alert('Please select at least one test case to run.');
-            return;
-        }
-        if (isShared && selectedTests.length === 0) {
-            alert('Please select at least one SharedLLM task to run.');
-            return;
-        }
+            const isShared = endpoint.endsWith('shared_llm');
+            if (options.outdatedOnly && isShared) {
+                showToast('Outdated re-runs apply to General benchmarks only.', 'error');
+                return;
+            }
+            const selectedTests = isShared ? getSelectedSharedTests() : getSelectedTests();
+            const selectedGroups = isShared ? [] : getSelectedGroups();
+            if (isShared && selectedTests.length === 0) {
+                showToast('Please select at least one SharedLLM task to run.', 'error');
+                return;
+            }
+            // A group selection is a valid scope on its own (no individual tests needed).
+            if (!isShared && selectedTests.length === 0 && selectedGroups.length === 0) {
+                showToast('Please select at least one test case or benchmark group to run.', 'error');
+                return;
+            }
 
         btnRun.disabled = true;
         btnRunShared.disabled = true;
+        btnRunOutdated.disabled = true;
         
         if (isShared) {
             btnRunShared.innerHTML = `<span class="loader"></span> Starting...`;
+        } else if (options.outdatedOnly) {
+            btnRunOutdated.innerHTML = `<span class="loader"></span> Starting...`;
         } else {
             btnRun.innerHTML = `<span class="loader"></span> Starting...`;
         }
@@ -3622,7 +5660,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 use_proxy: (benchmarkMode === 'proxy')
             };
             if (!isShared) {
-                payload.test_ids = selectedTests;
+                if (options.outdatedOnly) {
+                    payload.outdated_only = true;
+                }
+                // Benchmark GROUPS: only send when the user explicitly chose some.
+                // Omitting (or emptying) tells the backend to run ALL groups.
+                if (selectedGroups.length > 0) {
+                    payload.groups = selectedGroups;
+                }
+                // Resume is on by default: when "run all" is intended (every test
+                // checkbox checked) we omit test_ids so the backend skips already
+                // completed tests. Only send test_ids when a subset is selected,
+                // which forces those specific tests to (re)run and overwrite.
+                const resumeChk = document.getElementById('chk-resume');
+                payload.resume = resumeChk ? resumeChk.checked : true;
+                // Advanced tier (long-running / complex tests) is opt-in so the
+                // default run stays fast and runs every standard test.
+                const advChk = document.getElementById('chk-advanced');
+                payload.tiers = (advChk && advChk.checked) ? ['standard', 'advanced'] : ['standard'];
+                if (!options.outdatedOnly) {
+                    const totalTests = testCheckboxes.querySelectorAll('input[type="checkbox"]').length || 0;
+                    if (selectedTests.length < totalTests) {
+                        payload.test_ids = selectedTests;
+                    }
+                }
             } else {
                 // Only pass test_ids if not all tasks selected (backend treats null as "all")
                 const allSharedTasks = document.getElementById('shared-test-checkboxes')
@@ -3631,7 +5692,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     payload.test_ids = selectedTests;
                 }
             }
-
             const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3640,7 +5700,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (res.status === 409) {
                 const data = await res.json();
-                alert(data.error);
+                showToast(data.error, 'error');
                 setRunnerState('idle');
                 return;
             }
@@ -3648,6 +5708,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!res.ok) {
                 const errorText = await res.text();
                 throw new Error(errorText || 'Server error starting benchmark');
+            }
+
+            const resData = await res.json().catch(() => null);
+            if (options.outdatedOnly && resData && resData.status === 'No outdated benchmarks') {
+                showToast(resData.message || 'All benchmark definitions are up to date.', 'success');
+                logToTerminal(resData.message || 'All benchmark definitions are up to date — nothing to redo.', 'info', termTarget);
+                setRunnerState('idle');
+                return;
             }
 
             logToTerminal("Benchmark pipeline initialized successfully.", 'success', termTarget);
@@ -3713,6 +5781,7 @@ document.addEventListener('DOMContentLoaded', () => {
             runnerStatusBadge.innerHTML = `<span class="badge-dot"></span> RUNNING`;
             btnRun.disabled = true;
             btnRunShared.disabled = true;
+            btnRunOutdated.disabled = true;
             btnCancel.disabled = false;
             progressCard.classList.remove('d-none');
             
@@ -3724,8 +5793,10 @@ document.addEventListener('DOMContentLoaded', () => {
             runnerStatusBadge.innerHTML = `<span class="badge-dot"></span> IDLE`;
             btnRun.disabled = false;
             btnRunShared.disabled = false;
+            btnRunOutdated.disabled = false;
             btnRun.innerHTML = 'Run General';
             btnRunShared.innerHTML = 'Run SharedLLM';
+            btnRunOutdated.innerHTML = 'Run Outdated';
             btnCancel.disabled = true;
             btnCancel.textContent = 'Cancel Run';
             progressCard.classList.add('d-none');
@@ -3787,7 +5858,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     socket.on('benchmark_start', (data) => {
         const term = data.type === 'shared_llm' ? 'shared' : 'general';
-        logToTerminal(`Benchmark started: ${data.total_tests} tests across ${data.total_models} models.`, "info", term);
+        const numModels = data.total_models !== undefined ? data.total_models : (data.models ? data.models.length : 0);
+        logToTerminal(`Benchmark started: ${data.total_tests} tests across ${numModels} models.`, "info", term);
         setRunnerState('running');
         
         if (data.type === 'shared_llm') {
@@ -3831,6 +5903,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const pct = data.progress.percentage;
         progressPercent.textContent = `${pct}%`;
         progressBarFill.style.width = `${pct}%`;
+
+        // Live failure display: surface any failing test immediately in the terminal.
+        if (res && res.success === false) {
+            const why = res.error || 'incorrect result';
+            logToTerminal(`FAIL  ${data.model} / [${data.category}] ${data.test_id}: ${why}`, "error", "general");
+            if (typeof showToast === 'function') {
+                showToast(`Failed: ${data.test_id}`, 'error', 1500);
+            }
+        }
     });
 
     socket.on('model_complete', (data) => {
@@ -3880,7 +5961,7 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('benchmark_error', (data) => {
         logToTerminal(`Critical runner error: ${data.error}`, "error");
         logToTerminal(`Critical runner error: ${data.error}`, "error", "shared");
-        alert(`Runner Error: ${data.error}`);
+        showToast(`Runner Error: ${data.error}`, 'error');
         setRunnerState('idle');
     });
 
@@ -4171,7 +6252,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const section = profileSectionSelect.value;
             if (!section) {
-                alert('Please select a model profile section to save.');
+                showToast('Please select a model profile section to save.', 'error');
                 return;
             }
 
@@ -4185,15 +6266,15 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(res => res.json())
             .then(data => {
                 if (data.error) {
-                    alert('Failed to save settings: ' + data.error);
+                    showToast('Failed to save settings: ' + data.error, 'error');
                 } else {
                     modelProfiles[section] = Object.assign({}, modelProfiles[section], settings);
-                    alert('Settings saved successfully!');
+                    showToast('Settings saved successfully!', 'success');
                 }
             })
             .catch(err => {
                 console.error("Save profile error:", err);
-                alert('Failed to save profile settings');
+                showToast('Failed to save profile settings', 'error');
             });
         });
 
@@ -4201,7 +6282,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btnRestartServices.addEventListener('click', () => {
                 const section = profileSectionSelect.value;
                 if (!section) {
-                    alert('Please select a model profile section first.');
+                    showToast('Please select a model profile section first.', 'error');
                     return;
                 }
                 
@@ -4232,7 +6313,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 .then(res => res.json())
                 .then(data => {
                     if (data.error) {
-                        alert('Restart command failed: ' + data.error);
+                        showToast('Restart command failed: ' + data.error, 'error');
                     } else {
                         showToast('Backend restart sequence initiated. Reloading system monitor in 5 seconds...', 'success');
                         setTimeout(() => {
@@ -4242,7 +6323,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 })
                 .catch(err => {
                     console.error("Save and restart error:", err);
-                    alert('Failed to save settings or restart backend: ' + err.message);
+                    showToast('Failed to save settings or restart backend: ' + err.message, 'error');
                 })
                 .finally(() => {
                     btnRestartServices.disabled = false;
@@ -4260,12 +6341,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!name) return;
             const sanitized = name.trim().replace(/[^A-Za-z0-9._-]/g, '-');
             if (!sanitized) {
-                alert('Invalid profile name.');
+                showToast('Invalid profile name.', 'error');
                 return;
             }
             
             if (modelProfiles[sanitized]) {
-                alert(`Profile section [${sanitized}] already exists.`);
+                showToast(`Profile section [${sanitized}] already exists.`, 'error');
                 profileSectionSelect.value = sanitized;
                 profileSectionSelect.dispatchEvent(new Event('change'));
                 return;
@@ -4279,7 +6360,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(res => res.json())
             .then(data => {
                 if (data.error) {
-                    alert('Failed to create profile: ' + data.error);
+                    showToast('Failed to create profile: ' + data.error, 'error');
                 } else {
                     modelProfiles[sanitized] = {};
                     
@@ -4291,12 +6372,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     select.value = sanitized;
                     
                     profileSectionSelect.dispatchEvent(new Event('change'));
-                    alert(`Profile section [${sanitized}] created successfully!`);
+                    showToast(`Profile section [${sanitized}] created successfully!`, 'success');
                 }
             })
             .catch(err => {
                 console.error("Create profile error:", err);
-                alert('Failed to create profile section');
+                showToast('Failed to create profile section', 'error');
             });
         });
     }
@@ -4307,11 +6388,11 @@ document.addEventListener('DOMContentLoaded', () => {
         btnDeleteProfile.addEventListener('click', () => {
             const section = profileSectionSelect.value;
             if (!section) {
-                alert('Please select a profile section to delete.');
+                showToast('Please select a profile section to delete.', 'error');
                 return;
             }
             if (section === '*') {
-                alert('Cannot delete global defaults section [*].');
+                showToast('Cannot delete global defaults section [*].', 'error');
                 return;
             }
             if (!confirm(`Are you sure you want to delete profile section [${section}]? This cannot be undone.`)) {
@@ -4326,7 +6407,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(res => res.json())
             .then(data => {
                 if (data.error) {
-                    alert('Failed to delete profile: ' + data.error);
+                    showToast('Failed to delete profile: ' + data.error, 'error');
                 } else {
                     delete modelProfiles[section];
                     
@@ -4335,12 +6416,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     profileSectionSelect.value = '';
                     profileSectionSelect.dispatchEvent(new Event('change'));
                     
-                    alert(`Profile section [${section}] deleted successfully!`);
+                    showToast(`Profile section [${section}] deleted successfully!`, 'success');
                 }
             })
             .catch(err => {
                 console.error("Delete profile error:", err);
-                alert('Failed to delete profile section');
+                showToast('Failed to delete profile section', 'error');
             });
         });
     }
@@ -4403,7 +6484,7 @@ document.addEventListener('DOMContentLoaded', () => {
             s1.textContent = '⌛';
             s2.textContent = '⌛';
             s3.textContent = '⌛';
-            overlay.style.display = 'flex';
+            overlay.classList.add('open');
         }
 
         fetch('/api/proxy/restart', { method: 'POST' })
@@ -4442,7 +6523,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (s3) s3.textContent = '✅';
                     clearInterval(interval);
                     setTimeout(() => {
-                        if (overlay) overlay.style.display = 'none';
+                        if (overlay) overlay.classList.remove('open');
                         loadModelProfiles();
                         startMonitorPolling();
                     }, 1000);
@@ -4457,8 +6538,8 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (checks > 45) {
                 clearInterval(interval);
-                if (overlay) overlay.style.display = 'none';
-                alert('Restart sequence timed out or connection lost. Please refresh the page manually.');
+                if (overlay) overlay.classList.remove('open');
+                showToast('Restart sequence timed out or connection lost. Please refresh the page manually.', 'error');
                 startMonitorPolling();
             }
         }, 2000);
@@ -4528,13 +6609,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 logToTerminal(`Model switched to: ${modelName}`, 'success');
             } else {
                 if (modelSwitcherStatus) {
-                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${data.error || 'Failed to switch model'}</span>`;
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${escapeHtml(data.error || 'Failed to switch model')}</span>`;
                 }
                 logToTerminal(`Model switch failed: ${data.error}`, 'error');
             }
         } catch (err) {
             if (modelSwitcherStatus) {
-                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${err.message}</span>`;
+                modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${escapeHtml(err.message)}</span>`;
             }
             logToTerminal(`Model switch error: ${err.message}`, 'error');
         }
@@ -4553,7 +6634,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         if (modelSwitcherStatus) {
-            modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary);">Unloading ${currentModelName}...</span>`;
+            modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary);">Unloading ${escapeHtml(currentModelName)}...</span>`;
         }
         
         try {
@@ -4624,11 +6705,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function deleteModel(modelName) {
         if (!modelName) {
-            alert("Please select a model to delete.");
+            showToast("Please select a model to delete.", 'error');
             return;
         }
         if (!confirm(`Are you sure you want to permanently delete model "${modelName}"?\nThis will remove the manifest and all unshared blobs from disk. This action cannot be undone!`)) {
             return;
+        }
+
+        const hasBenchmarks =
+            (Array.isArray(currentResults) && currentResults.some(r => r.model === modelName)) ||
+            (Array.isArray(currentSharedResults) && currentSharedResults.some(r => r.model === modelName));
+        let removeBenchmarks = false;
+        if (hasBenchmarks) {
+            removeBenchmarks = confirm(`Model "${modelName}" has saved benchmark results.\n\nOK = also delete its benchmark results\nCancel = delete the model but keep its benchmark history`);
         }
 
         if (modelSwitcherStatus) {
@@ -4639,7 +6728,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch('/api/models/delete', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ model: modelName })
+                body: JSON.stringify({ model: modelName, remove_benchmarks: removeBenchmarks })
             });
 
             const data = await res.json();
@@ -4656,6 +6745,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 await loadModels();
+                
+                if (removeBenchmarks) {
+                    if (typeof loadHistory === 'function') {
+                        await loadHistory();
+                    }
+                }
                 
                 if (typeof loadRoutingMatrix === 'function') {
                     loadRoutingMatrix();
@@ -4675,8 +6770,50 @@ document.addEventListener('DOMContentLoaded', () => {
             showToast(`Model delete error: ${err.message}`, 'error');
         }
     }
-    
-    // ──── TELEMETRY AND AUTO-TUNING INTEGRATION ────
+
+    /**
+     * Bulk-remove all saved benchmark results for a model that is NOT being
+     * deleted from disk. The model itself stays (manifest, blobs, router link);
+     * only its benchmark history (per-model result files + merged latest
+     * snapshot entry + tracker record) is purged, so it reverts to "new" in
+     * the tracking UI and can be re-benchmarked later.
+     */
+    async function deleteModelBenchmarks(modelId, displayName) {
+        if (!modelId) {
+            showToast("Please select a model to clear.", 'error');
+            return;
+        }
+        if (!confirm(`Delete all saved benchmark results for "${displayName}"?\n\nThe model itself is kept on disk — only its benchmark history is removed. This action cannot be undone.`)) {
+            return;
+        }
+
+        try {
+            const res = await fetch(`/api/benchmarks/model/${encodeURIComponent(modelId)}`, {
+                method: 'DELETE'
+            });
+            const data = await res.json();
+
+            if (res.ok) {
+                logToTerminal(`Benchmark history cleared for "${displayName}" (${data.removed || 0} file(s) removed).`, 'success');
+                showToast(`Benchmark history cleared for "${displayName}"`, 'success');
+                await loadModels();
+                if (typeof loadHistory === 'function') {
+                    await loadHistory();
+                }
+                if (typeof loadRoutingMatrix === 'function') {
+                    await loadRoutingMatrix();
+                }
+            } else {
+                logToTerminal(`Failed to clear benchmarks for "${displayName}": ${data.error || 'Unknown error'}`, 'error');
+                showToast(`Failed to clear benchmarks: ${data.error || 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            logToTerminal(`Benchmark clear error: ${err.message}`, 'error');
+            showToast(`Benchmark clear error: ${err.message}`, 'error');
+        }
+    }
+
+    // TELEMETRY AND AUTO-TUNING INTEGRATION
     async function updateTelemetryAndRecommendations(modelName) {
         if (!modelName || modelName === 'None') {
             const modelBadge = document.getElementById('optimization-model-badge');
@@ -4834,7 +6971,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // ──── CAPABILITY ROUTING MATRIX INTEGRATION ────
+    // CAPABILITY ROUTING MATRIX INTEGRATION
     async function loadRoutingMatrix() {
         try {
             // 1. Fetch available models
@@ -5083,7 +7220,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnApplyOptimizations.addEventListener('click', applyTuningOptimizations);
     }
 
-    // ──── RESOURCE ANALYSIS ────
+    // RESOURCE ANALYSIS
     async function analyzeAllModels() {
         const btn = document.getElementById('btn-analyze-all');
         const resultsEl = document.getElementById('resource-analysis-results');
@@ -5191,7 +7328,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnAnalyzeAll.addEventListener('click', analyzeAllModels);
     }
 
-    // ──── MODEL ERROR LOG ────
+    // MODEL ERROR LOG
     const ERROR_TYPE_STYLES = {
         context_overflow: { color: '#f97316', label: 'CTX OVERFLOW' },
         oom:              { color: '#ef4444', label: 'OOM' },
@@ -5310,7 +7447,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Periodically update current model in switcher
     setInterval(updateCurrentModel, 5000);
 
-    // ──── MODEL DISCOVERY SEARCH AND PULL INTEGRATION ────
+    // MODEL DISCOVERY SEARCH AND PULL INTEGRATION
     const btnOpenSearchModal = document.getElementById('btn-open-search-modal');
     const searchPullOverlay = document.getElementById('search-pull-overlay');
     const searchPullClose = document.getElementById('search-pull-close');
@@ -5374,7 +7511,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function executeModelSearch() {
         const query = modelSearchQuery?.value.trim();
         if (!query) {
-            alert("Please enter a search query.");
+            showToast("Please enter a search query.", 'error');
             return;
         }
 
@@ -5421,7 +7558,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 results.forEach(item => {
                     const isSd = item.type === 'stable-diffusion';
 
-                    // Card base — tinted differently for SD vs LLM
+                    // Card base - tinted differently for SD vs LLM
                     const card = document.createElement('div');
                     card.style.cssText = isSd
                         ? 'background: rgba(234, 88, 12, 0.07); border: 1px solid rgba(234, 88, 12, 0.18); border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.75rem; transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;'
@@ -5442,7 +7579,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         card.style.boxShadow = 'none';
                     });
 
-                    // ── Header: name + badges ──
+                    // Header: name + badges
                     const header = document.createElement('div');
                     header.style.cssText = 'display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem;';
 
@@ -5476,7 +7613,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     header.appendChild(titleWrapper);
                     header.appendChild(sourceBadge);
 
-                    // ── Body: description + stats pills ──
+                    // Body: description + stats pills
                     const body = document.createElement('div');
                     body.style.cssText = 'flex: 1; display: flex; flex-direction: column; gap: 0.4rem;';
 
@@ -5523,7 +7660,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         body.appendChild(descDiv);
                     }
 
-                    // ── Footer: action button ──
+                    // Footer: action button
                     const footer = document.createElement('div');
                     footer.style.cssText = 'display: flex; justify-content: flex-end; align-items: center; margin-top: auto; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.05);';
 
@@ -5700,7 +7837,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const typeBadgeHtml = isSDRepo
                     ? '<span style="font-size:0.65rem; background:rgba(234,88,12,0.15); color:#fb923c; border:1px solid rgba(234,88,12,0.3); padding:0.1rem 0.35rem; border-radius:20px; font-weight:600; margin-left:0.5rem;">🎨 Stable Diffusion</span>'
                     : '<span style="font-size:0.65rem; background:rgba(99,102,241,0.12); color:#a5b4fc; border:1px solid rgba(99,102,241,0.25); padding:0.1rem 0.35rem; border-radius:20px; font-weight:600; margin-left:0.5rem;">🤖 Language Model</span>';
-                hfFilesTitle.innerHTML = `Repository: <span style="color:white;">${repoName}</span>${typeBadgeHtml}`;
+                hfFilesTitle.innerHTML = `Repository: <span style="color:white;">${escapeHtml(repoName)}</span>${typeBadgeHtml}`;
             }
 
             if (files.length === 0) {
@@ -5785,7 +7922,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (alias === null) return;  // user pressed Cancel
 
                         const ref = `hf://${repoName}/${file.filename}`;
-                        // Always use 'huggingface' as source — puller auto-detects SD vs LLM from the file
+                        // Always use 'huggingface' as source - puller auto-detects SD vs LLM from the file
                         pullModel(ref, 'huggingface', alias || baseName);
                     });
 
@@ -6004,8 +8141,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Startup Tasks
     initCharts();
+
+    // Model filter group toggle buttons (All / Local / Online)
+    document.querySelectorAll('.model-filter-group').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const type = btn.dataset.filterType;
+            const group = btn.dataset.group;
+            const all = filterAllModels[type] || [];
+            const sel = filterSelection[type] || new Set();
+            if (all.length === 0) return;
+
+            if (group === 'all') {
+                all.forEach(m => sel.add(m));
+            } else {
+                const groupModels = all.filter(m => (group === 'online') === isOnlineModelName(m));
+                if (groupModels.length === 0) return;
+                const allSelected = groupModels.every(m => sel.has(m));
+                groupModels.forEach(m => { if (allSelected) sel.delete(m); else sel.add(m); });
+            }
+            syncFilterCheckboxUI(type);
+            updateFilterGroupState(type);
+            onModelFilterChange(type);
+        });
+    });
+
     loadModels();
     loadTests();
+    loadBenchmarkGroups();
+    wireResumeDeselect();
     loadSharedTests();
     loadModelProfiles();
     loadHistory();
@@ -6029,6 +8192,43 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Benchmark group select-all / none
+    const btnSelectAllGroups = document.getElementById('btn-select-all-groups');
+    const btnDeselectAllGroups = document.getElementById('btn-deselect-all-groups');
+    if (btnSelectAllGroups) {
+        btnSelectAllGroups.addEventListener('click', () => {
+            groupCheckboxes?.querySelectorAll('input[type="checkbox"]')
+                .forEach(cb => { cb.checked = true; });
+        });
+    }
+    if (btnDeselectAllGroups) {
+        btnDeselectAllGroups.addEventListener('click', () => {
+            groupCheckboxes?.querySelectorAll('input[type="checkbox"]')
+                .forEach(cb => { cb.checked = false; });
+        });
+    }
+
+    // Screenshot lightbox wiring
+    const screenshotLightbox = document.getElementById('screenshot-lightbox');
+    const screenshotLightboxImg = document.getElementById('screenshot-lightbox-img');
+    const screenshotLightboxClose = document.getElementById('screenshot-lightbox-close');
+    function openScreenshotLightbox(dataUrl) {
+        if (!screenshotLightbox || !screenshotLightboxImg) return;
+        screenshotLightboxImg.src = dataUrl;
+        screenshotLightbox.classList.add('open');
+    }
+    function closeScreenshotLightbox() {
+        if (!screenshotLightbox) return;
+        screenshotLightbox.classList.remove('open');
+        if (screenshotLightboxImg) screenshotLightboxImg.src = '';
+    }
+    if (screenshotLightboxClose) screenshotLightboxClose.addEventListener('click', closeScreenshotLightbox);
+    if (screenshotLightbox) {
+        screenshotLightbox.addEventListener('click', (e) => {
+            if (e.target === screenshotLightbox) closeScreenshotLightbox();
+        });
+    }
+
     // Poll pull status periodically to keep UI in sync
     setInterval(() => {
         try {
@@ -6042,7 +8242,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial tab routing based on URL hash
     const initialHash = window.location.hash.substring(1);
-    const validTabs = ['monitor', 'general', 'shared', 'profiles', 'requests', 'docs', 'sd'];
+    const validTabs = ['monitor', 'general', 'shared', 'tests', 'profiles', 'requests', 'docs', 'sd'];
     if (validTabs.includes(initialHash)) {
         switchTab(initialHash);
     } else {
@@ -6058,6 +8258,68 @@ document.addEventListener('DOMContentLoaded', () => {
         URL.revokeObjectURL(a.href);
     }
 
+    function extractCodeFromResponse(response) {
+        if (!response) return '';
+        const fence = response.match(/```(?:python|py)?\s*([\s\S]*?)```/i);
+        if (fence && fence[1]) return fence[1].trim();
+        return response.trim();
+    }
+
+    function sanitizeArtifactName(name) {
+        return (name || 'model').replace(/[/:.]/g, '_');
+    }
+
+    async function saveArtifact(model, testId, content, type) {
+        try {
+            const resp = await fetch('/api/artifacts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model, test_id: testId, content, type })
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Failed to save artifact');
+            return data;
+        } catch (err) {
+            showToast(`Failed to save artifact: ${err.message}`, 'error');
+            return null;
+        }
+    }
+
+    function addArtifactButtons(container, model, testId, response) {
+        const code = extractCodeFromResponse(response);
+        if (!code) return;
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:flex; gap:0.5rem; margin-top:0.5rem;';
+
+        const dlBtn = document.createElement('button');
+        dlBtn.textContent = '⬇ Download .py';
+        dlBtn.className = 'btn btn-secondary btn-sm';
+        dlBtn.style.cssText = 'padding: 4px 12px; font-size: 0.75rem; cursor:pointer;';
+        dlBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const filename = `${sanitizeArtifactName(model)}__${testId}.py`;
+            downloadFile(code, filename, 'text/x-python');
+            showToast(`Downloading ${filename}`, 'success');
+        });
+        btnRow.appendChild(dlBtn);
+
+        const hostBtn = document.createElement('button');
+        hostBtn.textContent = '🖥 Host in Browser';
+        hostBtn.className = 'btn btn-secondary btn-sm';
+        hostBtn.style.cssText = 'padding: 4px 12px; font-size: 0.75rem; cursor:pointer;';
+        hostBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const result = await saveArtifact(model, testId, code, 'python');
+            if (result && result.host_url) {
+                showToast(`Artifact saved - opening hosted view`, 'success');
+                window.open(result.host_url, '_blank');
+            }
+        });
+        btnRow.appendChild(hostBtn);
+
+        container.appendChild(btnRow);
+    }
+
     function exportGeneralResults() {
         if (!currentResults || currentResults.length === 0) {
             showToast("No general benchmark results loaded to export", "error");
@@ -6069,8 +8331,13 @@ document.addEventListener('DOMContentLoaded', () => {
         md += `* **Models Tested:** ${currentResults.length}\n\n`;
         
         currentResults.forEach(modelData => {
+            const row = (typeof computeGeneralRow === 'function') ? computeGeneralRow(modelData) : null;
             md += `## Model: ${modelData.model}\n\n`;
             md += `* **Timestamp:** ${modelData.timestamp || 'N/A'}\n`;
+            if (row) {
+                md += `* **Overall Score:** ${row.score} / 100  (success ${row.success.toFixed(1)}%, ${row.tests} tests)\n`;
+                md += `* **Avg Speed:** ${row.tps.toFixed(1)} TPS  |  **Avg TTFT:** ${row.ttft.toFixed(0)} ms  |  **Avg Tokens:** ${row.tokens.toFixed(0)}\n`;
+            }
             if (modelData.performance_metrics) {
                 const perf = modelData.performance_metrics;
                 md += `* **Average Speed:** ${perf.avg_tps || 0} TPS\n`;
@@ -6080,21 +8347,23 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             md += `\n`;
             
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(catKey => {
                 const catStats = modelData[`category_${catKey}`];
                 if (!catStats || !catStats.tests) return;
                 
                 md += `### Category: ${catKey.replace('_', ' ').toUpperCase()}\n\n`;
-                md += `| Test Scenario | Status | Latency | Speed |\n`;
-                md += `| --- | --- | --- | --- |\n`;
+                md += `| Test Scenario | Status | Code Quality | Watermark | Latency | Speed |\n`;
+                md += `| --- | --- | --- | --- | --- | --- |\n`;
                 
                 catStats.tests.forEach(test => {
                     const latVal = test.eval_duration && test.prompt_eval_duration ? (test.eval_duration + test.prompt_eval_duration) / 1e9 : test.latency;
                     const duration = latVal || 0;
                     const tps = (test.success && test.tokens_generated > 0 && duration > 0) ? (test.tokens_generated / duration) : 0;
+                    const cq = test.code_quality ? test.code_quality.score : '-';
+                    const wm = test.watermark ? test.watermark.score : '-';
                     
-                    md += `| ${test.test_label} | ${test.success ? '✅ Success' : '❌ Fail'} | ${duration.toFixed(2)}s | ${tps > 0 ? tps.toFixed(1) + ' TPS' : '-'} |\n`;
+                    md += `| ${test.test_label} | ${test.success ? '✅ Success' : '❌ Fail'} | ${cq} | ${wm} | ${duration.toFixed(2)}s | ${tps > 0 ? tps.toFixed(1) + ' TPS' : '-'} |\n`;
                 });
                 md += `\n`;
                 
@@ -6195,9 +8464,672 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnExportGeneral) {
         btnExportGeneral.addEventListener('click', exportGeneralResults);
     }
+    const btnExportCsv = document.getElementById('btn-export-csv');
+    if (btnExportCsv) {
+        btnExportCsv.addEventListener('click', () => {
+            const url = '/api/benchmarks/export?format=csv';
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `benchmarks_export_${new Date().toISOString().slice(0,10)}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        });
+    }
     const btnExportShared = document.getElementById('btn-export-shared');
     if (btnExportShared) {
         btnExportShared.addEventListener('click', exportSharedResults);
+    }
+
+    // API KEYS & PROVIDER SETTINGS CONTROLLER
+    const btnOpenApiKeys = document.getElementById('btn-open-api-keys');
+    const apiKeysModal = document.getElementById('api-keys-modal');
+    const apiKeysClose = document.getElementById('api-keys-close');
+    const btnCancelApiKeys = document.getElementById('btn-cancel-api-keys');
+    const btnSaveApiKeys = document.getElementById('btn-save-api-keys');
+
+    const inputAlpacaKey = document.getElementById('input-alpaca-key');
+    const btnGenerateAlpacaToken = document.getElementById('btn-generate-alpaca-token');
+    const btnCopyAlpacaToken = document.getElementById('btn-copy-alpaca-token');
+    const btnClearAlpacaToken = document.getElementById('btn-clear-alpaca-token');
+    const badgeStatusAlpaca = document.getElementById('badge-status-alpaca');
+    const snippetApiKeyVal = document.getElementById('snippet-api-key-val');
+
+    const inputOpenrouterKey = document.getElementById('input-openrouter-key');
+    const btnTestOpenrouter = document.getElementById('btn-test-openrouter');
+    const testResultOpenrouter = document.getElementById('test-result-openrouter');
+    const badgeStatusOpenrouter = document.getElementById('badge-status-openrouter');
+
+    const inputHuggingfaceToken = document.getElementById('input-huggingface-token');
+    const btnTestHuggingface = document.getElementById('btn-test-huggingface');
+    const testResultHuggingface = document.getElementById('test-result-huggingface');
+    const badgeStatusHuggingface = document.getElementById('badge-status-huggingface');
+
+    const inputCloudflareToken = document.getElementById('input-cloudflare-token');
+    const inputCloudflareAccount = document.getElementById('input-cloudflare-account');
+    const btnTestCloudflare = document.getElementById('btn-test-cloudflare');
+    const testResultCloudflare = document.getElementById('test-result-cloudflare');
+    const badgeStatusCloudflare = document.getElementById('badge-status-cloudflare');
+
+    const inputOpencodeBaseUrl = document.getElementById('input-opencode-base-url');
+    const inputOpencodeKey = document.getElementById('input-opencode-key');
+    const btnTestOpencode = document.getElementById('btn-test-opencode');
+    const testResultOpencode = document.getElementById('test-result-opencode');
+    const badgeStatusOpencode = document.getElementById('badge-status-opencode');
+
+    const inputGroqKey = document.getElementById('input-groq-key');
+    const btnTestGroq = document.getElementById('btn-test-groq');
+    const testResultGroq = document.getElementById('test-result-groq');
+    const badgeStatusGroq = document.getElementById('badge-status-groq');
+
+    const inputGeminiKey = document.getElementById('input-gemini-key');
+    const btnTestGemini = document.getElementById('btn-test-gemini');
+    const testResultGemini = document.getElementById('test-result-gemini');
+    const badgeStatusGemini = document.getElementById('badge-status-gemini');
+
+    function updateAlpacaSnippet(token) {
+        if (snippetApiKeyVal) {
+            snippetApiKeyVal.textContent = token ? `"${token}"` : '"YOUR_TOKEN_HERE"';
+        }
+    }
+
+    async function loadApiKeysStatus() {
+        try {
+            const res = await fetch('/api/online/providers');
+            if (!res.ok) return;
+            const data = await res.json();
+            const providers = data.providers || {};
+
+            if (providers.alpaca) {
+                if (inputAlpacaKey && providers.alpaca.masked_key) {
+                    inputAlpacaKey.placeholder = providers.alpaca.masked_key;
+                }
+                if (badgeStatusAlpaca) {
+                    badgeStatusAlpaca.className = providers.alpaca.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusAlpaca.textContent = providers.alpaca.configured ? 'Protected (Token Required)' : 'Public / No Auth';
+                }
+                updateAlpacaSnippet(providers.alpaca.masked_key || '');
+            }
+
+            if (providers.openrouter) {
+                if (inputOpenrouterKey && providers.openrouter.masked_key) {
+                    inputOpenrouterKey.placeholder = providers.openrouter.masked_key;
+                }
+                if (badgeStatusOpenrouter) {
+                    badgeStatusOpenrouter.className = providers.openrouter.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusOpenrouter.textContent = providers.openrouter.configured ? 'Configured' : 'Not Configured';
+                }
+            }
+
+            if (providers.huggingface) {
+                if (inputHuggingfaceToken && providers.huggingface.masked_key) {
+                    inputHuggingfaceToken.placeholder = providers.huggingface.masked_key;
+                }
+                if (badgeStatusHuggingface) {
+                    badgeStatusHuggingface.className = providers.huggingface.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusHuggingface.textContent = providers.huggingface.configured ? 'Configured' : 'Not Configured';
+                }
+            }
+
+            if (providers.cloudflare) {
+                if (inputCloudflareToken && providers.cloudflare.masked_token) {
+                    inputCloudflareToken.placeholder = providers.cloudflare.masked_token;
+                }
+                if (inputCloudflareAccount && providers.cloudflare.account_id) {
+                    inputCloudflareAccount.value = providers.cloudflare.account_id;
+                }
+                if (badgeStatusCloudflare) {
+                    badgeStatusCloudflare.className = providers.cloudflare.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusCloudflare.textContent = providers.cloudflare.configured ? 'Configured' : 'Not Configured';
+                }
+            }
+
+            if (providers.opencode_zen) {
+                if (inputOpencodeBaseUrl && providers.opencode_zen.base_url) {
+                    inputOpencodeBaseUrl.value = providers.opencode_zen.base_url;
+                }
+                if (inputOpencodeKey && providers.opencode_zen.masked_key) {
+                    inputOpencodeKey.placeholder = providers.opencode_zen.masked_key;
+                }
+                if (badgeStatusOpencode) {
+                    badgeStatusOpencode.className = 'badge badge-success';
+                    badgeStatusOpencode.textContent = 'Ready';
+                }
+            }
+
+            if (providers.groq) {
+                if (inputGroqKey && providers.groq.masked_key) {
+                    inputGroqKey.placeholder = providers.groq.masked_key;
+                }
+                if (badgeStatusGroq) {
+                    badgeStatusGroq.className = providers.groq.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusGroq.textContent = providers.groq.configured ? 'Configured' : 'Not Configured';
+                }
+            }
+
+            if (providers.gemini) {
+                if (inputGeminiKey && providers.gemini.masked_key) {
+                    inputGeminiKey.placeholder = providers.gemini.masked_key;
+                }
+                if (badgeStatusGemini) {
+                    badgeStatusGemini.className = providers.gemini.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusGemini.textContent = providers.gemini.configured ? 'Configured' : 'Not Configured';
+                }
+            }
+        } catch (err) {
+            console.error('Error loading provider credentials:', err);
+        }
+    }
+
+    if (btnGenerateAlpacaToken) {
+        btnGenerateAlpacaToken.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/online/providers/alpaca/generate', { method: 'POST' });
+                const data = await res.json();
+                if (data.token && inputAlpacaKey) {
+                    inputAlpacaKey.value = data.token;
+                    updateAlpacaSnippet(data.token);
+                    if (badgeStatusAlpaca) {
+                        badgeStatusAlpaca.className = 'badge badge-warning';
+                        badgeStatusAlpaca.textContent = 'Unsaved Token';
+                    }
+                    showToast('Generated new Alpaca Proxy token! Click Save to apply.', 'info');
+                }
+            } catch (err) {
+                showToast(`Failed to generate token: ${err.message}`, 'error');
+            }
+        });
+    }
+
+    if (btnCopyAlpacaToken) {
+        btnCopyAlpacaToken.addEventListener('click', () => {
+            const token = inputAlpacaKey?.value.trim();
+            if (token) {
+                navigator.clipboard.writeText(token).then(() => {
+                    showToast('Alpaca API token copied to clipboard!', 'success');
+                }).catch(() => {
+                    showToast('Failed to copy token to clipboard', 'error');
+                });
+            } else {
+                showToast('No token set to copy', 'warning');
+            }
+        });
+    }
+
+    if (btnClearAlpacaToken) {
+        btnClearAlpacaToken.addEventListener('click', () => {
+            if (inputAlpacaKey) {
+                inputAlpacaKey.value = '';
+                updateAlpacaSnippet('');
+                if (badgeStatusAlpaca) {
+                    badgeStatusAlpaca.className = 'badge badge-secondary';
+                    badgeStatusAlpaca.textContent = 'Public / No Auth';
+                }
+                showToast('Alpaca token cleared. Click Save to set proxy to public access.', 'info');
+            }
+        });
+    }
+
+    if (inputAlpacaKey) {
+        inputAlpacaKey.addEventListener('input', () => {
+            updateAlpacaSnippet(inputAlpacaKey.value.trim());
+        });
+    }
+
+    if (btnOpenApiKeys) {
+        btnOpenApiKeys.addEventListener('click', () => {
+            if (apiKeysModal) apiKeysModal.classList.add('open');
+            loadApiKeysStatus();
+        });
+    }
+
+    function closeApiKeysModal() {
+        if (apiKeysModal) apiKeysModal.classList.remove('open');
+    }
+
+    if (apiKeysClose) apiKeysClose.addEventListener('click', closeApiKeysModal);
+    if (btnCancelApiKeys) btnCancelApiKeys.addEventListener('click', closeApiKeysModal);
+    if (apiKeysModal) {
+        apiKeysModal.addEventListener('click', (e) => {
+            if (e.target === apiKeysModal) closeApiKeysModal();
+        });
+    }
+
+    // Helper to run connection tests with visual feedback
+    async function runProviderTest(provider, customKeys, resultElem, badgeElem) {
+        if (!resultElem) return;
+        resultElem.style.display = 'block';
+        resultElem.style.color = '#93c5fd';
+        resultElem.innerHTML = '⏳ Testing connection...';
+
+        try {
+            const res = await fetch('/api/online/providers/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider: provider, keys: customKeys })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                resultElem.style.color = '#4ade80';
+                resultElem.innerHTML = `✅ ${data.message || 'Connection successful!'}`;
+                if (badgeElem) {
+                    badgeElem.className = 'badge badge-success';
+                    badgeElem.textContent = 'Active';
+                }
+            } else {
+                resultElem.style.color = '#f87171';
+                resultElem.innerHTML = `❌ ${data.error || 'Connection failed'}`;
+                if (badgeElem) {
+                    badgeElem.className = 'badge badge-danger';
+                    badgeElem.textContent = 'Failed';
+                }
+            }
+        } catch (err) {
+            resultElem.style.color = '#f87171';
+            resultElem.innerHTML = `❌ Network error: ${err.message}`;
+        }
+    }
+
+    if (btnTestOpenrouter) {
+        btnTestOpenrouter.addEventListener('click', () => {
+            const key = inputOpenrouterKey?.value.trim();
+            runProviderTest('openrouter', key ? { openrouter_api_key: key } : {}, testResultOpenrouter, badgeStatusOpenrouter);
+        });
+    }
+
+    if (btnTestHuggingface) {
+        btnTestHuggingface.addEventListener('click', () => {
+            const key = inputHuggingfaceToken?.value.trim();
+            runProviderTest('huggingface', key ? { huggingface_token: key } : {}, testResultHuggingface, badgeStatusHuggingface);
+        });
+    }
+
+    if (btnTestCloudflare) {
+        btnTestCloudflare.addEventListener('click', () => {
+            const token = inputCloudflareToken?.value.trim();
+            const account = inputCloudflareAccount?.value.trim();
+            const keys = {};
+            if (token) keys.cloudflare_api_token = token;
+            if (account) keys.cloudflare_account_id = account;
+            runProviderTest('cloudflare', keys, testResultCloudflare, badgeStatusCloudflare);
+        });
+    }
+
+    if (btnTestOpencode) {
+        btnTestOpencode.addEventListener('click', () => {
+            const url = inputOpencodeBaseUrl?.value.trim();
+            const key = inputOpencodeKey?.value.trim();
+            const keys = {};
+            if (url) keys.opencode_zen_base_url = url;
+            if (key) keys.opencode_zen_api_key = key;
+            runProviderTest('opencode_zen', keys, testResultOpencode, badgeStatusOpencode);
+        });
+    }
+
+    if (btnTestGroq) {
+        btnTestGroq.addEventListener('click', () => {
+            const key = inputGroqKey?.value.trim();
+            runProviderTest('groq', key ? { groq_api_key: key } : {}, testResultGroq, badgeStatusGroq);
+        });
+    }
+
+    if (btnTestGemini) {
+        btnTestGemini.addEventListener('click', () => {
+            const key = inputGeminiKey?.value.trim();
+            runProviderTest('gemini', key ? { gemini_api_key: key } : {}, testResultGemini, badgeStatusGemini);
+        });
+    }
+
+    if (btnSaveApiKeys) {
+        btnSaveApiKeys.addEventListener('click', async () => {
+            const payload = {};
+            if (inputAlpacaKey) payload.alpaca_api_key = inputAlpacaKey.value.trim();
+            if (inputOpenrouterKey?.value.trim()) payload.openrouter_api_key = inputOpenrouterKey.value.trim();
+            if (inputHuggingfaceToken?.value.trim()) payload.huggingface_token = inputHuggingfaceToken.value.trim();
+            if (inputCloudflareToken?.value.trim()) payload.cloudflare_api_token = inputCloudflareToken.value.trim();
+            if (inputCloudflareAccount?.value.trim()) payload.cloudflare_account_id = inputCloudflareAccount.value.trim();
+            if (inputOpencodeBaseUrl?.value.trim()) payload.opencode_zen_base_url = inputOpencodeBaseUrl.value.trim();
+            if (inputOpencodeKey?.value.trim()) payload.opencode_zen_api_key = inputOpencodeKey.value.trim();
+            if (inputGroqKey?.value.trim()) payload.groq_api_key = inputGroqKey.value.trim();
+            if (inputGeminiKey?.value.trim()) payload.gemini_api_key = inputGeminiKey.value.trim();
+
+            try {
+                btnSaveApiKeys.disabled = true;
+                btnSaveApiKeys.textContent = 'Saving...';
+                const res = await fetch('/api/online/providers/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('Credentials and security settings saved successfully!', 'success');
+                    closeApiKeysModal();
+                    await loadModels();
+                } else {
+                    showToast(`Failed to save credentials: ${data.error}`, 'error');
+                }
+            } catch (err) {
+                showToast(`Error saving credentials: ${err.message}`, 'error');
+            } finally {
+                btnSaveApiKeys.disabled = false;
+                btnSaveApiKeys.textContent = '💾 Save Credentials';
+            }
+        });
+    }
+
+    // LIVE ONLINE MODELS EXPLORER CONTROLLER
+    const btnOpenOnlineModels = document.getElementById('btn-open-online-models');
+    const onlineModelsModal = document.getElementById('online-models-modal');
+    const onlineModelsClose = document.getElementById('online-models-close');
+    const btnCancelOnlineModels = document.getElementById('btn-cancel-online-models');
+    const btnSaveOnlineSelection = document.getElementById('btn-save-online-selection');
+    const btnFetchLiveModels = document.getElementById('btn-fetch-live-models');
+    const onlineProviderFilter = document.getElementById('online-provider-filter');
+    const onlineModelsSearchInput = document.getElementById('online-models-search-input');
+    const onlineFreeOnlyToggle = document.getElementById('online-free-only-toggle');
+    const onlineModelsResultsContainer = document.getElementById('online-models-results-container');
+    const onlineResultsCount = document.getElementById('online-results-count');
+    const onlineSelectedCount = document.getElementById('online-selected-count');
+    const btnSelectAllOnline = document.getElementById('btn-select-all-online');
+    const btnClearOnlineSelection = document.getElementById('btn-clear-online-selection');
+
+    let currentOnlineCatalog = [];
+    let selectedOnlineModelMap = new Map(); // id -> model object
+
+    async function loadSelectedOnlineModels() {
+        try {
+            const res = await fetch('/api/online/models/selected');
+            if (res.ok) {
+                const data = await res.json();
+                selectedOnlineModelMap.clear();
+                (data.models || []).forEach(m => {
+                    if (m.id) selectedOnlineModelMap.set(m.id, m);
+                });
+                updateOnlineSelectionCounter();
+            }
+        } catch (err) {
+            console.error('Error loading selected online models:', err);
+        }
+    }
+
+    function updateOnlineSelectionCounter() {
+        if (onlineSelectedCount) {
+            onlineSelectedCount.textContent = selectedOnlineModelMap.size;
+        }
+    }
+
+    async function fetchLiveOnlineModels() {
+        if (!onlineModelsResultsContainer) return;
+        onlineModelsResultsContainer.innerHTML = `
+            <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:2.5rem;">
+                <div class="loader" style="width:28px; height:28px; border-width:3px; display:inline-block; margin-bottom:0.5rem;"></div>
+                <div>Fetching live models from remote providers...</div>
+            </div>`;
+
+        const provider = onlineProviderFilter?.value || 'all';
+        const query = onlineModelsSearchInput?.value.trim() || '';
+        const freeOnly = onlineFreeOnlyToggle?.checked || false;
+
+        try {
+            const url = `/api/online/models/search?provider=${encodeURIComponent(provider)}&query=${encodeURIComponent(query)}&free_only=${freeOnly}`;
+            const res = await fetch(url);
+            const data = await res.json();
+            currentOnlineCatalog = data.models || [];
+
+            if (onlineResultsCount) onlineResultsCount.textContent = currentOnlineCatalog.length;
+            renderOnlineModelResults(currentOnlineCatalog);
+        } catch (err) {
+            onlineModelsResultsContainer.innerHTML = `
+                <div style="text-align:center; color:#f87171; padding:2rem;">
+                    Failed to discover online models: ${err.message}
+                </div>`;
+        }
+    }
+
+    function renderOnlineModelResults(models) {
+        if (!onlineModelsResultsContainer) return;
+        onlineModelsResultsContainer.innerHTML = '';
+
+        if (!models || models.length === 0) {
+            onlineModelsResultsContainer.innerHTML = `
+                <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:2.5rem;">
+                    No models matched the current filter. Try adjusting your search query or provider.
+                </div>`;
+            return;
+        }
+
+        models.forEach(m => {
+            const isChecked = selectedOnlineModelMap.has(m.id);
+            const card = document.createElement('div');
+            card.style.cssText = `
+                display: flex;
+                align-items: flex-start;
+                gap: 0.75rem;
+                background: #090d16;
+                border: 1px solid ${isChecked ? 'var(--color-primary)' : 'var(--border-color)'};
+                border-radius: 8px;
+                padding: 0.65rem 0.85rem;
+                transition: all 0.15s ease;
+                cursor: pointer;
+            `;
+
+            const chk = document.createElement('input');
+            chk.type = 'checkbox';
+            chk.checked = isChecked;
+            chk.style.marginTop = '0.25rem';
+            chk.style.accentColor = 'var(--color-primary)';
+            chk.style.cursor = 'pointer';
+
+            const info = document.createElement('div');
+            info.style.flex = '1';
+            info.style.display = 'flex';
+            info.style.flexDirection = 'column';
+            info.style.gap = '0.25rem';
+
+            const headerRow = document.createElement('div');
+            headerRow.style.display = 'flex';
+            headerRow.style.alignItems = 'center';
+            headerRow.style.gap = '0.5rem';
+            headerRow.style.flexWrap = 'wrap';
+
+            const title = document.createElement('strong');
+            title.style.color = 'white';
+            title.style.fontSize = '0.84rem';
+            title.textContent = m.label || m.name;
+
+            const provBadge = document.createElement('span');
+            provBadge.style.fontSize = '0.65rem';
+            provBadge.style.padding = '1px 6px';
+            provBadge.style.borderRadius = '4px';
+            provBadge.style.fontWeight = '600';
+            if (m.provider === 'openrouter') {
+                provBadge.style.background = 'rgba(99, 102, 241, 0.2)';
+                provBadge.style.color = '#818cf8';
+                provBadge.textContent = 'OpenRouter';
+            } else if (m.provider === 'huggingface') {
+                provBadge.style.background = 'rgba(234, 179, 8, 0.2)';
+                provBadge.style.color = '#fde047';
+                provBadge.textContent = 'Hugging Face';
+            } else if (m.provider === 'cloudflare') {
+                provBadge.style.background = 'rgba(249, 115, 22, 0.2)';
+                provBadge.style.color = '#fb923c';
+                provBadge.textContent = 'Cloudflare';
+            } else if (m.provider === 'groq') {
+                provBadge.style.background = 'rgba(255, 87, 34, 0.2)';
+                provBadge.style.color = '#ffab91';
+                provBadge.textContent = 'Groq';
+            } else if (m.provider === 'gemini') {
+                provBadge.style.background = 'rgba(56, 189, 248, 0.2)';
+                provBadge.style.color = '#7dd3fc';
+                provBadge.textContent = 'Gemini';
+            } else {
+                provBadge.style.background = 'rgba(168, 85, 247, 0.2)';
+                provBadge.style.color = '#c084fc';
+                provBadge.textContent = 'OpenCode Zen';
+            }
+
+            const freeBadge = document.createElement('span');
+            freeBadge.style.fontSize = '0.65rem';
+            freeBadge.style.padding = '1px 6px';
+            freeBadge.style.borderRadius = '4px';
+            freeBadge.style.fontWeight = '700';
+            const tierText = m.free_tier || (m.free ? 'FREE' : (m.pricing_label || 'Paid Tier'));
+            if (m.free) {
+                freeBadge.style.background = 'rgba(34, 197, 94, 0.2)';
+                freeBadge.style.color = '#4ade80';
+                freeBadge.textContent = tierText;
+            } else {
+                freeBadge.style.background = 'rgba(56, 189, 248, 0.2)';
+                freeBadge.style.color = '#38bdf8';
+                freeBadge.textContent = tierText;
+            }
+
+            const ctxBadge = document.createElement('span');
+            ctxBadge.style.fontSize = '0.65rem';
+            ctxBadge.style.color = 'var(--text-muted)';
+            if (m.context_length) {
+                const kCtx = Math.round(m.context_length / 1024);
+                ctxBadge.textContent = `${kCtx > 0 ? kCtx + 'k' : m.context_length} ctx`;
+            }
+
+            headerRow.appendChild(title);
+            headerRow.appendChild(provBadge);
+            headerRow.appendChild(freeBadge);
+            if (ctxBadge.textContent) headerRow.appendChild(ctxBadge);
+
+            const modelIdText = document.createElement('div');
+            modelIdText.style.fontFamily = 'monospace';
+            modelIdText.style.fontSize = '0.72rem';
+            modelIdText.style.color = '#94a3b8';
+            modelIdText.textContent = m.id;
+
+            const desc = document.createElement('div');
+            desc.style.fontSize = '0.74rem';
+            desc.style.color = 'var(--text-muted)';
+            desc.style.lineHeight = '1.35';
+            desc.textContent = m.description || '';
+
+            info.appendChild(headerRow);
+            info.appendChild(modelIdText);
+            if (m.description) info.appendChild(desc);
+
+            card.appendChild(chk);
+            card.appendChild(info);
+
+            function toggleSelection() {
+                if (selectedOnlineModelMap.has(m.id)) {
+                    selectedOnlineModelMap.delete(m.id);
+                    chk.checked = false;
+                    card.style.borderColor = 'var(--border-color)';
+                } else {
+                    selectedOnlineModelMap.set(m.id, m);
+                    chk.checked = true;
+                    card.style.borderColor = 'var(--color-primary)';
+                }
+                updateOnlineSelectionCounter();
+            }
+
+            chk.addEventListener('change', (e) => {
+                e.stopPropagation();
+                if (chk.checked) {
+                    selectedOnlineModelMap.set(m.id, m);
+                    card.style.borderColor = 'var(--color-primary)';
+                } else {
+                    selectedOnlineModelMap.delete(m.id);
+                    card.style.borderColor = 'var(--border-color)';
+                }
+                updateOnlineSelectionCounter();
+            });
+
+            card.addEventListener('click', toggleSelection);
+            onlineModelsResultsContainer.appendChild(card);
+        });
+    }
+
+    if (btnOpenOnlineModels) {
+        btnOpenOnlineModels.addEventListener('click', async () => {
+            if (onlineModelsModal) onlineModelsModal.classList.add('open');
+            await loadSelectedOnlineModels();
+            await fetchLiveOnlineModels();
+        });
+    }
+
+    function closeOnlineModelsModal() {
+        if (onlineModelsModal) onlineModelsModal.classList.remove('open');
+    }
+
+    if (onlineModelsClose) onlineModelsClose.addEventListener('click', closeOnlineModelsModal);
+    if (btnCancelOnlineModels) btnCancelOnlineModels.addEventListener('click', closeOnlineModelsModal);
+    if (onlineModelsModal) {
+        onlineModelsModal.addEventListener('click', (e) => {
+            if (e.target === onlineModelsModal) closeOnlineModelsModal();
+        });
+    }
+
+    if (btnFetchLiveModels) btnFetchLiveModels.addEventListener('click', fetchLiveOnlineModels);
+    if (onlineProviderFilter) onlineProviderFilter.addEventListener('change', fetchLiveOnlineModels);
+    if (onlineFreeOnlyToggle) onlineFreeOnlyToggle.addEventListener('change', fetchLiveOnlineModels);
+
+    let onlineSearchDebounce = null;
+    if (onlineModelsSearchInput) {
+        onlineModelsSearchInput.addEventListener('input', () => {
+            clearTimeout(onlineSearchDebounce);
+            onlineSearchDebounce = setTimeout(fetchLiveOnlineModels, 300);
+        });
+        onlineModelsSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                clearTimeout(onlineSearchDebounce);
+                fetchLiveOnlineModels();
+            }
+        });
+    }
+
+    if (btnSelectAllOnline) {
+        btnSelectAllOnline.addEventListener('click', () => {
+            currentOnlineCatalog.forEach(m => {
+                if (m.id) selectedOnlineModelMap.set(m.id, m);
+            });
+            renderOnlineModelResults(currentOnlineCatalog);
+            updateOnlineSelectionCounter();
+        });
+    }
+
+    if (btnClearOnlineSelection) {
+        btnClearOnlineSelection.addEventListener('click', () => {
+            selectedOnlineModelMap.clear();
+            renderOnlineModelResults(currentOnlineCatalog);
+            updateOnlineSelectionCounter();
+        });
+    }
+
+    if (btnSaveOnlineSelection) {
+        btnSaveOnlineSelection.addEventListener('click', async () => {
+            const modelsToSave = Array.from(selectedOnlineModelMap.values());
+            try {
+                btnSaveOnlineSelection.disabled = true;
+                btnSaveOnlineSelection.textContent = 'Saving...';
+                const res = await fetch('/api/online/models/selected', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ models: modelsToSave })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`Updated benchmark models (${modelsToSave.length} online models selected)`, 'success');
+                    closeOnlineModelsModal();
+                    await loadModels();
+                } else {
+                    showToast(`Failed to save model selection: ${data.error}`, 'error');
+                }
+            } catch (err) {
+                showToast(`Error saving model selection: ${err.message}`, 'error');
+            } finally {
+                btnSaveOnlineSelection.disabled = false;
+                btnSaveOnlineSelection.textContent = '✅ Save Benchmark Selection';
+            }
+        });
     }
 
     // Listen for hashchange event to handle back/forward navigation
@@ -6206,5 +9138,62 @@ document.addEventListener('DOMContentLoaded', () => {
         if (validTabs.includes(hash)) {
             switchTab(hash);
         }
+    });
+
+    // Leaderboard row selection shows the corresponding detailed results tab
+    document.addEventListener('leaderboard:select', (e) => {
+        const { model, isGeneral } = e.detail || {};
+        if (!model) return;
+        try {
+            if (isGeneral) {
+                renderDetailsSection(currentResults, model);
+                const sel = document.getElementById('model-tabs');
+                if (sel) {
+                    sel.value = [...sel.options].find(o => o.value === model || o.value.includes(model))?.value || '';
+                    sel.dispatchEvent(new Event('change'));
+                }
+            } else {
+                renderSharedDetailsSection(currentSharedResults, model);
+                const sel = document.getElementById('shared-model-tabs');
+                if (sel) {
+                    sel.value = [...sel.options].find(o => o.value === model || o.value.includes(model))?.value || '';
+                    sel.dispatchEvent(new Event('change'));
+                }
+            }
+        } catch (_) { /* ignore */ }
+    });
+
+    // Leaderboard view mode toggle: Top 10 (default) vs Show All
+    document.querySelectorAll('.lb-show-top, .lb-show-all').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const isGeneral = btn.dataset.lb === 'general';
+            const mode = btn.dataset.mode;
+            if (isGeneral) LB_MODE.general = mode; else LB_MODE.shared = mode;
+            const group = btn.parentElement;
+            group.querySelectorAll('.lb-show-top, .lb-show-all').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            if (isGeneral) {
+                renderGeneralLeaderboard(currentResults);
+            } else {
+                renderSharedLeaderboard(currentSharedResults);
+            }
+        });
+    });
+
+    // Compare bar controls
+    [['general', true], ['shared', false]].forEach(([key, isGeneral]) => {
+        const clearBtn = document.getElementById(`${key}-lb-compare-clear`);
+        if (clearBtn) clearBtn.addEventListener('click', () => {
+            LB_SELECTION[key].clear();
+            updateLbCompareBar(isGeneral);
+            renderLeaderboardComparePanel(isGeneral);
+            if (isGeneral) renderGeneralLeaderboard(currentResults);
+            else renderSharedLeaderboard(currentSharedResults);
+        });
+        const goBtn = document.getElementById(`${key}-lb-compare-go`);
+        if (goBtn) goBtn.addEventListener('click', () => {
+            const panel = document.getElementById(`${key}-lb-compare-panel`);
+            if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
     });
 });

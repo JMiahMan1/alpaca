@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alpaca - Sign In</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .login-page-wrapper {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            position: relative;
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 440px;
+            background: rgba(19, 27, 46, 0.85);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 2.5rem 2rem;
+            box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5), 0 0 30px rgba(139, 92, 246, 0.1);
+            position: relative;
+            z-index: 10;
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .login-logo {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+            display: inline-block;
+            filter: drop-shadow(0 0 16px rgba(139, 92, 246, 0.4));
+        }
+
+        .login-title {
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--text-main);
+            margin-bottom: 0.35rem;
+        }
+
+        .login-subtitle {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            text-align: left;
+        }
+
+        .form-label {
+            font-size: 0.825rem;
+            font-weight: 600;
+            color: var(--text-main);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 1rem;
+            color: var(--text-dark);
+            font-size: 0.95rem;
+            pointer-events: none;
+            transition: color var(--transition-fast);
+        }
+
+        .login-input {
+            width: 100%;
+            background: rgba(11, 15, 25, 0.8);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 0.75rem 2.75rem 0.75rem 2.6rem;
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 0.925rem;
+            transition: all var(--transition-fast);
+        }
+
+        .login-input:focus {
+            outline: none;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 3px var(--color-primary-glow);
+            background: rgba(11, 15, 25, 0.95);
+        }
+
+        .login-input:focus + .toggle-password {
+            color: var(--text-muted);
+        }
+
+        .toggle-password {
+            position: absolute;
+            right: 0.85rem;
+            background: transparent;
+            border: none;
+            color: var(--text-dark);
+            cursor: pointer;
+            padding: 0.4rem;
+            font-size: 0.9rem;
+            transition: color var(--transition-fast);
+        }
+
+        .toggle-password:hover {
+            color: var(--text-main);
+        }
+
+        .login-btn {
+            background: linear-gradient(135deg, var(--color-primary), #6366f1);
+            color: #ffffff;
+            border: none;
+            border-radius: 10px;
+            padding: 0.85rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            transition: all var(--transition-fast);
+            box-shadow: 0 4px 12px var(--color-primary-glow);
+            margin-top: 0.5rem;
+        }
+
+        .login-btn:hover {
+            filter: brightness(1.1);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px var(--color-primary-glow);
+        }
+
+        .login-btn:active {
+            transform: translateY(0);
+        }
+
+        .login-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .alert-box {
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-size: 0.825rem;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .alert-error {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #fca5a5;
+        }
+
+        .alert-info {
+            background: rgba(6, 182, 212, 0.12);
+            border: 1px solid rgba(6, 182, 212, 0.25);
+            color: #a5f3fc;
+        }
+
+        .alert-success {
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #6ee7b7;
+        }
+
+        .login-footer {
+            margin-top: 1.75rem;
+            padding-top: 1.25rem;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.775rem;
+            color: var(--text-muted);
+        }
+
+        .network-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.25rem 0.6rem;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-color);
+            border-radius: 9999px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--color-warning);
+        }
+
+        .status-dot.secure {
+            background: var(--color-success);
+        }
+
+        .status-dot.local {
+            background: var(--color-secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-page-wrapper">
+        <div class="login-card">
+            <div class="login-header">
+                <div class="login-logo">🦙</div>
+                <h1 class="login-title">Alpaca</h1>
+                <p class="login-subtitle">GPU Model Router & Benchmark Telemetry</p>
+            </div>
+
+            <div id="alertBox" class="alert-box alert-error">
+                <i class="fa-solid fa-circle-exclamation"></i>
+                <span id="alertMessage">Invalid API key or password.</span>
+            </div>
+
+            <form id="loginForm" class="login-form" method="POST" action="/login">
+                <div class="form-group">
+                    <label class="form-label" for="apiKeyInput">
+                        <span>Access Key or Admin Password</span>
+                    </label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-key input-icon"></i>
+                        <input 
+                            type="password" 
+                            id="apiKeyInput" 
+                            name="api_key" 
+                            class="login-input" 
+                            placeholder="Enter ALPACA_API_KEY..." 
+                            required 
+                            autofocus
+                            autocomplete="current-password"
+                        >
+                        <button type="button" class="toggle-password" id="togglePasswordBtn" title="Toggle password visibility">
+                            <i class="fa-regular fa-eye" id="toggleIcon"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <button type="submit" class="login-btn" id="loginSubmitBtn">
+                    <span>Authenticate</span>
+                    <i class="fa-solid fa-arrow-right"></i>
+                </button>
+            </form>
+
+            <div class="login-footer">
+                <div class="network-badge" id="networkBadge">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="networkText">Checking origin...</span>
+                </div>
+                <span>v3.0</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const form = document.getElementById('loginForm');
+            const input = document.getElementById('apiKeyInput');
+            const submitBtn = document.getElementById('loginSubmitBtn');
+            const alertBox = document.getElementById('alertBox');
+            const alertMessage = document.getElementById('alertMessage');
+            const toggleBtn = document.getElementById('togglePasswordBtn');
+            const toggleIcon = document.getElementById('toggleIcon');
+            const networkText = document.getElementById('networkText');
+            const statusDot = document.getElementById('statusDot');
+
+            // Toggle password view
+            toggleBtn.addEventListener('click', () => {
+                const isPassword = input.type === 'password';
+                input.type = isPassword ? 'text' : 'password';
+                toggleIcon.className = isPassword ? 'fa-regular fa-eye-slash' : 'fa-regular fa-eye';
+            });
+
+            // Check connection origin & auth status
+            fetch('/api/auth/status')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.is_local) {
+                        statusDot.className = 'status-dot local';
+                        networkText.textContent = 'Local LAN / Docker';
+                        if (!data.auth_required || data.authenticated) {
+                            window.location.href = '/';
+                        }
+                    } else if (data.authenticated) {
+                        statusDot.className = 'status-dot secure';
+                        networkText.textContent = 'Authenticated';
+                        window.location.href = '/';
+                    } else {
+                        statusDot.className = 'status-dot';
+                        networkText.textContent = 'Public Access';
+                    }
+                })
+                .catch(() => {
+                    networkText.textContent = 'Standard Mode';
+                });
+
+            // Handle AJAX form submission for smooth feedback
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                alertBox.style.display = 'none';
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying...</span>';
+
+                const key = input.value.trim();
+
+                try {
+                    const response = await fetch('/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        body: JSON.stringify({ api_key: key })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok && result.success) {
+                        alertBox.className = 'alert-box alert-success';
+                        alertMessage.textContent = 'Access granted. Redirecting...';
+                        alertBox.style.display = 'flex';
+                        setTimeout(() => {
+                            window.location.href = result.redirect || '/';
+                        }, 400);
+                    } else {
+                        alertBox.className = 'alert-box alert-error';
+                        alertMessage.textContent = result.error || 'Invalid API key or password.';
+                        alertBox.style.display = 'flex';
+                        submitBtn.disabled = false;
+                        submitBtn.innerHTML = '<span>Authenticate</span> <i class="fa-solid fa-arrow-right"></i>';
+                        input.select();
+                    }
+                } catch (err) {
+                    alertBox.className = 'alert-box alert-error';
+                    alertMessage.textContent = 'Connection failed. Please check proxy status.';
+                    alertBox.style.display = 'flex';
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = '<span>Authenticate</span> <i class="fa-solid fa-arrow-right"></i>';
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -34,15 +34,11 @@ def locate_model_file(model_alias: str) -> Path:
 
     # Check lowercase stem matching
     for path in ROUTER_MODELS_DIR.glob("*.gguf"):
-        if path.stem.lower() == model_alias.lower() or path.stem.lower().startswith(
-            model_alias.lower()
-        ):
+        if path.stem.lower() == model_alias.lower() or path.stem.lower().startswith(model_alias.lower()):
             return path.resolve()
 
     # Raise error if not found
-    raise FileNotFoundError(
-        f"Could not find model file for alias: {model_alias} in {ROUTER_MODELS_DIR}"
-    )
+    raise FileNotFoundError(f"Could not find model file for alias: {model_alias} in {ROUTER_MODELS_DIR}")
 
 
 def run_llama_bench_sweep(
@@ -75,9 +71,7 @@ def run_llama_bench_sweep(
     logger.info(f"Executing: {' '.join(cmd)}")
 
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, check=True
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
         # Parse the JSON array from stdout
         try:

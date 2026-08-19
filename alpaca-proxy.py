@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from collections import deque
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -85,7 +87,160 @@ router_management_supported = None
 router_model_lock = asyncio.Lock()
 sd_execution_lock = asyncio.Lock()
 
-# Configuration
+
+# Configuration from environment and .env
+def load_dotenv_custom():
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent / ".env",
+        Path("/app/.env"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                with open(p, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, _, v = line.partition("=")
+                            os.environ[k.strip()] = v.strip().strip("\"'")
+            except Exception:
+                pass
+
+
+load_dotenv_custom()
+
+
+def get_alpaca_api_key() -> str:
+    """Retrieve active Alpaca Proxy API key from environment / .env."""
+    key = os.getenv("ALPACA_API_KEY", "").strip()
+    if not key:
+        load_dotenv_custom()
+        key = os.getenv("ALPACA_API_KEY", "").strip()
+    return key
+
+
+# Pre-defined local, private, and container subnets for instant authorization matching
+LOCAL_SUBNETS = (
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918 (Class A private LAN / VPN)
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918 (Docker bridge & compose subnets: 172.16.0.0 - 172.31.255.255)
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918 (Home / Office LAN: 192.168.0.0 - 192.168.255.255)
+    ipaddress.ip_network("127.0.0.0/8"),  # IPv4 Loopback (127.0.0.1 - 127.255.255.255)
+    ipaddress.ip_network("169.254.0.0/16"),  # IPv4 Link-Local
+    ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 (CGNAT / Tailscale / WireGuard private mesh)
+    ipaddress.ip_network("::1/128"),  # IPv6 Loopback
+    ipaddress.ip_network("fe80::/10"),  # IPv6 Link-Local
+    ipaddress.ip_network("fc00::/7"),  # IPv6 Unique Local Address (ULA / Docker IPv6 networks)
+)
+
+LOCAL_HOSTNAMES = frozenset(
+    {
+        "localhost",
+        "testclient",
+        "host.docker.internal",
+        "gateway.docker.internal",
+        "docker",
+        "unix",
+        "0.0.0.0",
+    }
+)
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP address or hostname from request, considering proxy headers."""
+    # 1. Check X-Forwarded-For (the leftmost IP is the client)
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        parts = [ip.strip() for ip in xff.split(",")]
+        if parts and parts[0]:
+            return parts[0]
+
+    # 2. Check X-Real-IP
+    x_real = request.headers.get("x-real-ip", "").strip()
+    if x_real:
+        return x_real
+
+    # 3. Check direct ASGI client host
+    if request.client and request.client.host:
+        return request.client.host.strip()
+
+    return "unknown-ip"
+
+
+def is_local_or_private_client(request: Request) -> bool:
+    """Check if the requesting client is on any local/private network or Docker container.
+
+    Exempts clients on:
+    - Docker container subnets (172.16.0.0/12, e.g. 172.17.x, 172.18.x, 172.19.x, etc.)
+    - Local network subnets (192.168.0.0/16, 10.0.0.0/8)
+    - Loopback addresses (127.0.0.0/8, ::1)
+    - Link-local addresses (169.254.0.0/16, fe80::/10)
+    - Tailscale / Wireguard / CGNAT mesh networks (100.64.0.0/10)
+    - IPv6 Unique Local Addresses (fc00::/7, fd00::/8)
+    - Docker / local socket hostnames (localhost, host.docker.internal, docker, unix)
+    """
+    raw_ip = get_client_ip(request)
+    if not raw_ip or raw_ip == "unknown-ip":
+        return False
+
+    raw_clean = raw_ip.strip().lower()
+    if raw_clean in LOCAL_HOSTNAMES:
+        return True
+
+    # Handle IPv6-mapped IPv4 addresses (e.g. ::ffff:192.168.1.10 or ::ffff:172.18.0.4)
+    if raw_clean.startswith("::ffff:"):
+        raw_clean = raw_clean[7:]
+
+    # Strip scope ID if present (e.g. fe80::1%eth0)
+    if "%" in raw_clean:
+        raw_clean = raw_clean.split("%")[0]
+
+    try:
+        ip_obj = ipaddress.ip_address(raw_clean)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return True
+        return any(ip_obj in subnet for subnet in LOCAL_SUBNETS)
+    except ValueError:
+        return False
+
+
+def is_request_authorized(request: Request) -> bool:
+    """Verify incoming request against ALPACA_API_KEY (if configured).
+
+    Clients on any local/private networks, loopback, or Docker containers
+    do not require an API key to communicate with Alpaca.
+    """
+    # 0. Local / private network clients are automatically authorized without an API key
+    if is_local_or_private_client(request):
+        return True
+
+    expected = get_alpaca_api_key()
+    if not expected:
+        return True  # Open / public mode
+
+    # 1. Check Authorization header (Bearer <token> or direct token)
+    auth = request.headers.get("authorization", "").strip()
+    if auth:
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
+        if token == expected:
+            return True
+
+    # 2. Check X-API-Key or x-api-token header
+    x_api_key = (request.headers.get("x-api-key") or request.headers.get("x-api-token") or "").strip()
+    if x_api_key == expected:
+        return True
+
+    # 3. Check query param ?api_key=... or ?token=...
+    try:
+        q_key = (request.query_params.get("api_key") or request.query_params.get("token") or "").strip()
+        if q_key == expected:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://llama-server:8080")
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "/models")
 MODEL_NAMESPACE = os.getenv("MODEL_NAMESPACE", "registry.ollama.ai")
@@ -100,7 +255,7 @@ LLAMA_SERVER_READ_TIMEOUT_SECONDS = os.getenv("LLAMA_SERVER_READ_TIMEOUT_SECONDS
 FOREVER_EXPIRES_AT = "9999-12-31T23:59:59Z"
 LOADED_MODELS_STATE_FILE = os.path.join(ROUTER_MODELS_DIR, ".loaded-models.json")
 
-# Structured model error log — JSONL file + in-memory ring buffer
+# Structured model error log - JSONL file + in-memory ring buffer
 MODEL_ERRORS_FILE = os.path.join(os.getenv("DATA_DIR", "data"), "model_errors.jsonl")
 _model_errors_buffer: deque = deque(maxlen=500)
 _model_errors_lock = threading.Lock()
@@ -173,9 +328,9 @@ async def acquire_slot(
     slot_ok = await wait_for_slot(backend_model, timeout=timeout)
     if not slot_ok:
         return None, None
-    # Slot confirmed — release the queued count immediately.
+    # Slot confirmed - release the queued count immediately.
     # The active_requests count will protect the slot for the request lifetime.
-    await release_request_queued(model_name)
+    await release_request_queued(backend_model)
     return backend_model, None
 
 
@@ -408,11 +563,15 @@ def with_default_tag(model_name):
 
 def public_model_name(model_name):
     resolved = with_default_tag(model_name)
-    if resolved.endswith(":latest"):
-        resolved = resolved[:-7]
+    # Convert the router "--" separator to the public ":" form BEFORE stripping
+    # a trailing ":latest", so a router id like "family--latest" surfaces as
+    # "family" (not "family:latest"). This keeps the OpenAI /v1/models list
+    # consistent with the Ollama /api/tags list, which never exposes ":latest".
     if "--" in resolved:
         family, tag = resolved.rsplit("--", 1)
         resolved = f"{family}:{tag}"
+    if resolved.endswith(":latest"):
+        resolved = resolved[:-7]
     return resolved
 
 
@@ -843,14 +1002,10 @@ def render_template_prompt(body):
 
 
 def apply_thinking_override(payload, body):
-    # We always keep thinking enabled downstream to prevent reasoning models
-    # (like 35B MTP) from failing or crashing. Proxy will strip/filter
-    # the thinking phase from the output returned to the client if think is False.
+    # We keep thinking enabled downstream so reasoning models do not crash.
+    # The proxy filters/strips the thinking trace from responses when think is False.
     payload["thinking"] = True
 
-    # If the user explicitly disabled thinking, we must increase the token budget
-    # downstream to account for the model's reasoning phase. Otherwise, the model
-    # will run out of tokens before generating the actual response.
     think_val = body.get("think")
     if think_val is None:
         think_val = body.get("enable_thinking")
@@ -858,9 +1013,9 @@ def apply_thinking_override(payload, body):
         opts = body["options"]
         think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
-    if think_val is False:
+    if think_val is True:
         original_n_predict = payload.get("n_predict")
-        if original_n_predict is not None:
+        if original_n_predict is not None and original_n_predict > 0:
             payload["n_predict"] = original_n_predict + 2048
 
 
@@ -1114,10 +1269,12 @@ async def unload_model(model_name):
         return
     backend_model = resolved["backend_model"]
     async with active_requests_lock:
-        if active_requests.get(backend_model, 0) > 0:
+        active_cnt = active_requests.get(backend_model, 0)
+        queued_cnt = queued_requests.get(backend_model, 0)
+        if active_cnt > 0 or queued_cnt > 0:
             logger.warning(
                 f"Aborting unload of {backend_model} because it currently has "
-                f"{active_requests[backend_model]} active request(s)."
+                f"{active_cnt} active and {queued_cnt} queued request(s)."
             )
             return
     async with router_model_lock:
@@ -1369,26 +1526,6 @@ async def lifespan(app: FastAPI):
         await client_sd_httpx.aclose()
 
 
-def get_client_ip(request: Request) -> str:
-    # 1. Check X-Forwarded-For header (handles proxies/load balancers)
-    x_forwarded_for = request.headers.get("x-forwarded-for")
-    if x_forwarded_for:
-        parts = [ip.strip() for ip in x_forwarded_for.split(",")]
-        if parts and parts[0]:
-            return parts[0]
-
-    # 2. Check X-Real-IP header
-    x_real_ip = request.headers.get("x-real-ip")
-    if x_real_ip:
-        return x_real_ip
-
-    # 3. Fallback to client host
-    if request.client and request.client.host:
-        return request.client.host
-
-    return "unknown-ip"
-
-
 app = FastAPI(lifespan=lifespan)
 
 
@@ -1401,7 +1538,7 @@ async def log_requests(request: Request, call_next):
     client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent", "unknown-ua")
 
-    # Raw inbound routing/attribution headers — used to trace where a request
+    # Raw inbound routing/attribution headers - used to trace where a request
     # actually originated (e.g. Caddy -> gateway -> proxy chains, browser vs
     # server-to-server calls) rather than only the inferred source category.
     xff = request.headers.get("x-forwarded-for", "")
@@ -1475,7 +1612,7 @@ async def log_requests(request: Request, call_next):
         )
     else:
         # Always log every request with a timestamp (persisted to the audit
-        # log) so traffic — including /v1/images/generations — is attributable
+        # log) so traffic - including /v1/images/generations - is attributable
         # by time and full source chain even when verbose DEBUG is off.
         src_detail = f"src={request_source} ip={client_ip}"
         if xff:
@@ -1493,6 +1630,33 @@ async def log_requests(request: Request, call_next):
             extra={"request_id": request_id, "request_source": request_source},
         )
 
+    # Enforce API Key authentication if ALPACA_API_KEY is configured
+    exempt_paths = (
+        "/",
+        "/health",
+        "/healthz",
+        "/docs",
+        "/openapi.json",
+        "/favicon.ico",
+        "/admin/security/status",
+    )
+    if (
+        request.url.path not in exempt_paths
+        and not request.url.path.startswith(("/docs", "/openapi"))
+        and not is_request_authorized(request)
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "message": "Unauthorized. Missing or invalid Alpaca API Key.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key",
+                }
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
@@ -1507,7 +1671,7 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# ─── Performance Metrics Tracking ─────────────────────────────────────────────
+# Performance Metrics Tracking
 metrics = {
     "requests_total": 0,
     "requests_by_endpoint": {},
@@ -1535,14 +1699,16 @@ async def record_metrics(endpoint, latency_ms, prompt_tokens=0, gen_tokens=0, er
         metrics["avg_latency_ms"] = sum(metrics["latency_samples"]) / len(metrics["latency_samples"])
 
 
-# ─── Grammar/Schema Registry ──────────────────────────────────────────────────
+# Grammar/Schema Registry
 GRAMMAR_REGISTRY_DIR = os.getenv("GRAMMAR_REGISTRY_DIR", "/alpaca-data/grammars")
 SCHEMA_REGISTRY_DIR = os.getenv("SCHEMA_REGISTRY_DIR", "/alpaca-data/schemas")
 
 
 def _ensure_registry_dirs():
-    os.makedirs(GRAMMAR_REGISTRY_DIR, exist_ok=True)
-    os.makedirs(SCHEMA_REGISTRY_DIR, exist_ok=True)
+    with suppress(Exception):
+        os.makedirs(GRAMMAR_REGISTRY_DIR, exist_ok=True)
+    with suppress(Exception):
+        os.makedirs(SCHEMA_REGISTRY_DIR, exist_ok=True)
 
 
 _ensure_registry_dirs()
@@ -1681,7 +1847,7 @@ async def delete_schema(name: str):
     return {"status": "deleted", "name": name}
 
 
-# ─── Embedding Endpoints (Ollama-compatible) ──────────────────────────────────
+# Embedding Endpoints (Ollama-compatible)
 @app.post("/api/embed")
 async def embed(request: Request):
     """Ollama-compatible embedding endpoint. Proxies to llama-server /v1/embeddings."""
@@ -1748,7 +1914,7 @@ async def embeddings_legacy(request: Request):
     return await embed(request)
 
 
-# ─── OpenAI-Compatible Endpoints ──────────────────────────────────────────────
+# OpenAI-Compatible Endpoints
 def _sd_openai_model_entry(name: str, manifest: dict) -> dict:
     """Build an OpenAI-style model entry for a Stable Diffusion model."""
     info = manifest_stats(manifest_path_for_model(name) or "", manifest)
@@ -1914,7 +2080,7 @@ async def openai_chat_completions(request: Request):
                                 }
                             },
                         )
-                    # Slot confirmed — release the queue counter NOW so other models
+                    # Slot confirmed - release the queue counter NOW so other models
                     # aren't blocked from swapping while this request is in-flight.
                     await release_request_queued(queued_backend)
                     body["model"] = backend_model
@@ -2006,13 +2172,10 @@ async def openai_chat_completions(request: Request):
                         # generator and any `await` in this finally can raise CancelledError,
                         # aborting the rest of the block. Running the sync cleanup up front
                         # guarantees the entry is always removed.
-                        complete_active_request(request_id)
+                        req_data = complete_active_request(request_id)
                         async with active_requests_lock:
                             active_requests[_bm] = max(0, active_requests.get(_bm, 0) - 1)
                             active_requests_lock.notify_all()
-                        # Best-effort cleanup below; guard against cancellation so a dropped
-                        # connection can't leave these un-run (the critical work is above).
-                        req_data = complete_active_request(request_id)
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                         c_toks = req_data.get("completion_tokens", 0) if req_data else 0
                         with suppress(BaseException):
@@ -2180,7 +2343,7 @@ async def openai_completions(request: Request):
                                 }
                             },
                         )
-                    # Slot confirmed — release the queue counter NOW so other models
+                    # Slot confirmed - release the queue counter NOW so other models
                     # aren't blocked from swapping while this request is in-flight.
                     await release_request_queued(queued_backend)
                     body["model"] = backend_model
@@ -2267,11 +2430,10 @@ async def openai_completions(request: Request):
                         # Clear the detailed tracking entry FIRST (synchronous, cannot be
                         # interrupted by a client disconnect / task cancellation). See the
                         # chat-stream finally for the full rationale.
-                        complete_active_request(request_id)
+                        req_data = complete_active_request(request_id)
                         async with active_requests_lock:
                             active_requests[_bm] = max(0, active_requests.get(_bm, 0) - 1)
                             active_requests_lock.notify_all()
-                        req_data = complete_active_request(request_id)
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                         c_toks = req_data.get("completion_tokens", 0) if req_data else 0
                         with suppress(BaseException):
@@ -3310,7 +3472,7 @@ async def edit_images(request: Request) -> Response:
                 if "negative_prompt" in extra and "negative_prompt" not in data:
                     data["negative_prompt"] = extra["negative_prompt"]
                 logger.info(
-                    "sd_cpp_extra_args parsed — strength=%s negative=%s",
+                    "sd_cpp_extra_args parsed - strength=%s negative=%s",
                     extra.get("strength"),
                     bool(extra.get("negative_prompt")),
                 )
@@ -3524,7 +3686,14 @@ async def admin_sd_unload():
         return JSONResponse(status_code=500, content={"error": "Failed to unload SD model."})
 
 
-# ─── Management API ───────────────────────────────────────────────────────────
+# Management API
+@app.get("/health")
+@app.get("/healthz")
+async def health_check():
+    """Simple health check endpoint."""
+    return {"status": "ok", "version": API_VERSION}
+
+
 @app.get("/admin/health")
 async def admin_health():
     """Comprehensive health check for Alpaca proxy, llama-server, and model inventory."""
@@ -3609,7 +3778,7 @@ async def admin_system():
             logger.warning(f"Failed to fetch psutil system metrics: {e}")
 
     # GPU information via docker exec into llama-server (which holds the GPU reservation).
-    # The proxy has no GPU device access itself — it uses the Docker socket it already mounts.
+    # The proxy has no GPU device access itself - it uses the Docker socket it already mounts.
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -3915,7 +4084,7 @@ async def admin_runtime():
     except Exception:
         pass
 
-    # Loaded models — enriched with running_settings from .profile.json + live props
+    # Loaded models - enriched with running_settings from .profile.json + live props
     loaded = []
     try:
         router_models = await fetch_router_models(reload=False)
@@ -4096,7 +4265,7 @@ async def admin_slots(fail_on_no_slot: int = 0):
                 "message": "No model loaded in llama-server",
             }
 
-        # Query /slots directly via httpx — never use docker exec curl here.
+        # Query /slots directly via httpx - never use docker exec curl here.
         # docker exec curl is slow (subprocess overhead + no ?model= param),
         # caused 400 Bad Request from llama-server, and blocked during inference.
         resp = await client_httpx.get(
@@ -4210,24 +4379,48 @@ async def admin_config():
     }
 
 
-@app.post("/admin/config")
-async def admin_config_update(request: Request):
-    """Update runtime configuration. Only mutable fields: default_keep_alive, max_loaded_models."""
-    body = await request.json()
-    global DEFAULT_KEEP_ALIVE, MAX_LOADED_MODELS
-
-    if "default_keep_alive" in body:
-        # In a real implementation, you'd use a mutable config object
-        # For now, this is informational
-        pass
-    if "max_loaded_models" in body:
-        pass
-
+@app.get("/admin/security/status")
+async def get_security_status():
+    """Returns whether proxy token authentication is enabled and the masked key."""
+    key = get_alpaca_api_key()
     return {
-        "status": "config_update_requested",
-        "note": "Runtime config changes require restart for full effect",
-        "requested": body,
+        "auth_required": bool(key),
+        "masked_key": f"{key[:6]}••••{key[-4:]}" if len(key) > 10 else ("••••••••" if key else ""),
     }
+
+
+@app.post("/admin/security/key")
+async def set_security_key(request: Request):
+    """Dynamically set or clear the Alpaca proxy API key."""
+    data = await request.json()
+    new_key = data.get("api_key", "").strip()
+    os.environ["ALPACA_API_KEY"] = new_key
+
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent / ".env",
+        Path("/app/.env"),
+    ]
+    for p in candidates:
+        if p.exists():
+            try:
+                lines = []
+                found = False
+                with open(p, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("ALPACA_API_KEY="):
+                            lines.append(f"ALPACA_API_KEY={new_key}\n")
+                            found = True
+                        else:
+                            lines.append(line)
+                if not found:
+                    lines.append(f"ALPACA_API_KEY={new_key}\n")
+                with open(p, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+            except Exception:
+                pass
+
+    return {"success": True, "auth_required": bool(new_key)}
 
 
 @app.post("/admin/models/pull")
@@ -4434,6 +4627,15 @@ async def admin_model_switch(request: Request):
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
+
+    # Online provider models (openrouter:*, huggingface:*, etc.) cannot be loaded
+    # into the local GPU backend.  Return a clear 400 so the UI can surface a
+    # helpful message rather than spinning indefinitely.
+    if _is_online_model(model):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"'{model}' is an online provider model and cannot be loaded by the local inference server."),
+        )
 
     model = with_default_tag(model)
 
@@ -4901,7 +5103,7 @@ async def _run_docker(args, timeout=60.0):
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
-        logger.error("docker command not found — cannot manage containers.")
+        logger.error("docker command not found - cannot manage containers.")
         return (-1, b"", b"docker not found")
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -4916,7 +5118,7 @@ async def _container_running(name: str) -> bool:
     """Return True if the container exists and is currently running."""
     rc, stdout, _ = await _run_docker(["inspect", "-f", "{{.State.Running}}", name], timeout=10.0)
     if rc != 0:
-        # Container missing or inspect failed — treat as not running.
+        # Container missing or inspect failed - treat as not running.
         return False
     return stdout.decode().strip().lower() == "true"
 
@@ -5069,7 +5271,7 @@ async def wait_for_llama_server_or_restart(timeout=300.0):
             pass
 
         if not restart_triggered and time.time() - start_time > 15.0:
-            logger.info("llama-server or child model not responding after 15s — attempting docker restart...")
+            logger.info("llama-server or child model not responding after 15s - attempting docker restart...")
             restart_triggered = True
             if await restart_llama_server():
                 logger.info("llama-server restart command succeeded, waiting 5s for GPU memory release...")
@@ -5103,7 +5305,7 @@ async def is_child_model_healthy(backend_model: str) -> bool:
                         # Previously this used `docker exec curl` which blocked for
                         # up to 3 s during active inference (CPU-bound child), causing
                         # this function to return False and pushing every concurrent
-                        # request through the exclusive router_model_lock — serialising
+                        # request through the exclusive router_model_lock - serialising
                         # all traffic even when a free slot was available.
                         args = model.get("status", {}).get("args", [])
                         try:
@@ -5212,7 +5414,7 @@ def _read_gguf_metadata(path: str) -> dict:
                 elif val_type == 9:  # array
                     arr_type = struct.unpack("<I", f.read(4))[0]
                     arr_len = struct.unpack("<Q", f.read(8))[0]
-                    # Skip array contents — we only care about scalar metadata
+                    # Skip array contents - we only care about scalar metadata
                     if arr_type == 8:  # array of strings
                         for _ in range(arr_len):
                             sl = struct.unpack("<Q", f.read(8))[0]
@@ -5234,7 +5436,7 @@ def _read_gguf_metadata(path: str) -> dict:
                         skip = arr_len * sizes.get(arr_type, 0)
                         f.read(skip)
                 else:
-                    # Unknown type — skip conservatively
+                    # Unknown type - skip conservatively
                     break
     except Exception:
         pass
@@ -5255,7 +5457,7 @@ def _is_moe(meta: dict) -> bool:
 def _supports_flash_attn(meta: dict) -> bool:
     arch = meta.get("general.architecture", "").lower()
     if not arch:
-        return False  # unknown arch — don't risk it
+        return False  # unknown arch - don't risk it
     return arch not in _FA_UNSUPPORTED_ARCHS
 
 
@@ -5535,7 +5737,42 @@ async def ensure_sd_unloaded():
                 logger.error(f"Failed to unload Stable Diffusion model: {e}")
 
 
+# Recognised online model provider prefixes - never route these to llama.cpp.
+_ONLINE_MODEL_PREFIXES = (
+    "openrouter:",
+    "huggingface:",
+    "hf:",
+    "cloudflare:",
+    "opencode_zen:",
+    "groq:",
+    "gemini:",
+    "openai:",
+    "custom:",
+)
+
+
+def _is_online_model(model_name: str) -> bool:
+    if not model_name:
+        return False
+    clean = model_name.strip().lower()
+    return any(clean.startswith(p) for p in _ONLINE_MODEL_PREFIXES)
+
+
 async def ensure_model(model_name: str, options: dict | None = None, skip_swap: bool = False):
+    # Online models are handled by the benchmark/web layer directly via the
+    # online_providers module.  If one of their identifiers somehow reaches the
+    # proxy (e.g. a misconfigured client) we reject it immediately instead of
+    # trying to resolve/load it as a local GPU model.
+    if _is_online_model(model_name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{model_name}' is an online provider model and cannot be loaded "
+                "by the local inference server. Use the Alpaca web dashboard or the "
+                "online_providers module to query it directly."
+            ),
+        )
+
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
 
@@ -5602,7 +5839,7 @@ async def _ensure_model_impl(
         # During mid-stream crash recovery, don't try to load the crashed model.
         # Another model may be loaded (user's current session) and MAX_LOADED_MODELS
         # may prevent loading the crashed model anyway. Just ensure the server is
-        # running — the crashed model will autoload naturally when needed.
+        # running - the crashed model will autoload naturally when needed.
         logger.info(
             f"Mid-stream crash recovery: ensuring llama-server is running "
             f"(model {public_model_name(model_name)} will autoload naturally)."
@@ -5643,7 +5880,7 @@ async def _ensure_model_impl(
             other_id = other.get("id")
             other_status = router_entry_status(other)
             if other_id != backend_model and other_status == "loaded":
-                # Skip active request wait for crashed models — they're dead and
+                # Skip active request wait for crashed models - they're dead and
                 # need to be force-unloaded immediately (not wait forever)
                 is_crashed = crashed_models.get(other_id, False)
 
@@ -5765,7 +6002,7 @@ async def _ensure_model_impl(
                 raise HTTPException(status_code=502, detail="Failed to restore llama-server after child crash")
             status = "unloaded"
 
-    # Need to load — attempt load with optimized parameters
+    # Need to load - attempt load with optimized parameters
     logger.info(f"Loading backend model {backend_model} for {public_model_name(model_name)}")
 
     # Optimization: Pass n_ctx and other flags to the load call if provided in options
@@ -5832,7 +6069,7 @@ async def _ensure_model_impl(
     if is_model_over_9b(model_name, resolved.get("manifest")):
         load_payload["n_parallel"] = 2
         logger.info(
-            f"Model {backend_model} is >9B — capping n_parallel=2 to prevent concurrent prefill OOM while --kv-unified handles unified dynamic context."
+            f"Model {backend_model} is >9B - capping n_parallel=2 to prevent concurrent prefill OOM while --kv-unified handles unified dynamic context."
         )
 
     # Proactive VRAM budgeting for dense models: if the model won't fit in GPU
@@ -6101,7 +6338,7 @@ async def _ensure_model_impl(
                 }
         raise
 
-    # Load succeeded — check for OOM or startup crash (post-load verification)
+    # Load succeeded - check for OOM or startup crash (post-load verification)
     preset_info = get_model_preset_info(backend_model)
     logger.info(f"Model {backend_model} loaded successfully{preset_info}. Checking for OOM or startup crash...")
     await asyncio.sleep(1.0)
@@ -6139,7 +6376,7 @@ async def _ensure_model_impl(
             # Mark model as crashed so other models don't try to unload it (prevents deadlock)
             crashed_models[backend_model] = True
             logger.info(f"Model {backend_model} marked as crashed. Other models will skip unload wait.")
-            # Clear active requests for this model — the requests are dead (server crashed)
+            # Clear active requests for this model - the requests are dead (server crashed)
             # and need to be retried, not waited on forever
             async with active_requests_lock:
                 active_requests[backend_model] = 0
@@ -6169,7 +6406,7 @@ async def _ensure_model_impl(
                         _write_ini_model_setting(backend_model, "n-gpu-layers", str(safe_ngl))
 
             # Incorporate Telemetry & Auto-Tuning suggestions to prevent recurring memory exhaustion.
-            # NOTE: n-gpu-layers is intentionally excluded here — it is already computed above
+            # NOTE: n-gpu-layers is intentionally excluded here - it is already computed above
             # using live VRAM state and GGUF metadata, which is more accurate than heuristics.
             _ANALYZER_SKIP_KEYS = {"n-gpu-layers"}
             try:
@@ -6390,6 +6627,8 @@ async def wait_for_slot(backend_model: str, timeout: float = 120.0) -> bool:
         # No specific model to scope to; nothing to wait on.
         return True
     start = asyncio.get_event_loop().time()
+    delay = 0.1
+    max_delay = 1.0
     while True:
         slots = await _fetch_model_slots(backend_model)
         # An open slot is one that is not currently processing.
@@ -6399,7 +6638,8 @@ async def wait_for_slot(backend_model: str, timeout: float = 120.0) -> bool:
         if elapsed >= timeout:
             logger.warning(f"Timeout waiting for slot on {backend_model} after {elapsed:.0f}s")
             return False
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, max_delay)
 
 
 SLOTS_CACHE_DIR = os.getenv("SLOTS_CACHE_DIR", "/slots-cache")
@@ -6572,7 +6812,7 @@ async def chat(request: Request):
     _req_idle = not any(c > 0 for c in active_requests.values())
     if model_name and _llm_idle and _req_idle:
         logger.info(
-            f"[AUTO-LOAD] Idle intercept — /api/chat received for '{model_name}'. Triggering auto-load (Wake-on-LAN)."
+            f"[AUTO-LOAD] Idle intercept - /api/chat received for '{model_name}'. Triggering auto-load (Wake-on-LAN)."
         )
 
     # Admit this request into the shared queue: mark it "queued" for its target
@@ -6598,7 +6838,7 @@ async def chat(request: Request):
         slot_available = await wait_for_slot(resolved_backend, timeout=wait_timeout)
     except Exception:
         # Never leak the queued count or the tracked request on load/pre-dispatch
-        # failures (e.g. unresolvable model) — otherwise the request stays in the
+        # failures (e.g. unresolvable model) - otherwise the request stays in the
         # Active Requests list forever.
         await release_request_queued(_queued_backend)
         complete_active_request(request_id)
@@ -6611,12 +6851,12 @@ async def chat(request: Request):
             status_code=503,
         )
 
-    # Slot confirmed — release the queue counter NOW so other models
+    # Slot confirmed - release the queue counter NOW so other models
     # aren't blocked from swapping while this request is in-flight.
     await release_request_queued(_queued_backend)
 
     # Capture the already-resolved backend for use inside stream_proxy via closure.
-    # DO NOT call ensure_model() again inside stream_proxy — it was already called
+    # DO NOT call ensure_model() again inside stream_proxy - it was already called
     # above to verify the model is loaded and a slot is available. A second call
     # acquires router_model_lock unnecessarily and serializes cross-endpoint requests
     # (e.g. an OpenAI client + an Ollama client targeting the same model) through a
@@ -7002,7 +7242,7 @@ async def generate(request: Request):
             # available, so the request never runs on a slot serving a different
             # model (which would force a swap + thrash).
             if not await wait_for_slot(resolved_backend, timeout=body.get("queue_timeout", 120.0)):
-                # Timeout — release the queued counter so the count doesn't
+                # Timeout - release the queued counter so the count doesn't
                 # leak when the generator exits without ever acquiring a slot.
                 await release_request_queued(queued_backend)
                 yield (
@@ -7010,7 +7250,7 @@ async def generate(request: Request):
                 )
                 return
 
-            # Slot confirmed — release the queue counter NOW so other models
+            # Slot confirmed - release the queue counter NOW so other models
             # aren't blocked from swapping while this request is in-flight.
             await release_request_queued(queued_backend)
 
@@ -7209,7 +7449,7 @@ async def generate(request: Request):
                 # interrupted by a client disconnect / task cancellation). See the
                 # chat-stream finally for the full rationale.
                 complete_active_request(request_id)
-                # Only decrement the active counter — the queued-slot was
+                # Only decrement the active counter - the queued-slot was
                 # released right after wait_for_slot returned (see stream setup
                 # above), so it is already 0 here.
                 with suppress(BaseException):
@@ -7242,7 +7482,7 @@ async def generate(request: Request):
         # The request's queued count is released right after this point (on
         # success) or here (on timeout).
         if not await wait_for_slot(resolved_backend, timeout=body.get("queue_timeout", 120.0)):
-            # Timeout — release the queued counter so it doesn't leak.
+            # Timeout - release the queued counter so it doesn't leak.
             if queued_backend:
                 await release_request_queued(queued_backend)
             return JSONResponse(
@@ -7253,7 +7493,7 @@ async def generate(request: Request):
                 },
             )
 
-        # Slot confirmed — release the queue counter NOW so other models
+        # Slot confirmed - release the queue counter NOW so other models
         # aren't blocked from swapping while this request is in-flight.
         if queued_backend:
             await release_request_queued(queued_backend)
@@ -7386,7 +7626,7 @@ async def generate(request: Request):
             # interrupted by a client disconnect / task cancellation). See the
             # chat-stream finally for the full rationale.
             complete_active_request(request_id)
-            # Only decrement the active counter — the queued-slot was
+            # Only decrement the active counter - the queued-slot was
             # released right after wait_for_slot returned (see above), so it is
             # already 0 here.
             with suppress(BaseException):
@@ -7572,7 +7812,7 @@ async def ps():
 async def queue_wait(request: Request):
     """Wait for a llama-server slot to become available.
 
-    Body: {"timeout": 300.0} — max seconds to wait (default 300)
+    Body: {"timeout": 300.0} - max seconds to wait (default 300)
     Returns: {"status": "ready", "slots": {...}} when a slot opens
     Or: {"status": "timeout"} if no slot available within timeout
     """

@@ -23,7 +23,7 @@ def evaluate_realism(image_path):
     file_size_kb = os.path.getsize(image_path) / 1024.0
 
     # Convert to Grayscale & Array
-    gray = img.convert('L')
+    gray = img.convert("L")
     arr = np.array(gray, dtype=np.float32)
 
     # Laplacian Variance for Sharpness Detail
@@ -37,7 +37,7 @@ def evaluate_realism(image_path):
     luma_std = float(np.std(arr))
 
     # Color Channel Balance (RGB)
-    rgb_img = img.convert('RGB')
+    rgb_img = img.convert("RGB")
     r, g, b = rgb_img.split()
     r_mean = float(np.mean(np.array(r)))
     g_mean = float(np.mean(np.array(g)))
@@ -74,14 +74,15 @@ def evaluate_realism(image_path):
         "clipped_shadows_pct": round(clipped_shadows, 2),
         "clipped_highlights_pct": round(clipped_highlights, 2),
         "realism_grade": realism_grade,
-        "recommendations": recommendations
+        "recommendations": recommendations,
     }
+
 
 def main():
     target_files = [
         "/tmp/sd_peak_beach_michele_0117.png",
         "/tmp/sd_peak_beach_michele_2014.png",
-        "/tmp/sd_peak_text2img_beach.png"
+        "/tmp/sd_peak_text2img_beach.png",
     ]
 
     print("=== Realism & Image Quality Analysis Report ===")
@@ -90,6 +91,7 @@ def main():
         res = evaluate_realism(path)
         results.append(res)
         print(json.dumps(res, indent=2))
+
 
 if __name__ == "__main__":
     main()

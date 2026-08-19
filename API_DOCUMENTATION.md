@@ -409,6 +409,18 @@ Start a model evaluation suite run for specific model files.
 * **Payload Parameters**:
   - `models` (array of strings, required): List of models to evaluate.
   - `use_proxy` (boolean, optional): Route requests through Alpaca proxy. Defaults to `true`.
+  - `test_ids` (array of strings, optional): Subset of test task IDs to execute. When supplied,
+    those tests always re-run (resume-skip is bypassed).
+  - `resume` (boolean, optional): Skip tests the model already passed and reuse prior results.
+    Ignored when `test_ids` is supplied. Defaults to `false`.
+  - `groups` (array of strings, optional): Only run the given top-level category ids
+    (e.g. `["gamedev", "coding"]`). Omit to run all groups.
+  - `tiers` (array of strings, optional): `["standard"]` (default) or `["standard", "advanced"]`
+    to include advanced/evaluation tests.
+  - `outdated_only` (boolean, optional): When `true`, compute the test definitions whose
+    recorded results are stale for the selected models (hash/prompt mismatch) and run only
+    those. Returns `{"status": "No outdated benchmarks", ...}` (HTTP 200) when nothing is
+    out of date, so no run starts.
 
 * **Curl Example**:
   ```bash
@@ -418,14 +430,45 @@ Start a model evaluation suite run for specific model files.
   }'
   ```
 
+* **Curl Example (outdated only)**:
+  ```bash
+  curl http://localhost:5000/api/run -d '{
+    "models": ["qwen2.5-coder:7b"],
+    "use_proxy": true,
+    "outdated_only": true
+  }'
+  ```
+
 ---
 
-### POST /api/run/shared_llm
-Trigger validation suites checking specs for the standard SharedLLM profiles.
+### GET /api/models/online
+List configured online LLM providers (OpenRouter, Hugging Face, Cloudflare Workers AI, OpenCode Zen) and currently selected models (dynamically discovered and chosen by the user).
 
 * **Curl Example**:
   ```bash
-  curl http://localhost:5000/api/run/shared_llm -d '{"models": ["qwen2.5-coder:7b"]}'
+  curl http://localhost:5000/api/models/online
+  ```
+
+---
+
+### POST /api/run/shared_llm
+Trigger validation suites checking specs for the SharedLLM home automation ecosystem (FastPath Intent, Librarian Tools, Raven Code Gen AST, Raven Mission Planning, and Needle Context Retrieval). Supports both local models and online provider models (e.g. `openrouter:meta-llama/llama-3.3-70b-instruct:free`, `huggingface:Qwen/Qwen2.5-Coder-32B-Instruct`).
+
+* **Payload Parameters**:
+  - `models` (array of strings, required): List of local or online model identifiers.
+  - `use_proxy` (boolean, optional): Route requests through Alpaca proxy. Defaults to `true`.
+  - `test_ids` (array of strings, optional): Subset of test task IDs to execute.
+  - `custom_keys` (object, optional): Dynamic API keys for online providers (e.g. `{"openrouter_api_key": "..."}`).
+
+* **Curl Example**:
+  ```bash
+  curl http://localhost:5000/api/run/shared_llm -d '{
+    "models": [
+      "qwen2.5-coder:7b",
+      "openrouter:google/gemini-2.0-flash-exp:free"
+    ],
+    "use_proxy": true
+  }'
   ```
 
 ---
@@ -521,3 +564,211 @@ Download complete historical proxy logs as an attachment.
   ```bash
   curl -O -J http://localhost:5000/api/logs/download
   ```
+
+---
+
+## 5. Online Provider & Model Discovery APIs (Port 5000)
+
+### GET /api/online/providers
+Retrieve the configuration status and masked API keys for remote cloud providers (OpenRouter, Hugging Face, Cloudflare Workers AI, OpenCode Zen).
+
+* **Curl Example**:
+  ```bash
+  curl http://localhost:5000/api/online/providers
+  ```
+
+---
+
+### POST /api/online/providers/save
+Save API keys and credentials to `.env` and reload the active provider configuration.
+
+* **Payload**:
+  ```json
+  {
+    "openrouter_api_key": "sk-or-v1-...",
+    "huggingface_token": "hf_...",
+    "cloudflare_api_token": "...",
+    "cloudflare_account_id": "...",
+    "opencode_zen_base_url": "https://opencode.ai/zen/v1",
+    "opencode_zen_api_key": "..."
+  }
+  ```
+
+---
+
+### POST /api/online/providers/test
+Test connection validity for a specific provider.
+
+* **Payload**:
+  ```json
+  {
+    "provider": "openrouter",
+    "keys": {
+      "openrouter_api_key": "sk-or-v1-..."
+    }
+  }
+  ```
+
+---
+
+### GET /api/online/models/search
+Dynamically query and search live models from remote provider APIs (OpenRouter, Hugging Face, Cloudflare, OpenCode Zen).
+
+* **Query Parameters**:
+  - `provider` (optional): `all`, `openrouter`, `huggingface`, `cloudflare`, `opencode_zen`. Defaults to `all`.
+  - `query` (optional): Search query string (e.g. `gemini`, `llama-3.3`, `deepseek-r1`).
+  - `free_only` (optional): `true` or `false` to filter for free tier models.
+
+* **Curl Example**:
+  ```bash
+  curl "http://localhost:5000/api/online/models/search?provider=openrouter&free_only=true"
+  ```
+
+---
+
+### GET /api/online/models/selected & POST /api/online/models/selected
+Retrieve or save the user's custom selection of online models to include in the benchmark sidebar.
+
+* **Save Selection Example**:
+  ```bash
+  curl -X POST http://localhost:5000/api/online/models/selected \
+    -H "Content-Type: application/json" \
+    -d '{
+      "models": [
+        {"id": "openrouter:google/gemini-2.0-flash-exp:free", "label": "Gemini 2.0 Flash (Free)", "provider": "openrouter", "free": true},
+        {"id": "openrouter:meta-llama/llama-3.3-70b-instruct:free", "label": "Llama 3.3 70B (Free)", "provider": "openrouter", "free": true}
+      ]
+    }'
+  ```
+
+---
+
+### POST /api/online/providers/alpaca/generate
+Generate a cryptographically secure Alpaca Proxy Bearer Token (e.g. `alpaca-sk-...`) for access control.
+
+* **Curl Example**:
+  ```bash
+  curl -X POST http://localhost:5000/api/online/providers/alpaca/generate
+  ```
+
+---
+
+## 6. Access Control, Local Network Bypass & Authentication
+
+Alpaca implements an intelligent zero-trust access control model:
+1. **Local Network & Docker Container Auto-Bypass**: Clients connecting from private subnets (`192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `127.0.0.0/8`, `::1`, Docker container networks) are automatically recognized as local and bypass API key / password requirements without friction.
+2. **External Public Traffic (Fail-Closed)**: External public requests require authentication unless `ALPACA_PUBLIC_MODE=1` is explicitly set in `.env`.
+3. **Authentication Methods**: Callers can provide credentials via:
+   - `Authorization: Bearer <ALPACA_API_KEY>`
+   - `Authorization: <ALPACA_API_KEY>`
+   - `X-API-Key: <ALPACA_API_KEY>`
+   - `?api_key=<ALPACA_API_KEY>` (or `?token=<ALPACA_API_KEY>`)
+   - Browser session cookie (authenticated via Web Dashboard login)
+
+### GET /admin/security/status
+Check whether proxy authentication is enabled, view active security mode, and retrieve masked key info.
+
+* **Curl Example**:
+  ```bash
+  curl http://localhost:11434/admin/security/status
+  ```
+
+### POST /admin/security/key
+Dynamically update or clear the Alpaca proxy access token.
+
+* **Payload**: `{"api_key": "alpaca-sk-..."}`
+* **Curl Example**:
+  ```bash
+  curl -X POST http://localhost:11434/admin/security/key \
+    -H "Content-Type: application/json" \
+    -d '{"api_key": "alpaca-sk-..."}'
+  ```
+
+---
+
+## 7. Sandbox Execution & Web Serving APIs (Port 5000)
+
+Alpaca provides an isolated, locked-down runtime (`alpaca-sandbox`) to execute, test, and render model-generated code in real time.
+
+### POST /api/sandbox/run
+Execute code in an isolated container without network access and return stdout, stderr, and exit code.
+
+* **Payload Parameters**:
+  - `code` (string, required): Source code to execute.
+  - `lang` (string, optional): Language identifier (`python`, `javascript`, `cpp`, `java`, `bash`, `sql`). Defaults to `python`.
+  - `timeout` (integer, optional): Maximum execution time in seconds (default: 30s, max: 120s).
+
+* **Curl Example**:
+  ```bash
+  curl -X POST http://localhost:5000/api/sandbox/run \
+    -H "Content-Type: application/json" \
+    -d '{
+      "code": "print(sum(range(1, 101)))",
+      "lang": "python"
+    }'
+  ```
+
+### POST /api/sandbox/serve
+Serve a web page, game, or interactive UI generated by a model on an isolated port for live viewing in the Test Browser. The port is published on all host interfaces; the caller builds the browser URL from the returned `host_port` and their own host name (never assume `localhost`, since the dashboard may be accessed from a remote machine).
+
+* **Payload Parameters**:
+  - `code` (string, required): Full HTML/CSS/JS source code.
+  - `lang` (string, optional): Runtime target (`html`, `web`, `node`, `python`). Defaults to `html`.
+
+* **Response**:
+  ```json
+  {
+    "container_id": "alpaca-serve-a1b2c3d4",
+    "host_port": "8080",
+    "error": ""
+  }
+  ```
+  The app is tunneled through the dashboard origin at `/serve/<container_id>/` so it
+  works from the LAN, a VPN, or an external/forwarded hostname — never assume a
+  direct-to-sandbox-port URL.
+
+### GET /serve/<container_id>/…
+Reverse-proxy the sandboxed app through the dashboard (port 5000) origin. Any method
+(`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`) and subpath under
+`/serve/<container_id>/` is forwarded to the container's published port via
+`http://host.docker.internal:<host_port>/…`. Use this URL in the browser instead of the
+raw ephemeral sandbox port, which is only reachable from the local machine.
+* **Response**: proxied content with the upstream status code and headers.
+* **Errors**: `404` if the container is gone / has no published port; `502` if the upstream is unreachable.
+
+### POST /api/sandbox/stop
+Stop a running sandbox web server container.
+
+* **Payload**: `{"container_id": "alpaca-serve-a1b2c3d4"}`
+
+---
+
+## 8. Benchmark Data Management & Export APIs (Port 5000)
+
+### GET /api/benchmarks/export
+Export historical benchmark results across all models.
+
+* **Query Parameters**:
+  - `format` (string, optional): `json` (full dataset) or `csv` (flat per-test metrics). Defaults to `json`.
+
+* **Curl Example**:
+  ```bash
+  curl "http://localhost:5000/api/benchmarks/export?format=csv" -o benchmark_results.csv
+  ```
+
+### DELETE /api/benchmarks/model/<model_name>
+Purge benchmark history, per-model JSON records, and generated artifacts for a specific local or online model.
+
+* **Curl Example**:
+  ```bash
+  curl -X DELETE http://localhost:5000/api/benchmarks/model/qwen2.5-coder:7b
+  ```
+
+### GET /api/tests/<test_id>/attachment/<att_name>
+Securely stream or preview a test attachment (image, reference document, dataset) with directory traversal protection.
+
+* **Curl Example**:
+  ```bash
+  curl http://localhost:5000/api/tests/mm_image_light_switch/attachment/light_switch.png
+  ```
+
