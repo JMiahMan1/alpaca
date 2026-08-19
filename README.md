@@ -32,12 +32,44 @@ This means Alpaca can behave like Ollama from the client perspective while still
 
 The web dashboard renders screenshots of every benchmark's output — UI games (pygame), HTML5 canvas, three.js, and raw WebGL apps are captured headless in Chromium and shown inline on each test card. Click any thumbnail to open a full-screen lightbox.
 
+### Dashboard home (▶ Run General / ⚠ Run Outdated controls, model grid, monitor)
+
+![Alpaca dashboard home](docs/screenshots/dashboard_home.png)
+
+### Test Browser (213 tests, model filter, preview modal)
+
+![Alpaca Test Browser](docs/screenshots/dashboard_tests.png)
+
+### Rendered benchmark output — real screenshots from actual runs
+
+| Screenshot | Source |
+|---|---|
+| `game_pong.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` — pygame Pong |
+| `retro_space_invaders.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` — retro Space Invaders |
+| `game_falling_sand.png` | `kwaipilot-kat-coder-v2-5-dev-iq4-nl` — falling-sand simulation |
+
+![Game pong rendered output](docs/screenshots/game_pong.png)
+
+### Other screenshot features
+
 - **Benchmark results** — each test card shows a rendered screenshot (when available) plus the model score, pass/fail status, and code execution details.
 - **Test Browser** — browse all 213 tests by category/kind/status, filter by model, and preview a test's prompt, expected output, and live-rendered HTML/3D output in a sandboxed iframe (with an "Open in new tab" option).
 - **Live monitor** — real-time VRAM/RAM/context telemetry per model with slot allocation and request queueing.
 - **Human aesthetic ratings** — give each model a 1–5 star rating per test from the test preview modal; each card shows the highest-rated model (name, score, and rating), and a **Top Rated** board ranks winners per category and overall.
 
-To capture screenshots yourself, run a benchmark from the dashboard (▶ Run General / ⚠ Run Outdated) — rendered output is stored alongside each result in `data/llm_benchmarks/models/general_<model>.json`.
+To capture screenshots yourself, run a benchmark from the dashboard (▶ Run General / ⚠ Run Outdated) — rendered output is stored alongside each result in `data/llm_benchmarks/models/general_<model>.json`. New dashboard screenshots can be taken with Playwright (`node_modules/playwright-core`):
+
+```bash
+node -e "
+import('/node_modules/playwright-core').then(async ({ chromium }) => {
+  const b = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
+  await p.goto('http://localhost:5000/', { waitUntil: 'domcontentloaded' });
+  await p.screenshot({ path: 'docs/screenshots/dashboard_home.png' });
+  await b.close();
+});
+"
+```
 
 ## Model Lifecycle
 
