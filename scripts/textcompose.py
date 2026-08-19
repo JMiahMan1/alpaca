@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 #!/usr/bin/env python3
 """CLI: deterministic text editing on images (alpaca stack, no external models).
 
@@ -15,6 +16,10 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 from PIL import Image

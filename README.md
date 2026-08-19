@@ -373,7 +373,7 @@ docker compose up -d --build
 To verify that a model is visible to both native Ollama and Alpaca, run:
 
 ```bash
-python3 test-alpaca.py qwen3:8b
+python3 tests/test-alpaca.py qwen3:8b
 ```
 
 Use the local model name such as `qwen3:8b`. Do not use internal router filenames such as `qwen3--8b.gguf`; those are only implementation details for `llama-server` discovery.
@@ -398,7 +398,7 @@ Local unit tests:
 ```bash
 pip install -r requirements-dev.txt
 pip install fastapi uvicorn httpx
-pytest -q test_proxy_unit.py test_puller_unit.py
+pytest -q tests/test_proxy_unit.py tests/test_puller_unit.py
 ```
 
 ## GitHub Actions
@@ -406,7 +406,7 @@ pytest -q test_proxy_unit.py test_puller_unit.py
 GitHub Actions runs:
 
 - Python `3.11`
-- `pytest -q test_proxy_unit.py test_puller_unit.py`
+- `pytest -q tests/test_proxy_unit.py tests/test_puller_unit.py`
 
 The workflow file is:
 

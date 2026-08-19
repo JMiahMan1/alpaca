@@ -73,8 +73,7 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 | `llama-server-entrypoint.sh` | Entrypoint script for llama-server container |
 | `llama-server-flags.py` | llama-server CLI flags configuration |
 | `mypy.ini` | mypy config — `disallow_untyped_defs = False` for `web.*` package |
-| `pyproject.toml` | Ruff config: `line-length = 100`, lints `F` (pyflakes) + `I` (isort) |
-| `pytest.ini` | Pytest config: `asyncio_default_fixture_loop_scope = function` |
+| `pyproject.toml` | Ruff config: `line-length = 120`, lints `E,F,W,I,UP,B,SIM,RUF`; pytest config: `testpaths = ["tests"]`, `pythonpath = ["."]`, `asyncio_default_fixture_loop_scope = function` |
 | `requirements-dev.txt` | Dev deps: `ruff`, `pytest`, `pytest-asyncio` |
 | `.env` | Secret/token storage (gitignored) — e.g. `HUGGING_FACE_TOKEN` |
 
@@ -150,7 +149,7 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 | `_outdated_test_ids` misses models | Sanitized filename vs public model name | Compare both `model` and `re.sub(r"[/:.]","_",model)` forms |
 
 ## Testing
-- **Comprehensive Test Suite**: 228 automated tests across:
+- **Comprehensive Test Suite**: 228 automated tests in `tests/`:
   - `test_sandbox_and_security.py` (Non-root execution, path traversal guards, port isolation)
   - `test_proxy_unit.py` (Slot allocation, request queueing, thinking overrides, keep-alive)
   - `test_puller_unit.py` (Ollama & Hugging Face GGUF imports, stop markers, resume)
@@ -158,7 +157,8 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
   - `test_online_providers_and_benchmarks.py` (OpenRouter, HF, Cloudflare, OpenCode Zen, scoring)
   - `test_benchmark_dynamic.py` (Group filters, category test execution, incremental merging, persistent-scoreboard grading, gamedev_alt UI verify)
   - `test_live_services.py` (Live proxy/web/sandbox smoke tests)
-- Run tests: `pytest` (uses `pytest-asyncio`)
+  - `test-alpaca.py` (CLI verifier for a model visible to Ollama + Alpaca: `python3 tests/test-alpaca.py qwen3:8b`)
+- Run tests: `pytest` from repo root (uses `pytest-asyncio`; `testpaths = ["tests"]` + `pythonpath = ["."]` in `pyproject.toml`)
 - All tests pass locally and in CI.
 
 ## Linting & Type Checking
