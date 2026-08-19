@@ -737,12 +737,23 @@ def _get_test_benchmark_stats():
                         "out_of_date_count": 0,
                         "out_of_date_models": [],
                         "last_run": None,
+                        "models_scores": {},
                     }
 
                 st = stats[tid]
                 if model_name not in st["models_tested"]:
                     st["models_tested"].append(model_name)
                     st["models_tested_count"] += 1
+
+                    # Track each model's most recent score for the Test Browser card
+                    # (used to show the highest human-rated model alongside its score).
+                    score = t.get("score", 0)
+                    if isinstance(score, str):
+                        try:
+                            score = float(score)
+                        except (TypeError, ValueError):
+                            score = 0
+                    st["models_scores"][model_name] = score
 
                     passed = bool(t.get("success", False) or (t.get("score", 0) >= 50))
                     if passed:
@@ -840,6 +851,7 @@ def get_tests():
                     "models_passed_count": st.get("models_passed_count", 0),
                     "models_failed_count": st.get("models_failed_count", 0),
                     "models_tested": st.get("models_tested", []),
+                    "models_scores": st.get("models_scores", {}),
                     "is_out_of_date": st.get("is_out_of_date", False),
                     "out_of_date_count": st.get("out_of_date_count", 0),
                     "out_of_date_models": st.get("out_of_date_models", []),
@@ -866,6 +878,7 @@ def get_tests():
                     "models_passed_count": st.get("models_passed_count", 0),
                     "models_failed_count": st.get("models_failed_count", 0),
                     "models_tested": st.get("models_tested", []),
+                    "models_scores": st.get("models_scores", {}),
                     "is_out_of_date": st.get("is_out_of_date", False),
                     "out_of_date_count": st.get("out_of_date_count", 0),
                     "out_of_date_models": st.get("out_of_date_models", []),
