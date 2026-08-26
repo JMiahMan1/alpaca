@@ -10,6 +10,9 @@ from PIL import Image, ImageDraw
 
 from online_providers import OnlineModelProvider
 from sandbox_exec import (
+    _find_web_js_error,
+    _lint_code,
+    _lint_html_js,
     _run_ui,
     _run_web_ui,
     _screenshot_has_content,
@@ -79,6 +82,63 @@ def test_extract_clean_code_javascript_fences():
     assert "// Render loop" in cleaned
     assert "Sure, here is" not in cleaned
     assert "This runs at 60fps" not in cleaned
+
+
+def test_extract_clean_code_truncated_fence():
+    # Generation hit the token cap before the closing ``` arrived.
+    raw = (
+        "<think>plan</think>\n"
+        "The user wants a game. Let me plan it out.\n"
+        "```python\n"
+        "import pygame\n"
+        "pygame.init()\n"
+        "screen = pygame.display.set_mode((800, 600))\n"
+        "while True:\n"
+        "    for event in pygame.event.get():"
+    )
+    cleaned = extract_clean_code(raw, "python")
+    assert "import pygame" in cleaned
+    assert "The user wants a game" not in cleaned
+    assert "```" not in cleaned
+
+
+def test_extract_clean_code_prefers_code_over_plan_fence():
+    # Some models fence their planning notes before the real implementation.
+    raw = (
+        "```python\n"
+        "# Plan:\n"
+        "# 1. Build the game loop\n"
+        "# 2. Add scoring\n"
+        "```\n"
+        "```python\n"
+        "import json\n"
+        "SCORE_FILE = 'scores.json'\n"
+        "def load():\n"
+        "    return []\n"
+        "```"
+    )
+    cleaned = extract_clean_code(raw, "python")
+    assert "import json" in cleaned
+    assert "# Plan:" not in cleaned
+
+
+def test_extract_clean_code_markdown_prose_not_code():
+    # Reasoning prose with markdown headings/bullets must not be mistaken for code.
+    raw = (
+        "Here's a thinking process:\n"
+        "1. **Analyze User Requirements:**\n"
+        "   - Libraries: pygame, PyOpenGL\n"
+        "## Requirements\n"
+        "- for each food eaten grow\n"
+        "- while playing keep score\n"
+        "import sys\n"
+        "def main():\n"
+        "    pass\n"
+    )
+    cleaned = extract_clean_code(raw, "python")
+    assert cleaned.startswith("import sys")
+    assert "thinking process" not in cleaned
+    assert "## Requirements" not in cleaned
 
 
 def test_sandbox_exec_timeout_handling():
@@ -605,3 +665,161 @@ def test_web_login_flow_and_session_auth():
 
         resp_local_docker = local_client.get("/", environ_base={"REMOTE_ADDR": "172.18.0.2"})
         assert resp_local_docker.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Syntax / lint gates (false-success fix)
+# ---------------------------------------------------------------------------
+def _mock_container(exec_return=(0, b"")):
+    container = MagicMock()
+    container.exec_run.return_value = exec_return
+    return container
+
+
+def test_lint_html_js_rejects_truncated_script():
+    # Token-budget cutoff mid-<script>: the start screen still renders, but the
+    # game JS is cut off. Must be rejected before any screenshot is trusted.
+    truncated = "<!DOCTYPE html><html><head></head><body><canvas id='c'></canvas><script>const state = 'gameover"
+    ok, err = _lint_html_js(_mock_container(), truncated)
+    assert ok is False
+    assert "truncated" in err.lower()
+
+
+def test_lint_html_js_rejects_missing_closing_html():
+    truncated = "<html><body><script>const x=1;</script></body>"  # no </html>
+    ok, err = _lint_html_js(_mock_container(), truncated)
+    assert ok is False
+    assert "html" in err.lower()
+
+
+def test_lint_html_js_rejects_inline_js_syntax_error():
+    code = "<!DOCTYPE html><html><body><canvas id='c'></canvas><script>const state = 'gameover</script></body></html>"
+    container = _mock_container(exec_return=(1, b"SyntaxError: Invalid or unexpected token"))
+    ok, err = _lint_html_js(container, code)
+    assert ok is False
+    assert "syntax" in err.lower()
+
+
+def test_lint_html_js_passes_complete_valid_page():
+    code = (
+        "<!DOCTYPE html><html><body>"
+        "<canvas id='c'></canvas>"
+        "<script>const x = 1; window.start = () => document.body.appendChild(document.createElement('p'));</script>"
+        "</body></html>"
+    )
+    ok, err = _lint_html_js(_mock_container(), code)
+    assert ok is True
+    assert err == ""
+
+
+def test_lint_code_python_syntax_error():
+    container = _mock_container(exec_return=(1, b"SyntaxError: invalid syntax"))
+    ok, err = _lint_code(container, "def broken(:\n    pass\n", "python")
+    assert ok is False
+    assert "syntax" in err.lower()
+
+
+def test_lint_code_python_valid():
+    container = _mock_container(exec_return=(0, b""))
+    ok, err = _lint_code(container, "print('hello')\n", "python")
+    assert ok is True
+    assert err == ""
+
+
+def test_lint_code_unsupported_lang_is_skipped():
+    # go/rust/java/sql already fail their build on broken syntax, so the lint
+    # gate must not add a second, unreliable check.
+    ok, err = _lint_code(_mock_container(), "garbage", "go")
+    assert ok is True
+    assert err == ""
+
+
+def test_grade_code_rejects_truncated_html():
+    truncated = "<!DOCTYPE html><html><body><canvas id='c'></canvas><script>const state = 'gameover"
+    with patch("docker.DockerClient") as mock_docker:
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.run.return_value = mock_container
+        mock_container.exec_run.return_value = (0, b"")
+        res = grade_code(truncated, lang="web", ui=True)
+    assert res["ran"] is False
+    assert res["score"] == 0
+    assert "truncated" in (res["error"] or "").lower()
+
+
+def test_grade_code_fails_inline_js_syntax_error():
+    code = "<!DOCTYPE html><html><body><canvas id='c'></canvas><script>const state = 'gameover</script></body></html>"
+    with patch("docker.DockerClient") as mock_docker:
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.run.return_value = mock_container
+        mock_container.exec_run.return_value = (1, b"SyntaxError: Invalid or unexpected token")
+        res = grade_code(code, lang="web", ui=True)
+    assert res["ran"] is False
+    assert res["score"] == 0
+    assert "syntax" in (res["error"] or "").lower()
+
+
+def test_grade_code_fails_python_syntax_error():
+    code = "def broken(:\n    pass\n"
+    with patch("docker.DockerClient") as mock_docker:
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.run.return_value = mock_container
+        mock_container.exec_run.return_value = (1, b"SyntaxError: invalid syntax")
+        res = grade_code(code, lang="python")
+    assert res["ran"] is False
+    assert res["score"] == 0
+
+
+def test_grade_code_valid_complete_html_still_passes():
+    code = (
+        "<!DOCTYPE html><html><body>"
+        "<canvas id='c'></canvas>"
+        "<script>const x = 1; window.start = () => document.body.appendChild(document.createElement('p'));</script>"
+        "</body></html>"
+    )
+    with patch("docker.DockerClient") as mock_docker, patch("sandbox_exec._read_file") as mock_read:
+        content = _png_bytes(shapes=[(5, 5, 60, 60)])
+        mock_read.side_effect = lambda c, p: content if p.endswith("out.png") else b""
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.run.return_value = mock_container
+        mock_container.exec_run.return_value = (0, b"")
+        res = grade_code(code, lang="web", ui=True)
+    assert res["ran"] is True
+    assert res["score"] == 100
+
+
+def test_find_web_js_error_flags_runtime_failure():
+    stderr = (
+        "[INFO:CONSOLE(1)] hello\n"
+        "ERROR:dbus/bus.cc(123): some dbus noise\n"
+        "[ERROR:CONSOLE(5)] Uncaught ReferenceError: THREE is not defined\n"
+    )
+    assert "THREE is not defined" in _find_web_js_error(stderr)
+
+
+def test_find_web_js_error_ignores_dbus_noise():
+    stderr = "ERROR:dbus/bus.cc(123): some dbus noise\nERROR:gpu: software renderer initialized\n"
+    assert _find_web_js_error(stderr) is None
+
+
+def test_run_web_ui_fails_on_js_console_error():
+    with patch("sandbox_exec._put_file"), patch("sandbox_exec._read_file") as mock_read:
+        content = _png_bytes(shapes=[(5, 5, 60, 60)])
+        mock_read.side_effect = lambda c, p: (
+            b"Uncaught ReferenceError: THREE is not defined\n"
+            if p.endswith("ui_stdout.txt")
+            else (content if p.endswith("out.png") else b"")
+        )
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, b"")
+        result = _run_web_ui(mock_container, "<script>...</script>", 30, {})
+    assert result["ran"] is False
+    assert result["ui_rendered"] is False
+    assert "console" in (result["error"] or "").lower()

@@ -1,5 +1,6 @@
 # alpaca-sandbox: minimal, locked-down runtime for executing benchmark-produced
-# text-based code (Python / Node) inside the Test Browser terminal.
+# text-based code (Python / Node / C++ / Go / Rust / Java / BASIC / Pascal /
+# TypeScript / shell / SQL) inside the Test Browser terminal.
 FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -15,17 +16,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # (libgl1-mesa-dri, libglu1-mesa, mesa-utils, libosmesa6) provide a SOFTWARE
 # OpenGL implementation so 3D games (pygame + PyOpenGL) can render headlessly
 # under Xvfb and be screenshotted.
+# fpc = Free Pascal, bwbasic+yabasic = BASIC interpreters (yabasic supports
+# X11 graphics windows for UI benchmarks), typescript via npm = tsc compiler,
+# rpm = rpmspec/rpmbuild for RPM spec validation, gambas3-runtime+scripter =
+# Gambas (GUI-capable BASIC) interpreter gbr3.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates gnupg build-essential xvfb scrot imagemagick \
         default-jdk-headless sqlite3 golang-go chromium \
         libgl1-mesa-dri libglu1-mesa mesa-utils libosmesa6 \
         x11vnc novnc websockify \
+        fpc bwbasic yabasic rpm \
+        gambas3-runtime gambas3-scripter \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
         > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g typescript@5 \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --profile minimal --default-toolchain stable \
     && chmod -R a+rX /usr/local/cargo /usr/local/rustup \
@@ -38,9 +46,9 @@ COPY three.min.js /usr/local/share/three.min.js
 # Common Python packages useful for testing/troubleshooting model code.
 # pygame enables headless 2D UI rendering; PyOpenGL enables headless 3D
 # rendering (paired with the Mesa/llvmpipe software GL above) for gamedev
-# and retrogames benchmarks.
+# and retrogames benchmarks. pyyaml validates GH-Actions/RPM-spec YAML output.
 RUN pip install --no-cache-dir --break-system-packages \
-        numpy requests pillow pytest pygame PyOpenGL PyOpenGL-accelerate
+        numpy requests pillow pytest pygame PyOpenGL PyOpenGL-accelerate pyyaml
 
 # Non-root sandbox user (no network, low privileges enforced at container run time)
 RUN useradd -m -s /bin/sh sandbox

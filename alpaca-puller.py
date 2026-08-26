@@ -391,6 +391,9 @@ def update_models_ini():
         "parallel = 2",
         "kv-unified = true",
         "n-gpu-layers = 99",
+        # Global default sampling temperature (timeless). Per-model profile
+        # temperatures override this; benchmarks fail loudly without either.
+        "temperature = 0.6",
         "",
     ]
 

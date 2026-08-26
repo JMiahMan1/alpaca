@@ -4,6 +4,7 @@ import os
 import pathlib
 import re
 import tempfile
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -25,6 +26,7 @@ REAL_ITER_LOCAL_MANIFESTS = alpaca_proxy.iter_local_manifests
 REAL_LOAD_LOCAL_MANIFEST = alpaca_proxy.load_local_manifest
 REAL_MANIFEST_MODEL_NAME = alpaca_proxy.manifest_model_name
 REAL_WAIT_FOR_SLOT = alpaca_proxy.wait_for_slot
+REAL_IS_CHILD_MODEL_HEALTHY = alpaca_proxy.is_child_model_healthy
 
 # Globally mock network/docker boundary endpoints to protect unit tests
 alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
@@ -1852,7 +1854,11 @@ def test_find_local_model_file_resolves_sd_not_llm():
 async def test_resolve_router_model_rejects_image_model_for_llama():
     """An SD model must never be routed to llama.cpp for chat/completion."""
     orig_resolve = alpaca_proxy.resolve_router_model
+    orig_fetch = alpaca_proxy.fetch_router_models
+    # Self-sufficient: do not inherit a possibly-exhausted fetch mock left by an
+    # earlier test. Empty router list forces the local-manifest fallback path.
     alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
+    alpaca_proxy.fetch_router_models = AsyncMock(return_value=[])
     try:
         with tempfile.TemporaryDirectory() as base:
             _write_complete_manifest(base, "stable-diffusion-xl-base-1.0:latest", "stable-diffusion")
@@ -1863,6 +1869,7 @@ async def test_resolve_router_model_rejects_image_model_for_llama():
     finally:
         alpaca_proxy.OLLAMA_BASE = _ORIG_OLLAMA_BASE
         alpaca_proxy.resolve_router_model = orig_resolve
+        alpaca_proxy.fetch_router_models = orig_fetch
 
 
 @pytest.mark.asyncio
@@ -2324,3 +2331,478 @@ async def test_alpaca_api_key_auth_verification():
     with patch.dict(os.environ, {"ALPACA_API_KEY": ""}):
         req_open = make_request("/v1/chat/completions", headers={}, client_ip="93.184.216.34")
         assert alpaca_proxy.is_request_authorized(req_open)
+
+
+# ---------------------------------------------------------------------------
+# VRAM budgeter / MTP detection / cache-reuse tests
+# ---------------------------------------------------------------------------
+
+
+def write_synthetic_gguf(path, tensor_names, kv=None):
+    """Build a minimal-but-valid GGUF file with the given tensor names.
+
+    Format: magic 'GGUF' + version(u32) + n_tensors(u64) + n_kv(u64), then KV
+    metadata pairs (key_len u64, key, val_type u32, value), then one tensor-info
+    per tensor (name_len u64, name, n_dims u32, dims, type u32, offset u64).
+    """
+    import struct
+
+    buf = bytearray()
+    buf += b"GGUF"
+    buf += struct.pack("<I", 4)  # version
+    buf += struct.pack("<Q", len(tensor_names))  # n_tensors
+    kv = dict(kv or {})
+    kv.setdefault("general.architecture", "qwen35")
+    buf += struct.pack("<Q", len(kv))  # n_kv
+    for key, val in kv.items():
+        k = key.encode()
+        buf += struct.pack("<Q", len(k))
+        buf += k
+        buf += struct.pack("<I", 8)  # string type
+        v = str(val).encode()
+        buf += struct.pack("<Q", len(v))
+        buf += v
+    offset = 0
+    for name in tensor_names:
+        n = name.encode()
+        buf += struct.pack("<Q", len(n))
+        buf += n
+        buf += struct.pack("<I", 2)  # n_dims
+        buf += struct.pack("<QQ", 1, 1)  # dims
+        buf += struct.pack("<I", 0)  # tensor type f32
+        buf += struct.pack("<Q", offset)  # offset
+        offset += 4
+    path.write_bytes(bytes(buf))
+    return path
+
+
+Qwen35_META = {"general.architecture": "qwen35", "qwen35.block_count": 32, "qwen35.embedding_length": 4096}
+
+
+def test_compute_safe_n_gpu_layers_escalates_from_preset_zero(tmp_path):
+    """Regression: a preset n_gpu_layers of 0 must escalate, not stay CPU-only.
+
+    Before the fix, `_compute_safe_n_gpu_layers` short-circuited to 0 whenever
+    models.ini had `n-gpu-layers = 0` (set by an earlier OOM recovery), so the
+    model was stuck on CPU forever. Now 0 means 'recompute the best fit'.
+    """
+    model_file = tmp_path / "qwen35-9b.gguf"
+    model_file.write_bytes(b"\x00" * 1048576)  # 1 MiB file
+
+    ngl = alpaca_proxy._compute_safe_n_gpu_layers(
+        str(model_file),
+        Qwen35_META,
+        n_ctx=32768,
+        cache_type="f16",
+        n_parallel=2,
+        available_vram_mib=8000,
+        requested_n_gpu_layers=0,
+    )
+    # RTX 4060 (8GB), 32 layers, 1MiB file, f16 KV at 32k ctx -> ~7-8 layers fit.
+    assert ngl > 0
+    assert ngl < 32
+
+
+def test_compute_safe_n_gpu_layers_respects_explicit_preset(tmp_path):
+    """A positive requested n_gpu_layers is honored (capped to n_layers)."""
+    model_file = tmp_path / "qwen35-9b.gguf"
+    model_file.write_bytes(b"\x00" * 1048576)
+
+    ngl = alpaca_proxy._compute_safe_n_gpu_layers(
+        str(model_file),
+        Qwen35_META,
+        n_ctx=32768,
+        cache_type="f16",
+        n_parallel=2,
+        available_vram_mib=8000,
+        requested_n_gpu_layers=99,
+    )
+    assert ngl <= 32  # capped at n_layers
+
+
+def test_compute_safe_n_gpu_layers_missing_meta_returns_requested(tmp_path):
+    model_file = tmp_path / "qwen35-9b.gguf"
+    model_file.write_bytes(b"\x00")
+    ngl = alpaca_proxy._compute_safe_n_gpu_layers(
+        str(model_file),
+        {"general.architecture": "qwen35"},  # no block_count -> n_layers 0
+        n_ctx=32768,
+        cache_type="f16",
+        n_parallel=2,
+        available_vram_mib=8000,
+        requested_n_gpu_layers=0,
+    )
+    assert ngl == 0
+
+
+def test_budget_dense_model_vram_returns_config_dict(tmp_path):
+    """Ladder picks the best {ctx-size, cache, ngl} maximizing GPU offload."""
+    model_file = tmp_path / "qwen35-9b.gguf"
+    model_file.write_bytes(b"\x00" * 1048576)
+
+    budget = alpaca_proxy._budget_dense_model_vram(
+        str(model_file),
+        Qwen35_META,
+        n_ctx=32768,
+        cache_type="f16",
+        n_parallel=2,
+        available_vram_mib=8000,
+        requested_n_gpu_layers=-1,
+    )
+    assert set(budget) == {"ctx-size", "cache-type-k", "cache-type-v", "n-gpu-layers"}
+    assert budget["n-gpu-layers"] > 0
+    assert budget["cache-type-k"] == budget["cache-type-v"]
+
+
+def test_budget_dense_model_vram_returns_empty_when_unavailable(tmp_path):
+    model_file = tmp_path / "qwen35-9b.gguf"
+    model_file.write_bytes(b"\x00")
+    # No VRAM info -> empty (callers skip budgeting).
+    assert alpaca_proxy._budget_dense_model_vram(str(model_file), Qwen35_META, 32768, "f16", 2, None, -1) == {}
+    # No meta -> empty.
+    assert alpaca_proxy._budget_dense_model_vram(str(model_file), {}, 32768, "f16", 2, 8000, -1) == {}
+
+
+def test_gguf_has_mtp_heads_detects_nextn_tensors(tmp_path):
+    mtp_path = tmp_path / "mtp.gguf"
+    write_synthetic_gguf(mtp_path, ["blk.40.nextn.eh_proj.weight", "blk.0.attn_q.weight"])
+    assert alpaca_proxy._gguf_has_mtp_heads(str(mtp_path)) is True
+
+
+def test_gguf_has_mtp_heads_false_without_heads(tmp_path):
+    plain_path = tmp_path / "plain.gguf"
+    write_synthetic_gguf(plain_path, ["blk.0.attn_q.weight", "blk.0.attn_k.weight"])
+    assert alpaca_proxy._gguf_has_mtp_heads(str(plain_path)) is False
+
+
+def test_gguf_has_mtp_heads_missing_file(tmp_path):
+    assert alpaca_proxy._gguf_has_mtp_heads(str(tmp_path / "nope.gguf")) is False
+
+
+def test_write_ini_model_setting_persists_and_noops(tmp_path):
+    """cache-reuse + spec-type persist to models.ini; repeated write is a no-op."""
+    import configparser
+
+    router_dir = tmp_path / "router"
+    router_dir.mkdir()
+    ini_path = router_dir / "models.ini"
+    ini_path.write_text("[*]\nn-gpu-layers = 99\n")
+    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+
+    alpaca_proxy._write_ini_model_setting("qwen3.6--9b", "cache-reuse", "256")
+    alpaca_proxy._write_ini_model_setting("qwen3.6--9b", "cache-reuse", "256")
+
+    config = configparser.ConfigParser()
+    config.read(ini_path)
+    assert config["qwen3.6--9b"]["cache-reuse"] == "256"
+    # profile.json mirror exists (prevents reindex reversion)
+    assert (router_dir / "qwen3.6--9b.profile.json").exists()
+
+
+def test_read_ini_model_setting_falls_back_to_defaults(tmp_path):
+    router_dir = tmp_path / "router"
+    router_dir.mkdir()
+    ini_path = router_dir / "models.ini"
+    ini_path.write_text("[*]\nn-gpu-layers = 99\n")
+    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+
+    assert alpaca_proxy._read_ini_model_setting("qwen3.6--9b", "n-gpu-layers", "99") == "99"
+    assert alpaca_proxy._read_ini_model_setting("qwen3.6--9b", "ctx-size", "32768") == "32768"
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_enables_mtp_for_dense_model_with_heads(tmp_path):
+    """Dense models with MTP heads in the GGUF must get spec_type=draft-mtp and n_parallel=1."""
+    import configparser
+
+    router_dir = tmp_path / "router"
+    router_dir.mkdir()
+    ini_path = router_dir / "models.ini"
+    ini_path.write_text("[*]\nn-gpu-layers = 99\n")
+    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+
+    gguf_path = tmp_path / "qwen35--9b-mtp.gguf"
+    write_synthetic_gguf(gguf_path, ["blk.40.nextn.eh_proj.weight"])
+
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.is_child_model_healthy = REAL_IS_CHILD_MODEL_HEALTHY
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen35:9b",
+            "backend_model": "qwen35--9b-mtp.gguf",
+            "entry": {"id": "qwen35--9b-mtp.gguf", "status": {"value": "unloaded"}, "path": str(gguf_path)},
+            "manifest_path": str(tmp_path / "manifest"),
+            "manifest": make_manifest(digest="sha256:mtp"),
+            "router_models": [{"id": "qwen35--9b-mtp.gguf", "status": {"value": "unloaded"}}],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+
+    resolved = await alpaca_proxy.ensure_model("qwen35:9b")
+    assert resolved["backend_model"] == "qwen35--9b-mtp.gguf"
+
+    load_payload = alpaca_proxy.post_router_model_action.await_args_list[0][0][1]
+    assert load_payload["spec_type"] == "draft-mtp"
+    assert load_payload["spec_draft_n_max"] == 3
+    assert load_payload["n_parallel"] == 1
+
+    # Settings persisted to models.ini
+    config = configparser.ConfigParser()
+    config.read(ini_path)
+    section = "qwen35--9b-mtp.gguf"
+    assert config[section]["spec-type"] == "draft-mtp"
+    assert config[section]["spec-draft-n-max"] == "3"
+    assert config[section]["parallel"] == "1"
+    assert config[section]["cache-reuse"] == "256"
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_does_not_enable_mtp_without_heads(tmp_path):
+    """Dense model WITHOUT MTP heads keeps spec_type=none and auto n_parallel."""
+    router_dir = tmp_path / "router"
+    router_dir.mkdir()
+    ini_path = router_dir / "models.ini"
+    ini_path.write_text("[*]\nn-gpu-layers = 99\n")
+    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+
+    gguf_path = tmp_path / "qwen35--9b.gguf"
+    write_synthetic_gguf(gguf_path, ["blk.0.attn_q.weight"])
+
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.is_child_model_healthy = REAL_IS_CHILD_MODEL_HEALTHY
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "qwen35:9b",
+            "backend_model": "qwen35--9b.gguf",
+            "entry": {"id": "qwen35--9b.gguf", "status": {"value": "unloaded"}, "path": str(gguf_path)},
+            "manifest_path": str(tmp_path / "manifest"),
+            "manifest": make_manifest(digest="sha256:nomtp"),
+            "router_models": [{"id": "qwen35--9b.gguf", "status": {"value": "unloaded"}}],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+
+    await alpaca_proxy.ensure_model("qwen35:9b")
+
+    load_payload = alpaca_proxy.post_router_model_action.await_args_list[0][0][1]
+    assert load_payload["spec_type"] == "none"
+    assert load_payload["spec_draft_n_max"] == 0
+    assert "n_parallel" not in load_payload  # small dense model, auto slots
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_moe_never_zeroes_ngl(tmp_path):
+    """MoE models must never be pushed to n-gpu-layers=0 by the dense budgeter."""
+    router_dir = tmp_path / "router"
+    router_dir.mkdir()
+    ini_path = router_dir / "models.ini"
+    ini_path.write_text("[*]\nn-gpu-layers = 99\n")
+    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+
+    gguf_path = tmp_path / "kwaipilot--moe.gguf"
+    write_synthetic_gguf(
+        gguf_path,
+        ["blk.0.attn_q.weight"],
+        kv={"general.architecture": "kwaipilot", "kwaipilot.expert_count": 8, "kwaipilot.block_count": 32},
+    )
+
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.is_child_model_healthy = REAL_IS_CHILD_MODEL_HEALTHY
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "kwaipilot:moe",
+            "backend_model": "kwaipilot--moe.gguf",
+            "entry": {"id": "kwaipilot--moe.gguf", "status": {"value": "unloaded"}, "path": str(gguf_path)},
+            "manifest_path": str(tmp_path / "manifest"),
+            "manifest": make_manifest(digest="sha256:moe"),
+            "router_models": [{"id": "kwaipilot--moe.gguf", "status": {"value": "unloaded"}}],
+        }
+    )
+    alpaca_proxy.post_router_model_action = AsyncMock()
+
+    with patch.object(
+        alpaca_proxy, "_budget_dense_model_vram", wraps=alpaca_proxy._budget_dense_model_vram
+    ) as budget_mock:
+        await alpaca_proxy.ensure_model("kwaipilot:moe")
+
+    # MoE detection: budgeter must not even be consulted for MoE models.
+    budget_mock.assert_not_called()
+
+    load_payload = alpaca_proxy.post_router_model_action.await_args_list[0][0][1]
+    assert load_payload.get("n_gpu_layers", -1) != 0
+
+
+@pytest.mark.asyncio
+async def test_chat_think_false_empty_content_falls_back_to_thinking():
+    """When think=False and the model emits ONLY a thinking trace (spent its whole
+    budget thinking), the proxy must return the thinking text as content instead of
+    an empty response."""
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.wait_for_slot = AsyncMock(return_value=True)
+    alpaca_proxy.apply_keep_alive_policy = AsyncMock()
+    alpaca_proxy.is_child_model_healthy = AsyncMock(return_value=True)
+    mock_http = MockHTTPClient(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "", "thinking": "Let me reason about this carefully."},
+                    "finish_reason": "length",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 200},
+        }
+    )
+    alpaca_proxy.client_httpx = mock_http
+
+    response = await alpaca_proxy.chat(
+        make_request(
+            "/api/chat",
+            {
+                "model": "tinyllama",
+                "messages": [{"role": "user", "content": "hi"}],
+                "think": False,
+                "stream": False,
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["message"]["content"] == "Let me reason about this carefully."
+    assert "thinking" not in body["message"]
+    assert mock_http.calls[0]["json"]["thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_think_false_empty_content_and_no_thinking_stays_empty():
+    """When think=False and the model returns neither content nor thinking, the
+    response stays empty (nothing to fall back on)."""
+    alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+    alpaca_proxy.wait_for_slot = AsyncMock(return_value=True)
+    alpaca_proxy.apply_keep_alive_policy = AsyncMock()
+    alpaca_proxy.is_child_model_healthy = AsyncMock(return_value=True)
+    mock_http = MockHTTPClient(
+        {
+            "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 0},
+        }
+    )
+    alpaca_proxy.client_httpx = mock_http
+
+    response = await alpaca_proxy.chat(
+        make_request(
+            "/api/chat",
+            {
+                "model": "tinyllama",
+                "messages": [{"role": "user", "content": "hi"}],
+                "think": False,
+                "stream": False,
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["message"]["content"] == ""
+
+
+def test_apply_thinking_override_pads_only_when_think_true():
+    # think=True + small budget -> padded +2048 (headroom for thinking phase).
+    payload = {"model": "x", "n_predict": 200, "thinking": None}
+    alpaca_proxy.apply_thinking_override(payload, {"think": True})
+    assert payload["n_predict"] == 200 + 2048
+    assert payload["thinking"] is True
+
+    # think=False -> NOT padded (budget stays exactly as the caller asked).
+    payload = {"model": "x", "n_predict": 200}
+    alpaca_proxy.apply_thinking_override(payload, {"think": False})
+    assert payload["n_predict"] == 200
+    assert payload["thinking"] is True
+
+    # Large explicit budget -> never double-padded.
+    payload = {"model": "x", "n_predict": 12000}
+    alpaca_proxy.apply_thinking_override(payload, {"think": True})
+    assert payload["n_predict"] == 12000
+
+    # No n_predict -> no padding key injected.
+    payload = {"model": "x"}
+    alpaca_proxy.apply_thinking_override(payload, {"think": True})
+    assert "n_predict" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Token-count passthrough in streamed done frames
+# (regression: llama-server streaming frames carry counts only inside
+# timings.prompt_n / timings.predicted_n, so proxied /api/chat done frames
+# reported no eval_count and benchmark suites could never detect budget
+# exhaustion or fire phase-2 continuations through the proxy)
+# ---------------------------------------------------------------------------
+
+
+def test_usage_stats_reads_llama_server_timings_counts():
+    data = {
+        "choices": [],
+        "timings": {"prompt_n": 12, "predicted_n": 34, "prompt_ms": 5.0, "predicted_ms": 9.0},
+    }
+    prompt_eval_count, eval_count = alpaca_proxy.usage_stats(data)
+    assert prompt_eval_count == 12
+    assert eval_count == 34
+
+
+def test_usage_stats_prefers_ollama_and_openai_keys_over_timings():
+    ollama_style = {"prompt_eval_count": 7, "eval_count": 8, "timings": {"prompt_n": 1, "predicted_n": 2}}
+    assert alpaca_proxy.usage_stats(ollama_style) == (7, 8)
+    openai_style = {"usage": {"prompt_tokens": 3, "completion_tokens": 4}, "timings": {"prompt_n": 1, "predicted_n": 2}}
+    assert alpaca_proxy.usage_stats(openai_style) == (3, 4)
+
+
+def test_apply_metrics_puts_token_counts_on_done_chunk():
+    data = {
+        "message": {"role": "assistant", "content": ""},
+        "done": True,
+        "timings": {"prompt_n": 12, "predicted_n": 34, "prompt_ms": 168.698, "predicted_ms": 222.275},
+    }
+    chunk = alpaca_proxy.ollama_chat_chunk("m", done=True)
+    decorated = alpaca_proxy.apply_metrics(chunk, data)
+    assert decorated["eval_count"] == 34
+    assert decorated["prompt_eval_count"] == 12
+    # Durations keep their existing ms->ns conversion behavior.
+    assert decorated["eval_duration"] > 10_000_000
+
+
+# ---------------------------------------------------------------------------
+# Client-host enrichment for request logs / inspector
+# (regression: REQ log lines showed a bare docker-network IP like 172.18.0.5,
+# which is useless for identifying who issued the request)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_client_host_maps_docker_ip_to_container_name(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "_container_ip_names", {"172.18.0.5": "alpaca-web (abcdef123456)"})
+    monkeypatch.setattr(alpaca_proxy, "_container_map_ts", time.time())
+    # Fresh cache: no docker CLI call needed, direct and IPv4-mapped forms map.
+    assert alpaca_proxy.resolve_client_host("172.18.0.5") == "alpaca-web (abcdef123456)"
+    assert alpaca_proxy.resolve_client_host("::ffff:172.18.0.5") == "alpaca-web (abcdef123456)"
+
+
+def test_resolve_client_host_returns_empty_for_unknown_or_missing():
+    assert alpaca_proxy.resolve_client_host("") == ""
+    assert alpaca_proxy.resolve_client_host(None) == ""
+    assert alpaca_proxy.resolve_client_host("unknown-ip") == ""
+    # An IP that cannot be a container address resolves to '' without crashing.
+    assert alpaca_proxy.resolve_client_host("10.255.255.1") in ("", "anything")
+
+
+def test_host_lan_ips_and_external_ip_honor_caches(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "_host_ips_cache", ["10.0.0.2"])
+    monkeypatch.setattr(alpaca_proxy, "_host_ips_ts", time.time())
+    monkeypatch.setattr(alpaca_proxy, "_external_ip_cache", "203.0.113.7")
+    monkeypatch.setattr(alpaca_proxy, "_external_ip_ts", time.time())
+    assert alpaca_proxy.host_lan_ips() == ["10.0.0.2"]
+    assert alpaca_proxy.host_external_ip() == "203.0.113.7"

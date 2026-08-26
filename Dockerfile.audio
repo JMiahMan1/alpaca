@@ -1,0 +1,35 @@
+# Audio generation server: Kokoro-82M TTS + MusicGen-small on CUDA
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1 \
+    HF_HOME=/cache/huggingface \
+    TORCH_HOME=/cache/torch
+
+# espeak-ng is required by kokoro's phonemizer backend
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    espeak-ng \
+    espeak \
+    ffmpeg \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    fastapi==0.115.* \
+    "uvicorn[standard]==0.34.*" \
+    kokoro>=0.9.4 \
+    soundfile \
+    "transformers>=4.48" \
+    accelerate \
+    httpx
+
+COPY audio_server.py /app/audio_server.py
+
+WORKDIR /app
+EXPOSE 8082
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=60s \
+    CMD curl -sf http://localhost:8082/health || exit 1
+
+CMD ["python3", "/app/audio_server.py"]

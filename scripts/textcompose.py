@@ -1,4 +1,3 @@
-# ruff: noqa: E402
 #!/usr/bin/env python3
 """CLI: deterministic text editing on images (alpaca stack, no external models).
 
@@ -21,10 +20,10 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import numpy as np
-from PIL import Image
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
 
-from imageops import draw_text, fill_band_deterministic
+from imageops import draw_text, fill_band_deterministic  # noqa: E402
 
 SEPIA = np.array([[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]])
 

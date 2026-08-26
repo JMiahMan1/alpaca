@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -212,7 +213,9 @@ class MultiTenantLock:
 def test_shared_llm_strip_thinking_handles_prose_blocks():
     bench = SharedLLMModelBenchmark()
     # XML-style thinking block.
-    assert bench.strip_thinking("Let me think<thinking>carefully</thinking> answer is 42") == "Let me think answer is 42"
+    assert (
+        bench.strip_thinking("Let me think<thinking>carefully</thinking> answer is 42") == "Let me think answer is 42"
+    )
     # Prose thinking marker used by reasoning models.
     text = " thinking step by step about the request we need to classify response light_on"
     assert bench.strip_thinking(text) == "light_on"
@@ -264,7 +267,12 @@ def test_shared_llm_tool_request_tasks_and_validation():
     tool_tasks = [t for t in bench.get_all_tasks() if t["task_type"] == "tool_request"]
     assert len(tool_tasks) >= 4
     ids = {t["id"] for t in tool_tasks}
-    assert {"tool_request_light_control", "tool_request_media_play", "tool_request_rag_search", "tool_request_git_commit"} <= ids
+    assert {
+        "tool_request_light_control",
+        "tool_request_media_play",
+        "tool_request_rag_search",
+        "tool_request_git_commit",
+    } <= ids
 
     # Valid canonical tool call passes.
     valid = '{"tool": "lightcontrolrequest", "args": {"entity_id": "light.living_room", "brightness_pct": 80}}'
@@ -432,9 +440,7 @@ async def test_online_model_query_thinking_model_inflates_budget():
     provider = OnlineModelProvider()
     provider.groq_api_key = "test-key"
     # Simulate metadata already discovered from the Groq API.
-    provider._cached_live_models["groq"] = [
-        {"id": "qwen/qwen3.6-27b", "supported_features": ["reasoning"]}
-    ]
+    provider._cached_live_models["groq"] = [{"id": "qwen/qwen3.6-27b", "supported_features": ["reasoning"]}]
 
     captured = {}
 
@@ -468,9 +474,7 @@ async def test_online_model_query_non_thinking_uses_exact_budget():
     provider = OnlineModelProvider()
     provider.groq_api_key = "test-key"
     # Simulate metadata already discovered from the Groq API (no reasoning feature).
-    provider._cached_live_models["groq"] = [
-        {"id": "llama-3.3-70b-versatile", "supported_features": ["json_mode"]}
-    ]
+    provider._cached_live_models["groq"] = [{"id": "llama-3.3-70b-versatile", "supported_features": ["json_mode"]}]
 
     captured = {}
 
@@ -501,9 +505,7 @@ async def test_online_model_query_thinking_model_phase2_continuation():
     provider = OnlineModelProvider()
     provider.groq_api_key = "test-key"
     # Metadata cached so detection uses provider data, not name hints / live fetch.
-    provider._cached_live_models["groq"] = [
-        {"id": "qwen/qwen3.6-27b", "supported_features": ["reasoning"]}
-    ]
+    provider._cached_live_models["groq"] = [{"id": "qwen/qwen3.6-27b", "supported_features": ["reasoning"]}]
 
     calls = []
 
@@ -527,9 +529,7 @@ async def test_online_model_query_thinking_model_phase2_continuation():
         else:
             # Phase-2 continuation returns the rest.
             mock_resp.json.return_value = {
-                "choices": [
-                    {"message": {"content": "done"}, "finish_reason": "stop"}
-                ],
+                "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
                 "usage": {"completion_tokens": 50},
             }
         return mock_resp
@@ -547,3 +547,209 @@ async def test_online_model_query_thinking_model_phase2_continuation():
         assert len(calls) == 2
         # Phase-2 prompt asks to finish and includes the prior partial output.
         assert "finish" in calls[1]["json"]["messages"][0]["content"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Streaming benchmark requests (regression: non-streaming hard timeouts killed
+# healthy long generations on large-prompt models - llama-server logged
+# "Connection handling canceled" and benchmarks scored empty results).
+# ---------------------------------------------------------------------------
+
+
+def _chat_ndjson(chunks, final_metrics):
+    lines = []
+    for c in chunks:
+        lines.append(json.dumps({"message": {"role": "assistant", **c}, "done": False}))
+    lines.append(json.dumps({"message": {"role": "assistant", "content": ""}, "done": True, **final_metrics}))
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _generate_ndjson(text_parts, final_metrics):
+    lines = [json.dumps({"response": t, "done": False}) for t in text_parts]
+    lines.append(json.dumps({"done": True, **final_metrics}))
+    return ("\n".join(lines) + "\n").encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module_path", ["web.shared_llm_benchmark", "llm_benchmark_suite"])
+async def test_read_chat_stream_accumulates_content_thinking_metrics(module_path):
+    from importlib import import_module
+
+    import httpx
+
+    mod = import_module(module_path)
+    payload = _chat_ndjson(
+        [{"content": "def foo():"}, {"thinking": "step"}, {"content": "\n    return 1"}],
+        {"eval_count": 42, "eval_duration": 9000, "prompt_eval_count": 10, "prompt_eval_duration": 300},
+    )
+    data = await mod._read_chat_stream(httpx.Response(200, content=payload))
+    assert data["content"] == "def foo():\n    return 1"
+    assert data["thinking"] == "step"
+    assert data["eval_count"] == 42
+    assert data["eval_duration"] == 9000
+    assert data["prompt_eval_count"] == 10
+    assert data["prompt_eval_duration"] == 300
+
+
+@pytest.mark.asyncio
+async def test_read_chat_stream_no_done_frame_yields_zero_metrics():
+    import httpx
+
+    from web.shared_llm_benchmark import _read_chat_stream
+
+    raw = json.dumps({"message": {"role": "assistant", "content": "partial"}}).encode() + b"\n"
+    data = await _read_chat_stream(httpx.Response(200, content=raw))
+    assert data["content"] == "partial"
+    assert data["eval_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_query_model_impl_streams_via_proxy_and_continues_phase2(tmp_path, monkeypatch):
+    """Regression: proxy benchmark requests must use stream=True so slow
+    generations are not killed by a hard client timeout."""
+    from unittest.mock import patch
+
+    import httpx
+
+    from web.shared_llm_benchmark import SharedLLMModelBenchmark
+
+    ini = tmp_path / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.5\n")
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/admin/runtime":
+            return httpx.Response(
+                200,
+                json={"loaded_models": [
+                    {"name": "local-model--latest", "backend_model": "local-model--latest",
+                     "running_settings": {"ctx-size": "8192"}}
+                ]},
+            )
+        body = json.loads(request.content.decode())
+        seen.append({"url": str(request.url), "json": body})
+        if len(seen) == 1:
+            # First attempt exhausts the token budget (7 >= max_tokens 4).
+            raw = _chat_ndjson(
+                [{"content": "part1"}, {"content": "-end"}],
+                {"eval_count": 7, "eval_duration": 5000, "prompt_eval_duration": 100},
+            )
+            return httpx.Response(200, content=raw)
+        raw = _chat_ndjson([{"content": "+part2"}], {"eval_count": 3, "eval_duration": 10})
+        return httpx.Response(200, content=raw)
+
+    factory_calls = []
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs.pop("timeout", None)
+        factory_calls.append(kwargs)
+        return real_client(transport=httpx.MockTransport(handler))
+
+    bench = SharedLLMModelBenchmark()
+    with patch("web.shared_llm_benchmark.httpx.AsyncClient", side_effect=client_factory):
+        res = await bench.query_model(model="local-model", use_proxy=True, prompt="hi", max_tokens=4)
+
+    assert len(seen) == 2
+    assert seen[0]["url"].endswith("/api/chat")
+    assert seen[0]["json"]["stream"] is True
+    assert seen[1]["json"]["stream"] is True
+    assert seen[1]["json"]["messages"][1]["role"] == "assistant"
+    assert res["success"] is True
+    assert res["response"].replace("\n", "").endswith("part2")
+    assert res["tokens_generated"] == 10
+
+
+@pytest.mark.asyncio
+async def test_query_model_impl_direct_generate_streams(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    import httpx
+
+    from web.shared_llm_benchmark import SharedLLMModelBenchmark
+
+    ini = tmp_path / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.5\n")
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/admin/runtime":
+            return httpx.Response(
+                200,
+                json={"loaded_models": [
+                    {"name": "local-model--latest", "backend_model": "local-model--latest",
+                     "running_settings": {"ctx-size": "8192"}}
+                ]},
+            )
+        body = json.loads(request.content.decode())
+        seen.append({"url": str(request.url), "json": body})
+        raw = _generate_ndjson(["answer"], {"eval_count": 2, "eval_duration": 20})
+        return httpx.Response(200, content=raw)
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs.pop("timeout", None)
+        return real_client(transport=httpx.MockTransport(handler))
+
+    bench = SharedLLMModelBenchmark()
+    monkeypatch.setattr(bench, "OLLAMA_SERVER_URLS", ["http://direct-mock"])
+    with patch("web.shared_llm_benchmark.httpx.AsyncClient", side_effect=client_factory):
+        res = await bench.query_model(model="local-model", use_proxy=False, prompt="hi", max_tokens=100)
+
+    assert seen[0]["url"].endswith("/api/generate")
+    assert seen[0]["json"]["stream"] is True
+    assert res["success"] is True
+    assert res["response"] == "answer"
+    assert res["tokens_generated"] == 2
+
+
+@pytest.mark.asyncio
+async def test_suite_test_model_proxy_streams_payload(monkeypatch, tmp_path):
+    """llm_benchmark_suite.test_model must stream too (General Benchmarks path)."""
+    from unittest.mock import patch
+
+    import httpx
+
+    import llm_benchmark_suite as suite_mod
+
+    ini = tmp_path / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.5\n")
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/admin/runtime":
+            return httpx.Response(
+                200,
+                json={"loaded_models": [
+                    {"name": "local-model--latest", "backend_model": "local-model--latest",
+                     "running_settings": {"ctx-size": "8192"}}
+                ]},
+            )
+        body = json.loads(request.content.decode())
+        seen.append(body)
+        raw = _chat_ndjson([{"content": "42"}], {"eval_count": 3, "eval_duration": 60})
+        return httpx.Response(200, content=raw)
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs.pop("timeout", None)
+        return real_client(transport=httpx.MockTransport(handler))
+
+    s = suite_mod.LLMModelBenchmark()
+    test = {"id": "t1", "prompt": "life?", "reasoning_budget": 512}
+    with patch.object(suite_mod.httpx, "AsyncClient", side_effect=client_factory):
+        res = await s.test_model_proxy("local-model", test)
+
+    assert seen and seen[0]["stream"] is True
+    assert res["success"] is True
+    assert res["response"] == "42"
+    assert res["tokens_generated"] == 3
