@@ -10,6 +10,7 @@ Divided into two distinct execution phases:
 
 import ast
 import asyncio
+import configparser
 import hashlib
 import json
 import logging
@@ -18,23 +19,63 @@ import re
 import sys
 import time
 import unicodedata
+import wave
 from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
 import psutil
 
+from context_awareness import estimate_prompt_tokens, resolve_context_window, turn_budget
 from online_providers import online_model_provider
 
 # One-shot code execution for grading coding benchmarks (runs Python/Node in the
 # locked-down alpaca-sandbox container and returns ran/output/exit_code).
-from sandbox_exec import grade_code
+from sandbox_exec import extract_clean_code, grade_code
 
 # Proactive delay between requests when benchmarking online providers. Free-tier
 # endpoints (e.g. OpenRouter) rate-limit aggressively and answer throttled requests
 # with empty 200 completions, so pacing requests avoids throttling the run into
 # spurious false negatives. Local/proxy models are not throttled, so this is skipped.
 ONLINE_BENCHMARK_THROTTLE_S = 3.0
+
+
+# Timeless per-model temperature: required, no fallback. Read from
+# .alpaca-router/models.ini (MODELS_INI_PATH or default). Must be set in
+# [*] or per-model section or error is raised so misconfig is loud.
+def _model_temperature(model: str) -> float:
+    candidates = []
+    env = os.getenv("MODELS_INI_PATH", "").strip()
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path(__file__).parent / ".alpaca-router" / "models.ini")
+    candidates.append(Path(".alpaca-router/models.ini"))
+    # Standard in-container location: compose mounts .alpaca-router at
+    # /router-models (ROUTER_MODELS_DIR), so models.ini lands there.
+    candidates.append(Path("/router-models/models.ini"))
+    # Router aliases carry the --latest suffix (e.g. ornith-1-5-9b-q4-k-m--latest)
+    # while callers may pass either form, so try both section spellings.
+    section_names = [model, model[: -len("--latest")]] if model.endswith("--latest") else [model, f"{model}--latest"]
+    for ini in candidates:
+        try:
+            if not ini.exists():
+                continue
+            cp = configparser.ConfigParser()
+            cp.read(ini)
+            for name in section_names:
+                if name in cp and "temperature" in cp[name]:
+                    return float(cp[name]["temperature"])
+            if "*" in cp and "temperature" in cp["*"]:
+                return float(cp["*"]["temperature"])
+            if "DEFAULT" in cp and "temperature" in cp["DEFAULT"]:
+                return float(cp["DEFAULT"]["temperature"])
+        except ValueError:
+            raise
+        except Exception:
+            continue
+    raise ValueError(
+        f"temperature not set for model '{model}' (and no [*] default) in models.ini - set [*] temperature or per-model temperature via Settings > UI or .alpaca-router/models.ini"
+    )
 
 
 def _ascii_fold(text: str) -> str:
@@ -45,6 +86,170 @@ def _ascii_fold(text: str) -> str:
     """
     normalized = unicodedata.normalize("NFKD", text)
     return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+
+
+# Per-chunk stream timeouts: read applies to the gap BETWEEN stream lines, not
+# total request time. Large prompts (15k+ tokens) plus slow generation on big
+# MoE models can run for many minutes; a hard non-streaming deadline kills
+# healthy requests mid-generation (llama-server logs "Connection handling
+# canceled" and the benchmark scores an empty result).
+_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0)
+
+
+async def _read_chat_stream(resp: httpx.Response) -> dict:
+    """Accumulate an Ollama-style NDJSON /api/chat stream into text + final metrics."""
+    parts: list[str] = []
+    think_parts: list[str] = []
+    final: dict[str, Any] = {}
+    async for line in resp.aiter_lines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        msg = obj.get("message") or {}
+        chunk = msg.get("content") or ""
+        if chunk:
+            parts.append(chunk)
+        think_chunk = msg.get("thinking") or ""
+        if think_chunk:
+            think_parts.append(think_chunk)
+        if obj.get("done"):
+            final = obj
+    return {
+        "content": "".join(parts),
+        "thinking": "".join(think_parts),
+        "eval_count": int(final.get("eval_count") or 0),
+        "eval_duration": int(final.get("eval_duration") or 0),
+        "prompt_eval_count": int(final.get("prompt_eval_count") or 0),
+        "prompt_eval_duration": int(final.get("prompt_eval_duration") or 0),
+    }
+
+
+async def _read_generate_stream(resp: httpx.Response) -> dict:
+    """Accumulate an Ollama-style NDJSON /api/generate stream into text + final metrics."""
+    parts: list[str] = []
+    think_parts: list[str] = []
+    final: dict[str, Any] = {}
+    async for line in resp.aiter_lines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        chunk = obj.get("response") or ""
+        if chunk:
+            parts.append(chunk)
+        think_chunk = obj.get("thinking") or ""
+        if think_chunk:
+            think_parts.append(think_chunk)
+        if obj.get("done"):
+            final = obj
+    return {
+        "content": "".join(parts),
+        "thinking": "".join(think_parts),
+        "eval_count": int(final.get("eval_count") or 0),
+        "eval_duration": int(final.get("eval_duration") or 0),
+        "prompt_eval_count": int(final.get("prompt_eval_count") or 0),
+        "prompt_eval_duration": int(final.get("prompt_eval_duration") or 0),
+    }
+
+
+# Per-benchmark reasoning toggle (timeless, driven by each test's own fields).
+# Heavy-budget tests (reasoning_budget >= REASONING_HEAVY_BUDGET) keep the
+# thinking phase ON and get raised num_predict headroom so the thinking phase
+# plus the full answer fit without truncation. Light-budget tests disable the
+# thinking phase entirely: short factual/code answers should not spend their
+# whole generation on reasoning prose. Fairness note: disabling thinking can
+# lower scores for reasoning-tuned models on light tests (they answer faster
+# with less deliberation), while enabling it on light tiers would instead cap
+# their output mid-thought - both directions are recorded per-result via the
+# "think" field so runs remain comparable within a suite version.
+REASONING_HEAVY_BUDGET = 2048
+
+# Task-shape tiers for per-benchmark reasoning estimates (tokens a competent
+# model needs for its thinking phase on that test). benchmark_tests.json ships
+# explicit per-test "reasoning_estimate" values generated by
+# scripts/gen_reasoning_estimates.py from these same rules; the fallbacks here
+# keep ad-hoc test dicts working.
+_EST_UI_GAME_CATEGORIES = {"gamedev", "gamedev_alt", "retrogames", "youtuber"}
+_EST_CODE_CATEGORIES = {
+    "coding",
+    "appdev",
+    "webdev",
+    "linux_driver",
+    "iac",
+    "android",
+    "typescript",
+    "rpm",
+    "usb",
+    "networking",
+    "bash",
+    "basic",
+    "pascal",
+}
+_EST_DELIBERATE_CATEGORIES = {
+    "gpqa_diamond",
+    "hle",
+    "math_hard",
+    "mmlu_pro",
+    "logic",
+    "reasoning",
+    "metacog",
+    "agentic",
+    "code_review",
+}
+
+
+def _test_reasoning_estimate(test: dict) -> int:
+    """Calculated reasoning-token need for this specific benchmark.
+
+    An explicit per-test "reasoning_estimate" field always wins; otherwise the
+    task shape decides: UI games reason about whole program architectures,
+    runnable-program categories plan code and edge cases, exam-style categories
+    deliberate before answering, everything else reasons briefly if at all.
+    """
+    explicit = int(test.get("reasoning_estimate") or 0)
+    if explicit:
+        return explicit
+    category = str(test.get("category") or "")
+    if str(test.get("type") or "") == "ui" or category in _EST_UI_GAME_CATEGORIES:
+        tier = 4096
+    elif category in _EST_CODE_CATEGORIES:
+        tier = 3072
+    elif category in _EST_DELIBERATE_CATEGORIES:
+        tier = 2048
+    else:
+        tier = 1024
+    # A test flagged heavy-reasoning should never estimate below its threshold.
+    return max(tier, int(test.get("reasoning_budget") or 0))
+
+
+def _test_thinking(test: dict) -> bool:
+    """Whether this test runs with the thinking phase enabled."""
+    return int(test.get("reasoning_budget", REASONING_HEAVY_BUDGET)) >= REASONING_HEAVY_BUDGET
+
+
+def _test_num_predict(test: dict) -> int:
+    """Per-test token cap.
+
+    Heavy-reasoning tests get DOUBLED per-benchmark reasoning headroom
+    (base + 2 x estimate) so the thinking phase plus the complete answer fit
+    without truncation - the failure mode that stranded reasoning models on
+    large UI tests with empty, length-capped responses.
+    """
+    base = int(test.get("num_predict", 4000))
+    if not _test_thinking(test):
+        return base
+    return base + 2 * _test_reasoning_estimate(test)
 
 
 # Configure logging
@@ -86,6 +291,22 @@ class LLMModelBenchmark:
         self.ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
         self.MODELS_DIR.mkdir(parents=True, exist_ok=True)
         self.tests_config = self._load_tests_config()
+        self._last_online_request: dict[str, float] = {}
+        self._rate_limit_retry_floor = 30.0
+        # Resolved backend context windows (model -> n_ctx), cached per instance.
+        self._ctx_cache: dict[str, int] = {}
+
+    async def _effective_num_predict(self, model: str, prompt: str, requested: int) -> int:
+        """Clamp a generation budget into the live backend context window.
+
+        Raises RuntimeError (propagates to the caller's error handling) when
+        the context window cannot be determined — guessing would reintroduce
+        the silent-truncation bug this guard exists to prevent.
+        """
+        ctx = await resolve_context_window(
+            model, self.PROXY_SERVER_URLS, self._ctx_cache, "general/benchmark"
+        )
+        return turn_budget(ctx, estimate_prompt_tokens([{"role": "user", "content": prompt}]), requested)
 
     @staticmethod
     def _proxy_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -128,6 +349,56 @@ class LLMModelBenchmark:
         err = (test_result.get("error") or "").lower()
         return "429" in err or "rate limit" in err
 
+    # Minimum wall-clock seconds to wait between requests to a given online
+    # provider. Free tiers throttle hard (Gemini free = 20 req/min), and a
+    # burst of fast benchmark calls exhausts the window, cascading into 429s.
+    _ONLINE_PACE_SECONDS: ClassVar[dict[str, float]] = {
+        "gemini": 3.5,  # 20 req/min free tier -> one request every 3s
+        "openrouter": 1.2,  # generous free tier; keep a little headroom
+        "opencode_zen": 1.2,
+        "huggingface": 1.2,
+        "cloudflare": 1.2,
+        "groq": 1.2,
+    }
+
+    def _pace_online_request(self, model: str) -> None:
+        """Enforce a minimum interval between requests to the same online provider.
+
+        Called before every online benchmark request. Sleeps until the
+        per-provider pace window has elapsed since the last request so a fast
+        local run does not blow through a free-tier quota window in seconds.
+        """
+        provider, _ = online_model_provider.parse_model_identifier(model)
+        min_gap = self._ONLINE_PACE_SECONDS.get(provider, 0.0)
+        if min_gap <= 0:
+            return
+        now = time.time()
+        last = self._last_online_request.get(provider, 0.0)
+        wait = min_gap - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        self._last_online_request[provider] = time.time()
+
+    @staticmethod
+    def _merge_run_history(existing: dict | None, incoming: dict) -> dict:
+        """Merge a fresh test result into a previously stored one, tracking run history.
+
+        ``run_count`` counts how many times the model has run this test (total
+        attempts), ``fail_count`` how many of those attempts did not pass. When the
+        test has been seen before the counters carry over and increment; a brand-new
+        test starts at 1 / (1 if it failed else 0). The incoming result (latest run)
+        wins for all other fields.
+        """
+        merged = dict(incoming)
+        prev_runs = 0
+        prev_fails = 0
+        if isinstance(existing, dict):
+            prev_runs = int(existing.get("run_count") or 0)
+            prev_fails = int(existing.get("fail_count") or 0)
+        merged["run_count"] = prev_runs + 1
+        merged["fail_count"] = prev_fails + (0 if incoming.get("success") else 1)
+        return merged
+
     def save_per_model_result(
         self,
         model_data: dict,
@@ -163,7 +434,7 @@ class LLMModelBenchmark:
                 cur_tests = entry.get(cat_key, {}).get("tests", []) if isinstance(entry.get(cat_key), dict) else []
                 by_id = {t.get("test_id"): t for t in cur_tests}
                 for t in incoming:
-                    by_id[t.get("test_id")] = t
+                    by_id[t.get("test_id")] = self._merge_run_history(by_id.get(t.get("test_id")), t)
                 merged = list(by_id.values())
                 entry[cat_key] = self._calculate_category_stats(merged)
             entry["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -234,11 +505,11 @@ class LLMModelBenchmark:
         replaced = False
         for idx, t in enumerate(tests):
             if t.get("test_id") == tid:
-                tests[idx] = test_result
+                tests[idx] = self._merge_run_history(t, test_result)
                 replaced = True
                 break
         if not replaced:
-            tests.append(test_result)
+            tests.append(self._merge_run_history(None, test_result))
         entry[cat_key] = self._calculate_category_stats(tests)
         per_model["last_updated"] = now
         tmp = file_path.with_suffix(".json.tmp")
@@ -672,6 +943,36 @@ class LLMModelBenchmark:
     def _metacog_tests(self, model: str) -> list[dict]:
         return self.tests_config.get("metacog", [])
 
+    def _networking_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("networking", [])
+
+    def _usb_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("usb", [])
+
+    def _iac_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("iac", [])
+
+    def _linux_driver_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("linux_driver", [])
+
+    def _bash_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("bash", [])
+
+    def _basic_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("basic", [])
+
+    def _pascal_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("pascal", [])
+
+    def _typescript_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("typescript", [])
+
+    def _rpm_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("rpm", [])
+
+    def _android_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("android", [])
+
     def strip_thinking(self, text: str) -> "tuple[str, str | None]":
         """Split reasoning from output.
 
@@ -679,12 +980,32 @@ class LLMModelBenchmark:
         ``<think>/<thinking>`` blocks removed (so the stored response is pure code/output)
         and ``thinking`` is the concatenated reasoning text, preserved for optional display.
         Handles matched (``<think>...</think>``) and mismatched (``<thinking>...</think>``)
-        tag pairings.
+        tag pairings. Also removes plain-text "thinking process" preambles (e.g. models
+        that narrate ``Here's a thinking process:`` before writing code) up to the first
+        unindented code fence, so leaked reasoning + its draft snippets never pollute the
+        stored response or the code-quality checker.
         """
         tag_re = r"<think[^>]*>[\s\S]*?</think[^>]*>"
         blocks = re.findall(tag_re, text, flags=re.IGNORECASE)
         clean = re.sub(tag_re, "", text, flags=re.IGNORECASE).strip()
         thinking = "\n\n".join(b.strip() for b in blocks) if blocks else None
+        # Plain-text reasoning preamble: a "thinking" style header line followed by
+        # prose, ending at the first unindented code fence. Only stripped when a real
+        # (column-0) fence follows, so legitimate short intros like "Here's the game:"
+        # and pure-prose answers are never damaged.
+        preamble_re = re.compile(
+            r"(?:^|\n)(?:Here'?s (?:a |my |the )?thinking (?:process|steps?)"
+            r"|Let me think (?:about|through|this)"
+            r"|Let me (?:reason|work|think) (?:through|about|this)"
+            r"|Thought process|My thinking|I'll think|I will think|I'll reason"
+            r"|Step-by-step thinking)[^:\n]*:(.*?)(?=\n```)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        match = preamble_re.search(clean)
+        if match:
+            preamble = match.group(0).strip()
+            clean = clean.replace(preamble, "", 1).strip()
+            thinking = f"{preamble}\n\n{thinking}" if thinking else preamble
         return clean, thinking
 
     def _has_persistent_scoreboard(self, cleaned: str) -> bool:
@@ -697,15 +1018,12 @@ class LLMModelBenchmark:
         (never carrying the previous session's score over).
         """
         score_word = any(x in cleaned for x in ["score", "record", "population"])
-        persist = any(
-            x in cleaned for x in ["json", "dump", "load", "save", "localstorage", 'open("', "open('"]
-        )
+        persist = any(x in cleaned for x in ["json", "dump", "load", "save", "localstorage", 'open("', "open('"])
         name_entry = ("name" in cleaned or "initial" in cleaned) and any(
             x in cleaned for x in ["input(", "readline", "gets", "prompt(", "value", "save"]
         )
         reset = any(
-            x in cleaned
-            for x in ["reset", "= 0", "=0", "new game", "new_game", "newgame", "resetscore", "clear"]
+            x in cleaned for x in ["reset", "= 0", "=0", "new game", "new_game", "newgame", "resetscore", "clear"]
         )
         return score_word and persist and name_entry and reset
 
@@ -816,6 +1134,29 @@ class LLMModelBenchmark:
         elif test_id == "summarization":
             bullets = re.findall(r"(?:^\s*[-*•+\d]\s+.*$)|(?:^\d+\..*$)", response, re.MULTILINE)
             return len(bullets) >= 3
+
+        elif test_id == "instruction_adherence":
+            # Strict format-following: exactly 3 markdown bullets, mandatory ordered
+            # bold labels, required terms present, forbidden terms absent.
+            lines = [ln.strip() for ln in response.strip().splitlines() if ln.strip()]
+            bullet_pat = r"^(?:[-*+]|\d+[.)])\s+"
+            bullets = [ln for ln in lines if re.match(bullet_pat, ln)]
+            if len(lines) != 3 or len(bullets) != 3:
+                return False
+            labels = ("failures:", "pattern:", "cause:")
+            lows: list[str] = []
+            for i, b in enumerate(bullets):
+                text = re.sub(bullet_pat, "", b).strip().replace("**", "")
+                low = text.lower()
+                if not low.startswith(labels[i]):
+                    return False
+                if len(text.split()) > 28:
+                    return False
+                lows.append(low)
+            joined = " ".join(lows)
+            if not all(term in joined for term in ("ai overview", "token", "transformer")):
+                return False
+            return not any(term in cleaned for term in ("strawberry", "kindergarten", "image credits"))
 
         elif test_id == "device_control":
             return "bedroom" in cleaned and any(x in cleaned for x in ["60%", "60", "sixty"])
@@ -1117,10 +1458,11 @@ class LLMModelBenchmark:
                 and "q" in cleaned
             )
         elif test_id == "logic_syllogism":
+            # Stem match: models may answer with singular or plural forms.
             return (
                 any(x in cleaned for x in ["yes", "definitely", "true", "correct"])
-                and "bloops" in cleaned
-                and "lazzies" in cleaned
+                and "bloop" in cleaned
+                and "lazzi" in cleaned
             )
         elif test_id == "logic_weigh":
             return (
@@ -1261,7 +1603,10 @@ class LLMModelBenchmark:
                 and "ball" in cleaned
                 and any(x in cleaned for x in ["brick", "bounce", "wall"])
                 and any(x in cleaned for x in ["life", "lives", "miss", "lose", "lost", "bottom"])
-                and any(x in cleaned for x in ["power", "capsule", "laser", "multi", "catch", "enlarge", "expand", "boss", "doh"])
+                and any(
+                    x in cleaned
+                    for x in ["power", "capsule", "laser", "multi", "catch", "enlarge", "expand", "boss", "doh"]
+                )
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "game_simcity":
             return (
@@ -1291,11 +1636,7 @@ class LLMModelBenchmark:
                     and "enemy" in cleaned
                 )
             else:  # game_breakout_rt
-                core = (
-                    "paddle" in cleaned
-                    and "ball" in cleaned
-                    and "brick" in cleaned
-                )
+                core = "paddle" in cleaned and "ball" in cleaned and "brick" in cleaned
             return core and score_word and self._has_persistent_scoreboard(cleaned)
         # ---- gamedev_alt: web UI games (HTML5 canvas / three.js / WebGL) ----
         elif test_id == "game_snake_canvas":
@@ -1646,7 +1987,7 @@ class LLMModelBenchmark:
             return (
                 "subject" in cleaned
                 and any(x in cleaned for x in ["dear", "hi ", "hello", "team", "client"])
-                and any(x in cleaned for x in ["delay", "apolog", "later", "postpone"])
+                and any(x in cleaned for x in ["delay", "apolog", "later", "postpone", "extend", "push", "slip"])
                 and any(x in cleaned for x in ["date", "deliver", "schedul"])
             )
         elif test_id == "office_spreadsheet":
@@ -1774,6 +2115,172 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["5", "four", "4"])
                 and any(x in cleaned for x in ["while", "loop", "condition"])
             )
+        # ---- Networking ----
+        elif test_id == "net_echo_server":
+            return (
+                any(x in cleaned for x in ["bind", "listen", "accept"])
+                and any(x in cleaned for x in ["recv", "sendall", "conn.send"])
+                and any(x in cleaned for x in ["socket.socket", "import socket"])
+            )
+        elif test_id == "net_http_client":
+            return any(x in cleaned for x in ["urllib.request", "http.client", "requests.get", "http.request"]) and any(
+                x in cleaned for x in ["status", "code", "getcode", "print"]
+            )
+        elif test_id == "net_dns_resolver":
+            return any(x in cleaned for x in ["gethostbyname", "getaddrinfo", "dnspython", "socket"]) and any(
+                x in cleaned for x in ["print", "ip", "address"]
+            )
+        elif test_id == "net_port_scanner":
+            return (
+                any(x in cleaned for x in ["socket.socket", "connect_ex", "import socket"])
+                and any(x in cleaned for x in ["port", "open"])
+                and any(x in cleaned for x in ["for", "threading", "range"])
+            )
+        # ---- USB device programming ----
+        elif test_id in ("usb_interface_claim", "usb_hidraw_read"):
+            return any(x in cleaned for x in ["usbdevfs", "ioctl", "hidraw", "usb"]) and any(
+                x in cleaned for x in ["#include", "fd", "open("]
+            )
+        elif test_id == "usb_descriptor_dump":
+            return any(x in cleaned for x in ["descriptor", "endpoint", "interface"]) and any(
+                x in cleaned for x in ["#include", "usb", "print"]
+            )
+        elif test_id == "usb_hid_parser":
+            return any(x in cleaned for x in ["report", "usage", "hid", "struct"]) and any(
+                x in cleaned for x in ["#include", "usb", "parse", "print"]
+            )
+        # ---- Infrastructure as code (Terraform / Pulumi / GH Actions) ----
+        elif test_id == "iac_tf_vpc":
+            return any(x in cleaned for x in ["aws_vpc", "subnet", "security_group"]) and any(
+                x in cleaned for x in ["resource", "provider", "terraform"]
+            )
+        elif test_id == "iac_tf_ec2":
+            return any(x in cleaned for x in ["aws_instance", "resource"]) and any(
+                x in cleaned for x in ["ami", "instance_type", "provider"]
+            )
+        elif test_id == "iac_gha_ci":
+            return any(x in cleaned for x in ["on:", "jobs:", "steps:"]) and any(
+                x in cleaned for x in ["runs-on", "actions/checkout", "uses:"]
+            )
+        elif test_id == "iac_pulumi_s3":
+            return any(x in cleaned for x in ["aws:s3", "s3/bucket", "resources"]) and any(
+                x in cleaned for x in ["name:", "runtime:", "yaml"]
+            )
+        # ---- Linux kernel driver ----
+        elif test_id == "ldrv_char_device":
+            return (
+                any(x in cleaned for x in ["register_chrdev", "alloc_chrdev_region", "cdev"])
+                and any(x in cleaned for x in ["file_operations", ".open", ".read", ".write"])
+                and any(x in cleaned for x in ["module_init", "module_exit"])
+            )
+        elif test_id == "ldrv_platform_driver":
+            return any(x in cleaned for x in ["platform_driver", "probe", "remove"]) and any(
+                x in cleaned for x in ["module_init", "module_exit", "of_match_table"]
+            )
+        elif test_id == "ldrv_ioctl":
+            return any(x in cleaned for x in ["ioctl", "copy_to_user", "copy_from_user"]) and any(
+                x in cleaned for x in ["_io", "_ior", "_iow", "unlocked_ioctl", "file_operations"]
+            )
+        elif test_id == "ldrv_miscdevice":
+            return any(x in cleaned for x in ["misc_register", "miscdevice"]) and any(
+                x in cleaned for x in [".name", ".fops", "file_operations"]
+            )
+        # ---- Bash scripting ----
+        elif test_id == "bash_backup_rotate":
+            return (
+                any(x in cleaned for x in ["tar", "backup", "cp "])
+                and any(x in cleaned for x in ["ls", "head", "find", "for"])
+                and "#!/bin/bash" in cleaned
+            )
+        elif test_id == "bash_csv_sums":
+            return (
+                any(x in cleaned for x in ["awk", "cut", "while read"])
+                and any(x in cleaned for x in ["sum", "total"])
+                and "#!/bin/bash" in cleaned
+            )
+        elif test_id == "bash_health_loop":
+            return (
+                any(x in cleaned for x in ["curl", "http_code", "wget"])
+                and any(x in cleaned for x in ["sleep", "while", "for"])
+                and "#!/bin/bash" in cleaned
+            )
+        elif test_id == "bash_top_cpu":
+            return (
+                any(x in cleaned for x in ["ps ", "top", "awk"])
+                and any(x in cleaned for x in ["cpu", "%cpu"])
+                and "#!/bin/bash" in cleaned
+            )
+        # ---- BASIC (yabasic) ----
+        elif test_id == "bas_guess_game":
+            return (
+                any(x in cleaned for x in ["ran(", "int(ran", "random"])
+                and any(x in cleaned for x in ["input", "too high", "too low", "higher", "lower"])
+                and any(x in cleaned for x in ["loop", "while", "for"])
+            )
+        elif test_id == "bas_fibonacci":
+            return (
+                any(x in cleaned for x in ["fibonacci", "fib"])
+                and any(x in cleaned for x in ["for", "next"])
+                and any(x in cleaned for x in ["print"])
+            )
+        elif test_id == "bas_grade_calc":
+            return (
+                any(x in cleaned for x in ["input", "grade", "score"])
+                and any(x in cleaned for x in ["if", "then", "else"])
+                and any(x in cleaned for x in ["print", "end"])
+            )
+        elif test_id == "bas_countdown":
+            return any(x in cleaned for x in ["for", "next", "down"]) and any(x in cleaned for x in ["print", "sleep"])
+        # ---- Pascal (Free Pascal) ----
+        elif test_id == "pas_records":
+            return any(x in cleaned for x in ["type", "record", "array"]) and "program" in cleaned and "end." in cleaned
+        elif test_id == "pas_factorial":
+            return (
+                any(x in cleaned for x in ["function", "factorial", "fact"])
+                and any(x in cleaned for x in ["recursive", "if", "begin"])
+                and "end." in cleaned
+            )
+        elif test_id == "pas_bubble_sort":
+            return (
+                any(x in cleaned for x in ["array", "sort", "bubble"])
+                and any(x in cleaned for x in ["for", "to", "do"])
+                and "end." in cleaned
+            )
+        elif test_id == "pas_word_count":
+            return (
+                any(x in cleaned for x in ["readln", "word", "count"])
+                and any(x in cleaned for x in ["while", "repeat", "for"])
+                and "end." in cleaned
+            )
+        # ---- TypeScript ----
+        elif test_id in ("ts_shapes", "ts_fib_memo", "ts_string_utils", "ts_json_parse"):
+            return any(x in cleaned for x in [": string", ": number", "interface", "class", "function"]) and any(
+                x in cleaned for x in ["console.log", "return", "=>"]
+            )
+        # ---- RPM spec files ----
+        elif test_id in ("rpm_minimal_spec", "rpm_build_spec", "rpm_devel_subpackage", "rpm_doc_config_spec"):
+            return any(x in cleaned for x in ["name:", "version:", "release:", "summary:"]) and any(
+                x in cleaned for x in ["%description", "%install", "%files", "%build", "%prep"]
+            )
+        # ---- Android (Kotlin) ----
+        elif test_id == "and_main_activity":
+            return (
+                any(x in cleaned for x in ["oncreate", "setcontentview", "recyclerview"])
+                and any(x in cleaned for x in ["appcompatactivity", "activity", "adapter", "viewholder"])
+                and any(x in cleaned for x in ["fun ", "class ", "import"])
+            )
+        elif test_id == "and_viewmodel":
+            return any(x in cleaned for x in ["viewmodel", "livedata", "stateflow", "mutablelivedata"]) and any(
+                x in cleaned for x in ["class", "fun", "private", "val"]
+            )
+        elif test_id == "and_retrofit":
+            return any(x in cleaned for x in ["retrofit", "@get", "@post", "interface", "call<"]) and any(
+                x in cleaned for x in ["class", "fun", "import"]
+            )
+        elif test_id == "and_room":
+            return any(x in cleaned for x in ["@database", "@dao", "@entity", "@query", "@insert"]) and any(
+                x in cleaned for x in ["interface", "class", "fun"]
+            )
 
         # Unknown / custom test_ids from BENCHMARK_TESTS_JSON have no built-in
         # expectations. Use a minimal content-quality gate instead of an
@@ -1801,6 +2308,62 @@ class LLMModelBenchmark:
         "happy to help",
         "in summary",
         "to summarize",
+    ]
+
+    # Default rubric applied to every code/UI benchmark (in addition to any
+    # per-test "rubric" list in benchmark_tests.json). These are cheap,
+    # unambiguous checks for things every code prompt asks for: a fenced code
+    # block, a real runnable program rather than placeholder stubs, and a
+    # self-contained entry point / demo. Missing any of them costs points even
+    # when the code happens to run.
+    _DEFAULT_CODE_RUBRIC: ClassVar[list[dict]] = [
+        {
+            "label": "Code is in a fenced block",
+            "check": ["```"],
+            "match": "any",
+            "points": 8,
+        },
+        {
+            "label": "No placeholder/stub text",
+            "check": ["todo", "your code here", "placeholder", "fixme", "insert code", "xxx", "implement this"],
+            "match": "absent",
+            "points": 8,
+        },
+        {
+            "label": "Has a self-contained entry point / demo",
+            "check": [
+                "def main",
+                "if __name__",
+                "main()",
+                "function main",
+                "int main",
+                "func main",
+                "fn main",
+                "public static void main",
+                "app.mainloop",
+                "pygame.display.set_mode",
+                "display.set_mode",
+                "requestanimationframe",
+                "setinterval",
+                "console.log",
+                "writeln(",
+                "printf(",
+                "fmt.println",
+                "echo ",
+                "print ",
+                "print(",
+                "program ",
+                "#!/bin",
+            ],
+            "match": "any",
+            "points": 8,
+        },
+        {
+            "label": "Code is complete, not truncated",
+            "check": ["...", "…"],
+            "match": "absent_trailing",
+            "points": 4,
+        },
     ]
 
     def _score_code_quality(self, response: str, test: dict) -> dict:
@@ -1878,7 +2441,12 @@ class LLMModelBenchmark:
         syntax_valid = None
         if lang == "python" and code:
             try:
-                ast.parse(code)
+                # Use the SAME extraction the sandbox executes so syntax_valid
+                # reflects the code that actually ran, not a mangled join of
+                # every fenced block (leaked thinking drafts can carry stray
+                # indentation that would otherwise cause a false alarm).
+                parsed = extract_clean_code(response, "python") or code
+                ast.parse(parsed)
                 syntax_valid = True
                 notes.append("python syntax valid")
             except SyntaxError:
@@ -1936,6 +2504,66 @@ class LLMModelBenchmark:
             flags.append("excessive emoji")
         score = min(100, len(flags) * 18)
         return {"score": score, "flags": flags}
+
+    def _evaluate_rubric(self, test: dict, response: str, code: str = "") -> dict:
+        """Score a response against the benchmark's rubric criteria.
+
+        Criteria come from the test's ``rubric`` list in benchmark_tests.json
+        (per-test additions, e.g. "game must persist a top-5 high-score table")
+        layered on top of the always-applied ``_DEFAULT_CODE_RUBRIC`` for code/UI
+        tests. Each criterion checks the response (and/or the extracted code) for
+        a required substring (``match: any``), for every required substring
+        (``match: all``), for the ABSENCE of a forbidden substring
+        (``match: absent``), or for a truncated tail (``match: absent_trailing``).
+
+        Returns ``{score, fraction, total_points, earned_points, criteria: [...]}``
+        where each criterion carries ``label``, ``passed``, ``points`` so the
+        dashboard can show exactly which requested features a model delivered or
+        missed.
+        """
+        criteria = list(self._DEFAULT_CODE_RUBRIC)
+        for extra in test.get("rubric") or []:
+            if isinstance(extra, dict) and extra.get("label"):
+                criteria.append(extra)
+
+        haystack = f"{response}\n{code}" if code else response
+        low = haystack.lower()
+        total_points = 0
+        earned_points = 0
+        results: list[dict] = []
+        for crit in criteria:
+            points = int(crit.get("points") or 1)
+            checks = crit.get("check") or []
+            if isinstance(checks, str):
+                checks = [checks]
+            match = (crit.get("match") or "any").lower()
+            if match == "absent":
+                passed = not any(c.lower() in low for c in checks)
+            elif match == "absent_trailing":
+                passed = not (response.rstrip().endswith(("...", "```")))
+            elif match == "all":
+                passed = all(c.lower() in low for c in checks)
+            else:  # any
+                passed = any(c.lower() in low for c in checks)
+            total_points += points
+            if passed:
+                earned_points += points
+            results.append(
+                {
+                    "label": crit.get("label") or "Untitled criterion",
+                    "passed": bool(passed),
+                    "points": points,
+                    "checks": [str(c) for c in checks],
+                }
+            )
+        fraction = (earned_points / total_points) if total_points else 1.0
+        return {
+            "score": round(100 * fraction),
+            "fraction": fraction,
+            "total_points": total_points,
+            "earned_points": earned_points,
+            "criteria": results,
+        }
 
     class ResourceSampler:
         """Context manager to sample peak CPU, RAM, and VRAM utilization during a query."""
@@ -2006,12 +2634,17 @@ class LLMModelBenchmark:
         """Test a model against a proxy endpoint or online provider."""
         if online_model_provider.is_online_model(model):
             try:
+                # Free-tier online providers throttle aggressively (e.g. Gemini
+                # free tier = 20 req/min). Pace requests so a fast local run does
+                # not blow through the whole quota window in seconds, which used
+                # to trigger cascade 429s that aborted the entire model run.
+                self._pace_online_request(model)
                 if sampler:
                     sampler.start()
                 res = await online_model_provider.query_online_model(
                     model_identifier=model,
                     prompt=test["prompt"],
-                    max_tokens=test.get("num_predict", 4000),
+                    max_tokens=_test_num_predict(test),
                 )
                 if sampler:
                     await sampler.stop()
@@ -2031,134 +2664,173 @@ class LLMModelBenchmark:
                     "error": f"online provider error: {e}",
                 }
             latency = res.get("latency", 0.0)
+            resp_raw = res.get("response") or ""
+            response_text, thinking = self.strip_thinking(resp_raw)
+            if thinking:
+                resp_raw = response_text
             return {
                 "proxy": "online",
                 "success": res.get("success", False),
                 "prompt": test["prompt"],
                 "latency": round(latency, 3),
-                "response": res.get("response"),
+                "response": resp_raw,
+                "thinking": thinking or res.get("thinking"),
                 "tokens_generated": res.get("tokens_generated", 0),
                 "eval_duration": int(latency * 1e9),
                 "prompt_eval_duration": 0,
                 "error": res.get("error"),
+                "retry_after": res.get("retry_after"),
             }
 
         last_error: Exception | None = None
+        try:
+            think_on = _test_thinking(test)
+            num_predict = await self._effective_num_predict(model, test["prompt"], _test_num_predict(test))
+        except RuntimeError as e:
+            return {
+                "proxy": "context-guard",
+                "success": False,
+                "prompt": test["prompt"],
+                "latency": 0,
+                "response": None,
+                "tokens_generated": 0,
+                "error": str(e),
+            }
+        if num_predict <= 0:
+            return {
+                "proxy": "context-guard",
+                "success": False,
+                "prompt": test["prompt"],
+                "latency": 0,
+                "response": None,
+                "tokens_generated": 0,
+                "error": (
+                    "Context window exhausted before generation. Reduce the prompt size or "
+                    "increase the backend ctx-size."
+                ),
+            }
         for proxy_url in self.PROXY_SERVER_URLS:
             try:
-                async with httpx.AsyncClient(timeout=240.0) as client:
-                    start_t = time.time()
+                start_t = time.time()
+                async with httpx.AsyncClient(timeout=_STREAM_TIMEOUT) as client:
                     if sampler:
                         sampler.start()
-                    response = await client.post(
-                        f"{proxy_url}/api/chat",
-                        json={
-                            "model": model,
-                            "messages": [{"role": "user", "content": test["prompt"]}],
-                            "stream": False,
-                            "think": False,
-                            "options": {
-                                "num_predict": 4000,
-                                "temperature": 0.3,
-                            },
+                    payload = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": test["prompt"]}],
+                        "stream": True,
+                        "think": think_on,
+                        "reasoning_budget": test.get("reasoning_budget", 2048),
+                        "options": {
+                            "num_predict": num_predict,
+                            "temperature": _model_temperature(model),
                         },
-                        headers=self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"}),
-                        timeout=240.0,
-                    )
-                    elapsed = time.time() - start_t
-                    if sampler:
-                        await sampler.stop()
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        eval_ns = data.get("eval_duration", 0)
-                        prompt_ns = data.get("prompt_eval_duration", 0)
-                        eval_count = data.get("eval_count", 0)
-                        response_text, thinking = self.strip_thinking(
-                            data.get("message", {}).get("content") or data.get("response", "")
-                        )
-
-                        # Guard: empty generation - server returned 200 but produced nothing.
-                        # Skip the nudge retry (it would hang) and fail immediately.
-                        if not response_text and eval_count == 0:
+                    }
+                    headers = self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"})
+                    async with client.stream(
+                        "POST", f"{proxy_url}/api/chat", json=payload, headers=headers
+                    ) as response:
+                        if response.status_code != 200:
+                            body = (await response.aread()).decode("utf-8", "replace")
+                            if sampler:
+                                await sampler.stop()
                             return {
                                 "proxy": proxy_url,
                                 "success": False,
                                 "prompt": test["prompt"],
-                                "latency": round(elapsed, 3),
+                                "latency": 0,
                                 "response": None,
                                 "tokens_generated": 0,
-                                "error": "Empty generation (eval_count=0, no content returned)",
+                                "error": f"HTTP {response.status_code}: {body}",
                             }
+                        data = await _read_chat_stream(response)
+                    elapsed = time.time() - start_t
+                    if sampler:
+                        await sampler.stop()
 
-                        # If we used 4000 tokens or more (half of 8000), inject nudge and request remaining tokens
-                        if eval_count >= 4000:
-                            try:
-                                payload2 = {
-                                    "model": model,
-                                    "messages": [
-                                        {"role": "user", "content": test["prompt"]},
-                                        {"role": "assistant", "content": response_text},
-                                        {
-                                            "role": "user",
-                                            "content": "[System: You are halfway through your token budget. Please come up with an answer quickly.]",
-                                        },
-                                    ],
-                                    "stream": False,
-                                    "think": False,
-                                    "options": {
-                                        "num_predict": 4000,
-                                        "temperature": 0.3,
-                                    },
-                                }
-                                start_t2 = time.time()
-                                response2 = await client.post(
-                                    f"{proxy_url}/api/chat",
-                                    json=payload2,
-                                    headers=self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"}),
-                                    timeout=240.0,
-                                )
-                                elapsed += time.time() - start_t2
-                                if response2.status_code == 200:
-                                    data2 = response2.json()
-                                    response_text2, thinking2 = self.strip_thinking(
-                                        data2.get("message", {}).get("content") or data2.get("response", "")
-                                    )
-                                    response_text = response_text + "\n" + response_text2
-                                    if thinking2:
-                                        thinking = (thinking + "\n\n" + thinking2) if thinking else thinking2
-                                    eval_count += data2.get("eval_count", 0)
-                                    eval_ns += data2.get("eval_duration", 0)
-                                    prompt_ns += data2.get("prompt_eval_duration", 0)
-                            except Exception as e2:
-                                print(f"Phase 2 proxy query error: {e2}")
+                    eval_ns = data["eval_duration"]
+                    prompt_ns = data["prompt_eval_duration"]
+                    eval_count = data["eval_count"]
+                    response_text, thinking = self.strip_thinking(data["content"])
+                    # Reasoning models emit the thinking phase as separate streamed
+                    # message.thinking chunks when --reasoning-format deepseek is in
+                    # effect, so capture those too (they are already separate from
+                    # the code we score).
+                    if not thinking and data.get("thinking"):
+                        thinking = data["thinking"]
 
-                        latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
-                        return {
-                            "proxy": proxy_url,
-                            "success": True,
-                            "prompt": test["prompt"],
-                            "latency": round(latency, 3),
-                            "response": response_text,
-                            "thinking": thinking,
-                            "tokens_generated": eval_count,
-                            "eval_duration": eval_ns,
-                            "prompt_eval_duration": prompt_ns,
-                            "error": None,
-                        }
-                    else:
+                    # Guard: empty generation - server returned 200 but produced nothing.
+                    # Skip the nudge retry (it would hang) and fail immediately.
+                    if not response_text and eval_count == 0:
                         return {
                             "proxy": proxy_url,
                             "success": False,
                             "prompt": test["prompt"],
-                            "latency": 0,
+                            "latency": round(elapsed, 3),
                             "response": None,
                             "tokens_generated": 0,
-                            "error": f"HTTP {response.status_code}: {response.text}",
+                            "error": "Empty generation (eval_count=0, no content returned)",
                         }
+
+                    # If we exhausted the token cap, inject nudge and request remaining tokens
+                    if eval_count >= num_predict:
+                        try:
+                            payload2 = {
+                                "model": model,
+                                "messages": [
+                                    {"role": "user", "content": test["prompt"]},
+                                    {"role": "assistant", "content": response_text},
+                                    {
+                                        "role": "user",
+                                        "content": "[System: You are halfway through your token budget. Please come up with an answer quickly.]",
+                                    },
+                                ],
+                                "stream": True,
+                                "think": think_on,
+                                "reasoning_budget": test.get("reasoning_budget", 2048),
+                                "options": {
+                                    "num_predict": num_predict,
+                                    "temperature": _model_temperature(model),
+                                },
+                            }
+                            start_t2 = time.time()
+                            async with client.stream(
+                                "POST", f"{proxy_url}/api/chat", json=payload2, headers=headers
+                            ) as response2:
+                                if response2.status_code == 200:
+                                    data2 = await _read_chat_stream(response2)
+                                    response_text2, thinking2 = self.strip_thinking(data2["content"])
+                                    response_text = response_text + "\n" + response_text2
+                                    if thinking2:
+                                        thinking = (thinking + "\n\n" + thinking2) if thinking else thinking2
+                                    elif data2.get("thinking"):
+                                        thinking = data2["thinking"]
+                                    eval_count += data2["eval_count"]
+                                    eval_ns += data2["eval_duration"]
+                                    prompt_ns += data2["prompt_eval_duration"]
+                            elapsed += time.time() - start_t2
+                        except Exception as e2:
+                            print(f"Phase 2 proxy query error: {e2}")
+
+                    latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
+                    return {
+                        "proxy": proxy_url,
+                        "success": True,
+                        "prompt": test["prompt"],
+                        "latency": round(latency, 3),
+                        "response": response_text,
+                        "thinking": thinking,
+                        "think": think_on,
+                        "reasoning_budget": test.get("reasoning_budget", 2048),
+                        "num_predict": num_predict,
+                        "tokens_generated": eval_count,
+                        "eval_duration": eval_ns,
+                        "prompt_eval_duration": prompt_ns,
+                        "error": None,
+                    }
             except (httpx.RemoteProtocolError, httpx.ReadError) as e:
                 # Server crashed or dropped the connection - fail immediately
-                # instead of waiting out the full 240-second timeout.
+                # instead of waiting out the full read timeout.
                 if sampler:
                     await sampler.stop()
                 last_error = e
@@ -2189,6 +2861,456 @@ class LLMModelBenchmark:
             "error": error_msg,
         }
 
+    # ------------------------------------------------------------------ #
+    # Tool / media-service benchmarks                                     #
+    # ------------------------------------------------------------------ #
+
+    AUDIO_SERVER_URL: ClassVar[str] = os.getenv("AUDIO_SERVER_URL", "http://localhost:8082")
+
+    def _service_urls(self) -> tuple[str, str]:
+        """Resolve (proxy_url, audio_url) honoring container/host environments."""
+        proxy = os.getenv("PROXY_SERVER_URLS", "http://localhost:11434,http://alpaca-proxy:11434")
+        proxy_url = proxy.split(",")[0].strip()
+        return proxy_url, self.AUDIO_SERVER_URL
+
+    async def _tool_image(self, test: dict) -> dict:
+        """Generate an image through the alpaca proxy and grade the result.
+
+        Graded dimensions: request success, PNG decodes, exact requested size,
+        non-blank pixel variance, and wall-clock time within the test budget.
+        """
+        import base64 as b64mod
+
+        import httpx
+
+        params = test.get("params") or {}
+        prompt = params.get("prompt") or test.get("prompt") or ""
+        size = str(params.get("size", "512x512"))
+        payload = {
+            "model": params.get("model", ""),
+            "prompt": prompt,
+            "n": 1,
+            "size": size,
+            "steps": int(params.get("steps", 20)),
+            "response_format": "b64_json",
+        }
+        if params.get("seed") is not None:
+            payload["seed"] = int(params["seed"])
+        if params.get("cfg_scale") is not None:
+            payload["cfg_scale"] = float(params["cfg_scale"])
+
+        proxy_url, _ = self._service_urls()
+        t0 = time.perf_counter()
+        meta: dict = {"size": size, "steps": payload["steps"], "prompt": prompt[:120]}
+        criteria: list[dict] = []
+
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                resp = await client.post(f"{proxy_url}/v1/images/generations", json=payload)
+        except Exception as e:
+            return {
+                "success": False,
+                "score": 0,
+                "tool_score": 0,
+                "error": f"image service unreachable: {e}",
+                "meta": meta,
+                "criteria": [{"name": "service_reachable", "pass": False}],
+                "tokens_generated": None,
+            }
+        elapsed = time.perf_counter() - t0
+        meta["elapsed_s"] = round(elapsed, 1)
+        reachable = resp.status_code == 200
+        criteria.append({"name": "service_reachable", "pass": reachable})
+        if not reachable:
+            detail = ""
+            try:
+                detail = str(resp.json())[:200]
+            except Exception:
+                detail = resp.text[:200]
+            meta["http_status"] = resp.status_code
+            return {
+                "success": False,
+                "score": 0,
+                "tool_score": 0,
+                "error": f"image generation failed HTTP {resp.status_code}: {detail}",
+                "meta": meta,
+                "criteria": criteria,
+                "tokens_generated": None,
+            }
+
+        data = (resp.json() or {}).get("data") or []
+        b64img = (data[0] or {}).get("b64_json") if data else None
+        got_image = bool(b64img)
+        criteria.append({"name": "image_returned", "pass": got_image})
+
+        dims_ok = variance_ok = False
+        w_px = h_px = 0
+        if got_image:
+            try:
+                import io as _io
+
+                from PIL import Image, ImageStat
+
+                img = Image.open(_io.BytesIO(b64mod.b64decode(b64img or "")))
+                w_px, h_px = img.size
+                want_w, want_h = (int(x) for x in size.lower().split("x"))
+                dims_ok = (w_px, h_px) == (want_w, want_h)
+                stat = ImageStat.Stat(img.convert("L"))
+                stddev = float(stat.stddev[0])
+                meta["stddev"] = round(stddev, 2)
+                variance_ok = stddev > 8.0  # a flat/blank render has ~0 variance
+            except Exception as e:
+                meta["decode_error"] = str(e)[:150]
+        criteria.append({"name": f"dims_match_{w_px}x{h_px}", "pass": dims_ok})
+        criteria.append({"name": "non_blank_render", "pass": variance_ok})
+
+        budget = float(test.get("time_budget_s", 300))
+        speed_ok = elapsed <= budget
+        criteria.append({"name": f"time_within_{budget:g}s", "pass": speed_ok})
+
+        score = round(100 * sum(1 for c in criteria if c["pass"]) / len(criteria))
+        errors = [c["name"] for c in criteria if not c["pass"]]
+        return {
+            "success": got_image and dims_ok and variance_ok,
+            "score": score,
+            "tool_score": score,
+            "response": f"[image {w_px}x{h_px} in {elapsed:.1f}s via sd-server]",
+            "error": "" if not errors else f"failed: {', '.join(errors)}",
+            "meta": meta,
+            "criteria": criteria,
+            "tokens_generated": None,
+            "artifact_b64": b64img,
+            "artifact_mime": "image/png" if b64img else None,
+        }
+
+    @staticmethod
+    def _wav_stats(raw: bytes) -> dict:
+        """Parse WAV bytes with the stdlib and compute duration/RMS/zcr stats."""
+        import array
+        import io as _io
+
+        out: dict = {}
+        try:
+            with wave.open(_io.BytesIO(raw), "rb") as wf:
+                sr = wf.getframerate()
+                n_frames = wf.getnframes()
+                width = wf.getsampwidth()
+                out["sample_rate"] = sr
+                out["duration_s"] = round(n_frames / float(sr or 1), 2)
+                frames = wf.readframes(n_frames)
+        except Exception as e:
+            out["error"] = f"invalid wav: {e}"
+            return out
+        if width == 2:
+            samples = array.array("h")
+            samples.frombytes(frames[: (len(frames) // 2) * 2])
+            if samples:
+                acc = 0
+                for s in samples:
+                    acc += int(s) * int(s)
+                rms = (acc / len(samples)) ** 0.5 / 32768.0
+                out["rms"] = round(rms, 5)
+                crossings = sum(1 for i in range(1, len(samples)) if (samples[i - 1] < 0) != (samples[i] < 0))
+                out["zcr"] = round(crossings / float(len(samples)), 4)
+        return out
+
+    async def _tool_tts(self, test: dict) -> dict:
+        """Synthesize speech through audio-server and grade the WAV output."""
+        import base64 as b64mod
+
+        import httpx
+
+        params = test.get("params") or {}
+        text = params.get("text") or test.get("prompt") or ""
+        body = {
+            "text": text,
+            "voice": params.get("voice", "af_heart"),
+            "speed": float(params.get("speed", 1.0)),
+        }
+        _, audio_url = self._service_urls()
+        t0 = time.perf_counter()
+        meta: dict = {"voice": body["voice"], "chars": len(text)}
+        criteria: list[dict] = []
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                resp = await client.post(f"{audio_url}/api/tts", json=body)
+        except Exception as e:
+            return {
+                "success": False,
+                "score": 0,
+                "tool_score": 0,
+                "error": f"audio service unreachable: {e}",
+                "meta": meta,
+                "criteria": [{"name": "service_reachable", "pass": False}],
+                "tokens_generated": None,
+            }
+        elapsed = time.perf_counter() - t0
+        meta["elapsed_s"] = round(elapsed, 1)
+
+        ok = resp.status_code == 200 and not (resp.json() or {}).get("error")
+        criteria.append({"name": "service_reachable", "pass": ok})
+        if not ok:
+            try:
+                detail = str(resp.json())[:200]
+            except Exception:
+                detail = resp.text[:200]
+            return {
+                "success": False,
+                "score": 0,
+                "tool_score": 0,
+                "error": f"TTS failed HTTP {resp.status_code}: {detail}",
+                "meta": meta,
+                "criteria": criteria,
+                "tokens_generated": None,
+            }
+
+        data = resp.json() or {}
+        raw = b64mod.b64decode(data.get("audio_b64") or "")
+        stats = self._wav_stats(raw)
+        meta.update({k: v for k, v in stats.items() if k != "error"})
+        duration = float(stats.get("duration_s", 0))
+        expected_lo, expected_hi = float(params.get("min_duration_s", 1.0)), float(params.get("max_duration_s", 600))
+        dur_ok = expected_lo <= duration <= expected_hi
+        criteria.append({"name": f"duration_{duration}s_in_range", "pass": dur_ok})
+
+        rms = float(stats.get("rms", 0))
+        audible = rms >= float(params.get("min_rms", 0.01))
+        criteria.append({"name": f"audible_rms_{rms}", "pass": audible})
+
+        rtf = float((data.get("meta") or {}).get("rtf", 99))
+        fast_ok = rtf <= float(params.get("max_rtf", 3.0))
+        criteria.append({"name": f"rtf_{rtf}_within_budget", "pass": fast_ok})
+
+        score = round(100 * sum(1 for c in criteria if c["pass"]) / len(criteria))
+        errors = [c["name"] for c in criteria if not c["pass"]]
+        return {
+            "success": ok and dur_ok and audible,
+            "score": score,
+            "tool_score": score,
+            "response": f"[speech {duration}s voice={body['voice']} rtf={rtf}]",
+            "error": "" if not errors else f"failed: {', '.join(errors)}",
+            "meta": meta,
+            "criteria": criteria,
+            "tokens_generated": None,
+            "artifact_b64": data.get("audio_b64"),
+            "artifact_mime": "audio/wav",
+        }
+
+    async def _tool_music(self, test: dict) -> dict:
+        """Generate a music clip through audio-server and grade it."""
+        import base64 as b64mod
+
+        import httpx
+
+        params = test.get("params") or {}
+        prompt = params.get("prompt") or test.get("prompt") or ""
+        requested = float(params.get("duration_s", 10))
+        body: dict = {
+            "prompt": prompt,
+            "duration_s": requested,
+        }
+        if params.get("temperature") is not None:
+            body["temperature"] = float(params["temperature"])
+        if params.get("guidance_scale") is not None:
+            body["guidance_scale"] = float(params["guidance_scale"])
+        if params.get("seed") is not None:
+            body["seed"] = int(params["seed"])
+
+        _, audio_url = self._service_urls()
+        t0 = time.perf_counter()
+        meta: dict = {"requested_duration_s": requested, "prompt": prompt[:120]}
+        criteria: list[dict] = []
+        try:
+            async with httpx.AsyncClient(timeout=900.0) as client:
+                resp = await client.post(f"{audio_url}/api/music", json=body)
+        except Exception as e:
+            return {
+                "success": False,
+                "score": 0,
+                "tool_score": 0,
+                "error": f"audio service unreachable: {e}",
+                "meta": meta,
+                "criteria": [{"name": "service_reachable", "pass": False}],
+                "tokens_generated": None,
+            }
+        elapsed = time.perf_counter() - t0
+        meta["elapsed_s"] = round(elapsed, 1)
+
+        ok = resp.status_code == 200 and not (resp.json() or {}).get("error")
+        criteria.append({"name": "service_reachable", "pass": ok})
+        if not ok:
+            try:
+                detail = str(resp.json())[:200]
+            except Exception:
+                detail = resp.text[:200]
+            return {
+                "success": False,
+                "score": 0,
+                "tool_score": 0,
+                "error": f"music generation failed HTTP {resp.status_code}: {detail}",
+                "meta": meta,
+                "criteria": criteria,
+                "tokens_generated": None,
+            }
+
+        data = resp.json() or {}
+        raw = b64mod.b64decode(data.get("audio_b64") or "")
+        stats = self._wav_stats(raw)
+        meta.update({k: v for k, v in stats.items() if k != "error"})
+        duration = float(stats.get("duration_s", 0))
+
+        tol = float(params.get("duration_tolerance", 0.25))
+        dur_ok = abs(duration - requested) <= max(requested * tol, 1.0)
+        criteria.append({"name": f"duration_{duration}s_within_{int(tol * 100)}pct", "pass": dur_ok})
+
+        rms = float(stats.get("rms", 0))
+        audible = rms >= float(params.get("min_rms", 0.005))
+        criteria.append({"name": f"audible_rms_{rms}", "pass": audible})
+
+        zcr = float(stats.get("zcr", 0))
+        # A dead-flat or pure-DC render has ~0 crossing rate; real music sits well above.
+        spectral_ok = float(params.get("min_zcr", 0.005)) <= zcr <= 0.45
+        criteria.append({"name": f"spectral_variety_zcr_{zcr}", "pass": spectral_ok})
+
+        score = round(100 * sum(1 for c in criteria if c["pass"]) / len(criteria))
+        errors = [c["name"] for c in criteria if not c["pass"]]
+        return {
+            "success": ok and dur_ok and audible and spectral_ok,
+            "score": score,
+            "tool_score": score,
+            "response": f"[music {duration}s (wanted {requested:g}s) in {elapsed:.1f}s]",
+            "error": "" if not errors else f"failed: {', '.join(errors)}",
+            "meta": meta,
+            "criteria": criteria,
+            "tokens_generated": None,
+            "artifact_b64": data.get("audio_b64"),
+            "artifact_mime": "audio/wav",
+        }
+
+    async def _composite_llm_html(self, model: str, spec_prompt: str) -> tuple[str | None, str]:
+        """Ask an LLM for the composite game artifact; returns (html, error)."""
+        use_proxy = not online_model_provider.is_online_model(model)
+        res = (
+            await self.test_model_proxy(
+                model, {"id": "composite_stage", "reasoning_budget": 2048, "prompt": spec_prompt}
+            )
+            if use_proxy
+            else await self.test_model_direct(
+                model, {"id": "composite_stage", "reasoning_budget": 2048, "prompt": spec_prompt}
+            )
+        )
+        html = extract_clean_code(res.get("response") or "", "web") or (res.get("response") or "")
+        if "<html" not in html.lower() and "<canvas" not in html.lower():
+            return None, f"LLM produced no usable HTML ({(res.get('error') or 'empty response')[:120]})"
+        return html, ""
+
+    async def test_tool_service(self, model: str, test: dict) -> dict:
+        """Dispatch tool-type benchmarks to their backing services.
+
+        ``model`` is a pseudo-model like ``tool:image``/``tool:tts``/``tool:music``
+        for pure service tests; composite tests run on a REAL chat model and use
+        that LLM to author the game while image/music services supply assets.
+        """
+        ttype = test.get("type")
+        if ttype == "image":
+            return await self._tool_image(test)
+        if ttype == "tts":
+            return await self._tool_tts(test)
+        if ttype == "music":
+            return await self._tool_music(test)
+        if ttype == "composite":
+            return await self._run_composite_game(model, test)
+        return {"success": False, "score": 0, "tool_score": 0, "error": f"unknown tool type {ttype}"}
+
+    async def _run_composite_game(self, model: str, test: dict) -> dict:
+        """Advanced game benchmark using every tool at once.
+
+        Stage 1: the selected chat LLM authors a complete HTML5 game whose code
+        references __SPRITE__ and __BGM__ placeholders.
+        Stage 2: sd-server renders the sprite sheet from the test's image prompt.
+        Stage 3: audio-server composes the background loop.
+        Stage 4: the assembled single-file game is executed headless; a rendered,
+        non-blank frame plus present <audio> element proves integration.
+        """
+        params = test.get("params") or {}
+        sprite_prompt = params.get("sprite_prompt", "pixel art game hero sprite sheet, transparent background")
+        bgm_prompt = params.get("bgm_prompt", "chiptune adventure loop, upbeat, 10 seconds")
+
+        llm_error = ""
+        html = None
+        if online_model_provider.is_online_model(model) or not model.startswith("tool:"):
+            html, llm_error = await self._composite_llm_html(model, test.get("prompt", ""))
+        else:
+            llm_error = "composite tests require a real chat model"
+
+        image_res = await self._tool_image(
+            {
+                "params": {
+                    "prompt": sprite_prompt,
+                    "size": params.get("sprite_size", "512x512"),
+                    "steps": int(params.get("sprite_steps", 20)),
+                },
+                "time_budget_s": 300,
+            }
+        )
+        music_res = await self._tool_music(
+            {
+                "params": {
+                    "prompt": bgm_prompt,
+                    "duration_s": float(params.get("bgm_duration_s", 10)),
+                },
+            }
+        )
+
+        criteria: list[dict] = [
+            {"name": "llm_game_authored", "pass": bool(html)},
+            {"name": "sprite_generated", "pass": bool(image_res.get("artifact_b64"))},
+            {"name": "bgm_generated", "pass": bool(music_res.get("artifact_b64"))},
+        ]
+
+        game_ran = None
+        screenshot = None
+        if html and image_res.get("artifact_b64") and music_res.get("artifact_b64"):
+            final_html = html.replace("__SPRITE__", f"data:image/png;base64,{image_res['artifact_b64']}")
+            final_html = final_html.replace("__BGM__", f"data:audio/wav;base64,{music_res['artifact_b64']}")
+            fenced = f"```html\n{final_html}\n```"
+            try:
+                gr = grade_code(fenced, "web", None, timeout=60, ui=True)
+                game_ran = gr.get("ran")
+                screenshot = gr.get("screenshot")
+                ran_ok = game_ran is True
+            except Exception as e:  # pragma: no cover - runtime dependent
+                ran_ok = False
+                gr = {"output": "", "error": f"headless run failed: {e}"}
+            criteria.append({"name": "game_runs_headless", "pass": bool(ran_ok)})
+        else:
+            criteria.append({"name": "game_runs_headless", "pass": False})
+            gr = {"output": "", "error": "assets missing"}
+
+        score = round(100 * sum(1 for c in criteria if c["pass"]) / len(criteria))
+        failed = [c["name"] for c in criteria if not c["pass"]]
+        error_parts = []
+        if llm_error:
+            error_parts.append(llm_error)
+        if failed:
+            error_parts.append(f"failed: {', '.join(failed)}")
+        return {
+            "success": all(c["pass"] for c in criteria),
+            "score": score,
+            "tool_score": score,
+            "response": f"[composite game: llm={'ok' if html else 'FAIL'} sprite={'ok' if image_res.get('artifact_b64') else 'FAIL'} bgm={'ok' if music_res.get('artifact_b64') else 'FAIL'} headless={game_ran}]",
+            "error": "; ".join(error_parts),
+            "meta": {
+                "image_meta": image_res.get("meta"),
+                "music_meta": music_res.get("meta"),
+                "game_output": (gr.get("output") or "")[:400],
+            },
+            "criteria": criteria,
+            "screenshot": screenshot,
+            "code_ran": game_ran,
+            "tokens_generated": None if html is None else 1,
+        }
+
     async def test_model_direct(self, model: str, test: dict, sampler: ResourceSampler | None = None) -> dict:
         """Test a model directly without proxy or via online provider."""
         if online_model_provider.is_online_model(model):
@@ -2197,7 +3319,7 @@ class LLMModelBenchmark:
             res = await online_model_provider.query_online_model(
                 model_identifier=model,
                 prompt=test["prompt"],
-                max_tokens=test.get("num_predict", 4000),
+                max_tokens=_test_num_predict(test),
             )
             if sampler:
                 await sampler.stop()
@@ -2215,40 +3337,54 @@ class LLMModelBenchmark:
             }
 
         last_error: Exception | None = None
+        try:
+            think_on = _test_thinking(test)
+            num_predict = await self._effective_num_predict(model, test["prompt"], _test_num_predict(test))
+        except RuntimeError as e:
+            return {
+                "ollama_url": "context-guard",
+                "success": False,
+                "prompt": test["prompt"],
+                "latency": 0,
+                "response": None,
+                "tokens_generated": 0,
+                "error": str(e),
+            }
+        if num_predict <= 0:
+            return {
+                "ollama_url": "context-guard",
+                "success": False,
+                "prompt": test["prompt"],
+                "latency": 0,
+                "response": None,
+                "tokens_generated": 0,
+                "error": (
+                    "Context window exhausted before generation. Reduce the prompt size or "
+                    "increase the backend ctx-size."
+                ),
+            }
         for ollama_url in self.OLLAMA_SERVER_URLS:
             try:
-                async with httpx.AsyncClient(timeout=240.0) as client:
+                async with httpx.AsyncClient(timeout=_STREAM_TIMEOUT) as client:
                     start_t = time.time()
                     if sampler:
                         sampler.start()
-                    response = await client.post(
-                        f"{ollama_url}/api/generate",
-                        json={
-                            "model": model,
-                            "prompt": test["prompt"],
-                            "stream": False,
-                            "think": False,
-                            "options": {
-                                "num_predict": 4000,
-                                "temperature": 0.3,
-                            },
+                    payload = {
+                        "model": model,
+                        "prompt": test["prompt"],
+                        "stream": True,
+                        "think": think_on,
+                        "options": {
+                            "num_predict": num_predict,
+                            "temperature": _model_temperature(model),
                         },
-                        timeout=240.0,
-                    )
-                    elapsed = time.time() - start_t
-                    if sampler:
-                        await sampler.stop()
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        eval_ns = data.get("eval_duration", 0)
-                        prompt_ns = data.get("prompt_eval_duration", 0)
-                        eval_count = data.get("eval_count", 0)
-                        response_text, thinking = self.strip_thinking(data.get("response", ""))
-
-                        # Guard: empty generation - server returned 200 but produced nothing.
-                        # Skip the nudge retry (it would hang) and fail immediately.
-                        if not response_text and eval_count == 0:
+                    }
+                    async with client.stream("POST", f"{ollama_url}/api/generate", json=payload) as response:
+                        if response.status_code != 200:
+                            body = (await response.aread()).decode("utf-8", "replace")
+                            elapsed = time.time() - start_t
+                            if sampler:
+                                await sampler.stop()
                             return {
                                 "ollama_url": ollama_url,
                                 "success": False,
@@ -2256,71 +3392,86 @@ class LLMModelBenchmark:
                                 "latency": round(elapsed, 3),
                                 "response": None,
                                 "tokens_generated": 0,
-                                "error": "Empty generation (eval_count=0, no content returned)",
+                                "error": f"HTTP {response.status_code}: {body}",
                             }
+                        data = await _read_generate_stream(response)
+                    elapsed = time.time() - start_t
+                    if sampler:
+                        await sampler.stop()
 
-                        # If we used 4000 tokens or more (half of 8000), inject nudge and request remaining tokens
-                        if eval_count >= 4000:
-                            try:
-                                new_prompt = (
-                                    f"{test['prompt']}\n{response_text}\n"
-                                    f"[System: You are halfway through your token budget. Please come up with an answer quickly.]"
-                                )
-                                payload2 = {
-                                    "model": model,
-                                    "prompt": new_prompt,
-                                    "stream": False,
-                                    "think": False,
-                                    "options": {
-                                        "num_predict": 4000,
-                                        "temperature": 0.3,
-                                    },
-                                }
-                                start_t2 = time.time()
-                                response2 = await client.post(
-                                    f"{ollama_url}/api/generate",
-                                    json=payload2,
-                                    timeout=240.0,
-                                )
-                                elapsed += time.time() - start_t2
-                                if response2.status_code == 200:
-                                    data2 = response2.json()
-                                    response_text2, thinking2 = self.strip_thinking(data2.get("response", ""))
-                                    response_text = response_text + "\n" + response_text2
-                                    if thinking2:
-                                        thinking = (thinking + "\n\n" + thinking2) if thinking else thinking2
-                                    eval_count += data2.get("eval_count", 0)
-                                    eval_ns += data2.get("eval_duration", 0)
-                                    prompt_ns += data2.get("prompt_eval_duration", 0)
-                            except Exception as e2:
-                                print(f"Phase 2 direct query error: {e2}")
+                    eval_ns = data["eval_duration"]
+                    prompt_ns = data["prompt_eval_duration"]
+                    eval_count = data["eval_count"]
+                    response_text, thinking = self.strip_thinking(data["content"])
+                    if not thinking and data.get("thinking"):
+                        thinking = data["thinking"]
 
-                        latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
-                        return {
-                            "ollama_url": ollama_url,
-                            "success": True,
-                            "prompt": test["prompt"],
-                            "latency": round(latency, 3),
-                            "response": response_text,
-                            "thinking": thinking,
-                            "tokens_generated": eval_count,
-                            "eval_duration": eval_ns,
-                            "prompt_eval_duration": prompt_ns,
-                            "error": None,
-                        }
-                    else:
+                    # Guard: empty generation - server returned 200 but produced nothing.
+                    # Skip the nudge retry (it would hang) and fail immediately.
+                    if not response_text and eval_count == 0:
                         return {
                             "ollama_url": ollama_url,
                             "success": False,
                             "prompt": test["prompt"],
-                            "latency": 0,
+                            "latency": round(elapsed, 3),
                             "response": None,
                             "tokens_generated": 0,
-                            "error": f"HTTP {response.status_code}",
+                            "error": "Empty generation (eval_count=0, no content returned)",
                         }
+
+                    # If we exhausted the token cap, inject nudge and request remaining tokens
+                    if eval_count >= num_predict:
+                        try:
+                            new_prompt = (
+                                f"{test['prompt']}\n{response_text}\n"
+                                f"[System: You are halfway through your token budget. Please come up with an answer quickly.]"
+                            )
+                            payload2 = {
+                                "model": model,
+                                "prompt": new_prompt,
+                                "stream": True,
+                                "think": think_on,
+                                "options": {
+                                    "num_predict": num_predict,
+                                    "temperature": _model_temperature(model),
+                                },
+                            }
+                            start_t2 = time.time()
+                            async with client.stream("POST", f"{ollama_url}/api/generate", json=payload2) as response2:
+                                if response2.status_code == 200:
+                                    data2 = await _read_generate_stream(response2)
+                                    response_text2, thinking2 = self.strip_thinking(data2["content"])
+                                    response_text = response_text + "\n" + response_text2
+                                    if thinking2:
+                                        thinking = (thinking + "\n\n" + thinking2) if thinking else thinking2
+                                    elif data2.get("thinking"):
+                                        thinking = data2["thinking"]
+                                    eval_count += data2["eval_count"]
+                                    eval_ns += data2["eval_duration"]
+                                    prompt_ns += data2["prompt_eval_duration"]
+                            elapsed += time.time() - start_t2
+                        except Exception as e2:
+                            print(f"Phase 2 direct query error: {e2}")
+
+                    latency = (eval_ns + prompt_ns) / 1e9 if (eval_ns or prompt_ns) else elapsed
+                    return {
+                        "ollama_url": ollama_url,
+                        "success": True,
+                        "prompt": test["prompt"],
+                        "latency": round(latency, 3),
+                        "response": response_text,
+                        "thinking": thinking,
+                        "think": think_on,
+                        "reasoning_budget": test.get("reasoning_budget", 2048),
+                        "num_predict": num_predict,
+                        "tokens_generated": eval_count,
+                        "eval_duration": eval_ns,
+                        "prompt_eval_duration": prompt_ns,
+                        "error": None,
+                    }
             except (httpx.RemoteProtocolError, httpx.ReadError) as e:
                 # Server crashed or dropped the connection - fail immediately
-                # instead of waiting out the full 240-second timeout.
+                # instead of waiting out the full read timeout.
                 if sampler:
                     await sampler.stop()
                 last_error = e
@@ -2455,6 +3606,16 @@ class LLMModelBenchmark:
             "threedprint": self._threedprint_tests,
             "languages": self._languages_tests,
             "tvdev": self._tvdev_tests,
+            "networking": self._networking_tests,
+            "usb": self._usb_tests,
+            "iac": self._iac_tests,
+            "linux_driver": self._linux_driver_tests,
+            "bash": self._bash_tests,
+            "basic": self._basic_tests,
+            "pascal": self._pascal_tests,
+            "typescript": self._typescript_tests,
+            "rpm": self._rpm_tests,
+            "android": self._android_tests,
             # Heavy knowledge/reasoning corpora last.
             "knowledge": self._knowledge_tests,
             "mmlu_pro": self._mmlu_pro_tests,
@@ -2572,17 +3733,23 @@ class LLMModelBenchmark:
                 test_result: dict = {}
                 for _attempt in range(3):
                     try:
-                        # Code categories get a directive demanding runnable output,
-                        # which the sandbox-execution grading step then verifies.
                         run_test = test
-                        if test.get("category") in self.CODE_CATEGORIES:
-                            run_test = dict(test)
-                            run_test["prompt"] = (test.get("prompt") or "") + self.CODE_DIRECTIVE
-                        test_result = (
-                            await self.test_model_proxy(model, run_test)
-                            if use_proxy
-                            else await self.test_model_direct(model, run_test)
-                        )
+                        # Tool benchmarks (image/tts/music/composite) talk to the
+                        # sd-server/audio-server services directly, not to an LLM.
+                        if test.get("type") in self.TOOL_TEST_TYPES:
+                            test_result = await self.test_tool_service(model, run_test)
+                        elif use_proxy:
+                            # Code categories get a directive demanding runnable output,
+                            # which the sandbox-execution grading step then verifies.
+                            if test.get("category") in self.CODE_CATEGORIES:
+                                run_test = dict(test)
+                                run_test["prompt"] = (test.get("prompt") or "") + self.CODE_DIRECTIVE
+                            test_result = await self.test_model_proxy(model, run_test)
+                        else:
+                            if test.get("category") in self.CODE_CATEGORIES:
+                                run_test = dict(test)
+                                run_test["prompt"] = (test.get("prompt") or "") + self.CODE_DIRECTIVE
+                            test_result = await self.test_model_direct(model, run_test)
                     except Exception as e:
                         test_result = {
                             "proxy": "online" if use_proxy else "direct",
@@ -2602,22 +3769,32 @@ class LLMModelBenchmark:
                     print(f"[benchmark] empty result for {test['id']} (attempt {_attempt + 1}); retrying")
                     await asyncio.sleep(2.0 * (_attempt + 1))
 
-                # Rate-limit guard: a 429 means this model's quota is exhausted, so
-                # any further results are garbage (repeated 429s / empty responses).
-                # Discard the rate-limited result AND stop the run, keeping only the
-                # results already persisted before the 429 fired.
+                # Rate-limit handling: a 429 means the provider's quota window is
+                # exhausted. query_online_model already retried with backoff and
+                # honored the provider's retry hint, so if we still have a 429 the
+                # window simply hasn't reset yet. Do NOT abort the whole model run
+                # over a transient quota hit: record the test as failed, wait out
+                # the retry window, and continue with the next test.
                 if self._is_rate_limited_result(test_result):
+                    retry_after = test_result.get("retry_after")
+                    try:
+                        wait = float(retry_after) if retry_after else self._rate_limit_retry_floor
+                    except (TypeError, ValueError):
+                        wait = self._rate_limit_retry_floor
+                    wait = min(wait, 120.0)
                     print(
-                        f"[benchmark] {model} hit a provider rate limit (429) on {category}/{test['id']}; "
-                        f"discarding rate-limited results and stopping this model's run."
+                        f"[benchmark] {model} hit a provider rate limit (429) on "
+                        f"{category}/{test['id']}; waiting {wait:.1f}s and continuing."
                     )
-                    results["rate_limited"] = True
-                    results["rate_limited_at"] = test["id"]
-                    break
+                    test_result["error"] = test_result.get("error") or "Provider rate limit (429)"
+                    await asyncio.sleep(wait)
+                    # Do NOT break — keep the failed result and proceed to the next
+                    # test once the quota window has had time to reset.
 
-                if test_result["success"]:
+                if test_result.get("response"):
                     actual_correct = self._verify_functional_response(test, test_result.get("response", ""))
-                    if not actual_correct:
+                    test_result["functional_pass"] = bool(actual_correct)
+                    if test_result["success"] and not actual_correct:
                         test_result["success"] = False
                         test_result["error"] = "Failed correctness verification check"
 
@@ -2648,25 +3825,77 @@ class LLMModelBenchmark:
                             "from ursina import",
                         )
                     )
-                    lang = test.get("lang") or self._infer_lang(resp_text)
+                    lang = test.get("lang") or self._fence_lang(resp_text) or self._infer_lang(resp_text)
                     if lang in self.EXEC_LANGS or is_ui:
                         expected_out = test.get("expected_output")
                         try:
                             gr = grade_code(resp_text, lang, expected_out, ui=is_ui)
                             test_result["code_ran"] = gr["ran"]
                             test_result["code_score"] = gr["score"]
+                            test_result["lint_passed"] = gr.get("lint_passed", gr["ran"] is not False)
                             test_result["code_output"] = gr.get("output", "")
                             test_result["code_error"] = gr.get("error", "")
                             test_result["screenshot"] = gr.get("screenshot")
                             if gr["ran"] is not None:
-                                # Execution actually happened: a runnable program
-                                # passes; a crash/timeout fails (score is already 0).
-                                test_result["success"] = bool(gr["ran"])
-                                if gr["ran"]:
-                                    test_result["error"] = ""
+                                # Execution actually happened. A runnable program
+                                # passes; a crash/timeout fails (score is already
+                                # 0). BUT if the functional verification against
+                                # the prompt's expectations already failed, that
+                                # takes precedence: running is not the same as
+                                # satisfying the task (e.g. a game that renders
+                                # but never implements the persistent scoreboard).
+                                ran_ok = bool(gr["ran"])
+                                fp = test_result.get("functional_pass")
+                                if ran_ok and fp is False:
+                                    test_result["success"] = False
+                                    test_result["error"] = (
+                                        test_result.get("error") or "Failed correctness verification check"
+                                    )
+                                else:
+                                    test_result["success"] = ran_ok
+                                    if ran_ok:
+                                        test_result["error"] = ""
                         except Exception as e:  # pragma: no cover - runtime dependent
                             test_result["code_ran"] = None
                             test_result["code_error"] = f"sandbox grading failed: {e}"
+
+                # Rubric compliance: score the response against the benchmark's
+                # prompt-required, easily-checkable features (persistent high-score
+                # board, name entry, score reset, etc.) plus the default code rubric.
+                # The per-criterion results feed the dashboard breakdown so we can
+                # see exactly which requested features each model delivered or
+                # missed, and which categories models struggle with.
+                if ttype in ("code", "ui") and resp_text:
+                    try:
+                        extracted = (
+                            extract_clean_code(resp_text, (test.get("lang") or ""))
+                            if test.get("lang")
+                            else extract_clean_code(resp_text)
+                        )
+                    except Exception:  # pragma: no cover - extraction infra
+                        extracted = ""
+                    test_result["rubric"] = self._evaluate_rubric(test, resp_text, extracted)
+                else:
+                    test_result["rubric"] = {
+                        "score": 100,
+                        "fraction": 1.0,
+                        "total_points": 0,
+                        "earned_points": 0,
+                        "criteria": [],
+                    }
+
+                # Non-code/non-UI tests have nothing to lint; only executed code
+                # can fail the syntax gate. Default to True so stats are consistent.
+                # BUT a code/UI test that produced NO output at all has nothing that
+                # passed a compile/syntax check — an empty generation must not be
+                # reported as a green lint, or the dashboard would show "Lint/Compile
+                # ✓ passed" for a model that generated zero tokens.
+                if ttype in ("code", "ui") and not resp_text:
+                    test_result["lint_passed"] = False
+                    test_result.setdefault("code_ran", False)
+                    test_result["code_error"] = test_result.get("code_error") or "No code generated (empty response)"
+                else:
+                    test_result.setdefault("lint_passed", True)
 
                 # Unified 0-100 score across ALL benchmark types.
                 test_result["score"] = self._score_test(test, test_result)
@@ -2688,6 +3917,7 @@ class LLMModelBenchmark:
                         "test_category": category,
                         "test_label": test["label"],
                         "test_hash": cur_hash,
+                        "last_run": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     }
                 )
                 category_results.append(test_result)
@@ -2915,17 +4145,35 @@ class LLMModelBenchmark:
         "debugging",
         "database",
         "linux_admin",
+        "languages",
+        "networking",
+        "usb",
+        "iac",
+        "linux_driver",
+        "bash",
+        "basic",
+        "pascal",
+        "typescript",
+        "rpm",
+        "android",
     }
 
     # Appended to code-category prompts so models emit complete, self-contained,
     # runnable programs (with a demo / example usage) instead of snippets or
     # prose, which is what the sandbox execution step then verifies.
+    # GRADER_DIRECTIVE_VERSION bumps whenever this text materially changes so
+    # result hashing (_compute_test_hash) marks prior runs outdated.
+    GRADER_DIRECTIVE_VERSION: ClassVar[str] = "v2"
     CODE_DIRECTIVE = (
         "\n\nREQUIREMENTS: Respond with a single, complete, self-contained, "
         "runnable program and nothing else (no preamble, no explanation outside "
         "the code). Use only standard libraries. The code must execute top-to-bottom "
         "without missing imports or undefined names, and must include a short demo "
         "or example input/output so it can be run and observed."
+        "\n\nGRADING NOTICE: This response is scored by an automated benchmark "
+        "grader that executes your code. Output ONLY the final code inside one "
+        "fenced code block - reasoning, plans, or prose anywhere outside the code "
+        "block, or truncated/incomplete code, will fail grading."
     )
 
     @staticmethod
@@ -2964,17 +4212,27 @@ class LLMModelBenchmark:
             return "go"
         if "fn main(" in low or "use std::" in low or "let mut" in low:
             return "rust"
-        if ("select " in low and (" from " in low or " join " in low)) or "insert into" in low:
+        # Raw SQL scripts never contain Python scaffolding. A Python program
+        # embedding SQL string literals (sqlite3 solutions) must run as
+        # Python; mislabeling it "sql" pipes valid code into sqlite3 and
+        # fails with a parse error on the first import line.
+        looks_sql = ("select " in low and (" from " in low or " join " in low)) or "insert into" in low
+        if looks_sql and not any(x in low for x in ("import ", "def ", "print(", "cursor", "sqlite3")):
             return "sql"
         if low.strip().startswith("#!/bin/bash") or low.strip().startswith("#!/bin/sh"):
             return "bash"
-        if (
-            "<!doctype html" in low
-            or "<html" in low
-            or "<canvas" in low
-            or ("<script" in low and "</body>" in low)
-        ):
+        if "<!doctype html" in low or "<html" in low or "<canvas" in low or ("<script" in low and "</body>" in low):
             return "web"
+        if "program " in low and ("begin" in low and "end." in low):
+            return "pascal"
+        if 'print "hello' in low or 'input "' in low or "goto " in low:
+            return "basic"
+        if "terraform {" in low or 'resource "' in low or 'provider "' in low:
+            return "terraform"
+        if "rpm_spec" in low or ("name:" in low and "buildroot" in low) or "%description" in low:
+            return "rpm"
+        if "on:" in low and "jobs:" in low and ("steps:" in low or "runs-on" in low):
+            return "yaml"
         py = low.count("def ") + low.count("import ") + low.count("print(") + low.count("self.")
         js = (
             low.count("console.log")
@@ -2985,9 +4243,78 @@ class LLMModelBenchmark:
         )
         return "python" if py >= js else "node"
 
+    # Markdown fence tag -> sandbox language. An explicit tag from the model
+    # is the strongest language signal and beats content heuristics.
+    _FENCE_LANG_MAP: ClassVar[dict[str, str]] = {
+        "py": "python",
+        "python": "python",
+        "python3": "python",
+        "js": "node",
+        "javascript": "node",
+        "node": "node",
+        "ts": "typescript",
+        "typescript": "typescript",
+        "html": "web",
+        "htm": "web",
+        "web": "web",
+        "cpp": "cpp",
+        "c++": "cpp",
+        "cc": "cpp",
+        "java": "java",
+        "go": "go",
+        "rust": "rust",
+        "rs": "rust",
+        "sql": "sql",
+        "sqlite": "sql",
+        "bash": "bash",
+        "sh": "bash",
+        "shell": "bash",
+        "basic": "basic",
+        "bas": "basic",
+        "pascal": "pascal",
+        "pas": "pascal",
+        "yaml": "yaml",
+        "yml": "yaml",
+        "terraform": "terraform",
+        "hcl": "terraform",
+        "tf": "terraform",
+    }
+
+    def _fence_lang(self, resp: str) -> str:
+        """Return the sandbox language of the first explicitly-tagged code fence.
+
+        Models that answer SQL prompts with a Python sqlite3 program tag it
+        ```` ```python ```` — honoring the tag executes their code correctly,
+        while content sniffing sees embedded SQL keywords and picks "sql".
+        """
+        for match in re.finditer(r"```([A-Za-z0-9+#-]+)[ \t]*\r?\n", resp or ""):
+            return self._FENCE_LANG_MAP.get(match.group(1).lower(), "")
+        return ""
+
     # Languages we can actually execute in the sandbox. Others are graded by
     # their functional verification result, not by code execution.
-    EXEC_LANGS: ClassVar[set[str]] = {"python", "node", "cpp", "java", "sql", "bash", "go", "rust", "web"}
+    EXEC_LANGS: ClassVar[set[str]] = {
+        "python",
+        "node",
+        "cpp",
+        "java",
+        "sql",
+        "bash",
+        "go",
+        "rust",
+        "web",
+        "basic",
+        "pascal",
+        "typescript",
+        "yaml",
+        "terraform",
+        "rpm",
+    }
+
+    # Test types executed against generation SERVICES instead of chat models.
+    # image/tts/music grade the backing service directly; composite orchestrates
+    # an LLM plus both media services into one artifact that is then run headless.
+    TOOL_TEST_TYPES: ClassVar[tuple[str, ...]] = ("image", "tts", "music", "composite")
 
     def _infer_type(self, test: dict, resp: str) -> str:
         t = test.get("type")
@@ -3005,9 +4332,25 @@ class LLMModelBenchmark:
         return "open"
 
     def _score_test(self, test: dict, result: dict) -> int:
-        """Return a unified 0-100 score for any test type."""
+        """Return a unified 0-100 score for any test type.
+
+        Graded scoring instead of binary pass/fail: for executable code and UI
+        tests the score blends (1) whether the code actually ran, (2) whether
+        the output satisfied the prompt's stated expectations (functional
+        verification), and (3) static code-quality heuristics. A result that
+        runs but misses the task's expectations scores below passing; a result
+        that runs and meets expectations scores proportionally to how clean and
+        complete it is.
+        """
         resp = result.get("response") or ""
         ttype = self._infer_type(test, resp)
+        # Tool benchmarks (image/tts/music/composite) carry their own criteria-
+        # based score computed at generation time; no LLM-response heuristics apply.
+        if test.get("type") in self.TOOL_TEST_TYPES:
+            raw = result.get("tool_score")
+            if isinstance(raw, (int, float)):
+                return max(0, min(100, round(raw)))
+            return 100 if result.get("success") else 0
         if ttype in ("code", "ui"):
             ran = result.get("code_ran")
             if ran is None:
@@ -3016,7 +4359,29 @@ class LLMModelBenchmark:
                 return 100 if result.get("success") else 0
             if not ran:
                 return 0
-            return int(result.get("code_score", 60))
+            # Static quality heuristic (0-100) from the same extracted code.
+            quality = (result.get("code_quality") or {}).get("score")
+            if not isinstance(quality, (int, float)):
+                quality = 60
+            quality = max(0, min(100, int(quality)))
+            # Functional verification against the prompt's expectations:
+            # missing it means the code ran but did not actually do the task.
+            if result.get("functional_pass") is False:
+                return min(round(0.6 * quality), 45)
+            # Run outcome: 100 = screenshot/expected-output match, 60 = clean run.
+            base = int(result.get("code_score", 60))
+            # Rubric compliance: requested prompt features the model actually
+            # delivered (e.g. a game's persistent high-score board). A run that
+            # works but omits an explicitly requested, easily-checkable feature
+            # costs points rather than passing at full marks. Missing every
+            # criterion caps the score at half of the execution+quality blend.
+            rubric = result.get("rubric")
+            if rubric:
+                fraction = rubric.get("fraction", 1.0)
+                base = round(base * (0.5 + 0.5 * fraction))
+                quality = round(quality * (0.5 + 0.5 * fraction))
+            # Execution result matters most; static quality refines it.
+            return max(0, min(100, round(0.7 * base + 0.3 * quality)))
         if ttype == "review":
             issues = test.get("expected_issues") or []
             if not issues:
@@ -3025,6 +4390,13 @@ class LLMModelBenchmark:
             found = sum(1 for iss in issues if iss.lower() in low)
             return round(100 * found / len(issues))
         if ttype == "knowledge":
+            expected = test.get("expected")
+            if expected and str(expected).strip():
+                low = (resp or "").lower()
+                words = [w for w in re.split(r"\W+", str(expected)) if len(w) > 3]
+                if words:
+                    found = sum(1 for w in words if w.lower() in low)
+                    return round(100 * found / len(words))
             return 100 if result.get("success") else 0
         if ttype == "web":
             # Web/HTML output is judged by rendering it live; a non-empty,
@@ -3306,9 +4678,14 @@ class LLMModelBenchmark:
             except Exception as e:
                 print(f"Callback error: {e}")
 
-        for model in models:
+        # Local models share a single GPU + proxy hot-swap, so they must run one
+        # at a time. Online models hit external provider APIs and can safely fan
+        # out in parallel with whatever local model is occupying the GPU.
+        local_sem = asyncio.Semaphore(1)
+
+        async def _run_one_model(model: str) -> dict | None:
             if cancel_event and cancel_event.is_set():
-                break
+                return None
 
             model_data: dict[str, Any] = {"model": model}
 
@@ -3376,19 +4753,8 @@ class LLMModelBenchmark:
             model_data["overall_stars"] = overall["stars"]
             model_data["group_scores"] = overall["groups"]
 
-            if model_data.get("rate_limited"):
-                # Quota exhausted mid-run: keep whatever was persisted incrementally
-                # BEFORE the 429 (save_test_result_incremental already wrote those),
-                # but do NOT merge the polluted/partial tail into the aggregated
-                # results, the per-model file, or the merged history.
-                print(
-                    f"[benchmark] {model} was rate-limited during the run; "
-                    "discarding rate-limited results (pre-429 results are preserved)."
-                )
-                model_data["saved"] = False
-            else:
-                all_results["results"].append(model_data)
-                self.save_per_model_result(model_data, mode, use_proxy, all_results["generated_at"])
+            all_results["results"].append(model_data)
+            self.save_per_model_result(model_data, mode, use_proxy, all_results["generated_at"])
 
             # Emit model_complete event
             if progress_callback:
@@ -3401,6 +4767,20 @@ class LLMModelBenchmark:
                         progress_callback("model_complete", {"model": model, "results": model_data})
                 except Exception as e:
                     print(f"Callback error: {e}")
+            return model_data
+
+        async def _run_local_model(model: str) -> dict | None:
+            async with local_sem:
+                return await _run_one_model(model)
+
+        tasks = []
+        for model in models:
+            if online_model_provider.is_online_model(model):
+                tasks.append(asyncio.create_task(_run_one_model(model)))
+            else:
+                tasks.append(asyncio.create_task(_run_local_model(model)))
+        if tasks:
+            await asyncio.gather(*tasks)
 
         if all_results["results"]:
             run_only_results = list(all_results["results"])

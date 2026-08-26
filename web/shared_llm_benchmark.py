@@ -10,15 +10,136 @@ Evaluates LLM models (both local GPU and online providers) based on Jarvis / Sha
 """
 
 import ast
+import configparser
 import json
 import os
 import re
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+import context_awareness
+
+
+def _model_temperature(model: str) -> float:
+    candidates = []
+    env = os.getenv("MODELS_INI_PATH", "").strip()
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path(__file__).resolve().parent.parent / ".alpaca-router" / "models.ini")
+    candidates.append(Path(".alpaca-router/models.ini"))
+    for ini in candidates:
+        try:
+            if not ini.exists():
+                continue
+            cp = configparser.ConfigParser()
+            cp.read(ini)
+            if model in cp and "temperature" in cp[model]:
+                return float(cp[model]["temperature"])
+            if "*" in cp and "temperature" in cp["*"]:
+                return float(cp["*"]["temperature"])
+            if "DEFAULT" in cp and "temperature" in cp["DEFAULT"]:
+                return float(cp["DEFAULT"]["temperature"])
+        except ValueError:
+            raise
+        except Exception:
+            continue
+    # also check .profile.json as secondary source (timeless, same setting)
+    try:
+        pj = Path(__file__).resolve().parent.parent / ".alpaca-router" / ".profile.json"
+        if pj.exists():
+            j = json.loads(pj.read_text())
+            llm = j.get("profiles", {}).get("llm", {}) or j.get("llm", {})
+            t = llm.get("config", {}).get("temperature") or llm.get("temperature")
+            if t not in (None, ""):
+                return float(t)
+    except ValueError:
+        raise
+    except Exception:
+        pass
+    raise ValueError(
+        f"temperature not set for model '{model}' (and no [*] default) in models.ini - set [*] temperature or per-model temperature via Settings > UI or .alpaca-router/models.ini"
+    )
+
+
+# Per-chunk stream timeouts: read applies to the gap BETWEEN stream lines, not
+# total request time. Large prompts (15k+ tokens) plus slow generation can run
+# for many minutes; a hard non-streaming deadline kills healthy requests while
+# llama-server is still generating (observed as "Connection handling canceled").
+_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0)
+
+
+async def _read_chat_stream(resp: httpx.Response) -> dict:
+    """Accumulate an Ollama-style NDJSON /api/chat stream into text + final metrics."""
+    parts: list[str] = []
+    think_parts: list[str] = []
+    final: dict[str, Any] = {}
+    async for line in resp.aiter_lines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        msg = obj.get("message") or {}
+        chunk = msg.get("content") or ""
+        if chunk:
+            parts.append(chunk)
+        think_chunk = msg.get("thinking") or ""
+        if think_chunk:
+            think_parts.append(think_chunk)
+        if obj.get("done"):
+            final = obj
+    return {
+        "content": "".join(parts),
+        "thinking": "".join(think_parts),
+        "eval_count": int(final.get("eval_count") or 0),
+        "eval_duration": int(final.get("eval_duration") or 0),
+        "prompt_eval_count": int(final.get("prompt_eval_count") or 0),
+        "prompt_eval_duration": int(final.get("prompt_eval_duration") or 0),
+    }
+
+
+async def _read_generate_stream(resp: httpx.Response) -> dict:
+    """Accumulate an Ollama-style NDJSON /api/generate stream into text + final metrics."""
+    parts: list[str] = []
+    think_parts: list[str] = []
+    final: dict[str, Any] = {}
+    async for line in resp.aiter_lines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        chunk = obj.get("response") or ""
+        if chunk:
+            parts.append(chunk)
+        think_chunk = obj.get("thinking") or ""
+        if think_chunk:
+            think_parts.append(think_chunk)
+        if obj.get("done"):
+            final = obj
+    return {
+        "content": "".join(parts),
+        "thinking": "".join(think_parts),
+        "eval_count": int(final.get("eval_count") or 0),
+        "eval_duration": int(final.get("eval_duration") or 0),
+        "prompt_eval_count": int(final.get("prompt_eval_count") or 0),
+        "prompt_eval_duration": int(final.get("prompt_eval_duration") or 0),
+    }
+
 
 online_model_provider: Any = None
 try:
@@ -200,6 +321,9 @@ class SharedLLMModelBenchmark:
         self.ARTIFACTS_DIR = Path("data/artifacts")
         self.ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
         self.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Resolved backend context windows (model -> n_ctx), cached per instance.
+        self._ctx_cache: dict[str, int] = {}
 
     @staticmethod
     def _proxy_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -601,143 +725,158 @@ class SharedLLMModelBenchmark:
 
         # 2. Local GPU Inference (Proxy or direct llama-server)
         urls = self.PROXY_SERVER_URLS if use_proxy else self.OLLAMA_SERVER_URLS
+
+        # Context-window guard: resolve the live backend window and clamp the
+        # generation budget so prompt + generation fit. Without this,
+        # llama-server silently truncates (`n_tokens = N, truncated = 1`) and
+        # the benchmark records empty responses on small-context hosts.
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            ctx = await context_awareness.resolve_context_window(
+                model, self.PROXY_SERVER_URLS, self._ctx_cache, "shared-llm/benchmark"
+            )
+        except RuntimeError as e:
+            return {
+                "success": False,
+                "latency": 0.0,
+                "response": None,
+                "tokens_generated": 0,
+                "error": str(e),
+            }
+        est_tokens = context_awareness.estimate_prompt_tokens(messages)
+        effective_max_tokens = context_awareness.turn_budget(ctx, est_tokens, max_tokens)
+        if effective_max_tokens <= 0:
+            return {
+                "success": False,
+                "latency": 0.0,
+                "response": None,
+                "tokens_generated": 0,
+                "error": (
+                    f"Context window exhausted before generation (ctx={ctx}, ~{est_tokens} prompt "
+                    "tokens). Reduce the prompt size or increase the backend ctx-size."
+                ),
+            }
+
         last_error = None
 
         for base_url in urls:
             try:
                 start_t = time.time()
-                async with httpx.AsyncClient(timeout=180.0) as client:
+                async with httpx.AsyncClient(timeout=_STREAM_TIMEOUT) as client:
                     if use_proxy:
-                        resp = await client.post(
-                            f"{base_url}/api/chat",
-                            json={
-                                "model": model,
-                                "messages": [{"role": "user", "content": prompt}],
-                                "stream": False,
-                                "think": False,
-                                "options": {
-                                    "num_predict": max_tokens,
-                                    "temperature": 0.2,
-                                },
+                        payload = {
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "stream": True,
+                            "think": False,
+                            "options": {
+                                "num_predict": effective_max_tokens,
+                                "temperature": _model_temperature(model),
                             },
-                            headers=self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"}),
-                            timeout=180.0,
-                        )
+                        }
+                        headers = self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"})
+                        async with client.stream("POST", f"{base_url}/api/chat", json=payload, headers=headers) as resp:
+                            if resp.status_code != 200:
+                                body = (await resp.aread()).decode("utf-8", "replace")
+                                last_error = f"HTTP {resp.status_code}: {body[:300]}"
+                                continue
+                            data = await _read_chat_stream(resp)
                         latency = time.time() - start_t
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            content = self.strip_thinking(
-                                data.get("message", {}).get("content", "") or data.get("response", "") or ""
-                            )
-                            eval_cnt = data.get("eval_count", 0)
+                        content = self.strip_thinking(data["content"])
+                        eval_cnt = data["eval_count"]
 
-                            if eval_cnt >= max_tokens:
-                                try:
-                                    payload2 = {
-                                        "model": model,
-                                        "messages": [
-                                            {"role": "user", "content": prompt},
-                                            {"role": "assistant", "content": content},
-                                            {
-                                                "role": "user",
-                                                "content": "[System: You are halfway through your token budget. Please come up with an answer quickly.]",
-                                            },
-                                        ],
-                                        "stream": False,
-                                        "think": False,
-                                        "options": {
-                                            "num_predict": max_tokens,
-                                            "temperature": 0.2,
+                        if eval_cnt >= effective_max_tokens:
+                            try:
+                                payload2 = {
+                                    "model": model,
+                                    "messages": [
+                                        {"role": "user", "content": prompt},
+                                        {"role": "assistant", "content": content},
+                                        {
+                                            "role": "user",
+                                            "content": "[System: You are halfway through your token budget. Please come up with an answer quickly.]",
                                         },
-                                    }
-                                    start_t2 = time.time()
-                                    resp2 = await client.post(
-                                        f"{base_url}/api/chat",
-                                        json=payload2,
-                                        headers=self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"}),
-                                        timeout=180.0,
-                                    )
-                                    latency += time.time() - start_t2
+                                    ],
+                                    "stream": True,
+                                    "think": False,
+                                    "options": {
+                                        "num_predict": effective_max_tokens,
+                                        "temperature": _model_temperature(model),
+                                    },
+                                }
+                                start_t2 = time.time()
+                                async with client.stream(
+                                    "POST", f"{base_url}/api/chat", json=payload2, headers=headers
+                                ) as resp2:
                                     if resp2.status_code == 200:
-                                        data2 = resp2.json()
-                                        content2 = self.strip_thinking(
-                                            data2.get("message", {}).get("content", "")
-                                            or data2.get("response", "")
-                                            or ""
-                                        )
-                                        content = content + "\n" + content2
-                                        eval_cnt += data2.get("eval_count", 0)
-                                except Exception as e2:
-                                    print(f"Phase 2 proxy query error in SharedLLM: {e2}")
+                                        data2 = await _read_chat_stream(resp2)
+                                        content = content + "\n" + self.strip_thinking(data2["content"])
+                                        eval_cnt += data2["eval_count"]
+                                latency += time.time() - start_t2
+                            except Exception as e2:
+                                print(f"Phase 2 proxy query error in SharedLLM: {e2}")
 
-                            return {
-                                "success": True,
-                                "latency": latency,
-                                "response": content,
-                                "tokens_generated": eval_cnt,
-                                "error": None,
-                            }
+                        return {
+                            "success": True,
+                            "latency": latency,
+                            "response": content,
+                            "tokens_generated": eval_cnt,
+                            "error": None,
+                        }
                     else:
-                        resp = await client.post(
-                            f"{base_url}/api/generate",
-                            json={
-                                "model": model,
-                                "prompt": prompt,
-                                "stream": False,
-                                "think": False,
-                                "options": {
-                                    "num_predict": max_tokens,
-                                    "temperature": 0.2,
-                                },
+                        payload = {
+                            "model": model,
+                            "prompt": prompt,
+                            "stream": True,
+                            "think": False,
+                            "options": {
+                                "num_predict": effective_max_tokens,
+                                "temperature": _model_temperature(model),
                             },
-                            timeout=180.0,
-                        )
+                        }
+                        async with client.stream("POST", f"{base_url}/api/generate", json=payload) as resp:
+                            if resp.status_code != 200:
+                                body = (await resp.aread()).decode("utf-8", "replace")
+                                last_error = f"HTTP {resp.status_code}: {body[:300]}"
+                                continue
+                            data = await _read_generate_stream(resp)
                         latency = time.time() - start_t
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            content = self.strip_thinking(data.get("response", "") or "")
-                            eval_cnt = data.get("eval_count", 0)
+                        content = self.strip_thinking(data["content"])
+                        eval_cnt = data["eval_count"]
 
-                            if eval_cnt >= max_tokens:
-                                try:
-                                    new_prompt = (
-                                        f"{prompt}\n{content}\n"
-                                        f"[System: You are halfway through your token budget. Please come up with an answer quickly.]"
-                                    )
-                                    payload2 = {
-                                        "model": model,
-                                        "prompt": new_prompt,
-                                        "stream": False,
-                                        "think": False,
-                                        "options": {
-                                            "num_predict": max_tokens,
-                                            "temperature": 0.2,
-                                        },
-                                    }
-                                    start_t2 = time.time()
-                                    resp2 = await client.post(
-                                        f"{base_url}/api/generate",
-                                        json=payload2,
-                                        timeout=180.0,
-                                    )
-                                    latency += time.time() - start_t2
+                        if eval_cnt >= effective_max_tokens:
+                            try:
+                                new_prompt = (
+                                    f"{prompt}\n{content}\n"
+                                    f"[System: You are halfway through your token budget. Please come up with an answer quickly.]"
+                                )
+                                payload2 = {
+                                    "model": model,
+                                    "prompt": new_prompt,
+                                    "stream": True,
+                                    "think": False,
+                                    "options": {
+                                        "num_predict": effective_max_tokens,
+                                        "temperature": _model_temperature(model),
+                                    },
+                                }
+                                start_t2 = time.time()
+                                async with client.stream("POST", f"{base_url}/api/generate", json=payload2) as resp2:
                                     if resp2.status_code == 200:
-                                        data2 = resp2.json()
-                                        content2 = self.strip_thinking(data2.get("response", "") or "")
-                                        content = content + "\n" + content2
-                                        eval_cnt += data2.get("eval_count", 0)
-                                except Exception as e2:
-                                    print(f"Phase 2 direct query error in SharedLLM: {e2}")
+                                        data2 = await _read_generate_stream(resp2)
+                                        content = content + "\n" + self.strip_thinking(data2["content"])
+                                        eval_cnt += data2["eval_count"]
+                                latency += time.time() - start_t2
+                            except Exception as e2:
+                                print(f"Phase 2 direct query error in SharedLLM: {e2}")
 
-                            return {
-                                "success": True,
-                                "latency": latency,
-                                "response": content,
-                                "tokens_generated": eval_cnt,
-                                "error": None,
-                            }
-
-                    last_error = f"HTTP {resp.status_code}: {resp.text}"
+                        return {
+                            "success": True,
+                            "latency": latency,
+                            "response": content,
+                            "tokens_generated": eval_cnt,
+                            "error": None,
+                        }
             except Exception as e:
                 last_error = str(e)
                 continue
@@ -1401,9 +1540,7 @@ class SharedLLMModelBenchmark:
                         resolved = _resolve_tool_name(emitted)
                         tool_matched = bool(req_tool) and resolved == req_tool
                         args_obj = parsed.get("args") or parsed.get("payload") or {}
-                        args_matched = all(
-                            args_obj.get(k) not in (None, "", [], {}) for k in req_args
-                        )
+                        args_matched = all(args_obj.get(k) not in (None, "", [], {}) for k in req_args)
                         passed = json_val["valid_json"] and tool_matched and args_matched
                         validation_results = {
                             "valid_json": json_val["valid_json"],
@@ -1423,16 +1560,8 @@ class SharedLLMModelBenchmark:
                         # at least one required "Apply: [lesson-id]" citation.
                         lines = [ln.strip() for ln in response_text.splitlines() if ln.strip()]
                         numbered_steps = sum(1 for ln in lines if re.match(r"^\d+[\.\)]", ln))
-                        apply_cites = [
-                            ln
-                            for ln in lines
-                            if re.match(r"^Apply:\s*\[?lesson-", ln, re.IGNORECASE)
-                        ]
-                        passed = (
-                            numbered_steps >= 1
-                            and len(lines) <= 20
-                            and len(apply_cites) >= 1
-                        )
+                        apply_cites = [ln for ln in lines if re.match(r"^Apply:\s*\[?lesson-", ln, re.IGNORECASE)]
+                        passed = numbered_steps >= 1 and len(lines) <= 20 and len(apply_cites) >= 1
                         validation_results = {
                             "line_count": len(lines),
                             "numbered_steps": numbered_steps,

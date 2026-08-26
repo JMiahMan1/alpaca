@@ -137,6 +137,46 @@ def get_llama_server_flags() -> list[str]:
         "--models-preset",
         "/router-models/models.ini",
     ]
+
+    # Reasoning (thinking) budget control. Reasoning models (Qwen3 MoE etc.)
+    # emit a thinking phase before producing content. Without a cap the model
+    # happily spends the ENTIRE generation budget on thinking and returns empty
+    # content, which is exactly the "No Output" failure the benchmark suite
+    # saw across models.
+    #
+    # --reasoning-budget N is a llama.cpp server-startup flag (NOT per-request):
+    #   -1  unrestricted (default)
+    #   0   immediate end (no thinking at all)
+    #   N>0 cap the thinking phase to N tokens
+    # --reasoning-format routes thoughts into message.thinking separate from
+    # the content the benchmark actually scores (deepseek | none |
+    # deepseek-legacy). These are REQUIRED settings - they must be supplied via
+    # LLAMA_REASONING_BUDGET / LLAMA_REASONING_FORMAT in the environment, and
+    # the server will refuse to start if they are missing. There is no silent
+    # fallback: an unset budget would let a reasoning model think away the
+    # whole generation budget and return empty content.
+    budget = os.getenv("LLAMA_REASONING_BUDGET", "").strip()
+    if not budget:
+        raise SystemExit(
+            "[llama-flags] LLAMA_REASONING_BUDGET is not set - refusing to start "
+            "llama-server without an explicit reasoning budget (set it in the "
+            "llama-server service environment, e.g. LLAMA_REASONING_BUDGET=2048)"
+        )
+    try:
+        int(budget)
+    except ValueError as err:
+        raise SystemExit(f"[llama-flags] LLAMA_REASONING_BUDGET={budget!r} is not an integer") from err
+    flags += ["--reasoning-budget", budget]
+
+    fmt = os.getenv("LLAMA_REASONING_FORMAT", "").strip()
+    if not fmt:
+        raise SystemExit(
+            "[llama-flags] LLAMA_REASONING_FORMAT is not set - refusing to start "
+            "llama-server without an explicit reasoning format (set it in the "
+            "llama-server service environment, e.g. LLAMA_REASONING_FORMAT=deepseek)"
+        )
+    flags += ["--reasoning-format", fmt]
+
     print(
         "[llama-flags] Configured llama-server router mode using models.ini preset file",
         file=sys.stderr,

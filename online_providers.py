@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -365,7 +366,10 @@ class OnlineModelProvider:
                             "message": f"Connected to OpenRouter! {count} models available. {auth_status}",
                             "count": count,
                         }
-                    return {"success": False, "error": self._format_http_error("OpenRouter", resp.status_code, resp.text[:200])}
+                    return {
+                        "success": False,
+                        "error": self._format_http_error("OpenRouter", resp.status_code, resp.text[:200]),
+                    }
 
             elif provider == "huggingface":
                 api_key = custom.get("huggingface_token") or self.huggingface_token
@@ -379,7 +383,10 @@ class OnlineModelProvider:
                         data = resp.json()
                         user = data.get("name", "authenticated")
                         return {"success": True, "message": f"Connected as user '{user}'."}
-                    return {"success": False, "error": self._format_http_error("Hugging Face", resp.status_code, resp.text[:200])}
+                    return {
+                        "success": False,
+                        "error": self._format_http_error("Hugging Face", resp.status_code, resp.text[:200]),
+                    }
 
             elif provider == "cloudflare":
                 api_token = custom.get("cloudflare_api_token") or self.cloudflare_api_token
@@ -395,7 +402,10 @@ class OnlineModelProvider:
                         data = resp.json()
                         count = len(data.get("result", []))
                         return {"success": True, "message": f"Connected to Cloudflare! {count} AI models found."}
-                    return {"success": False, "error": self._format_http_error("Cloudflare", resp.status_code, resp.text[:200])}
+                    return {
+                        "success": False,
+                        "error": self._format_http_error("Cloudflare", resp.status_code, resp.text[:200]),
+                    }
 
             elif provider == "opencode_zen":
                 api_key = custom.get("opencode_zen_api_key") or self.opencode_zen_api_key
@@ -425,7 +435,10 @@ class OnlineModelProvider:
                         data = resp.json()
                         count = len(data.get("data", []))
                         return {"success": True, "message": f"Connected to Groq! {count} models available."}
-                    return {"success": False, "error": self._format_http_error("Groq", resp.status_code, resp.text[:200])}
+                    return {
+                        "success": False,
+                        "error": self._format_http_error("Groq", resp.status_code, resp.text[:200]),
+                    }
 
             elif provider == "gemini":
                 api_key = custom.get("gemini_api_key") or self.gemini_api_key
@@ -434,14 +447,15 @@ class OnlineModelProvider:
 
                 headers = {"x-goog-api-key": api_key}
                 async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.get(
-                        "https://generativelanguage.googleapis.com/v1beta/models", headers=headers
-                    )
+                    resp = await client.get("https://generativelanguage.googleapis.com/v1beta/models", headers=headers)
                     if resp.status_code == 200:
                         data = resp.json()
                         count = len(data.get("models", []))
                         return {"success": True, "message": f"Connected to Gemini! {count} models available."}
-                    return {"success": False, "error": self._format_http_error("Gemini", resp.status_code, resp.text[:200])}
+                    return {
+                        "success": False,
+                        "error": self._format_http_error("Gemini", resp.status_code, resp.text[:200]),
+                    }
 
             return {"success": False, "error": f"Unknown provider '{provider}'"}
 
@@ -682,19 +696,19 @@ class OnlineModelProvider:
                                 continue
 
                             results.append(
-                            {
-                                "id": f"groq:{m_id}",
-                                "name": m_id,
-                                "label": m_id,
-                                "provider": "groq",
-                                "free": True,
-                                "free_tier": "Free (Groq)",
-                                "pricing_label": "Free (Rate-limited)",
-                                "context_length": m.get("context_window") or m.get("context_length") or 131072,
-                                "reasoning": "reasoning" in (m.get("supported_features") or []),
-                                "description": f"Groq hosted model {m_id} ({owned}).",
-                            }
-                        )
+                                {
+                                    "id": f"groq:{m_id}",
+                                    "name": m_id,
+                                    "label": m_id,
+                                    "provider": "groq",
+                                    "free": True,
+                                    "free_tier": "Free (Groq)",
+                                    "pricing_label": "Free (Rate-limited)",
+                                    "context_length": m.get("context_window") or m.get("context_length") or 131072,
+                                    "reasoning": "reasoning" in (m.get("supported_features") or []),
+                                    "description": f"Groq hosted model {m_id} ({owned}).",
+                                }
+                            )
             except Exception as e:
                 logger.warning(f"Error discovering Groq models: {e}")
 
@@ -705,9 +719,7 @@ class OnlineModelProvider:
                 if self.gemini_api_key:
                     headers["x-goog-api-key"] = self.gemini_api_key
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(
-                        "https://generativelanguage.googleapis.com/v1beta/models", headers=headers
-                    )
+                    resp = await client.get("https://generativelanguage.googleapis.com/v1beta/models", headers=headers)
                     if resp.status_code == 200:
                         data = resp.json()
                         raw_models = data.get("models", []) if isinstance(data, dict) else []
@@ -1142,7 +1154,12 @@ class OnlineModelProvider:
             # If a reasoning model still got cut off by the length limit, run one
             # phase-2 continuation asking it to finish the answer now. This recovers
             # responses whose entire budget was consumed by the think block.
-            if result.get("success") and result.get("finish_reason") in ("length", "MAX_TOKENS", "max_tokens"):
+            # Also fires when the budget was exhausted entirely inside the
+            # provider's reasoning field (empty content, finish_reason=length,
+            # reasoning text captured): that outcome is deterministic - plain
+            # retries reproduce it forever - so the continuation IS the recovery.
+            _length_cut = result.get("finish_reason") in ("length", "MAX_TOKENS", "max_tokens")
+            if result.get("success") and _length_cut:
                 continuation = (
                     "\n\n[System: You ran out of tokens before finishing. Provide ONLY the "
                     "remaining final answer now, continuing exactly where you left off. Do not "
@@ -1165,6 +1182,44 @@ class OnlineModelProvider:
                         result["finish_reason"] = phase2.get("finish_reason") or "stop"
                 except Exception as exc2:
                     print(f"[online] {provider} phase-2 continuation failed: {exc2}")
+            elif not result.get("success") and _length_cut and result.get("thinking"):
+                # Deterministic exhaustion: every token went to reasoning and the
+                # content came back empty. Ask for the final answer directly; if
+                # that still fails, stop retrying - backoff cannot fix a full
+                # reasoning field.
+                try:
+                    phase2 = await self._query_online_model_impl(
+                        model_identifier,
+                        f"{working_prompt}\n\n[System: Your previous attempt produced no "
+                        f"final answer because reasoning used the entire token budget. "
+                        f"Answer now with ONLY the complete final answer - no reasoning, "
+                        f"no preamble, no restating the problem.]",
+                        effective_max_tokens,
+                        temperature,
+                        custom_keys,
+                        request_timeout=timeout,
+                    )
+                    if phase2.get("success") and phase2.get("response"):
+                        result.update(
+                            {
+                                "success": True,
+                                "response": phase2["response"],
+                                "thinking": result.get("thinking") or None,
+                                "tokens_generated": (result.get("tokens_generated") or 0)
+                                + (phase2.get("tokens_generated") or 0),
+                                "finish_reason": phase2.get("finish_reason") or "stop",
+                                "error": None,
+                            }
+                        )
+                    else:
+                        result["error"] = (
+                            f"{result.get('error') or 'Empty response'} "
+                            "(reasoning exhausted the output budget; direct-answer retry also failed)"
+                        )
+                        break
+                except Exception as exc2:
+                    print(f"[online] {provider} direct-answer retry failed: {exc2}")
+                    break
             # Retry transient free-tier failures (empty/length-truncated completions,
             # DNS/network blips, timeouts, 429/5xx) instead of scoring them as a miss.
             if not self._is_retryable_online_failure(result) or attempt >= max_retries:
@@ -1286,6 +1341,7 @@ class OnlineModelProvider:
                                 "success": False,
                                 "latency": latency,
                                 "response": None,
+                                "thinking": thinking,
                                 "tokens_generated": 0,
                                 "finish_reason": finish,
                                 "error": cerr,
@@ -1381,6 +1437,7 @@ class OnlineModelProvider:
                                     "success": False,
                                     "latency": latency,
                                     "response": None,
+                                    "thinking": thinking,
                                     "tokens_generated": 0,
                                     "finish_reason": finish,
                                     "error": cerr,
@@ -1543,6 +1600,7 @@ class OnlineModelProvider:
                                 "success": False,
                                 "latency": latency,
                                 "response": None,
+                                "thinking": thinking,
                                 "tokens_generated": 0,
                                 "finish_reason": finish,
                                 "error": cerr,
@@ -1615,6 +1673,7 @@ class OnlineModelProvider:
                                 "success": False,
                                 "latency": latency,
                                 "response": None,
+                                "thinking": thinking,
                                 "tokens_generated": 0,
                                 "finish_reason": finish,
                                 "error": cerr,
@@ -1688,9 +1747,7 @@ class OnlineModelProvider:
                             cand = candidates[0]
                             finish_reason = cand.get("finishReason", "")
                             parts = (cand.get("content") or {}).get("parts") or []
-                            content = "".join(
-                                p.get("text", "") for p in parts if isinstance(p, dict)
-                            ).strip()
+                            content = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
                         if not content:
                             return {
                                 "success": False,
@@ -1698,9 +1755,7 @@ class OnlineModelProvider:
                                 "response": None,
                                 "tokens_generated": 0,
                                 "finish_reason": finish_reason,
-                                "error": (
-                                    f"Gemini returned an empty response (finish_reason={finish_reason})"
-                                ),
+                                "error": (f"Gemini returned an empty response (finish_reason={finish_reason})"),
                             }
                         return {
                             "success": True,
@@ -1716,13 +1771,22 @@ class OnlineModelProvider:
                         err_msg = err_data.get("error", {}).get("message") or err_data.get("message") or resp.text[:300]
                     except Exception:
                         err_msg = resp.text[:300]
-                    return {
+                    fail = {
                         "success": False,
                         "latency": latency,
                         "response": None,
                         "tokens_generated": 0,
                         "error": self._format_http_error("Gemini", resp.status_code, err_msg),
                     }
+                    if resp.status_code == 429:
+                        # Gemini's quota error embeds a precise retry hint
+                        # ("Please retry in 43.08s") that we should honor instead
+                        # of guessing. Pass it up so the retry backoff waits it out.
+                        m = re.search(r"retry in ([\d.]+)\s*s", err_msg)
+                        if m:
+                            with suppress(ValueError):
+                                fail["retry_after"] = float(m.group(1))
+                    return fail
 
             else:
                 return {

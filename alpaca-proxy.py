@@ -5,8 +5,11 @@ import json
 import logging
 import os
 import re
+import socket
+import subprocess
 import threading
 import time
+import urllib.request
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager, suppress
@@ -165,6 +168,115 @@ def get_client_ip(request: Request) -> str:
         return request.client.host.strip()
 
     return "unknown-ip"
+
+
+# --------------------------------------------------------------------------- #
+# Client identity enrichment                                                   #
+#                                                                              #
+# A bare docker IP (172.18.0.x) says nothing about WHO called. The proxy runs  #
+# on the host network, so it can ask the local docker daemon for the           #
+# container-name <-> IP mapping; host LAN / external IPs give the operator a   #
+# stable frame of reference when triaging requests.                            #
+# --------------------------------------------------------------------------- #
+
+_CONTAINER_MAP_TTL = 30.0
+_container_map_lock = threading.Lock()
+_container_ip_names: dict[str, str] = {}
+_container_map_ts = 0.0
+
+_HOST_IPS_TTL = 60.0
+_host_ips_cache: list[str] = []
+_host_ips_ts = 0.0
+
+_EXTERNAL_IP_TTL = 3600.0
+_external_ip_cache = ""
+_external_ip_ts = 0.0
+
+
+def _docker_container_ip_map() -> dict[str, str]:
+    """Best-effort map of container IP -> container name via the docker CLI."""
+    global _container_ip_names, _container_map_ts
+    now = time.time()
+    with _container_map_lock:
+        if _container_map_ts and now - _container_map_ts < _CONTAINER_MAP_TTL:
+            return _container_ip_names
+    try:
+        ids = subprocess.run(
+            ["docker", "ps", "-q"], capture_output=True, text=True, timeout=5, check=False
+        ).stdout.split()
+        mapping: dict[str, str] = {}
+        if ids:
+            fmt = "{{.ID}} {{.Name}} {{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}"
+            out = subprocess.run(
+                ["docker", "inspect", "--format", fmt, *ids],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            ).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 3:
+                    cid, name = parts[0][:12], parts[1].lstrip("/")
+                    for ip in parts[2:]:
+                        if ip:
+                            mapping[ip] = f"{name} ({cid})"
+        with _container_map_lock:
+            _container_ip_names = mapping
+            _container_map_ts = now
+    except Exception:
+        # docker CLI missing/unavailable (e.g. non-docker dev box): stale cache is fine.
+        with _container_map_lock:
+            _container_map_ts = now
+    return _container_ip_names
+
+
+def resolve_client_host(client_ip: str) -> str:
+    """Human-readable client identity for an IP (docker container name) or ''. """
+    if not client_ip or client_ip in ("unknown-ip", ""):
+        return ""
+    raw = client_ip.strip().lower()
+    if raw.startswith("::ffff:"):
+        raw = raw[7:]
+    return _docker_container_ip_map().get(raw, "")
+
+
+def host_lan_ips() -> list[str]:
+    """LAN-facing IPs of this machine (cached)."""
+    global _host_ips_cache, _host_ips_ts
+    now = time.time()
+    if _host_ips_cache and now - _host_ips_ts < _HOST_IPS_TTL:
+        return _host_ips_cache
+    ips: set[str] = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(0.5)
+            s.connect(("8.8.8.8", 80))
+            ips.add(s.getsockname()[0])
+    except Exception:
+        pass
+    with suppress(Exception):
+        ips.add(socket.gethostbyname(socket.gethostname()))
+    result = sorted(ips - {"127.0.0.1"})[:4]
+    if result:
+        _host_ips_cache, _host_ips_ts = result, now
+    return result
+
+
+def host_external_ip() -> str:
+    """Public egress IP of this machine (cached 1h; '' when unavailable)."""
+    global _external_ip_cache, _external_ip_ts
+    now = time.time()
+    if _external_ip_cache and now - _external_ip_ts < _EXTERNAL_IP_TTL:
+        return _external_ip_cache
+    try:
+        with urllib.request.urlopen("https://api.ipify.org", timeout=3) as resp:
+            ip = resp.read().decode("utf-8", "replace").strip()
+            if ip and len(ip) <= 45:
+                _external_ip_cache, _external_ip_ts = ip, now
+    except Exception:
+        pass
+    return _external_ip_cache
 
 
 def is_local_or_private_client(request: Request) -> bool:
@@ -449,6 +561,7 @@ def register_active_request(request_id, model, req_type, payload, request_source
             "response": "",
             "request_source": request_source,
             "client_ip": client_ip,
+            "client_host": resolve_client_host(client_ip),
         }
 
 
@@ -465,7 +578,29 @@ def update_active_request_progress(request_id, response_chunk=None, thinking_chu
                 req["ttft_seconds"] = round(time.time() - req["started_at"], 3)
 
 
-def complete_active_request(request_id, final_response=None, final_thinking=None, prompt_tokens=0, completion_tokens=0):
+def record_active_request_error(request_id, error):
+    """Attach a failure reason to a still-active request without completing it.
+
+    Used on paths where the request is completed later in a finally block (or
+    by an early return) so the completed entry carries the reason it produced
+    no output. Safe to call when the entry is already gone.
+    """
+    if not error or not request_id:
+        return
+    with active_request_details_lock:
+        req = active_request_details.get(request_id)
+        if req is not None:
+            req["error"] = str(error)[:500]
+
+
+def complete_active_request(
+    request_id,
+    final_response=None,
+    final_thinking=None,
+    prompt_tokens=0,
+    completion_tokens=0,
+    error=None,
+):
     req = None
     with active_request_details_lock:
         if request_id in active_request_details:
@@ -474,6 +609,10 @@ def complete_active_request(request_id, final_response=None, final_thinking=None
                 req["response"] = final_response
             if final_thinking:
                 req["thinking"] = final_thinking
+            if error:
+                # Persist WHY this request produced no/short output so the
+                # dashboard Request Monitor can surface the reason.
+                req["error"] = str(error)[:500]
 
             # Extract thinking block if embedded in response
             if not req.get("thinking") and req.get("response"):
@@ -894,6 +1033,7 @@ DIRECT_LLAMA_FIELDS = {
     "top_logprobs",
     "thinking",
     "reasoning_format",
+    "reasoning_budget",
     "enable_thinking",  # qwen3-style thinking control; mapped → thinking by OLLAMA_OPTION_MAP
 }
 
@@ -1002,10 +1142,6 @@ def render_template_prompt(body):
 
 
 def apply_thinking_override(payload, body):
-    # We keep thinking enabled downstream so reasoning models do not crash.
-    # The proxy filters/strips the thinking trace from responses when think is False.
-    payload["thinking"] = True
-
     think_val = body.get("think")
     if think_val is None:
         think_val = body.get("enable_thinking")
@@ -1013,9 +1149,30 @@ def apply_thinking_override(payload, body):
         opts = body["options"]
         think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
 
+    # Keep thinking enabled downstream so reasoning models do not crash.
+    # The proxy filters/strips the thinking trace from responses when think is False.
+    # Do NOT set thinking=False here; upstream always gets thinking=True.
+    payload["thinking"] = True
+
+    # Forward an explicit reasoning-budget cap when the caller supplied one.
+    # llama.cpp's --reasoning-budget N (-1 unrestricted, 0 immediate end)
+    # bounds the thinking phase so it cannot consume the whole generation
+    # budget and leave the content empty.
+    budget = body.get("reasoning_budget")
+    if budget is None and isinstance(body.get("options"), dict):
+        budget = body["options"].get("reasoning_budget")
+    if budget is not None:
+        with suppress(TypeError, ValueError):
+            payload["reasoning_budget"] = int(budget)
+
+    # Reasoning models ALWAYS consume tokens on a thinking phase before producing
+    # content (we keep thinking enabled upstream so the model does not crash),
+    # so a request that explicitly opts into thinking needs headroom for the
+    # thinking phase, otherwise the n_predict budget is consumed by thinking and
+    # the response comes back empty. Only pad when the caller asked for thinking.
     if think_val is True:
         original_n_predict = payload.get("n_predict")
-        if original_n_predict is not None and original_n_predict > 0:
+        if original_n_predict is not None and 0 < original_n_predict < 8192:
             payload["n_predict"] = original_n_predict + 2048
 
 
@@ -1374,12 +1531,20 @@ async def apply_keep_alive_policy(model_name, keep_alive):
 
 def usage_stats(data):
     usage = data.get("usage") or {}
+    timings = data.get("timings") or {}
     prompt_eval_count = usage.get("prompt_tokens", data.get("tokens_evaluated"))
     eval_count = usage.get("completion_tokens", data.get("tokens_predicted"))
     if prompt_eval_count is None:
         prompt_eval_count = data.get("prompt_eval_count")
     if eval_count is None:
         eval_count = data.get("eval_count")
+    # llama-server streaming frames carry counts only inside timings
+    # (prompt_n/predicted_n); without this fallback every proxied done frame
+    # reports no token counts and clients cannot detect budget exhaustion.
+    if prompt_eval_count is None:
+        prompt_eval_count = timings.get("prompt_n")
+    if eval_count is None:
+        eval_count = timings.get("predicted_n")
     return prompt_eval_count, eval_count
 
 
@@ -1615,6 +1780,10 @@ async def log_requests(request: Request, call_next):
         # log) so traffic - including /v1/images/generations - is attributable
         # by time and full source chain even when verbose DEBUG is off.
         src_detail = f"src={request_source} ip={client_ip}"
+        client_host = resolve_client_host(client_ip)
+        if client_host:
+            request.state.client_host = client_host
+            src_detail += f" client={client_host}"
         if xff:
             src_detail += f" xff={xff}"
         if x_real_ip:
@@ -2068,7 +2237,9 @@ async def openai_chat_completions(request: Request):
                     slot_ok = await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0))
                     if not slot_ok:
                         await release_request_queued(queued_backend)
-                        complete_active_request(request_id)
+                        complete_active_request(
+                            request_id, error="No llama-server slots available within timeout (queue_timeout)"
+                        )
                         return JSONResponse(
                             status_code=503,
                             content={
@@ -2087,7 +2258,7 @@ async def openai_chat_completions(request: Request):
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
                     await release_request_queued(queued_backend)
-                    complete_active_request(request_id)
+                    complete_active_request(request_id, error=f"Model resolution failed: {e.detail}")
                     return JSONResponse(
                         status_code=e.status_code,
                         content={
@@ -2124,6 +2295,7 @@ async def openai_chat_completions(request: Request):
                                             )
                                             await ensure_model(model_name)
                                             continue
+                                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
                                         yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
                                         return
 
@@ -2150,6 +2322,7 @@ async def openai_chat_completions(request: Request):
                                     return
                             except httpx.RequestError as exc:
                                 if stream_started or s_attempt == max_retries - 1:
+                                    record_active_request_error(request_id, f"Upstream connection lost: {exc}")
                                     yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
                                     if stream_started:
                                         # Mid-stream crash: stream is lost but kick off background
@@ -2222,6 +2395,7 @@ async def openai_chat_completions(request: Request):
                             extra=extra_fields if extra_fields else None,
                         )
                         await record_metrics("/v1/chat/completions", 0, error=True)
+                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
                         return JSONResponse(
                             status_code=resp.status_code,
                             content={
@@ -2268,7 +2442,7 @@ async def openai_chat_completions(request: Request):
                 )
                 await record_metrics("/v1/chat/completions", 0, error=True)
                 await release_request_queued(queued_backend)
-                complete_active_request(request_id)
+                complete_active_request(request_id, error=f"Upstream request failed: {exc}")
                 return JSONResponse(
                     status_code=502,
                     content={
@@ -2331,7 +2505,9 @@ async def openai_completions(request: Request):
                     slot_ok = await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0))
                     if not slot_ok:
                         await release_request_queued(queued_backend)
-                        complete_active_request(request_id)
+                        complete_active_request(
+                            request_id, error="No llama-server slots available within timeout (queue_timeout)"
+                        )
                         return JSONResponse(
                             status_code=503,
                             content={
@@ -2350,7 +2526,7 @@ async def openai_completions(request: Request):
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
                     await release_request_queued(queued_backend)
-                    complete_active_request(request_id)
+                    complete_active_request(request_id, error=f"Model resolution failed: {e.detail}")
                     return JSONResponse(
                         status_code=e.status_code,
                         content={
@@ -2385,6 +2561,7 @@ async def openai_completions(request: Request):
                                             )
                                             await ensure_model(model_name)
                                             continue
+                                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
                                         yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
                                         return
 
@@ -2412,6 +2589,7 @@ async def openai_completions(request: Request):
                                     return
                             except httpx.RequestError as exc:
                                 if stream_started or s_attempt == max_retries - 1:
+                                    record_active_request_error(request_id, f"Upstream connection lost: {exc}")
                                     yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
                                     if stream_started:
                                         # Mid-stream crash: stream is lost but kick off background
@@ -2465,6 +2643,7 @@ async def openai_completions(request: Request):
                         except Exception:
                             pass
                         await record_metrics("/v1/completions", 0, error=True)
+                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
                         return JSONResponse(
                             status_code=resp.status_code,
                             content={
@@ -2508,7 +2687,7 @@ async def openai_completions(request: Request):
                 logger.error(f"Completions proxy failed after {max_retries} attempts due to connection error: {exc}")
                 await record_metrics("/v1/completions", 0, error=True)
                 await release_request_queued(queued_backend)
-                complete_active_request(request_id)
+                complete_active_request(request_id, error=f"Upstream request failed: {exc}")
                 return JSONResponse(
                     status_code=502,
                     content={
@@ -4014,7 +4193,11 @@ async def admin_requests():
     with active_request_details_lock:
         active = list(active_request_details.values())
         completed = list(completed_requests)
-    return {"active_requests": active, "completed_requests": completed}
+    return {
+        "active_requests": active,
+        "completed_requests": completed,
+        "server_context": {"host_ips": host_lan_ips(), "external_ip": host_external_ip()},
+    }
 
 
 @app.post("/admin/requests/clear")
@@ -4606,6 +4789,17 @@ async def admin_model_delete(request: Request):
                     logger.info(f"Removed section [{alias}] from models.ini for deleted model")
         except Exception as ie:
             logger.warning(f"Failed to clean up models.ini section for deleted model {alias}: {ie}")
+
+        # Reload the llama-server router model registry so the deleted model's
+        # stale preset disappears from the Select Model List immediately instead
+        # of lingering until the next container restart. llama-server rescans
+        # models.ini on /models?reload=1 (which now no longer contains the
+        # deleted model), so its in-memory registry drops the entry.
+        try:
+            await fetch_router_models(reload=True)
+            logger.info(f"Reloaded router model registry after deleting {model}")
+        except Exception as re:
+            logger.warning(f"Router model registry reload after delete failed: {re}")
 
         return {
             "status": "deleted",
@@ -5542,7 +5736,11 @@ def _compute_safe_n_gpu_layers(
     if requested_n_gpu_layers < 0:
         candidate = n_layers
     elif requested_n_gpu_layers == 0:
-        candidate = 0
+        # A preset of 0 means "CPU-only" — usually the artifact of a previous
+        # OOM recovery that guessed the worst case instead of the real max that
+        # fits. Treat 0 as "recompute the best fit from the top" rather than
+        # short-circuiting to 0 forever (which self-perpetuates CPU-only mode).
+        candidate = n_layers
     else:
         candidate = min(requested_n_gpu_layers, n_layers)
     estimated = _estimate_vram_mib(model_path, meta, n_ctx, cache_type, n_parallel, candidate)
@@ -5550,7 +5748,7 @@ def _compute_safe_n_gpu_layers(
         logger.info(
             f"VRAM check passed: ~{estimated}MiB needed, ~{available_vram_mib}MiB available (n_gpu_layers={candidate})"
         )
-        return requested_n_gpu_layers
+        return candidate if requested_n_gpu_layers == 0 else requested_n_gpu_layers
     lo, hi, best = 0, candidate, 0
     while lo <= hi:
         mid = (lo + hi) // 2
@@ -5562,6 +5760,101 @@ def _compute_safe_n_gpu_layers(
         f"VRAM budgeting: n_gpu_layers={requested_n_gpu_layers}→{best} (~{estimated}MiB needed, ~{available_vram_mib}MiB available)"
     )
     return best
+
+
+# Dense-model VRAM ladder: for dense models the levers to fit the GPU are, in
+# order of least-to-most destructive: quantize the KV cache (halves VRAM per
+# step) then halve the context window. We try to keep the model fully on GPU
+# (n_gpu_layers == n_layers); only when that is impossible even at the smallest
+# ctx do we accept a partial offload that maximizes n_gpu_layers.
+_DENSE_CACHE_LADDER = ["f16", "q8_0", "q4_0"]
+_DENSE_CTX_LADDER = [32768, 16384, 8192]
+
+
+def _budget_dense_model_vram(
+    model_path, meta, n_ctx, cache_type, n_parallel, available_vram_mib, requested_n_gpu_layers
+) -> dict:
+    """Walk the cache-type/ctx ladder and pick the config maximizing GPU offload.
+
+    Returns a dict of settings to persist to models.ini:
+    {"ctx-size", "cache-type-k", "cache-type-v", "n-gpu-layers"}.
+    Returns {} when metadata/VRAM is unavailable (callers skip budgeting).
+    """
+    _, n_layers, _ = _get_model_arch_meta(meta)
+    if not n_layers or available_vram_mib is None:
+        return {}
+    start_ctx = max(int(n_ctx or 0), min(_DENSE_CTX_LADDER))
+    ctxs = sorted({start_ctx, *_DENSE_CTX_LADDER}, reverse=True)
+
+    best = None
+    for ctx in ctxs:
+        for cache in _DENSE_CACHE_LADDER:
+            # Always budget from the full n_layers so the returned ngl is a
+            # concrete layer count (never the -1 "auto" sentinel).
+            ngl = _compute_safe_n_gpu_layers(model_path, meta, ctx, cache, n_parallel, available_vram_mib, n_layers)
+            if best is None or ngl > best["n-gpu-layers"] or (ngl == best["n-gpu-layers"] and ctx > best["ctx-size"]):
+                best = {
+                    "ctx-size": ctx,
+                    "cache-type-k": cache,
+                    "cache-type-v": cache,
+                    "n-gpu-layers": ngl,
+                }
+            # Full GPU offload achieved — no point testing smaller ctx/cache.
+            if ngl >= n_layers:
+                return best
+    return best or {}
+
+
+def _gguf_has_mtp_heads(path: str) -> bool:
+    """Detect MTP (multi-token-prediction) head tensors in a GGUF file.
+
+    MTP heads are stored as tensors named blk.NN.nextn.* (e.g.
+    blk.40.nextn.eh_proj.weight). Presence means the model can run speculative
+    decoding via --spec-type draft-mtp. Only tensor *names* are scanned (the
+    tensor data block follows after all infos), so this is cheap.
+    """
+    import struct
+
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return False
+            f.read(4)  # version
+            n_tensors = struct.unpack("<Q", f.read(8))[0]
+            kv_count = struct.unpack("<Q", f.read(8))[0]
+            # Skip KV metadata (same type layout as _read_gguf_metadata).
+            sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+            for _ in range(kv_count):
+                key_len = struct.unpack("<Q", f.read(8))[0]
+                f.read(key_len)
+                val_type = struct.unpack("<I", f.read(4))[0]
+                if val_type == 8:  # string
+                    sl = struct.unpack("<Q", f.read(8))[0]
+                    f.read(sl)
+                elif val_type == 9:  # array
+                    arr_type = struct.unpack("<I", f.read(4))[0]
+                    arr_len = struct.unpack("<Q", f.read(8))[0]
+                    if arr_type == 8:
+                        for _ in range(arr_len):
+                            sl = struct.unpack("<Q", f.read(8))[0]
+                            f.read(sl)
+                    else:
+                        f.read(arr_len * sizes.get(arr_type, 0))
+                else:
+                    f.read(sizes.get(val_type, 4))
+            # Scan tensor-info names for MTP heads.
+            for _ in range(n_tensors):
+                name_len = struct.unpack("<Q", f.read(8))[0]
+                name = f.read(name_len).decode("utf-8", errors="replace").lower()
+                if "nextn" in name or "mtp" in name:
+                    return True
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                f.read(n_dims * 8)  # dims
+                f.read(4)  # type
+                f.read(8)  # offset
+    except Exception:
+        return False
+    return False
 
 
 def _resolve_ini_section_name(config, backend_model: str) -> str:
@@ -6037,17 +6330,33 @@ async def _ensure_model_impl(
         flash_attn_supported = _supports_flash_attn(meta)
         load_payload["flash_attn"] = flash_attn_supported
 
-        if is_moe and backend_model not in MTP_INCOMPATIBLE_MODELS:
+        # MTP (multi-token prediction) heads live INSIDE the GGUF as tensors
+        # named blk.NN.nextn.*. Detect them directly so DENSE models with MTP
+        # heads (not just MoE) also get speculative decoding. MTP requires a
+        # single pipeline, so force n_parallel=1 when enabled.
+        mtp_supported = (
+            backend_model not in MTP_INCOMPATIBLE_MODELS
+            and bool(model_path)
+            and os.path.exists(model_path)
+            and _gguf_has_mtp_heads(model_path)
+        )
+        if mtp_supported:
             load_payload["spec_type"] = "draft-mtp"
             load_payload["spec_draft_n_max"] = 3
-            logger.info(f"Detected MoE model {backend_model} supporting MTP. Enabling speculative decoding.")
+            load_payload["n_parallel"] = 1
+            _write_ini_model_setting(backend_model, "spec-type", "draft-mtp")
+            _write_ini_model_setting(backend_model, "spec-draft-n-max", "3")
+            _write_ini_model_setting(backend_model, "parallel", "1")
+            logger.info(
+                f"Detected MTP heads in {backend_model} GGUF. Enabling speculative decoding (n_parallel forced to 1)."
+            )
         else:
             load_payload["spec_type"] = "none"
             load_payload["spec_draft_n_max"] = 0
             if is_moe:
                 logger.info(f"Model {backend_model} is marked as MTP incompatible. Disabling speculative decoding.")
             else:
-                logger.info(f"Detected dense model {backend_model}. Disabling speculative decoding.")
+                logger.info(f"No MTP heads detected in {backend_model}. Disabling speculative decoding.")
     else:
         # Fallback when GGUF file is not found (e.g. in unit tests)
         load_payload["flash_attn"] = True
@@ -6066,32 +6375,50 @@ async def _ensure_model_impl(
     # Cap concurrent inference slots to 2 for large models to prevent multiple
     # simultaneous full-context prefills from exhausting host DRAM. Small models
     # can use auto (typically 4) since their KV cache footprint is minimal.
-    if is_model_over_9b(model_name, resolved.get("manifest")):
+    # MTP speculative decoding requires a single pipeline (n_parallel=1), so
+    # never override that.
+    if load_payload.get("spec_type") != "draft-mtp" and is_model_over_9b(model_name, resolved.get("manifest")):
         load_payload["n_parallel"] = 2
         logger.info(
             f"Model {backend_model} is >9B - capping n_parallel=2 to prevent concurrent prefill OOM while --kv-unified handles unified dynamic context."
         )
 
+    # Fold in prompt-cache reuse: --cache-reuse N makes llama-server reuse
+    # cached KV prefixes via KV shifting when a request re-uses an earlier
+    # prompt (big win for benchmark suites that re-run similar prompts).
+    # Persist to models.ini so the router passes it at startup. No-op if set.
+    # Gated on a real GGUF file so unit tests without a model path don't
+    # create phantom sections in the live models.ini.
+    if model_path and os.path.exists(model_path):
+        _write_ini_model_setting(backend_model, "cache-reuse", "256")
+
     # Proactive VRAM budgeting for dense models: if the model won't fit in GPU
-    # VRAM with the current preset, write a safe n_gpu_layers to models.ini and
-    # restart llama-server BEFORE attempting the load. This avoids the OOM crash
-    # + recovery cycle entirely. Metadata-driven (no hardcoded model names).
+    # VRAM with the current preset, walk the cache/ctx ladder to find the config
+    # that maximizes GPU offload (quantize KV cache first, then shrink ctx),
+    # write the winning settings to models.ini, and restart llama-server BEFORE
+    # attempting the load. This avoids the OOM crash + recovery cycle entirely.
+    # Metadata-driven (no hardcoded model names).
     is_dense = meta is not None and not _is_moe(meta)
     if is_dense and model_path and os.path.exists(model_path):
         available_vram = await _get_available_vram_mib()
         if available_vram is not None:
             eff_ctx = int(load_payload.get("n_ctx") or _read_ini_model_setting(backend_model, "ctx-size", "32768"))
             eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
-            safe_ngl = _compute_safe_n_gpu_layers(
+            budget = _budget_dense_model_vram(
                 model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
             )
-            if safe_ngl != n_gpu_layers_preset:
-                _write_ini_model_setting(backend_model, "n-gpu-layers", str(safe_ngl))
-                logger.info("Restarting llama-server to pick up VRAM-safe n_gpu_layers preset...")
+            changed = False
+            if budget:
+                for key, val in budget.items():
+                    if str(_read_ini_model_setting(backend_model, key, None)) != str(val):
+                        _write_ini_model_setting(backend_model, key, str(val))
+                        changed = True
+                n_gpu_layers_preset = int(budget.get("n-gpu-layers", n_gpu_layers_preset))
+            if changed:
+                logger.info("Restarting llama-server to pick up VRAM-safe dense budget preset...")
                 await restart_llama_server()
                 if not await wait_for_llama_server_or_restart(timeout=60.0):
                     raise HTTPException(status_code=502, detail="Failed to restart llama-server for VRAM budgeting")
-                n_gpu_layers_preset = safe_ngl
 
     try:
         await post_router_model_action("load", load_payload)
@@ -6399,11 +6726,14 @@ async def _ensure_model_impl(
                 if available_vram is not None:
                     eff_ctx = int(_read_ini_model_setting(backend_model, "ctx-size", "32768"))
                     eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
-                    safe_ngl = _compute_safe_n_gpu_layers(
+                    budget = _budget_dense_model_vram(
                         model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
                     )
-                    if safe_ngl != n_gpu_layers_preset:
-                        _write_ini_model_setting(backend_model, "n-gpu-layers", str(safe_ngl))
+                    if budget:
+                        for key, val in budget.items():
+                            if str(_read_ini_model_setting(backend_model, key, None)) != str(val):
+                                _write_ini_model_setting(backend_model, key, str(val))
+                        n_gpu_layers_preset = int(budget.get("n-gpu-layers", n_gpu_layers_preset))
 
             # Incorporate Telemetry & Auto-Tuning suggestions to prevent recurring memory exhaustion.
             # NOTE: n-gpu-layers is intentionally excluded here - it is already computed above
@@ -6454,16 +6784,22 @@ async def _ensure_model_impl(
             else:
                 # Tiered recovery/escalation for <= 9B models
                 if oom_detected:
-                    # OOM recovery: cap n_gpu_layers=0 immediately
+                    # OOM recovery: the VRAM budget above already wrote the
+                    # best-fitting ngl/ctx/cache ladder to models.ini and updated
+                    # n_gpu_layers_preset. Fall back to that budgeted value (never
+                    # 0 unless the ladder genuinely had nowhere to go), with CPU
+                    # safety settings as a last resort.
+                    safe_ngl = n_gpu_layers_preset if n_gpu_layers_preset >= 0 else 0
                     logger.warning(
-                        f"Model {backend_model} OOM'ed. Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
+                        f"Model {backend_model} OOM'ed. Falling back to budgeted "
+                        f"CPU settings (n_gpu_layers={safe_ngl})..."
                     )
                     load_payload = {"model": backend_model}
                     if options:
                         n_ctx = options.get("num_ctx") or options.get("n_ctx")
                         if n_ctx:
                             load_payload["n_ctx"] = int(n_ctx)
-                    load_payload["n_gpu_layers"] = 0
+                    load_payload["n_gpu_layers"] = safe_ngl
                     load_payload["n_thread"] = 8
                     load_payload["n_batch"] = 256
                     load_payload["n_ubatch"] = 512
@@ -6836,16 +7172,16 @@ async def chat(request: Request):
         # Queue-and-wait: if all llama-server slots are busy, wait for one to open
         wait_timeout = body.get("queue_timeout", 120.0)
         slot_available = await wait_for_slot(resolved_backend, timeout=wait_timeout)
-    except Exception:
+    except Exception as e:
         # Never leak the queued count or the tracked request on load/pre-dispatch
         # failures (e.g. unresolvable model) - otherwise the request stays in the
         # Active Requests list forever.
         await release_request_queued(_queued_backend)
-        complete_active_request(request_id)
+        complete_active_request(request_id, error=f"Model load/dispatch failed: {e}")
         raise
     if not slot_available:
         await release_request_queued(_queued_backend)
-        complete_active_request(request_id)
+        complete_active_request(request_id, error="No llama-server slots available within timeout (queue_timeout)")
         return JSONResponse(
             {"error": "No llama-server slots available within timeout", "status": "queue_timeout"},
             status_code=503,
@@ -7046,10 +7382,12 @@ async def chat(request: Request):
                 upstream_type=upstream_type,
                 extra=extra_fields if extra_fields else None,
             )
+            record_active_request_error(request_id, error_msg)
             yield json.dumps({"error": error_msg}) + "\n"
         except Exception as e:
             logger.error(f"Stream error: {e}")
             log_model_error(model=model_name, message=str(e))
+            record_active_request_error(request_id, f"Stream failed: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
             if resolved_backend:
@@ -7139,6 +7477,11 @@ async def chat(request: Request):
                     client_message["content"],
                     flags=re.IGNORECASE,
                 ).strip()
+            # A reasoning model can spend its whole budget thinking (or emit only
+            # a thinking block and no content). Never return an empty response:
+            # fall back to the thinking text so the caller still gets something.
+            if not client_message.get("content") and final_thinking and final_thinking.strip():
+                client_message["content"] = final_thinking.strip()
             final_thinking = None
         else:
             if final_thinking:
@@ -7179,12 +7522,15 @@ async def chat(request: Request):
         return JSONResponse(chunk)
     except httpx.HTTPStatusError as e:
         logger.error(f"Chat error: {e}")
+        record_active_request_error(request_id, f"Upstream error {e.response.status_code}: {e.response.text}")
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except httpx.TimeoutException as e:
         logger.error(f"Chat upstream timeout: {e}")
+        record_active_request_error(request_id, f"Upstream llama-server timed out: {e}")
         raise HTTPException(status_code=504, detail="Upstream llama-server timed out") from e
     except httpx.RequestError as e:
         logger.error(f"Chat upstream request error: {e}")
+        record_active_request_error(request_id, f"Upstream llama-server request failed: {e}")
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
         if resolved_backend:
@@ -7439,9 +7785,11 @@ async def generate(request: Request):
                 body_text = "<unreadable>"
             error_msg = f"Upstream error {e.response.status_code}: {body_text}"
             logger.error(error_msg)
+            record_active_request_error(request_id, error_msg)
             yield json.dumps({"error": error_msg}) + "\n"
         except Exception as e:
             logger.error(f"Generate stream error: {e}")
+            record_active_request_error(request_id, f"Stream failed: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
             if resolved_backend:
@@ -7613,12 +7961,15 @@ async def generate(request: Request):
         return JSONResponse(chunk)
     except httpx.HTTPStatusError as e:
         logger.error(f"Generate error: {e}")
+        record_active_request_error(request_id, f"Upstream error {e.response.status_code}: {e.response.text}")
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
     except httpx.TimeoutException as e:
         logger.error(f"Generate upstream timeout: {e}")
+        record_active_request_error(request_id, f"Upstream llama-server timed out: {e}")
         raise HTTPException(status_code=504, detail="Upstream llama-server timed out") from e
     except httpx.RequestError as e:
         logger.error(f"Generate upstream request error: {e}")
+        record_active_request_error(request_id, f"Upstream llama-server request failed: {e}")
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
         if resolved_backend:

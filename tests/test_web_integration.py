@@ -1026,10 +1026,8 @@ def test_api_tests_run_stats_and_currency(client, tmp_path):
     gen_models_dir = tmp_path / "models"
     gen_models_dir.mkdir(parents=True, exist_ok=True)
 
-    cur_hash = _compute_test_hash({
-        "id": "debug_fix",
-        "prompt": "Find and fix the bug in this function:\n\n```\ndef sum_list(items):\n    total = 0\n    for i in range(1, len(items)):\n        total += items[i]\n    return total\n```\nThe function should sum all list items, not skip the first one.",
-    })
+    cur_coding_test = next(t for t in benchmark.tests_config.get("coding", []) if t.get("id") == "debug_fix")
+    cur_hash = _compute_test_hash(cur_coding_test)
 
     m1_data = {
         "model": "model1",
@@ -1058,9 +1056,7 @@ def test_api_tests_run_stats_and_currency(client, tmp_path):
     }
     (gen_models_dir / "general_model1.json").write_text(json.dumps(m1_data))
 
-    with patch.object(benchmark, "MODELS_DIR", gen_models_dir), patch.object(
-        benchmark, "RESULTS_DIR", tmp_path
-    ):
+    with patch.object(benchmark, "MODELS_DIR", gen_models_dir), patch.object(benchmark, "RESULTS_DIR", tmp_path):
         res = client.get("/api/tests")
         assert res.status_code == 200
         data = json.loads(res.data.decode("utf-8"))
@@ -1074,6 +1070,15 @@ def test_api_tests_run_stats_and_currency(client, tmp_path):
         assert df["models_passed_count"] == 1
         assert df["models_failed_count"] == 0
         assert df["is_out_of_date"] is False
+        assert df["models_lint"].get("model1") is True
+        assert df["models_last_run"].get("model1") == "2026-08-17T01:00:00"
+        assert df["last_run"] == "2026-08-17T01:00:00"
+        assert "model1" in df["models_passed"]
+        assert df["models_run_count"].get("model1") == 1
+        assert df["models_fail_count"].get("model1") == 0
+        assert df["models_latency"].get("model1") == 0.0
+        assert df["models_tokens"].get("model1") == 0
+        assert df["models_speed"].get("model1") == 0.0
 
         # guess_game has 1 run, failed, out of date
         assert "guess_game" in tests_by_id
@@ -1081,6 +1086,7 @@ def test_api_tests_run_stats_and_currency(client, tmp_path):
         assert gg["models_tested_count"] == 1
         assert gg["models_passed_count"] == 0
         assert gg["models_failed_count"] == 1
+        assert "model1" not in gg.get("models_passed", [])
         assert gg["is_out_of_date"] is True
         assert "model1" in gg["out_of_date_models"]
 
@@ -1091,14 +1097,14 @@ def test_api_tests_run_stats_and_currency(client, tmp_path):
         assert lp["is_out_of_date"] is False
 
 
-
 def test_sandbox_serve_proxy_forwards_to_upstream(client):
     """Serve proxy tunnels through the dashboard origin, never assuming localhost."""
     from unittest.mock import Mock
 
-    with patch("web.app._serve_container_host_port", return_value="39876"), patch(
-        "web.app.httpx.Client"
-    ) as mock_client_cls:
+    with (
+        patch("web.app._serve_container_host_port", return_value="39876"),
+        patch("web.app.httpx.Client") as mock_client_cls,
+    ):
         mock_resp = Mock()
         mock_resp.status_code = 200
         mock_resp.content = b"<html><body>hello sandbox</body></html>"
@@ -1121,9 +1127,10 @@ def test_sandbox_serve_proxy_forwards_to_upstream(client):
 def test_sandbox_serve_proxy_preserves_subpath_and_method(client):
     from unittest.mock import Mock
 
-    with patch("web.app._serve_container_host_port", return_value="50001"), patch(
-        "web.app.httpx.Client"
-    ) as mock_client_cls:
+    with (
+        patch("web.app._serve_container_host_port", return_value="50001"),
+        patch("web.app.httpx.Client") as mock_client_cls,
+    ):
         mock_resp = Mock()
         mock_resp.status_code = 200
         mock_resp.content = b"ok"
@@ -1152,9 +1159,10 @@ def test_sandbox_serve_proxy_upstream_unreachable(client):
 
     import httpx
 
-    with patch("web.app._serve_container_host_port", return_value="50002"), patch(
-        "web.app.httpx.Client"
-    ) as mock_client_cls:
+    with (
+        patch("web.app._serve_container_host_port", return_value="50002"),
+        patch("web.app.httpx.Client") as mock_client_cls,
+    ):
         mock_client = Mock()
         mock_client.request.side_effect = httpx.ConnectError("connect failed")
         mock_client_cls.return_value.__enter__.return_value = mock_client

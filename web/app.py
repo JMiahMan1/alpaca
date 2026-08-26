@@ -34,6 +34,7 @@ import uuid
 import docker
 
 from llm_benchmark_suite import LLMModelBenchmark
+from multistep_benchmark import MultiStepBenchmark
 from sandbox_exec import serve_app, serve_ui, stop_serve, ui_exec, ui_restart, ui_screenshot, ui_status
 from web.model_tracker import model_tracker
 from web.shared_llm_benchmark import SharedLLMModelBenchmark
@@ -86,10 +87,12 @@ def add_cache_headers(response):
 
 benchmark = LLMModelBenchmark()
 shared_llm_benchmark = SharedLLMModelBenchmark()
+multistep_benchmark = MultiStepBenchmark()
 
 puller_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alpaca-puller.py")
 PROXY_URL = os.environ.get("PROXY_URL", "http://host.docker.internal:11434")
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://llama-server:8080")
+AUDIO_SERVER_URL = os.environ.get("AUDIO_SERVER_URL", "http://audio-server:8082")
 
 
 LOCAL_SUBNETS = (
@@ -205,6 +208,21 @@ def get_proxy_headers(extra_headers: dict[str, str] | None = None) -> dict[str, 
         headers.setdefault("Authorization", f"Bearer {key}")
         headers.setdefault("X-API-Key", key)
     return headers
+
+
+def _find_proxy_url() -> str | None:
+    """Return the first reachable proxy URL from PROXY_SERVER_URLS, or None."""
+    import httpx
+
+    for url in benchmark.PROXY_SERVER_URLS:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get(f"{url}/api/version")
+                if resp.status_code == 200:
+                    return url
+        except Exception:
+            continue
+    return None
 
 
 active_pulls: dict[str, dict[str, Any]] = {}
@@ -357,10 +375,15 @@ benchmark_thread = None
 
 # Callback for progress reporting from inside the benchmark threads
 def get_progress_callback(run_type):
+    # Multi-step runs report one event per conversation turn; track cumulative
+    # turn counts so the progress bar can move within a long workflow.
+    ms_state = {"wf": None, "done": 0, "cur_total": 0}
+
     def callback(event, data):
         global active_run
         with active_run_lock:
             if event == "benchmark_start":
+                ms_state.update({"wf": None, "done": 0, "cur_total": 0})
                 active_run["status"] = "running"
                 active_run["type"] = run_type
                 active_run["models"] = data["models"]
@@ -399,6 +422,44 @@ def get_progress_callback(run_type):
                         "test_label": data["test_label"],
                     },
                 )
+
+            elif event == "test_step":
+                # Multi-step workflows emit one event per agentic turn so the
+                # dashboard shows movement during long conversations.
+                step_no = data.get("step")
+                total = data.get("total")
+                label = f"{data.get('workflow_label') or data.get('workflow')} — turn {step_no}/{total}: {data.get('label')}"
+                active_run["current_test"] = label
+                socketio.emit(
+                    "test_start",
+                    {
+                        "model": data["model"],
+                        "category": data.get("category"),
+                        "test_id": data.get("workflow"),
+                        "test_label": label,
+                    },
+                )
+                budget = data.get("num_predict")
+                msg = f"↻ turn {step_no}/{total}: {data.get('label')}"
+                if budget:
+                    msg += f" (budget {budget} tokens)"
+                socketio.emit("benchmark_step", {"model": data["model"], "message": msg})
+
+                # Turn-level progress: each agentic turn counts as one unit so
+                # the dashboard bar advances during long multi-turn workflows.
+                try:
+                    step_i, total_i = int(step_no), int(total)
+                except (TypeError, ValueError):
+                    step_i = total_i = 0
+                wf_key = f"{data.get('model')}::{data.get('workflow')}"
+                if ms_state["wf"] != wf_key:
+                    ms_state["done"] += ms_state["cur_total"]
+                    ms_state["cur_total"] = total_i
+                    ms_state["wf"] = wf_key
+                active_run["tests_completed"] = ms_state["done"] + max(0, step_i - 1)
+                if ms_state["done"] + ms_state["cur_total"]:
+                    active_run["total_tests"] = ms_state["done"] + ms_state["cur_total"]
+                socketio.emit("sync_status", dict(active_run))
 
             elif event == "test_complete":
                 active_run["tests_completed"] += 1
@@ -476,7 +537,9 @@ def get_progress_callback(run_type):
     return callback
 
 
-def run_general_in_thread(models, use_proxy, run_cancel_event, callback, test_ids=None, resume=False, groups=None, tiers=None):
+def run_general_in_thread(
+    models, use_proxy, run_cancel_event, callback, test_ids=None, resume=False, groups=None, tiers=None
+):
     global active_run
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -547,6 +610,46 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task
             with active_run_lock:
                 if active_run["status"] == "running":
                     print("[benchmark] SharedLLM thread exiting with status still 'running' - forcing to 'completed'")
+                    active_run["status"] = "completed"
+                    active_run["current_model"] = None
+                    active_run["current_test"] = None
+                    active_run["current_category"] = None
+                    socketio.emit(
+                        "benchmark_complete",
+                        {"status": "completed", "saved_as": active_run.get("saved_as")},
+                    )
+
+    loop.run_until_complete(run())
+    loop.close()
+
+
+def run_multistep_in_thread(models, use_proxy, run_cancel_event, callback, workflow_ids=None):
+    global active_run
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def run():
+        try:
+            await multistep_benchmark.run_multistep_benchmarks(
+                models=models,
+                use_proxy=use_proxy,
+                progress_callback=callback,
+                cancel_event=run_cancel_event,
+                workflow_ids=workflow_ids,
+            )
+        except Exception as e:
+            print(f"Error in MultiStep execution: {e}")
+            socketio.emit("benchmark_error", {"error": str(e)})
+            with active_run_lock:
+                active_run["status"] = "failed"
+                active_run["current_model"] = None
+                active_run["current_test"] = None
+                active_run["current_category"] = None
+        finally:
+            # Guarantee we never stay stuck in "running" state
+            with active_run_lock:
+                if active_run["status"] == "running":
+                    print("[benchmark] MultiStep thread exiting with status still 'running' - forcing to 'completed'")
                     active_run["status"] = "completed"
                     active_run["current_model"] = None
                     active_run["current_test"] = None
@@ -688,6 +791,11 @@ def _compute_test_hash(test_dict):
     if not isinstance(test_dict, dict):
         return ""
     atts = [a.get("name", "") for a in test_dict.get("attachments", []) if isinstance(a, dict)]
+    # Code-category tests are graded with an appended grader directive; bump the
+    # recorded directive version when its text changes so outdated_only re-runs.
+    directive_version = ""
+    if test_dict.get("type") in ("code", "ui") or test_dict.get("category") in (LLMModelBenchmark.CODE_CATEGORIES):
+        directive_version = LLMModelBenchmark.GRADER_DIRECTIVE_VERSION
     canonical = {
         "id": test_dict.get("id", ""),
         "prompt": (test_dict.get("prompt") or "").strip(),
@@ -696,6 +804,7 @@ def _compute_test_hash(test_dict):
         "type": test_dict.get("type", "functional"),
         "kind": test_dict.get("kind", "text"),
         "attachments": sorted(atts),
+        "grader_directive": directive_version,
     }
     dumped = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(dumped.encode("utf-8")).hexdigest()[:12]
@@ -738,6 +847,14 @@ def _get_test_benchmark_stats():
                         "out_of_date_models": [],
                         "last_run": None,
                         "models_scores": {},
+                        "models_lint": {},
+                        "models_breakdown": {},
+                        "models_last_run": {},
+                        "models_run_count": {},
+                        "models_fail_count": {},
+                        "models_latency": {},
+                        "models_tokens": {},
+                        "models_speed": {},
                     }
 
                 st = stats[tid]
@@ -755,6 +872,28 @@ def _get_test_benchmark_stats():
                             score = 0
                     st["models_scores"][model_name] = score
 
+                    st["models_lint"][model_name] = bool(t.get("lint_passed", t.get("code_ran") is not False))
+
+                    # Per-model score breakdown so the dashboard can explain WHY a
+                    # model scored what it did (execution, functional check, code
+                    # quality notes, watermark, and any error) instead of showing a
+                    # bare number.
+                    st["models_breakdown"][model_name] = {
+                        "score": score,
+                        "functional_pass": t.get("functional_pass"),
+                        "code_ran": t.get("code_ran"),
+                        "code_score": t.get("code_score"),
+                        "lint_passed": t.get("lint_passed"),
+                        "code_quality": (t.get("code_quality") or {}).get("score"),
+                        "code_quality_notes": (t.get("code_quality") or {}).get("notes") or [],
+                        "code_quality_lang": (t.get("code_quality") or {}).get("language"),
+                        "watermark": (t.get("watermark") or {}).get("score"),
+                        "watermark_flags": (t.get("watermark") or {}).get("flags") or [],
+                        "rubric": t.get("rubric"),
+                        "error": t.get("error") or t.get("code_error") or "",
+                        "last_run": t.get("last_run"),
+                    }
+
                     passed = bool(t.get("success", False) or (t.get("score", 0) >= 50))
                     if passed:
                         st["models_passed"].append(model_name)
@@ -766,6 +905,35 @@ def _get_test_benchmark_stats():
                     run_time = t.get("last_run") or data.get("last_updated") or data.get("generated_at")
                     if run_time and (not st["last_run"] or run_time > st["last_run"]):
                         st["last_run"] = run_time
+                    if run_time:
+                        st["models_last_run"][model_name] = run_time
+
+                    st["models_run_count"][model_name] = int(t.get("run_count") or 1)
+                    st["models_fail_count"][model_name] = int(t.get("fail_count") or (0 if passed else 1))
+
+                    latency = t.get("latency")
+                    if isinstance(latency, str):
+                        try:
+                            latency = float(latency)
+                        except (TypeError, ValueError):
+                            latency = None
+                    if latency is None:
+                        eval_ns = t.get("eval_duration") or 0
+                        prompt_ns = t.get("prompt_eval_duration") or 0
+                        try:
+                            latency = (float(eval_ns) + float(prompt_ns)) / 1e9
+                        except (TypeError, ValueError):
+                            latency = 0.0
+                    st["models_latency"][model_name] = float(latency or 0.0)
+
+                    tokens = t.get("tokens_generated")
+                    try:
+                        tokens = int(tokens or 0)
+                    except (TypeError, ValueError):
+                        tokens = 0
+                    st["models_tokens"][model_name] = tokens
+                    speed = (tokens / float(latency)) if latency else 0.0
+                    st["models_speed"][model_name] = round(speed, 2)
 
                     cur_test = current_tests.get(tid)
                     if cur_test:
@@ -851,7 +1019,16 @@ def get_tests():
                     "models_passed_count": st.get("models_passed_count", 0),
                     "models_failed_count": st.get("models_failed_count", 0),
                     "models_tested": st.get("models_tested", []),
+                    "models_passed": st.get("models_passed", []),
                     "models_scores": st.get("models_scores", {}),
+                    "models_lint": st.get("models_lint", {}),
+                    "models_breakdown": st.get("models_breakdown", {}),
+                    "models_last_run": st.get("models_last_run", {}),
+                    "models_run_count": st.get("models_run_count", {}),
+                    "models_fail_count": st.get("models_fail_count", {}),
+                    "models_latency": st.get("models_latency", {}),
+                    "models_tokens": st.get("models_tokens", {}),
+                    "models_speed": st.get("models_speed", {}),
                     "is_out_of_date": st.get("is_out_of_date", False),
                     "out_of_date_count": st.get("out_of_date_count", 0),
                     "out_of_date_models": st.get("out_of_date_models", []),
@@ -878,7 +1055,15 @@ def get_tests():
                     "models_passed_count": st.get("models_passed_count", 0),
                     "models_failed_count": st.get("models_failed_count", 0),
                     "models_tested": st.get("models_tested", []),
+                    "models_passed": st.get("models_passed", []),
                     "models_scores": st.get("models_scores", {}),
+                    "models_lint": st.get("models_lint", {}),
+                    "models_last_run": st.get("models_last_run", {}),
+                    "models_run_count": st.get("models_run_count", {}),
+                    "models_fail_count": st.get("models_fail_count", {}),
+                    "models_latency": st.get("models_latency", {}),
+                    "models_tokens": st.get("models_tokens", {}),
+                    "models_speed": st.get("models_speed", {}),
                     "is_out_of_date": st.get("is_out_of_date", False),
                     "out_of_date_count": st.get("out_of_date_count", 0),
                     "out_of_date_models": st.get("out_of_date_models", []),
@@ -1067,6 +1252,21 @@ def get_test_responses(test_id):
                                 continue
                             is_html = bool(re.search(r"<!doctype|<html|<script|<canvas", resp, re.I))
                             passed = t.get("success") if "success" in t else None
+                            score = t.get("score")
+                            try:
+                                score = float(score) if score is not None else None
+                            except (TypeError, ValueError):
+                                score = None
+                            _tg = t.get("tokens_generated") or 0
+                            try:
+                                _tg = float(_tg)
+                            except (TypeError, ValueError):
+                                _tg = 0.0
+                            _la = t.get("latency") or 0
+                            try:
+                                _la = float(_la)
+                            except (TypeError, ValueError):
+                                _la = 0.0
                             out.append(
                                 {
                                     "model": model,
@@ -1076,6 +1276,17 @@ def get_test_responses(test_id):
                                     "response_len": len(resp),
                                     "is_html": is_html,
                                     "passed": passed,
+                                    "score": score,
+                                    "lint_passed": t.get("lint_passed"),
+                                    "code_error": t.get("code_error") or None,
+                                    "code_output": t.get("code_output") or None,
+                                    "screenshot": t.get("screenshot"),
+                                    "latency": t.get("latency"),
+                                    "tokens_generated": t.get("tokens_generated"),
+                                    "speed": round(_tg / _la, 2) if _la else 0.0,
+                                    "run_count": t.get("run_count") or 1,
+                                    "fail_count": t.get("fail_count") or 0,
+                                    "last_run": t.get("last_run") or data.get("last_updated"),
                                 }
                             )
         best = {}
@@ -1246,6 +1457,61 @@ def get_sd_status():
     except Exception as e:
         return jsonify({"online": False, "error": str(e)})
     return jsonify({"online": False, "error": "Proxy unresponsive"})
+
+
+@app.route("/api/audio/status")
+def get_audio_status():
+    """Fetch audio-server health (loaded models, VRAM, voice list)."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            resp = client.get(f"{AUDIO_SERVER_URL}/health")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"status": "offline", "error": str(e)})
+
+
+@app.route("/api/audio/tts", methods=["POST"])
+def audio_tts_api():
+    """Forward a TTS request to the audio-server and return wav b64 + metadata."""
+    import httpx
+
+    data = request.get_json() or {}
+    try:
+        # Kokoro synthesis + first model load can take a while on cold start.
+        with httpx.Client(timeout=600.0) as client:
+            resp = client.post(f"{AUDIO_SERVER_URL}/api/tts", json=data)
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/audio/music", methods=["POST"])
+def audio_music_api():
+    """Forward a music generation request to the audio-server."""
+    import httpx
+
+    data = request.get_json() or {}
+    try:
+        with httpx.Client(timeout=900.0) as client:
+            resp = client.post(f"{AUDIO_SERVER_URL}/api/music", json=data)
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/audio/unload", methods=["POST"])
+def audio_unload_api():
+    """Ask the audio-server to drop loaded models and free VRAM."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(f"{AUDIO_SERVER_URL}/api/unload")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
 
 
 @app.route("/api/sd/unload", methods=["POST"])
@@ -2231,7 +2497,10 @@ def start_benchmark():
         test_ids = _outdated_test_ids(models)
         if not test_ids:
             return jsonify(
-                {"status": "No outdated benchmarks", "message": "All benchmark definitions are up to date for the selected models — nothing to redo."}
+                {
+                    "status": "No outdated benchmarks",
+                    "message": "All benchmark definitions are up to date for the selected models — nothing to redo.",
+                }
             ), 200
 
     with active_run_lock:
@@ -2315,7 +2584,8 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
         url = f"{url}?{query}"
 
     fwd_headers = {
-        k: v for k, v in request.headers.items()
+        k: v
+        for k, v in request.headers.items()
         if k.lower() not in ("host", "content-length", "connection", "transfer-encoding", "accept-encoding")
     }
     fwd_headers["Host"] = f"host.docker.internal:{host_port}"
@@ -2337,7 +2607,12 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
         if k.lower() in ("content-length", "connection", "transfer-encoding", "content-encoding"):
             continue
         resp_headers[k] = v
-    return Response(resp.content, status=resp.status_code, headers=resp_headers, content_type=resp.headers.get("content-type", "text/html"))
+    return Response(
+        resp.content,
+        status=resp.status_code,
+        headers=resp_headers,
+        content_type=resp.headers.get("content-type", "text/html"),
+    )
 
 
 def _ws_proxy_pump(src, dst):
@@ -2511,6 +2786,114 @@ def start_shared_llm_benchmark():
     return jsonify({"status": "SharedLLM Benchmark started", "active_run": dict(active_run)})
 
 
+@app.route("/api/tests/multistep", methods=["GET"])
+def list_multistep_workflows():
+    """List registered multi-step agentic workflows."""
+    try:
+        workflows = [
+            {
+                "id": w["id"],
+                "category": w["category"],
+                "label": w["label"],
+                "description": w.get("description", ""),
+                "steps": len(w["steps"]),
+                "type": "multistep",
+            }
+            for w in multistep_benchmark.get_all_workflows()
+        ]
+        return jsonify({"tests": workflows})
+    except Exception as e:
+        return jsonify({"tests": [], "error": str(e)})
+
+
+@app.route("/api/multistep/artifact/<path:filename>", methods=["GET"])
+def serve_multistep_artifact(filename):
+    """Serve a multi-step workflow artifact (final game HTML or per-turn raw text).
+
+    Only files that live inside ARTIFACTS_DIR are served; path traversal and
+    non-artifact extensions are rejected so this cannot read arbitrary files.
+    """
+    try:
+        base = Path(multistep_benchmark.ARTIFACTS_DIR).resolve()
+        target = (base / filename).resolve()
+        if base != target and base not in target.parents:
+            return jsonify({"error": "Invalid artifact path"}), 400
+        if not target.is_file():
+            return jsonify({"error": "Artifact not found"}), 404
+        if target.suffix.lower() not in (".html", ".txt"):
+            return jsonify({"error": "Unsupported artifact type"}), 400
+        mimetype = "text/html" if target.suffix.lower() == ".html" else "text/plain"
+        return send_file(str(target), mimetype=mimetype)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _annotate_multistep_artifact_urls(data: dict) -> dict:
+    """Attach web-viewable URLs to multistep result payloads.
+
+    Adds task.artifact_url (final assembled document) and
+    step.response_url (per-turn raw response) when those files exist,
+    so the dashboard can link to the FULL generated code instead of the
+    truncated response excerpt stored in the snapshot.
+    """
+    try:
+        base = Path(multistep_benchmark.ARTIFACTS_DIR).resolve()
+        for rec in data.get("results", []):
+            for task in rec.get("tasks", []):
+                art = task.get("artifact")
+                if art:
+                    p = Path(art)
+                    if (base / p.name).is_file():
+                        task["artifact_url"] = f"/api/multistep/artifact/{p.name}"
+                for step in task.get("steps") or []:
+                    rp = step.get("response_path")
+                    if rp and (base / Path(rp).name).is_file():
+                        step["response_url"] = f"/api/multistep/artifact/{Path(rp).name}"
+    except Exception:
+        pass
+    return data
+
+
+@app.route("/api/run/multistep", methods=["POST"])
+def start_multistep_benchmark():
+    """Start a multi-step agentic benchmark run (long multi-turn workflows)"""
+    global cancel_event, benchmark_thread, active_run
+    with active_run_lock:
+        if active_run["status"] == "running":
+            return jsonify({"error": "Benchmark is already running"}), 409
+
+    data = request.get_json() or {}
+    models = data.get("models", [])
+    use_proxy = data.get("use_proxy", True)
+    workflow_ids = data.get("workflow_ids") or None  # None means run all
+
+    if not models:
+        return jsonify({"error": "No models specified"}), 400
+
+    with active_run_lock:
+        cancel_event = threading.Event()
+        callback = get_progress_callback("multistep")
+
+        active_run["status"] = "running"
+        active_run["type"] = "multistep"
+        active_run["models"] = models
+        active_run["use_proxy"] = use_proxy
+        active_run["tests_completed"] = 0
+        active_run["total_tests"] = 0
+        active_run["results"] = []
+        active_run["start_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        active_run["saved_as"] = None
+
+        benchmark_thread = threading.Thread(
+            target=run_multistep_in_thread,
+            args=(models, use_proxy, cancel_event, callback, workflow_ids),
+            daemon=True,
+        )
+        benchmark_thread.start()
+
+    return jsonify({"status": "MultiStep Benchmark started", "active_run": dict(active_run)})
+
+
 @app.route("/api/cancel", methods=["POST"])
 def cancel_benchmark():
     """Cancel currently running benchmark"""
@@ -2541,11 +2924,20 @@ def get_results_list():
         shared_dir = shared_llm_benchmark.RESULTS_DIR
         shared_files = list(shared_dir.glob("shared_llm_benchmarks_*.json")) if shared_dir.exists() else []
 
+        # Load MultiStep results
+        multistep_dir = multistep_benchmark.RESULTS_DIR
+        multistep_files = list(multistep_dir.glob("multistep_benchmarks_*.json")) if multistep_dir.exists() else []
+
         # Load per-model result files (results follow the model)
         per_model_general = list(benchmark.MODELS_DIR.glob("general_*.json")) if benchmark.MODELS_DIR.exists() else []
         per_model_shared = (
             list(shared_llm_benchmark.MODELS_DIR.glob("shared_*.json"))
             if shared_llm_benchmark.MODELS_DIR.exists()
+            else []
+        )
+        per_model_multistep = (
+            list(multistep_benchmark.MODELS_DIR.glob("multistep_*.json"))
+            if multistep_benchmark.MODELS_DIR.exists()
             else []
         )
 
@@ -2579,11 +2971,17 @@ def get_results_list():
         for file_path in shared_files:
             _append_result(file_path, "shared_llm")
 
+        # Process MultiStep files
+        for file_path in multistep_files:
+            _append_result(file_path, "multistep")
+
         # Process per-model files last so per-model (latest per model) is authoritative on dedupe
         for file_path in per_model_general:
             _append_result(file_path, "general")
         for file_path in per_model_shared:
             _append_result(file_path, "shared_llm")
+        for file_path in per_model_multistep:
+            _append_result(file_path, "multistep")
 
         # Sort files by timestamp (newest first)
         results_list.sort(key=lambda x: x.get("generated_at") or "", reverse=True)
@@ -2611,10 +3009,16 @@ def _rebuild_per_model_files():
             if shared_llm_benchmark.RESULTS_DIR.exists()
             else []
         )
+        multistep_snapshots = (
+            sorted(multistep_benchmark.RESULTS_DIR.glob("multistep_benchmarks_*.json"))
+            if multistep_benchmark.RESULTS_DIR.exists()
+            else []
+        )
 
         # Models still covered by at least one remaining run snapshot.
         general_models: set[str] = set()
         shared_models: set[str] = set()
+        multistep_models: set[str] = set()
         for snapshot_path in general_snapshots:
             try:
                 with open(snapshot_path) as f:
@@ -2629,6 +3033,13 @@ def _rebuild_per_model_files():
             except Exception:
                 continue
             shared_models.update(r.get("model") for r in snapshot.get("results", []) if r.get("model"))
+        for snapshot_path in multistep_snapshots:
+            try:
+                with open(snapshot_path) as f:
+                    snapshot = json.load(f)
+            except Exception:
+                continue
+            multistep_models.update(r.get("model") for r in snapshot.get("results", []) if r.get("model"))
 
         # Remove per-model files for models no longer covered by any run snapshot.
         if benchmark.MODELS_DIR.exists():
@@ -2651,6 +3062,16 @@ def _rebuild_per_model_files():
                 model = pm.get("model")
                 if model and model not in shared_models:
                     os.remove(pm_path)
+        if multistep_benchmark.MODELS_DIR.exists():
+            for pm_path in multistep_benchmark.MODELS_DIR.glob("multistep_*.json"):
+                try:
+                    with open(pm_path) as f:
+                        pm = json.load(f)
+                except Exception:
+                    continue
+                model = pm.get("model")
+                if model and model not in multistep_models:
+                    os.remove(pm_path)
     except Exception as e:
         print(f"[results] _rebuild_per_model_files error: {e}")
 
@@ -2665,7 +3086,13 @@ def get_result_detail(filename):
         # NOTE: "shared_llm_" MUST be checked before "shared_" because run files
         # are named "shared_llm_benchmarks_*.json" and would otherwise be
         # misrouted to the per-model MODELS_DIR (which only holds "shared_<model>.json").
-        if filename.startswith("shared_llm_"):
+        # Same pattern for MultiStep: run snapshots are "multistep_benchmarks_*",
+        # per-model files are "multistep_<model>.json".
+        if filename.startswith("multistep_benchmarks_"):
+            file_path = multistep_benchmark.RESULTS_DIR / filename
+        elif filename.startswith("multistep_"):
+            file_path = multistep_benchmark.MODELS_DIR / filename
+        elif filename.startswith("shared_llm_"):
             file_path = shared_llm_benchmark.RESULTS_DIR / filename
         elif filename.startswith("shared_"):
             file_path = shared_llm_benchmark.MODELS_DIR / filename
@@ -2678,8 +3105,14 @@ def get_result_detail(filename):
             return jsonify({"error": "Result file not found"}), 404
 
         if request.method == "DELETE":
-            was_run_snapshot = bool(filename.startswith("benchmarks_") or filename.startswith("shared_llm_benchmarks_"))
-            was_per_model = bool(filename.startswith("general_") or filename.startswith("shared_"))
+            was_run_snapshot = bool(
+                filename.startswith("benchmarks_")
+                or filename.startswith("shared_llm_benchmarks_")
+                or filename.startswith("multistep_benchmarks_")
+            )
+            was_per_model = bool(
+                filename.startswith("general_") or filename.startswith("shared_") or filename.startswith("multistep_")
+            )
             affected_models = set()
             try:
                 with open(file_path) as f:
@@ -2723,6 +3156,16 @@ def get_result_detail(filename):
                                 json.dump(ldoc, f, indent=2, default=str)
                         except Exception:
                             pass
+                    latest_ms = multistep_benchmark.RESULTS_DIR / "all_multistep_benchmarks_latest.json"
+                    if latest_ms.exists():
+                        try:
+                            with open(latest_ms) as f:
+                                ldoc = json.load(f)
+                            ldoc["results"] = [m for m in ldoc.get("results", []) if m.get("model") != am]
+                            with open(latest_ms, "w") as f:
+                                json.dump(ldoc, f, indent=2, default=str)
+                        except Exception:
+                            pass
 
             with contextlib.suppress(Exception):
                 model_tracker.scan_historical_benchmarks()
@@ -2731,6 +3174,8 @@ def get_result_detail(filename):
 
         with open(file_path) as f:
             data = json.load(f)
+        if filename.startswith("multistep"):
+            data = _annotate_multistep_artifact_urls(data)
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -3418,16 +3863,7 @@ def download_logs():
     """Download historical proxy logs as a text file"""
     import httpx
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version")
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return "Proxy server offline", 503
@@ -3457,16 +3893,7 @@ def restart_proxy_services():
     import httpx
 
     # 1. Try to find the active proxy and call /admin/restart
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if proxy_url:
         try:
@@ -3502,16 +3929,7 @@ def get_active_requests():
     """Fetch active and recently completed requests from the proxy"""
     import httpx
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
@@ -3526,6 +3944,11 @@ def get_active_requests():
                 online = get_online_requests()
                 data.setdefault("active_requests", []).extend(online.get("active_requests", []))
                 data.setdefault("completed_requests", []).extend(online.get("completed_requests", []))
+                # Merge proxy + online entries into a single time-ordered list so the
+                # dashboard's newest-first render does not put stale entries on top
+                # (online entries are appended after the proxy's, not interleaved).
+                data["active_requests"].sort(key=lambda r: r.get("started_at") or 0)
+                data["completed_requests"].sort(key=lambda r: r.get("completed_at") or 0)
                 return jsonify(data)
             else:
                 return jsonify({"error": f"Proxy returned status {resp.status_code}"}), resp.status_code
@@ -3538,16 +3961,7 @@ def clear_completed_requests():
     """Clear completed requests buffer in the proxy"""
     import httpx
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
@@ -3585,10 +3999,6 @@ def cancel_stuck_request():
     for url in benchmark.PROXY_SERVER_URLS:
         try:
             with httpx.Client(timeout=3.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code != 200:
-                    continue
-
                 resp = client.delete(f"{url}/admin/requests/{request_id}")
                 if resp.status_code == 200:
                     return jsonify(resp.json())
@@ -3634,10 +4044,6 @@ def resubmit_stuck_request(request_id):
     for url in benchmark.PROXY_SERVER_URLS:
         try:
             with httpx.Client(timeout=3.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code != 200:
-                    continue
-
                 # Try persistent resubmit storage first (never rotates out)
                 resp = client.get(f"{url}/admin/resubmit/{request_id}")
                 if resp.status_code == 200:
@@ -3741,13 +4147,7 @@ def get_telemetry_history():
         try:
             import httpx
 
-            proxy_url = None
-            for url in benchmark.PROXY_SERVER_URLS:
-                with httpx.Client(timeout=0.5) as client:
-                    resp = client.get(f"{url}/api/version")
-                    if resp.status_code == 200:
-                        proxy_url = url
-                        break
+            proxy_url = _find_proxy_url()
             if proxy_url:
                 with httpx.Client(timeout=1.0) as client:
                     resp = client.get(f"{proxy_url}/admin/runtime")
@@ -3825,13 +4225,7 @@ def get_telemetry_recommendations():
         try:
             import httpx
 
-            proxy_url = None
-            for url in benchmark.PROXY_SERVER_URLS:
-                with httpx.Client(timeout=0.5) as client:
-                    resp = client.get(f"{url}/api/version")
-                    if resp.status_code == 200:
-                        proxy_url = url
-                        break
+            proxy_url = _find_proxy_url()
             if proxy_url:
                 with httpx.Client(timeout=1.0) as client:
                     resp = client.get(f"{proxy_url}/admin/runtime")
@@ -4055,19 +4449,18 @@ def _get_currently_loaded_model():
     """Return the name of the model currently loaded in the proxy, or None."""
     import httpx
 
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code != 200:
-                    continue
-                resp = client.get(f"{url}/admin/runtime", timeout=3.0)
-                if resp.status_code == 200:
-                    loaded = resp.json().get("loaded_models", [])
-                    if loaded:
-                        return loaded[0].get("name") or loaded[0].get("backend_model")
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
+    if not proxy_url:
+        return None
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{proxy_url}/admin/runtime")
+            if resp.status_code == 200:
+                loaded = resp.json().get("loaded_models", [])
+                if loaded:
+                    return loaded[0].get("name") or loaded[0].get("backend_model")
+    except Exception:
+        pass
     return None
 
 
@@ -4237,16 +4630,7 @@ def get_model_usage():
     """Get model usage statistics from the proxy"""
     import httpx
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
@@ -4272,16 +4656,7 @@ def switch_model():
     if not model:
         return jsonify({"error": "model is required"}), 400
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
@@ -4307,16 +4682,7 @@ def unload_model():
     if not model:
         return jsonify({"error": "model is required"}), 400
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
@@ -4337,16 +4703,7 @@ def clear_vram():
     """Clear VRAM via the proxy"""
     import httpx
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Could not connect to any proxy endpoints."}), 503
@@ -4371,16 +4728,7 @@ def get_model_errors():
     error_type = request.args.get("error_type")
     limit = request.args.get("limit", "100")
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         # Fall back to reading the JSONL file directly if proxy is unreachable
@@ -4427,16 +4775,7 @@ def clear_model_errors():
     """Clear in-memory error buffer via the proxy."""
     import httpx
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Proxy unreachable"}), 503
@@ -4458,16 +4797,7 @@ def delete_model():
     if not model:
         return jsonify({"error": "model is required"}), 400
 
-    proxy_url = None
-    for url in benchmark.PROXY_SERVER_URLS:
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(f"{url}/api/version", timeout=1.0)
-                if resp.status_code == 200:
-                    proxy_url = url
-                    break
-        except Exception:
-            continue
+    proxy_url = _find_proxy_url()
 
     if not proxy_url:
         return jsonify({"error": "Could not connect to any proxy endpoints."}), 503

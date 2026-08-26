@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabBtnRequests = document.getElementById('tab-btn-requests');
     const tabBtnDocs = document.getElementById('tab-btn-docs');
     const tabBtnSd = document.getElementById('tab-btn-sd');
+    const tabBtnAudio = document.getElementById('tab-btn-audio');
     const viewMonitor = document.getElementById('view-monitor');
     const viewGeneral = document.getElementById('view-general');
     const viewShared = document.getElementById('view-shared');
@@ -34,6 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewRequests = document.getElementById('view-requests');
     const viewDocs = document.getElementById('view-docs');
     const viewImageStudio = document.getElementById('view-image-studio');
+    const viewAudio = document.getElementById('view-audio');
 
 
     // Controls Elements
@@ -48,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const modeDirectBtn = document.getElementById('mode-direct-btn');
     const btnRun = document.getElementById('btn-run');
     const btnRunShared = document.getElementById('btn-run-shared');
+    const btnRunMultistep = document.getElementById('btn-run-multistep');
     const btnRunOutdated = document.getElementById('btn-run-outdated');
     const headerLogoutBtn = document.getElementById('header-logout-btn');
 
@@ -144,6 +147,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let benchmarkMode = 'proxy'; // 'proxy' or 'direct'
     let availableModels = [];
     let currentResults = []; // Currently loaded run results
+    // Per-run trend data collected from run snapshots (not per-model aggregates):
+    // entries {label, model, score} where label is the run's timestamp.
+    const TREND_DATA = { general: [], shared: [] };
+    const TREND_CHARTS = { general: null, shared: null };
+    const RADAR_CHARTS = {};
+    // Chart.js palette for per-model trend lines (cycled).
+    const TREND_COLORS = ['#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444',
+        '#3b82f6', '#ec4899', '#84cc16', '#f97316', '#14b8a6'];
     let currentSharedResults = [];
     let monitorIntervalId = null;
 
@@ -186,6 +197,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tabBtnRequests.classList.remove('active');
         tabBtnDocs.classList.remove('active');
         tabBtnSd.classList.remove('active');
+        tabBtnAudio.classList.remove('active');
 
         // Hide views
         viewMonitor.classList.add('d-none');
@@ -196,6 +208,7 @@ document.addEventListener('DOMContentLoaded', () => {
         viewRequests.classList.add('d-none');
         viewDocs.classList.add('d-none');
         viewImageStudio.classList.add('d-none');
+        viewAudio.classList.add('d-none');
         
         // Stop both polls to start clean
         stopMonitorPolling();
@@ -234,6 +247,10 @@ document.addEventListener('DOMContentLoaded', () => {
             tabBtnSd.classList.add('active');
             viewImageStudio.classList.remove('d-none');
             loadSdModels();
+        } else if (tabName === 'audio') {
+            tabBtnAudio.classList.add('active');
+            viewAudio.classList.remove('d-none');
+            initAudioStudio();
         }
         document.dispatchEvent(new CustomEvent('tabChanged', { detail: tabName }));
     }
@@ -246,6 +263,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tabBtnRequests.addEventListener('click', () => switchTab('requests'));
     tabBtnDocs.addEventListener('click', () => switchTab('docs'));
     tabBtnSd.addEventListener('click', () => switchTab('sd'));
+    tabBtnAudio.addEventListener('click', () => switchTab('audio'));
 
     // Image Studio (Stable Diffusion)
     async function loadSdModels() {
@@ -1724,35 +1742,36 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalThinking = document.getElementById('modal-thinking');
     const modalThinkingSection = document.getElementById('modal-thinking-section');
 
-    function openModal(prompt, rawResponse) {
+    function openModal(prompt, rawResponse, thinking) {
         modalPrompt.textContent = prompt || 'No prompt recorded.';
 
-        // Parse out <think>...</think> block if present with error handling
+        // Parse out <think>...</think> block if present, or use separate thinking field
+        // (when --reasoning-format deepseek routes thoughts to message.thinking).
         let thinkingContent = '';
         let actualResponse = '';
         let thinkingBlockFound = false;
-        
-        if (rawResponse) {
+
+        if (thinking) {
+            thinkingContent = String(thinking).trim();
+            thinkingBlockFound = !!thinkingContent;
+            actualResponse = rawResponse ? String(rawResponse).trim() : '';
+        } else if (rawResponse) {
             try {
                 const thinkMatch = rawResponse.match(/<think>([\s\S]*?)<\/think>/i);
                 if (thinkMatch) {
                     thinkingBlockFound = true;
                     thinkingContent = thinkMatch[1].trim();
-                    // Actual response is everything after the closing </think>
                     const remainingContent = rawResponse.replace(/<think>[\s\S]*?<\/think>/i, '');
                     actualResponse = remainingContent.trim();
                 } else {
-                    // No thinking block, use entire response
                     actualResponse = rawResponse.trim();
                 }
             } catch (error) {
-                // If parsing fails, use the raw response as-is
                 actualResponse = rawResponse ? rawResponse.trim() : '';
                 console.warn('Error parsing thinking block:', error);
             }
         }
 
-        // Fallback for thinking block
         if (thinkingBlockFound) {
             modalThinking.textContent = thinkingContent || '(empty thinking block)';
             modalThinkingSection.style.display = '';
@@ -1910,6 +1929,13 @@ document.addEventListener('DOMContentLoaded', () => {
         return Array.from(boxes).map(box => box.value);
     }
 
+    function getSelectedMultistepWorkflows() {
+        const container = document.getElementById('multistep-workflow-checkboxes');
+        if (!container) return [];
+        const boxes = container.querySelectorAll('input[type="checkbox"]:checked');
+        return Array.from(boxes).map(box => box.value);
+    }
+
     function getSelectedModels() {
         const boxes = modelCheckboxes.querySelectorAll('input[type="checkbox"]:checked');
         return Array.from(boxes).map(box => box.value);
@@ -2022,7 +2048,7 @@ document.addEventListener('DOMContentLoaded', () => {
             proxyConnectionTitle.textContent = `Alpaca Proxy Monitor [Online]`;
             
             const downloadLogsBtn = document.getElementById('btn-download-logs');
-            if (downloadLogsBtn) downloadLogsBtn.style.display = 'inline-block';
+            if (downloadLogsBtn) downloadLogsBtn.style.display = 'flex';
             
             // Format uptime
             const uptimeSec = data.metrics.uptime_seconds || 0;
@@ -2342,7 +2368,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function startMonitorPolling() {
         if (!monitorIntervalId) {
             pollProxyStatus(); // immediate load
-            monitorIntervalId = setInterval(pollProxyStatus, 2000);
+            // Visibility-aware: skip network churn while the page is hidden.
+            monitorIntervalId = setInterval(() => { if (!document.hidden) pollProxyStatus(); }, 2000);
         }
     }
 
@@ -2358,12 +2385,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let allRequestsMap = {};
     let lastActiveList = [];
     let lastCompletedList = [];
+    let requestsServerContext = null;
 
     function startRequestsPolling() {
         if (!requestsIntervalId) {
             setupRequestsControls();
             pollRequestsStatus(); // immediate load
-            requestsIntervalId = setInterval(pollRequestsStatus, 2000);
+            // Visibility-aware: skip network churn while the page is hidden.
+            requestsIntervalId = setInterval(() => { if (!document.hidden) pollRequestsStatus(); }, 2000);
         }
     }
 
@@ -2374,7 +2403,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function showToast(message, type = 'info') {
+    function showToast(message, type = 'info', opts = {}) {
         const toast = document.createElement('div');
         const colors = {
             success: { bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.3)', color: '#6ee7b7' },
@@ -2386,15 +2415,31 @@ document.addEventListener('DOMContentLoaded', () => {
             position: 'fixed', bottom: '1rem', right: '1rem', padding: '0.6rem 1rem',
             background: c.bg, border: `1px solid ${c.border}`, borderRadius: '8px',
             color: c.color, fontSize: '0.8rem', zIndex: '10000',
-            fontFamily: 'system-ui, sans-serif', boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+            fontFamily: 'system-ui, sans-serif', boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            display: 'flex', alignItems: 'center', gap: '0.75rem', maxWidth: 'min(92vw, 420px)'
         });
-        toast.textContent = message;
-        document.body.appendChild(toast);
-        setTimeout(() => {
+        const msgSpan = document.createElement('span');
+        msgSpan.textContent = message;
+        msgSpan.style.wordBreak = 'break-word';
+        toast.appendChild(msgSpan);
+        if (opts.actionLabel && typeof opts.onAction === 'function') {
+            const actBtn = document.createElement('button');
+            actBtn.className = 'btn btn-sm btn-ghost';
+            actBtn.textContent = opts.actionLabel;
+            actBtn.style.flex = '0 0 auto';
+            actBtn.addEventListener('click', () => { opts.onAction(); dismissToast(); });
+            toast.appendChild(actBtn);
+        }
+        let dismissed = false;
+        function dismissToast() {
+            if (dismissed) return;
+            dismissed = true;
             toast.style.opacity = '0';
             toast.style.transition = 'opacity 0.3s ease';
             setTimeout(() => toast.remove(), 300);
-        }, 3000);
+        }
+        document.body.appendChild(toast);
+        setTimeout(dismissToast, opts.duration || 3000);
     }
 
 
@@ -2408,6 +2453,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             lastActiveList = data.active_requests || [];
             lastCompletedList = data.completed_requests || [];
+            requestsServerContext = data.server_context || null;
             
             const newRequestsMap = {};
             lastActiveList.forEach(r => {
@@ -2570,6 +2616,18 @@ document.addEventListener('DOMContentLoaded', () => {
             div.style.borderLeft = '3px solid rgba(139, 92, 246, 0.7)';
         }
 
+        // Failed request marker: red FAILED chip + accent border so empty-output
+        // rows are instantly recognizable as errors, with the reason in the inspector.
+        const failedBadge = document.createElement('span');
+        if (!isActive && req.error) {
+            failedBadge.className = 'badge badge-danger';
+            failedBadge.style.fontSize = '0.6rem';
+            failedBadge.style.padding = '0.1rem 0.35rem';
+            failedBadge.textContent = 'FAILED';
+            failedBadge.title = String(req.error);
+            div.style.borderLeft = '3px solid var(--color-danger, #ef4444)';
+        }
+
         const timeSpan = document.createElement('span');
         timeSpan.style.cssText = 'font-size: 0.65rem; color: var(--text-muted);';
         
@@ -2581,6 +2639,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         headerDiv.appendChild(typeBadge);
+        if (!isActive && req.error) headerDiv.appendChild(failedBadge);
         headerDiv.appendChild(timeSpan);
 
         const modelDiv = document.createElement('div');
@@ -2750,6 +2809,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeEl) typeEl.textContent = req.type;
         if (originEl) originEl.textContent = req.request_source || 'unknown';
         if (ipEl) ipEl.textContent = req.client_ip || 'unknown';
+        const clientHostEl = document.getElementById('inspect-client-host');
+        const hostIpsEl = document.getElementById('inspect-host-ip');
+        const externalIpEl = document.getElementById('inspect-external-ip');
+        if (clientHostEl) clientHostEl.textContent = req.client_host || '-';
+        if (hostIpsEl) {
+            hostIpsEl.textContent =
+                requestsServerContext && Array.isArray(requestsServerContext.host_ips)
+                    ? requestsServerContext.host_ips.join(', ')
+                    : '-';
+        }
+        if (externalIpEl) externalIpEl.textContent = requestsServerContext?.external_ip || '-';
         if (ttftEl) ttftEl.textContent = req.ttft_seconds ? `${req.ttft_seconds}s` : '-';
         if (tpsEl) tpsEl.textContent = req.tps ? `${req.tps} tok/s` : '-';
         
@@ -2794,7 +2864,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 responseEl.innerHTML = html;
             } else {
                 const isNearBottom = responseEl.scrollHeight - responseEl.clientHeight - responseEl.scrollTop < 40;
-                responseEl.textContent = req.response || (req.completed_at ? '(No Output)' : 'Generating output...');
+                if (req.response) {
+                    responseEl.textContent = req.response;
+                } else if (req.error) {
+                    // Failed request: surface WHY there is no output instead of a bare placeholder.
+                    const reason = String(req.error).replace(/[<>&]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;'}[c]));
+                    responseEl.innerHTML =
+                        `<div class="request-error-note" style="border:1px solid var(--color-danger, #ef4444); background:rgba(239,68,68,0.08); color:var(--color-danger, #f87171); border-radius:6px; padding:0.5rem 0.75rem; font-size:0.85rem;">` +
+                        `<strong style="text-transform:uppercase; letter-spacing:0.04em;">Request failed</strong>` +
+                        `<div style="margin-top:0.25rem; white-space:pre-wrap; word-break:break-word;">${reason}</div></div>`;
+                } else {
+                    responseEl.textContent = req.completed_at ? '(No Output)' : 'Generating output...';
+                }
                 if (isNearBottom || !req.completed_at) {
                     responseEl.scrollTop = responseEl.scrollHeight;
                 }
@@ -2804,62 +2885,76 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let requestsControlsSetup = false;
     function setupRequestsControls() {
-        if (requestsControlsSetup) return;
-        requestsControlsSetup = true;
-
         const timezoneSelect = document.getElementById('requests-timezone-select');
-        if (timezoneSelect && timezoneSelect.options.length === 0) {
-            // Add default browser local timezone
-            const localOption = document.createElement('option');
-            localOption.value = 'local';
-            localOption.textContent = `Local Time (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
-            timezoneSelect.appendChild(localOption);
+        if (!timezoneSelect) return; // DOM not ready yet; retry next call
 
-            // Add UTC option
-            const utcOption = document.createElement('option');
-            utcOption.value = 'UTC';
-            utcOption.textContent = 'UTC';
-            timezoneSelect.appendChild(utcOption);
+        // Populate options once. The guard resets if the select is ever found
+        // empty again (e.g. markup replaced), so restore/listener are re-applied.
+        if (timezoneSelect.options.length === 0) {
+            requestsControlsSetup = false;
+        }
+        if (requestsControlsSetup && timezoneSelect.dataset.tzWired === '1') return;
+        requestsControlsSetup = true;
+        timezoneSelect.dataset.tzWired = '1';
+        // Add default browser local timezone
+        const localOption = document.createElement('option');
+        localOption.value = 'local';
+        localOption.textContent = `Local Time (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+        timezoneSelect.appendChild(localOption);
 
-            // Add all other supported timezones
-            try {
-                const timezones = Intl.supportedValuesOf('timeZone');
-                timezones.forEach(tz => {
-                    if (tz !== 'UTC') { // Already added UTC
-                        const opt = document.createElement('option');
-                        opt.value = tz;
-                        opt.textContent = tz;
-                        timezoneSelect.appendChild(opt);
-                    }
-                });
-            } catch (e) {
-                // Fallback common timezones if Intl.supportedValuesOf is not supported
-                const fallbackTz = [
-                    "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
-                    "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata", "Australia/Sydney"
-                ];
-                fallbackTz.forEach(tz => {
+        // Add UTC option
+        const utcOption = document.createElement('option');
+        utcOption.value = 'UTC';
+        utcOption.textContent = 'UTC';
+        timezoneSelect.appendChild(utcOption);
+
+        // Add all other supported timezones
+        try {
+            const timezones = Intl.supportedValuesOf('timeZone');
+            timezones.forEach(tz => {
+                if (tz !== 'UTC') { // Already added UTC
                     const opt = document.createElement('option');
                     opt.value = tz;
                     opt.textContent = tz;
                     timezoneSelect.appendChild(opt);
-                });
-            }
-
-            // Restore selection from localStorage
-            const savedTz = localStorage.getItem('alpaca_requests_timezone');
-            if (savedTz) {
-                timezoneSelect.value = savedTz;
-            }
-            
-            timezoneSelect.addEventListener('change', () => {
-                localStorage.setItem('alpaca_requests_timezone', timezoneSelect.value);
-                renderRequestsLists(lastActiveList, lastCompletedList);
-                if (selectedRequestId && allRequestsMap[selectedRequestId]) {
-                    updateInspectorDetails(allRequestsMap[selectedRequestId]);
                 }
             });
+        } catch (e) {
+            // Fallback common timezones if Intl.supportedValuesOf is not supported
+            const fallbackTz = [
+                "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+                "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata", "Australia/Sydney"
+            ];
+            fallbackTz.forEach(tz => {
+                const opt = document.createElement('option');
+                opt.value = tz;
+                opt.textContent = tz;
+                timezoneSelect.appendChild(opt);
+            });
         }
+
+        // Restore selection from localStorage; drop stale keys whose saved
+        // value no longer matches any option so the select stays usable.
+        const savedTz = localStorage.getItem('alpaca_requests_timezone');
+        if (savedTz) {
+            if ([...timezoneSelect.options].some(o => o.value === savedTz)) {
+                timezoneSelect.value = savedTz;
+            } else {
+                localStorage.removeItem('alpaca_requests_timezone');
+            }
+        }
+
+        // Delegated listener: matches by id so it keeps working even if the
+        // select element is ever replaced after setup ran.
+        document.addEventListener('change', (ev) => {
+            if (!ev.target || ev.target.id !== 'requests-timezone-select') return;
+            const sel = document.getElementById('requests-timezone-select');
+            localStorage.setItem('alpaca_requests_timezone', sel ? sel.value : 'local');
+            renderRequestsLists(lastActiveList, lastCompletedList);
+            if (selectedRequestId && allRequestsMap[selectedRequestId]) {
+                updateInspectorDetails(allRequestsMap[selectedRequestId]);
+            }
+        });
 
         document.getElementById('requests-search-input')?.addEventListener('input', () => {
             renderRequestsLists(lastActiveList, lastCompletedList);
@@ -2905,6 +3000,55 @@ document.addEventListener('DOMContentLoaded', () => {
         setupCopyButton('btn-copy-prompt', 'inspect-prompt');
         setupCopyButton('btn-copy-thinking', 'inspect-thinking');
         setupCopyButton('btn-copy-response', 'inspect-response');
+
+        document.getElementById('btn-copy-request-details')?.addEventListener('click', async () => {
+            const req = allRequestsMap[selectedRequestId];
+            if (!req) return;
+            const cap = (text, max = 8000) => {
+                const s = String(text ?? '');
+                return s.length > max ? `${s.slice(0, max)}... [truncated]` : s;
+            };
+            const ctx = requestsServerContext || {};
+            const lines = [
+                `Request ID: ${req.request_id}`,
+                `Type: ${req.type}`,
+                `Model: ${req.model || '-'}`,
+                `Initiated: ${formatInitiatedTime(req.started_at)}`,
+                req.completed_at
+                    ? `Duration: ${req.duration_seconds}s (Finished)`
+                    : `Duration: ${Math.round(Date.now() / 1000 - (req.started_at || 0))}s (Active)`,
+                `Origin: ${req.request_source || 'unknown'}`,
+                `Client Host: ${req.client_host || '-'}`,
+                `Client IP: ${req.client_ip || '-'}`,
+                `Host IPs: ${(Array.isArray(ctx.host_ips) ? ctx.host_ips.join(', ') : '') || '-'}`,
+                `External IP: ${ctx.external_ip || '-'}`,
+                `TTFT: ${req.ttft_seconds ? `${req.ttft_seconds}s` : '-'}`,
+                `TPS: ${req.tps ? `${req.tps} tok/s` : '-'}`,
+            ];
+            if (req.error) {
+                lines.push(`Error: ${cap(req.error)}`);
+            }
+            lines.push('', '--- Prompt ---', cap(req.prompt || '(Empty Prompt)'));
+            if (req.thinking) {
+                lines.push('', '--- Thinking ---', cap(req.thinking));
+            }
+            lines.push('', '--- Response ---', cap(req.response || '(No Response)'));
+            const text = lines.join('\n');
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch (err) {
+                // Clipboard API may be unavailable (insecure origin/permissions); fall back.
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                ta.remove();
+            }
+            showToast('Request details copied to clipboard', 'success');
+        });
     }
 
     // Fetch and display available models in configurations sidebar with lifecycle tracking
@@ -3239,6 +3383,16 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/'/g, '&#39;');
     }
 
+    function gradeForScore(score) {
+        if (score === undefined || score === null || Number.isNaN(Number(score))) return '—';
+        const p = Number(score);
+        if (p >= 90) return 'A';
+        if (p >= 80) return 'B';
+        if (p >= 70) return 'C';
+        if (p >= 60) return 'D';
+        return 'F';
+    }
+
     let ALL_TESTS = [];
     let TEST_BROWSER_FILTER = { q: '', kind: 'all', status: 'all', model: '' };
 
@@ -3277,6 +3431,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="test-card-footer">
                 <div class="test-card-cat">${escapeHtml((t.category || '').toUpperCase())}</div>
                 ${runsBadge}
+                <button class="test-card-run-btn" title="Run the winning model's code in an expanded window / terminal">▶ Run</button>
             </div>
         </div>`;
     }
@@ -3286,18 +3441,64 @@ document.addEventListener('DOMContentLoaded', () => {
         const scores = t.models_scores || {};
         if (!tested.length) return '';
         const saved = _loadHumanRatings(t.id) || {};
-        const rated = tested
-            .filter((m) => (saved[m] || 0) > 0)
-            .sort((a, b) => (saved[b] || 0) - (saved[a] || 0) || (scores[b] || 0) - (scores[a] || 0));
-        if (!rated.length) return '';
-        const best = rated[0];
+        const tokens = t.models_tokens || {};
+        const latencies = t.models_latency || {};
+        const speeds = t.models_speed || {};
+        const passed = t.models_passed || [];
+        // A "physical" score is a concrete benchmark score that clears the
+        // passing bar — only then is a model genuinely the winner. If no model
+        // has passed (all attempts failed the expectations / lint / run), the
+        // benchmark is still "undefeated": show that state instead of crowning
+        // a winner that doesn't exist.
+        const winners = tested.filter((m) => passed.includes(m));
+        if (!winners.length) {
+            const bestScore = tested
+                .map((m) => ({ m, s: Number(scores[m]) || 0 }))
+                .sort((a, b) => b.s - a.s)[0];
+            const bestTxt = bestScore ? `${Math.round(bestScore.s)}` : '—';
+            return `<div class="test-card-ratings">
+                <div class="top-rated undefeated" title="No model has passed this benchmark yet — it's still undefeated">
+                    <span class="top-rated-label">🛡️ Unbeaten</span>
+                    <span class="top-rated-score">best attempt ${bestTxt}</span>
+                </div>
+            </div>`;
+        }
+        // Winning model: highest total points — benchmark score plus the
+        // human star bonus (30/star, 15/half star, 150 for all five).
+        // Unrated models rank on their plain benchmark score.
+        const best = winners.slice().sort((a, b) =>
+            _modelTotalPoints(b, scores, saved) - _modelTotalPoints(a, scores, saved)
+        )[0];
         const bestScore = scores[best] != null ? Math.round(Number(scores[best])) : '—';
+        const starCount = saved[best] || 0;
+        const totalPts = _modelTotalPoints(best, scores, saved);
+        const starsHtml = starCount > 0
+            ? `<span class="top-rated-human" title="Human rating: ${starCount}/5 (+${_starPoints(starCount)} pts)">${_starDisplayHtml(starCount)}</span>`
+            : `<span class="top-rated-human unrated" title="No human rating yet">☆☆☆☆☆</span>`;
+        const scoreHtml = starCount > 0
+            ? `<span class="top-rated-score" title="${bestScore} code + ${_starPoints(starCount)} star points = ${totalPts} ranking points">${totalPts} pts</span>`
+            : `<span class="top-rated-score" title="Benchmark score (no human rating yet)">score ${bestScore}</span>`;
+        const specParts = [];
+        if (tokens[best] != null && Number.isFinite(Number(tokens[best]))) {
+            specParts.push(`⚡ ${Number(tokens[best]).toLocaleString()} tok`);
+        }
+        const timeSec = latencies[best] != null ? Number(latencies[best]) : null;
+        if (timeSec != null && Number.isFinite(timeSec)) {
+            specParts.push(`⏱ ${timeSec >= 60 ? (timeSec / 60).toFixed(1) + 'm' : timeSec.toFixed(1) + 's'}`);
+        }
+        if (speeds[best] != null && Number.isFinite(Number(speeds[best]))) {
+            specParts.push(`🚀 ${Number(speeds[best]).toFixed(1)} tok/s`);
+        }
+        const specsHtml = specParts.length
+            ? `<span class="top-rated-specs">${specParts.join(' · ')}</span>`
+            : '';
         return `<div class="test-card-ratings">
-            <div class="top-rated" title="Highest human-rated model — click to rate/view all models">
+            <div class="top-rated" title="Winning model: ${escapeHtml(best)} — click to preview/rate/view all models">
                 <span class="top-rated-label">🏆 ${escapeHtml(truncateModelName(best))}</span>
-                <span class="top-rated-score">score ${bestScore}</span>
-                <span class="top-rated-human">${'★'.repeat(saved[best])}</span>
+                ${scoreHtml}
+                ${starsHtml}
             </div>
+            ${specsHtml}
         </div>`;
     }
 
@@ -3309,6 +3510,68 @@ document.addEventListener('DOMContentLoaded', () => {
             return all[testId] || {};
         } catch (e) {
             return {};
+        }
+    }
+
+    // Human star ratings convert into ranking points on top of the benchmark
+    // (code) score: each full star is worth 30 points, a half star 15, so all
+    // 5 stars add up to 150. A model's ranking total for a benchmark is its
+    // benchmark score plus its star points; unrated models simply keep their
+    // raw code score.
+    const STAR_POINTS_PER_STAR = 30;
+
+    function _starPoints(stars) {
+        return Math.round((Number(stars) || 0) * STAR_POINTS_PER_STAR);
+    }
+
+    function _modelTotalPoints(model, scores, ratings) {
+        const codeScore = Number(scores ? scores[model] : 0) || 0;
+        return Math.round(codeScore) + _starPoints(ratings ? ratings[model] : 0);
+    }
+
+    // Run the winning model's generated code from a Test Browser card directly,
+    // mirroring the featured "winner" action inside the preview modal: HTML/JS UI
+    // opens in a new browser window, non-HTML UI launches the sandbox viewer,
+    // and CLI code runs in the terminal. Rerunning a benchmark is done from the
+    // preview modal ("Rerun for selected models") where the stats table lives.
+    async function runWinningFromCard(t, anchorBtn) {
+        const originalLabel = anchorBtn.textContent;
+        anchorBtn.disabled = true;
+        anchorBtn.innerHTML = '<span class="loader"></span>';
+        try {
+            const res = await fetch(`/api/tests/${encodeURIComponent(t.id)}/responses`);
+            if (!res.ok) throw new Error('Failed to load stored results');
+            const data = await res.json();
+            const responses = Array.isArray(data) ? data : (data.responses || []);
+            const scores = t.models_scores || {};
+            // Same ranking as the card winner: benchmark score + star bonus.
+            const savedRatings = _loadHumanRatings(t.id) || {};
+            let winnerName = null;
+            (t.models_tested || []).forEach((m) => {
+                if (winnerName === null) winnerName = m;
+                else if (_modelTotalPoints(m, scores, savedRatings) > _modelTotalPoints(winnerName, scores, savedRatings)) winnerName = m;
+            });
+            const winnerRow = winnerName === null || !responses.length
+                ? null
+                : responses.find((r) => r.model === winnerName) || responses[0];
+            if (!winnerRow || !winnerRow.response) {
+                showToast('No stored result to run for this benchmark yet.', 'error');
+                return;
+            }
+            const isUi = t.type === 'ui';
+            const isHtml = !!winnerRow.is_html;
+            if (isHtml) {
+                openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking);
+            } else if (isUi) {
+                openUiViewer(winnerRow.response, winnerRow.model, winnerRow.thinking);
+            } else {
+                openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking);
+            }
+        } catch (err) {
+            showToast(`Failed to run winning result: ${err.message}`, 'error');
+        } finally {
+            anchorBtn.disabled = false;
+            anchorBtn.textContent = originalLabel;
         }
     }
 
@@ -3332,6 +3595,60 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Render 5 star slots with fractional fill (0.0–5.0 in 0.5 steps).
+    // Each slot draws an SVG star twice: a gray base plus a gold overlay
+    // clipped with clip-path inset, so a 0.5 rating is an exact half star
+    // (font-metrics independent — text-clipping rendered ~2/3 instead).
+    const STAR_SVG_PATH = 'M12 2.2l2.98 6.04 6.67.97-4.83 4.7 1.14 6.64L12 17.42l-5.96 3.13 1.14-6.64-4.83-4.7 6.67-.97z';
+
+    function _starDisplayHtml(rating, interactive) {
+        const r = Math.max(0, Math.min(5, Number(rating) || 0));
+        const slots = [];
+        for (let pos = 1; pos <= 5; pos++) {
+            const frac = Math.max(0, Math.min(1, r - (pos - 1)));
+            const attrs = interactive
+                ? ' role="button" tabindex="0" title="Rate 1–5 (click left half for .5)"'
+                : '';
+            slots.push(
+                `<span class="star-slot" data-pos="${pos}"${attrs} aria-label="${r}/5">` +
+                    `<svg class="star-svg" viewBox="0 0 24 24" aria-hidden="true">` +
+                        `<path class="star-bg" d="${STAR_SVG_PATH}"></path>` +
+                        (frac > 0
+                            ? `<path class="star-fill" style="clip-path:inset(0 ${(100 - frac * 100).toFixed(2)}% 0 0)" d="${STAR_SVG_PATH}"></path>`
+                            : '') +
+                    `</svg>` +
+                `</span>`
+            );
+        }
+        return slots.join('');
+    }
+
+    // Wire click/keyboard interaction on .star-slot elements inside a container.
+    // Clicking the left half of a star sets that star minus 0.5; the right half
+    // sets the full star. onChange receives the new rating (0.5 increments).
+    function _bindStarSlots(container, onChange) {
+        container.querySelectorAll('.star-slot').forEach((slot) => {
+            const pos = Number(slot.dataset.pos);
+            const set = (val) => onChange(Math.max(0, Math.min(5, val)));
+            const click = (e) => {
+                e.stopPropagation();
+                const rect = slot.getBoundingClientRect();
+                const half = (e.clientX - rect.left) < rect.width / 2;
+                set(half ? pos - 0.5 : pos);
+            };
+            slot.addEventListener('click', click);
+            slot.addEventListener('keydown', (e) => {
+                if (e.key === 'ArrowLeft') { e.preventDefault(); set(pos - 0.5); }
+                else if (e.key === 'ArrowRight') { e.preventDefault(); set(pos); }
+                else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); set(pos); }
+            });
+        });
+    }
+
+    // Active preview-modal context: stored so a rating change can re-rank and
+    // re-render the featured winning result (and its screenshot) in place.
+    let ACTIVE_PREVIEW = null; // { testId, responses }
+
     function renderTestPreviewRatings(t) {
         const el = document.getElementById('test-preview-ratings');
         if (!el) return;
@@ -3341,42 +3658,134 @@ document.addEventListener('DOMContentLoaded', () => {
             el.innerHTML = '';
             return;
         }
-        const saved = _loadHumanRatings(t.id) || {};
-        const rows = tested.map((m) => {
+const saved = _loadHumanRatings(t.id) || {};
+        // Rank by total points (benchmark score + star bonus, 30/star).
+        // Unrated models keep their plain benchmark score.
+        const ranked = tested.slice().sort((a, b) =>
+            _modelTotalPoints(b, scores, saved) - _modelTotalPoints(a, scores, saved));
+        const rows = ranked.map((m, rIdx) => {
             const rating = saved[m] || 0;
             const score = scores[m] != null ? `${Math.round(Number(scores[m]))}` : '—';
-            const stars = [1, 2, 3, 4, 5].map((n) => {
-                const filled = n <= rating;
-                const cls = filled ? 'star filled' : 'star';
-                return `<span class="star" data-model="${escapeHtml(m)}" data-val="${n}" role="button" tabindex="0" title="${escapeHtml(m)}: ${n} star${n === 1 ? '' : 's'}">★</span>`;
-            }).join('');
+            const starPts = _starPoints(rating);
+            const totalPts = _modelTotalPoints(m, scores, saved);
+            const stars = _starDisplayHtml(rating, true);
+            const rank = rIdx === 0 ? '🥇' : rIdx === 1 ? '🥈' : rIdx === 2 ? '🥉' : `${rIdx + 1}`;
+            const ptsHtml = rating > 0
+                ? `<span class="rating-score" title="${score} code + ${starPts} star points">${totalPts} pts</span>`
+                : `<span class="rating-score" title="Benchmark score (no human rating yet)">${score}</span>`;
             return `<div class="rating-row" data-model="${escapeHtml(m)}">
+                <span class="rating-rank">${rank}</span>
                 <span class="rating-model" title="${escapeHtml(m)}">${escapeHtml(m)}</span>
                 <span class="rating-stars">${stars}</span>
-                <span class="rating-score">${score}</span>
+                ${ptsHtml}
             </div>`;
         }).join('');
-        el.innerHTML = `<div class="modal-section-title">Human Aesthetic Rating (per model)</div>
+
+        el.innerHTML = `<div class="modal-section-title">Human Aesthetic Rating <span style="color:var(--text-muted);font-size:0.72rem;font-weight:400;">(per model · 30 pts/star — rated models rank on code score + stars)</span></div>
             <div class="rating-list">${rows}</div>`;
-        el.querySelectorAll('.rating-stars .star').forEach((star) => {
-            const click = () => {
-                const model = star.dataset.model;
-                const val = Number(star.dataset.val);
+        el.querySelectorAll('.rating-row').forEach((row) => {
+            const model = row.dataset.model;
+            _bindStarSlots(row, (val) => {
                 _saveHumanRating(t.id, model, val);
                 renderTestPreviewRatings(t);
+                // Stars can flip the #1 — refresh the featured winning
+                // result (and its screenshot) inside the open dialog.
+                if (ACTIVE_PREVIEW && ACTIVE_PREVIEW.testId === t.id) {
+                    renderFeaturedWinner(t, ACTIVE_PREVIEW.responses);
+                }
                 renderRatingsBoard();
                 renderTestBrowser();
-            };
-            star.addEventListener('click', click);
-            star.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    click();
-                }
             });
         });
     }
 
+    // Build / rebuild the featured "🏆 Winning result" block of the preview
+    // modal. Winner = highest total points (code score + star bonus), the
+    // same ranking shown on the test card. secOverride lets the initial
+    // render target a not-yet-attached section.
+    function renderFeaturedWinner(t, responses, secOverride) {
+        const sec = secOverride || document.querySelector('#test-preview-overlay .model-outputs-section');
+        if (!sec) return;
+        const prev = sec.querySelector('.winner-result');
+        if (prev) prev.remove();
+        const passedList = t.models_passed || [];
+        const scores = t.models_scores || {};
+        const savedRatings = _loadHumanRatings(t.id) || {};
+        const candidates = (t.models_tested || []).filter((m) => passedList.includes(m));
+        if (!candidates.length) candidates.push(...(t.models_tested || []));
+        let winnerName = null;
+        candidates.forEach((m) => {
+            if (winnerName === null) winnerName = m;
+            else if (_modelTotalPoints(m, scores, savedRatings) > _modelTotalPoints(winnerName, scores, savedRatings)) winnerName = m;
+        });
+        const winnerRow = (winnerName === null || !responses.length)
+            ? null
+            : (responses.find((r) => r.model === winnerName) || responses[0]);
+        const hasPassingWinner = winnerRow && passedList.includes(winnerRow.model);
+        if (!winnerRow) return;
+        const isUi = t.type === 'ui';
+        const isHtml = !!winnerRow.is_html;
+        const starPts = _starPoints(savedRatings[winnerRow.model]);
+        const winnerWrap = document.createElement('div');
+        winnerWrap.className = hasPassingWinner ? 'winner-result' : 'winner-result undefeated';
+        winnerWrap.dataset.winnerModel = winnerRow.model;
+        const winnerTitle = document.createElement('div');
+        winnerTitle.className = 'test-preview-note';
+        winnerTitle.textContent = hasPassingWinner
+            ? `🏆 Winning result: ${winnerRow.model}` +
+                (winnerRow.score != null
+                    ? ` (${Math.round(Number(winnerRow.score))} code` + (starPts > 0 ? ` + ${starPts}★ = ${_modelTotalPoints(winnerRow.model, scores, savedRatings)} pts` : '') + ')'
+                    : '') +
+                (isUi ? ` — ${isHtml ? 'HTML/JS UI' : 'UI'} result` : ' — CLI result')
+            : `🛡️ Unbeaten — no model has passed this benchmark yet (best attempt: ${winnerRow.model})`;
+        winnerWrap.appendChild(winnerTitle);
+        const winnerBar = document.createElement('div');
+        winnerBar.className = 'att-run-bar';
+        const winRun = document.createElement('button');
+        winRun.className = 'btn-run-code';
+        if (isHtml) {
+            winRun.textContent = '▶ Play (expanded)';
+            winRun.addEventListener('click', () => openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking));
+        } else if (isUi) {
+            winRun.textContent = '🖥 View UI (expanded)';
+            winRun.addEventListener('click', () => openUiViewer(winnerRow.response, winnerRow.model, winnerRow.thinking));
+        } else {
+            winRun.textContent = '▶ Run (terminal)';
+            winRun.addEventListener('click', () => openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking));
+        }
+        winnerBar.appendChild(winRun);
+        if (winnerRow.last_run) {
+            const winDate = document.createElement('span');
+            winDate.style.marginLeft = '0.5rem';
+            winDate.style.color = 'var(--text-muted)';
+            winDate.style.fontSize = '0.72rem';
+            winDate.textContent = `ran ${String(winnerRow.last_run).replace('T', ' ').slice(0, 16)}`;
+            winnerBar.appendChild(winDate);
+        }
+        winnerWrap.appendChild(winnerBar);
+        if (isUi && winnerRow.screenshot) {
+            const shot = document.createElement('img');
+            shot.className = 'test-preview-screenshot';
+            shot.src = `data:image/png;base64,${winnerRow.screenshot}`;
+            shot.alt = `${winnerRow.model} screenshot`;
+            shot.title = 'Click to expand';
+            shot.addEventListener('click', () => openScreenshotLightbox(`data:image/png;base64,${winnerRow.screenshot}`));
+            winnerWrap.appendChild(shot);
+            const shotHint = document.createElement('div');
+            shotHint.className = 'test-preview-note';
+            shotHint.style.fontSize = '0.68rem';
+            shotHint.style.color = 'var(--text-muted)';
+            shotHint.textContent = 'Click the screenshot to open it in an expanded window.';
+            winnerWrap.appendChild(shotHint);
+        } else if (winnerRow.code_output) {
+            const outPre = document.createElement('pre');
+            outPre.className = 'code-display-block test-preview-code';
+            outPre.textContent = winnerRow.code_output.slice(0, 4000) +
+                (winnerRow.code_output.length > 4000 ? '\n… (truncated)' : '');
+            winnerWrap.appendChild(outPre);
+        }
+        sec.insertBefore(winnerWrap, sec.firstChild);
+    }
     function renderRatingsBoard() {
         const board = document.getElementById('test-ratings-board');
         if (!board) return;
@@ -3439,7 +3848,7 @@ document.addEventListener('DOMContentLoaded', () => {
             })).sort((x, y) => y.rating - x.rating || (y.score || 0) - (x.score || 0))[0];
         })();
 
-        const starsFor = (rating) => '★'.repeat(Math.round(rating));
+        const starsFor = (rating) => _starDisplayHtml(rating);
         const scoreFor = (s) => (s != null ? `${Math.round(s)}` : '—');
 
         board.innerHTML = `<h4>🏆 Top Rated</h4>
@@ -3495,13 +3904,25 @@ document.addEventListener('DOMContentLoaded', () => {
         grid.innerHTML = filtered.map(_testCardHtml).join('');
         grid.querySelectorAll('.test-card').forEach((card) => {
             const id = card.dataset.testId;
-            card.addEventListener('click', () => openTestPreview(id));
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.test-card-run-btn')) return;
+                openTestPreview(id);
+            });
             card.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
                     openTestPreview(id);
                 }
             });
+            const runBtn = card.querySelector('.test-card-run-btn');
+            if (runBtn) {
+                runBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    const t = ALL_TESTS.find((x) => x.id === id);
+                    if (t) runWinningFromCard(t, runBtn);
+                });
+            }
         });
     }
 
@@ -3552,6 +3973,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let _termInput = null;
     let _termLang = null;
     let _termOpen = false;
+    // Readline-style input history shared by every terminal session:
+    // Enter executes + clears, ArrowUp/ArrowDown walk through past inputs
+    // (unsent draft is preserved), like a real shell.
+    const _termHistory = [];
+    let _termHistIdx = -1; // -1 = live input line, otherwise index into _termHistory
+    let _termDraft = '';
 
     function buildTerminal() {
         if (_termBuilt) return;
@@ -3588,9 +4015,33 @@ document.addEventListener('DOMContentLoaded', () => {
         _termInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 const v = _termInput.value;
+                if (v.trim() !== '') _termHistory.push(v);
+                _termHistIdx = -1;
+                _termDraft = '';
                 _termInput.value = '';
                 appendTerm('> ' + v + '\n');
                 socket.emit('sandbox_input', { text: v + '\n' });
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!_termHistory.length) return;
+                if (_termHistIdx === -1) {
+                    _termDraft = _termInput.value;
+                    _termHistIdx = _termHistory.length - 1;
+                } else if (_termHistIdx > 0) {
+                    _termHistIdx -= 1;
+                }
+                _termInput.value = _termHistory[_termHistIdx];
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (_termHistIdx === -1) return;
+                _termHistIdx += 1;
+                if (_termHistIdx >= _termHistory.length) {
+                    _termHistIdx = -1;
+                    _termInput.value = _termDraft;
+                    _termDraft = '';
+                } else {
+                    _termInput.value = _termHistory[_termHistIdx];
+                }
             }
         });
         panel.appendChild(bar);
@@ -3902,6 +4353,27 @@ document.addEventListener('DOMContentLoaded', () => {
         overlay.classList.add('open');
     }
 
+    // Open a model-produced result in an ACTUAL expanded window. HTML/3js games
+    // are opened as a blob in a new browser window (fully playable, larger);
+    // CLI/code results launch the full-screen sandbox terminal instead of the
+    // in-modal preview. This backs the "▶ Play (expanded)" / "▶ Run (expanded)"
+    // actions on the Test Browser winner/response rows.
+    function openExpandedRunner(responseText, label, thinkingText) {
+        const txt = responseText || '';
+        const isHtml = /<!doctype|<html|<script/i.test(txt);
+        if (isHtml) {
+            const htmlDoc = extractHtmlDocument(txt) || extractRunnableCode(txt);
+            const blob = new Blob([htmlDoc], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const win = window.open(url, '_blank');
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+            if (!win) showToast('Popup blocked — allow popups for this site.', 'error');
+        } else {
+            const code = extractRunnableCode(txt);
+            openTerminal(code, null, '');
+        }
+    }
+
     function openUiViewer(responseText, label, thinkingText) {
         const overlay = document.getElementById('test-preview-overlay');
         const title = document.getElementById('test-preview-title');
@@ -4181,6 +4653,184 @@ document.addEventListener('DOMContentLoaded', () => {
 
         renderTestPreviewRatings(t);
 
+        const statsEl = document.getElementById('test-preview-stats');
+        if (statsEl) {
+            const tested = t.models_tested || [];
+            if (tested.length === 0) {
+                statsEl.classList.add('d-none');
+                statsEl.innerHTML = '';
+            } else {
+                statsEl.classList.remove('d-none');
+                const scores = t.models_scores || {};
+                const lint = t.models_lint || {};
+                const lastRun = t.models_last_run || {};
+                const passedList = t.models_passed || [];
+                const runCount = t.models_run_count || {};
+                const failCount = t.models_fail_count || {};
+                const tokens = t.models_tokens || {};
+                const latencies = t.models_latency || {};
+                const speeds = t.models_speed || {};
+                const breakdowns = t.models_breakdown || {};
+                // Rank order: total points (benchmark score + star bonus,
+                // 30/star) — unrated models keep their plain code score.
+                const savedRatings = _loadHumanRatings(t.id) || {};
+                const rankedTested = tested.slice().sort((a, b) =>
+                    _modelTotalPoints(b, scores, savedRatings) - _modelTotalPoints(a, scores, savedRatings));
+                const rows = rankedTested.map((m, rIdx) => {
+                    const sc = scores[m];
+                    const scoreTxt = (sc === undefined || sc === null) ? '—' : `${Math.round(sc)}`;
+                    const rating = savedRatings[m] || 0;
+                    const starPts = _starPoints(rating);
+                    const totalPts = _modelTotalPoints(m, scores, savedRatings);
+                    const ptsCell = rating > 0
+                        ? `<span title="${scoreTxt} code + ${starPts} star points">${totalPts} pts</span>`
+                        : `<span title="Benchmark score (no human rating yet)">${scoreTxt === '—' ? '—' : `${totalPts} pts`}</span>`;
+                    const rank = rIdx === 0 ? '🥇' : rIdx === 1 ? '🥈' : rIdx === 2 ? '🥉' : `${rIdx + 1}`;                    const passed = passedList.includes(m);
+                    const lp = lint[m];
+                    let lintCell;
+                    if (lp === true) lintCell = '<span class="test-stats-lint-ok">✓ passed</span>';
+                    else if (lp === false) lintCell = '<span class="test-stats-lint-fail">✗ FAILED</span>';
+                    else lintCell = '<span style="color:var(--text-muted);">—</span>';
+                    const lr = lastRun[m];
+                    const dateCell = lr
+                        ? `<span title="${escapeHtml(String(lr))}" style="color:var(--text-muted);white-space:nowrap;">${escapeHtml(String(lr).replace('T', ' ').slice(0, 16))}</span>`
+                        : '<span style="color:var(--text-muted);white-space:nowrap;">—</span>';
+                    const rcount = runCount[m] != null ? Number(runCount[m]) : 1;
+                    const fcount = failCount[m] != null ? Number(failCount[m]) : (passed ? 0 : 1);
+                    const tcount = tokens[m] != null ? Number(tokens[m]) : null;
+                    const timeSec = latencies[m] != null ? Number(latencies[m]) : null;
+                    const tokPerSec = speeds[m] != null ? Number(speeds[m]) : null;
+                    const tokensCell = (tcount !== null && Number.isFinite(tcount))
+                        ? `<span title="${tcount.toLocaleString()} tokens generated">${tcount.toLocaleString()}</span>`
+                        : '<span style="color:var(--text-muted);">—</span>';
+                    const timeCell = (timeSec !== null && Number.isFinite(timeSec))
+                        ? `<span title="${timeSec.toFixed(1)}s to finish">${timeSec >= 60 ? (timeSec / 60).toFixed(1) + 'm' : timeSec.toFixed(1) + 's'}</span>`
+                        : '<span style="color:var(--text-muted);">—</span>';
+                    const speedCell = (tokPerSec !== null && Number.isFinite(tokPerSec) && tokPerSec > 0)
+                        ? `${tokPerSec.toFixed(1)} tok/s`
+                        : '<span style="color:var(--text-muted);">—</span>';
+                    // Score breakdown panel (why this score): execution outcome,
+                    // functional check, code quality notes, watermark, error.
+                    const bd = breakdowns[m] || {};
+                    const yesno = (v) => (v === true ? '✓' : v === false ? '✗' : '—');
+                    const bdScore = (bd.score !== undefined && bd.score !== null) ? `${Math.round(Number(bd.score))}/100` : '—';
+                    const bdGrade = (bd.score !== undefined && bd.score !== null) ? gradeForScore(Number(bd.score)) : '—';
+                    const bdFp = bd.functional_pass;
+                    const bdRan = bd.code_ran;
+                    const bdNotes = Array.isArray(bd.code_quality_notes) && bd.code_quality_notes.length
+                        ? bd.code_quality_notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('')
+                        : '<li>—</li>';
+                    const bdWater = Array.isArray(bd.watermark_flags) && bd.watermark_flags.length
+                        ? bd.watermark_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('')
+                        : '<li>none detected</li>';
+                    const bdErr = (bd.error || '').trim();
+                    // Rubric per-criterion results (scoring rubric from the test's
+                    // "rubric" field merged with the engine default). Each entry is
+                    // {label, passed, points, checks}.
+                    const rubric = bd.rubric || {};
+                    const crits = Array.isArray(rubric.criteria) ? rubric.criteria : [];
+                    const rubricPassed = crits.filter((c) => c.passed).length;
+                    const rubricScore = (rubric.score !== undefined && rubric.score !== null) ? `${Math.round(Number(rubric.score))}%` : '—';
+                    const rubricHtml = crits.length
+                        ? `<details class="test-stats-rubric">
+                            <summary><span class="ttl">Scoring rubric</span> <span class="val">${rubricPassed}/${crits.length} criteria <em>(${rubricScore})</em></span></summary>
+                            <ul>
+                                ${crits.map((c) => `<li class="${c.passed ? 'rubric-ok' : 'rubric-miss'}">${c.passed ? '✓' : '✗'} <strong>${escapeHtml(c.label)}</strong> <span class="val">${Number(c.points) || 0} pts</span></li>`).join('')}
+                            </ul>
+                        </details>`
+                        : '';
+                    const bdQScore = (bd.code_quality !== undefined && bd.code_quality !== null)
+                        ? `${Math.round(Number(bd.code_quality))}/100${bd.code_quality_lang ? ` (${escapeHtml(bd.code_quality_lang)})` : ''}`
+                        : '—';
+                    const bdCS = (bd.code_score !== undefined && bd.code_score !== null) ? `${Math.round(Number(bd.code_score))}` : '—';
+                    const detailRow = `<tr class="test-stats-detail-row" id="stats-detail-${rIdx}" style="display:none;">
+                        <td colspan="11">
+                            <div class="test-stats-detail">
+                                <div class="test-stats-detail-grid">
+                                    <div><span class="ttl">Final score</span><span class="val">${bdScore} <em>(${bdGrade})</em></span></div>
+                                    <div><span class="ttl">Code ran</span><span class="val">${yesno(bdRan)}</span></div>
+                                    <div><span class="ttl">Functional pass</span><span class="val">${yesno(bdFp)}</span></div>
+                                    <div><span class="ttl">Lint / compile</span><span class="val">${yesno(bd.lint_passed)}</span></div>
+                                    <div><span class="ttl">Run score</span><span class="val">${bdCS}</span></div>
+                                    <div><span class="ttl">Code quality</span><span class="val">${bdQScore}</span></div>
+                                    <div><span class="ttl">AI watermark</span><span class="val">${bd.watermark !== undefined && bd.watermark !== null ? Math.round(Number(bd.watermark)) : '—'}</span></div>
+                                </div>
+                                <div class="test-stats-detail-col"><span class="ttl">Code-quality notes</span>
+                                    <ul>${bdNotes}</ul>
+                                </div>
+                                <div class="test-stats-detail-col"><span class="ttl">Watermark flags</span>
+                                    <ul>${bdWater}</ul>
+                                </div>
+                                ${rubricHtml ? `<div class="test-stats-detail-col">${rubricHtml}</div>` : ''}
+                                ${bdErr ? `<div class="test-stats-detail-col test-stats-detail-err"><span class="ttl">Error / notes</span><span class="val">${escapeHtml(bdErr)}</span></div>` : ''}
+                            </div>
+                        </td>
+                    </tr>`;
+                    return `<tr class="test-stats-main-row">
+                        <td><input type="checkbox" class="test-stats-rerun" value="${escapeHtml(m)}" checked title="Tick to include this model in a rerun"></td>
+                        <td class="test-stats-model">${rank} ${escapeHtml(m)}</td>
+                        <td class="${passed ? 'test-stats-pass' : 'test-stats-fail'}">${passed ? '✓ Pass' : '✗ Fail'}</td>
+                        <td><button class="btn-stats-score" type="button" title="Why this score? Click for breakdown" data-detail="${rIdx}">${scoreTxt} ${scoreTxt !== '—' ? 'ⓘ' : ''}</button></td>
+                        <td>${ptsCell}</td>
+                        <td>${lintCell}</td>
+                        <td><span title="${rcount} run(s), ${fcount} failed">${rcount}<span style="color:var(--text-muted);"> / ${fcount} fail</span></span></td>
+                        <td>${tokensCell}</td>
+                        <td>${timeCell}</td>
+                        <td>${speedCell}</td>
+                        <td>${dateCell}</td>
+                    </tr>${detailRow}`;
+                }).join('');
+                // Model weaknesses: aggregate rubric criteria across every model's
+                // breakdown and rank the most-missed criteria, so the panel shows
+                // which requested features models commonly fail to deliver.
+                const gapCounts = new Map();
+                const gapTotal = new Map();
+                Object.values(breakdowns).forEach((bd) => {
+                    const crits = (bd.rubric && Array.isArray(bd.rubric.criteria)) ? bd.rubric.criteria : [];
+                    crits.forEach((c) => {
+                        gapTotal.set(c.label, (gapTotal.get(c.label) || 0) + 1);
+                        if (!c.passed) gapCounts.set(c.label, (gapCounts.get(c.label) || 0) + 1);
+                    });
+                });
+                const gaps = [...gapCounts.entries()]
+                    .map(([label, miss]) => ({ label, miss, total: gapTotal.get(label) || 0 }))
+                    .filter((g) => g.miss > 0)
+                    .sort((a, b) => (b.miss / b.total) - (a.miss / a.total) || b.miss - a.miss)
+                    .slice(0, 6);
+                const gapsHtml = gaps.length
+                    ? `<div class="test-stats-gaps">
+                        <div class="modal-section-title" style="margin-bottom:0.4rem;">Common rubric gaps <span style="color:var(--text-muted);font-size:0.72rem;font-weight:400;">(most-missed criteria across models)</span></div>
+                        <ul>${gaps.map((g) => `<li class="${g.miss === g.total ? 'rubric-miss' : ''}"><strong>${escapeHtml(g.label)}</strong> — missed by ${g.miss}/${g.total} model${g.miss === 1 ? '' : 's'}</li>`).join('')}</ul>
+                    </div>`
+                    : '';
+                statsEl.innerHTML = `<div class="modal-section-title">Per-Model Stats <span style="color:var(--text-muted);font-size:0.72rem;font-weight:400;">(ranked by points — code score + 30/star bonus; tick models to rerun)</span>
+                    <button id="btn-rerun-stats" class="btn btn-secondary btn-sm" title="Re-run this benchmark for the models ticked above" style="float:right;margin-top:-0.2rem;">🔄 Rerun selected</button></div>
+                    <table class="test-stats-table">
+                        <thead><tr><th>Rerun</th><th>Model</th><th>Pass</th><th>Code Score</th><th>Points</th><th>Lint / Compile</th><th>Runs <span style="font-weight:400;color:var(--text-muted);">(fails)</span></th><th>Tokens</th><th>Time</th><th>Speed</th><th>Run Date</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                    ${gapsHtml}`;
+            }
+        }
+
+        const rerunBtn = document.getElementById('btn-rerun-test');
+        if (rerunBtn) {
+            rerunBtn.onclick = () => rerunTestFromBrowser(t.id);
+        }
+        const rerunStatsBtn = document.getElementById('btn-rerun-stats');
+        if (rerunStatsBtn) {
+            rerunStatsBtn.onclick = () => rerunTestFromBrowser(t.id);
+        }
+        statsEl.querySelectorAll('.btn-stats-score').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const row = document.getElementById(`stats-detail-${btn.dataset.detail}`);
+                if (row) {
+                    const hidden = row.style.display === 'none' || !row.style.display;
+                    row.style.display = hidden ? '' : 'none';
+                }
+            });
+        });
+
         meta.innerHTML = `<span class="kind-badge kind-${kind}">${kind}</span>` +
             `<span class="test-meta-cat">${escapeHtml((t.category || '').toUpperCase())}</span>` +
             (t.type ? `<span class="test-meta-type">${escapeHtml(t.type)}</span>` : '');
@@ -4266,24 +4916,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 h.className = 'test-preview-note';
                 h.textContent = `Model-produced outputs (${responses.length}): download, or play if web-based`;
                 sec.appendChild(h);
+
+                // Featured: the winning model's result (same total-points
+                // ranking as the card — stars included). Re-rendered in place
+                // when a rating flips the #1.
+                ACTIVE_PREVIEW = { testId: t.id, responses };
+                renderFeaturedWinner(t, responses, sec);
+
                 responses.forEach((resp) => {
                     const row = document.createElement('div');
                     row.className = 'att-run-wrap';
                     const bar = document.createElement('div');
                     bar.className = 'att-run-bar';
+                    const isUi = t.type === 'ui';
+                    const isHtml = !!resp.is_html;
                     const lbl = document.createElement('span');
                     lbl.className = 'model-output-label';
                     lbl.textContent = `${resp.model}${resp.passed === false ? ' (failed)' : ''} - ${resp.response_len} chars`;
-                    if (resp.is_html) {
+                    if (isHtml) {
                         const playBtn = document.createElement('button');
                         playBtn.className = 'btn-run-code';
                         playBtn.textContent = '▶ Play';
                         playBtn.addEventListener('click', () => openResponseRunner(resp.response, resp.model, resp.thinking));
                         bar.appendChild(playBtn);
-                    } else {
+                    } else if (isUi) {
                         const runBtn = document.createElement('button');
                         runBtn.className = 'btn-run-code';
-                        runBtn.textContent = '▶ Run';
+                        runBtn.textContent = '▶ Run UI';
                         runBtn.addEventListener('click', () => openResponseRunner(resp.response, resp.model, resp.thinking));
                         bar.appendChild(runBtn);
                         const uiBtn = document.createElement('button');
@@ -4292,7 +4951,27 @@ document.addEventListener('DOMContentLoaded', () => {
                         uiBtn.textContent = '🖥 View UI';
                         uiBtn.addEventListener('click', () => openUiViewer(resp.response, resp.model, resp.thinking));
                         bar.appendChild(uiBtn);
+                    } else {
+                        const runBtn = document.createElement('button');
+                        runBtn.className = 'btn-run-code';
+                        runBtn.textContent = '▶ Run (terminal)';
+                        runBtn.addEventListener('click', () => openResponseRunner(resp.response, resp.model, resp.thinking));
+                        bar.appendChild(runBtn);
                     }
+                    const expandBtn = document.createElement('button');
+                    expandBtn.className = 'btn-run-code';
+                    expandBtn.style.marginLeft = '0.5rem';
+                    if (isHtml) {
+                        expandBtn.textContent = '⤢ Play (expanded)';
+                        expandBtn.addEventListener('click', () => openExpandedRunner(resp.response, resp.model, resp.thinking));
+                    } else if (isUi) {
+                        expandBtn.textContent = '⤢ View UI (expanded)';
+                        expandBtn.addEventListener('click', () => openUiViewer(resp.response, resp.model, resp.thinking));
+                    } else {
+                        expandBtn.textContent = '⤢ Run (terminal)';
+                        expandBtn.addEventListener('click', () => openExpandedRunner(resp.response, resp.model, resp.thinking));
+                    }
+                    bar.appendChild(expandBtn);
                     const dlBtn = document.createElement('button');
                     dlBtn.className = 'btn-run-code';
                     dlBtn.style.marginLeft = '0.5rem';
@@ -4329,6 +5008,66 @@ document.addEventListener('DOMContentLoaded', () => {
     function closeTestPreview() {
         const overlay = document.getElementById('test-preview-overlay');
         if (overlay) overlay.classList.remove('open');
+    }
+
+    async function rerunTestFromBrowser(testId) {
+        // Prefer models ticked in the card's stats table; fall back to the
+        // sidebar model checklist so the button also works without a prior run.
+        const checkedBoxes = document.querySelectorAll('#test-preview-stats .test-stats-rerun:checked');
+        const models = Array.from(checkedBoxes).map((cb) => cb.value);
+        if (models.length === 0) {
+            const sidebarModels = getSelectedModels();
+            if (sidebarModels.length === 0) {
+                showToast('Please tick at least one model in the stats panel, or select one in the sidebar.', 'error');
+                return;
+            }
+            models.push(...sidebarModels);
+        }
+        const btn = document.getElementById('btn-rerun-test');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = `<span class="loader"></span> Starting...`;
+        }
+        try {
+            const payload = {
+                models: models,
+                use_proxy: (typeof benchmarkMode === 'undefined' ? true : benchmarkMode === 'proxy'),
+                test_ids: [testId],
+                resume: false,
+            };
+            const res = await fetch('/api/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (res.status === 409) {
+                const data = await res.json();
+                showToast(data.error, 'error');
+                return;
+            }
+            if (!res.ok) {
+                const errorText = await res.text();
+                throw new Error(errorText || 'Server error starting benchmark');
+            }
+            const resData = await res.json().catch(() => null);
+            if (resData && resData.status === 'No outdated benchmarks') {
+                showToast(resData.message || 'All benchmark definitions are up to date.', 'success');
+                return;
+            }
+            logToTerminal(`Re-running benchmark "${testId}" for models: ${models.join(', ')}...`, 'info', 'general');
+            showToast(`Benchmark "${testId}" started for ${models.length} model${models.length === 1 ? '' : 's'}.`, 'success');
+            closeTestPreview();
+            switchTab('general');
+            setRunnerState('running');
+        } catch (err) {
+            logToTerminal(`Failed to start benchmark: ${err.message}`, 'error', 'general');
+            showToast(`Failed to start benchmark: ${err.message}`, 'error');
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '🔄 Rerun for selected models';
+            }
+        }
     }
 
     // Wire up Test Browser toolbar + preview modal
@@ -4418,6 +5157,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function loadMultistepWorkflows() {
+        const container = document.getElementById('multistep-workflow-checkboxes');
+        if (!container) return;
+        try {
+            const res = await fetch('/api/tests/multistep');
+            const data = await res.json();
+            const workflows = data.tests || [];
+            container.innerHTML = '';
+
+            if (workflows.length === 0) {
+                container.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">No MultiStep workflows found</div>`;
+                return;
+            }
+
+            workflows.forEach((wf) => {
+                const item = document.createElement('label');
+                item.className = 'checkbox-item';
+
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = wf.id;
+                input.checked = true;
+
+                const span = document.createElement('span');
+                span.className = 'checkbox-label';
+                span.textContent = `${wf.category}: ${wf.label} (${wf.steps} steps)` + (wf.description ? ` — ${wf.description}` : '');
+
+                item.appendChild(input);
+                item.appendChild(span);
+                container.appendChild(item);
+            });
+        } catch (err) {
+            container.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">Failed to load workflows</div>`;
+        }
+    }
+
     // Load past reports list and auto-restore comparison view on refresh
     async function loadHistory() {
         try {
@@ -4439,11 +5214,23 @@ document.addEventListener('DOMContentLoaded', () => {
             const sharedResults  = [];
             let latestGeneralData = null;
             let latestSharedData  = null;
+            TREND_DATA.general = [];
+            TREND_DATA.shared = [];
 
             await Promise.all(results.map(async (result) => {
                 try {
                     const dr = await fetch(`/api/results/${result.filename}`);
                     const detail = await dr.json();
+                    // Run snapshots (not per-model aggregates) feed the trend charts:
+                    // each file is a point-in-time run with its own timestamp.
+                    if (!result.per_model && result.generated_at) {
+                        const label = result.generated_at.replace('T', ' ').slice(0, 16);
+                        (detail.results || []).forEach(modelRecord => {
+                            const bucket = result.type === 'shared_llm' ? TREND_DATA.shared : TREND_DATA.general;
+                            const row = result.type === 'shared_llm' ? computeSharedRow(modelRecord) : computeGeneralRow(modelRecord);
+                            bucket.push({ label, filename: result.filename, model: modelRecord.model, score: row.score });
+                        });
+                    }
                     if (result.type === 'shared_llm') {
                         (detail.results || []).forEach(modelRecord => {
                             const existing = sharedResults.find(r => r.model === modelRecord.model);
@@ -4491,6 +5278,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 logToTerminal(`Restored ${sharedResults.length} SharedLLM benchmark model(s) from history`, 'success');
             }
 
+            // Merged view active again -> hide single-run banner and refresh trends.
+            const snapBar = document.getElementById('snapshot-mode-bar');
+            if (snapBar) snapBar.classList.add('d-none');
+            renderTrendChart('general');
+            renderTrendChart('shared');
+            populateDiffSelects(results.filter(r => !r.per_model));
+
             results.forEach(result => {
                 // Per-model files are an internal storage detail; only show run snapshots in history.
                 if (result.per_model) {
@@ -4506,7 +5300,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const meta = document.createElement('div');
                 meta.className = 'history-meta';
                 
-                const runTypeBadge = result.type === 'shared_llm' ? 'SharedLLM' : 'General';
+                const runTypeBadge = result.type === 'shared_llm' ? 'SharedLLM' : result.type === 'multistep' ? 'Multi-Step' : 'General';
                 const typeText = document.createElement('span');
                 typeText.textContent = `${runTypeBadge} (${result.benchmark_type.toUpperCase()})`;
                 
@@ -4569,10 +5363,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Wire "Show All Runs" (restore merged multi-run view from single-run snapshot mode)
+    const btnShowAllRuns = document.getElementById('btn-show-all-runs');
+    if (btnShowAllRuns) {
+        btnShowAllRuns.addEventListener('click', () => loadHistory());
+    }
+
+    // Wire run-to-run diff
+    const btnDiffRuns = document.getElementById('btn-diff-runs');
+    if (btnDiffRuns) {
+        btnDiffRuns.addEventListener('click', runDiff);
+    }
+
     // Wire Clear All History button
     const btnClearAllHistory = document.getElementById('btn-clear-all-history');
-    if (btnClearAllHistory) {
-        btnClearAllHistory.addEventListener('click', async (e) => {
+    if (btnClearAllHistory) {        btnClearAllHistory.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!confirm('Are you sure you want to permanently clear ALL benchmark history reports, result files, and artifacts across all models? This cannot be undone.')) {
                 return;
@@ -4603,10 +5408,21 @@ document.addEventListener('DOMContentLoaded', () => {
             logToTerminal(`Loading benchmark file: ${filename}...`);
             const res = await fetch(`/api/results/${filename}`);
             const data = await res.json();
-            
-            if (type === 'shared_llm') {
+
+            // Single-run snapshot mode: banner tells the user the merged view is
+            // replaced and offers one-click restore.
+            const snapBar = document.getElementById('snapshot-mode-bar');
+            if (snapBar) {
+                document.getElementById('snapshot-mode-filename').textContent = filename;
+                snapBar.classList.remove('d-none');
+            }
+
+            if (type === 'shared_llm' || type === 'multistep') {
                 currentSharedResults = data.results || [];
-                logToTerminal(`Loaded SharedLLM results for ${currentSharedResults.length} models`, 'success');
+                logToTerminal(
+                    `Loaded ${type === 'multistep' ? 'Multi-Step' : 'SharedLLM'} results for ${currentSharedResults.length} models`,
+                    'success'
+                );
                 switchTab('shared');
                 updateSharedOverviewMetrics(data);
                 renderSharedChartsFromData(currentSharedResults);
@@ -4621,6 +5437,100 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (err) {
             logToTerminal(`Error loading benchmark details: ${err.message}`, 'error');
+        }
+    }
+
+    // Line chart of per-model score across run snapshots (oldest -> newest).
+    function renderTrendChart(kind) {
+        const canvas = document.getElementById(`${kind}-trend-chart`);
+        if (!canvas || typeof Chart === 'undefined') return;
+        const entries = TREND_DATA[kind] || [];
+        if (entries.length === 0) return;
+
+        const labels = [...new Set(entries.map(e => e.label))].sort();
+        const models = [...new Set(entries.map(e => e.model))].map(m => ({
+            model: m,
+            last: entries.filter(e => e.model === m).sort((a, b) => b.label.localeCompare(a.label))[0].score,
+        })).sort((a, b) => b.last - a.last);
+
+        if (TREND_CHARTS[kind]) { TREND_CHARTS[kind].destroy(); }
+        TREND_CHARTS[kind] = new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels,
+                datasets: models.map((m, i) => {
+                    const color = TREND_COLORS[i % TREND_COLORS.length];
+                    const byLabel = Object.fromEntries(
+                        entries.filter(e => e.model === m.model).map(e => [e.label, e.score])
+                    );
+                    return {
+                        label: m.model,
+                        data: labels.map(l => byLabel[l] !== undefined ? byLabel[l] : null),
+                        borderColor: color,
+                        backgroundColor: color + '33',
+                        spanGaps: true,
+                        tension: 0.25,
+                        pointRadius: 4,
+                        pointHoverRadius: 6,
+                    };
+                }),
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true, max: 100, title: { display: true, text: 'Score' } },
+                    x: { ticks: { maxRotation: 45, minRotation: 30, font: { size: 10 } } },
+                },
+                plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } },
+            },
+        });
+    }
+
+    // Run-to-run diff: pick two snapshots, show per-model score deltas.
+    function populateDiffSelects(runResults) {
+        const selA = document.getElementById('diff-run-a');
+        const selB = document.getElementById('diff-run-b');
+        if (!selA || !selB) return;
+        const runs = runResults.filter(r => r.type !== 'shared_llm');
+        const opts = runs.map(r => {
+            const d = r.generated_at ? ` (${r.generated_at.slice(0, 10)})` : '';
+            return `<option value="${escapeHtml(r.filename)}">${escapeHtml(r.filename.replace('benchmarks_', '').replace('.json', ''))}${d}</option>`;
+        }).join('');
+        selA.innerHTML = opts;
+        selB.innerHTML = opts;
+        if (runs.length > 1) selB.selectedIndex = 1; // default: latest vs previous
+    }
+
+    async function runDiff() {
+        const fa = document.getElementById('diff-run-a')?.value;
+        const fb = document.getElementById('diff-run-b')?.value;
+        const out = document.getElementById('diff-results');
+        if (!fa || !fb || !out) return;
+        out.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;">Comparing…</div>';
+        try {
+            const [da, db] = await Promise.all([
+                fetch(`/api/results/${fa}`).then(r => r.json()),
+                fetch(`/api/results/${fb}`).then(r => r.json()),
+            ]);
+            const rowsA = new Map((da.results || []).map(m => [m.model, computeGeneralRow(m).score]));
+            const rowsB = new Map((db.results || []).map(m => [m.model, computeGeneralRow(m).score]));
+            const models = [...new Set([...rowsA.keys(), ...rowsB.keys()])];
+            const html = `<table class="diff-table"><thead><tr>
+                <th>Model</th><th>${escapeHtml(fa.replace('benchmarks_', '').replace('.json', ''))}</th>
+                <th>${escapeHtml(fb.replace('benchmarks_', '').replace('.json', ''))}</th><th>Δ</th></tr></thead><tbody>` +
+                models.map(m => {
+                    const a = rowsA.get(m), b = rowsB.get(m);
+                    const d = (a != null && b != null) ? b - a : null;
+                    const delta = d == null ? '<span class="muted">—</span>'
+                        : `<span class="${d > 0 ? 'delta-up' : d < 0 ? 'delta-down' : 'muted'}">${d > 0 ? '▲ +' : d < 0 ? '▼ ' : '± '}${d}</span>`;
+                    return `<tr><td class="model-cell" title="${escapeHtml(m)}">${escapeHtml(truncateModelName(m))}</td>
+                        <td>${a != null ? a : '<span class="muted">—</span>'}</td>
+                        <td>${b != null ? b : '<span class="muted">—</span>'}</td><td>${delta}</td></tr>`;
+                }).join('') + '</tbody></table>';
+            out.innerHTML = html;
+        } catch (err) {
+            out.innerHTML = `<div style="color:var(--color-danger);font-size:0.8rem;">Diff failed: ${escapeHtml(err.message)}</div>`;
         }
     }
 
@@ -5247,7 +6157,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (m === 'latency') return `${v.toFixed(2)}s`;
             return v > 0 ? v.toFixed(1) : '-';
         };
-
         panel.innerHTML = `<div class="compare-grid">${selected.map(r => {
             const isWinner = Number(r.score) === topScore && topScore > 0;
             const cells = metrics.map(m => {
@@ -5265,7 +6174,77 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 ${cells}
             </div>`;
-        }).join('')}</div>`;
+        }).join('')}</div>${selected.length >= 2
+            ? `<div class="radar-wrapper chart-wrapper"><canvas id="${key}-radar-chart"></canvas></div>`
+            : ''}`;
+        renderCompareRadar(isGeneral, key, selected);
+    }
+
+    // Radar/spider profile of per-category success % for the compared models.
+    function renderCompareRadar(isGeneral, key, selected) {
+        const canvas = document.getElementById(`${key}-radar-chart`);
+        if (!canvas || typeof Chart === 'undefined' || selected.length < 2) return;
+        const source = isGeneral ? currentResults : currentSharedResults;
+        const profiles = selected.map(r =>
+            source.find(rec => rec.model === r.model)
+        ).filter(Boolean);
+        if (profiles.length < 2) return;
+
+        // Category -> success% extraction.
+        let axes = [];
+        const values = [];
+        if (isGeneral) {
+            const catKeys = [...new Set(profiles.flatMap(p => Object.keys(p).filter(k => k.startsWith('category_'))))];
+            axes = catKeys.map(k => k.replace('category_', '').replace(/_/g, ' '));
+            profiles.forEach(p => {
+                values.push(catKeys.map(k => {
+                    const cd = p[k];
+                    return cd && cd.tests_run > 0 ? Math.round((cd.tests_passed / cd.tests_run) * 100) : 0;
+                }));
+            });
+        } else {
+            const catSet = new Set();
+            profiles.forEach(p => (p.tasks || []).forEach(t => { if (t.category) catSet.add(t.category); }));
+            axes = [...catSet].map(c => String(c).replace(/_/g, ' '));
+            profiles.forEach(p => {
+                const byCat = {};
+                (p.tasks || []).forEach(t => {
+                    if (!t.category) return;
+                    byCat[t.category] = byCat[t.category] || { run: 0, passed: 0 };
+                    byCat[t.category].run++;
+                    if (t.success) byCat[t.category].passed++;
+                });
+                values.push(axes.map((_, i) => {
+                    const c = [...catSet][i];
+                    const b = byCat[c];
+                    return b && b.run > 0 ? Math.round((b.passed / b.run) * 100) : 0;
+                }));
+            });
+        }
+        if (axes.length < 3) return; // radar needs at least a triangle
+
+        const id = `${key}-radar-chart`;
+        if (RADAR_CHARTS[id]) RADAR_CHARTS[id].destroy();
+        RADAR_CHARTS[id] = new Chart(canvas.getContext('2d'), {
+            type: 'radar',
+            data: {
+                labels: axes,
+                datasets: profiles.map((p, i) => ({
+                    label: truncateModelName(p.model),
+                    data: values[i],
+                    borderColor: TREND_COLORS[i % TREND_COLORS.length],
+                    backgroundColor: TREND_COLORS[i % TREND_COLORS.length] + '22',
+                    pointRadius: 2,
+                    borderWidth: 2,
+                })),
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: { r: { min: 0, max: 100, ticks: { stepSize: 25, font: { size: 9 } }, pointLabels: { font: { size: 9 } } } },
+                plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } },
+            },
+        });
     }
 
     function renderLeaderboardRows(body, rows, sortKey, isGeneral) {
@@ -5360,7 +6339,7 @@ document.addEventListener('DOMContentLoaded', () => {
         detailedResultsBody.innerHTML = '';
 
         if (results.length === 0) {
-            detailedResultsBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);">No detailed data available.</td></tr>`;
+            detailedResultsBody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);">No detailed data available.</td></tr>`;
             return;
         }
 
@@ -5462,6 +6441,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function setDetailedRating(tdRating, ratingKey, modelName, val) {
+        _saveHumanRating(ratingKey, modelName, val);
+        tdRating.innerHTML = _starDisplayHtml(val, true);
+        _bindStarSlots(tdRating, (v) => setDetailedRating(tdRating, ratingKey, modelName, v));
+        if (typeof renderRatingsBoard === 'function') renderRatingsBoard();
+        if (typeof renderTestBrowser === 'function') renderTestBrowser();
+    }
+
     function renderModelDetailedTable(modelData) {
         detailedResultsBody.innerHTML = '';
         const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
@@ -5515,7 +6502,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 promptLink.textContent = 'View Prompt & Response';
                 promptLink.addEventListener('click', () => {
                     const errorMsg = test.error ? `Error: ${test.error}` : 'No response.';
-                    openModal(test.prompt || '(no prompt recorded)', test.response || errorMsg);
+                    openModal(test.prompt || '(no prompt recorded)', test.response || errorMsg, test.thinking);
                 });
                 tdView.appendChild(promptLink);
 
@@ -5547,6 +6534,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     tdArt.appendChild(createServeButton(test.response, catKey));
                 }
 
+                // Human rating stars — same store/key as the Test Browser card
+                // (localStorage 'alpaca_human_ratings' -> testId -> model -> 1..5),
+                // so a rating given here shows on the card and vice versa.
+                const tdRating = document.createElement('td');
+                tdRating.className = 'rating-stars detail-rating';
+                tdRating.style.cursor = 'pointer';
+                const ratingKey = test.test_id || test.id || test.test_label;
+                const saved = _loadHumanRatings(ratingKey) || {};
+                const modelName = modelData.model;
+                const curRating = saved[modelName] || 0;
+                tdRating.setAttribute('data-test', ratingKey);
+                tdRating.setAttribute('data-model', modelName);
+                tdRating.innerHTML = _starDisplayHtml(curRating, true);
+                _bindStarSlots(tdRating, (v) => setDetailedRating(tdRating, ratingKey, modelName, v));
+
                 tr.appendChild(tdCat);
                 tr.appendChild(tdLabel);
                 tr.appendChild(tdStatus);
@@ -5556,6 +6558,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tr.appendChild(tdSpeed);
                 tr.appendChild(tdView);
                 tr.appendChild(tdArt);
+                tr.appendChild(tdRating);
                 
                 let expandedRow = null;
                 tr.style.cursor = 'pointer';
@@ -5564,6 +6567,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (e.target.classList.contains('screenshot-thumb')) return;
                     if (e.target.classList.contains('serve-view-btn')) return;
                     if (e.target.classList.contains('serve-stop-btn')) return;
+                    if (e.target.classList.contains('star') || e.target.closest('.star-slot') || e.target.closest('.detail-rating')) return;
                     
                     if (expandedRow) {
                         expandedRow.remove();
@@ -5573,7 +6577,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         expandedRow = document.createElement('tr');
                         expandedRow.className = 'expanded-row';
                         const tdFull = document.createElement('td');
-                        tdFull.colSpan = 9;
+                        tdFull.colSpan = 10;
                         tdFull.style.cssText = 'background: rgba(15, 23, 42, 0.4); padding: 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04);';
                         
                         const flex = document.createElement('div');
@@ -5637,7 +6641,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (!hasRows) {
-            detailedResultsBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);">No test logs for this model</td></tr>`;
+            detailedResultsBody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);">No test logs for this model</td></tr>`;
         }
     }
 
@@ -5761,17 +6765,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } else if (task.test_id.startsWith('needle')) {
                 tdPayload.textContent = `Secret Token: ${val.needle_found ? '✓ Found: ' + (val.expected || '') : '✗ Not Found'}`;
+            } else if (task.test_category === 'multistep_gamedev' || task.artifact_url) {
+                const bits = [];
+                if (typeof task.score === 'number') bits.push(`Score: ${task.score.toFixed(1)}/100`);
+                if (task.steps_completed !== undefined) bits.push(`Steps: ${task.steps_completed}/${task.steps_total}`);
+                if (val.ui_render) {
+                    bits.push(val.ui_render.ran ? '✓ Renders' : `✗ Render${val.ui_render.error ? ': ' + val.ui_render.error : ''}`);
+                }
+                tdPayload.textContent = bits.join(' | ') || `Status: ${task.success ? '✓ Pass' : '✗ Fail'}`;
             } else {
                 tdPayload.textContent = `Status: ${task.success ? '✓ Pass' : '✗ Fail'}`;
             }
 
             const tdView = document.createElement('td');
+            if (task.artifact_url) {
+                const fullLink = document.createElement('span');
+                fullLink.className = 'prompt-text';
+                fullLink.style.marginRight = '0.75rem';
+                fullLink.textContent = '🎮 View Full Game';
+                fullLink.title = 'Open the complete generated HTML document';
+                fullLink.addEventListener('click', () => window.open(task.artifact_url, '_blank'));
+                tdView.appendChild(fullLink);
+            }
             const promptLink = document.createElement('span');
             promptLink.className = 'prompt-text';
             promptLink.textContent = 'View Code / Payload';
-            promptLink.addEventListener('click', () => {
+            promptLink.addEventListener('click', async () => {
                 const details = task.error ? `Error: ${task.error}` : '';
-                openModal(task.prompt, task.response || details);
+                let body = task.response || details;
+                // Older snapshots stored only the last ~4000 chars of the
+                // generated document; when the full artifact exists on disk,
+                // fetch it so the payload modal shows the COMPLETE code.
+                if (task.artifact_url) {
+                    try {
+                        const res = await fetch(task.artifact_url);
+                        if (res.ok) body = await res.text();
+                    } catch (e) { /* keep inline excerpt on failure */ }
+                }
+                openModal(task.prompt, body);
             });
             tdView.appendChild(promptLink);
 
@@ -5808,8 +6839,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     const codeBlock = document.createElement('pre');
                     codeBlock.style.cssText = 'margin: 0; background: rgba(9, 15, 29, 0.95); border: 1px solid rgba(255, 255, 255, 0.05); padding: 0.75rem; border-radius: 6px; font-family: monospace; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; color: #e2e8f0; max-height: 300px;';
                     codeBlock.textContent = task.response || task.error || 'No response recorded';
-                    
+
                     flex.appendChild(title);
+                    if (task.artifact_url) {
+                        const note = document.createElement('div');
+                        note.style.cssText = 'font-size: 0.75rem; color: var(--text-muted);';
+                        note.innerHTML = 'Preview below is an excerpt — <a href="' + task.artifact_url + '" target="_blank">open the FULL generated document</a>';
+                        flex.appendChild(note);
+                    }
                     flex.appendChild(codeBlock);
                     addArtifactButtons(flex, modelData.model, task.test_id, task.response);
                     tdFull.appendChild(flex);
@@ -5834,6 +6871,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Trigger SharedLLM Benchmarks
     btnRunShared.addEventListener('click', () => triggerBenchmark('/api/run/shared_llm'));
 
+    // Trigger MultiStep (agentic) Benchmarks
+    // Guarded: a stale cached template without the button must not break global init.
+    if (btnRunMultistep) {
+        btnRunMultistep.addEventListener('click', () => triggerBenchmark('/api/run/multistep', { multistep: true }));
+    }
+
     async function triggerBenchmark(endpoint, options = {}) {
         const selected = getSelectedModels();
         if (selected.length === 0) {
@@ -5842,35 +6885,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
             const isShared = endpoint.endsWith('shared_llm');
+            const isMultistep = endpoint.endsWith('multistep');
             if (options.outdatedOnly && isShared) {
                 showToast('Outdated re-runs apply to General benchmarks only.', 'error');
                 return;
             }
-            const selectedTests = isShared ? getSelectedSharedTests() : getSelectedTests();
-            const selectedGroups = isShared ? [] : getSelectedGroups();
+            const selectedTests = options.testIds && options.testIds.length
+                ? options.testIds
+                : (isMultistep ? getSelectedMultistepWorkflows() : (isShared ? getSelectedSharedTests() : getSelectedTests()));
+            const selectedGroups = isShared || isMultistep ? [] : getSelectedGroups();
+            if (isMultistep && selectedTests.length === 0) {
+                showToast('Please select at least one MultiStep workflow to run.', 'error');
+                return;
+            }
             if (isShared && selectedTests.length === 0) {
                 showToast('Please select at least one SharedLLM task to run.', 'error');
                 return;
             }
             // A group selection is a valid scope on its own (no individual tests needed).
-            if (!isShared && selectedTests.length === 0 && selectedGroups.length === 0) {
+            if (!isShared && !isMultistep && selectedTests.length === 0 && selectedGroups.length === 0) {
                 showToast('Please select at least one test case or benchmark group to run.', 'error');
                 return;
             }
 
         btnRun.disabled = true;
         btnRunShared.disabled = true;
+        btnRunMultistep.disabled = true;
         btnRunOutdated.disabled = true;
-        
-        if (isShared) {
+
+        if (isMultistep) {
+            btnRunMultistep.innerHTML = `<span class="loader"></span> Starting...`;
+        } else if (isShared) {
             btnRunShared.innerHTML = `<span class="loader"></span> Starting...`;
         } else if (options.outdatedOnly) {
             btnRunOutdated.innerHTML = `<span class="loader"></span> Starting...`;
         } else {
             btnRun.innerHTML = `<span class="loader"></span> Starting...`;
         }
-        
-        const termTarget = isShared ? 'shared' : 'general';
+
+        const termTarget = isShared || isMultistep ? 'shared' : 'general';
         
         try {
             logToTerminal(`Initiating benchmark for models: ${selected.join(', ')}...`, 'info', termTarget);
@@ -5903,6 +6956,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (selectedTests.length < totalTests) {
                         payload.test_ids = selectedTests;
                     }
+                }
+            } else if (isMultistep) {
+                // Only pass workflow_ids if not all workflows selected (backend treats null as "all")
+                const allWorkflows = document.getElementById('multistep-workflow-checkboxes')
+                    ?.querySelectorAll('input[type="checkbox"]').length || 0;
+                if (selectedTests.length < allWorkflows) {
+                    payload.workflow_ids = selectedTests;
                 }
             } else {
                 // Only pass test_ids if not all tasks selected (backend treats null as "all")
@@ -5943,7 +7003,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Ensure SocketIO is connected before switching tabs to receive progress events
             if (socket.connected) {
-                if (isShared) {
+                if (isShared || isMultistep) {
                     switchTab('shared');
                 } else {
                     switchTab('general');
@@ -5961,7 +7021,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }, 100);
                 });
-                if (isShared) {
+                if (isShared || isMultistep) {
                     switchTab('shared');
                 } else {
                     switchTab('general');
@@ -6001,10 +7061,11 @@ document.addEventListener('DOMContentLoaded', () => {
             runnerStatusBadge.innerHTML = `<span class="badge-dot"></span> RUNNING`;
             btnRun.disabled = true;
             btnRunShared.disabled = true;
+            btnRunMultistep.disabled = true;
             btnRunOutdated.disabled = true;
             btnCancel.disabled = false;
             progressCard.classList.remove('d-none');
-            
+
             progressPercent.textContent = '0%';
             progressBarFill.style.width = '0%';
             progressText.textContent = 'Initializing test run...';
@@ -6013,9 +7074,11 @@ document.addEventListener('DOMContentLoaded', () => {
             runnerStatusBadge.innerHTML = `<span class="badge-dot"></span> IDLE`;
             btnRun.disabled = false;
             btnRunShared.disabled = false;
+            btnRunMultistep.disabled = false;
             btnRunOutdated.disabled = false;
             btnRun.innerHTML = 'Run General';
             btnRunShared.innerHTML = 'Run SharedLLM';
+            btnRunMultistep.innerHTML = '🛩 Run MultiStep';
             btnRunOutdated.innerHTML = 'Run Outdated';
             btnCancel.disabled = true;
             btnCancel.textContent = 'Cancel Run';
@@ -6118,6 +7181,14 @@ document.addEventListener('DOMContentLoaded', () => {
         statusCategory.textContent = data.category;
     });
 
+    socket.on('benchmark_step', (data) => {
+        // Multi-step agentic workflows: one line per conversation turn.
+        logToTerminal(data.message || 'next turn…', "info", "shared");
+        if (typeof showToast === 'function') {
+            showToast(data.message || 'Next turn…', 'info', 1500);
+        }
+    });
+
     socket.on('test_complete', (data) => {
         const res = data.result;
         const pct = data.progress.percentage;
@@ -6170,6 +7241,14 @@ document.addEventListener('DOMContentLoaded', () => {
         
         setRunnerState('idle');
         loadHistory();
+        if (typeof loadTestBrowser === 'function') loadTestBrowser();
+        // Run-flow clarity: surface results from any tab (audit: results materialize
+        // only in General/Shared while the user may be anywhere).
+        showToast(
+            data.status === 'cancelled' ? 'Benchmark cancelled — partial results saved.' : 'Benchmark complete — results saved.',
+            data.status === 'cancelled' ? 'info' : 'success',
+            { actionLabel: 'View Results', onAction: () => switchTab(isShared ? 'shared' : 'general'), duration: 8000 }
+        );
     });
 
     socket.on('benchmark_cancelled', (data) => {
@@ -6374,6 +7453,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             setNumberInput('spec-draft-n-max', 'spec-draft-n-max', '0 (Disabled)');
             setNumberInput('n-cpu-moe', 'n-cpu-moe', isSd ? 'Auto (nproc - 2)' : 'Auto');
+            setNumberInput('temperature', 'temperature', '0.6 (Recommended)');
 
             // SD / image model fields
             setSelectInput('model_family', 'model_family', 'qwen-image');
@@ -6457,7 +7537,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     'kv-unified': profileEditForm.elements['kv-unified'].value,
                     'spec-type': profileEditForm.elements['spec-type'].value,
                     'spec-draft-n-max': profileEditForm.elements['spec-draft-n-max'].value || null,
-                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null
+                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null,
+                    'temperature': profileEditForm.elements['temperature'].value || null
                 };
             }
             Object.keys(settings).forEach(key => {
@@ -6663,7 +7744,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     'kv-unified': profileEditForm.elements['kv-unified'].value,
                     'spec-type': profileEditForm.elements['spec-type'].value,
                     'spec-draft-n-max': profileEditForm.elements['spec-draft-n-max'].value || null,
-                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null
+                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null,
+                    'temperature': profileEditForm.elements['temperature'].value || null
                 };
                 
                 Object.keys(settings).forEach(key => {
@@ -7627,7 +8709,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.detail === 'monitor') {
             if (!errorLogInterval) {
                 loadErrorLog();
-                errorLogInterval = setInterval(loadErrorLog, 30000);
+                // Visibility-aware: skip network churn while the page is hidden.
+                errorLogInterval = setInterval(() => { if (!document.hidden) loadErrorLog(); }, 30000);
             }
         } else {
             if (errorLogInterval) {
@@ -7664,8 +8747,8 @@ document.addEventListener('DOMContentLoaded', () => {
         btnSaveRoutingMatrix.addEventListener('click', saveRoutingMatrix);
     }
     
-    // Periodically update current model in switcher
-    setInterval(updateCurrentModel, 5000);
+    // Periodically update current model in switcher (skips while tab hidden)
+    setInterval(() => { if (!document.hidden) updateCurrentModel(); }, 5000);
 
     // MODEL DISCOVERY SEARCH AND PULL INTEGRATION
     const btnOpenSearchModal = document.getElementById('btn-open-search-modal');
@@ -8390,6 +9473,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadBenchmarkGroups();
     wireResumeDeselect();
     loadSharedTests();
+    loadMultistepWorkflows();
     loadModelProfiles();
     loadHistory();
     loadActivePulls();
@@ -8407,6 +9491,24 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnDeselectAllSharedTests) {
         btnDeselectAllSharedTests.addEventListener('click', () => {
             document.getElementById('shared-test-checkboxes')
+                ?.querySelectorAll('input[type="checkbox"]')
+                .forEach(cb => { cb.checked = false; });
+        });
+    }
+
+    // MultiStep workflow select-all / none
+    const btnSelectAllMultistep = document.getElementById('btn-select-all-multistep-workflows');
+    const btnDeselectAllMultistep = document.getElementById('btn-deselect-all-multistep-workflows');
+    if (btnSelectAllMultistep) {
+        btnSelectAllMultistep.addEventListener('click', () => {
+            document.getElementById('multistep-workflow-checkboxes')
+                ?.querySelectorAll('input[type="checkbox"]')
+                .forEach(cb => { cb.checked = true; });
+        });
+    }
+    if (btnDeselectAllMultistep) {
+        btnDeselectAllMultistep.addEventListener('click', () => {
+            document.getElementById('multistep-workflow-checkboxes')
                 ?.querySelectorAll('input[type="checkbox"]')
                 .forEach(cb => { cb.checked = false; });
         });
@@ -8449,8 +9551,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Poll pull status periodically to keep UI in sync
+    // Poll pull status periodically to keep UI in sync (skips while tab hidden)
     setInterval(() => {
+        if (document.hidden) return;
         try {
             fetch('/api/models/pulls/active').then(res => res.ok ? res.json().then(data => {
                 if (data.active_pulls && Object.keys(data.active_pulls).length > 0) {
@@ -8462,7 +9565,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial tab routing based on URL hash
     const initialHash = window.location.hash.substring(1);
-    const validTabs = ['monitor', 'general', 'shared', 'tests', 'profiles', 'requests', 'docs', 'sd'];
+    const validTabs = ['monitor', 'general', 'shared', 'tests', 'profiles', 'requests', 'docs', 'sd', 'audio'];
     if (validTabs.includes(initialHash)) {
         switchTab(initialHash);
     } else {
@@ -9417,3 +10520,163 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 });
+
+// ═══════════════════════════ AUDIO STUDIO ═══════════════════════════
+// TTS (Kokoro-82M) + Music (MusicGen-small) via the audio-server service.
+// Models load on demand server-side and unload when idle, so VRAM stays
+// available for llama-server.
+
+let _audioStatusTimer = null;
+
+function initAudioStudio() {
+    if (!document.getElementById('btn-tts-run').dataset.wired) {
+        wireAudioStudio();
+    }
+    refreshAudioStatus();
+    if (_audioStatusTimer) clearInterval(_audioStatusTimer);
+    _audioStatusTimer = setInterval(() => {
+        if (document.hidden) return;
+        if (!activeTab || activeTab !== 'audio') {
+            clearInterval(_audioStatusTimer);
+            _audioStatusTimer = null;
+            return;
+        }
+        refreshAudioStatus();
+    }, 15000);
+}
+
+function wireAudioStudio() {
+    const ttsBtn = document.getElementById('btn-tts-run');
+    const musicBtn = document.getElementById('btn-music-run');
+    const unloadBtn = document.getElementById('btn-audio-unload');
+    const speed = document.getElementById('tts-speed');
+    const speedVal = document.getElementById('tts-speed-val');
+    if (!ttsBtn) return;
+    ttsBtn.dataset.wired = '1';
+
+    speed.addEventListener('input', () => { speedVal.textContent = parseFloat(speed.value).toFixed(2).replace(/0$/, '') + '×'; });
+
+    ttsBtn.addEventListener('click', async () => {
+        const text = document.getElementById('tts-text').value.trim();
+        const meta = document.getElementById('tts-meta');
+        if (!text) { meta.textContent = 'Enter some text first.'; return; }
+        ttsBtn.disabled = true; ttsBtn.textContent = '⏳ Synthesizing…';
+        meta.textContent = '';
+        try {
+            const resp = await fetch('/api/audio/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, voice: document.getElementById('tts-voice').value, speed: parseFloat(speed.value) }),
+            });
+            const data = await resp.json();
+            if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
+            showAudio(data.audio_b64, `alpaca-tts-${data.meta.voice}.wav`);
+            meta.textContent = `✅ ${data.meta.duration_s}s · RTF ${data.meta.rtf} · ${data.meta.chunks} chunk(s) · ${data.meta.elapsed_s}s elapsed`;
+            refreshAudioStatus();
+        } catch (err) {
+            meta.textContent = '❌ ' + err.message;
+        } finally {
+            ttsBtn.disabled = false; ttsBtn.textContent = '🔊 Generate Speech';
+        }
+    });
+
+    musicBtn.addEventListener('click', async () => {
+        const prompt = document.getElementById('music-prompt').value.trim();
+        const meta = document.getElementById('music-meta');
+        if (!prompt) { meta.textContent = 'Describe the music you want first.'; return; }
+        const seedRaw = document.getElementById('music-seed').value;
+        const body = {
+            prompt,
+            duration_s: parseInt(document.getElementById('music-duration').value, 10),
+        };
+        if (seedRaw) body.seed = parseInt(seedRaw, 10);
+        musicBtn.disabled = true; musicBtn.textContent = '⏳ Composing…';
+        meta.textContent = '';
+        try {
+            const resp = await fetch('/api/audio/music', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
+            showAudio(data.audio_b64, 'alpaca-music.wav');
+            meta.textContent = `✅ ${data.meta.duration_s}s clip · ${data.meta.elapsed_s}s to render · RTF ${data.meta.rtf}`;
+            refreshAudioStatus();
+        } catch (err) {
+            meta.textContent = '❌ ' + err.message;
+        } finally {
+            musicBtn.disabled = false; musicBtn.textContent = '🎶 Generate Music';
+        }
+    });
+
+    unloadBtn.addEventListener('click', async () => {
+        unloadBtn.disabled = true;
+        try {
+            await fetch('/api/audio/unload', { method: 'POST' });
+            refreshAudioStatus();
+        } finally {
+            unloadBtn.disabled = false;
+        }
+    });
+
+    // Preset chips for music prompts
+    fetch('/api/audio/status').then(r => r.json()).then(st => {
+        const presets = (st.music && st.music.presets) || [];
+        const box = document.getElementById('music-presets');
+        box.innerHTML = '';
+        presets.forEach(p => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'music-preset-chip';
+            chip.textContent = p.split(',')[0];
+            chip.title = p;
+            chip.style.cssText = 'font-size:0.68rem;padding:0.25rem 0.55rem;border-radius:999px;border:1px solid rgba(255,255,255,0.14);background:#090d16;color:#94a3b8;cursor:pointer;';
+            chip.addEventListener('mouseenter', () => chip.style.color = '#f59e0b');
+            chip.addEventListener('mouseleave', () => chip.style.color = '#94a3b8');
+            chip.addEventListener('click', () => {
+                document.getElementById('music-prompt').value = p;
+            });
+            box.appendChild(chip);
+        });
+    }).catch(() => {});
+}
+
+async function refreshAudioStatus() {
+    const chip = document.getElementById('audio-status-chip');
+    const voiceSel = document.getElementById('tts-voice');
+    try {
+        const st = await (await fetch('/api/audio/status')).json();
+        if (st.status === 'offline') {
+            chip.innerHTML = '<span style="color:#ef4444;">● audio-server offline</span>';
+            return;
+        }
+        const free = st.vram_free_mb != null ? `${(st.vram_free_mb / 1024).toFixed(1)} GB free` : 'VRAM n/a';
+        const parts = [
+            `<span style="color:${st.tts.loaded ? '#34d399' : '#64748b'};">${st.tts.loaded ? '●' : '○'} Kokoro</span>`,
+            `<span style="color:${st.music.loaded ? '#34d399' : '#64748b'};">${st.music.loaded ? '●' : '○'} MusicGen</span>`,
+            `<span style="color:#64748b;">${free}</span>`,
+        ];
+        chip.innerHTML = parts.join(' &nbsp; ');
+        if (voiceSel.options.length === 0 && Array.isArray(st.tts.voices)) {
+            st.tts.voices.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v; opt.textContent = v;
+                voiceSel.appendChild(opt);
+            });
+        }
+    } catch (err) {
+        chip.innerHTML = '<span style="color:#ef4444;">● audio-server unreachable</span>';
+    }
+}
+
+function showAudio(b64, filename) {
+    document.getElementById('audio-output-empty').style.display = 'none';
+    const box = document.getElementById('audio-player-box');
+    const player = document.getElementById('audio-player');
+    const dl = document.getElementById('audio-download');
+    player.src = `data:audio/wav;base64,${b64}`;
+    dl.href = player.src;
+    dl.setAttribute('download', filename);
+    box.style.display = 'block';
+}

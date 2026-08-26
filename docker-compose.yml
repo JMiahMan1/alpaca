@@ -36,6 +36,14 @@ services:
       - ./.slots-cache:/slots-cache
       - ./llama-server-flags.py:/scripts/llama-server-flags.py:ro
       - ./llama-server-entrypoint.sh:/scripts/llama-server-entrypoint.sh:ro
+    environment:
+      # Reasoning-budget control for reasoning models (Qwen3 MoE etc.).
+      # --reasoning-budget is a llama.cpp server-startup flag (NOT per-request):
+      # it caps the thinking phase so the model cannot spend the whole
+      # generation budget on thinking and return empty content. deepseek format
+      # routes thoughts into message.thinking separate from scored content.
+      LLAMA_REASONING_BUDGET: "${LLAMA_REASONING_BUDGET:-2048}"
+      LLAMA_REASONING_FORMAT: "${LLAMA_REASONING_FORMAT:-deepseek}"
     entrypoint: ["/bin/sh", "/scripts/llama-server-entrypoint.sh"]
     depends_on:
       alpaca-indexer:
@@ -107,14 +115,17 @@ services:
       - ./online_providers.py:/app/online_providers.py:ro
       - ./.alpaca-router:/router-models
       - ./analyzer.py:/app/analyzer.py:ro
+      - ./sandbox_exec.py:/app/sandbox_exec.py:ro
       - /usr/share/ollama/.ollama/models:/models
     env_file:
       - ./.env
     environment:
       OLLAMA_SERVER_URLS: "http://llama-server:8080"
       PROXY_SERVER_URLS: "http://host.docker.internal:11434"
+      AUDIO_SERVER_URL: "http://audio-server:8082"
       ROUTER_MODELS_DIR: "/router-models"
       MODELS_DIR: "/models"
+      MODELS_INI_PATH: "/router-models/models.ini"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -187,5 +198,46 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  audio-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.audio
+    container_name: audio-server
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: always
+    cap_add:
+      - IPC_LOCK
+    ulimits:
+      memlock: -1
+    ports:
+      - "8082:8082"
+    environment:
+      # Models load lazily on first request; the OTHER model is evicted first
+      # and idle models are unloaded after this many seconds so llama-server
+      # gets its VRAM back on an 8 GB card.
+      - AUDIO_IDLE_UNLOAD_S=180
+      - AUDIO_DEVICE=cuda
+      - TTS_MODEL_ID=hexgrad/Kokoro-82M
+      - MUSIC_MODEL_ID=facebook/musicgen-small
+      - HUGGING_FACE_TOKEN=${HUGGING_FACE_TOKEN:-}
+    volumes:
+      - audio-models:/cache/huggingface
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  audio-models:
 
 

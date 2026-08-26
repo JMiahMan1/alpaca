@@ -35,6 +35,27 @@ BACKEND_URL = os.getenv(
 )
 BENCHMARK_PROMPT = "List 5 primary colors and write a very short sentence for each describing its mood."
 
+
+def _model_temperature(model: str) -> float:
+    for ini in [INI_PATH, Path(__file__).parent / ".alpaca-router" / "models.ini"]:
+        if not ini.exists():
+            continue
+        cp = configparser.ConfigParser()
+        try:
+            cp.read(ini)
+            if model in cp and "temperature" in cp[model]:
+                return float(cp[model]["temperature"])
+            if "*" in cp and "temperature" in cp["*"]:
+                return float(cp["*"]["temperature"])
+        except ValueError:
+            raise
+        except Exception:
+            continue
+    raise ValueError(
+        f"temperature not set for model '{model}' (and no [*] default) in {INI_PATH} - set via Settings > UI"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Quality test suite - runs once after the optimal config is confirmed.
 # These test real-world use cases that matter for Jarvis OS / SharedLLM:
@@ -201,7 +222,7 @@ def run_quality_tests(public_model_name):
             "model": public_model_name,
             "messages": [{"role": "user", "content": test["prompt"]}],
             "stream": False,
-            "options": {"num_predict": test["num_predict"], "temperature": 0.3},
+            "options": {"num_predict": test["num_predict"], "temperature": _model_temperature(public_model_name)},
         }
         t0 = time.time()
         try:

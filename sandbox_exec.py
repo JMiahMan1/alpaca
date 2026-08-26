@@ -22,6 +22,7 @@ import io
 import os
 import re
 import tarfile
+import textwrap
 import threading
 import time
 import uuid
@@ -34,13 +35,67 @@ SANDBOX_IMAGE = "alpaca-sandbox:latest"
 # and would otherwise crash with EOFError because exec_run attaches no stdin.
 # This gives them a handful of plausible responses so they can complete a
 # typical playthrough; programs that ignore stdin are unaffected.
-_SAMPLE_STDIN = "\n".join(
-    [
-        "Alice", "5", "7", "1", "left", "right", "a3", "b4", "n", "y",
-        "restart", "q", "quit", "exit", "10", "n", "n", "y", "2", "3",
-        "up", "down", "c1", "d2", "n", "y", "0", "12", "n", "e",
-    ]
-) + "\n"
+_SAMPLE_STDIN = (
+    "\n".join(
+        [
+            "5",
+            "7",
+            "1",
+            "10",
+            "12",
+            "3",
+            "2",
+            "0",
+            "42",
+            "50",
+            "20",
+            "15",
+            "Alice",
+            "Bob",
+            "gold",
+            "black",
+            "left",
+            "right",
+            "up",
+            "down",
+            "a3",
+            "b4",
+            "c1",
+            "d2",
+            "1 1",
+            "2 2",
+            "3 3",
+            "4 4",
+            "5 5",
+            "6 6",
+            "7 7",
+            "8 8",
+            "n",
+            "y",
+            "yes",
+            "no",
+            "restart",
+            "start",
+            "q",
+            "quit",
+            "exit",
+            "1",
+            "2",
+            "3",
+            "n",
+            "n",
+            "y",
+            "2",
+            "3",
+            "0",
+            "12",
+            "n",
+            "e",
+        ]
+    )
+    * 3
+    + "\n"
+)
 
 try:  # pragma: no cover - present in both web and sandbox images
     import PIL.Image as _PILImage
@@ -80,13 +135,170 @@ def _screenshot_has_content(png_bytes: bytes) -> bool:
         return False
 
 
+# Console/error markers that indicate a web page's JavaScript failed at runtime.
+# Chromium surfaces these on stderr with --enable-logging=stderr; a page that
+# throws during its game loop is a broken game even if the static HTML overlay
+# (title screen, buttons) still painted a screenshot.
+_WEB_JS_ERROR_MARKERS = (
+    "uncaught ",
+    "referenceerror",
+    "typeerror",
+    "syntaxerror",
+    "is not defined",
+    "failed to load resource",
+    "err_file_not_found",
+    "three is not defined",
+    "[error:console",
+)
+
+
+def _lint_html_js(container, code: str) -> tuple[bool, str]:
+    """Syntax-check a web page and reject truncated/broken output.
+
+    Returns ``(ok, error)``. Token-budget cutoff frequently truncates an HTML
+    response mid-``<script>``, leaving the start-screen overlay intact but the
+    game code itself syntactically broken. ``node --check`` on each inline
+    script catches exactly that, and structural checks reject a page that is
+    missing its closing tags entirely.
+    """
+    low = code.lower()
+    if "<script" in low and low.count("<script") != low.count("</script>"):
+        return False, "HTML truncated: unclosed <script> tag"
+    if "<html" in low and "</html>" not in low:
+        return False, "HTML truncated: missing </html>"
+    if "<body" in low and "</body>" not in low:
+        return False, "HTML truncated: missing </body>"
+    inline = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", code, re.S | re.I)
+    for i, js in enumerate(inline):
+        if not js.strip():
+            continue
+        _put_file(container, f"/tmp/lint_{i}.js", js.encode("utf-8"))
+        try:
+            ec, out = container.exec_run(
+                ["node", "--check", f"/tmp/lint_{i}.js"], stdout=True, stderr=True, tty=False, demux=False
+            )
+        except Exception:  # pragma: no cover - lint infra failure shouldn't fail the benchmark
+            continue
+        if ec != 0:
+            txt = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+            return False, f"JS syntax error in inline script {i}: {txt.strip()[:300]}"
+    return True, ""
+
+
+def _lint_code(container, code: str, lang: str) -> tuple[bool, str]:
+    """Run a language-appropriate syntax check inside the container.
+
+    Returns ``(ok, error)``. A syntax error means the model's code is malformed
+    or truncated (common when it burns its whole token budget mid-generation),
+    so the benchmark must fail rather than grade a partial run. Compiled
+    languages (go/rust/java/sql) are skipped: their compiler already fails the
+    build when the code is broken.
+    """
+    if lang in ("html", "htm", "web"):
+        return _lint_html_js(container, code)
+    if lang in ("python", "py"):
+        fname, check = "/tmp/lint.py", ["python3", "-m", "py_compile", "/tmp/lint.py"]
+    elif lang in ("node", "js", "javascript"):
+        fname, check = "/tmp/lint.js", ["node", "--check", "/tmp/lint.js"]
+    elif lang in ("bash", "sh"):
+        fname, check = "/tmp/lint.sh", ["bash", "-n", "/tmp/lint.sh"]
+    elif lang == "cpp":
+        fname, check = "/tmp/lint.cpp", ["bash", "-c", "g++ -std=c++17 -fsyntax-only /tmp/lint.cpp"]
+    elif lang in ("basic", "bas"):
+        fname, check = "/tmp/lint.bas", ["bash", "-c", "yabasic /tmp/lint.bas </dev/null >/dev/null 2>&1"]
+    elif lang in ("pascal", "pas"):
+        fname, check = "/tmp/lint.pas", ["bash", "-c", "fpc -S2 -o/tmp/lint_pas /tmp/lint.pas >/dev/null 2>&1"]
+    elif lang in ("typescript", "ts"):
+        fname, check = (
+            "/tmp/lint.ts",
+            ["bash", "-c", "tsc --target ES2020 --module commonjs --noEmit /tmp/lint.ts >/dev/null 2>&1"],
+        )
+    elif lang in ("yaml", "yml"):
+        fname, check = (
+            "/tmp/lint.yaml",
+            ["bash", "-c", "python3 -c \"import yaml,sys; yaml.safe_load(open('/tmp/lint.yaml'))\" >/dev/null 2>&1"],
+        )
+    elif lang == "terraform":
+        fname, check = (
+            "/tmp/lint.tf",
+            [
+                "bash",
+                "-c",
+                "python3 -c \"import sys; s=open('/tmp/lint.tf').read(); assert s.count('{')==s.count('}'), 'unbalanced braces'; assert 'resource' in s or 'variable' in s or 'provider' in s, 'no terraform blocks'\" >/dev/null 2>&1",
+            ],
+        )
+    elif lang == "rpm":
+        fname, check = "/tmp/lint.spec", ["bash", "-c", "rpmspec -P /tmp/lint.spec >/dev/null 2>&1"]
+    else:
+        return True, ""
+    _put_file(container, fname, code.encode("utf-8"))
+    try:
+        ec, out = container.exec_run(check, stdout=True, stderr=True, tty=False, demux=False)
+    except Exception:  # pragma: no cover - lint infra failure shouldn't fail the benchmark
+        return True, ""
+    if ec == 0:
+        return True, ""
+    txt = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+    return False, txt.strip()[:300]
+
+
+def _find_web_js_error(output: str) -> str | None:
+    """Return the first line of chromium stderr that looks like a real JS error.
+
+    Chromium logs page console/JS errors to stderr when run with
+    ``--enable-logging=stderr``. Ignore the dbus/GL noise that headless
+    chromium always prints; only genuine JS failures (Uncaught, ReferenceError,
+    failed resource loads, "three is not defined", etc.) are treated as a
+    broken game.
+    """
+    for line in (output or "").splitlines():
+        low = line.lower()
+        if "dbus" in low or "gpu" in low or "gl_" in low or "fontconfig" in low:
+            continue
+        if any(marker in low for marker in _WEB_JS_ERROR_MARKERS):
+            return line.strip()[:200]
+    return None
+
+
+_CODE_FIRST_LINE_STARTERS = {
+    "python": ("import ", "from ", "def ", "class ", "async def", "if __name__", "#!/", "@"),
+    "html": ("<!doctype", "<html", "<head", "<script", "<style", "<body", "<!--"),
+    "javascript": ("const ", "let ", "var ", "function ", "import ", "export ", "require(", "//", "'use strict'"),
+    "node": ("const ", "let ", "var ", "function ", "import ", "export ", "require(", "//", "'use strict'", "#!/"),
+    "typescript": ("const ", "let ", "var ", "function ", "import ", "export ", "require(", "//"),
+    "rust": ("use ", "fn ", "mod ", "struct ", "enum ", "#!["),
+}
+_DEFAULT_CODE_STARTERS = _CODE_FIRST_LINE_STARTERS["python"]
+
+
+def _block_starts_like_code(block: str, lang: str) -> bool:
+    """Heuristic: does a fenced block's first non-empty line look like real code for ``lang``?
+
+    Used to prefer executable code blocks over plan/reasoning snippets that some
+    models wrap in fences.
+    """
+    starters = _CODE_FIRST_LINE_STARTERS.get(lang.lower(), _DEFAULT_CODE_STARTERS)
+    for line in block.splitlines():
+        stripped = line.strip().lower()
+        if not stripped:
+            continue
+        return stripped.startswith(starters)
+    return False
+
+
 def extract_clean_code(text: str, lang: str = "python") -> str:
     """Extract pure, executable code from an LLM response.
 
     1. Removes <think>/<thinking> reasoning tags.
-    2. Extracts from markdown code fences if present (```python, ```js, etc.).
-    3. Strips conversational prose preambles and postambles if no fences exist.
-    4. Preserves legitimate code comments (#, //, /* */, docstrings).
+    2. Extracts from markdown code fences if present (```python, ```js, etc.),
+       preferring blocks whose first line looks like real code over fenced
+       plan/reasoning snippets.
+    3. Handles truncated fences (generation hit the token cap before the
+       closing ```) by taking content from the last fence marker to EOF.
+    4. Strips conversational prose preambles and postambles if no fences exist,
+       using strict syntax indicators so reasoning/markdown prose is never
+       mistaken for code.
+    5. Preserves legitimate code comments (#, //, /* */, docstrings).
     """
     if not text:
         return ""
@@ -94,20 +306,34 @@ def extract_clean_code(text: str, lang: str = "python") -> str:
     # 1. Strip think blocks
     cleaned = re.sub(r"<think[^>]*>[\s\S]*?</think[^>]*>", "", text, flags=re.IGNORECASE).strip()
 
-    # 2. Check for markdown code fences
+    # 2. Check for markdown code fences (complete pairs only)
     fence_patterns = [
-        rf"```(?:{lang}|{lang.lower()}|python3|py|javascript|js|node|html|htm|web|cpp|c\+\+|java|sql|bash|sh)?\s*\n([\s\S]*?)```",
+        rf"```(?:{lang}|{lang.lower()}|python3|py|javascript|js|node|html|htm|web|cpp|c\+\+|java|sql|bash|sh|basic|bas|pascal|pas|typescript|ts|yaml|yml|terraform|hcl|spec|rpm)?\s*\n([\s\S]*?)```",
         r"```[\w+-]*\s*\n([\s\S]*?)```",
         r"```([\s\S]*?)```",
     ]
     for pat in fence_patterns:
         matches = re.findall(pat, cleaned, flags=re.IGNORECASE)
-        if matches:
-            best = max(matches, key=len).strip()
-            if best:
-                return best
+        if not matches:
+            continue
+        # Prefer blocks that start like real code for this language (some models
+        # fence their planning notes before the actual implementation).
+        coded = [m for m in matches if _block_starts_like_code(m, lang)]
+        best = max(coded or matches, key=len)
+        if best.strip():
+            return textwrap.dedent(best).strip()
 
-    # 3. Clean leading/trailing non-code lines if no markdown code fences
+    # 2b. Truncated final fence: generation hit the token cap before the closing
+    # ``` arrived (common on long game outputs at n_predict caps like 8000).
+    # Take everything after the last opening fence marker to EOF.
+    trunc = re.search(r"```[\w+-]*[ \t]*\r?\n([\s\S]+)$", cleaned)
+    if trunc and len(trunc.group(1).strip().splitlines()) >= 3:
+        return textwrap.dedent(trunc.group(1)).strip()
+
+    # 3. Clean leading/trailing non-code lines if no markdown code fences.
+    # Strict syntax-only indicators: loose ones like "#", "for ", "while ",
+    # "const " matched markdown headings and reasoning bullets, injecting
+    # thinking prose into extracted code (seen as lint.py SyntaxErrors).
     lines = cleaned.splitlines()
     start_idx = 0
     code_indicators = (
@@ -115,36 +341,25 @@ def extract_clean_code(text: str, lang: str = "python") -> str:
         "from ",
         "def ",
         "class ",
-        "#",
-        "//",
-        "/*",
-        "public ",
-        "package ",
+        "async def",
+        "if __name__",
+        "#!/",
+        "#include",
         "use std::",
         "fn main(",
-        "extern ",
         "pub fn",
-        "struct ",
-        "impl ",
         "<!doctype",
         "<html",
         "<script",
-        "const ",
-        "let ",
-        "var ",
+        "<style",
         "function ",
-        "#include",
+        "require(",
+        "'use strict'",
+        "package ",
+        "public class",
         "using namespace",
-        "select ",
-        "insert ",
-        "create table",
-        "#!/",
-        "if __name__",
-        "async def",
-        "async function",
-        "try:",
-        "for ",
-        "while ",
+        "impl ",
+        "extern crate",
     )
     for idx, line in enumerate(lines):
         stripped = line.strip().lower()
@@ -190,7 +405,7 @@ def extract_clean_code(text: str, lang: str = "python") -> str:
             break
 
     extracted = "\n".join(lines[start_idx:end_idx]).strip()
-    return extracted if extracted else cleaned.strip()
+    return textwrap.dedent(extracted).strip() if extracted else cleaned.strip()
 
 
 def _put_file(container, path: str, data: bytes) -> None:
@@ -235,6 +450,7 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         "error": "",
         "lang": lang,
         "screenshot": None,
+        "lint_passed": True,
     }
     try:
         import docker
@@ -282,6 +498,36 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
     elif lang in ("bash", "sh"):
         ext, bin_ = "sh", "bash"
         cmd = ["bash", "/tmp/code.sh"]
+    elif lang in ("basic", "bas"):
+        ext, bin_ = "bas", "yabasic"
+        cmd = ["bash", "-c", "yabasic /tmp/code.bas </dev/null 2>&1"]
+    elif lang in ("pascal", "pas"):
+        ext, bin_ = "pas", "fpc"
+        cmd = [
+            "bash",
+            "-c",
+            "cd /tmp && fpc -S2 -o/tmp/pascal_out code.pas >/tmp/fpc_build.log 2>&1 && /tmp/pascal_out",
+        ]
+    elif lang in ("typescript", "ts"):
+        ext, bin_ = "ts", "tsc"
+        cmd = [
+            "bash",
+            "-c",
+            "cd /tmp && tsc --target ES2020 --module commonjs code.ts >/tmp/tsc_build.log 2>&1 && node /tmp/code.js",
+        ]
+    elif lang in ("yaml", "yml"):
+        ext, bin_ = "yaml", "python3"
+        cmd = ["bash", "-c", "python3 -c \"import yaml,sys; yaml.safe_load(open('/tmp/code.yaml')); print('YAML OK')\""]
+    elif lang == "terraform":
+        ext, bin_ = "tf", "python3"
+        cmd = [
+            "bash",
+            "-c",
+            "python3 -c \"import sys; s=open('/tmp/code.tf').read(); print('terraform config OK, bytes=', len(s))\"",
+        ]
+    elif lang == "rpm":
+        ext, bin_ = "spec", "rpmspec"
+        cmd = ["bash", "-c", "rpmspec -P /tmp/code.spec"]
     else:
         result["error"] = f"unsupported language for execution: {lang}"
         return result
@@ -304,6 +550,17 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
             name=f"alpaca-grade-{uuid.uuid4().hex[:8]}",
             remove=False,
         )
+
+        # Syntax gate: reject truncated/malformed code BEFORE running it, so a
+        # token-budget cutoff (unclosed </script>, missing </html>, invalid JS)
+        # fails the benchmark instead of grading a broken partial render.
+        lint_ok, lint_err = _lint_code(container, cleaned_code, lang)
+        result["lint_passed"] = bool(lint_ok)
+        if not lint_ok:
+            result["ran"] = False
+            result["exit_code"] = 1
+            result["error"] = f"syntax/lint error: {lint_err}"
+            return result
 
         if ui:
             if lang in ("html", "htm", "web"):
@@ -450,7 +707,7 @@ def _run_web_ui(container, code: str, timeout: int, result: dict[str, Any]) -> d
         "if [ -f /usr/local/share/three.min.js ]; then cp /usr/local/share/three.min.js /tmp/three.min.js; fi\n"
         "timeout 25 chromium --headless --no-sandbox --disable-gpu "
         "--disable-dev-shm-usage --hide-scrollbars --force-device-scale-factor=1 "
-        "--window-size=1024,768 --screenshot=/tmp/out.png "
+        "--enable-logging=stderr --window-size=1024,768 --screenshot=/tmp/out.png "
         f"--virtual-time-budget={capture_delay * 1000} file:///tmp/code.html "
         ">/tmp/ui_stdout.txt 2>&1\n"
     )
@@ -491,6 +748,14 @@ def _run_web_ui(container, code: str, timeout: int, result: dict[str, Any]) -> d
             rendered = True
         result["ui_rendered"] = rendered
         result["ran"] = rendered
+        # A page can paint a static overlay (title screen, buttons) while its
+        # game-loop JavaScript crashed, which would otherwise pass the
+        # screenshot check. Fail it when the console shows a real JS error.
+        console_error = _find_web_js_error(result["output"])
+        if console_error:
+            result["ran"] = False
+            result["ui_rendered"] = False
+            result["error"] = f"JS console error: {console_error}"
     else:
         result["ui_rendered"] = False
         result["ran"] = result["exit_code"] == 0
@@ -759,7 +1024,11 @@ def ui_exec(container_id: str, command: str, timeout: int = 15) -> dict[str, Any
             environment={"DISPLAY": ":99"},
             demux=True,
         )
-        stdout = (out[0] or b"").decode("utf-8", errors="replace") if isinstance(out, tuple) else (out or b"").decode("utf-8", errors="replace")
+        stdout = (
+            (out[0] or b"").decode("utf-8", errors="replace")
+            if isinstance(out, tuple)
+            else (out or b"").decode("utf-8", errors="replace")
+        )
         stderr = (out[1] or b"").decode("utf-8", errors="replace") if isinstance(out, tuple) else ""
         result["output"] = stdout + (("\n[stderr]\n" + stderr) if stderr else "")
         result["exit_code"] = code
@@ -791,9 +1060,15 @@ def ui_status(container_id: str) -> dict[str, Any]:
         result["running"] = container.status == "running"
         port_info = (container.ports or {}).get("6080/tcp")
         result["host_port"] = port_info[0]["HostPort"] if port_info else None
-        app_pid = container.exec_run(["cat", "/tmp/app.pid"], user="sandbox").output.decode("utf-8", errors="replace").strip()
+        app_pid = (
+            container.exec_run(["cat", "/tmp/app.pid"], user="sandbox").output.decode("utf-8", errors="replace").strip()
+        )
         result["app_pid"] = app_pid if app_pid.isdigit() else None
-        exitcode = container.exec_run(["cat", "/tmp/app.exitcode"], user="sandbox").output.decode("utf-8", errors="replace").strip()
+        exitcode = (
+            container.exec_run(["cat", "/tmp/app.exitcode"], user="sandbox")
+            .output.decode("utf-8", errors="replace")
+            .strip()
+        )
         result["app_exitcode"] = int(exitcode) if exitcode.lstrip("-").isdigit() else None
         tail = container.exec_run(
             ["bash", "-c", "tail -c 4000 /tmp/ui_stdout.txt 2>/dev/null || echo '(no stdout yet)'"],
@@ -818,7 +1093,11 @@ def ui_screenshot(container_id: str) -> dict[str, Any]:
         return result
     try:
         _, out = container.exec_run(
-            ["/bin/bash", "-c", "DISPLAY=:99 scrot -o /tmp/ui_shot.png 2>/dev/null && base64 -w0 /tmp/ui_shot.png || echo SCROT_FAIL"],
+            [
+                "/bin/bash",
+                "-c",
+                "DISPLAY=:99 scrot -o /tmp/ui_shot.png 2>/dev/null && base64 -w0 /tmp/ui_shot.png || echo SCROT_FAIL",
+            ],
             user="sandbox",
         )
         data = (out or b"").decode("utf-8", errors="replace").strip()
