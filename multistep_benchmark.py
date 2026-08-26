@@ -61,6 +61,8 @@ with contextlib.suppress(Exception):  # sandbox optional (CI containers)
 # short backoff before recording the turn as failed.
 _EMPTY_TURN_RETRIES = 2
 _EMPTY_TURN_RETRY_DELAY_S = 15
+_UI_RENDER_RETRIES = 2
+_UI_RENDER_RETRY_DELAY_S = 5
 
 
 def strip_thinking(text: str | None) -> str:
@@ -460,7 +462,7 @@ class MultiStepBenchmark:
 
         try:
             result = _render()
-        except Exception as e:  # noqa: BLE001 - sandbox is best-effort
+        except Exception as e:
             return {"ran": None, "skipped": f"sandbox error: {e}"}
         # Only retry when the lint gate passed and the render itself failed --
         # a syntax/lint error is deterministic and would fail again.
@@ -474,7 +476,7 @@ class MultiStepBenchmark:
             time.sleep(_UI_RENDER_RETRY_DELAY_S)
             try:
                 result = _render()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 return {"ran": None, "skipped": f"sandbox error: {e}"}
         if attempts > 1:
             result["render_attempts"] = attempts
