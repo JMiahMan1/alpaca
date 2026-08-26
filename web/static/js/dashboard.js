@@ -3502,7 +3502,80 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>`;
     }
 
+    // Server-backed human ratings: canonical store is GET/POST /api/ratings
+    // (data/human_ratings.json on the host). localStorage is only an offline
+    // mirror so ratings survive across browsers/machines.
+    let SERVER_RATINGS_CACHE = null; // null = not yet fetched; {} = fetched
+    let SERVER_RATINGS_PROMISE = null;
+
+    async function fetchServerRatings() {
+        if (SERVER_RATINGS_PROMISE) return SERVER_RATINGS_PROMISE;
+        SERVER_RATINGS_PROMISE = (async () => {
+            try {
+                const res = await fetch('/api/ratings');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const j = await res.json();
+                const srv = (j && j.ratings && typeof j.ratings === 'object') ? j.ratings : {};
+                SERVER_RATINGS_CACHE = srv;
+                // Merge in any local-only ratings that haven't been pushed yet
+                // (e.g. rated while offline) and keep localStorage in sync.
+                try {
+                    const raw = localStorage.getItem('alpaca_human_ratings');
+                    if (raw) {
+                        const localAll = JSON.parse(raw) || {};
+                        let merged = false;
+                        for (const [tid, models] of Object.entries(localAll)) {
+                            if (!SERVER_RATINGS_CACHE[tid]) { SERVER_RATINGS_CACHE[tid] = {}; merged = true; }
+                            for (const [m, v] of Object.entries(models)) {
+                                if (!(m in SERVER_RATINGS_CACHE[tid])) {
+                                    SERVER_RATINGS_CACHE[tid][m] = v;
+                                    merged = true;
+                                }
+                            }
+                        }
+                        if (merged) {
+                            // Keep server in sync opportunistically (per-entry push)
+                            for (const [tid2, models2] of Object.entries(localAll)) {
+                                for (const [m2, v2] of Object.entries(models2)) {
+                                    if (srv[tid2] && (m2 in srv[tid2])) continue;
+                                    fetch('/api/ratings', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ testId: tid2, model: m2, rating: v2 })
+                                    }).catch(() => {});
+                                }
+                            }
+                        }
+                    }
+                } catch (_) {}
+                try { localStorage.setItem('alpaca_human_ratings', JSON.stringify(SERVER_RATINGS_CACHE)); } catch (_) {}
+                // Re-render any visible rating surfaces
+                if (typeof renderRatingsBoard === 'function') try { renderRatingsBoard(); } catch (_) {}
+                if (typeof renderTestBrowser === 'function' && Array.isArray(ALL_TESTS) && ALL_TESTS.length) try { renderTestBrowser(); } catch (_) {}
+                // If a preview modal is open, refresh its rating rows
+                if (ACTIVE_PREVIEW && ACTIVE_PREVIEW.testId && typeof renderTestPreviewRatings === 'function') {
+                    const t = ALL_TESTS.find(x => x.id === ACTIVE_PREVIEW.testId);
+                    if (t) try { renderTestPreviewRatings(t); } catch (_) {}
+                }
+                return SERVER_RATINGS_CACHE;
+            } catch (e) {
+                try {
+                    const raw = localStorage.getItem('alpaca_human_ratings');
+                    SERVER_RATINGS_CACHE = raw ? (JSON.parse(raw) || {}) : {};
+                } catch (_) { SERVER_RATINGS_CACHE = {}; }
+                return SERVER_RATINGS_CACHE;
+            }
+        })();
+        return SERVER_RATINGS_PROMISE;
+    }
+    // Kick off a load early so the first card render already has server data
+    // when possible; failures fall back to localStorage transparently.
+    fetchServerRatings();
+
     function _loadHumanRatings(testId) {
+        if (SERVER_RATINGS_CACHE !== null) {
+            return SERVER_RATINGS_CACHE[testId] || {};
+        }
         try {
             const raw = localStorage.getItem('alpaca_human_ratings');
             if (!raw) return {};
@@ -3577,16 +3650,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function _saveHumanRating(testId, model, val) {
         try {
-            let all = {};
-            const raw = localStorage.getItem('alpaca_human_ratings');
-            if (raw) all = JSON.parse(raw) || {};
-            if (!all[testId]) all[testId] = {};
-            all[testId][model] = val;
-            localStorage.setItem('alpaca_human_ratings', JSON.stringify(all));
+            if (SERVER_RATINGS_CACHE === null) SERVER_RATINGS_CACHE = {};
+            if (!SERVER_RATINGS_CACHE[testId]) SERVER_RATINGS_CACHE[testId] = {};
+            if (val === 0 || val == null) {
+                delete SERVER_RATINGS_CACHE[testId][model];
+                if (Object.keys(SERVER_RATINGS_CACHE[testId]).length === 0) delete SERVER_RATINGS_CACHE[testId];
+            } else {
+                SERVER_RATINGS_CACHE[testId][model] = val;
+            }
+            localStorage.setItem('alpaca_human_ratings', JSON.stringify(SERVER_RATINGS_CACHE));
         } catch (e) { /* storage unavailable — ignore */ }
+        // Fire-and-forget sync to the server so other browsers see it
+        try {
+            fetch('/api/ratings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ testId: testId, model: model, rating: val })
+            }).catch(() => {});
+        } catch (_) {}
     }
 
     function _loadAllHumanRatings() {
+        if (SERVER_RATINGS_CACHE !== null) return SERVER_RATINGS_CACHE;
         try {
             const raw = localStorage.getItem('alpaca_human_ratings');
             return raw ? JSON.parse(raw) || {} : {};
@@ -3748,7 +3833,7 @@ const saved = _loadHumanRatings(t.id) || {};
             winRun.addEventListener('click', () => openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking));
         } else if (isUi) {
             winRun.textContent = '🖥 View UI (expanded)';
-            winRun.addEventListener('click', () => openUiViewer(winnerRow.response, winnerRow.model, winnerRow.thinking));
+            winRun.addEventListener('click', () => openUiViewerExpanded(winnerRow.response, winnerRow.model, winnerRow.thinking));
         } else {
             winRun.textContent = '▶ Run (terminal)';
             winRun.addEventListener('click', () => openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking));
@@ -4374,6 +4459,33 @@ const saved = _loadHumanRatings(t.id) || {};
         }
     }
 
+    // Open a UI result directly in a new browser tab via the noVNC launcher,
+    // without replacing the current Test Browser preview. This is the user-
+    // facing "⤢ View UI (expanded)" action on each model row / winner block:
+    // it serves the code to a fresh sandbox container and then opens
+    // /ui/launcher/<id> in a new tab so the full noVNC desktop is visible.
+    function openUiViewerExpanded(responseText, label, thinkingText) {
+        const code = extractRunnableCode(responseText || '');
+        if (!code.trim()) {
+            showToast('No runnable UI code found in response', 'error');
+            return;
+        }
+        showToast('Launching UI in new tab…', 'info');
+        fetch('/api/sandbox/serve_ui', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code, lang: 'python' })
+        })
+            .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+            .then(({ ok, j }) => {
+                if (!ok || j.error) throw new Error(j.error || 'serve_ui failed');
+                const url = `/ui/launcher/${j.container_id}`;
+                const win = window.open(url, '_blank');
+                if (!win) showToast('Popup blocked — allow popups for this site.', 'error');
+            })
+            .catch((e) => showToast(`UI launch failed: ${e.message}`, 'error'));
+    }
+
     function openUiViewer(responseText, label, thinkingText) {
         const overlay = document.getElementById('test-preview-overlay');
         const title = document.getElementById('test-preview-title');
@@ -4382,11 +4494,23 @@ const saved = _loadHumanRatings(t.id) || {};
         const stage = document.getElementById('test-preview-stage');
         const expectedEl = document.getElementById('test-preview-expected');
         const downloadBtn = document.getElementById('btn-download-test');
+        // Remember which test preview we came from so "Back to models" can
+        // restore it — this fixes "no way to go back without closing modal".
+        const _prevTestId = ACTIVE_PREVIEW ? ACTIVE_PREVIEW.testId : null;
         title.textContent = '🖥 UI Launcher: ' + (label || 'app');
         meta.innerHTML = '<span class="kind-badge kind-node">UI</span>';
         promptEl.textContent = 'Model-produced UI code running live in a sandbox container (noVNC). Use the tools below to troubleshoot.';
         expectedEl.textContent = '';
         stage.innerHTML = '';
+        if (_prevTestId) {
+            const backBtn = document.createElement('button');
+            backBtn.className = 'btn btn-secondary btn-sm';
+            backBtn.textContent = '← Back to models';
+            backBtn.title = 'Return to the test preview (all models) without closing the modal';
+            backBtn.style.marginBottom = '0.75rem';
+            backBtn.addEventListener('click', () => openTestPreview(_prevTestId));
+            stage.appendChild(backBtn);
+        }
         const txt = responseText || '';
         if (thinkingText) {
             const thWrap = document.createElement('div');
@@ -4966,7 +5090,7 @@ const saved = _loadHumanRatings(t.id) || {};
                         expandBtn.addEventListener('click', () => openExpandedRunner(resp.response, resp.model, resp.thinking));
                     } else if (isUi) {
                         expandBtn.textContent = '⤢ View UI (expanded)';
-                        expandBtn.addEventListener('click', () => openUiViewer(resp.response, resp.model, resp.thinking));
+                        expandBtn.addEventListener('click', () => openUiViewerExpanded(resp.response, resp.model, resp.thinking));
                     } else {
                         expandBtn.textContent = '⤢ Run (terminal)';
                         expandBtn.addEventListener('click', () => openExpandedRunner(resp.response, resp.model, resp.thinking));

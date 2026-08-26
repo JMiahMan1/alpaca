@@ -1299,6 +1299,85 @@ def get_test_responses(test_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Human ratings persistence — stored server-side so ratings survive across
+# browsers / machines / sessions. File lives under DATA_DIR (default ./data)
+# alongside the telemetry/benchmark JSON dumps. Frontend keeps a localStorage
+# mirror for offline fallback but treats this file as the canonical store.
+# ---------------------------------------------------------------------------
+_RATINGS_FILE = Path(os.getenv("DATA_DIR", "data")) / "human_ratings.json"
+_RATINGS_LOCK = threading.Lock()
+
+
+def _load_ratings_file() -> dict:
+    try:
+        if _RATINGS_FILE.exists():
+            with open(_RATINGS_FILE, encoding="utf-8") as fh:
+                d = json.load(fh)
+                return d if isinstance(d, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_ratings_file(data: dict) -> None:
+    try:
+        _RATINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_RATINGS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+    except Exception as e:
+        print(f"[ratings] failed to save {_RATINGS_FILE}: {e}")
+
+
+@app.route("/api/ratings", methods=["GET"])
+def get_ratings():
+    """Return the canonical human ratings store: { testId: { model: 0.5..5 } }."""
+    try:
+        with _RATINGS_LOCK:
+            data = _load_ratings_file()
+        return jsonify({"ratings": data})
+    except Exception as e:
+        return jsonify({"ratings": {}, "error": str(e)}), 500
+
+
+@app.route("/api/ratings", methods=["POST"])
+def post_rating():
+    """Create/update/delete a single human rating. Body: {testId, model, rating}."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        test_id = ""
+        for k in ("testId", "test_id", "testid", "id"):
+            v = payload.get(k)
+            if isinstance(v, str) and v.strip():
+                test_id = v.strip()
+                break
+        model = (payload.get("model") or "").strip() if isinstance(payload.get("model"), str) else ""
+        raw_rating = payload.get("rating")
+        if not test_id or not model:
+            return jsonify({"error": "testId and model are required"}), 400
+        try:
+            rating = float(raw_rating)
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid rating"}), 400
+        # Clamp to 0..5 and snap to 0.5 increments; 0 means delete
+        rating = max(0.0, min(5.0, round(rating * 2) / 2))
+        with _RATINGS_LOCK:
+            data = _load_ratings_file()
+            if rating == 0:
+                if test_id in data and model in data[test_id]:
+                    del data[test_id][model]
+                    if not data[test_id]:
+                        del data[test_id]
+            else:
+                if test_id not in data:
+                    data[test_id] = {}
+                data[test_id][model] = rating
+            _save_ratings_file(data)
+        return jsonify({"ok": True, "ratings": data})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/tests/shared_llm")
 def get_shared_llm_tests():
     """Return list of all SharedLLM task definitions"""
