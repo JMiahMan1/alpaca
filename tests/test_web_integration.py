@@ -443,8 +443,12 @@ def test_api_models_ollama_tags_route(mock_get, client):
     data = json.loads(res.data.decode("utf-8"))
     assert "tags" in data
     assert len(data["tags"]) == 2
-    assert data["tags"][0] == "latest"
-    assert data["tags"][1] == "8b"
+    # Tags are enriched objects {tag, size, size_bytes}; sizes are best-effort
+    # from registry manifests and stay None when the lookup fails.
+    assert data["tags"][0]["tag"] == "latest"
+    assert data["tags"][1]["tag"] == "8b"
+    assert "size" in data["tags"][0]
+    assert "size_bytes" in data["tags"][0]
 
 
 def test_api_pull_stop_returns_404_for_missing_pull(client):

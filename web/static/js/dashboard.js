@@ -9177,7 +9177,12 @@ const saved = _loadHumanRatings(t.id) || {};
             if (hfFilesList) {
                 hfFilesList.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0.75rem; padding: 0.25rem; max-height: 250px; overflow-y: auto;';
                 hfFilesList.innerHTML = '';
-                tags.forEach(tag => {
+                tags.forEach(entry => {
+                    // Backend returns enriched objects {tag, size, size_bytes};
+                    // tolerate plain strings from older responses/caches.
+                    const tagName = typeof entry === 'string' ? entry : (entry.tag || '');
+                    const sizeLabel = typeof entry === 'object' && entry ? entry.size : null;
+
                     const card = document.createElement('div');
                     card.style.cssText = 'background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; transition: border-color 0.2s, transform 0.2s;';
                     
@@ -9186,15 +9191,28 @@ const saved = _loadHumanRatings(t.id) || {};
                     
                     const nameSpan = document.createElement('span');
                     nameSpan.style.cssText = 'color: white; font-size: 0.75rem; font-family: monospace; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;';
-                    nameSpan.textContent = `${modelName}:${tag}`;
-                    nameSpan.title = `${modelName}:${tag}`;
+                    nameSpan.textContent = `${modelName}:${tagName}`;
+                    nameSpan.title = `${modelName}:${tagName}`;
+                    
+                    const badgesDiv = document.createElement('div');
+                    badgesDiv.style.cssText = 'display:flex; gap:0.25rem; align-items:center; flex-shrink:0;';
                     
                     const tagSpan = document.createElement('span');
                     tagSpan.style.cssText = 'font-size: 0.65rem; color: #10b981; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); padding: 0.1rem 0.35rem; border-radius: 4px; font-weight: 500;';
-                    tagSpan.textContent = tag;
+                    tagSpan.textContent = tagName;
+                    badgesDiv.appendChild(tagSpan);
+                    
+                    // Download size badge (from registry manifest blob sum)
+                    if (sizeLabel) {
+                        const sizeSpan = document.createElement('span');
+                        sizeSpan.style.cssText = 'font-size: 0.65rem; color: #94a3b8; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06); padding: 0.1rem 0.35rem; border-radius: 4px; font-weight: 500;';
+                        sizeSpan.textContent = sizeLabel;
+                        sizeSpan.title = 'Download size (all layer blobs)';
+                        badgesDiv.appendChild(sizeSpan);
+                    }
                     
                     top.appendChild(nameSpan);
-                    top.appendChild(tagSpan);
+                    top.appendChild(badgesDiv);
                     
                     const footer = document.createElement('div');
                     footer.style.cssText = 'display:flex; justify-content:flex-end; border-top: 1px solid rgba(255, 255, 255, 0.04); padding-top: 0.4rem; margin-top: auto;';
@@ -9202,7 +9220,7 @@ const saved = _loadHumanRatings(t.id) || {};
                     const pullBtn = document.createElement('button');
                     pullBtn.className = 'btn btn-primary';
                     pullBtn.style.cssText = 'font-size: 0.7rem; padding: 0.3rem 0.65rem; background: #059669; border-color: #059669; color: white; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500; cursor: pointer; transition: background 0.2s, transform 0.1s; width: 100%; justify-content: center;';
-                    pullBtn.innerHTML = '📥 Pull Model Variant';
+                    pullBtn.innerHTML = sizeLabel ? `📥 Pull Model (${sizeLabel})` : '📥 Pull Model Variant';
                     
                     pullBtn.addEventListener('mouseenter', () => {
                         pullBtn.style.transform = 'scale(1.01)';
@@ -9214,7 +9232,7 @@ const saved = _loadHumanRatings(t.id) || {};
                     });
                     
                     pullBtn.addEventListener('click', () => {
-                        pullModel(`${modelName}:${tag}`, 'ollama');
+                        pullModel(`${modelName}:${tagName}`, 'ollama');
                     });
                     
                     footer.appendChild(pullBtn);
