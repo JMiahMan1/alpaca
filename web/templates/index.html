@@ -1088,6 +1088,79 @@
                                           <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Default Temperature (temperature)</label>
                                           <input type="number" name="temperature" step="0.01" min="0" max="2" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 0.6 (recommended) or 0.0 greedy">
                                       </div>
+
+                                      <div style="margin-top:0.25rem; padding-top:0.75rem; border-top:1px solid rgba(255,255,255,0.07);">
+                                          <label style="display:block; font-size:0.8rem; font-weight:600; color:#93c5fd; margin-bottom:0.5rem;">🧠 Thinking &amp; Reasoning</label>
+                                          <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Reasoning Budget (reasoning-budget)</label>
+                                                  <input type="number" name="reasoning-budget" step="128" min="0" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 2048 (budget for the thinking phase, tokens)">
+                                                  <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Benchmarks reserve base + 2×budget tokens when thinking is on. 0/empty = no budget.</div>
+                                              </div>
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Thinking Mode (thinking)</label>
+                                                  <select name="thinking" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                      <option value="auto">auto (budget decides)</option>
+                                                      <option value="on">on (always think)</option>
+                                                      <option value="off">off (never think)</option>
+                                                  </select>
+                                                  <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Overrides the per-test defaults for every benchmark on this model.</div>
+                                              </div>
+                                          </div>
+                                      </div>
+
+                                      <div style="margin-top:0.25rem; padding-top:0.75rem; border-top:1px solid rgba(255,255,255,0.07);">
+                                          <label style="display:block; font-size:0.8rem; font-weight:600; color:#93c5fd; margin-bottom:0.5rem;">🎲 Sampling &amp; Repetition</label>
+                                          <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Top-K (top-k)</label>
+                                                  <input type="number" name="top-k" min="0" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 40 (0 = disabled)">
+                                              </div>
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Top-P (top-p)</label>
+                                                  <input type="number" name="top-p" step="0.01" min="0" max="1" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 0.95">
+                                              </div>
+                                          </div>
+                                          <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:0.75rem;">
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Min-P (min-p)</label>
+                                                  <input type="number" name="min-p" step="0.01" min="0" max="1" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 0.05">
+                                              </div>
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Typical-P (typical-p)</label>
+                                                  <input type="number" name="typical-p" step="0.01" min="0" max="1" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 1.0 (unused by default)">
+                                              </div>
+                                          </div>
+                                      </div>
+
+                                      <div style="margin-top:0.25rem; padding-top:0.75rem; border-top:1px solid rgba(255,255,255,0.07);">
+                                          <label style="display:block; font-size:0.8rem; font-weight:600; color:#93c5fd; margin-bottom:0.5rem;">🔁 Repetition Penalties &amp; Seed</label>
+                                          <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Repeat Last N (repeat-last-n)</label>
+                                                  <input type="number" name="repeat-last-n" min="0" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 64 (0 = disabled)">
+                                              </div>
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Repeat Penalty (repeat-penalty)</label>
+                                                  <input type="number" name="repeat-penalty" step="0.01" min="1" max="2" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 1.1">
+                                              </div>
+                                          </div>
+                                          <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:0.75rem;">
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Presence Penalty (presence-penalty)</label>
+                                                  <input type="number" name="presence-penalty" step="0.05" min="-2" max="2" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 0.6">
+                                              </div>
+                                              <div>
+                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Frequency Penalty (frequency-penalty)</label>
+                                                  <input type="number" name="frequency-penalty" step="0.05" min="-2" max="2" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 0.3">
+                                              </div>
+                                          </div>
+                                          <div style="margin-top:0.75rem;">
+                                              <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Seed (seed)</label>
+                                              <input type="number" name="seed" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;" placeholder="e.g. 42 (empty = random)">
+                                              <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Fixed seeds make benchmark output reproducible across runs on this model.</div>
+                                          </div>
+                                      </div>
                                       </div><!-- /llm-fields -->
 
                                      <div id="sd-fields" style="display:none;">

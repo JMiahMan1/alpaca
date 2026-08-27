@@ -40,6 +40,9 @@ import context_awareness
 from web.shared_llm_benchmark import (
     _STREAM_TIMEOUT,
     _THINKING_PATTERNS,
+    _effective_reasoning_budget,
+    _effective_thinking,
+    _model_sampling_options,
     _model_temperature,
     _read_chat_stream,
     _read_generate_stream,
@@ -327,6 +330,12 @@ class MultiStepBenchmark:
 
         urls = self.PROXY_SERVER_URLS if use_proxy else self.OLLAMA_SERVER_URLS
         last_error = None
+        # Per-model / benchmark-level reasoning settings (model profile wins,
+        # then settable [benchmark] default; nothing configured = off).
+        thinking = _effective_thinking(model)
+        reasoning_budget = _effective_reasoning_budget(model)
+        if thinking and reasoning_budget:
+            max_tokens = max_tokens + 2 * reasoning_budget
 
         for base_url in urls:
             try:
@@ -337,12 +346,15 @@ class MultiStepBenchmark:
                             "model": model,
                             "messages": messages,
                             "stream": True,
-                            "think": False,
+                            "think": thinking,
                             "options": {
                                 "num_predict": max_tokens,
                                 "temperature": _model_temperature(model),
+                                **_model_sampling_options(model),
                             },
                         }
+                        if reasoning_budget is not None:
+                            payload["reasoning_budget"] = reasoning_budget
                         headers = self._proxy_headers({"X-Request-Source": "multistep/benchmark"})
                         async with client.stream("POST", f"{base_url}/api/chat", json=payload, headers=headers) as resp:
                             if resp.status_code != 200:
@@ -355,12 +367,15 @@ class MultiStepBenchmark:
                             "model": model,
                             "prompt": serialize_messages(messages),
                             "stream": True,
-                            "think": False,
+                            "think": thinking,
                             "options": {
                                 "num_predict": max_tokens,
                                 "temperature": _model_temperature(model),
+                                **_model_sampling_options(model),
                             },
                         }
+                        if reasoning_budget is not None:
+                            payload["reasoning_budget"] = reasoning_budget
                         async with client.stream("POST", f"{base_url}/api/generate", json=payload) as resp:
                             if resp.status_code != 200:
                                 body = (await resp.aread()).decode("utf-8", "replace")

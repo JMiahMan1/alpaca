@@ -175,14 +175,14 @@ async def test_two_phase_token_generation_and_nudge_injection(tmp_path, monkeypa
 
     # Temperature must resolve from models.ini (suite raises ValueError otherwise).
     ini = tmp_path / "models.ini"
-    ini.write_text("[*]\ntemperature = 0.5\n")
+    ini.write_text("[*]\ntemperature = 0.5\n[test-model]\nreasoning-budget = 2048\n")
     monkeypatch.setenv("MODELS_INI_PATH", str(ini))
 
-    # Explicit heavy-reasoning test: think ON, num_predict = base + reasoning headroom.
-    bench_test = {"id": "test", "prompt": "Hello", "reasoning_budget": 2048}
+    # Model profile budget: think ON for this model, num_predict = base + 2 x headroom.
+    bench_test = {"id": "test", "prompt": "Hello"}
     from llm_benchmark_suite import _test_num_predict
 
-    expected_cap = _test_num_predict(bench_test)
+    expected_cap = _test_num_predict(bench_test, "test-model")
 
     seen = []
 
@@ -900,25 +900,120 @@ def test_reasoning_estimate_explicit_field_wins_and_tiers_fallback():
     assert _test_reasoning_estimate({"reasoning_budget": 3072, "category": "office"}) == 3072
 
 
-def test_num_predict_doubles_reasoning_headroom_when_thinking_on():
-    """Heavy tests get base + 2 x estimate so think + full answer fit without
-    truncation (the empty length-capped response failure mode); light tests
-    keep the plain base cap."""
-    from llm_benchmark_suite import REASONING_HEAVY_BUDGET, _test_num_predict
+def test_num_predict_doubles_reasoning_headroom_when_thinking_on(tmp_path, monkeypatch):
+    """A model profile budget enables thinking and doubles headroom
+    (base + 2 x estimate) so think + full answer fit without truncation;
+    no budget anywhere -> plain base cap, thinking off."""
+    from llm_benchmark_suite import _effective_thinking, _test_num_predict
 
-    heavy = {"num_predict": 8000, "reasoning_budget": 2048, "reasoning_estimate": 4096}
-    assert _test_num_predict(heavy) == 8000 + 2 * 4096
-    light = {"num_predict": 900, "reasoning_budget": 512}
-    assert light["reasoning_budget"] < REASONING_HEAVY_BUDGET
-    assert _test_num_predict(light) == 900
-    # Default reasoning_budget is heavy -> doubled headroom applies
-    assert _test_num_predict({"prompt": "x"}) == 4000 + 2 * _default_estimate()
+    ini = tmp_path / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.5\n[test-model]\nreasoning-budget = 2048\n")
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    heavy = {"num_predict": 8000, "reasoning_estimate": 4096}
+    assert _effective_thinking("test-model") is True
+    assert _test_num_predict(heavy, "test-model") == 8000 + 2 * 4096
+
+    # Legacy per-test reasoning_budget values no longer toggle thinking
+    assert _effective_thinking("missing-model") is False
+    legacy = {"num_predict": 8000, "reasoning_budget": 4096, "reasoning_estimate": 4096}
+    assert _test_num_predict(legacy) == 8000
+
+    # Any defined budget enables thinking; explicit thinking=off keeps the
+    # plain base cap even when a budget is defined.
+    ini.write_text("[*]\ntemperature = 0.5\n[test-model]\nreasoning-budget = 512\n")
+    light = {"num_predict": 900}
+    assert _effective_thinking("test-model") is True
+    assert _test_num_predict(light, "test-model") == 900 + 2 * _default_estimate()
+    ini.write_text("[*]\ntemperature = 0.5\n[test-model]\nreasoning-budget = 512\nthinking = off\n")
+    assert _effective_thinking("test-model") is False
+    assert _test_num_predict(light, "test-model") == 900
 
 
 def _default_estimate():
     from llm_benchmark_suite import _test_reasoning_estimate
 
     return _test_reasoning_estimate({})
+
+
+def test_model_profile_reasoning_budget_thinking_and_benchmark_default(tmp_path, monkeypatch):
+    """Reasoning comes from the model profile: profile budget wins, then the
+    settable [benchmark] default, and 'no budget anywhere' means thinking off.
+    explicit thinking=off must beat a profile budget; benchmark default must
+    apply to models without their own budget."""
+    from llm_benchmark_suite import (
+        _effective_reasoning_budget,
+        _effective_thinking,
+        _model_reasoning_budget,
+        _model_sampling_options,
+        _test_reasoning_budget,
+    )
+
+    ini = tmp_path / "models.ini"
+    ini.write_text(
+        "[*]\ntemperature = 0.5\n"
+        "[profiled]\nreasoning-budget = 4096\nthinking = off\n"
+        "[benchmark]\nreasoning-budget = 1024\n"
+    )
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    # Model profile budget wins over benchmark default
+    assert _model_reasoning_budget("profiled") == 4096
+    assert _effective_reasoning_budget("profiled") == 4096
+    assert _test_reasoning_budget({}, "profiled") == 4096
+
+    # Explicit thinking=off beats the profile budget
+    assert _effective_thinking("profiled") is False
+
+    # Benchmark default applies to models without their own budget
+    assert _model_reasoning_budget("unprofiled") is None
+    assert _effective_reasoning_budget("unprofiled") == 1024
+    assert _effective_thinking("unprofiled") is True
+
+    # No budget anywhere -> no budget, no thinking
+    ini.write_text("[*]\ntemperature = 0.5\n[probably-empty]\nseed = 42\n")
+    assert _effective_reasoning_budget("probably-empty") is None
+    assert _effective_thinking("probably-empty") is False
+    assert _test_reasoning_budget({"reasoning_budget": 4096}, "probably-empty") is None
+
+
+def test_model_profile_sampling_options_parse(tmp_path, monkeypatch):
+    """Per-model sampling knobs surface as typed llama.cpp option names and
+    only when actually defined in the profile."""
+    from llm_benchmark_suite import _model_sampling_options
+
+    ini = tmp_path / "models.ini"
+    ini.write_text(
+        "[*]\ntemperature = 0.5\n"
+        "[sampling]\ntop-k = 40\ntop-p = 0.9\nmin-p = 0.05\nrepeat-last-n = 64\n"
+        "repeat-penalty = 1.15\npresence-penalty = 0.4\nfrequency-penalty = 0.2\nseed = 7\n"
+        "[plain]\ntemperature = 0.5\n"
+    )
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    opts = _model_sampling_options("sampling")
+    assert opts == {
+        "top_k": 40,
+        "top_p": 0.9,
+        "min_p": 0.05,
+        "repeat_last_n": 64,
+        "repeat_penalty": 1.15,
+        "presence_penalty": 0.4,
+        "frequency_penalty": 0.2,
+        "seed": 7,
+    }
+    assert isinstance(opts["top_k"], int)
+    assert isinstance(opts["top_p"], float)
+    assert opts["top_p"] == 0.9
+
+    # A profile without sampling keys returns {}; a malformed value is skipped
+    # instead of raising.
+    ini.write_text(
+        "[*]\ntemperature = 0.5\n"
+        "[broken]\ntop-k = not-a-number\n[plain]\ntemperature = 0.5\n"
+    )
+    assert _model_sampling_options("broken") == {}
+    assert _model_sampling_options("plain") == {}
 
 
 @pytest.mark.asyncio

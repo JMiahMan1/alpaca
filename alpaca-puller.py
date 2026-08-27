@@ -1,4 +1,5 @@
 import argparse
+import configparser
 import contextlib
 import hashlib
 import json
@@ -396,6 +397,26 @@ def update_models_ini():
         "temperature = 0.6",
         "",
     ]
+
+    # Preserve user-authored benchmark-wide defaults ([benchmark] section) that
+    # the reindexer does not derive, e.g. reasoning-budget / thinking used by
+    # the benchmark harnesses.
+    preexisting_sections = {}
+    try:
+        cp = configparser.ConfigParser(delimiters=("=",))
+        cp.read(ini_path)
+        for sec in ("benchmark", "benchmarks"):
+            if cp.has_section(sec):
+                items = dict(cp[sec])
+                if items:
+                    preexisting_sections[sec] = items
+    except Exception as e:
+        print(f"Warning: could not read existing [benchmark] section: {e}", file=sys.stderr)
+    for sec, items in preexisting_sections.items():
+        content.append(f"[{sec}]")
+        for k, v in items.items():
+            content.append(f"{k} = {v}")
+        content.append("")
 
     if router_dir.exists():
         for entry in sorted(router_dir.iterdir()):
