@@ -945,7 +945,6 @@ def test_model_profile_reasoning_budget_thinking_and_benchmark_default(tmp_path,
         _effective_reasoning_budget,
         _effective_thinking,
         _model_reasoning_budget,
-        _model_sampling_options,
         _test_reasoning_budget,
     )
 
