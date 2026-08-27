@@ -5105,7 +5105,9 @@ def get_hf_files():
 
     url = f"https://huggingface.co/api/models/{repo}"
     try:
-        resp = httpx.get(url, headers=headers, timeout=15.0)
+        # blobs=true makes HF return per-file `size` on siblings so the UI can
+        # show download sizes; without it siblings only carry filenames.
+        resp = httpx.get(url, headers=headers, timeout=15.0, params={"blobs": "true"})
         if resp.status_code != 200:
             return (
                 jsonify({"error": f"Failed to fetch model info from Hugging Face: {resp.text}"}),
@@ -5213,7 +5215,49 @@ def get_ollama_model_tags():
                     seen.add(t_clean)
                     unique_tags.append(t_clean)
 
-        return jsonify({"tags": unique_tags})
+        # Resolve download size per tag from the registry manifest (sum of layer
+        # blobs) so the UI can show e.g. "qwen3:8b - 5.2 GB". Best-effort: any
+        # failure leaves size null and the UI simply hides the badge.
+        from concurrent.futures import ThreadPoolExecutor
+
+        registry = os.getenv("OLLAMA_REGISTRY", "https://registry.ollama.ai/v2")
+        auth_url_tpl = "https://ollama.com/v2/auth/token?scope=repository:{repo}:pull&service=registry.ollama.ai"
+
+        def _manifest_size(tag: str) -> dict:
+            info = {"tag": tag, "size": None, "size_bytes": None}
+            # Registry repo path: official library models live under library/,
+            # user-published models already carry their namespace (author/name).
+            repo = model if "/" in model else f"library/{model}"
+            m_url = f"{registry}/{repo}/manifests/{tag}"
+            try:
+                headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/vnd.docker.distribution.manifest.v2+json"}
+                r = httpx.get(m_url, headers=headers, timeout=10.0)
+                if r.status_code == 401:
+                    tok = httpx.get(auth_url_tpl.format(repo=repo), timeout=10.0)
+                    tok.raise_for_status()
+                    bearer = tok.json().get("token")
+                    if not bearer:
+                        return info
+                    headers["Authorization"] = f"Bearer {bearer}"
+                    r = httpx.get(m_url, headers=headers, timeout=10.0)
+                if r.status_code != 200:
+                    return info
+                manifest = r.json()
+                total = sum(int(layer.get("size") or 0) for layer in manifest.get("layers", []))
+                if total <= 0:
+                    return info
+                info["size_bytes"] = total
+                info["size"] = f"{total / 1024**3:.1f} GB" if total >= 1024**3 else f"{total / 1024**2:.0f} MB"
+            except Exception:
+                pass
+            return info
+
+        enriched = []
+        if unique_tags:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                enriched = list(pool.map(_manifest_size, unique_tags))
+
+        return jsonify({"tags": enriched})
     except Exception as e:
         return jsonify({"error": f"Error fetching Ollama model tags: {e!s}"}), 500
 
