@@ -7579,6 +7579,21 @@ const saved = _loadHumanRatings(t.id) || {};
             setNumberInput('n-cpu-moe', 'n-cpu-moe', isSd ? 'Auto (nproc - 2)' : 'Auto');
             setNumberInput('temperature', 'temperature', '0.6 (Recommended)');
 
+            // Thinking & reasoning (per-model, applied to every benchmark on this model)
+            setNumberInput('reasoning-budget', 'reasoning-budget', '2048 (Recommended for heavy tests)');
+            setSelectInput('thinking', 'thinking', 'auto');
+
+            // Sampling knobs (llama.cpp sampler options)
+            setNumberInput('top-k', 'top-k', '40 (0 = disabled)');
+            setNumberInput('top-p', 'top-p', '0.95');
+            setNumberInput('min-p', 'min-p', '0.05');
+            setNumberInput('typical-p', 'typical-p', '1.0 (disabled)');
+            setNumberInput('repeat-last-n', 'repeat-last-n', '64 (0 = disabled)');
+            setNumberInput('repeat-penalty', 'repeat-penalty', '1.1');
+            setNumberInput('presence-penalty', 'presence-penalty', '0.6');
+            setNumberInput('frequency-penalty', 'frequency-penalty', '0.3');
+            setNumberInput('seed', 'seed', 'Random (empty)');
+
             // SD / image model fields
             setSelectInput('model_family', 'model_family', 'qwen-image');
             setNumberInput('gpu_layers', 'gpu_layers', '40 (Default)');
@@ -7652,17 +7667,36 @@ const saved = _loadHumanRatings(t.id) || {};
                     'cache-option': get('cache-option')
                 };
             } else {
+                const elVal = (name, fallback) => {
+                    const el = profileEditForm.elements[name];
+                    if (!el) return null;
+                    const v = el.value;
+                    return (v !== undefined && v !== null && v !== '') ? v : null;
+                };
+                // 'auto' for thinking means "let the budget decide" -> unset (null)
+                const thinkingRaw = elVal('thinking', null);
                 settings = {
-                    'ctx-size': profileEditForm.elements['ctx-size'].value || null,
-                    'n-gpu-layers': profileEditForm.elements['n-gpu-layers'].value || null,
+                    'ctx-size': elVal('ctx-size'),
+                    'n-gpu-layers': elVal('n-gpu-layers'),
                     'cache-type-k': profileEditForm.elements['cache-type-k'].value,
                     'cache-type-v': profileEditForm.elements['cache-type-v'].value,
                     'flash-attn': profileEditForm.elements['flash-attn'].value,
                     'kv-unified': profileEditForm.elements['kv-unified'].value,
                     'spec-type': profileEditForm.elements['spec-type'].value,
-                    'spec-draft-n-max': profileEditForm.elements['spec-draft-n-max'].value || null,
-                    'n-cpu-moe': profileEditForm.elements['n-cpu-moe'].value || null,
-                    'temperature': profileEditForm.elements['temperature'].value || null
+                    'spec-draft-n-max': elVal('spec-draft-n-max'),
+                    'n-cpu-moe': elVal('n-cpu-moe'),
+                    'temperature': elVal('temperature'),
+                    'reasoning-budget': elVal('reasoning-budget'),
+                    'thinking': (thinkingRaw && thinkingRaw !== 'auto') ? thinkingRaw : null,
+                    'top-k': elVal('top-k'),
+                    'top-p': elVal('top-p'),
+                    'min-p': elVal('min-p'),
+                    'typical-p': elVal('typical-p'),
+                    'repeat-last-n': elVal('repeat-last-n'),
+                    'repeat-penalty': elVal('repeat-penalty'),
+                    'presence-penalty': elVal('presence-penalty'),
+                    'frequency-penalty': elVal('frequency-penalty'),
+                    'seed': elVal('seed')
                 };
             }
             Object.keys(settings).forEach(key => {

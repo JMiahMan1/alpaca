@@ -10,7 +10,6 @@ Evaluates LLM models (both local GPU and online providers) based on Jarvis / Sha
 """
 
 import ast
-import configparser
 import json
 import os
 import re
@@ -25,47 +24,15 @@ import httpx
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import context_awareness
 
-
-def _model_temperature(model: str) -> float:
-    candidates = []
-    env = os.getenv("MODELS_INI_PATH", "").strip()
-    if env:
-        candidates.append(Path(env))
-    candidates.append(Path(__file__).resolve().parent.parent / ".alpaca-router" / "models.ini")
-    candidates.append(Path(".alpaca-router/models.ini"))
-    for ini in candidates:
-        try:
-            if not ini.exists():
-                continue
-            cp = configparser.ConfigParser()
-            cp.read(ini)
-            if model in cp and "temperature" in cp[model]:
-                return float(cp[model]["temperature"])
-            if "*" in cp and "temperature" in cp["*"]:
-                return float(cp["*"]["temperature"])
-            if "DEFAULT" in cp and "temperature" in cp["DEFAULT"]:
-                return float(cp["DEFAULT"]["temperature"])
-        except ValueError:
-            raise
-        except Exception:
-            continue
-    # also check .profile.json as secondary source (timeless, same setting)
-    try:
-        pj = Path(__file__).resolve().parent.parent / ".alpaca-router" / ".profile.json"
-        if pj.exists():
-            j = json.loads(pj.read_text())
-            llm = j.get("profiles", {}).get("llm", {}) or j.get("llm", {})
-            t = llm.get("config", {}).get("temperature") or llm.get("temperature")
-            if t not in (None, ""):
-                return float(t)
-    except ValueError:
-        raise
-    except Exception:
-        pass
-    raise ValueError(
-        f"temperature not set for model '{model}' (and no [*] default) in models.ini - set [*] temperature or per-model temperature via Settings > UI or .alpaca-router/models.ini"
-    )
-
+# Per-model / benchmark-level reasoning settings resolve from the model profile
+# (models.ini section / {alias}.profile.json) and the [benchmark] default
+# section. No budget configured -> thinking off, no reasoning_budget sent.
+from llm_benchmark_suite import (
+    _effective_reasoning_budget,
+    _effective_thinking,
+    _model_sampling_options,
+    _model_temperature,
+)
 
 # Per-chunk stream timeouts: read applies to the gap BETWEEN stream lines, not
 # total request time. Large prompts (15k+ tokens) plus slow generation can run
@@ -744,7 +711,15 @@ class SharedLLMModelBenchmark:
                 "error": str(e),
             }
         est_tokens = context_awareness.estimate_prompt_tokens(messages)
-        effective_max_tokens = context_awareness.turn_budget(ctx, est_tokens, max_tokens)
+        # Per-model / benchmark-level reasoning settings (profile wins, then
+        # settable [benchmark] default; nothing configured = thinking off).
+        thinking = _effective_thinking(model)
+        reasoning_budget = _effective_reasoning_budget(model)
+        if thinking and reasoning_budget:
+            # Reasoning headroom: thinking phase + full answer must fit.
+            effective_max_tokens = context_awareness.turn_budget(ctx, est_tokens, max_tokens + 2 * reasoning_budget)
+        else:
+            effective_max_tokens = context_awareness.turn_budget(ctx, est_tokens, max_tokens)
         if effective_max_tokens <= 0:
             return {
                 "success": False,
@@ -768,12 +743,15 @@ class SharedLLMModelBenchmark:
                             "model": model,
                             "messages": [{"role": "user", "content": prompt}],
                             "stream": True,
-                            "think": False,
+                            "think": thinking,
                             "options": {
                                 "num_predict": effective_max_tokens,
                                 "temperature": _model_temperature(model),
+                                **_model_sampling_options(model),
                             },
                         }
+                        if reasoning_budget is not None:
+                            payload["reasoning_budget"] = reasoning_budget
                         headers = self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"})
                         async with client.stream("POST", f"{base_url}/api/chat", json=payload, headers=headers) as resp:
                             if resp.status_code != 200:
@@ -798,12 +776,15 @@ class SharedLLMModelBenchmark:
                                         },
                                     ],
                                     "stream": True,
-                                    "think": False,
+                                    "think": thinking,
                                     "options": {
                                         "num_predict": effective_max_tokens,
                                         "temperature": _model_temperature(model),
+                                        **_model_sampling_options(model),
                                     },
                                 }
+                                if reasoning_budget is not None:
+                                    payload2["reasoning_budget"] = reasoning_budget
                                 start_t2 = time.time()
                                 async with client.stream(
                                     "POST", f"{base_url}/api/chat", json=payload2, headers=headers
@@ -828,12 +809,15 @@ class SharedLLMModelBenchmark:
                             "model": model,
                             "prompt": prompt,
                             "stream": True,
-                            "think": False,
+                            "think": thinking,
                             "options": {
                                 "num_predict": effective_max_tokens,
                                 "temperature": _model_temperature(model),
+                                **_model_sampling_options(model),
                             },
                         }
+                        if reasoning_budget is not None:
+                            payload["reasoning_budget"] = reasoning_budget
                         async with client.stream("POST", f"{base_url}/api/generate", json=payload) as resp:
                             if resp.status_code != 200:
                                 body = (await resp.aread()).decode("utf-8", "replace")
@@ -854,12 +838,15 @@ class SharedLLMModelBenchmark:
                                     "model": model,
                                     "prompt": new_prompt,
                                     "stream": True,
-                                    "think": False,
+                                    "think": thinking,
                                     "options": {
                                         "num_predict": effective_max_tokens,
                                         "temperature": _model_temperature(model),
+                                        **_model_sampling_options(model),
                                     },
                                 }
+                                if reasoning_budget is not None:
+                                    payload2["reasoning_budget"] = reasoning_budget
                                 start_t2 = time.time()
                                 async with client.stream("POST", f"{base_url}/api/generate", json=payload2) as resp2:
                                     if resp2.status_code == 200:

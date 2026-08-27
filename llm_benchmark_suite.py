@@ -40,42 +40,182 @@ from sandbox_exec import extract_clean_code, grade_code
 ONLINE_BENCHMARK_THROTTLE_S = 3.0
 
 
-# Timeless per-model temperature: required, no fallback. Read from
-# .alpaca-router/models.ini (MODELS_INI_PATH or default). Must be set in
-# [*] or per-model section or error is raised so misconfig is loud.
-def _model_temperature(model: str) -> float:
-    candidates = []
+# Per-model profiles: benchmarks derive per-model settings (temperature,
+# reasoning budget, thinking toggle, sampling knobs) from models.ini and the
+# companion {alias}.profile.json overlays next to the router symlinks. The
+# overlay file wins over the ini section for the same key, mirroring the
+# web dashboard's merge order. Nothing here is test-specific: a per-model
+# setting applies to every benchmark test run for that model, so a model
+# profile fully controls how long the model is allowed to think.
+def _models_ini_candidates() -> list[Path]:
     env = os.getenv("MODELS_INI_PATH", "").strip()
     if env:
-        candidates.append(Path(env))
-    candidates.append(Path(__file__).parent / ".alpaca-router" / "models.ini")
-    candidates.append(Path(".alpaca-router/models.ini"))
-    # Standard in-container location: compose mounts .alpaca-router at
-    # /router-models (ROUTER_MODELS_DIR), so models.ini lands there.
-    candidates.append(Path("/router-models/models.ini"))
-    # Router aliases carry the --latest suffix (e.g. ornith-1-5-9b-q4-k-m--latest)
-    # while callers may pass either form, so try both section spellings.
-    section_names = [model, model[: -len("--latest")]] if model.endswith("--latest") else [model, f"{model}--latest"]
-    for ini in candidates:
+        return [Path(env)]
+    return [
+        Path(__file__).parent / ".alpaca-router" / "models.ini",
+        Path(".alpaca-router/models.ini"),
+        # Standard in-container location: compose mounts .alpaca-router at
+        # /router-models (ROUTER_MODELS_DIR), so models.ini lands there.
+        Path("/router-models/models.ini"),
+    ]
+
+
+def _model_section_names(model: str) -> list[str]:
+    """Router aliases carry the --latest suffix (e.g. ornith-1-5-9b-q4-k-m--latest)
+    while callers may pass either form, so try both section spellings."""
+    if model.endswith("--latest"):
+        return [model, model[: -len("--latest")]]
+    return [model, f"{model}--latest"]
+
+
+def _profile_overlay(ini_dir: Path, model: str) -> dict:
+    """Merge companion ``{alias}.profile.json`` overlays for a model.
+
+    Files are named after the router symlink stem, so try both the alias as
+    passed and the same alias without the ``--latest`` suffix. Overlays win
+    over equally-keyed ini values (same merge order the dashboard uses).
+    """
+    merged: dict = {}
+    for alias in {model, model[: -len("--latest")] if model.endswith("--latest") else model}:
+        for ext in (".profile.json", ".gguf.profile.json", ".safetensors.profile.json"):
+            candidate = ini_dir / f"{alias}{ext}"
+            try:
+                if candidate.exists():
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        merged.update(data)
+            except Exception:
+                continue
+    return merged
+
+
+def _model_profile_raw(model: str) -> dict:
+    """Merged per-model settings dict: models.ini section + profile overlay.
+
+    Resolution order per key: ``[model]`` / ``[model--latest]`` section, then
+    the ``{alias}.profile.json`` companion overlay, then the global defaults
+    (``[*]`` then ``[DEFAULT]``).
+    """
+    profile: dict = {}
+    ini_dir: Path | None = None
+    for ini in _models_ini_candidates():
         try:
             if not ini.exists():
                 continue
-            cp = configparser.ConfigParser()
+            if ini_dir is None:
+                ini_dir = ini.parent
+            cp = configparser.ConfigParser(delimiters=("=",))
             cp.read(ini)
-            for name in section_names:
-                if name in cp and "temperature" in cp[name]:
-                    return float(cp[name]["temperature"])
-            if "*" in cp and "temperature" in cp["*"]:
-                return float(cp["*"]["temperature"])
-            if "DEFAULT" in cp and "temperature" in cp["DEFAULT"]:
-                return float(cp["DEFAULT"]["temperature"])
-        except ValueError:
-            raise
+            for name in _model_section_names(model):
+                if cp.has_section(name):
+                    profile.update(dict(cp[name]))
+            if cp.has_section("*"):
+                for k, v in cp["*"].items():
+                    profile.setdefault(k, v)
+            if cp.has_section("DEFAULT"):
+                for k, v in cp["DEFAULT"].items():
+                    profile.setdefault(k, v)
         except Exception:
             continue
+    if ini_dir is not None:
+        profile.update(_profile_overlay(ini_dir, model))
+    return profile
+
+
+def _model_profile_get(model: str, key: str) -> str | None:
+    value = _model_profile_raw(model).get(key)
+    return value.strip() if isinstance(value, str) and value else None
+
+
+def _model_profile_int(model: str, key: str) -> int | None:
+    value = _model_profile_get(model, key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _model_profile_bool(model: str, key: str) -> bool | None:
+    value = _model_profile_get(model, key)
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in ("on", "true", "1", "yes"):
+        return True
+    if normalized in ("off", "false", "0", "no", "auto"):
+        return False
+    return None
+
+
+def _model_temperature(model: str) -> float:
+    """Timeless per-model temperature: required, no fallback. Must be set in
+    [*] or a per-model section, otherwise misconfig is loud (as before)."""
+    profile = _model_profile_raw(model)
+    temp = profile.get("temperature")
+    if temp is not None:
+        try:
+            return float(temp)
+        except ValueError:
+            raise ValueError(f"invalid temperature '{temp}' for model '{model}' in models.ini") from None
     raise ValueError(
         f"temperature not set for model '{model}' (and no [*] default) in models.ini - set [*] temperature or per-model temperature via Settings > UI or .alpaca-router/models.ini"
     )
+
+
+def _model_reasoning_budget(model: str) -> int | None:
+    """Per-model reasoning budget (tokens) from the profile, or None when the
+    profile defines no budget. Only the profile decides: benchmarks send no
+    budget at all when this returns None."""
+    budget = _model_profile_int(model, "reasoning-budget")
+    if budget is None:
+        budget = _model_profile_int(model, "reasoning_budget")
+    return budget
+
+
+def _model_thinking(model: str) -> bool | None:
+    """Explicit per-model thinking toggle (thinking/think = on/off)."""
+    toggle = _model_profile_bool(model, "thinking")
+    if toggle is None:
+        toggle = _model_profile_bool(model, "think")
+    return toggle
+
+
+# Profile sampling knobs mapped to llama.cpp request option names (snake_case
+# as used by /api/chat options and /api/generate). The profile stores kebab
+# keys like the rest of models.ini (ctx-size, n-gpu-layers).
+_SAMPLING_KEYMAP: dict[str, tuple[str, type]] = {
+    "top-k": ("top_k", int),
+    "top-p": ("top_p", float),
+    "min-p": ("min_p", float),
+    "typical-p": ("typical_p", float),
+    "repeat-last-n": ("repeat_last_n", int),
+    "repeat-penalty": ("repeat_penalty", float),
+    "presence-penalty": ("presence_penalty", float),
+    "frequency-penalty": ("frequency_penalty", float),
+    "seed": ("seed", int),
+}
+
+
+def _model_sampling_options(model: str) -> dict:
+    """Per-model sampling overrides from the profile (option-knob -> value).
+
+    Only keys explicitly defined in the model profile are returned; undefined
+    knobs keep llama-server defaults. Temperature is covered separately and
+    required, so it is not smuggled in here.
+    """
+    profile = _model_profile_raw(model)
+    options: dict[str, Any] = {}
+    for ini_key, (param, typ) in _SAMPLING_KEYMAP.items():
+        raw = profile.get(ini_key)
+        if raw in (None, ""):
+            continue
+        try:
+            options[param] = typ(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return options
 
 
 def _ascii_fold(text: str) -> str:
@@ -163,17 +303,74 @@ async def _read_generate_stream(resp: httpx.Response) -> dict:
     }
 
 
-# Per-benchmark reasoning toggle (timeless, driven by each test's own fields).
-# Heavy-budget tests (reasoning_budget >= REASONING_HEAVY_BUDGET) keep the
-# thinking phase ON and get raised num_predict headroom so the thinking phase
-# plus the full answer fit without truncation. Light-budget tests disable the
-# thinking phase entirely: short factual/code answers should not spend their
-# whole generation on reasoning prose. Fairness note: disabling thinking can
-# lower scores for reasoning-tuned models on light tests (they answer faster
-# with less deliberation), while enabling it on light tiers would instead cap
-# their output mid-thought - both directions are recorded per-result via the
-# "think" field so runs remain comparable within a suite version.
+# Reasoning budget resolution (per-model driven):
+# 1. Model profile "reasoning-budget" (models.ini section or {alias}.profile.json)
+#    - the authoritative per-model setting.
+# 2. Benchmark-wide default "reasoning-budget" in the [benchmark] ini section
+#    (settable once, applies to every model without its own budget).
+# 3. No budget at all: the benchmark sends no reasoning_budget and disables
+#    the thinking phase. Per-test "reasoning_budget" values no longer toggle
+#    thinking - the model itself decides how much it thinks, per its profile.
+# Each run records the effective "think"/"reasoning_budget" per result so runs
+# stay comparable and inspectable.
 REASONING_HEAVY_BUDGET = 2048
+
+
+def _benchmark_default(key: str) -> str | None:
+    """Read a benchmark-wide default from the ``[benchmark]`` ini section.
+
+    Env overrides (BENCHMARK_REASONING_BUDGET / BENCHMARK_THINKING) win over
+    the ini so CI and ad-hoc runs can override without editing persistent
+    config. Returns None when unset.
+    """
+    env_map = {
+        "reasoning-budget": ("BENCHMARK_REASONING_BUDGET", None),
+        "thinking": ("BENCHMARK_THINKING", None),
+        "think": ("BENCHMARK_THINKING", None),
+    }
+    env_name, _ = env_map.get(key, (None, None))
+    if env_name:
+        env_val = os.getenv(env_name, "").strip()
+        if env_val:
+            return env_val
+    for ini in _models_ini_candidates():
+        try:
+            if not ini.exists():
+                continue
+            cp = configparser.ConfigParser(delimiters=("=",))
+            cp.read(ini)
+            for section in ("benchmark", "benchmarks"):
+                if cp.has_section(section) and key in cp[section]:
+                    value = cp[section][key]
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+        except Exception:
+            continue
+    return None
+
+
+def _benchmark_reasoning_budget() -> int | None:
+    """Settable benchmark-wide reasoning budget (tokens), or None for 'no budget'."""
+    value = _benchmark_default("reasoning-budget") or _benchmark_default("reasoning_budget")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _benchmark_thinking() -> bool | None:
+    """Settable benchmark-wide thinking toggle, or None for 'let the budget decide'."""
+    value = _benchmark_default("thinking") or _benchmark_default("think")
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in ("on", "true", "1", "yes"):
+        return True
+    if normalized in ("off", "false", "0", "no", "auto"):
+        return False
+    return None
 
 # Task-shape tiers for per-benchmark reasoning estimates (tokens a competent
 # model needs for its thinking phase on that test). benchmark_tests.json ships
@@ -233,21 +430,58 @@ def _test_reasoning_estimate(test: dict) -> int:
     return max(tier, int(test.get("reasoning_budget") or 0))
 
 
-def _test_thinking(test: dict) -> bool:
-    """Whether this test runs with the thinking phase enabled."""
-    return int(test.get("reasoning_budget", REASONING_HEAVY_BUDGET)) >= REASONING_HEAVY_BUDGET
+def _effective_reasoning_budget(model: str | None) -> int | None:
+    """Effective reasoning budget for a model: per-model profile wins, then the
+    settable benchmark-wide default, then None = no budget (thinking off)."""
+    if model is not None:
+        budget = _model_reasoning_budget(model)
+        if budget is not None:
+            return budget
+    return _benchmark_reasoning_budget()
 
 
-def _test_num_predict(test: dict) -> int:
+def _effective_thinking(model: str | None) -> bool:
+    """Whether the thinking phase is enabled for a model run.
+
+    Explicit ``thinking``/``think`` toggle in the model profile wins; then the
+    benchmark-wide default; otherwise thinking is enabled only when an
+    effective reasoning budget is set (no budget = no thinking).
+    """
+    if model is not None:
+        toggle = _model_thinking(model)
+        if toggle is not None:
+            return toggle
+    toggle = _benchmark_thinking()
+    if toggle is not None:
+        return toggle
+    budget = _effective_reasoning_budget(model)
+    return budget is not None and budget > 0
+
+
+def _test_reasoning_budget(test: dict, model: str | None = None) -> int | None:
+    """Effective reasoning budget for (test, model). Per-model/per-benchmark
+    resolution only: legacy per-test ``reasoning_budget`` values are NOT used
+    to enable thinking anymore - model profiles decide."""
+    return _effective_reasoning_budget(model)
+
+
+def _test_thinking(test: dict, model: str | None = None) -> bool:
+    """Whether this (test, model) run has the thinking phase enabled."""
+    return _effective_thinking(model)
+
+
+def _test_num_predict(test: dict, model: str | None = None) -> int:
     """Per-test token cap.
 
-    Heavy-reasoning tests get DOUBLED per-benchmark reasoning headroom
-    (base + 2 x estimate) so the thinking phase plus the complete answer fit
-    without truncation - the failure mode that stranded reasoning models on
-    large UI tests with empty, length-capped responses.
+    When the thinking phase is enabled (model profile or benchmark default
+    budget), the cap gets DOUBLED per-test reasoning headroom (base + 2 x
+    estimate) so the thinking phase plus the complete answer fit without
+    truncation - the failure mode that stranded reasoning models on large UI
+    tests with empty, length-capped responses. Without a budget the cap is the
+    plain test base.
     """
     base = int(test.get("num_predict", 4000))
-    if not _test_thinking(test):
+    if not _test_thinking(test, model):
         return base
     return base + 2 * _test_reasoning_estimate(test)
 
@@ -2644,7 +2878,7 @@ class LLMModelBenchmark:
                 res = await online_model_provider.query_online_model(
                     model_identifier=model,
                     prompt=test["prompt"],
-                    max_tokens=_test_num_predict(test),
+                    max_tokens=_test_num_predict(test, model),
                 )
                 if sampler:
                     await sampler.stop()
@@ -2684,8 +2918,9 @@ class LLMModelBenchmark:
 
         last_error: Exception | None = None
         try:
-            think_on = _test_thinking(test)
-            num_predict = await self._effective_num_predict(model, test["prompt"], _test_num_predict(test))
+            think_on = _test_thinking(test, model)
+            reasoning_budget = _test_reasoning_budget(test, model)
+            num_predict = await self._effective_num_predict(model, test["prompt"], _test_num_predict(test, model))
         except RuntimeError as e:
             return {
                 "proxy": "context-guard",
@@ -2720,12 +2955,14 @@ class LLMModelBenchmark:
                         "messages": [{"role": "user", "content": test["prompt"]}],
                         "stream": True,
                         "think": think_on,
-                        "reasoning_budget": test.get("reasoning_budget", 2048),
                         "options": {
                             "num_predict": num_predict,
                             "temperature": _model_temperature(model),
+                            **_model_sampling_options(model),
                         },
                     }
+                    if reasoning_budget is not None:
+                        payload["reasoning_budget"] = reasoning_budget
                     headers = self._proxy_headers({"X-Request-Source": "shared-llm/benchmark"})
                     async with client.stream(
                         "POST", f"{proxy_url}/api/chat", json=payload, headers=headers
@@ -2787,12 +3024,14 @@ class LLMModelBenchmark:
                                 ],
                                 "stream": True,
                                 "think": think_on,
-                                "reasoning_budget": test.get("reasoning_budget", 2048),
                                 "options": {
                                     "num_predict": num_predict,
                                     "temperature": _model_temperature(model),
+                                    **_model_sampling_options(model),
                                 },
                             }
+                            if reasoning_budget is not None:
+                                payload2["reasoning_budget"] = reasoning_budget
                             start_t2 = time.time()
                             async with client.stream(
                                 "POST", f"{proxy_url}/api/chat", json=payload2, headers=headers
@@ -2821,7 +3060,7 @@ class LLMModelBenchmark:
                         "response": response_text,
                         "thinking": thinking,
                         "think": think_on,
-                        "reasoning_budget": test.get("reasoning_budget", 2048),
+                        "reasoning_budget": reasoning_budget,
                         "num_predict": num_predict,
                         "tokens_generated": eval_count,
                         "eval_duration": eval_ns,
@@ -3319,7 +3558,7 @@ class LLMModelBenchmark:
             res = await online_model_provider.query_online_model(
                 model_identifier=model,
                 prompt=test["prompt"],
-                max_tokens=_test_num_predict(test),
+                max_tokens=_test_num_predict(test, model),
             )
             if sampler:
                 await sampler.stop()
@@ -3338,8 +3577,9 @@ class LLMModelBenchmark:
 
         last_error: Exception | None = None
         try:
-            think_on = _test_thinking(test)
-            num_predict = await self._effective_num_predict(model, test["prompt"], _test_num_predict(test))
+            think_on = _test_thinking(test, model)
+            reasoning_budget = _test_reasoning_budget(test, model)
+            num_predict = await self._effective_num_predict(model, test["prompt"], _test_num_predict(test, model))
         except RuntimeError as e:
             return {
                 "ollama_url": "context-guard",
@@ -3377,8 +3617,11 @@ class LLMModelBenchmark:
                         "options": {
                             "num_predict": num_predict,
                             "temperature": _model_temperature(model),
+                            **_model_sampling_options(model),
                         },
                     }
+                    if reasoning_budget is not None:
+                        payload["reasoning_budget"] = reasoning_budget
                     async with client.stream("POST", f"{ollama_url}/api/generate", json=payload) as response:
                         if response.status_code != 200:
                             body = (await response.aread()).decode("utf-8", "replace")
@@ -3434,8 +3677,11 @@ class LLMModelBenchmark:
                                 "options": {
                                     "num_predict": num_predict,
                                     "temperature": _model_temperature(model),
+                                    **_model_sampling_options(model),
                                 },
                             }
+                            if reasoning_budget is not None:
+                                payload2["reasoning_budget"] = reasoning_budget
                             start_t2 = time.time()
                             async with client.stream("POST", f"{ollama_url}/api/generate", json=payload2) as response2:
                                 if response2.status_code == 200:
@@ -3462,7 +3708,7 @@ class LLMModelBenchmark:
                         "response": response_text,
                         "thinking": thinking,
                         "think": think_on,
-                        "reasoning_budget": test.get("reasoning_budget", 2048),
+                        "reasoning_budget": reasoning_budget,
                         "num_predict": num_predict,
                         "tokens_generated": eval_count,
                         "eval_duration": eval_ns,
