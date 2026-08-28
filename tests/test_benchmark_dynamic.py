@@ -1087,3 +1087,12 @@ async def test_online_deterministic_exhaustion_stops_retry_loop():
     assert res["success"] is False
     assert "reasoning exhausted" in res["error"]
     assert call["n"] == 2  # initial + one direct-answer retry, then stop
+
+
+def test_get_fallback_models_requires_env_when_nothing_discovered():
+    """No hardcoded model fallbacks: without BENCHMARK_MODELS the suite fails fast with a clear error."""
+    suite = LLMModelBenchmark()
+    with patch.dict(os.environ, {"BENCHMARK_MODELS": ""}), pytest.raises(RuntimeError, match="BENCHMARK_MODELS"):
+        suite._get_fallback_models()
+    with patch.dict(os.environ, {"BENCHMARK_MODELS": "m1:latest, m2:8b"}):
+        assert suite._get_fallback_models() == ["m1:latest", "m2:8b"]

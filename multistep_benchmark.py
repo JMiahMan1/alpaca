@@ -1347,9 +1347,14 @@ def _glider_2026_workflow() -> dict[str, Any]:
 if __name__ == "__main__":  # pragma: no cover - manual smoke run
     bench = MultiStepBenchmark()
     print([w["id"] for w in bench.get_all_workflows()])
+    models_env = os.getenv("MULTISTEP_MODEL", "").strip()
+    if not models_env:
+        raise SystemExit(
+            "MULTISTEP_MODEL is not set - export MULTISTEP_MODEL=<model[,model2]> to run multistep benchmarks"
+        )
     asyncio.run(
         bench.run_multistep_benchmarks(
-            models=[m.strip() for m in (os.getenv("MULTISTEP_MODEL", "") or "qwen3:8b").split(",")],
+            models=[m.strip() for m in models_env.split(",") if m.strip()],
             use_proxy=os.getenv("USE_PROXY", "1") == "1",
         )
     )

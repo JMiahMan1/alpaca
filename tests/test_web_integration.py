@@ -804,6 +804,8 @@ def test_vision_synthesize_edit_prompt_success(client):
             }
         ]
     }
+    mock_text_models = MagicMock()
+    mock_text_models.get_json.return_value = {"models": ["qwen-test:7b"]}
 
     payload = {
         "base_description": "A woman wearing a white shirt in a studio",
@@ -811,7 +813,10 @@ def test_vision_synthesize_edit_prompt_success(client):
         "style_preset": "Cyberpunk Sci-Fi",
     }
 
-    with patch("httpx.Client.post", return_value=mock_resp):
+    with (
+        patch("web.app.get_text_models", return_value=mock_text_models),
+        patch("httpx.Client.post", return_value=mock_resp),
+    ):
         res = client.post("/api/vision/synthesize_edit_prompt", json=payload)
         assert res.status_code == 200
         data = json.loads(res.data.decode("utf-8"))
@@ -823,18 +828,39 @@ def test_vision_synthesize_edit_prompt_success(client):
 
 def test_vision_synthesize_edit_prompt_fallback(client):
     """Test /api/vision/synthesize_edit_prompt fallback logic when LLM call raises exception"""
+    mock_text_models = MagicMock()
+    mock_text_models.get_json.return_value = {"models": ["qwen-test:7b"]}
     payload = {
         "base_description": "A portrait of a dog",
         "desired_changes": "Add superhero cape",
         "style_preset": "Anime Fantasy",
     }
 
-    with patch("httpx.Client.post", side_effect=Exception("Connection error")):
+    with (
+        patch("web.app.get_text_models", return_value=mock_text_models),
+        patch("httpx.Client.post", side_effect=Exception("Connection error")),
+    ):
         res = client.post("/api/vision/synthesize_edit_prompt", json=payload)
         assert res.status_code == 200
         data = json.loads(res.data.decode("utf-8"))
         assert data["status"] == "success"
         assert "superhero cape" in data["master_prompt"]
+
+
+def test_vision_synthesize_edit_prompt_no_models(client):
+    """Test /api/vision/synthesize_edit_prompt fails fast when no text models exist (no hardcoded fallback)."""
+    mock_text_models = MagicMock()
+    mock_text_models.get_json.return_value = {"models": []}
+    payload = {
+        "base_description": "A portrait of a dog",
+        "desired_changes": "Add superhero cape",
+    }
+
+    with patch("web.app.get_text_models", return_value=mock_text_models):
+        res = client.post("/api/vision/synthesize_edit_prompt", json=payload)
+        assert res.status_code == 503
+        data = json.loads(res.data.decode("utf-8"))
+        assert "No text models available" in data["error"]
 
 
 def test_api_online_providers_get(client):
@@ -916,8 +942,12 @@ def test_api_online_models_search_and_selected(client):
         assert data["count"] == 1
 
 
-def test_api_models_tracking(client):
+@patch("llm_benchmark_suite.LLMModelBenchmark.discover_all_models")
+@patch("llm_benchmark_suite.LLMModelBenchmark.discover_all_proxy_models")
+def test_api_models_tracking(mock_discover_proxy, mock_discover_all, client):
     """Test GET /api/models/tracking returns structured new vs benchmarked lists."""
+    mock_discover_all.return_value = ["model1"]
+    mock_discover_proxy.return_value = ["model2"]
     res = client.get("/api/models/tracking")
     assert res.status_code == 200
     data = json.loads(res.data.decode("utf-8"))
@@ -927,6 +957,15 @@ def test_api_models_tracking(client):
     assert "counts" in data
     assert "all_tracked" in data
     assert data["counts"]["total"] >= 0
+
+
+def test_api_models_tracking_discovery_failure(client):
+    """Discovery failure surfaces an explicit error instead of hardcoded fallback models."""
+    res = client.get("/api/models/tracking")
+    assert res.status_code == 500
+    data = json.loads(res.data.decode("utf-8"))
+    assert data["success"] is False
+    assert "BENCHMARK_MODELS" in data["error"]
 
 
 def test_delete_model_benchmarks_comprehensive(client, tmp_path):

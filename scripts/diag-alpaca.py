@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 
 import requests
@@ -97,8 +98,11 @@ if __name__ == "__main__":
                 break
 
         if not target_model:
+            if not all_models:
+                print("No models available on the proxy - pull a model first.")
+                sys.exit(1)
             print("No alternative model found to switch to. Trying first available.")
-            target_model = all_models[0] if all_models else "qwen3.5:9b"
+            target_model = all_models[0]
 
         # 4. Perform the switch test
         test_chat_stream(target_model)

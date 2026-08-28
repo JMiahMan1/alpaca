@@ -232,7 +232,7 @@ def _docker_container_ip_map() -> dict[str, str]:
 
 
 def resolve_client_host(client_ip: str) -> str:
-    """Human-readable client identity for an IP (docker container name) or ''. """
+    """Human-readable client identity for an IP (docker container name) or ''."""
     if not client_ip or client_ip in ("unknown-ip", ""):
         return ""
     raw = client_ip.strip().lower()
@@ -2295,7 +2295,9 @@ async def openai_chat_completions(request: Request):
                                             )
                                             await ensure_model(model_name)
                                             continue
-                                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
+                                        record_active_request_error(
+                                            request_id, f"Upstream error {resp.status_code}: {err_msg}"
+                                        )
                                         yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
                                         return
 
@@ -2561,7 +2563,9 @@ async def openai_completions(request: Request):
                                             )
                                             await ensure_model(model_name)
                                             continue
-                                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
+                                        record_active_request_error(
+                                            request_id, f"Upstream error {resp.status_code}: {err_msg}"
+                                        )
                                         yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
                                         return
 
@@ -3919,6 +3923,17 @@ async def admin_health():
     # Overall status
     health["overall"] = "ok" if health["llama_server"]["status"] == "ok" else "degraded"
     return JSONResponse(health)
+
+
+@app.get("/admin/vram-recommendations")
+async def admin_vram_recommendations():
+    """VRAM step-down records for the recommendations UI.
+
+    Lists every non-bench-verified model the budgeter had to step down at load
+    time, with repeat offenders flagged recommend=True so the dashboard can
+    suggest permanent profile changes.
+    """
+    return JSONResponse({"recommendations": _vram_downgrade_recommendations()})
 
 
 @app.get("/admin/system")
@@ -5774,35 +5789,96 @@ _DENSE_CTX_LADDER = [32768, 16384, 8192]
 def _budget_dense_model_vram(
     model_path, meta, n_ctx, cache_type, n_parallel, available_vram_mib, requested_n_gpu_layers
 ) -> dict:
-    """Walk the cache-type/ctx ladder and pick the config maximizing GPU offload.
+    """Compute RUNTIME-ONLY VRAM overrides for a dense model that will not fit.
 
-    Returns a dict of settings to persist to models.ini:
-    {"ctx-size", "cache-type-k", "cache-type-v", "n-gpu-layers"}.
-    Returns {} when metadata/VRAM is unavailable (callers skip budgeting).
+    The context window is user/benchmark territory and is NEVER modified here
+    (stepping down from 64K must never go to 8K). The levers are, in order of
+    least destruction: KV cache quantization (requested -> q8_0 -> q4_0), then
+    reducing n_gpu_layers (partial CPU offload). Full GPU offload is preferred
+    when achievable; otherwise the config maximizing n_gpu_layers wins.
+
+    Returns runtime overrides {"cache-type-k", "cache-type-v", "n-gpu-layers"}.
+    NEVER contains "ctx-size" and is NEVER persisted to models.ini — callers
+    apply it to the load payload only. Returns {} when metadata/VRAM is
+    unavailable (callers skip budgeting).
     """
     _, n_layers, _ = _get_model_arch_meta(meta)
     if not n_layers or available_vram_mib is None:
         return {}
-    start_ctx = max(int(n_ctx or 0), min(_DENSE_CTX_LADDER))
-    ctxs = sorted({start_ctx, *_DENSE_CTX_LADDER}, reverse=True)
-
+    # Always budget from the full n_layers so the returned ngl is a concrete
+    # layer count (never the -1 "auto" sentinel).
+    requested_cache = (cache_type or "f16").lower()
+    caches = [requested_cache] + [c for c in _DENSE_CACHE_LADDER if c != requested_cache]
     best = None
-    for ctx in ctxs:
-        for cache in _DENSE_CACHE_LADDER:
-            # Always budget from the full n_layers so the returned ngl is a
-            # concrete layer count (never the -1 "auto" sentinel).
-            ngl = _compute_safe_n_gpu_layers(model_path, meta, ctx, cache, n_parallel, available_vram_mib, n_layers)
-            if best is None or ngl > best["n-gpu-layers"] or (ngl == best["n-gpu-layers"] and ctx > best["ctx-size"]):
-                best = {
-                    "ctx-size": ctx,
-                    "cache-type-k": cache,
-                    "cache-type-v": cache,
-                    "n-gpu-layers": ngl,
-                }
-            # Full GPU offload achieved — no point testing smaller ctx/cache.
-            if ngl >= n_layers:
-                return best
+    for cache in caches:
+        ngl = _compute_safe_n_gpu_layers(model_path, meta, n_ctx, cache, n_parallel, available_vram_mib, n_layers)
+        candidate = {"cache-type-k": cache, "cache-type-v": cache, "n-gpu-layers": ngl}
+        if best is None or ngl > best["n-gpu-layers"]:
+            best = candidate
+        # Full GPU offload achieved at the least-destructive cache level.
+        if ngl >= n_layers:
+            return candidate
     return best or {}
+
+
+# After this many runtime VRAM step-downs for the same model, surface a
+# recommendation telling the user to adjust the model's settings themselves.
+VRAM_DOWNGRADE_RECOMMEND_AFTER = 3
+_VRAM_DOWNGRADES_FILE = ".vram-downgrades.json"
+
+
+def _is_bench_verified(backend_model: str) -> bool:
+    """True when the model's settings were explicitly set and validated by the
+    benchmark scanner (bench-verified marker in its models.ini section). Such
+    settings must never be overwritten by automatic VRAM budgeting."""
+    try:
+        val = _read_ini_model_setting(backend_model, "bench-verified", "")
+        return str(val).strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
+
+def _record_vram_downgrade(backend_model: str, budget: dict, requested_ngl) -> dict:
+    """Track runtime VRAM step-downs per model. Repeated downgrades mean the
+    persisted settings do not fit this hardware — surface a recommendation
+    instead of silently degrading the model forever."""
+    entry = {"count": 1, "last": datetime.now().isoformat(timespec="seconds"), "last_budget": budget}
+    path = os.path.join(ROUTER_MODELS_DIR, _VRAM_DOWNGRADES_FILE)
+    data = {}
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                data = json.load(f)
+        prev = data.get(backend_model) or {}
+        entry["count"] = int(prev.get("count", 0)) + 1
+        if entry["count"] >= VRAM_DOWNGRADE_RECOMMEND_AFTER:
+            # Flag BEFORE persisting so the recommendations reader sees it.
+            entry["recommend"] = True
+        data[backend_model] = entry
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to record VRAM downgrade for {backend_model}: {e}")
+        return entry
+    if entry["count"] >= VRAM_DOWNGRADE_RECOMMEND_AFTER:
+        logger.warning(
+            f"VRAM step-down #{entry['count']} for {backend_model} (requested ngl={requested_ngl}, "
+            f"runtime override {budget.get('n-gpu-layers')}). Settings keep failing to fit - "
+            f"recommend the user lower ctx-size or use a smaller quant in Settings/Recommendations."
+        )
+    return entry
+
+
+def _vram_downgrade_recommendations() -> dict:
+    """Read the recorded VRAM step-downs for the recommendations UI."""
+    path = os.path.join(ROUTER_MODELS_DIR, _VRAM_DOWNGRADES_FILE)
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to read VRAM downgrade records: {e}")
+    return {}
 
 
 def _gguf_has_mtp_heads(path: str) -> bool:
@@ -6393,32 +6469,38 @@ async def _ensure_model_impl(
         _write_ini_model_setting(backend_model, "cache-reuse", "256")
 
     # Proactive VRAM budgeting for dense models: if the model won't fit in GPU
-    # VRAM with the current preset, walk the cache/ctx ladder to find the config
-    # that maximizes GPU offload (quantize KV cache first, then shrink ctx),
-    # write the winning settings to models.ini, and restart llama-server BEFORE
-    # attempting the load. This avoids the OOM crash + recovery cycle entirely.
+    # VRAM with the current preset, compute RUNTIME-ONLY overrides (KV cache
+    # quantization, then fewer GPU layers). Never touches ctx-size and never
+    # persists to models.ini — settings are the user's/benchmark scanner's.
+    # Benchmark-verified settings are never budgeted at all.
     # Metadata-driven (no hardcoded model names).
     is_dense = meta is not None and not _is_moe(meta)
     if is_dense and model_path and os.path.exists(model_path):
-        available_vram = await _get_available_vram_mib()
-        if available_vram is not None:
-            eff_ctx = int(load_payload.get("n_ctx") or _read_ini_model_setting(backend_model, "ctx-size", "32768"))
-            eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
-            budget = _budget_dense_model_vram(
-                model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
+        if _is_bench_verified(backend_model):
+            logger.info(
+                f"Skipping VRAM budgeting for {backend_model}: benchmark-verified settings present in models.ini."
             )
-            changed = False
-            if budget:
-                for key, val in budget.items():
-                    if str(_read_ini_model_setting(backend_model, key, None)) != str(val):
-                        _write_ini_model_setting(backend_model, key, str(val))
-                        changed = True
-                n_gpu_layers_preset = int(budget.get("n-gpu-layers", n_gpu_layers_preset))
-            if changed:
-                logger.info("Restarting llama-server to pick up VRAM-safe dense budget preset...")
-                await restart_llama_server()
-                if not await wait_for_llama_server_or_restart(timeout=60.0):
-                    raise HTTPException(status_code=502, detail="Failed to restart llama-server for VRAM budgeting")
+        else:
+            available_vram = await _get_available_vram_mib()
+            if available_vram is not None:
+                eff_ctx = int(load_payload.get("n_ctx") or _read_ini_model_setting(backend_model, "ctx-size", "32768"))
+                eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
+                budget = _budget_dense_model_vram(
+                    model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
+                )
+                if budget:
+                    ngl_override = int(budget.get("n-gpu-layers", 0))
+                    cache_k = budget.get("cache-type-k", eff_cache)
+                    if ngl_override != n_gpu_layers_preset or (cache_k or "f16") != (eff_cache or "f16"):
+                        load_payload["n_gpu_layers"] = ngl_override
+                        load_payload["cache_type_k"] = cache_k
+                        load_payload["cache_type_v"] = budget.get("cache-type-v", cache_k)
+                        # ctx-size intentionally untouched (never 64K -> 8K).
+                        logger.info(
+                            f"VRAM budget (runtime-only, not persisted): n_gpu_layers={n_gpu_layers_preset}→{ngl_override}, "
+                            f"cache={cache_k}, ctx stays {eff_ctx}"
+                        )
+                        _record_vram_downgrade(backend_model, budget, n_gpu_layers_preset)
 
     try:
         await post_router_model_action("load", load_payload)
@@ -6714,26 +6796,30 @@ async def _ensure_model_impl(
             with suppress(Exception):
                 await post_router_model_action("unload", backend_model)
 
-            # Before restarting, write VRAM-safe n_gpu_layers to models.ini.
-            # The router only reads n_gpu_layers from the INI at startup, so
-            # we must write the corrected value BEFORE the restart for it to
-            # take effect. Use metadata-driven VRAM budgeting (no hardcoding).
+            # Before restarting, compute RUNTIME-ONLY VRAM-safe overrides.
+            # The router only reads n_gpu_layers from the INI at startup, but we
+            # deliberately do NOT persist: the retried load goes through
+            # ensure_model, which applies the budget to the load payload.
+            # Benchmark-verified settings are never budgeted.
             is_moe = is_model_moe(backend_model, meta) or is_model_over_9b(
                 model_name, resolved.get("manifest") if resolved else None
             )
             if not is_moe and model_path and os.path.exists(model_path) and meta:
-                available_vram = await _get_available_vram_mib()
-                if available_vram is not None:
-                    eff_ctx = int(_read_ini_model_setting(backend_model, "ctx-size", "32768"))
-                    eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
-                    budget = _budget_dense_model_vram(
-                        model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
+                if _is_bench_verified(backend_model):
+                    logger.info(
+                        f"Skipping VRAM budgeting for {backend_model}: benchmark-verified settings present in models.ini."
                     )
-                    if budget:
-                        for key, val in budget.items():
-                            if str(_read_ini_model_setting(backend_model, key, None)) != str(val):
-                                _write_ini_model_setting(backend_model, key, str(val))
-                        n_gpu_layers_preset = int(budget.get("n-gpu-layers", n_gpu_layers_preset))
+                else:
+                    available_vram = await _get_available_vram_mib()
+                    if available_vram is not None:
+                        eff_ctx = int(_read_ini_model_setting(backend_model, "ctx-size", "32768"))
+                        eff_cache = _read_ini_model_setting(backend_model, "cache-type-k", "f16")
+                        budget = _budget_dense_model_vram(
+                            model_path, meta, eff_ctx, eff_cache, 2, available_vram, n_gpu_layers_preset
+                        )
+                        if budget:
+                            _record_vram_downgrade(backend_model, budget, n_gpu_layers_preset)
+                            n_gpu_layers_preset = int(budget.get("n-gpu-layers", n_gpu_layers_preset))
 
             # Incorporate Telemetry & Auto-Tuning suggestions to prevent recurring memory exhaustion.
             # NOTE: n-gpu-layers is intentionally excluded here - it is already computed above
