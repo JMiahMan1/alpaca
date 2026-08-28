@@ -2436,7 +2436,7 @@ def test_compute_safe_n_gpu_layers_missing_meta_returns_requested(tmp_path):
 
 
 def test_budget_dense_model_vram_returns_config_dict(tmp_path):
-    """Ladder picks the best {ctx-size, cache, ngl} maximizing GPU offload."""
+    """Ladder picks the best {cache, ngl} maximizing GPU offload; ctx is never touched."""
     model_file = tmp_path / "qwen35-9b.gguf"
     model_file.write_bytes(b"\x00" * 1048576)
 
@@ -2449,9 +2449,82 @@ def test_budget_dense_model_vram_returns_config_dict(tmp_path):
         available_vram_mib=8000,
         requested_n_gpu_layers=-1,
     )
-    assert set(budget) == {"ctx-size", "cache-type-k", "cache-type-v", "n-gpu-layers"}
+    assert set(budget) == {"cache-type-k", "cache-type-v", "n-gpu-layers"}
+    assert "ctx-size" not in budget
     assert budget["n-gpu-layers"] > 0
     assert budget["cache-type-k"] == budget["cache-type-v"]
+
+
+def test_budget_dense_model_vram_never_returns_ctx_size(tmp_path):
+    """User directive: stepping down from 64K must never go to 8K - ctx is not a lever."""
+    model_file = tmp_path / "qwen35-9b.gguf"
+    model_file.write_bytes(b"\x00" * 1048576)
+    for ctx in (65536, 32768, 8192):
+        budget = alpaca_proxy._budget_dense_model_vram(
+            str(model_file),
+            Qwen35_META,
+            n_ctx=ctx,
+            cache_type="f16",
+            n_parallel=2,
+            available_vram_mib=8000,
+            requested_n_gpu_layers=-1,
+        )
+        assert "ctx-size" not in budget
+
+
+def test_budget_dense_model_vram_prefers_less_destructive_cache(tmp_path):
+    """KV cache ladder tries requested cache first, then q8_0, then q4_0."""
+    model_file = tmp_path / "qwen35-9b.gguf"
+    model_file.write_bytes(b"\x00" * 1048576)
+    # Generous VRAM: requested q8_0 should be kept (no downgrade past q4_0).
+    budget = alpaca_proxy._budget_dense_model_vram(
+        str(model_file),
+        Qwen35_META,
+        n_ctx=8192,
+        cache_type="q8_0",
+        n_parallel=2,
+        available_vram_mib=16000,
+        requested_n_gpu_layers=-1,
+    )
+    assert budget.get("cache-type-k") in ("q8_0", "q4_0", "f16")
+
+
+def _tmp_ini(tmp_path, sections):
+    ini = tmp_path / "models.ini"
+    lines = []
+    for name, kv in sections.items():
+        lines.append(f"[{name}]")
+        lines.extend(f"{k} = {v}" for k, v in kv.items())
+    ini.write_text("\n".join(lines) + "\n")
+    return ini
+
+
+def test_is_bench_verified_true_and_false(tmp_path, monkeypatch):
+    ini = _tmp_ini(
+        tmp_path,
+        {
+            "alpha": {"bench-verified": "1"},
+            "beta": {"ctx-size": "65536"},
+        },
+    )
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    # _read_ini_model_setting looks for ROUTER_MODELS_DIR/models.ini
+    (tmp_path / "models.ini").write_text(ini.read_text())
+    assert alpaca_proxy._is_bench_verified("alpha") is True
+    assert alpaca_proxy._is_bench_verified("beta") is False
+    assert alpaca_proxy._is_bench_verified("missing") is False
+
+
+def test_record_vram_downgrade_counts_and_recommends(tmp_path, monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    budget = {"cache-type-k": "q4_0", "cache-type-v": "q4_0", "n-gpu-layers": "21"}
+    for i in range(1, alpaca_proxy.VRAM_DOWNGRADE_RECOMMEND_AFTER + 1):
+        entry = alpaca_proxy._record_vram_downgrade("gamma", budget, 99)
+        assert entry["count"] == i
+        assert entry["last_budget"] == budget
+    assert entry["recommend"] is True
+    recs = alpaca_proxy._vram_downgrade_recommendations()
+    assert "gamma" in recs and recs["gamma"]["recommend"] is True
 
 
 def test_budget_dense_model_vram_returns_empty_when_unavailable(tmp_path):

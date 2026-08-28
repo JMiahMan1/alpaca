@@ -930,7 +930,10 @@ class LLMModelBenchmark:
         env_models = os.getenv("BENCHMARK_MODELS", "")
         if env_models:
             return [m.strip() for m in env_models.split(",") if m.strip()]
-        return ["qwen3:8b", "qwen2.5-coder:7b", "qwen3.5:9b"]
+        raise RuntimeError(
+            "No models discovered and BENCHMARK_MODELS is not set. "
+            "Set BENCHMARK_MODELS (comma-separated model ids) or ensure an Ollama/proxy endpoint is reachable."
+        )
 
     def _coding_tests(self, model: str) -> list[dict]:
         if "coding" in self.tests_config:

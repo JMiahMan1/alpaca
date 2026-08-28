@@ -756,8 +756,11 @@ def get_models():
         proxy_models = loop.run_until_complete(benchmark.discover_all_proxy_models())
         loop.close()
 
-        # Filter out hardcoded fallback placeholders if we successfully retrieved real proxy models
-        fallback = benchmark._get_fallback_models()
+        # Filter out fallback placeholder models if we successfully retrieved real proxy models
+        try:
+            fallback = benchmark._get_fallback_models()
+        except RuntimeError:
+            fallback = []
         if proxy_models and proxy_models != fallback and direct_models == fallback:
             direct_models = []
 
@@ -775,12 +778,12 @@ def get_models():
                 combined.append(canonical)
         return jsonify({"models": combined, "direct_models": direct_models, "proxy_models": proxy_models})
     except Exception as e:
-        fallback = benchmark._get_fallback_models()
+        # No silent fallback to hardcoded model ids: report the true (empty) state.
         return jsonify(
             {
-                "models": fallback,
-                "direct_models": fallback,
-                "proxy_models": fallback,
+                "models": [],
+                "direct_models": [],
+                "proxy_models": [],
                 "warning": str(e),
             }
         )
@@ -2416,7 +2419,17 @@ def vision_synthesize_edit_prompt_api():
         t_resp = get_text_models()
         t_data = t_resp.get_json() if hasattr(t_resp, "get_json") else {}
         t_models = t_data.get("models", []) if isinstance(t_data, dict) else []
-        model = t_models[0] if t_models else "qwen2.5-coder:latest"
+        if not t_models:
+            return (
+                jsonify(
+                    {
+                        "error": "No text models available to synthesize an edit prompt. "
+                        "Pull a text model or pass 'model' in the request."
+                    }
+                ),
+                503,
+            )
+        model = t_models[0]
 
     proxy_model = model.replace("--", ":") if ("--" in model and ":" not in model) else model
 
@@ -4332,6 +4345,37 @@ def get_telemetry_recommendations():
 
         perf_first = strategy == "performance"
         analysis = analyze_telemetry(sanitized_model, performance_first=perf_first)
+        # Merge proxy VRAM-budget step-down records: repeat offenders recommend
+        # permanent profile changes (user-facing "recommendation section").
+        try:
+            import httpx
+
+            proxy_url = _find_proxy_url()
+            if proxy_url:
+                with httpx.Client(timeout=2.0) as client:
+                    resp = client.get(f"{proxy_url}/admin/vram-recommendations")
+                    if resp.status_code == 200:
+                        recs = resp.json().get("recommendations", {})
+                        rec = recs.get(model) or recs.get(sanitized_model)
+                        if rec is None:
+                            for key, val in recs.items():
+                                if key and (key in model or key in sanitized_model):
+                                    rec = val
+                                    break
+                        if rec:
+                            issues = analysis.setdefault("detected_issues", [])
+                            issues.append(
+                                f"VRAM budgeting stepped this model down {rec.get('count', 1)}x"
+                                f" at load time (last budget: {rec.get('last_budget')})."
+                            )
+                            if rec.get("recommend"):
+                                issues.append(
+                                    "VRAM step-downs keep happening - lower ctx-size or use a smaller "
+                                    "quant in the model profile instead of relying on runtime budgeting."
+                                )
+                            analysis["vram_budgeting"] = rec
+        except Exception:
+            pass
         return jsonify(analysis)
     except Exception as e:
         # Fallback analysis if importer/analyzer fails
@@ -5230,7 +5274,10 @@ def get_ollama_model_tags():
             repo = model if "/" in model else f"library/{model}"
             m_url = f"{registry}/{repo}/manifests/{tag}"
             try:
-                headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/vnd.docker.distribution.manifest.v2+json"}
+                headers = {
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/vnd.docker.distribution.manifest.v2+json",
+                }
                 r = httpx.get(m_url, headers=headers, timeout=10.0)
                 if r.status_code == 401:
                     tok = httpx.get(auth_url_tpl.format(repo=repo), timeout=10.0)
