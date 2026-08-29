@@ -100,17 +100,16 @@ def test_smart_baseline_unknown_shape_falls_back_conservative():
     assert s["cache-type-k"] == "q4_0"
 
 
-def test_smart_baseline_kv_in_ram_only_when_strictly_better(monkeypatch):
-    """Dense model, KV-in-RAM lever fires only when it buys more GPU layers and RAM allows."""
+def test_smart_baseline_never_offloads_kv_to_ram(monkeypatch):
+    """KV-in-RAM lever retired: KV-over-PCIe decode collapses long-form generation."""
     shape = {"n_layers": 48, "n_head_kv": 8, "head_dim": 128, "file_size_mb": 14000, "expert_count": 0, "arch": "x"}
     monkeypatch.setattr(settings_scan, "ram_available_mb", lambda: 30000)
-    # Roomy VRAM: full offload already fits (48 layers incl. KV) -> no-kv-offload must NOT fire
     s, _ = settings_scan.compute_smart_baseline(shape, 65536, ["q8_0", "q4_0"], 24000)
     assert "no-kv-offload" not in s
-    # Tight VRAM: KV-in-RAM frees the KV budget for weights -> 21 GPU layers vs 9
+    # Tight VRAM: stays with fewer GPU layers and KV in VRAM - never the lever
     s2, _ = settings_scan.compute_smart_baseline(shape, 65536, ["q8_0", "q4_0"], 8188)
-    assert s2.get("no-kv-offload") == "true"
-    assert s2["n-gpu-layers"] == "21"
+    assert "no-kv-offload" not in s2
+    assert s2["cache-type-k"] == s2["cache-type-v"]
 
 
 def test_smart_baseline_kv_in_ram_never_for_moe(monkeypatch):
@@ -119,9 +118,9 @@ def test_smart_baseline_kv_in_ram_never_for_moe(monkeypatch):
     monkeypatch.setattr(settings_scan, "ram_available_mb", lambda: 30000)
     s, _ = settings_scan.compute_smart_baseline(shape, 65536, ["q8_0", "q4_0"], 8188, is_moe=True)
     assert "no-kv-offload" not in s
-    # Same shape as dense would take the lever; MoE must not
+    # Same shape as dense: retired lever means dense never sets it either
     s_dense, _ = settings_scan.compute_smart_baseline(shape, 65536, ["q8_0", "q4_0"], 8188, is_moe=False)
-    assert s_dense.get("no-kv-offload") == "true"
+    assert "no-kv-offload" not in s_dense
 
 
 # ---------- escalation (no response => free VRAM and retry) ----------
