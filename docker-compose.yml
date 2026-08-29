@@ -42,7 +42,9 @@ services:
       # it caps the thinking phase so the model cannot spend the whole
       # generation budget on thinking and return empty content. deepseek format
       # routes thoughts into message.thinking separate from scored content.
-      LLAMA_REASONING_BUDGET: "${LLAMA_REASONING_BUDGET:-2048}"
+      # 8192: heavy reasoning tasks exceed 2048 think tokens and get cut
+      # mid-thinking; 0 = unrestricted via .env if ever needed.
+      LLAMA_REASONING_BUDGET: "${LLAMA_REASONING_BUDGET:-8192}"
       LLAMA_REASONING_FORMAT: "${LLAMA_REASONING_FORMAT:-deepseek}"
     entrypoint: ["/bin/sh", "/scripts/llama-server-entrypoint.sh"]
     depends_on:
