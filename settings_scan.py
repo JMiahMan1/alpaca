@@ -82,7 +82,7 @@ PROBE = (
     "runnable source code in a single fenced code block, no preamble."
 )
 MAX_TOKENS = 4000
-DENSE_MAX_TOKENS = 2048  # long-form probe: a complete Pong program; too slow to finish => combo fails
+DENSE_MAX_TOKENS = 3584  # long-form probe: observed need 2914 tok at temp=1.0; 3072 truncated 1 of 2 runs
 PROBE_TIMEOUT_S = 2400.0  # 2048 tok at a ~1 tok/s dense floor needs up to ~40 min
 
 # Hello pre-flight: the response-establishment gate. The model rambles on a
@@ -454,9 +454,8 @@ def compute_smart_baseline(
 
     Returns (settings, est_vram_mb). Ties prefer the earlier (higher quality)
     kv quant. Falls back to a conservative config when geometry is unknown.
-    The KV-in-RAM lever (--no-kv-offload) is dense-only: MoE models already
-    park expert weights in system RAM, so stacking the KV cache there too
-    risks RAM exhaustion.
+    The KV-in-RAM lever (--no-kv-offload) was retired: KV-over-PCIe decode
+    collapses long-form generation (see comment below).
     """
     n_layers = shape.get("n_layers") or 0
     file_mb = shape.get("file_size_mb") or 0.0
@@ -477,25 +476,10 @@ def compute_smart_baseline(
         est = int(ngl * weights_per_layer_mb + kv_total_mb + overhead_mb)
         if best is None or ngl > best[0]:
             best = (ngl, kv, est)
-    # Long-context lever: KV in system RAM (--no-kv-offload) frees VRAM for more
-    # GPU layers -> less CPU compute -> less heat. Prefer it when it yields
-    # strictly more GPU layers and the KV fits comfortably in available RAM.
-    kv_best_mb = kv_bytes_per_token(shape, best[1]) * ctx / 1e6
-    ram_free_mb = ram_available_mb() or 0
-    if not is_moe and ram_free_mb > kv_best_mb + GUARD_RAM_HEADROOM_MB:
-        ngl_nokv = max(0, min(n_layers, int((vram_total * target_frac - overhead_mb) / weights_per_layer_mb)))
-        if ngl_nokv > best[0]:
-            return (
-                {
-                    "ctx-size": str(ctx),
-                    "cache-type-k": best[1],
-                    "cache-type-v": best[1],
-                    "n-gpu-layers": str(ngl_nokv),
-                    "flash-attn": "on",
-                    "no-kv-offload": "true",
-                },
-                int(ngl_nokv * weights_per_layer_mb + overhead_mb),
-            )
+    # KV-in-RAM lever (--no-kv-offload) RETIRED: live evidence shows KV-over-PCIe
+    # collapses long-form generation (2048-token probe yielded 86 usable chars
+    # at ngl=16 vs 3449 chars with KV in VRAM). More GPU layers is the wrong
+    # trade when every decode token must cross PCIe.
     ngl, kv, est = best  # type: ignore[misc]
     return {
         "ctx-size": str(ctx),
