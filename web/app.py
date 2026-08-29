@@ -2149,6 +2149,35 @@ def get_online_models_api():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/thermal/watchdog", methods=["GET"])
+def get_thermal_watchdog_api():
+    """Current thermal watchdog config + live temperatures."""
+    try:
+        from web.thermal import _read_live_temps, load_config
+
+        cfg = load_config()
+        try:
+            temps = _read_live_temps()
+        except Exception as e:
+            temps = {"cpu": None, "gpu": None, "error": str(e)}
+        return jsonify({"config": cfg, "temps": temps})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/thermal/watchdog", methods=["POST"])
+def save_thermal_watchdog_api():
+    """Save thermal watchdog settings (enabled flag + temperature thresholds)."""
+    try:
+        from web.thermal import save_config
+
+        payload = request.get_json(force=True, silent=True) or {}
+        cfg = save_config(payload)
+        return jsonify({"success": True, "config": cfg})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/online/providers", methods=["GET"])
 def get_online_providers_credentials_api():
     """Return configured status and masked keys for all online providers."""

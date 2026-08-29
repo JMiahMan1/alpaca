@@ -33,6 +33,7 @@ from llm_benchmark_suite import (
     _model_sampling_options,
     _model_temperature,
 )
+from web.thermal import ThermalAbortError, ThermalWatchdog
 
 # Per-chunk stream timeouts: read applies to the gap BETWEEN stream lines, not
 # total request time. Large prompts (15k+ tokens) plus slow generation can run
@@ -41,12 +42,17 @@ from llm_benchmark_suite import (
 _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0)
 
 
-async def _read_chat_stream(resp: httpx.Response) -> dict:
+async def _read_chat_stream(resp: httpx.Response, watchdog: Any = None) -> dict:
     """Accumulate an Ollama-style NDJSON /api/chat stream into text + final metrics."""
     parts: list[str] = []
     think_parts: list[str] = []
     final: dict[str, Any] = {}
     async for line in resp.aiter_lines():
+        if watchdog is not None:
+            try:
+                await watchdog.heartbeat()
+            except ThermalAbortError:
+                break
         stripped = line.strip()
         if not stripped:
             continue
@@ -72,15 +78,21 @@ async def _read_chat_stream(resp: httpx.Response) -> dict:
         "eval_duration": int(final.get("eval_duration") or 0),
         "prompt_eval_count": int(final.get("prompt_eval_count") or 0),
         "prompt_eval_duration": int(final.get("prompt_eval_duration") or 0),
+        "thermal_abort": bool(getattr(watchdog, "aborted", False)) and watchdog is not None,
     }
 
 
-async def _read_generate_stream(resp: httpx.Response) -> dict:
+async def _read_generate_stream(resp: httpx.Response, watchdog: Any = None) -> dict:
     """Accumulate an Ollama-style NDJSON /api/generate stream into text + final metrics."""
     parts: list[str] = []
     think_parts: list[str] = []
     final: dict[str, Any] = {}
     async for line in resp.aiter_lines():
+        if watchdog is not None:
+            try:
+                await watchdog.heartbeat()
+            except ThermalAbortError:
+                break
         stripped = line.strip()
         if not stripped:
             continue
@@ -105,6 +117,7 @@ async def _read_generate_stream(resp: httpx.Response) -> dict:
         "eval_duration": int(final.get("eval_duration") or 0),
         "prompt_eval_count": int(final.get("prompt_eval_count") or 0),
         "prompt_eval_duration": int(final.get("prompt_eval_duration") or 0),
+        "thermal_abort": watchdog is not None and bool(getattr(watchdog, "aborted", False)),
     }
 
 
@@ -672,6 +685,26 @@ class SharedLLMModelBenchmark:
                 "error": str(e),
             }
 
+    @staticmethod
+    def _watchdog_stats(watchdog: Any) -> dict:
+        """Peak temp/throttle stats to merge into a test result record."""
+        if watchdog is None:
+            return {}
+        return {"temps": watchdog.stats()}
+
+    @staticmethod
+    def _thermal_abort_result(watchdog: Any, latency: float, content: str, eval_cnt: int) -> dict:
+        stats = watchdog.stats() if watchdog is not None else {"aborted": True}
+        return {
+            "success": False,
+            "latency": latency,
+            "response": content,
+            "tokens_generated": eval_cnt,
+            "error": f"thermal watchdog abort: {stats.get('abort_reason')}",
+            "temps": stats,
+            "thermal_aborted": True,
+        }
+
     async def query_model(
         self,
         model: str,
@@ -679,6 +712,7 @@ class SharedLLMModelBenchmark:
         prompt: str,
         max_tokens: int = 4000,
         custom_keys: dict[str, str] | None = None,
+        watchdog: Any = None,
     ) -> dict:
         """Execute request against online provider, local proxy, or direct llama-server."""
         # 1. Route to Online Provider if model is an online identifier
@@ -758,10 +792,13 @@ class SharedLLMModelBenchmark:
                                 body = (await resp.aread()).decode("utf-8", "replace")
                                 last_error = f"HTTP {resp.status_code}: {body[:300]}"
                                 continue
-                            data = await _read_chat_stream(resp)
+                            data = await _read_chat_stream(resp, watchdog=watchdog)
                         latency = time.time() - start_t
                         content = self.strip_thinking(data["content"])
                         eval_cnt = data["eval_count"]
+
+                        if data.get("thermal_abort"):
+                            return self._thermal_abort_result(watchdog, latency, content, eval_cnt)
 
                         if eval_cnt >= effective_max_tokens:
                             try:
@@ -790,9 +827,11 @@ class SharedLLMModelBenchmark:
                                     "POST", f"{base_url}/api/chat", json=payload2, headers=headers
                                 ) as resp2:
                                     if resp2.status_code == 200:
-                                        data2 = await _read_chat_stream(resp2)
+                                        data2 = await _read_chat_stream(resp2, watchdog=watchdog)
                                         content = content + "\n" + self.strip_thinking(data2["content"])
                                         eval_cnt += data2["eval_count"]
+                                        if data2.get("thermal_abort"):
+                                            return self._thermal_abort_result(watchdog, latency, content, eval_cnt)
                                 latency += time.time() - start_t2
                             except Exception as e2:
                                 print(f"Phase 2 proxy query error in SharedLLM: {e2}")
@@ -803,6 +842,7 @@ class SharedLLMModelBenchmark:
                             "response": content,
                             "tokens_generated": eval_cnt,
                             "error": None,
+                            **self._watchdog_stats(watchdog),
                         }
                     else:
                         payload = {
@@ -823,10 +863,13 @@ class SharedLLMModelBenchmark:
                                 body = (await resp.aread()).decode("utf-8", "replace")
                                 last_error = f"HTTP {resp.status_code}: {body[:300]}"
                                 continue
-                            data = await _read_generate_stream(resp)
+                            data = await _read_generate_stream(resp, watchdog=watchdog)
                         latency = time.time() - start_t
                         content = self.strip_thinking(data["content"])
                         eval_cnt = data["eval_count"]
+
+                        if data.get("thermal_abort"):
+                            return self._thermal_abort_result(watchdog, latency, content, eval_cnt)
 
                         if eval_cnt >= effective_max_tokens:
                             try:
@@ -850,9 +893,11 @@ class SharedLLMModelBenchmark:
                                 start_t2 = time.time()
                                 async with client.stream("POST", f"{base_url}/api/generate", json=payload2) as resp2:
                                     if resp2.status_code == 200:
-                                        data2 = await _read_generate_stream(resp2)
+                                        data2 = await _read_generate_stream(resp2, watchdog=watchdog)
                                         content = content + "\n" + self.strip_thinking(data2["content"])
                                         eval_cnt += data2["eval_count"]
+                                        if data2.get("thermal_abort"):
+                                            return self._thermal_abort_result(watchdog, latency, content, eval_cnt)
                                 latency += time.time() - start_t2
                             except Exception as e2:
                                 print(f"Phase 2 direct query error in SharedLLM: {e2}")
@@ -863,6 +908,7 @@ class SharedLLMModelBenchmark:
                             "response": content,
                             "tokens_generated": eval_cnt,
                             "error": None,
+                            **self._watchdog_stats(watchdog),
                         }
             except Exception as e:
                 last_error = str(e)
@@ -874,6 +920,7 @@ class SharedLLMModelBenchmark:
             "response": None,
             "tokens_generated": 0,
             "error": last_error or "Endpoint unavailable",
+            **self._watchdog_stats(watchdog),
         }
 
     @classmethod
@@ -1404,8 +1451,11 @@ class SharedLLMModelBenchmark:
                 print(f"Callback error: {e}")
 
         completed_count = 0
+        thermal_stop = False
         for model in models:
             if cancel_event and cancel_event.is_set():
+                break
+            if thermal_stop:
                 break
 
             if progress_callback:
@@ -1459,7 +1509,34 @@ class SharedLLMModelBenchmark:
                 # Query endpoint (local or online)
                 prompt_val = task["prompt"] if isinstance(task["prompt"], str) else ""
                 tokens_val = task["max_tokens"] if isinstance(task["max_tokens"], int) else 4000
-                res = await self.query_model(model, use_proxy, prompt_val, tokens_val, custom_keys=custom_keys)
+                watchdog = ThermalWatchdog()
+                await watchdog.pre_test_wait()
+                res = await self.query_model(
+                    model, use_proxy, prompt_val, tokens_val, custom_keys=custom_keys, watchdog=watchdog
+                )
+
+                if res.get("thermal_aborted"):
+                    # Machine protection: a test hit the abort temperature -
+                    # stop this model and the whole run immediately.
+                    print(f"[thermal] stopping benchmark run: {res.get('error')}")
+                    all_results["status"] = "thermal_abort"
+                    thermal_stop = True
+                    model_record["tasks"].append(
+                        {
+                            "test_id": task["id"],
+                            "test_category": task["category"],
+                            "test_label": task["label"],
+                            "success": False,
+                            "latency": res.get("latency", 0.0),
+                            "tokens_generated": res.get("tokens_generated", 0),
+                            "prompt": task["prompt"],
+                            "response": res.get("response"),
+                            "error": res.get("error"),
+                            "validation": {},
+                            "temps": res.get("temps"),
+                        }
+                    )
+                    break
 
                 # Custom evaluations for SharedLLM tiers
                 validation_results: dict[str, Any] = {}
@@ -1700,6 +1777,7 @@ class SharedLLMModelBenchmark:
                     "response": res["response"],
                     "error": res["error"],
                     "validation": validation_results,
+                    "temps": res.get("temps"),
                 }
 
                 model_record["tasks"].append(test_result)
@@ -1765,7 +1843,7 @@ class SharedLLMModelBenchmark:
 
         if cancel_event and cancel_event.is_set():
             all_results["status"] = "cancelled"
-        else:
+        elif all_results.get("status") != "thermal_abort":
             all_results["status"] = "completed"
 
         if all_results["results"]:
