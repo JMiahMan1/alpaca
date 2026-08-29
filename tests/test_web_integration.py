@@ -959,13 +959,27 @@ def test_api_models_tracking(mock_discover_proxy, mock_discover_all, client):
     assert data["counts"]["total"] >= 0
 
 
-def test_api_models_tracking_discovery_failure(client):
-    """Discovery failure surfaces an explicit error instead of hardcoded fallback models."""
+def test_api_models_tracking_discovery_failure(client, monkeypatch):
+    """Genuine discovery errors surface an explicit error instead of hardcoded fallback models."""
+    from web.app import benchmark
+
+    def _boom():
+        raise RuntimeError("No models discovered and BENCHMARK_MODELS is not set.")
+
+    monkeypatch.setattr(benchmark, "discover_all_models", _boom)
     res = client.get("/api/models/tracking")
     assert res.status_code == 500
     data = json.loads(res.data.decode("utf-8"))
     assert data["success"] is False
     assert "BENCHMARK_MODELS" in data["error"]
+
+
+def test_api_models_tracking_empty_discovery_uses_router_models(client):
+    """Discovery returning [] (no raise) must not 500 - empty lists are a valid result."""
+    res = client.get("/api/models/tracking")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert data["success"] is True
 
 
 def test_delete_model_benchmarks_comprehensive(client, tmp_path):
