@@ -6775,7 +6775,7 @@ const saved = _loadHumanRatings(t.id) || {};
         sharedDetailedResultsBody.innerHTML = '';
 
         if (results.length === 0) {
-            sharedDetailedResultsBody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No detailed data available.</td></tr>`;
+            sharedDetailedResultsBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">No detailed data available.</td></tr>`;
             return;
         }
 
@@ -6807,7 +6807,7 @@ const saved = _loadHumanRatings(t.id) || {};
         sharedDetailedResultsBody.innerHTML = '';
         
         if (!modelData.tasks) {
-            sharedDetailedResultsBody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No detailed task data for this model.</td></tr>`;
+            sharedDetailedResultsBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">No detailed task data for this model.</td></tr>`;
             return;
         }
 
@@ -6830,6 +6830,17 @@ const saved = _loadHumanRatings(t.id) || {};
             const tdLat = document.createElement('td');
             const latency = typeof task.latency === 'number' ? task.latency : 0;
             tdLat.textContent = `${latency.toFixed(2)}s`;
+
+            const tdTemps = document.createElement('td');
+            const temps = task.temps || {};
+            if (temps.peak_cpu_c !== undefined && temps.peak_cpu_c !== null) {
+                const cpuC = Math.round(temps.peak_cpu_c);
+                const gpuC = temps.peak_gpu_c !== undefined && temps.peak_gpu_c !== null ? Math.round(temps.peak_gpu_c) : '-';
+                tdTemps.textContent = temps.aborted ? `⛔ ${cpuC}°/${gpuC}°` : `${cpuC}°/${gpuC}°`;
+                if (temps.aborted) tdTemps.style.color = 'var(--color-danger)';
+            } else {
+                tdTemps.textContent = '-';
+            }
 
             // Custom Payload descriptions
             const tdPayload = document.createElement('td');
@@ -6934,6 +6945,7 @@ const saved = _loadHumanRatings(t.id) || {};
             tr.appendChild(tdLabel);
             tr.appendChild(tdStatus);
             tr.appendChild(tdLat);
+            tr.appendChild(tdTemps);
             tr.appendChild(tdPayload);
             tr.appendChild(tdView);
             
@@ -7277,7 +7289,7 @@ const saved = _loadHumanRatings(t.id) || {};
             sharedAstChart.data.datasets = [];
             sharedAstChart.update();
             
-            sharedDetailedResultsBody.innerHTML = `<tr><td colspan="6" style="text-align:center;">Waiting for first validation results...</td></tr>`;
+            sharedDetailedResultsBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Waiting for first validation results...</td></tr>`;
             currentSharedResults = [];
         } else {
             tpsChart.data.labels = [];
@@ -10173,6 +10185,61 @@ const saved = _loadHumanRatings(t.id) || {};
         inputAlpacaKey.addEventListener('input', () => {
             updateAlpacaSnippet(inputAlpacaKey.value.trim());
         });
+    }
+
+    // ---------- Thermal Watchdog settings ----------
+    async function loadThermalWatchdog() {
+        const enabled = document.getElementById('thermal-watchdog-enabled');
+        if (!enabled) return;
+        try {
+            const res = await fetch('/api/thermal/watchdog', { signal: AbortSignal.timeout(8000) });
+            const data = await res.json();
+            if (data.error) return;
+            const cfg = data.config || {};
+            enabled.checked = !!cfg.enabled;
+            document.getElementById('thermal-watchdog-abort').value = cfg.abort_c ?? 93;
+            document.getElementById('thermal-watchdog-throttle').value = cfg.throttle_c ?? 85;
+            document.getElementById('thermal-watchdog-resume').value = cfg.resume_c ?? 78;
+            document.getElementById('thermal-watchdog-poll').value = cfg.poll_s ?? 5;
+            const live = document.getElementById('thermal-watchdog-live');
+            const t = data.temps || {};
+            const fmt = (v) => (v === undefined || v === null ? '?' : `${Math.round(v)}°C`);
+            live.textContent = `Live: CPU ${fmt(t.cpu)} / GPU ${fmt(t.gpu)}`;
+        } catch (e) { /* card stays with defaults when the endpoint is unreachable */ }
+    }
+
+    const btnSaveThermal = document.getElementById('btn-save-thermal');
+    if (btnSaveThermal) {
+        btnSaveThermal.addEventListener('click', async () => {
+            const payload = {
+                enabled: document.getElementById('thermal-watchdog-enabled').checked,
+                abort_c: parseFloat(document.getElementById('thermal-watchdog-abort').value),
+                throttle_c: parseFloat(document.getElementById('thermal-watchdog-throttle').value),
+                resume_c: parseFloat(document.getElementById('thermal-watchdog-resume').value),
+                poll_s: parseFloat(document.getElementById('thermal-watchdog-poll').value),
+            };
+            try {
+                const res = await fetch('/api/thermal/watchdog', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+                if (data.error) {
+                    showToast('Failed to save watchdog settings: ' + data.error, 'error');
+                } else {
+                    showToast(
+                        data.config.enabled
+                            ? `Watchdog ON: abort ${data.config.abort_c}°C, throttle ${data.config.throttle_c}°C, resume ${data.config.resume_c}°C`
+                            : 'Watchdog OFF - benchmark runs are NOT thermally protected!',
+                        data.config.enabled ? 'success' : 'error'
+                    );
+                }
+            } catch (e) {
+                showToast('Failed to save watchdog settings', 'error');
+            }
+        });
+        loadThermalWatchdog();
     }
 
     if (btnOpenApiKeys) {

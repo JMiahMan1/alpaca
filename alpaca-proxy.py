@@ -3813,6 +3813,65 @@ async def generate_images(request: Request) -> JSONResponse:
             )
 
 
+async def _get_host_cpu_tctl_c() -> float | None:
+    """Host CPU package temp (AMD Tctl) from sysfs hwmon.
+
+    hwmon is not namespaced, so the host's k10temp/zenpower sensors are visible
+    from inside the (host-network) proxy container at /sys/class/hwmon.
+    """
+    import glob
+
+    try:
+        for name_path in glob.glob("/sys/class/hwmon/hwmon*/name"):
+            try:
+                with open(name_path) as f:
+                    name = (f.read() or "").strip().lower()
+            except OSError:
+                continue
+            if name not in ("k10temp", "zenpower"):
+                continue
+            hwmon_dir = name_path.rsplit("/", 1)[0]
+            for temp_file in sorted(glob.glob(f"{hwmon_dir}/temp*_input")):
+                try:
+                    with open(temp_file) as f:
+                        milli = int((f.read() or "0").strip())
+                except (OSError, ValueError):
+                    continue
+                if milli > 0:
+                    return milli / 1000.0
+    except Exception as e:
+        logger.debug(f"hwmon Tctl read failed: {e}")
+    return None
+
+
+async def _get_gpu_temp_c() -> int | None:
+    """GPU temperature via nvidia-smi inside the llama-server container."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "llama-server",
+            "nvidia-smi",
+            "--query-gpu=temperature.gpu",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            return int(stdout.decode().strip().splitlines()[0])
+    except Exception as e:
+        logger.debug(f"GPU temp query failed: {e}")
+    return None
+
+
+@app.get("/admin/temps")
+async def admin_temps():
+    """Live hardware temperatures (CPU Tctl + GPU) for the web thermal watchdog."""
+    cpu, gpu = await asyncio.gather(_get_host_cpu_tctl_c(), _get_gpu_temp_c())
+    return {"cpu": cpu, "gpu": gpu}
+
+
 async def _get_gpu_vram_telemetry() -> tuple[int, int, int]:
     """Queries GPU VRAM metrics from nvidia-smi on llama-server."""
     try:
