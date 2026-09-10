@@ -15,3 +15,5 @@ venv/
 .sd-build/
 .slots-cache/
 node_modules/
+.tmp/
+.tmp/

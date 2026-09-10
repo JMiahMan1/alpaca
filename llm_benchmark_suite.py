@@ -2739,6 +2739,103 @@ class LLMModelBenchmark:
         score = min(100, len(flags) * 18)
         return {"score": score, "flags": flags}
 
+    async def _attempt_post_generation_repair(
+        self,
+        model: str,
+        test: dict,
+        original_result: dict,
+        original_response: str,
+        error_message: str,
+        use_proxy: bool = True,
+    ) -> bool:
+        """Attempt a single repair pass: feed the model its failed code + error
+        and ask for a corrected version. Returns True when repair was attempted
+        (regardless of whether the repaired code passes), so callers can
+        annotate the result and deduct points. Only attempts repair when the
+        error is a syntax/code failure (not a missing-feature failure)."""
+        # Only repair syntax/code errors, not wrong-output errors.
+        err_lower = (error_message or "").lower()
+        syntax_keywords = [
+            "syntaxerror", "invalid syntax", "indentation", "syntax error",
+            "unexpected indent", "eol", "unexpected eof",
+        ]
+        extra_keywords = [
+            "name ", "undefined", "importerror", "module not found",
+        ]
+        is_syntax_issue = any(
+            kw in err_lower for kw in syntax_keywords
+        ) or any(kw in err_lower for kw in extra_keywords)
+        # If the error is clearly a logic/task failure, don't repair.
+        if not is_syntax_issue and "failed correctness" in err_lower:
+            return False
+        # Build repair prompt: show original code snippet + error, ask for fix only.
+        repair_prompt = (
+            f"Your previous code produced an execution error. Fix ONLY the syntax/code error, "
+            f"do not change the game logic or features. Return ONLY the corrected complete code.\n\n"
+            f"ORIGINAL CODE (may be truncated):\n```python\n{original_response[:4000]}\n```\n\n"
+            f"ERROR MESSAGE FROM SANDBOX:\n{error_message}\n\n"
+            f"INSTRUCTION: Return a single, complete, self-contained, runnable Python program "
+            f"that fixes the above error. No preamble, no explanation outside the code."
+        )
+        repair_test = dict(test)
+        repair_test["prompt"] = repair_prompt
+        # Call the same model path used in the benchmark loop.
+        try:
+            if use_proxy:
+                repair_result = await self.test_model_proxy(model, repair_test)
+            else:
+                repair_result = await self.test_model_direct(model, repair_test)
+        except Exception:
+            return False
+        repaired_resp = repair_result.get("response", "") or ""
+        original_result["repaired_response"] = repaired_resp
+        # Grade the repaired response.
+        if repaired_resp:
+            lang = repair_test.get("lang") or self._fence_lang(repaired_resp) or self._infer_lang(repaired_resp)
+            is_ui = any(
+                k in repaired_resp.lower()
+                for k in (
+                    "import pygame", "import tkinter", "from tkinter",
+                    "pygame.opengl", "from pygame.locals import opengl",
+                )
+            )
+            try:
+                gr = grade_code(repaired_resp, lang, None, ui=is_ui)
+                original_result["repaired_code_ran"] = gr.get("ran")
+                original_result["repaired_code_score"] = gr.get("score")
+                original_result["repaired_code_error"] = gr.get("error", "")
+                original_result["repaired_lint_passed"] = gr.get(
+                    "lint_passed", gr.get("ran") is not False
+                )
+                # If repair produced runnable code, update the primary result.
+                if gr.get("ran") is True:
+                    original_result["code_ran"] = True
+                    original_result["success"] = True
+                    original_result["code_score"] = gr.get("score", 60)
+                    original_result["code_error"] = ""
+                    # Update response to repaired version for rubric/scoring.
+                    original_result["response"] = repaired_resp
+                    # Apply deduction annotation.
+                    original_result["repaired"] = True
+                    original_result["repair_annotation"] = (
+                        "Post-generation repair applied: code needed fixing ("
+                        f"original error: {error_message})"
+                    )
+                    original_result["repair_points_deducted"] = 25
+                    original_result["repair_applied_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    return True
+                else:
+                    # Repair attempted but still failed; annotate.
+                    original_result["repaired"] = False
+                    original_result["repair_failed_note"] = (
+                        f"Repair attempted but code still failed: {gr.get('error', '')}"
+                    )
+            except Exception as repair_e:
+                original_result["repair_failed_note"] = f"Repair attempt raised exception: {repair_e}"
+        else:
+            original_result["repair_failed_note"] = "Repair produced empty response"
+        return True
+
     def _evaluate_rubric(self, test: dict, response: str, code: str = "") -> dict:
         """Score a response against the benchmark's rubric criteria.
 
@@ -4105,6 +4202,48 @@ class LLMModelBenchmark:
                             test_result["code_ran"] = None
                             test_result["code_error"] = f"sandbox grading failed: {e}"
 
+                # ---- Post-generation repair opportunity ----
+                # If a code/UI test produced runnable code that failed execution,
+                # give the model one repair attempt. Deduct points when repaired.
+                repair_triggered = False
+                repair_eligible = (
+                    ttype in ("code", "ui")
+                    and resp_text
+                    and test_result.get("code_ran") is False
+                    and (test_result.get("code_error", "") or "")
+                    and not test_result.get("repaired")
+                )
+                if repair_eligible:
+                    repair_error = test_result.get("code_error", "")
+                    repair_attempted = await self._attempt_post_generation_repair(
+                        model, test, test_result, resp_text, repair_error, use_proxy
+                    )
+                    # The repair method updates test_result directly.
+                    if test_result.get("repaired") is True:
+                        # Repair succeeded: annotate and apply deduction.
+                        test_result["repair_annotation"] = (
+                            "Post-generation repair applied: code needed fixing ("
+                            f"original error: {repair_error})"
+                        )
+                        repair_deduction = int(test_result.get("repair_points_deducted", 25))
+                        test_result["repair_applied_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                        # Re-evaluate rubric on repaired response if repair changed it.
+                        if "repaired_response" in test_result:
+                            repaired_resp = test_result["repaired_response"]
+                            ttype_repaired = self._infer_type(test, repaired_resp)
+                            if ttype_repaired in ("code", "ui"):
+                                try:
+                                    repaired_extracted = (
+                                        extract_clean_code(repaired_resp, (test.get("lang") or ""))
+                                        if test.get("lang")
+                                        else extract_clean_code(repaired_resp)
+                                    )
+                                except Exception:
+                                    repaired_extracted = ""
+                                test_result["rubric"] = self._evaluate_rubric(
+                                    test, repaired_resp, repaired_extracted
+                                )
+
                 # Rubric compliance: score the response against the benchmark's
                 # prompt-required, easily-checkable features (persistent high-score
                 # board, name entry, score reset, etc.) plus the default code rubric.
@@ -4627,7 +4766,13 @@ class LLMModelBenchmark:
                 base = round(base * (0.5 + 0.5 * fraction))
                 quality = round(quality * (0.5 + 0.5 * fraction))
             # Execution result matters most; static quality refines it.
-            return max(0, min(100, round(0.7 * base + 0.3 * quality)))
+            score = max(0, min(100, round(0.7 * base + 0.3 * quality)))
+            # Post-generation repair deduction: if repair was applied,
+            # cap the score lower (deduct 25 points) and annotate.
+            if result.get("repaired") is True:
+                deduction = int(result.get("repair_points_deducted", 25))
+                score = max(0, min(100, score - deduction))
+            return score
         if ttype == "review":
             issues = test.get("expected_issues") or []
             if not issues:
