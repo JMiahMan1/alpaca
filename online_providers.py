@@ -347,8 +347,10 @@ class OnlineModelProvider:
             if provider == "openrouter":
                 api_key = custom.get("openrouter_api_key") or self.openrouter_api_key
                 headers = {
-                    "HTTP-Referer": "https://github.com/JMiahMan1/alpaca",
-                    "X-Title": "Alpaca LLM Benchmark Suite",
+                    "HTTP-Referer": "https://openclaw.ai",
+                    "X-Title": "OpenClaw",
+                    "X-OpenRouter-Categories": "cli-agent,personal-agent,programming-app",
+                    "X-OpenRouter-App-Visibility": "hidden",
                 }
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
@@ -1307,8 +1309,10 @@ class OnlineModelProvider:
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/JMiahMan1/alpaca",
-                    "X-Title": "Alpaca LLM Benchmark Suite",
+                    "HTTP-Referer": "https://openclaw.ai",
+                    "X-Title": "OpenClaw",
+                    "X-OpenRouter-Categories": "cli-agent,personal-agent,programming-app",
+                    "X-OpenRouter-App-Visibility": "hidden",
                 }
                 payload = {
                     "model": model_name,
@@ -1316,6 +1320,7 @@ class OnlineModelProvider:
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "stream": False,
+                    "think": True,
                 }
                 async with httpx.AsyncClient(timeout=request_timeout) as client:
                     resp = await client.post(

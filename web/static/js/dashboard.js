@@ -3432,6 +3432,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="test-card-cat">${escapeHtml((t.category || '').toUpperCase())}</div>
                 ${runsBadge}
                 <button class="test-card-run-btn" title="Run the winning model's code in an expanded window / terminal">▶ Run</button>
+                <button class="test-card-delete-btn history-delete-btn" title="Remove this test from the browser (does not delete files)">✕</button>
             </div>
         </div>`;
     }
@@ -4006,6 +4007,42 @@ const saved = _loadHumanRatings(t.id) || {};
                     e.preventDefault();
                     const t = ALL_TESTS.find((x) => x.id === id);
                     if (t) runWinningFromCard(t, runBtn);
+                });
+            }
+            const deleteBtn = card.querySelector('.test-card-delete-btn');
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (!confirm(`Remove test "${escapeHtml(card.querySelector('.test-card-label').textContent)}" from the browser view?`)) return;
+                    // Remove from DOM and from ALL_TESTS so it stays removed after filter changes
+                    card.remove();
+                    const idx = ALL_TESTS.findIndex((x) => x.id === id);
+                    if (idx >= 0) ALL_TESTS.splice(idx, 1);
+                    // Refresh count and re-render filters without the removed item
+                    const q = (TEST_BROWSER_FILTER.q || '').trim().toLowerCase();
+                    const kind = TEST_BROWSER_FILTER.kind || 'all';
+                    const status = TEST_BROWSER_FILTER.status || 'all';
+                    const modelFilter = TEST_BROWSER_FILTER.model || '';
+                    const stillFiltered = ALL_TESTS.filter((t) => {
+                        if (kind !== 'all' && (t.kind || 'text').toLowerCase() !== kind) return false;
+                        if (status === 'tested' && (!t.models_tested_count || t.models_tested_count === 0)) return false;
+                        if (status === 'untested' && (t.models_tested_count > 0)) return false;
+                        if (status === 'outdated' && !t.is_out_of_date) return false;
+                        if (modelFilter) {
+                            const tested = (t.models_tested || []);
+                            const hit = tested.some(m => m === modelFilter || m.includes(modelFilter) || modelFilter.includes(m));
+                            if (!hit) return false;
+                        }
+                        if (!q) return true;
+                        return (
+                            (t.label || '').toLowerCase().includes(q) ||
+                            (t.id || '').toLowerCase().includes(q) ||
+                            (t.category || '').toLowerCase().includes(q)
+                        );
+                    });
+                    const countEl = document.getElementById('test-browser-count');
+                    if (countEl) countEl.textContent = `${stillFiltered.length} test${stillFiltered.length === 1 ? '' : 's'}`;
                 });
             }
         });
