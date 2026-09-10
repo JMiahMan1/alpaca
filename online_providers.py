@@ -1080,6 +1080,7 @@ class OnlineModelProvider:
         request_source: str = "web",
         client_ip: str = "web",
         max_retries: int = 4,
+        reasoning_estimate: int = 0,
     ) -> dict[str, Any]:
         """Queries the specified online provider.
 
@@ -1090,6 +1091,14 @@ class OnlineModelProvider:
         answer fits, (b) inject a token/time budget warning into the prompt so the
         model knows to wrap up, and (c) if the completion is still cut off by the
         length limit, run one phase-2 continuation asking it to finish the answer.
+
+        ``reasoning_estimate`` carries the per-test thinking need (tokens) from
+        the benchmark suite (``_test_reasoning_estimate``). When set, the
+        headroom is at least ``2 * reasoning_estimate`` — mirroring the suite's
+        ``base + 2 * estimate`` cap for thinking runs — so a small base (e.g.
+        8000 for a UI game needing ~4096 thinking tokens) still reserves room
+        for the answer. Without it the headroom falls back to the legacy
+        ``max(2048, max_tokens // 2)`` heuristic.
 
         Every online query is tracked in the in-process request queue so the web
         dashboard can display it alongside local requests. Tracking is fully
@@ -1111,9 +1120,17 @@ class OnlineModelProvider:
         thinking = await self._resolve_thinking_model(model_identifier)
         # Give reasoning models headroom so thinking + answer both fit. Capped so
         # we never exceed a provider's (unknown) max output window by much.
+        # The headroom mirrors the suite's thinking cap (base + 2 * estimate):
+        # a caller-supplied reasoning_estimate guarantees at least that much,
+        # otherwise fall back to the legacy max(2048, max_tokens // 2).
         effective_max_tokens = max_tokens
         if thinking:
-            effective_max_tokens = min(max_tokens + max(2048, max_tokens // 2), 65536)
+            try:
+                estimate_headroom = 2 * int(reasoning_estimate or 0)
+            except (TypeError, ValueError):
+                estimate_headroom = 0
+            headroom = max(estimate_headroom, 2048, max_tokens // 2)
+            effective_max_tokens = min(max_tokens + headroom, 65536)
             # Longer budget + reasoning phase => longer wall-clock time per call.
         timeout = 180.0 if thinking else 120.0
 

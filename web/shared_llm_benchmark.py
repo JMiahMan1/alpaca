@@ -713,6 +713,7 @@ class SharedLLMModelBenchmark:
         max_tokens: int = 4000,
         custom_keys: dict[str, str] | None = None,
         watchdog: Any = None,
+        reasoning_estimate: int = 0,
     ) -> dict:
         """Execute request against online provider, local proxy, or direct llama-server."""
         # 1. Route to Online Provider if model is an online identifier
@@ -722,6 +723,7 @@ class SharedLLMModelBenchmark:
                 prompt=prompt,
                 max_tokens=max_tokens,
                 custom_keys=custom_keys,
+                reasoning_estimate=reasoning_estimate,
             )
 
         # 2. Local GPU Inference (Proxy or direct llama-server)
@@ -1512,7 +1514,15 @@ class SharedLLMModelBenchmark:
                 watchdog = ThermalWatchdog()
                 await watchdog.pre_test_wait()
                 res = await self.query_model(
-                    model, use_proxy, prompt_val, tokens_val, custom_keys=custom_keys, watchdog=watchdog
+                    model,
+                    use_proxy,
+                    prompt_val,
+                    tokens_val,
+                    custom_keys=custom_keys,
+                    watchdog=watchdog,
+                    reasoning_estimate=int(task.get("reasoning_estimate") or 0)
+                    if isinstance(task, dict)
+                    else 0,
                 )
 
                 if res.get("thermal_aborted"):

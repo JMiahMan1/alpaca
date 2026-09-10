@@ -2769,15 +2769,59 @@ class LLMModelBenchmark:
         if not is_syntax_issue and "failed correctness" in err_lower:
             return False
         # Build repair prompt: show original code snippet + error, ask for fix only.
+        # Match the original language: tests without an explicit lang (e.g.
+        # youtuber HTML UI tests) would otherwise get a hardcoded ```python
+        # fence + "runnable Python program" instruction, and the model obeys it
+        # — returning Python for an HTML app that then misgrades as Python.
+        repair_lang = (
+            test.get("lang") or self._fence_lang(original_response) or self._infer_lang(original_response) or "python"
+        )
+        _repair_fences = {
+            "python": "python",
+            "node": "javascript",
+            "typescript": "typescript",
+            "web": "html",
+            "cpp": "cpp",
+            "java": "java",
+            "go": "go",
+            "rust": "rust",
+            "sql": "sql",
+            "bash": "bash",
+            "basic": "basic",
+            "pascal": "pascal",
+            "yaml": "yaml",
+            "terraform": "terraform",
+            "rpm": "spec",
+        }
+        _repair_kinds = {
+            "python": "Python program",
+            "node": "JavaScript (Node.js) program",
+            "typescript": "TypeScript program",
+            "web": "HTML web application (single self-contained HTML document)",
+            "cpp": "C++ program",
+            "java": "Java program",
+            "go": "Go program",
+            "rust": "Rust program",
+            "sql": "SQL script",
+            "bash": "Bash script",
+            "basic": "BASIC program",
+            "pascal": "Pascal program",
+            "yaml": "YAML document",
+            "terraform": "Terraform configuration",
+            "rpm": "RPM spec file",
+        }
+        repair_fence = _repair_fences.get(repair_lang, repair_lang)
+        repair_kind = _repair_kinds.get(repair_lang, f"{repair_lang} program")
         repair_prompt = (
             f"Your previous code produced an execution error. Fix ONLY the syntax/code error, "
             f"do not change the game logic or features. Return ONLY the corrected complete code.\n\n"
-            f"ORIGINAL CODE (may be truncated):\n```python\n{original_response[:4000]}\n```\n\n"
+            f"ORIGINAL CODE (may be truncated):\n```{repair_fence}\n{original_response[:4000]}\n```\n\n"
             f"ERROR MESSAGE FROM SANDBOX:\n{error_message}\n\n"
-            f"INSTRUCTION: Return a single, complete, self-contained, runnable Python program "
+            f"INSTRUCTION: Return a single, complete, self-contained, runnable {repair_kind} "
             f"that fixes the above error. No preamble, no explanation outside the code."
         )
         repair_test = dict(test)
+        repair_test["lang"] = repair_lang
         repair_test["prompt"] = repair_prompt
         # Call the same model path used in the benchmark loop.
         try:
@@ -2792,7 +2836,10 @@ class LLMModelBenchmark:
         # Grade the repaired response.
         if repaired_resp:
             lang = repair_test.get("lang") or self._fence_lang(repaired_resp) or self._infer_lang(repaired_resp)
-            is_ui = any(
+            # Preserve the UI nature of the original test (e.g. youtuber HTML
+            # apps with type "ui"): grading a repaired UI as non-UI would run
+            # it without screenshot scoring.
+            is_ui = (test.get("type") == "ui") or any(
                 k in repaired_resp.lower()
                 for k in (
                     "import pygame", "import tkinter", "from tkinter",
@@ -2976,6 +3023,7 @@ class LLMModelBenchmark:
                     model_identifier=model,
                     prompt=test["prompt"],
                     max_tokens=_test_num_predict(test, model),
+                    reasoning_estimate=_test_reasoning_estimate(test),
                 )
                 if sampler:
                     await sampler.stop()
@@ -3656,6 +3704,7 @@ class LLMModelBenchmark:
                 model_identifier=model,
                 prompt=test["prompt"],
                 max_tokens=_test_num_predict(test, model),
+                reasoning_estimate=_test_reasoning_estimate(test),
             )
             if sampler:
                 await sampler.stop()
