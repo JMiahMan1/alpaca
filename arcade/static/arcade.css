@@ -342,9 +342,10 @@ body > * { position: relative; z-index: 1; }
 
 @media (max-width: 640px) {
   .player-wrap { padding: 0.9rem 0.75rem 2.2rem; }
-  .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 0.55rem; }
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem; }
+  .stat-card, .trophy { min-width: 0; overflow-wrap: anywhere; }
   .stat-num { font-size: 1.3rem; }
-  .trophy-grid { grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
+  .trophy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
   .record-table { font-size: 0.76rem; min-width: 540px; }
   .record-table th, .record-table td { padding: 0.45rem 0.35rem; }
 }
