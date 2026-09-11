@@ -3143,6 +3143,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     badgesHtml += `<span class="badge-benchmarked-score" data-model="${id}" style="font-size:0.62rem; background:rgba(99,102,241,0.22); color:#a5b4fc; border:1px solid rgba(99,102,241,0.45); padding:1px 6px; border-radius:4px; margin-left:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Click to view latest test results for ${displayName} (${meta.benchmark_count}x runs | Last: ${meta.last_benchmarked_at || 'Unknown'})">📊 ${score} ↗</span>`;
                     badgesHtml += `<span class="badge-delete-benchmarks" data-model="${id}" style="font-size:0.62rem; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); padding:1px 4px; border-radius:4px; margin-left:2px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Delete all saved benchmark results for ${displayName} (model is kept)">🗑</span>`;
                 }
+                if (isOnline) {
+                    badgesHtml += `<span class="badge-remove-online" data-model="${id}" style="font-size:0.62rem; background:rgba(251,191,36,0.15); color:#fbbf24; border:1px solid rgba(251,191,36,0.4); padding:1px 4px; border-radius:4px; margin-left:2px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Remove ${displayName} from your online model selection (optionally also delete its benchmark results)">✖</span>`;
+                }
 
                 span.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span><span style="display:flex; gap:2px; flex-shrink:0;">${badgesHtml}</span>`;
 
@@ -3185,6 +3188,27 @@ document.addEventListener('DOMContentLoaded', () => {
                         e.preventDefault();
                         e.stopPropagation();
                         deleteModelBenchmarks(id, displayName);
+                    });
+                }
+
+                const removeBadge = span.querySelector('.badge-remove-online');
+                if (removeBadge) {
+                    removeBadge.addEventListener('mouseenter', () => {
+                        removeBadge.style.background = 'rgba(251,191,36,0.35)';
+                        removeBadge.style.borderColor = '#fcd34d';
+                        removeBadge.style.color = '#fef3c7';
+                        removeBadge.style.transform = 'scale(1.05)';
+                    });
+                    removeBadge.addEventListener('mouseleave', () => {
+                        removeBadge.style.background = 'rgba(251,191,36,0.15)';
+                        removeBadge.style.borderColor = 'rgba(251,191,36,0.4)';
+                        removeBadge.style.color = '#fbbf24';
+                        removeBadge.style.transform = 'none';
+                    });
+                    removeBadge.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        removeOnlineModel(id, displayName, isBenchmarked);
                     });
                 }
 
@@ -8217,6 +8241,15 @@ const saved = _loadHumanRatings(t.id) || {};
             showToast("Please select a model to delete.", 'error');
             return;
         }
+        // Online models live with their provider — route to the selection/
+        // benchmark removal flow instead of the local disk-delete path.
+        if (typeof isOnlineModelName === 'function' && isOnlineModelName(modelName)) {
+            const hasBenchmarks =
+                (Array.isArray(currentResults) && currentResults.some(r => r.model === modelName)) ||
+                (Array.isArray(currentSharedResults) && currentSharedResults.some(r => r.model === modelName));
+            await removeOnlineModel(modelName, modelName, hasBenchmarks);
+            return;
+        }
         if (!confirm(`Are you sure you want to permanently delete model "${modelName}"?\nThis will remove the manifest and all unshared blobs from disk. This action cannot be undone!`)) {
             return;
         }
@@ -8319,6 +8352,54 @@ const saved = _loadHumanRatings(t.id) || {};
         } catch (err) {
             logToTerminal(`Benchmark clear error: ${err.message}`, 'error');
             showToast(`Benchmark clear error: ${err.message}`, 'error');
+        }
+    }
+
+    async function removeOnlineModel(modelId, displayName, hasBenchmarks) {
+        if (!modelId) {
+            showToast("Please select an online model to remove.", 'error');
+            return;
+        }
+        // Two questions cover all three combos: model only, benchmarks only, or both.
+        let removeBenchmarks = false;
+        if (hasBenchmarks) {
+            removeBenchmarks = confirm(`Delete saved benchmark results for "${displayName}"?\n\nOK = delete its benchmark history\nCancel = keep its benchmark history`);
+        }
+        const removeModelEntry = confirm(`Remove online model "${displayName}" from your benchmark selection?\n\nOnline models live with their provider — this only drops the entry from your selection list.\n\nOK = remove from selection\nCancel = keep in selection`);
+        if (!removeBenchmarks && !removeModelEntry) {
+            showToast("Nothing to remove — model and benchmarks kept.", 'info');
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/online/models/remove', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ model: modelId, remove_model: removeModelEntry, remove_benchmarks: removeBenchmarks })
+            });
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                const parts = [];
+                if (removeModelEntry) parts.push(data.model_removed ? 'removed from selection' : 'was not in selection');
+                if (removeBenchmarks) parts.push('benchmark history deleted');
+                logToTerminal(`Online model "${displayName}": ${parts.join(' + ')}.`, 'success');
+                showToast(`"${displayName}": ${parts.join(' + ')}.`, 'success');
+
+                await loadModels();
+                if (removeBenchmarks && typeof loadHistory === 'function') {
+                    await loadHistory();
+                }
+                if (typeof loadRoutingMatrix === 'function') {
+                    loadRoutingMatrix();
+                }
+            } else {
+                logToTerminal(`Failed to remove online model "${displayName}": ${data.error || 'Unknown error'}`, 'error');
+                showToast(`Failed to remove online model: ${data.error || 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            logToTerminal(`Online model remove error: ${err.message}`, 'error');
+            showToast(`Online model remove error: ${err.message}`, 'error');
         }
     }
 
