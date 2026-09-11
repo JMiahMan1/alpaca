@@ -384,8 +384,10 @@ def update_models_ini():
         "# models.ini - Per-model presets for llama-server router mode",
         "",
         "[*]",
-        "mlock = true",
-        "no-mmap = true",
+        # NOTE (2026-09): llama.cpp removed --mlock/--mmap/--no-mmap; the
+        # preset parser hard-fails on those keys. load-mode = mlock preserves
+        # the old global (mlock=true + no-mmap=true) semantics.
+        "load-mode = mlock",
         "slot-save-path = /slots-cache",
         "batch-size = 1024",
         "ubatch-size = 1024",
