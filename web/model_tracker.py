@@ -92,6 +92,29 @@ class ModelTracker:
             models[model_id] = entry
             self._save_tracking_data(data)
 
+    def set_hidden(self, model_id: str, hidden: bool = True) -> bool:
+        """Mark a model hidden from the run-selection list without deleting history.
+
+        Used when an online model is removed from the selection but its
+        benchmark results are kept: the tracker entry (and result files)
+        stay, so History still shows past runs, but the checkbox list and
+        past-model resurrection skip it. Re-adding the model to the
+        selection clears the flag. History rescans never touch stored
+        flags, so the choice survives resyncs.
+        """
+        if not model_id:
+            return False
+        with self._lock:
+            data = self._load_tracking_data()
+            models = data.setdefault("models", {})
+            entry = models.setdefault(model_id.strip(), {})
+            if hidden:
+                entry["hidden_from_selection"] = True
+            else:
+                entry.pop("hidden_from_selection", None)
+            self._save_tracking_data(data)
+            return True
+
     def delete_model(self, model_id: str) -> bool:
         """Remove a model's tracking entry from the persisted registry.
 
@@ -295,6 +318,7 @@ class ModelTracker:
                 "latest_score": latest_score,
                 "latest_run_type": latest_type,
                 "latest_result_file": latest_file,
+                "hidden_from_selection": bool(stored.get("hidden_from_selection", False)),
             }
 
             all_tracked[m_id] = item

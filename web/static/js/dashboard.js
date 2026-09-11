@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Online model prefix tester
     function isOnlineModelName(model) {
-        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|gemini|openai|custom):/i.test(String(model || '').trim());
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|orcarouter|gemini):/i.test(String(model || '').trim());
     }
 
     // Socket initialization
@@ -3230,6 +3230,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (
                     isOnlineModelName(trackedId) &&
                     !activeOnlineIds.has(trackedId) &&
+                    !tMeta.hidden_from_selection &&
                     tMeta.benchmark_count > 0
                 ) {
                     pastOnlineModels.push({
@@ -5867,7 +5868,7 @@ const saved = _loadHumanRatings(t.id) || {};
 
     // Model comparison filter (graphs & stats)
     function isOnlineModelName(model) {
-        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|gemini):/i.test(model || '');
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|orcarouter|gemini):/i.test(model || '');
     }
 
     function getFilteredResults(results, type) {
@@ -10151,6 +10152,11 @@ const saved = _loadHumanRatings(t.id) || {};
     const testResultGroq = document.getElementById('test-result-groq');
     const badgeStatusGroq = document.getElementById('badge-status-groq');
 
+    const inputOrcarouterKey = document.getElementById('input-orcarouter-key');
+    const btnTestOrcarouter = document.getElementById('btn-test-orcarouter');
+    const testResultOrcarouter = document.getElementById('test-result-orcarouter');
+    const badgeStatusOrcarouter = document.getElementById('badge-status-orcarouter');
+
     const inputGeminiKey = document.getElementById('input-gemini-key');
     const btnTestGemini = document.getElementById('btn-test-gemini');
     const testResultGemini = document.getElementById('test-result-gemini');
@@ -10233,6 +10239,16 @@ const saved = _loadHumanRatings(t.id) || {};
                 if (badgeStatusGroq) {
                     badgeStatusGroq.className = providers.groq.configured ? 'badge badge-success' : 'badge badge-secondary';
                     badgeStatusGroq.textContent = providers.groq.configured ? 'Configured' : 'Not Configured';
+                }
+            }
+
+            if (providers.orcarouter) {
+                if (inputOrcarouterKey && providers.orcarouter.masked_key) {
+                    inputOrcarouterKey.placeholder = providers.orcarouter.masked_key;
+                }
+                if (badgeStatusOrcarouter) {
+                    badgeStatusOrcarouter.className = providers.orcarouter.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusOrcarouter.textContent = providers.orcarouter.configured ? 'Configured' : 'Not Configured';
                 }
             }
 
@@ -10458,6 +10474,13 @@ const saved = _loadHumanRatings(t.id) || {};
         });
     }
 
+    if (btnTestOrcarouter) {
+        btnTestOrcarouter.addEventListener('click', () => {
+            const key = inputOrcarouterKey?.value.trim();
+            runProviderTest('orcarouter', key ? { orcarouter_api_key: key } : {}, testResultOrcarouter, badgeStatusOrcarouter);
+        });
+    }
+
     if (btnTestGemini) {
         btnTestGemini.addEventListener('click', () => {
             const key = inputGeminiKey?.value.trim();
@@ -10476,6 +10499,7 @@ const saved = _loadHumanRatings(t.id) || {};
             if (inputOpencodeBaseUrl?.value.trim()) payload.opencode_zen_base_url = inputOpencodeBaseUrl.value.trim();
             if (inputOpencodeKey?.value.trim()) payload.opencode_zen_api_key = inputOpencodeKey.value.trim();
             if (inputGroqKey?.value.trim()) payload.groq_api_key = inputGroqKey.value.trim();
+            if (inputOrcarouterKey?.value.trim()) payload.orcarouter_api_key = inputOrcarouterKey.value.trim();
             if (inputGeminiKey?.value.trim()) payload.gemini_api_key = inputGeminiKey.value.trim();
 
             try {
@@ -10644,6 +10668,10 @@ const saved = _loadHumanRatings(t.id) || {};
                 provBadge.style.background = 'rgba(255, 87, 34, 0.2)';
                 provBadge.style.color = '#ffab91';
                 provBadge.textContent = 'Groq';
+            } else if (m.provider === 'orcarouter') {
+                provBadge.style.background = 'rgba(45, 212, 191, 0.2)';
+                provBadge.style.color = '#5eead4';
+                provBadge.textContent = 'OrcaRouter';
             } else if (m.provider === 'gemini') {
                 provBadge.style.background = 'rgba(56, 189, 248, 0.2)';
                 provBadge.style.color = '#7dd3fc';

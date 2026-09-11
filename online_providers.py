@@ -209,6 +209,7 @@ class OnlineModelProvider:
         self.opencode_zen_api_key = os.getenv("OPENCODE_ZEN_API_KEY")
         self.opencode_zen_base_url = os.getenv("OPENCODE_ZEN_BASE_URL")
         self.groq_api_key = os.getenv("GROQ_API_KEY")
+        self.orcarouter_api_key = os.getenv("ORCAROUTER_API_KEY")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
 
     @staticmethod
@@ -286,6 +287,7 @@ class OnlineModelProvider:
             "cloudflare": bool(self.cloudflare_api_token and self.cloudflare_account_id),
             "opencode_zen": bool(self.opencode_zen_base_url),
             "groq": bool(self.groq_api_key),
+            "orcarouter": bool(self.orcarouter_api_key),
             "gemini": bool(self.gemini_api_key),
         }
 
@@ -332,6 +334,11 @@ class OnlineModelProvider:
                 "configured": bool(self.groq_api_key),
                 "masked_key": mask(self.groq_api_key),
                 "has_key": bool(self.groq_api_key),
+            },
+            "orcarouter": {
+                "configured": bool(self.orcarouter_api_key),
+                "masked_key": mask(self.orcarouter_api_key),
+                "has_key": bool(self.orcarouter_api_key),
             },
             "gemini": {
                 "configured": bool(self.gemini_api_key),
@@ -442,6 +449,23 @@ class OnlineModelProvider:
                         "error": self._format_http_error("Groq", resp.status_code, resp.text[:200]),
                     }
 
+            elif provider == "orcarouter":
+                api_key = custom.get("orcarouter_api_key") or self.orcarouter_api_key
+                if not api_key:
+                    return {"success": False, "error": "OrcaRouter API Key not provided."}
+
+                headers = {"Authorization": f"Bearer {api_key}"}
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get("https://api.orcarouter.ai/v1/models", headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        count = len(data.get("data", []))
+                        return {"success": True, "message": f"Connected to OrcaRouter! {count} models available."}
+                    return {
+                        "success": False,
+                        "error": self._format_http_error("OrcaRouter", resp.status_code, resp.text[:200]),
+                    }
+
             elif provider == "gemini":
                 api_key = custom.get("gemini_api_key") or self.gemini_api_key
                 if not api_key:
@@ -470,7 +494,7 @@ class OnlineModelProvider:
         """Dynamically fetch and search available models from remote provider APIs in real-time."""
         results: list[dict[str, Any]] = []
         providers_to_query = (
-            ["openrouter", "huggingface", "cloudflare", "opencode_zen", "groq", "gemini"]
+            ["openrouter", "huggingface", "cloudflare", "opencode_zen", "groq", "orcarouter", "gemini"]
             if provider == "all"
             else [provider]
         )
@@ -714,7 +738,44 @@ class OnlineModelProvider:
             except Exception as e:
                 logger.warning(f"Error discovering Groq models: {e}")
 
-        # 6. Gemini Live Discovery (Google AI Studio, free tier: rate-limited, no card)
+        # 6. OrcaRouter Live Discovery (OpenAI-compatible gateway, keyed catalog)
+        if "orcarouter" in providers_to_query:
+            try:
+                headers = {}
+                if self.orcarouter_api_key:
+                    headers["Authorization"] = f"Bearer {self.orcarouter_api_key}"
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get("https://api.orcarouter.ai/v1/models", headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        raw_models = data.get("data", []) if isinstance(data, dict) else []
+                        self._cached_live_models["orcarouter"] = raw_models
+                        for m in raw_models:
+                            m_id = m.get("id", "") if isinstance(m, dict) else ""
+                            if not m_id:
+                                continue
+                            owned = m.get("owned_by", "") if isinstance(m, dict) else ""
+                            if query_lower and query_lower not in m_id.lower():
+                                continue
+
+                            results.append(
+                                {
+                                    "id": f"orcarouter:{m_id}",
+                                    "name": m_id,
+                                    "label": m_id,
+                                    "provider": "orcarouter",
+                                    "free": m_id.endswith(":free") or "/free" in m_id,
+                                    "free_tier": "OrcaRouter catalog",
+                                    "pricing_label": "Provider price (no markup)",
+                                    "context_length": m.get("context_window") or m.get("context_length") or 131072,
+                                    "reasoning": False,
+                                    "description": f"OrcaRouter gateway model {m_id} ({owned}).".strip(),
+                                }
+                            )
+            except Exception as e:
+                logger.warning(f"Error discovering OrcaRouter models: {e}")
+
+        # 7. Gemini Live Discovery (Google AI Studio, free tier: rate-limited, no card)
         if "gemini" in providers_to_query:
             try:
                 headers = {}
@@ -800,13 +861,31 @@ class OnlineModelProvider:
     @staticmethod
     def is_online_model(model_identifier: str) -> bool:
         """Determines if a model string corresponds to an online provider."""
-        prefixes = ("openrouter:", "huggingface:", "cloudflare:", "opencode_zen:", "hf:", "groq:", "gemini:")
+        prefixes = (
+            "openrouter:",
+            "huggingface:",
+            "cloudflare:",
+            "opencode_zen:",
+            "hf:",
+            "groq:",
+            "orcarouter:",
+            "gemini:",
+        )
         return any(model_identifier.startswith(p) for p in prefixes)
 
     @staticmethod
     def parse_model_identifier(model_identifier: str) -> tuple[str, str]:
         """Splits model identifier into (provider, raw_model_name)."""
-        valid_providers = {"openrouter", "huggingface", "hf", "cloudflare", "opencode_zen", "groq", "gemini"}
+        valid_providers = {
+            "openrouter",
+            "huggingface",
+            "hf",
+            "cloudflare",
+            "opencode_zen",
+            "groq",
+            "orcarouter",
+            "gemini",
+        }
         if ":" in model_identifier:
             provider, raw_model = model_identifier.split(":", 1)
             provider_clean = provider.lower()
@@ -1720,6 +1799,79 @@ class OnlineModelProvider:
                         "response": None,
                         "tokens_generated": 0,
                         "error": self._format_http_error("Groq", resp.status_code, err_msg),
+                    }
+
+            elif provider == "orcarouter":
+                api_key = custom.get("orcarouter_api_key") or self.orcarouter_api_key
+                if not api_key:
+                    return {
+                        "success": False,
+                        "latency": 0.0,
+                        "response": None,
+                        "tokens_generated": 0,
+                        "error": "OrcaRouter API Key not configured. Set ORCAROUTER_API_KEY in Settings.",
+                    }
+
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "stream": False,
+                }
+                async with httpx.AsyncClient(timeout=request_timeout) as client:
+                    resp = await client.post(
+                        "https://api.orcarouter.ai/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    latency = time.time() - start_t
+                    if resp.status_code == 200:
+                        data, decode_err = self._decode_json_response(resp, "OrcaRouter")
+                        if data is None or decode_err:
+                            return decode_err or {
+                                "success": False,
+                                "latency": latency,
+                                "response": None,
+                                "tokens_generated": 0,
+                                "error": "OrcaRouter returned an empty response body.",
+                            }
+                        tokens = data.get("usage", {}).get("completion_tokens", 0)
+                        content, thinking, finish, cerr = self._extract_online_content(data, "OrcaRouter")
+                        if cerr:
+                            return {
+                                "success": False,
+                                "latency": latency,
+                                "response": None,
+                                "thinking": thinking,
+                                "tokens_generated": 0,
+                                "finish_reason": finish,
+                                "error": cerr,
+                            }
+                        return {
+                            "success": True,
+                            "latency": latency,
+                            "response": content,
+                            "thinking": thinking,
+                            "finish_reason": finish,
+                            "tokens_generated": tokens,
+                            "error": None,
+                        }
+                    try:
+                        err_data = resp.json()
+                        err_msg = err_data.get("error", {}).get("message") or err_data.get("message") or resp.text[:300]
+                    except Exception:
+                        err_msg = resp.text[:300]
+                    return {
+                        "success": False,
+                        "latency": latency,
+                        "response": None,
+                        "tokens_generated": 0,
+                        "error": self._format_http_error("OrcaRouter", resp.status_code, err_msg),
                     }
 
             elif provider == "gemini":
