@@ -108,7 +108,7 @@ GUARD_MAX_TEMP_C = 82
 # probing into that residual heat caused every tok=0 thermal abort at 64K.
 GUARD_PRECOOL_C = 76.0
 GUARD_PRECOOL_TIMEOUT_S = 240.0
-GUARD_UNPIN_CTX = 32768  # at/above this ctx disable mlock/no-mmap so RAM pressure pages, not panics
+GUARD_UNPIN_CTX = 32768  # at/above this ctx use load-mode=mmap so RAM pressure pages, not panics
 LAST_GUARD_ERROR = ""
 # In-run thermal watchdog (hard-reboot protection): sample temps DURING generation,
 # abort the probe and the whole scan when the box runs too hot. AMD Tctl trips ~95C.
@@ -885,12 +885,13 @@ def load_section(c, section, overrides):
             c[section].pop(k, None)
         else:
             c[section][k] = str(v)
-    # Guardrail: at large context, never pin RAM (mlock+no-mmap + spilled dense
+    # Guardrail: at large context, never pin RAM (load-mode=mlock + spilled dense
     # weights contributed to the hard reboot); let mmap page gracefully.
     try:
         if int(c[section].get("ctx-size", "") or 0) >= GUARD_UNPIN_CTX:
-            c[section]["mlock"] = "false"
-            c[section]["no-mmap"] = "false"
+            c[section].pop("mlock", None)
+            c[section].pop("no-mmap", None)
+            c[section]["load-mode"] = "mmap"
     except ValueError:
         pass
 
