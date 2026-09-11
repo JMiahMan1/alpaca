@@ -302,6 +302,7 @@ def read_gguf_shape(model_path: str) -> dict:
                 "n_head_kv": int(meta.get(f"{arch}.attention.head_count_kv", 0) or 0),
                 "head_dim": int(meta.get(f"{arch}.attention.key_length", 0) or 0),
                 "expert_count": int(meta.get(f"{arch}.expert_count", 0) or 0),
+                "has_mtp": int(meta.get(f"{arch}.nextn_predict_layers", 0) or 0) > 0,
                 "file_size_mb": round(cand.stat().st_size / 1e6, 1),
             }
         except Exception:
@@ -494,6 +495,12 @@ def label_for(s: dict) -> str:
     label = f"ctx={s.get('ctx-size')} kv={s.get('cache-type-k')} ngl={s.get('n-gpu-layers')} fa={s.get('flash-attn')}"
     if s.get("n-cpu-moe"):
         label += f" moe={s['n-cpu-moe']}"
+    if s.get("ubatch-size"):
+        label += f" ub={s['ubatch-size']}"
+    if s.get("spec-type"):
+        label += f" spec={s['spec-type']}/{s.get('spec-draft-n-max', '?')}"
+    if s.get("cache-reuse") is not None:
+        label += f" reuse={s['cache-reuse']}"
     return label
 
 
@@ -534,13 +541,21 @@ def hill_neighbors(
     is_moe: bool,
     ctx: int,
     vram_total: int,
+    section: dict | None = None,
     target_frac: float = VRAM_TARGET_FRAC,
 ) -> list[dict]:
-    """Ordered upgrade variants of a working baseline (faster if they fit)."""
+    """Ordered upgrade variants of a working baseline (faster if they fit).
+
+    Beyond ngl/kv/moe: micro-batch size, speculative decoding (MTP) on/off,
+    and prompt-cache reuse on/off. ``section`` is the model's current
+    models.ini section, used as the baseline for keys the scan does not
+    otherwise manage (ubatch-size, spec-type, cache-reuse).
+    """
     out: list[dict] = []
     budget = vram_total * target_frac
     n_layers = shape.get("n_layers") or 48
     step = max(2, n_layers // 24)
+    sec = section or {}
 
     def fits(s: dict) -> bool:
         return _est_vram_mb(s, shape, ctx) <= budget
@@ -564,6 +579,39 @@ def hill_neighbors(
             down["n-cpu-moe"] = MOE_HIER[MOE_HIER.index(cur) - 1]
             if fits(down):
                 out.append(down)
+    # Micro-batch: prefill throughput lever, transient buffers only.
+    cur_ub = str(settings.get("ubatch-size") or sec.get("ubatch-size") or "1024")
+    for ub in ("512", "1024", "2048"):
+        if ub != cur_ub:
+            ubv = dict(settings)
+            ubv["ubatch-size"] = ub
+            out.append(ubv)
+            break  # one ubatch probe per climb round; winner re-climbs
+    # Speculative decoding: enable only on MTP-capable GGUFs (nextn tensors
+    # present), disable when the ini claims it on a non-MTP model. Old
+    # `--spec-type mtp` spelling is silently ignored by the server, so an
+    # explicit draft-mtp/2-3 probe is the only live validation.
+    has_mtp = bool(shape.get("has_mtp"))
+    cur_spec = str(settings.get("spec-type") or sec.get("spec-type") or "none")
+    if has_mtp and cur_spec in ("none", ""):
+        sp = dict(settings)
+        sp["spec-type"] = "draft-mtp"
+        sp["spec-draft-n-max"] = "2" if is_moe else "3"
+        out.append(sp)
+    elif not has_mtp and cur_spec not in ("none", ""):
+        sp = dict(settings)
+        sp["spec-type"] = "none"
+        sp["spec-draft-n-max"] = "0"
+        out.append(sp)
+    # Prompt-cache reuse: b9090-class cancel/hang regressions make this worth
+    # an explicit on/off measurement rather than an assumption.
+    cur_reuse = str(
+        settings.get("cache-reuse") if settings.get("cache-reuse") is not None else sec.get("cache-reuse", "256")
+    )
+    alt_reuse = "0" if cur_reuse != "0" else "256"
+    ruv = dict(settings)
+    ruv["cache-reuse"] = alt_reuse
+    out.append(ruv)
     return [n for n in out if label_for(n) != label_for(settings)]
 
 
@@ -625,6 +673,8 @@ def run_probe(model, think=False, budget=None, quick=False, num_predict=None):
         thinking_parts: list[str] = []
         eval_count = 0
         eval_duration = 0.0
+        prompt_count = 0
+        prompt_duration = 0.0
         ttft_ms = None
         peak_gpu = peak_cpu = None
         last_check = last_log = 0.0
@@ -722,6 +772,15 @@ def run_probe(model, think=False, budget=None, quick=False, num_predict=None):
                 if chunk.get("done"):
                     eval_count = chunk.get("eval_count", 0) or 0
                     eval_duration = (chunk.get("eval_duration", 0) or 0) / 1e9
+                    # Prefill (prompt-processing) timings ride the final chunk
+                    # when the server reports them; fall back to timings.* ms.
+                    timings = chunk.get("timings") or {}
+                    prompt_count = (
+                        chunk.get("prompt_eval_count") or chunk.get("prompt_n") or timings.get("prompt_n") or 0
+                    ) or 0
+                    prompt_duration = (chunk.get("prompt_eval_duration", 0) or 0) / 1e9
+                    if not prompt_duration:
+                        prompt_duration = (timings.get("prompt_ms", 0) or 0) / 1e3
         content = "".join(content_parts)
         thinking = "".join(thinking_parts)
         elapsed = time.time() - t0
@@ -730,12 +789,15 @@ def run_probe(model, think=False, budget=None, quick=False, num_predict=None):
             if eval_duration
             else (round(eval_count / elapsed, 1) if elapsed else 0)
         )
+        prompt_tps = round(prompt_count / prompt_duration, 1) if prompt_count and prompt_duration else None
         return {
             "success": bool(content.strip()),
             "content": content,
             "content_len": len(content),
             "thinking_len": len(thinking),
             "tokens": eval_count,
+            "prompt_tokens": prompt_count,
+            "prompt_tps": prompt_tps,
             "ttft_ms": ttft_ms,
             "elapsed_s": round(elapsed, 2),
             "tps": tps,
@@ -800,9 +862,14 @@ def main():
     )
     ap.add_argument("--ctx", type=int, default=CTX_TARGET_DEFAULT, help="target context size (default 65536)")
     ap.add_argument("--max-attempts", type=int, default=6, help="max response-establishment escalations per model")
-    ap.add_argument("--max-hill", type=int, default=5, help="max hill-climb probes per model")
+    ap.add_argument("--max-hill", type=int, default=8, help="max hill-climb probes per model")
     ap.add_argument("--out", default=str(OUT))
     ap.add_argument("--skip-restart", action="store_true")
+    ap.add_argument(
+        "--no-isolate",
+        action="store_true",
+        help="skip evicting sd-server/audio-server models before the scan (default: isolate for clean VRAM)",
+    )
     args = ap.parse_args()
 
     c = read_ini()
@@ -822,6 +889,20 @@ def main():
 
     vram_total = vram_total_mb() or 8188
     print(f"[scan] VRAM total: {vram_total} MB, RAM available: {ram_available_mb()} MB")
+
+    if not args.no_isolate:
+        # Isolation: evict sd-server + audio-server models so LLM probes get
+        # clean, uncontended VRAM readings. Best-effort; never fatal.
+        for name, url in (
+            ("sd", f"{PROXY_URL}/admin/sd/unload"),
+            ("audio", "http://localhost:5000/api/audio/unload"),
+        ):
+            try:
+                r = httpx.post(url, timeout=30.0)
+                print(f"[scan] isolate: {name} unload -> HTTP {r.status_code}")
+            except Exception as e:
+                print(f"[scan] isolate: {name} unload skipped ({str(e)[:80]})")
+        time.sleep(5)
 
     def save():
         out_path.write_text(json.dumps(results, indent=2))
@@ -1134,7 +1215,7 @@ def main():
         # ---- Phase C: hill climb around the working baseline ----
         tried = {winner_settings and label_for(winner_settings)}
         hill_done = 0
-        neighbors = hill_neighbors(winner_settings, shape, is_moe, args.ctx, vram_total)
+        neighbors = hill_neighbors(winner_settings, shape, is_moe, args.ctx, vram_total, dict(c[model]))
         for nset in neighbors:
             if hill_done >= args.max_hill or THERMAL_STOP:
                 break
@@ -1177,9 +1258,19 @@ def main():
             record(nkey, res)
             hill_done += 1
             cur_best_tps = (winner_res or {}).get("tps", 0)
+            # Decode t/s is primary; within 5% prefer the better prefill
+            # (prompt_tps) so interactive latency breaks ties.
             if valid and res.get("tps", 0) > cur_best_tps:
                 winner_settings, winner_res = dict(nset), res
                 print(f"[scan] hill IMPROVED: {res.get('tps')} tok/s (was {cur_best_tps})")
+            elif (
+                valid
+                and cur_best_tps
+                and abs(res.get("tps", 0) - cur_best_tps) <= 0.05 * cur_best_tps
+                and (res.get("prompt_tps") or 0) > ((winner_res or {}).get("prompt_tps") or 0)
+            ):
+                winner_settings, winner_res = dict(nset), res
+                print(f"[scan] hill TIE-BREAK (prefill {res.get('prompt_tps')} tok/s): {label_for(nset)}")
 
         # ---- Phase D: write the winner to the model profile ----
         final_label = label_for(winner_settings)
