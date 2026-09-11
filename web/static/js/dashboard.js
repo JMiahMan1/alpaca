@@ -2979,21 +2979,53 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        // Clipboard helper: navigator.clipboard only exists in secure contexts
+        // (https/localhost). The dashboard is usually opened over plain HTTP
+        // from another machine (e.g. a Mac on the LAN), where the API is
+        // undefined — and Safari additionally requires focus/permission. So
+        // always fall back to the textarea+execCommand path. Returns boolean.
+        async function copyTextToClipboard(text) {
+            const value = String(text ?? '');
+            if (navigator.clipboard && window.isSecureContext) {
+                try {
+                    await navigator.clipboard.writeText(value);
+                    return true;
+                } catch (err) {
+                    console.warn('Clipboard API failed, falling back:', err);
+                }
+            }
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = value;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.top = '0';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                ta.setSelectionRange(0, ta.value.length);
+                const ok = document.execCommand('copy');
+                ta.remove();
+                return ok;
+            } catch (err) {
+                console.error('Clipboard copy failed:', err);
+                return false;
+            }
+        }
+
         function setupCopyButton(btnId, targetId) {
-            document.getElementById(btnId)?.addEventListener('click', () => {
+            document.getElementById(btnId)?.addEventListener('click', async () => {
                 const el = document.getElementById(targetId);
                 const btn = document.getElementById(btnId);
                 if (!el || !btn) return;
-                
-                navigator.clipboard.writeText(el.textContent).then(() => {
-                    const originalText = btn.textContent;
-                    btn.textContent = '✅ Copied!';
-                    setTimeout(() => {
-                        btn.textContent = originalText;
-                    }, 1500);
-                }).catch(err => {
-                    console.error("Clipboard copy failed:", err);
-                });
+
+                const ok = await copyTextToClipboard(el.textContent);
+                const originalText = btn.textContent;
+                btn.textContent = ok ? '✅ Copied!' : '❌ Copy failed';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 1500);
             });
         }
 
@@ -3034,20 +3066,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             lines.push('', '--- Response ---', cap(req.response || '(No Response)'));
             const text = lines.join('\n');
-            try {
-                await navigator.clipboard.writeText(text);
-            } catch (err) {
-                // Clipboard API may be unavailable (insecure origin/permissions); fall back.
-                const ta = document.createElement('textarea');
-                ta.value = text;
-                ta.style.position = 'fixed';
-                ta.style.opacity = '0';
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand('copy');
-                ta.remove();
-            }
-            showToast('Request details copied to clipboard', 'success');
+            const ok = await copyTextToClipboard(text);
+            showToast(
+                ok ? 'Request details copied to clipboard' : 'Copy failed — select the text manually',
+                ok ? 'success' : 'error'
+            );
         });
     }
 
@@ -10366,14 +10389,14 @@ const saved = _loadHumanRatings(t.id) || {};
     }
 
     if (btnCopyAlpacaToken) {
-        btnCopyAlpacaToken.addEventListener('click', () => {
+        btnCopyAlpacaToken.addEventListener('click', async () => {
             const token = inputAlpacaKey?.value.trim();
             if (token) {
-                navigator.clipboard.writeText(token).then(() => {
-                    showToast('Alpaca API token copied to clipboard!', 'success');
-                }).catch(() => {
-                    showToast('Failed to copy token to clipboard', 'error');
-                });
+                const ok = await copyTextToClipboard(token);
+                showToast(
+                    ok ? 'Alpaca API token copied to clipboard!' : 'Failed to copy token to clipboard',
+                    ok ? 'success' : 'error'
+                );
             } else {
                 showToast('No token set to copy', 'warning');
             }
