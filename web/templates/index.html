@@ -922,6 +922,12 @@
                                 <option value="">All Models</option>
                             </select>
                         </div>
+                        <div class="test-date-filters" id="test-date-filters" style="display:flex; gap:0.4rem; align-items:center;">
+                            <input id="test-date-from" class="form-input" type="date" title="Only show tests last run on or after this date" style="max-width:10rem;">
+                            <span style="font-size:0.75rem; color:var(--text-muted);">–</span>
+                            <input id="test-date-to" class="form-input" type="date" title="Only show tests last run on or before this date" style="max-width:10rem;">
+                            <button id="test-date-clear" class="kind-filter" title="Clear date filter">✕</button>
+                        </div>
                     </div>
 
                     <div id="test-ratings-board" class="test-ratings-board"></div>
