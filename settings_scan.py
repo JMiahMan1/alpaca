@@ -187,6 +187,28 @@ def probe_guard(shape: dict, settings: dict, ctx: int, vram_total: int) -> tuple
 
 
 KV_BYTES_PER_ELEM = {"f16": 2.0, "q8_0": 1.0625, "q4_0": 0.5625}  # incl. block scale overhead
+
+# Precision/context policy ladder (user-mandated, do not reorder silently):
+#   rung 0: q8_0 KV at the target ctx (64K preferred)
+#   rung 1: q8_0 KV at 32K (the floor for q8 - never below)
+#   rung 2: q4_0 KV at 64K (last resort - q4 never drops below 64K)
+Q8_FLOOR_CTX = 32768
+Q4_FLOOR_CTX = 65536
+
+
+def build_rungs(target_ctx: int) -> list:
+    """Ordered (kv_quant, ctx) rungs enforcing the precision/context policy."""
+    rungs: list = [("q8_0", target_ctx)]
+    if target_ctx > Q8_FLOOR_CTX:
+        rungs.append(("q8_0", Q8_FLOOR_CTX))
+    rungs.append(("q4_0", max(target_ctx, Q4_FLOOR_CTX)))
+    deduped: list = []
+    for r in rungs:
+        if r not in deduped:
+            deduped.append(r)
+    return deduped
+
+
 MOE_HIER = ["", "28", "30", "31", "34", "36", "40", "48"]  # n-cpu-moe escalation (higher = less VRAM)
 
 
@@ -461,10 +483,11 @@ def compute_smart_baseline(
     n_layers = shape.get("n_layers") or 0
     file_mb = shape.get("file_size_mb") or 0.0
     if not n_layers or not file_mb:
+        fallback_kv = kv_choices[0] if kv_choices else "q8_0"
         return {
             "ctx-size": str(ctx),
-            "cache-type-k": "q4_0",
-            "cache-type-v": "q4_0",
+            "cache-type-k": fallback_kv,
+            "cache-type-v": fallback_kv,
             "n-gpu-layers": "26",
             "flash-attn": "on",
         }, 0
@@ -861,7 +884,12 @@ def main():
         help="Comma-separated model sections from models.ini, or empty/all to scan every model",
     )
     ap.add_argument("--ctx", type=int, default=CTX_TARGET_DEFAULT, help="target context size (default 65536)")
-    ap.add_argument("--max-attempts", type=int, default=6, help="max response-establishment escalations per model")
+    ap.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ignore resume state from previous scans: re-establish every model from scratch",
+    )
+    ap.add_argument("--max-attempts", type=int, default=6, help="max response-establishment escalations per rung")
     ap.add_argument("--max-hill", type=int, default=8, help="max hill-climb probes per model")
     ap.add_argument("--out", default=str(OUT))
     ap.add_argument("--skip-restart", action="store_true")
@@ -877,6 +905,11 @@ def main():
         models = [s for s in c.sections() if s != "*"]
     else:
         models = [m.strip() for m in args.models.split(",") if m.strip()]
+    # One task per (model, rung): earlier rungs are higher quality, and the
+    # first rung that yields a valid long response wins - later rungs for the
+    # same model are skipped via the ::winner record below.
+    tasks: list = [(m, kv, cx) for m in models for (kv, cx) in build_rungs(args.ctx)]
+    print(f"[scan] rung ladder: {build_rungs(args.ctx)}" + (" (fresh: no resume)" if args.fresh else ""))
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -907,18 +940,25 @@ def main():
     def save():
         out_path.write_text(json.dumps(results, indent=2))
 
-    for model in models:
+    for model, rung_kv, rung_ctx in tasks:
         if THERMAL_STOP:
             print(f"[scan] thermal stop - skipping remaining model {model}")
             continue
         if not c.has_section(model):
             print(f"[scan] section {model} not in models.ini, skipping")
             continue
+        if not args.fresh and f"{model}::winner" in results and results[f"{model}::winner"].get("done"):
+            print(
+                f"[scan] {model} already won at {results[f'{model}::winner'].get('label')} - "
+                "skipping rung (use --fresh to redo)"
+            )
+            continue
         model_path = c[model].get("model", "")
         shape = read_gguf_shape(model_path)
         is_moe = is_moe_model(model_path)
         print(
-            f"\n[scan] === {model} ({'MoE' if is_moe else 'Dense'}, shape={'ok' if shape else 'unknown'}, "
+            f"\n[scan] === {model} [rung kv={rung_kv} ctx={rung_ctx}] ({'MoE' if is_moe else 'Dense'}, "
+            f"shape={'ok' if shape else 'unknown'}, "
             f"{shape.get('file_size_mb', '?')} MB, {shape.get('n_layers', '?')} layers) ==="
         )
 
@@ -938,7 +978,11 @@ def main():
                 print("[scan] settings unchanged - skipping restart")
                 return True
             global LAST_GUARD_ERROR
-            ok, greason = probe_guard(_shape, settings, args.ctx, vram_total)
+            try:
+                guard_ctx = int(settings.get("ctx-size") or args.ctx)
+            except (TypeError, ValueError):
+                guard_ctx = args.ctx
+            ok, greason = probe_guard(_shape, settings, guard_ctx, vram_total)
             if not ok:
                 LAST_GUARD_ERROR = greason
                 print(f"    [guard] BLOCKED {label_for(settings)}: {greason}")
@@ -970,7 +1014,9 @@ def main():
             return True
 
         # ---- Phase A: establish a working hello response (smart guessing) ----
-        baseline, est = compute_smart_baseline(shape, args.ctx, ["q8_0", "q4_0"], vram_total, is_moe=is_moe)
+        # Baseline is pinned to this rung's kv/ctx - quality is chosen by the
+        # rung ladder, never by "whichever quant fits more layers".
+        baseline, est = compute_smart_baseline(shape, rung_ctx, [rung_kv], vram_total, is_moe=is_moe)
         if est:
             print(f"[scan] smart baseline: {label_for(baseline)} (est {est} MB VRAM)")
         else:
@@ -980,8 +1026,14 @@ def main():
         cur = dict(baseline)
         attempt_retried = False
         resumed_settings: dict | None = None
-        if f"{model}::response" in results and results[f"{model}::response"].get("success"):
-            resumed_settings = dict(results[f"{model}::response"]["settings"])
+        if not args.fresh and f"{model}::response" in results and results[f"{model}::response"].get("success"):
+            _rs = dict(results[f"{model}::response"]["settings"])
+            # A bare ::response record is rung-agnostic (and may predate the
+            # rung ladder entirely) - only trust it on this exact rung.
+            if _rs.get("cache-type-k") == rung_kv and str(_rs.get("ctx-size")) == str(rung_ctx):
+                resumed_settings = _rs
+            else:
+                print(f"[scan] resume record {label_for(_rs)} is not on rung kv={rung_kv} ctx={rung_ctx} - ignoring")
 
         def _ngl_of(s: dict) -> int:
             try:
@@ -1058,13 +1110,17 @@ def main():
                 attempt_retried = False
             if working is None:
                 # Escalation exhausted - try a previously-proven config (labeled
-                # response:: entries are durable evidence across runs).
+                # response:: entries are durable evidence across runs), but only
+                # ones on this rung: a q4-proven config must never satisfy a q8
+                # rung (or vice versa).
                 for rkey, rres in sorted(results.items()):
                     if not rkey.startswith(f"{model}::response::"):
                         continue
                     if not rres.get("success") or not rres.get("settings"):
                         continue
                     rset = dict(rres["settings"])
+                    if rset.get("cache-type-k") != rung_kv or str(rset.get("ctx-size")) != str(rung_ctx):
+                        continue
                     print(f"[scan] escalation exhausted - retrying previously-proven {label_for(rset)}")
                     if apply_and_restart(rset):
                         hello = run_probe(model, quick=True)
@@ -1095,7 +1151,7 @@ def main():
         long_key = f"{model}::long::{base_label}"
         winner_settings = dict(working)
         winner_res: dict | None = None
-        if long_key in results and results[long_key].get("done") and results[long_key].get("valid"):
+        if long_key in results and not args.fresh and results[long_key].get("done") and results[long_key].get("valid"):
             winner_res = results[long_key]
             print(f"[scan] resume: long probe already valid at {base_label}")
         else:
@@ -1215,7 +1271,11 @@ def main():
         # ---- Phase C: hill climb around the working baseline ----
         tried = {winner_settings and label_for(winner_settings)}
         hill_done = 0
-        neighbors = hill_neighbors(winner_settings, shape, is_moe, args.ctx, vram_total, dict(c[model]))
+        try:
+            hill_ctx = int(winner_settings.get("ctx-size") or rung_ctx)
+        except (TypeError, ValueError):
+            hill_ctx = rung_ctx
+        neighbors = hill_neighbors(winner_settings, shape, is_moe, hill_ctx, vram_total, dict(c[model]))
         for nset in neighbors:
             if hill_done >= args.max_hill or THERMAL_STOP:
                 break
@@ -1280,6 +1340,15 @@ def main():
         c[model]["bench-verified"] = "1"
         c[model]["bench-verified-at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         write_ini(c)
+        record(
+            f"{model}::winner",
+            {
+                "label": final_label,
+                "settings": dict(winner_settings),
+                "tps": winner_res.get("tps"),
+                "vram_peak_mb": winner_res.get("vram_peak_mb"),
+            },
+        )
         prof_path = write_profile_mirror(model, c)
         print(
             f"[scan] WINNER {model}: {final_label} -> {winner_res.get('tps')} tok/s, "
