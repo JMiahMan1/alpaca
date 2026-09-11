@@ -187,6 +187,17 @@ sudo docker compose up -d --build alpaca-proxy     # rebuild proxy
 sudo docker compose up -d                          # all services
 ```
 
+### Safe Restart (never kills a running benchmark)
+Direct `docker compose restart` kills any active benchmark run. After `git pull`,
+use the idle watcher instead — it polls `/api/status` and restarts only when idle:
+```bash
+./scripts/restart-when-idle.sh [service] [max_wait_s] [poll_s]
+# e.g. nohup ./scripts/restart-when-idle.sh alpaca-web > .tmp/restart-when-idle.log 2>&1 &
+```
+Defaults: `alpaca-web`, 24h max wait, 60s poll. Logs to `.tmp/restart-when-idle.log`.
+Pure bind-mounted Python changes (e.g. `web/`, `llm_benchmark_suite.py`,
+`online_providers.py`) need only a restart, not a rebuild.
+
 ### View Logs
 ```bash
 sudo docker compose logs -f alpaca-web
