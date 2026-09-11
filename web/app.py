@@ -2218,6 +2218,8 @@ def save_online_providers_credentials_api():
             keys["OPENCODE_ZEN_BASE_URL"] = data["opencode_zen_base_url"].strip()
         if "groq_api_key" in data:
             keys["GROQ_API_KEY"] = data["groq_api_key"].strip()
+        if "orcarouter_api_key" in data:
+            keys["ORCAROUTER_API_KEY"] = data["orcarouter_api_key"].strip()
         if "gemini_api_key" in data:
             keys["GEMINI_API_KEY"] = data["gemini_api_key"].strip()
 
@@ -2285,6 +2287,9 @@ def selected_online_models_api():
             for m in models:
                 if isinstance(m, dict) and m.get("id"):
                     model_tracker.record_model_seen(m["id"], source=m.get("provider", "online"))
+                    # Re-adding to the selection clears any removal-hiding.
+                    with contextlib.suppress(Exception):
+                        model_tracker.set_hidden(m["id"], False)
             result = online_model_provider.save_selected_models(models)
             return jsonify(result)
 
@@ -2348,6 +2353,12 @@ def remove_online_model_api():
                     500,
                 )
             selection_count = len(remaining)
+            if model_removed and not remove_benchmarks:
+                # History is kept but the entry must stay out of the run list:
+                # without this, pastOnlineModels resurrects the row from
+                # tracking and the removal looks like a no-op.
+                with contextlib.suppress(Exception):
+                    model_tracker.set_hidden(model, True)
 
         purge_info: dict = {}
         if remove_benchmarks:

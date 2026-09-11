@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from web.app import active_run, active_run_lock, app
+from web.model_tracker import ModelTracker
 
 
 @pytest.fixture
@@ -942,6 +943,27 @@ def test_api_online_models_search_and_selected(client):
         assert data["count"] == 1
 
 
+def test_api_online_models_selected_clears_hidden(client):
+    """Re-adding models to the selection clears any removal-hiding flag."""
+    mock_models = [
+        {
+            "id": "openrouter:deepseek/deepseek-v4.1-flash",
+            "name": "deepseek-v4.1-flash",
+            "provider": "openrouter",
+        }
+    ]
+    with (
+        patch(
+            "online_providers.online_model_provider.save_selected_models",
+            return_value={"success": True, "count": 1},
+        ),
+        patch("web.app.model_tracker") as mock_tracker,
+    ):
+        res = client.post("/api/online/models/selected", json={"models": mock_models})
+        assert res.status_code == 200
+        mock_tracker.set_hidden.assert_called_once_with("openrouter:deepseek/deepseek-v4.1-flash", False)
+
+
 def _online_selection():
     return [
         {"id": "openrouter:google/gemini-2.0-flash-exp:free", "name": "gemini-2.0-flash", "provider": "openrouter"},
@@ -962,6 +984,7 @@ def test_api_online_models_remove_model_only(client):
             side_effect=lambda models: saved.update(models=models) or {"success": True, "count": len(models)},
         ),
         patch("web.app._purge_model_benchmarks") as mock_purge,
+        patch("web.app.model_tracker") as mock_tracker,
     ):
         res = client.post(
             "/api/online/models/remove",
@@ -973,6 +996,8 @@ def test_api_online_models_remove_model_only(client):
         assert data["model_removed"] is True
         assert [m["id"] for m in saved["models"]] == ["openrouter:google/gemini-2.0-flash-exp:free"]
         mock_purge.assert_not_called()
+        # History is kept, so the entry must be hidden to stay out of the run list.
+        mock_tracker.set_hidden.assert_called_once_with("openrouter:deepseek/deepseek-v4.1-flash", True)
 
 
 def test_api_online_models_remove_benchmarks_only(client):
@@ -990,6 +1015,7 @@ def test_api_online_models_remove_benchmarks_only(client):
             "web.app._purge_model_benchmarks",
             return_value={"removed": True, "general": False, "shared": True, "snapshots_pruned": 1},
         ) as mock_purge,
+        patch("web.app.model_tracker") as mock_tracker,
     ):
         res = client.post(
             "/api/online/models/remove",
@@ -1005,6 +1031,8 @@ def test_api_online_models_remove_benchmarks_only(client):
         assert data["model_removed"] is False
         assert data["benchmark_results_removed"]["removed"] is True
         mock_purge.assert_called_once_with("openrouter:deepseek/deepseek-v4.1-flash")
+        # Selection untouched, so nothing to hide.
+        mock_tracker.set_hidden.assert_not_called()
 
 
 def test_api_online_models_remove_both(client):
@@ -1023,6 +1051,7 @@ def test_api_online_models_remove_both(client):
             "web.app._purge_model_benchmarks",
             return_value={"removed": True, "general": True, "shared": True, "snapshots_pruned": 2},
         ) as mock_purge,
+        patch("web.app.model_tracker") as mock_tracker,
     ):
         res = client.post(
             "/api/online/models/remove",
@@ -1039,6 +1068,8 @@ def test_api_online_models_remove_both(client):
         assert len(saved["models"]) == 1
         assert data["benchmark_results_removed"]["snapshots_pruned"] == 2
         mock_purge.assert_called_once()
+        # History is purged too, so the tracker entry is gone — no hiding needed.
+        mock_tracker.set_hidden.assert_not_called()
 
 
 def test_api_online_models_remove_validation(client):
@@ -1055,6 +1086,37 @@ def test_api_online_models_remove_validation(client):
         json={"model": "openrouter:deepseek/deepseek-v4.1-flash", "remove_model": False, "remove_benchmarks": False},
     )
     assert res.status_code == 400
+
+
+def test_model_tracker_set_hidden_roundtrip(tmp_path):
+    """Hidden flag persists on the entry and is exposed via the summary."""
+    tracker = ModelTracker(data_dir=tmp_path)
+    model = "openrouter:deepseek/deepseek-v4.1-flash"
+    tracker.record_model_seen(model, source="openrouter")
+    tracker.record_benchmark_result(model, 82.5, "shared", "shared_llm_benchmarks_x.json")
+
+    assert tracker.set_hidden(model, True) is True
+    summary = tracker.get_tracking_summary(current_online_models=[])
+    assert summary["all_tracked"][model]["hidden_from_selection"] is True
+    # Score history is untouched by hiding.
+    assert summary["all_tracked"][model]["latest_score"] == 82.5
+
+    assert tracker.set_hidden(model, False) is True
+    summary = tracker.get_tracking_summary(current_online_models=[])
+    assert summary["all_tracked"][model]["hidden_from_selection"] is False
+
+
+def test_model_tracker_hidden_survives_history_rescan(tmp_path):
+    """Later benchmark-result writes (history rescans) must not clear the flag."""
+    tracker = ModelTracker(data_dir=tmp_path)
+    model = "openrouter:deepseek/deepseek-v4.1-flash"
+    tracker.record_model_seen(model, source="openrouter")
+    assert tracker.set_hidden(model, True) is True
+
+    tracker.record_benchmark_result(model, 90.0, "shared", "shared_llm_benchmarks_y.json")
+    summary = tracker.get_tracking_summary(current_online_models=[])
+    assert summary["all_tracked"][model]["hidden_from_selection"] is True
+    assert summary["all_tracked"][model]["latest_score"] == 90.0
 
 
 @patch("llm_benchmark_suite.LLMModelBenchmark.discover_all_models")

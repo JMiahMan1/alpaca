@@ -2816,6 +2816,24 @@
                     <div id="test-result-gemini" style="font-size:0.72rem; display:none;"></div>
                 </div>
 
+                <!-- OrcaRouter Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>🐋</span> OrcaRouter
+                        </strong>
+                        <span id="badge-status-orcarouter" class="badge badge-secondary" style="font-size:0.68rem;">Ready</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Multi-provider gateway (OpenAI-compatible) at provider cost, no per-token markup. 200+ models via one key.
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <input type="password" id="input-orcarouter-key" placeholder="API Key (sk-orca-...)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <button id="btn-test-orcarouter" class="btn btn-secondary btn-sm btn-slate">Test</button>
+                    </div>
+                    <div id="test-result-orcarouter" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
                 <!-- Actions -->
                 <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:0.5rem;">
                     <button id="btn-cancel-api-keys" class="btn btn-slate">Cancel</button>
@@ -2848,6 +2866,7 @@
                             <option value="cloudflare">☁️ Cloudflare</option>
                             <option value="opencode_zen">⚙️ OpenCode Zen</option>
                             <option value="groq">⚡ Groq</option>
+                            <option value="orcarouter">🐋 OrcaRouter</option>
                             <option value="gemini">✨ Gemini</option>
                         </select>
                     </div>

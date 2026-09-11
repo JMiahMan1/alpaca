@@ -14,6 +14,7 @@ def test_online_model_provider_detection():
     assert provider.is_online_model("cloudflare:@cf/meta/llama-3.1-8b-instruct") is True
     assert provider.is_online_model("opencode_zen:zen-coder-v1") is True
     assert provider.is_online_model("groq:llama-3.3-70b-versatile") is True
+    assert provider.is_online_model("orcarouter:openai/gpt-4o-mini") is True
     assert provider.is_online_model("gemini:gemini-2.5-flash") is True
     assert provider.is_online_model("qwen2.5-coder:7b") is False
 
@@ -35,6 +36,10 @@ def test_online_model_provider_parse():
     p, m = provider.parse_model_identifier("groq:llama-3.3-70b-versatile")
     assert p == "groq"
     assert m == "llama-3.3-70b-versatile"
+
+    p, m = provider.parse_model_identifier("orcarouter:openai/gpt-4o-mini")
+    assert p == "orcarouter"
+    assert m == "openai/gpt-4o-mini"
 
     p, m = provider.parse_model_identifier("gemini:gemini-2.5-flash")
     assert p == "gemini"
@@ -93,6 +98,84 @@ async def test_online_model_query_groq_no_key():
     res = await provider.query_online_model("groq:llama-3.3-70b-versatile", prompt="hi")
     assert res["success"] is False
     assert "GROQ_API_KEY" in res.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_online_model_query_orcarouter_mock():
+    provider = OnlineModelProvider()
+    provider.orcarouter_api_key = "test-key"
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": "42"}}],
+        "usage": {"completion_tokens": 3},
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        res = await provider.query_online_model(
+            "orcarouter:openai/gpt-4o-mini",
+            prompt="What is the answer?",
+        )
+        assert res["success"] is True
+        assert res["response"] == "42"
+        assert res["tokens_generated"] == 3
+
+
+@pytest.mark.asyncio
+async def test_online_model_query_orcarouter_no_key():
+    provider = OnlineModelProvider()
+    provider.orcarouter_api_key = ""
+
+    res = await provider.query_online_model("orcarouter:openai/gpt-4o-mini", prompt="hi")
+    assert res["success"] is False
+    assert "ORCAROUTER_API_KEY" in res.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_test_connection_mock():
+    provider = OnlineModelProvider()
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"data": [{"id": "openai/gpt-4o-mini"}, {"id": "deepseek/deepseek-chat"}]}
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+        res = await provider.test_connection("orcarouter", {"orcarouter_api_key": "test-key"})
+        assert res["success"] is True
+        assert "2 models" in res.get("message", "")
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_test_connection_no_key():
+    provider = OnlineModelProvider()
+    provider.orcarouter_api_key = ""
+
+    res = await provider.test_connection("orcarouter", {})
+    assert res["success"] is False
+    assert "not provided" in res.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_orcarouter_fetch_live_models_mock():
+    provider = OnlineModelProvider()
+    provider.orcarouter_api_key = "test-key"
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "data": [
+            {"id": "openai/gpt-4o-mini", "owned_by": "openai"},
+            {"id": "deepseek/deepseek-chat", "owned_by": "deepseek"},
+        ]
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+        results = await provider.fetch_live_models(provider="orcarouter")
+        ids = [r["id"] for r in results]
+        assert "orcarouter:openai/gpt-4o-mini" in ids
+        assert "orcarouter:deepseek/deepseek-chat" in ids
+        assert all(r["provider"] == "orcarouter" for r in results)
 
 
 @pytest.mark.asyncio
