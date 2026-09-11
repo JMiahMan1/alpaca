@@ -463,6 +463,35 @@ def get_progress_callback(run_type):
 
             elif event == "test_complete":
                 active_run["tests_completed"] += 1
+                # Auto-publish star games to the arcade: best-effort, never
+                # breaks the run. The arcade keeps its own copy, so the game
+                # survives later benchmark/model deletion.
+                try:
+                    from web.arcade_publish import AUTO_PUBLISH_SCORE, publish_game
+
+                    _res = data.get("result") if isinstance(data.get("result"), dict) else {}
+                    _score = _res.get("score")
+                    _artifact = _res.get("artifact") or ""
+                    if (
+                        isinstance(_score, (int, float))
+                        and _score >= AUTO_PUBLISH_SCORE
+                        and isinstance(_artifact, str)
+                        and _artifact.endswith(".html")
+                    ):
+                        _prompt = _res.get("prompt_steps") or _res.get("prompt") or ""
+                        if isinstance(_prompt, list):
+                            _prompt = "\n\n".join(str(s) for s in _prompt)
+                        publish_game(
+                            model=data.get("model") or "",
+                            test_id=data.get("test_id") or "",
+                            benchmark_score=float(_score),
+                            max_score=_res.get("max_score"),
+                            prompt=str(_prompt),
+                            run_date=_res.get("timestamp") or "",
+                            auto=True,
+                        )
+                except Exception:
+                    pass
                 socketio.emit(
                     "test_complete",
                     {
@@ -3789,6 +3818,62 @@ def get_artifact(filename):
         return send_file(str(file_path.resolve()), as_attachment=as_attachment, download_name=filename)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/arcade/published", methods=["GET"])
+def arcade_published():
+    """List published arcade slugs (drives dashboard Publish buttons)."""
+    try:
+        from web.arcade_publish import published_slugs
+
+        return jsonify({"slugs": sorted(published_slugs())})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/arcade/publish", methods=["POST"])
+def arcade_publish():
+    """Manually publish a benchmark game to the arcade (port 5001).
+
+    Body: {model, test_id, benchmark_score?, max_score?, prompt?, run_date?, title?}.
+    Player scores/ratings are never touched on republish.
+    """
+    try:
+        from web.arcade_publish import publish_game
+
+        body = request.get_json(force=True) or {}
+        result = publish_game(
+            model=(body.get("model") or "").strip(),
+            test_id=(body.get("test_id") or "").strip(),
+            benchmark_score=body.get("benchmark_score"),
+            max_score=body.get("max_score"),
+            prompt=body.get("prompt") or "",
+            run_date=body.get("run_date") or "",
+            title=(body.get("title") or "").strip() or None,
+        )
+        return jsonify({"success": True, **result})
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/arcade/unpublish", methods=["POST"])
+def arcade_unpublish():
+    """Remove a game from the arcade (including its player scores). Body: {slug}."""
+    try:
+        from web.arcade_publish import slugify, unpublish_game
+
+        body = request.get_json(force=True) or {}
+        slug = (body.get("slug") or "").strip()
+        if not body.get("slug") and body.get("model") and body.get("test_id"):
+            slug = slugify(body["model"], body["test_id"])
+        if not slug or "/" in slug or slug.startswith("."):
+            return jsonify({"success": False, "error": "slug is required"}), 400
+        removed = unpublish_game(slug)
+        return jsonify({"success": True, "slug": slug, "removed": removed})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 def get_models_ini_path():

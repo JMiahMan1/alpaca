@@ -136,6 +136,22 @@ services:
       llama-server:
         condition: service_started
 
+  alpaca-arcade:
+    build:
+      context: .
+      dockerfile: Dockerfile.arcade
+    container_name: alpaca-arcade
+    restart: always
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - ./.env
+    environment:
+      ARCADE_DIR: /app/data/arcade
+      ARCADE_PORT: "5001"
+
   alpaca-telemetry:
     build:
       context: .

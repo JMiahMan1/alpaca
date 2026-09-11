@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# Arcade is stdlib + Flask only.
+RUN pip install --no-cache-dir flask
+
+# Copy the standalone service
+COPY arcade/ /app/arcade/
+
+EXPOSE 5001
+
+ENV PYTHONUNBUFFERED=1 \
+    ARCADE_DIR=/app/data/arcade \
+    ARCADE_PORT=5001
+
+# Set up non-root runtime user
+RUN (useradd -u 1000 -m -s /bin/bash alpaca 2>/dev/null || true) && \
+    mkdir -p /app/data/arcade && \
+    chown -R alpaca:alpaca /app
+
+USER alpaca
+
+CMD ["python", "arcade/app.py"]
