@@ -264,3 +264,91 @@ body > * { position: relative; z-index: 1; }
 @media (prefers-reduced-motion: reduce) {
   .marquee h1, .marquee, .bulbs i, .tagline, .arcade-footer .coin, body::before { animation: none; }
 }
+
+/* ---------- Player card ---------- */
+.player-wrap { max-width: 1060px; margin: 0 auto; padding: 1.2rem 1.2rem 3rem; display: flex; flex-direction: column; gap: 1.4rem; }
+.player-hero {
+  text-align: center; padding: 2rem 1rem 1.6rem; border-radius: 18px;
+  background: linear-gradient(160deg, #2b0a4e 0%, #3b0f63 45%, #0e2a5e 100%);
+  border: 2px solid var(--neon-pink, #ff2fb3);
+  box-shadow: 0 0 26px rgba(255, 47, 179, 0.45), inset 0 0 60px rgba(34, 211, 238, 0.12);
+  position: relative; overflow: hidden;
+}
+.player-callsign {
+  font-size: clamp(3rem, 10vw, 5.2rem); font-weight: 900; letter-spacing: 0.18em; line-height: 1;
+  background: linear-gradient(180deg, #fff 20%, #ffd23f 55%, #ff2fb3 95%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 0 14px rgba(255, 210, 63, 0.65));
+}
+.player-title { font-size: 1.15rem; margin-top: 0.5rem; color: #fff; text-shadow: 0 0 12px var(--neon-cyan, #22d3ee); }
+.player-unlock-count { margin-top: 0.3rem; color: var(--muted, #9aa4c7); font-size: 0.85rem; letter-spacing: 0.1em; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.8rem; }
+.stat-card {
+  background: rgba(10, 8, 30, 0.85); border: 1px solid var(--neon-cyan, #22d3ee); border-radius: 12px;
+  padding: 0.9rem 0.5rem; text-align: center; box-shadow: 0 0 14px rgba(34, 211, 238, 0.25);
+}
+.stat-num { font-size: 1.7rem; font-weight: 800; color: #fff; text-shadow: 0 0 10px var(--neon-cyan, #22d3ee); }
+.stat-label { font-size: 0.72rem; letter-spacing: 0.08em; color: var(--muted, #9aa4c7); margin-top: 0.25rem; }
+
+/* ---------- Trophy room ---------- */
+.trophy-room h2, .player-games h2 { color: #ffd23f; text-shadow: 0 0 14px rgba(255, 210, 63, 0.7); letter-spacing: 0.1em; }
+.trophy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.8rem; }
+.trophy {
+  border-radius: 12px; padding: 1rem 0.7rem; text-align: center; background: rgba(10, 8, 30, 0.9);
+  border: 1px solid #4a3a6e; transition: transform 0.15s ease;
+}
+.trophy.lit {
+  border-color: #ffd23f; box-shadow: 0 0 18px rgba(255, 210, 63, 0.5), inset 0 0 24px rgba(255, 210, 63, 0.08);
+  animation: trophy-glow 2.6s ease-in-out infinite;
+}
+@keyframes trophy-glow {
+  0%, 100% { box-shadow: 0 0 12px rgba(255, 210, 63, 0.4), inset 0 0 24px rgba(255, 210, 63, 0.06); }
+  50% { box-shadow: 0 0 24px rgba(255, 210, 63, 0.75), inset 0 0 30px rgba(255, 210, 63, 0.14); }
+}
+.trophy.dim { opacity: 0.55; }
+.trophy.dim .trophy-icon { filter: grayscale(1) brightness(0.6); }
+.trophy-icon { font-size: 2.2rem; line-height: 1.2; }
+.trophy-name { font-weight: 800; color: #fff; margin-top: 0.3rem; }
+.trophy-tag { font-size: 0.72rem; color: var(--muted, #9aa4c7); margin-top: 0.25rem; min-height: 2.1em; }
+.trophy-unlocked { margin-top: 0.4rem; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.2em; color: #ffd23f; }
+.trophy-progress { margin-top: 0.5rem; height: 8px; border-radius: 99px; background: #221a3e; overflow: hidden; }
+.trophy-progress i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--neon-cyan, #22d3ee), var(--neon-pink, #ff2fb3)); box-shadow: 0 0 8px var(--neon-cyan, #22d3ee); }
+.trophy-progress-label { font-size: 0.68rem; color: var(--muted, #9aa4c7); margin-top: 0.2rem; }
+
+/* ---------- Machine record table ---------- */
+.record-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.record-table th, .record-table td { padding: 0.55rem 0.6rem; text-align: left; border-bottom: 1px solid #2c2350; }
+.record-table th { color: #ffd23f; letter-spacing: 0.08em; font-size: 0.72rem; }
+.record-table td a { color: var(--neon-cyan, #22d3ee); }
+.record-table tr:hover td { background: rgba(34, 211, 238, 0.06); }
+
+/* ---------- Scoreboard player links ---------- */
+.score-list a { color: var(--neon-cyan, #22d3ee); text-decoration: none; }
+.score-list a:hover { text-shadow: 0 0 8px var(--neon-cyan, #22d3ee); }
+#score-msg a { color: #ffd23f; font-weight: 700; }
+
+/* ---------- Unlock toast + confetti ---------- */
+.unlock-toast {
+  position: fixed; left: 50%; bottom: 1.2rem; transform: translate(-50%, 140%);
+  z-index: 9999; max-width: min(92vw, 480px); background: #150b2e;
+  border: 2px solid #ffd23f; border-radius: 14px; padding: 0.9rem 1.2rem;
+  box-shadow: 0 0 30px rgba(255, 210, 63, 0.65); transition: transform 0.45s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.unlock-toast.show { transform: translate(-50%, 0); }
+.unlock-title { font-weight: 900; letter-spacing: 0.18em; color: #ffd23f; font-size: 0.8rem; margin-bottom: 0.4rem; }
+.unlock-item { color: #fff; font-size: 0.85rem; margin-top: 0.25rem; }
+.confetti-canvas { position: fixed; inset: 0; z-index: 9998; pointer-events: none; }
+
+@media (max-width: 640px) {
+  .player-wrap { padding: 0.9rem 0.75rem 2.2rem; }
+  .stat-grid { grid-template-columns: repeat(3, 1fr); gap: 0.55rem; }
+  .stat-num { font-size: 1.3rem; }
+  .trophy-grid { grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
+  .record-table { font-size: 0.76rem; }
+  .record-table th, .record-table td { padding: 0.45rem 0.35rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trophy.lit { animation: none; }
+  .unlock-toast { transition: none; }
+}

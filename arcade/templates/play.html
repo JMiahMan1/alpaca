@@ -41,7 +41,7 @@
     <div class="pane-block neon-gold">
       <h3>🏆 Top scores</h3>
       <ol id="score-list" class="score-list">
-        {% for s in scores %}<li><span>{{ s.initials }}</span><strong>{{ s.score }}</strong></li>{% else %}<li class="muted">No scores yet — be the first!</li>{% endfor %}
+        {% for s in scores %}<li><span><a href="/player/{{ s.initials }}">{{ s.initials }}</a></span><strong>{{ s.score }}</strong></li>{% else %}<li class="muted">No scores yet — be the first!</li>{% endfor %}
       </ol>
       <div class="score-form">
         <input id="score-initials" maxlength="3" placeholder="ABC" aria-label="Initials">

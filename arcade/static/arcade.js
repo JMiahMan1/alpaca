@@ -2,6 +2,69 @@
 (function () {
   const slug = window.ARCADE_SLUG;
   const $ = (id) => document.getElementById(id);
+  const CALLSIGN_KEY = "arcade_callsign";
+
+  // Remember the player's callsign across machines; it IS the arcade account.
+  const savedCallsign = (localStorage.getItem(CALLSIGN_KEY) || "").toUpperCase();
+  if (savedCallsign && $("score-initials") && !$("score-initials").value) {
+    $("score-initials").value = savedCallsign;
+  }
+  function rememberCallsign(v) {
+    const clean = String(v || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase();
+    if (clean) localStorage.setItem(CALLSIGN_KEY, clean);
+    return clean;
+  }
+
+  // Achievement unlock celebration: toast + lightweight confetti burst.
+  function celebrate(unlocks) {
+    if (!unlocks || !unlocks.length) return;
+    const toast = document.createElement("div");
+    toast.className = "unlock-toast";
+    toast.innerHTML = `<div class="unlock-title">🏆 ACHIEVEMENT UNLOCKED</div>` + unlocks
+      .map((u) => `<div class="unlock-item">${u.icon} <strong>${u.name}</strong> — ${u.tagline}</div>`)
+      .join("");
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("show"));
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 600);
+    }, 6000);
+    const canvas = document.createElement("canvas");
+    canvas.className = "confetti-canvas";
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext("2d");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const colors = ["#ff2fb3", "#22d3ee", "#ffd23f", "#a3e635", "#ffffff"];
+    const bits = Array.from({ length: 160 }, () => ({
+      x: window.innerWidth / 2 + (Math.random() - 0.5) * 240,
+      y: window.innerHeight * 0.3,
+      vx: (Math.random() - 0.5) * 12,
+      vy: Math.random() * -9 - 3,
+      s: Math.random() * 7 + 3,
+      c: colors[(Math.random() * colors.length) | 0],
+      r: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 0.3,
+    }));
+    let frames = 0;
+    (function tick() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const b of bits) {
+        b.x += b.vx;
+        b.y += b.vy;
+        b.vy += 0.35;
+        b.r += b.vr;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(b.r);
+        ctx.fillStyle = b.c;
+        ctx.fillRect(-b.s / 2, -b.s / 2, b.s, b.s * 0.6);
+        ctx.restore();
+      }
+      if (++frames < 180) requestAnimationFrame(tick);
+      else canvas.remove();
+    })();
+  }
 
   async function refreshScores() {
     const res = await fetch(`/api/games/${slug}`);
@@ -11,9 +74,15 @@
     list.innerHTML = "";
     (data.game.scores || []).forEach((s) => {
       const li = document.createElement("li");
-      li.innerHTML = `<span></span><strong></strong>`;
-      li.children[0].textContent = s.initials;
-      li.children[1].textContent = s.score;
+      const a = document.createElement("a");
+      a.href = `/player/${s.initials}`;
+      a.textContent = s.initials;
+      const span = document.createElement("span");
+      span.appendChild(a);
+      const strong = document.createElement("strong");
+      strong.textContent = s.score;
+      li.appendChild(span);
+      li.appendChild(strong);
       list.appendChild(li);
     });
     if (!(data.game.scores || []).length) list.innerHTML = `<li class="muted">No scores yet — be the first!</li>`;
@@ -21,7 +90,8 @@
 
   $("btn-submit-score").addEventListener("click", async () => {
     const msg = $("score-msg");
-    const body = { initials: $("score-initials").value, score: Number($("score-value").value) };
+    const callsign = rememberCallsign($("score-initials").value);
+    const body = { initials: callsign, score: Number($("score-value").value) };
     if (!Number.isFinite(body.score) || body.score < 0) {
       msg.textContent = "Enter a valid score first (or use 🎮 Get my score).";
       return;
@@ -33,8 +103,13 @@
     });
     const data = await res.json();
     if (data.success) {
-      msg.textContent = data.made_board ? `🏆 #${data.rank} on the board!` : "Saved, but outside the top 5.";
+      const who = data.player_url ? ` <a href="${data.player_url}">📊 my stats</a>` : "";
+      let extra = "";
+      if (data.personal_best) extra += " 🚀 New personal record!";
+      if (data.pioneer) extra += " 🚩 First score ever on this machine!";
+      msg.innerHTML = (data.made_board ? `🏆 #${data.rank} on the board!` : "Saved, but outside the top 5.") + extra + who;
       refreshScores();
+      celebrate(data.new_unlocks);
     } else {
       msg.textContent = data.error || "Submit failed.";
     }
@@ -115,7 +190,7 @@
       const res = await fetch(`/api/games/${slug}/rate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stars: Number(btn.dataset.stars) }),
+        body: JSON.stringify({ stars: Number(btn.dataset.stars), initials: rememberCallsign($("score-initials").value) || undefined }),
       });
       const data = await res.json();
       const msg = $("rate-msg");

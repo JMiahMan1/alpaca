@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ stats.initials }} — Alpaca Arcade Player Card</title>
+<link rel="stylesheet" href="/static/arcade.css">
+</head>
+<body>
+<header class="arcade-header slim">
+  <a href="/">&larr; Arcade</a>
+  <h1>Player Card</h1>
+</header>
+<main class="player-wrap">
+  <section class="player-hero">
+    <div class="player-callsign">{{ stats.initials }}</div>
+    <div class="player-title">
+      {% set u = stats.unlocked_count %}
+      {% if stats.crown_games >= 3 or u >= 12 %}👑 Arcade Immortal
+      {% elif stats.crowns >= 1 or u >= 9 %}🏆 Arcade Legend
+      {% elif u >= 6 %}🔥 High-Score Hunter
+      {% elif u >= 3 %}🎮 Cabinet Regular
+      {% elif stats.submits > 0 %}🕹️ Button Masher
+      {% else %}👻 Ghost — no scores yet{% endif %}
+    </div>
+    <div class="player-unlock-count">{{ u }} / {{ stats.achievements|length }} achievements</div>
+  </section>
+
+  <section class="stat-grid">
+    <div class="stat-card"><div class="stat-num">{{ stats.games_scored }}</div><div class="stat-label">Machines played</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.submits }}</div><div class="stat-label">Scores submitted</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.crowns }}</div><div class="stat-label">👑 #1 finishes</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.podiums }}</div><div class="stat-label">🥉 Podiums</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.personal_bests }}</div><div class="stat-label">🚀 Personal records</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.best_score }}</div><div class="stat-label">Best score</div></div>
+  </section>
+
+  <section class="trophy-room">
+    <h2>🏆 Trophy Room</h2>
+    <div class="trophy-grid">
+      {% for a in stats.achievements %}
+      <div class="trophy {{ 'lit' if a.unlocked else 'dim' }}">
+        <div class="trophy-icon">{{ a.icon }}</div>
+        <div class="trophy-name">{{ a.name }}</div>
+        <div class="trophy-tag">{{ a.tagline }}</div>
+        {% if not a.unlocked and a.progress is not none and a.goal %}
+        <div class="trophy-progress"><i style="width:{{ (a.progress * 100)|round(0) }}%"></i></div>
+        <div class="trophy-progress-label">{{ (a.progress * a.goal)|round(0)|int }} / {{ a.goal }}</div>
+        {% elif a.unlocked %}
+        <div class="trophy-unlocked">UNLOCKED ★</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="player-games">
+    <h2>🎰 Machine Record</h2>
+    <table class="record-table">
+      <thead><tr><th>Machine</th><th>My best</th><th>Rank</th><th>Plays</th><th>Machine top</th></tr></thead>
+      <tbody>
+      {% for r in stats.per_game %}
+        <tr>
+          <td><a href="/play/{{ r.slug }}">{{ r.title }}</a></td>
+          <td>{{ r.my_best if r.my_best is not none else '—' }}</td>
+          <td>{% if r.my_rank == 1 %}👑{% elif r.my_rank %}{{ r.my_rank }}{% else %}—{% endif %}</td>
+          <td>{{ r.my_plays }}</td>
+          <td>{% if r.top_score is not none %}{{ r.top_initials }} — {{ r.top_score }}{% else %}—{% endif %}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">No machines yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</main>
+<footer class="arcade-footer"><span class="coin">●</span> Alpaca Arcade · games stay published until explicitly removed <span class="coin">●</span></footer>
+</body>
+</html>

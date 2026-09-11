@@ -27,6 +27,11 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
+try:  # container runs `python arcade/app.py` (script dir on sys.path)
+    from achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
+except ImportError:  # tests import `arcade.app` as a package from the repo root
+    from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
+
 ARCADE_DIR = Path(os.getenv("ARCADE_DIR", "data/arcade"))
 GAMES_DIR = ARCADE_DIR / "games"
 ADMIN_TOKEN = os.getenv("ARCADE_ADMIN_TOKEN", "")
@@ -72,6 +77,116 @@ def _rating_stats(game_dir: Path) -> dict:
     stars = [v.get("stars") for v in votes if isinstance(v, dict) and 1 <= int(v.get("stars", 0) or 0) <= 5]
     count = len(stars)
     return {"count": count, "average": round(sum(stars) / count, 2) if count else 0.0}
+
+
+def _clean_initials(raw) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", str(raw or ""))[:3].upper()
+
+
+def _hour_of(stamp: str) -> int | None:
+    try:
+        return int(str(stamp or "")[11:13])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _player_rank(scores: list, initials: str) -> int | None:
+    """Best (lowest) 1-based rank of this player in a top-5 board."""
+    best = None
+    for i, s in enumerate(scores):
+        if isinstance(s, dict) and str(s.get("initials", "")).upper() == initials:
+            best = i + 1 if best is None else min(best, i + 1)
+    return best
+
+
+def player_stats(initials: str) -> dict:
+    """Aggregate one player's cross-game stats + achievements.
+
+    Reads every published game's scores/bests/ratings; purely derived, so it
+    stays correct no matter when games were published or removed.
+    """
+    initials = (initials or "").upper()
+    stats = {
+        "initials": initials,
+        "games_scored": 0,
+        "submits": 0,
+        "boards": 0,
+        "podiums": 0,
+        "crowns": 0,
+        "crown_games": 0,
+        "personal_bests": 0,
+        "pioneered": 0,
+        "night_owl": False,
+        "high_roller": False,
+        "best_score": 0,
+        "games_rated": 0,
+        "gave_five_stars": False,
+        "total_games": 0,
+        "per_game": [],
+    }
+    if not GAMES_DIR.exists():
+        stats["achievements"] = evaluate(stats)
+        return stats
+    for child in sorted(GAMES_DIR.iterdir()):
+        if not child.is_dir() or not (child / "game.html").exists():
+            continue
+        meta = _read_json(child / "meta.json", {})
+        scores = _read_json(child / "scores.json", {}).get("scores", [])
+        bests = _read_json(child / "bests.json", {})
+        players = bests.get("players", {}) if isinstance(bests.get("players"), dict) else {}
+        mine = players.get(initials, {}) if isinstance(players.get(initials), dict) else {}
+        votes = _read_json(child / "ratings.json", {}).get("votes", [])
+
+        stats["total_games"] += 1
+        my_count = int(mine.get("count", 0) or 0)
+        if my_count:
+            stats["games_scored"] += 1
+            stats["submits"] += my_count
+            stats["personal_bests"] += int(mine.get("pbs", 0) or 0)
+            stats["best_score"] = max(stats["best_score"], int(mine.get("best", 0) or 0))
+        if bests.get("first_by") == initials:
+            stats["pioneered"] += 1
+        for s in scores:
+            if not isinstance(s, dict) or str(s.get("initials", "")).upper() != initials:
+                continue
+            try:
+                hour = _hour_of(s.get("at", ""))
+                if hour is not None and NIGHT_OWL_START <= hour < NIGHT_OWL_END:
+                    stats["night_owl"] = True
+                if int(s.get("score", 0) or 0) >= HIGH_ROLLER_SCORE:
+                    stats["high_roller"] = True
+            except (TypeError, ValueError):
+                pass
+        rank = _player_rank(scores, initials)
+        if rank is not None:
+            stats["boards"] += 1
+            if rank <= 3:
+                stats["podiums"] += 1
+            if rank == 1:
+                stats["crowns"] += 1
+                stats["crown_games"] += 1
+        my_votes = [
+            v for v in votes if isinstance(v, dict) and str(v.get("by", "")).upper() == initials and v.get("stars")
+        ]
+        if my_votes:
+            stats["games_rated"] += 1
+            if any(int(v.get("stars", 0) or 0) == 5 for v in my_votes):
+                stats["gave_five_stars"] = True
+        stats["per_game"].append(
+            {
+                "slug": child.name,
+                "title": meta.get("title") or child.name,
+                "my_best": int(mine.get("best", 0) or 0) if my_count else None,
+                "my_rank": rank,
+                "my_plays": my_count,
+                "top_score": scores[0].get("score") if scores else None,
+                "top_initials": scores[0].get("initials") if scores else None,
+            }
+        )
+    stats["per_game"].sort(key=lambda r: (-(r["my_best"] or 0), r["title"]))
+    stats["achievements"] = evaluate(stats)
+    stats["unlocked_count"] = sum(1 for a in stats["achievements"] if a["unlocked"])
+    return stats
 
 
 def _game_card(slug: str) -> dict | None:
@@ -179,22 +294,54 @@ def api_submit_score(slug):
     if d is None or not (d / "game.html").exists():
         return jsonify({"success": False, "error": "game not found"}), 404
     body = request.get_json(force=True, silent=True) or {}
-    initials = re.sub(r"[^A-Za-z0-9]", "", str(body.get("initials", "")))[:3].upper() or "YOU"
+    initials = _clean_initials(body.get("initials")) or "YOU"
     try:
         score = int(body.get("score", 0))
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "score must be an integer"}), 400
     if score < 0 or score > 999_999_999:
         return jsonify({"success": False, "error": "score out of range"}), 400
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
     with _lock:
+        before = unlocked_ids(player_stats(initials))
         data = _read_json(d / "scores.json", {})
         scores = data.get("scores", []) if isinstance(data.get("scores"), list) else []
-        scores.append({"initials": initials, "score": score, "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        pioneer = not scores
+        scores.append({"initials": initials, "score": score, "at": stamp})
         scores.sort(key=lambda s: -int(s.get("score", 0) or 0))
         scores = scores[:MAX_SCORES]
         _write_json(d / "scores.json", {"scores": scores})
+        # Cross-game personal-best ledger (top-5 alone forgets old bests).
+        bests = _read_json(d / "bests.json", {})
+        if not isinstance(bests.get("players"), dict):
+            bests = {"submits": 0, "first_by": None, "players": {}}
+        bests["submits"] = int(bests.get("submits", 0) or 0) + 1
+        if pioneer and not bests.get("first_by"):
+            bests["first_by"] = initials
+        entry = bests["players"].get(initials, {})
+        prev_best = int(entry.get("best", 0) or 0)
+        personal_best = bool(prev_best) and score > prev_best
+        entry["best"] = max(prev_best, score)
+        entry["count"] = int(entry.get("count", 0) or 0) + 1
+        entry["pbs"] = int(entry.get("pbs", 0) or 0) + (1 if personal_best else 0)
+        entry.setdefault("first_at", stamp)
+        bests["players"][initials] = entry
+        _write_json(d / "bests.json", bests)
+        after_stats = player_stats(initials)
+    new_unlocks = [a for a in after_stats["achievements"] if a["unlocked"] and a["id"] not in before]
     rank = next((i + 1 for i, s in enumerate(scores) if s["initials"] == initials and s["score"] == score), None)
-    return jsonify({"success": True, "scores": scores, "rank": rank, "made_board": rank is not None})
+    return jsonify(
+        {
+            "success": True,
+            "scores": scores,
+            "rank": rank,
+            "made_board": rank is not None,
+            "personal_best": personal_best,
+            "pioneer": pioneer,
+            "new_unlocks": new_unlocks,
+            "player_url": f"/player/{initials}",
+        }
+    )
 
 
 @app.route("/api/games/<slug>/rate", methods=["POST"])
@@ -209,12 +356,37 @@ def api_rate(slug):
         return jsonify({"success": False, "error": "stars must be 1-5"}), 400
     if stars < 1 or stars > 5:
         return jsonify({"success": False, "error": "stars must be 1-5"}), 400
+    voter = _clean_initials(body.get("initials")) or None
     with _lock:
         data = _read_json(d / "ratings.json", {})
         votes = data.get("votes", []) if isinstance(data.get("votes"), list) else []
-        votes.append({"stars": stars, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "ip": request.remote_addr})
+        votes.append(
+            {
+                "stars": stars,
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "ip": request.remote_addr,
+                **({"by": voter} if voter else {}),
+            }
+        )
         _write_json(d / "ratings.json", {"votes": votes})
     return jsonify({"success": True, "rating": _rating_stats(d)})
+
+
+@app.route("/player/<initials>", methods=["GET"])
+def player_page(initials):
+    clean = _clean_initials(initials)
+    if not clean:
+        return render_template("index.html", games=list_games(), error="Pick a 3-letter callsign."), 404
+    stats = player_stats(clean)
+    return render_template("player.html", stats=stats)
+
+
+@app.route("/api/players/<initials>", methods=["GET"])
+def api_player(initials):
+    clean = _clean_initials(initials)
+    if not clean:
+        return jsonify({"success": False, "error": "invalid callsign"}), 404
+    return jsonify({"success": True, "player": player_stats(clean)})
 
 
 @app.route("/api/admin/games/<slug>", methods=["DELETE"])
