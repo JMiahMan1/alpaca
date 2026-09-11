@@ -66,6 +66,10 @@ def _model_temperature(model: str) -> float:
 
 INI = REPO / ".alpaca-router" / "models.ini"
 OUT = REPO / "data" / "llm_benchmarks" / "settings_scan.json"
+# Bench-verified marker lives here, NOT in models.ini: llama-server's
+# --models-preset parser rejects unknown preset keys and crash-loops
+# (observed Sep 2026). The proxy reads this sidecar (with ini fallback).
+BENCH_VERIFIED_SIDECAR = REPO / ".alpaca-router" / "bench-verified.json"
 COMPOSE = ["sudo", "docker", "compose"]
 LLAMA_URL = "http://localhost:8080"
 PROXY_URL = "http://localhost:11434"
@@ -653,9 +657,28 @@ def write_profile_mirror(model: str, c) -> Path:
         except Exception:
             prof = {}
     for k, v in c[model].items():
+        if k.startswith("bench-verified"):
+            continue  # sidecar-only marker; unknown keys crash llama-server presets
         prof[k] = v
     prof_path.write_text(json.dumps(prof, indent=2) + "\n")
     return prof_path
+
+
+def mark_bench_verified(model: str) -> str:
+    """Record the bench-verified marker in the sidecar file (never models.ini).
+
+    Returns the verification timestamp.
+    """
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    data: dict = {}
+    try:
+        if BENCH_VERIFIED_SIDECAR.exists():
+            data = json.loads(BENCH_VERIFIED_SIDECAR.read_text())
+    except Exception:
+        data = {}
+    data[model] = stamp
+    BENCH_VERIFIED_SIDECAR.write_text(json.dumps(data, indent=2) + "\n")
+    return stamp
 
 
 def restart_llama():
@@ -1335,10 +1358,11 @@ def main():
         # ---- Phase D: write the winner to the model profile ----
         final_label = label_for(winner_settings)
         load_section(c, model, winner_settings)
-        # Bench-verified marker: the proxy's VRAM budgeter checks this key and
+        # Bench-verified marker goes to the sidecar file, NOT models.ini:
+        # llama-server rejects unknown preset keys and crash-loops. The
+        # proxy's VRAM budgeter reads the sidecar (with ini fallback) and
         # leaves benchmarked settings alone (runtime budgeting is skipped).
-        c[model]["bench-verified"] = "1"
-        c[model]["bench-verified-at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        verified_at = mark_bench_verified(model)
         write_ini(c)
         record(
             f"{model}::winner",
@@ -1347,6 +1371,7 @@ def main():
                 "settings": dict(winner_settings),
                 "tps": winner_res.get("tps"),
                 "vram_peak_mb": winner_res.get("vram_peak_mb"),
+                "verified_at": verified_at,
             },
         )
         prof_path = write_profile_mirror(model, c)

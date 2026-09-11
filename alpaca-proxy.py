@@ -5888,9 +5888,18 @@ _VRAM_DOWNGRADES_FILE = ".vram-downgrades.json"
 
 def _is_bench_verified(backend_model: str) -> bool:
     """True when the model's settings were explicitly set and validated by the
-    benchmark scanner (bench-verified marker in its models.ini section). Such
-    settings must never be overwritten by automatic VRAM budgeting."""
+    benchmark scanner. Such settings must never be overwritten by automatic
+    VRAM budgeting. The marker lives in .alpaca-router/bench-verified.json
+    (a models.ini key is NOT used: llama-server's --models-preset parser
+    rejects unknown preset keys and crash-loops); the ini key is still
+    honored as a legacy fallback."""
     try:
+        sidecar = os.path.join(ROUTER_MODELS_DIR, "bench-verified.json")
+        if os.path.exists(sidecar):
+            with open(sidecar) as f:
+                data = json.load(f)
+            if backend_model in data:
+                return True
         val = _read_ini_model_setting(backend_model, "bench-verified", "")
         return str(val).strip().lower() in ("1", "true", "yes", "on")
     except Exception:
