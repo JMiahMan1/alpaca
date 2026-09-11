@@ -3007,7 +3007,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 ta.setSelectionRange(0, ta.value.length);
                 const ok = document.execCommand('copy');
                 ta.remove();
-                return ok;
+                // NOTE: Safari/WebKit returns undefined (not true) from
+                // execCommand on success — only an explicit false means failure.
+                return ok !== false;
             } catch (err) {
                 console.error('Clipboard copy failed:', err);
                 return false;
