@@ -7371,6 +7371,18 @@ const saved = _loadHumanRatings(t.id) || {};
         syncRunnerState(data);
     });
 
+    // REST fallback: SocketIO events can be missed (mid-run page load,
+    // reconnect gaps, long single tests with no progress events). Polling
+    // /api/status keeps the runner badge/progress truthful regardless.
+    async function pollRunStatus() {
+        try {
+            const res = await fetch('/api/status');
+            if (!res.ok) return;
+            syncRunnerState(await res.json());
+        } catch (e) { /* offline — the socket badge already shows it */ }
+    }
+    setInterval(pollRunStatus, 15000);
+
     socket.on('benchmark_start', (data) => {
         const term = data.type === 'shared_llm' ? 'shared' : 'general';
         const numModels = data.total_models !== undefined ? data.total_models : (data.models ? data.models.length : 0);
@@ -9818,6 +9830,7 @@ const saved = _loadHumanRatings(t.id) || {};
     loadModelProfiles();
     loadHistory();
     loadActivePulls();
+    pollRunStatus();
 
     // SharedLLM test select-all / none
     const btnSelectAllSharedTests = document.getElementById('btn-select-all-shared-tests');
