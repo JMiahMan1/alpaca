@@ -7,6 +7,7 @@ explicitly unpublished. Publishing never overwrites player data:
 republish (e.g. a better benchmark score for the same game).
 """
 
+import contextlib
 import json
 import os
 import re
@@ -97,6 +98,15 @@ def publish_game(
         "auto_published": bool(auto),
     }
     (game_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    # The arcade container runs as a non-root user while publishes often
+    # happen as root (web container / sudo). Leave everything group- and
+    # world-writable so score/rating/play-count writes never 500.
+    for path in (game_dir, game_dir / "game.html", game_dir / "meta.json"):
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o777 if path.is_dir() else 0o666)
+    for name in ("scores.json", "ratings.json"):
+        with contextlib.suppress(OSError):
+            os.chmod(game_dir / name, 0o666)
     return {"slug": slug, "url": f"/play/{slug}", "republished": republished}
 
 

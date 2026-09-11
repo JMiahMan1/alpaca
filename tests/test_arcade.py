@@ -73,6 +73,20 @@ def test_publish_copies_game_and_meta(games_dir, source_html):
     assert json.loads((game_dir / "ratings.json").read_text()) == {}
 
 
+def test_publish_leaves_files_writable_by_container_user(games_dir, source_html):
+    """Publishes often happen as root while the arcade serves as non-root uid 1000:
+    everything must stay world-writable or score/plays writes 500."""
+    import os
+    import stat
+
+    res = _publish(games_dir, source_html)
+    game_dir = games_dir / res["slug"]
+    for name in ("game.html", "meta.json", "scores.json", "ratings.json"):
+        mode = stat.S_IMODE(os.stat(game_dir / name).st_mode)
+        assert mode & stat.S_IWOTH, f"{name} not world-writable ({oct(mode)})"
+    assert stat.S_IMODE(os.stat(game_dir).st_mode) & 0o777 == 0o777
+
+
 def test_publish_requires_model_and_test(games_dir, source_html):
     with pytest.raises(ValueError):
         ap.publish_game(model="", test_id="x", source_file=source_html)
