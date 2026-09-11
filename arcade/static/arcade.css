@@ -111,6 +111,8 @@ body {
 }
 .screen { position: relative; border-radius: 12px; overflow: hidden; background: #000; line-height: 0; }
 .screen iframe { width: 100%; height: 76vh; min-height: 480px; border: 0; background: #000; }
+.cabinet-hint { margin: 0.6rem 0.2rem 0; font-size: 0.82rem; color: var(--arcade-muted, #b8a6e8); text-align: center; }
+.cabinet-hint kbd { background: #1a1033; border: 1px solid #6d28d9; border-radius: 4px; padding: 0 0.35rem; font-family: inherit; }
 .screen::after {
   content: ""; position: absolute; inset: 0; pointer-events: none; line-height: normal;
   background: repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 3px);

@@ -15,6 +15,19 @@
     return clean;
   }
 
+  // Give the game keyboard focus once loaded so Space/arrows work immediately.
+  const frame = $("game-frame");
+  if (frame) {
+    frame.addEventListener("load", () => {
+      try {
+        frame.focus();
+        frame.contentWindow.focus();
+      } catch (_) {
+        /* cross-origin focus is best-effort */
+      }
+    });
+  }
+
   // Achievement unlock celebration: toast + lightweight confetti burst.
   function celebrate(unlocks) {
     if (!unlocks || !unlocks.length) return;
