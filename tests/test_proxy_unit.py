@@ -2515,6 +2515,14 @@ def test_is_bench_verified_true_and_false(tmp_path, monkeypatch):
     assert alpaca_proxy._is_bench_verified("missing") is False
 
 
+def test_is_bench_verified_sidecar(tmp_path, monkeypatch):
+    (tmp_path / "models.ini").write_text("[gamma]\nctx-size = 65536\n")
+    (tmp_path / "bench-verified.json").write_text(json.dumps({"gamma": "2026-09-10T20:00:00"}))
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    assert alpaca_proxy._is_bench_verified("gamma") is True
+    assert alpaca_proxy._is_bench_verified("delta") is False
+
+
 def test_record_vram_downgrade_counts_and_recommends(tmp_path, monkeypatch):
     monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
     budget = {"cache-type-k": "q4_0", "cache-type-v": "q4_0", "n-gpu-layers": "21"}
