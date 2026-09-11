@@ -3419,9 +3419,53 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let ALL_TESTS = [];
-    let TEST_BROWSER_FILTER = { q: '', kind: 'all', status: 'all', model: '' };
+    let TEST_BROWSER_FILTER = { q: '', kind: 'all', status: 'all', model: '', date_from: '', date_to: '' };
 
     const TEST_KIND_ICON = { text: '📝', image: '🖼️', html: '🌐', node: '⚡' };
+
+    // Effective last-run date (YYYY-MM-DD) for a test: per-model when a model
+    // filter is active, otherwise the test's overall last run. '' when never run.
+    function _testRunDate(t, modelFilter) {
+        let run = t.last_run || '';
+        if (modelFilter) {
+            const tested = (t.models_tested || []);
+            const lastRuns = t.models_last_run || {};
+            const hit = tested.find(m => m === modelFilter || m.includes(modelFilter) || modelFilter.includes(m));
+            if (!hit) return '';
+            run = lastRuns[hit] || '';
+        }
+        return String(run || '').slice(0, 10);
+    }
+
+    function _testMatchesFilter(t) {
+        const q = (TEST_BROWSER_FILTER.q || '').trim().toLowerCase();
+        const kind = TEST_BROWSER_FILTER.kind || 'all';
+        const status = TEST_BROWSER_FILTER.status || 'all';
+        const modelFilter = TEST_BROWSER_FILTER.model || '';
+        const dateFrom = TEST_BROWSER_FILTER.date_from || '';
+        const dateTo = TEST_BROWSER_FILTER.date_to || '';
+        if (kind !== 'all' && (t.kind || 'text').toLowerCase() !== kind) return false;
+        if (status === 'tested' && (!t.models_tested_count || t.models_tested_count === 0)) return false;
+        if (status === 'untested' && (t.models_tested_count > 0)) return false;
+        if (status === 'outdated' && !t.is_out_of_date) return false;
+        if (modelFilter) {
+            const tested = (t.models_tested || []);
+            const hit = tested.some(m => m === modelFilter || m.includes(modelFilter) || modelFilter.includes(m));
+            if (!hit) return false;
+        }
+        if (dateFrom || dateTo) {
+            const d = _testRunDate(t, modelFilter);
+            if (!d) return false;
+            if (dateFrom && d < dateFrom) return false;
+            if (dateTo && d > dateTo) return false;
+        }
+        if (!q) return true;
+        return (
+            (t.label || '').toLowerCase().includes(q) ||
+            (t.id || '').toLowerCase().includes(q) ||
+            (t.category || '').toLowerCase().includes(q)
+        );
+    }
 
     function _testCardHtml(t) {
         const kind = (t.kind || 'text').toLowerCase();
@@ -3445,6 +3489,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const ratingsHtml = _testCardRatingsHtml(t);
 
+        const lastRunDate = String(t.last_run || '').slice(0, 10);
+        const lastRunHtml = lastRunDate
+            ? `<div class="test-card-lastrun" title="Last run: ${escapeHtml(String(t.last_run))}">📅 ${escapeHtml(lastRunDate)}</div>`
+            : '';
+
         return `<div class="test-card" data-test-id="${t.id}" role="button" tabindex="0">
             <div class="test-card-top">
                 <span class="kind-badge kind-${kind}">${icon} ${kind}</span>
@@ -3452,6 +3501,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${outdatedBadge}
             </div>
             <div class="test-card-label" title="${escapeHtml(t.label)}">${escapeHtml(t.label)}</div>
+            ${lastRunHtml}
             ${ratingsHtml}
             <div class="test-card-footer">
                 <div class="test-card-cat">${escapeHtml((t.category || '').toUpperCase())}</div>
@@ -3984,27 +4034,7 @@ const saved = _loadHumanRatings(t.id) || {};
     function renderTestBrowser() {
         const grid = document.getElementById('test-browser-grid');
         if (!grid) return;
-        const q = (TEST_BROWSER_FILTER.q || '').trim().toLowerCase();
-        const kind = TEST_BROWSER_FILTER.kind || 'all';
-        const status = TEST_BROWSER_FILTER.status || 'all';
-        const modelFilter = TEST_BROWSER_FILTER.model || '';
-        const filtered = ALL_TESTS.filter((t) => {
-            if (kind !== 'all' && (t.kind || 'text').toLowerCase() !== kind) return false;
-            if (status === 'tested' && (!t.models_tested_count || t.models_tested_count === 0)) return false;
-            if (status === 'untested' && (t.models_tested_count > 0)) return false;
-            if (status === 'outdated' && !t.is_out_of_date) return false;
-            if (modelFilter) {
-                const tested = (t.models_tested || []);
-                const hit = tested.some(m => m === modelFilter || m.includes(modelFilter) || modelFilter.includes(m));
-                if (!hit) return false;
-            }
-            if (!q) return true;
-            return (
-                (t.label || '').toLowerCase().includes(q) ||
-                (t.id || '').toLowerCase().includes(q) ||
-                (t.category || '').toLowerCase().includes(q)
-            );
-        });
+        const filtered = ALL_TESTS.filter(_testMatchesFilter);
         const countEl = document.getElementById('test-browser-count');
         if (countEl) countEl.textContent = `${filtered.length} test${filtered.length === 1 ? '' : 's'}`;
         renderRatingsBoard();
@@ -4045,27 +4075,7 @@ const saved = _loadHumanRatings(t.id) || {};
                     const idx = ALL_TESTS.findIndex((x) => x.id === id);
                     if (idx >= 0) ALL_TESTS.splice(idx, 1);
                     // Refresh count and re-render filters without the removed item
-                    const q = (TEST_BROWSER_FILTER.q || '').trim().toLowerCase();
-                    const kind = TEST_BROWSER_FILTER.kind || 'all';
-                    const status = TEST_BROWSER_FILTER.status || 'all';
-                    const modelFilter = TEST_BROWSER_FILTER.model || '';
-                    const stillFiltered = ALL_TESTS.filter((t) => {
-                        if (kind !== 'all' && (t.kind || 'text').toLowerCase() !== kind) return false;
-                        if (status === 'tested' && (!t.models_tested_count || t.models_tested_count === 0)) return false;
-                        if (status === 'untested' && (t.models_tested_count > 0)) return false;
-                        if (status === 'outdated' && !t.is_out_of_date) return false;
-                        if (modelFilter) {
-                            const tested = (t.models_tested || []);
-                            const hit = tested.some(m => m === modelFilter || m.includes(modelFilter) || modelFilter.includes(m));
-                            if (!hit) return false;
-                        }
-                        if (!q) return true;
-                        return (
-                            (t.label || '').toLowerCase().includes(q) ||
-                            (t.id || '').toLowerCase().includes(q) ||
-                            (t.category || '').toLowerCase().includes(q)
-                        );
-                    });
+                    const stillFiltered = ALL_TESTS.filter(_testMatchesFilter);
                     const countEl = document.getElementById('test-browser-count');
                     if (countEl) countEl.textContent = `${stillFiltered.length} test${stillFiltered.length === 1 ? '' : 's'}`;
                 });
@@ -5291,6 +5301,30 @@ const saved = _loadHumanRatings(t.id) || {};
         if (modelSelect) {
             modelSelect.addEventListener('change', (e) => {
                 TEST_BROWSER_FILTER.model = e.target.value;
+                renderTestBrowser();
+            });
+        }
+        const dateFrom = document.getElementById('test-date-from');
+        if (dateFrom) {
+            dateFrom.addEventListener('change', (e) => {
+                TEST_BROWSER_FILTER.date_from = e.target.value;
+                renderTestBrowser();
+            });
+        }
+        const dateTo = document.getElementById('test-date-to');
+        if (dateTo) {
+            dateTo.addEventListener('change', (e) => {
+                TEST_BROWSER_FILTER.date_to = e.target.value;
+                renderTestBrowser();
+            });
+        }
+        const dateClear = document.getElementById('test-date-clear');
+        if (dateClear) {
+            dateClear.addEventListener('click', () => {
+                TEST_BROWSER_FILTER.date_from = '';
+                TEST_BROWSER_FILTER.date_to = '';
+                if (dateFrom) dateFrom.value = '';
+                if (dateTo) dateTo.value = '';
                 renderTestBrowser();
             });
         }
