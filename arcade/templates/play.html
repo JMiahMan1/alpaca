@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ card.title }} — Alpaca Arcade</title>
+<link rel="stylesheet" href="/static/arcade.css">
+</head>
+<body>
+<header class="arcade-header slim">
+  <a href="/">&larr; Arcade</a>
+  <h1>{{ card.title }}</h1>
+</header>
+<main class="play-layout">
+  <section class="game-pane">
+    <div class="cabinet">
+      <div class="cabinet-marquee">★ {{ card.title }} ★</div>
+      <div class="screen">
+        <iframe id="game-frame" src="/game/{{ card.slug }}/index.html" title="{{ card.title }}" sandbox="allow-scripts allow-same-origin allow-pointer-lock"></iframe>
+      </div>
+    </div>
+  </section>
+  <aside class="score-pane">
+    <div class="pane-block neon-cyan">
+      <h3>🤖 Benchmark scorecard</h3>
+      <div class="bench-stars">★ {{ card.benchmark_score if card.benchmark_score is not none else '—' }} / 100</div>
+      <ul class="meta-list">
+        <li><strong>Model:</strong> {{ card.model }}</li>
+        <li><strong>Test:</strong> {{ card.test_label or card.test_id }}</li>
+        <li><strong>Benchmark date:</strong> {{ card.benchmark_date[:10] if card.benchmark_date else '?' }}</li>
+        <li><strong>Published:</strong> {{ card.published_at[:10] if card.published_at else '?' }}</li>
+        <li><strong>Plays:</strong> {{ card.plays }}</li>
+      </ul>
+      {% if validation %}
+      <details><summary>Grading breakdown</summary>
+        <ul class="meta-list">{% for k, v in validation.items() %}<li>{{ k }}: {{ v }}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+      <details><summary>Original prompt</summary><pre class="prompt-box">{{ prompt if prompt is string else prompt|join('\n\n---\n\n') }}</pre></details>
+    </div>
+    <div class="pane-block neon-gold">
+      <h3>🏆 Top scores</h3>
+      <ol id="score-list" class="score-list">
+        {% for s in scores %}<li><span>{{ s.initials }}</span><strong>{{ s.score }}</strong></li>{% else %}<li class="muted">No scores yet — be the first!</li>{% endfor %}
+      </ol>
+      <div class="score-form">
+        <input id="score-initials" maxlength="3" placeholder="ABC" aria-label="Initials">
+        <input id="score-value" type="number" min="0" placeholder="Score" aria-label="Score">
+        <button id="btn-fetch-score" class="arcade-btn ghost" type="button" title="Try to read your score from the game">🎮 Get my score</button>
+        <button id="btn-submit-score" class="arcade-btn" type="button">Submit</button>
+      </div>
+      <div id="score-candidates" class="candidates"></div>
+      <div id="score-msg" class="form-msg"></div>
+    </div>
+    <div class="pane-block neon-pink">
+      <h3>⭐ Player rating</h3>
+      <div id="rating-widget" class="rating-widget" data-avg="{{ card.rating.average }}" data-count="{{ card.rating.count }}">
+        <span class="rating-stars"></span>
+        <span class="muted rating-count"></span>
+      </div>
+      <div class="rate-buttons" role="group" aria-label="Rate this game">
+        {% for n in [1,2,3,4,5] %}<button type="button" data-stars="{{ n }}">★</button>{% endfor %}
+      </div>
+      <div id="rate-msg" class="form-msg"></div>
+    </div>
+  </aside>
+</main>
+<script>const ARCADE_SLUG = {{ card.slug|tojson }};</script>
+<script src="/static/arcade.js"></script>
+</body>
+</html>

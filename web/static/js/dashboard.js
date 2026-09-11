@@ -6847,7 +6847,7 @@ const saved = _loadHumanRatings(t.id) || {};
                             }
                         }
 
-                        addArtifactButtons(flex, modelData.model, test.test_id, test.response);
+                        addArtifactButtons(flex, modelData.model, test.test_id, test.response, test);
                         tdFull.appendChild(flex);
                         expandedRow.appendChild(tdFull);
                         
@@ -7080,7 +7080,7 @@ const saved = _loadHumanRatings(t.id) || {};
                         flex.appendChild(note);
                     }
                     flex.appendChild(codeBlock);
-                    addArtifactButtons(flex, modelData.model, task.test_id, task.response);
+                    addArtifactButtons(flex, modelData.model, task.test_id, task.response, task);
                     tdFull.appendChild(flex);
                     expandedRow.appendChild(tdFull);
                     
@@ -9962,11 +9962,11 @@ const saved = _loadHumanRatings(t.id) || {};
         }
     }
 
-    function addArtifactButtons(container, model, testId, response) {
+    function addArtifactButtons(container, model, testId, response, info) {
         const code = extractCodeFromResponse(response);
         if (!code) return;
         const btnRow = document.createElement('div');
-        btnRow.style.cssText = 'display:flex; gap:0.5rem; margin-top:0.5rem;';
+        btnRow.style.cssText = 'display:flex; gap:0.5rem; margin-top:0.5rem; flex-wrap:wrap;';
 
         const dlBtn = document.createElement('button');
         dlBtn.textContent = '⬇ Download .py';
@@ -9993,6 +9993,38 @@ const saved = _loadHumanRatings(t.id) || {};
             }
         });
         btnRow.appendChild(hostBtn);
+
+        const pubBtn = document.createElement('button');
+        pubBtn.textContent = '🕹 Publish to Arcade';
+        pubBtn.className = 'btn btn-secondary btn-sm';
+        pubBtn.style.cssText = 'padding: 4px 12px; font-size: 0.75rem; cursor:pointer;';
+        pubBtn.title = 'Freeze this game to the public arcade (own copy survives benchmark/model deletion)';
+        pubBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const meta = info || {};
+            const body = { model, test_id: testId };
+            if (meta.score !== undefined && meta.score !== null) body.benchmark_score = meta.score;
+            if (meta.max_score !== undefined) body.max_score = meta.max_score;
+            if (meta.prompt) body.prompt = meta.prompt;
+            if (meta.run_date) body.run_date = meta.run_date;
+            try {
+                const resp = await fetch('/api/arcade/publish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    showToast(`Published to arcade: ${data.slug}`, 'success');
+                    window.open(`http://${window.location.hostname}:5001${data.url}`, '_blank');
+                } else {
+                    showToast(`Publish failed: ${data.error || 'unknown error'}`, 'error');
+                }
+            } catch (err) {
+                showToast(`Publish failed: ${err.message}`, 'error');
+            }
+        });
+        btnRow.appendChild(pubBtn);
 
         container.appendChild(btnRow);
     }

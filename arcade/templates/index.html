@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🕹️ Alpaca Arcade</title>
+<link rel="stylesheet" href="/static/arcade.css">
+</head>
+<body>
+<header class="arcade-header">
+  <div class="marquee">
+    <div class="bulbs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <h1>🕹️ Alpaca Arcade</h1>
+    <p>Top-rated games built by benchmarked local models — free to play.</p>
+  </div>
+  <div class="tagline">★ insert coin · no quarters required ★</div>
+  {% if error %}<div class="arcade-error">{{ error }}</div>{% endif %}
+</header>
+<main class="game-grid">
+  {% for g in games %}
+  <a class="game-card" href="/play/{{ g.slug }}">
+    <div class="game-title">{{ g.title }}</div>
+    <div class="game-stars" title="Benchmark score {{ g.benchmark_score }}">★ {{ g.benchmark_score if g.benchmark_score is not none else '—' }}</div>
+    <div class="game-rating">
+      {% if g.rating.count %}★ {{ g.rating.average }} <span class="muted">({{ g.rating.count }})</span>{% else %}<span class="muted">not rated yet</span>{% endif %}
+    </div>
+    <div class="game-meta">🤖 {{ g.model }} · 📅 {{ g.benchmark_date[:10] if g.benchmark_date else '?' }} · ▶ {{ g.plays }}</div>
+    {% if g.top_score %}<div class="game-top">🏆 {{ g.top_score.initials }} — {{ g.top_score.score }}</div>{% endif %}
+    <span class="play-now">▶ PLAY</span>
+  </a>
+  {% else %}
+  <div class="empty-cabinet">🕹️ No games published yet. Check back soon!</div>
+  {% endfor %}
+</main>
+<footer class="arcade-footer"><span class="coin">●</span> Alpaca Arcade · games stay published until explicitly removed <span class="coin">●</span></footer>
+</body>
+</html>
