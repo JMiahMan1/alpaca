@@ -321,6 +321,7 @@ body > * { position: relative; z-index: 1; }
 .record-table th { color: #ffd23f; letter-spacing: 0.08em; font-size: 0.72rem; }
 .record-table td a { color: var(--neon-cyan, #22d3ee); }
 .record-table tr:hover td { background: rgba(34, 211, 238, 0.06); }
+.record-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
 /* ---------- Scoreboard player links ---------- */
 .score-list a { color: var(--neon-cyan, #22d3ee); text-decoration: none; }
@@ -341,10 +342,10 @@ body > * { position: relative; z-index: 1; }
 
 @media (max-width: 640px) {
   .player-wrap { padding: 0.9rem 0.75rem 2.2rem; }
-  .stat-grid { grid-template-columns: repeat(3, 1fr); gap: 0.55rem; }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 0.55rem; }
   .stat-num { font-size: 1.3rem; }
   .trophy-grid { grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
-  .record-table { font-size: 0.76rem; }
+  .record-table { font-size: 0.76rem; min-width: 540px; }
   .record-table th, .record-table td { padding: 0.45rem 0.35rem; }
 }
 
