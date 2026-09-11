@@ -942,6 +942,121 @@ def test_api_online_models_search_and_selected(client):
         assert data["count"] == 1
 
 
+def _online_selection():
+    return [
+        {"id": "openrouter:google/gemini-2.0-flash-exp:free", "name": "gemini-2.0-flash", "provider": "openrouter"},
+        {"id": "openrouter:deepseek/deepseek-v4.1-flash", "name": "deepseek-v4.1-flash", "provider": "openrouter"},
+    ]
+
+
+def test_api_online_models_remove_model_only(client):
+    """Remove selection entry, keep benchmarks: selection filtered, purge untouched."""
+    saved = {}
+    with (
+        patch(
+            "online_providers.online_model_provider.get_selected_models",
+            return_value=_online_selection(),
+        ),
+        patch(
+            "online_providers.online_model_provider.save_selected_models",
+            side_effect=lambda models: saved.update(models=models) or {"success": True, "count": len(models)},
+        ),
+        patch("web.app._purge_model_benchmarks") as mock_purge,
+    ):
+        res = client.post(
+            "/api/online/models/remove",
+            json={"model": "openrouter:deepseek/deepseek-v4.1-flash", "remove_model": True},
+        )
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True
+        assert data["model_removed"] is True
+        assert [m["id"] for m in saved["models"]] == ["openrouter:google/gemini-2.0-flash-exp:free"]
+        mock_purge.assert_not_called()
+
+
+def test_api_online_models_remove_benchmarks_only(client):
+    """Purge benchmarks, keep selection: purge called, selection file untouched."""
+    with (
+        patch(
+            "online_providers.online_model_provider.get_selected_models",
+            return_value=_online_selection(),
+        ),
+        patch(
+            "online_providers.online_model_provider.save_selected_models",
+            side_effect=AssertionError("selection must not be rewritten"),
+        ),
+        patch(
+            "web.app._purge_model_benchmarks",
+            return_value={"removed": True, "general": False, "shared": True, "snapshots_pruned": 1},
+        ) as mock_purge,
+    ):
+        res = client.post(
+            "/api/online/models/remove",
+            json={
+                "model": "openrouter:deepseek/deepseek-v4.1-flash",
+                "remove_model": False,
+                "remove_benchmarks": True,
+            },
+        )
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True
+        assert data["model_removed"] is False
+        assert data["benchmark_results_removed"]["removed"] is True
+        mock_purge.assert_called_once_with("openrouter:deepseek/deepseek-v4.1-flash")
+
+
+def test_api_online_models_remove_both(client):
+    """Remove entry and purge benchmarks in one call."""
+    saved = {}
+    with (
+        patch(
+            "online_providers.online_model_provider.get_selected_models",
+            return_value=_online_selection(),
+        ),
+        patch(
+            "online_providers.online_model_provider.save_selected_models",
+            side_effect=lambda models: saved.update(models=models) or {"success": True, "count": len(models)},
+        ),
+        patch(
+            "web.app._purge_model_benchmarks",
+            return_value={"removed": True, "general": True, "shared": True, "snapshots_pruned": 2},
+        ) as mock_purge,
+    ):
+        res = client.post(
+            "/api/online/models/remove",
+            json={
+                "model": "openrouter:deepseek/deepseek-v4.1-flash",
+                "remove_model": True,
+                "remove_benchmarks": True,
+            },
+        )
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True
+        assert data["model_removed"] is True
+        assert len(saved["models"]) == 1
+        assert data["benchmark_results_removed"]["snapshots_pruned"] == 2
+        mock_purge.assert_called_once()
+
+
+def test_api_online_models_remove_validation(client):
+    """Missing model, local model, and neither-flag requests are rejected."""
+    res = client.post("/api/online/models/remove", json={})
+    assert res.status_code == 400
+
+    res = client.post("/api/online/models/remove", json={"model": "qwen3:8b", "remove_model": True})
+    assert res.status_code == 400
+    assert "not an online model" in json.loads(res.data.decode("utf-8"))["error"]
+
+    res = client.post(
+        "/api/online/models/remove",
+        json={"model": "openrouter:deepseek/deepseek-v4.1-flash", "remove_model": False, "remove_benchmarks": False},
+    )
+    assert res.status_code == 400
+
+
 @patch("llm_benchmark_suite.LLMModelBenchmark.discover_all_models")
 @patch("llm_benchmark_suite.LLMModelBenchmark.discover_all_proxy_models")
 def test_api_models_tracking(mock_discover_proxy, mock_discover_all, client):

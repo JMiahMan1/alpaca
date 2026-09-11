@@ -2294,6 +2294,78 @@ def selected_online_models_api():
         return jsonify({"success": False, "models": [], "error": str(e)}), 500
 
 
+@app.route("/api/online/models/remove", methods=["POST"])
+def remove_online_model_api():
+    """Remove an online model from the selection and/or purge its benchmark data.
+
+    Body: {model (required, e.g. "openrouter:deepseek/deepseek-v4.1-flash"),
+           remove_model (default True), remove_benchmarks (default False)}
+    - remove_model: drop the entry from data/online_models_selected.json
+      (benchmark history is kept, so the model still shows as previously
+      benchmarked via scan_historical_benchmarks).
+    - remove_benchmarks: purge general + SharedLLM results via
+      _purge_model_benchmarks (selection entry is kept).
+    At least one of the two flags must be true.
+    """
+    try:
+        from online_providers import online_model_provider
+
+        data = request.get_json() or {}
+        model = (data.get("model") or "").strip()
+        if not model:
+            return jsonify({"success": False, "error": "model is required"}), 400
+        if not online_model_provider.is_online_model(model):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": f'"{model}" is not an online model; use /api/models/delete for local models',
+                    }
+                ),
+                400,
+            )
+        remove_model = data.get("remove_model", True)
+        remove_benchmarks = data.get("remove_benchmarks", False)
+        if not remove_model and not remove_benchmarks:
+            return jsonify(
+                {"success": False, "error": "nothing to do: enable remove_model and/or remove_benchmarks"}
+            ), 400
+
+        model_removed = False
+        selection_count = None
+        if remove_model:
+            selected = online_model_provider.get_selected_models() or []
+
+            def _matches(entry: dict) -> bool:
+                return any((entry.get(k) or "") == model for k in ("id", "name", "label"))
+
+            remaining = [m for m in selected if not (isinstance(m, dict) and _matches(m))]
+            model_removed = len(remaining) != len(selected)
+            save_res = online_model_provider.save_selected_models(remaining)
+            if not save_res.get("success"):
+                return (
+                    jsonify({"success": False, "error": f"failed to update selection: {save_res.get('error')}"}),
+                    500,
+                )
+            selection_count = len(remaining)
+
+        purge_info: dict = {}
+        if remove_benchmarks:
+            purge_info = _purge_model_benchmarks(model)
+
+        return jsonify(
+            {
+                "success": True,
+                "model": model,
+                "model_removed": model_removed,
+                "selection_count": selection_count,
+                "benchmark_results_removed": purge_info,
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/models/tracking")
 def get_models_tracking_api():
     """Returns tracking summary for newly added models vs previously benchmarked items."""
