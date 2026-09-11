@@ -272,3 +272,126 @@ def test_web_published_list(web_client, games_dir, source_html):
     slug = _publish(games_dir, source_html)["slug"]
     res = web_client.get("/api/arcade/published")
     assert json.loads(res.data.decode()) == {"slugs": [slug]}
+
+
+# --- players + achievements ---
+
+
+def _player(arcade_client, initials):
+    res = arcade_client.get(f"/api/players/{initials}")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    return data["player"]
+
+
+def test_submit_tracks_bests_and_first_unlocks(arcade_client):
+    res = arcade_client.post("/api/games/demo-model_demo-breakout/scores", json={"initials": "abc", "score": 500})
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["pioneer"] is True
+    assert data["personal_best"] is False
+    assert data["player_url"] == "/player/ABC"
+    ids = {u["id"] for u in data["new_unlocks"]}
+    assert {"first-blood", "on-board", "podium", "champion", "pioneer"} <= ids
+
+    # A better score sets a personal record and unlocks exactly that.
+    res = arcade_client.post("/api/games/demo-model_demo-breakout/scores", json={"initials": "ABC", "score": 900})
+    data = json.loads(res.data.decode())
+    assert data["personal_best"] is True
+    assert [u["id"] for u in data["new_unlocks"]] == ["personal-record"]
+
+    p = _player(arcade_client, "abc")  # case-insensitive identity
+    assert p["initials"] == "ABC"
+    assert p["submits"] == 2
+    assert p["best_score"] == 900
+    assert p["boards"] == 1 and p["crowns"] == 1
+    assert p["personal_bests"] == 1 and p["pioneered"] == 1
+
+
+def test_cross_game_globetrotter_and_completionist(arcade_client, games_dir, source_html):
+    slugs = [_publish(games_dir, source_html, test_id=f"demo_{n}")["slug"] for n in ("two", "three")]
+    slugs.append("demo-model_demo-breakout")
+    for slug in slugs:
+        res = arcade_client.post(f"/api/games/{slug}/scores", json={"initials": "XYZ", "score": 100})
+        assert res.status_code == 200
+    p = _player(arcade_client, "XYZ")
+    assert p["games_scored"] == 3
+    assert p["total_games"] == 3
+    unlocked = {a["id"] for a in p["achievements"] if a["unlocked"]}
+    assert {"globetrotter", "completionist", "grinder"} - unlocked == {"grinder"}  # only 3 submits
+    assert p["achievements"] and all("progress" in a and "goal" in a for a in p["achievements"])
+
+
+def test_critic_and_standing_ovation(arcade_client, games_dir, source_html):
+    slugs = [_publish(games_dir, source_html, test_id=f"demo_{n}")["slug"] for n in ("two", "three")]
+    slugs.append("demo-model_demo-breakout")
+    for i, slug in enumerate(slugs):
+        res = arcade_client.post(f"/api/games/{slug}/rate", json={"stars": 5 if i == 0 else 4, "initials": "crt"})
+        assert res.status_code == 200
+    p = _player(arcade_client, "CRT")
+    assert p["games_rated"] == 3
+    assert p["gave_five_stars"] is True
+    unlocked = {a["id"] for a in p["achievements"] if a["unlocked"]}
+    assert {"critic", "standing-ovation"} <= unlocked
+
+
+def test_anonymous_votes_do_not_credit_critic(arcade_client):
+    res = arcade_client.post("/api/games/demo-model_demo-breakout/rate", json={"stars": 5})
+    assert res.status_code == 200
+    p = _player(arcade_client, "ZZZ")
+    assert p["games_rated"] == 0
+    assert p["submits"] == 0
+
+
+def test_player_page_renders(arcade_client):
+    arcade_client.post("/api/games/demo-model_demo-breakout/scores", json={"initials": "QWE", "score": 42})
+    res = arcade_client.get("/player/qwe")
+    assert res.status_code == 200
+    assert b"QWE" in res.data
+    assert b"Trophy Room" in res.data
+    assert b"First Blood" in res.data
+
+    res = arcade_client.get("/player/!!")
+    assert res.status_code == 404
+
+
+def test_achievements_evaluate_all_locked_and_all_unlocked():
+    import arcade.achievements as ach
+
+    bare = {
+        "submits": 0,
+        "boards": 0,
+        "podiums": 0,
+        "crowns": 0,
+        "crown_games": 0,
+        "games_scored": 0,
+        "personal_bests": 0,
+        "pioneered": 0,
+        "night_owl": False,
+        "high_roller": False,
+        "best_score": 0,
+        "games_rated": 0,
+        "gave_five_stars": False,
+        "total_games": 4,
+    }
+    assert ach.unlocked_ids(bare) == set()
+
+    hero = dict(
+        bare,
+        submits=25,
+        boards=5,
+        podiums=4,
+        crowns=4,
+        crown_games=4,
+        games_scored=4,
+        personal_bests=5,
+        pioneered=2,
+        night_owl=True,
+        high_roller=True,
+        best_score=200000,
+        games_rated=4,
+        gave_five_stars=True,
+    )
+    assert ach.unlocked_ids(hero) == {a["id"] for a in ach.ACHIEVEMENTS}
