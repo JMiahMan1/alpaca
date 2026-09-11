@@ -560,10 +560,25 @@ def update_models_ini():
                     model_settings["spec-draft-n-max"] = "0"
 
                 if profile:
+                    # Sanitize legacy keys the current llama-server preset
+                    # parser hard-fails on: --mlock/--no-mmap were removed in
+                    # favor of --load-mode, and bench-verified* moved to the
+                    # .alpaca-router/bench-verified.json sidecar.
+                    drop_keys = {"mlock", "no-mmap"}
+                    unpin = False
                     for k, v in profile.items():
                         if k == "model":
                             continue
+                        if k in drop_keys:
+                            if str(v).lower() == "false":
+                                unpin = True
+                            continue
+                        if k.startswith("bench-verified"):
+                            continue
                         model_settings[k] = str(v)
+                    if unpin and "load-mode" not in model_settings:
+                        # Old mlock=false/no-mmap=false meant plain mmap.
+                        model_settings["load-mode"] = "mmap"
 
                 content.append(f"[{alias}]")
                 content.append(f"model = /router-models/{entry.name}")
