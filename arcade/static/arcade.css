@@ -344,6 +344,9 @@ body > * { position: relative; z-index: 1; }
 
 /* Code-kind games (pygame / desktop apps): screenshot + source + download. */
 .code-game { display: flex; flex-direction: column; gap: 0.7rem; padding: 0.8rem; }
+/* .screen zeroes line-height for pixel-perfect game frames — restore readable
+   text rhythm inside the code-game branch or every line paints over the last. */
+.screen .code-game { line-height: 1.45; }
 .code-screenshot { width: 100%; border-radius: 8px; border: 2px solid #22d3ee; box-shadow: 0 0 18px rgba(34, 211, 238, 0.45); }
 .code-run-hint { color: #ffd23f; font-size: 0.82rem; text-align: center; }
 .code-view {
