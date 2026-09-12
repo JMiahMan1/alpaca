@@ -203,6 +203,59 @@
             }).then((r) => r.json().then((j) => ({ ok: r.ok, j })));
 
         const frame = document.getElementById('vnc-frame');
+        // Report real stream state up to an embedding arcade page (same-origin
+        // parent). The 'Connected' text below only means the iframe src was
+        // set — the inner noVNC client reports its own status separately, and
+        // on phones that is the only way to see a silent stream failure.
+        const report = (state, detail) => {
+            try {
+                parent.postMessage(
+                    { source: 'arcade-vnc', container: CONTAINER_ID, state, detail: detail || '' },
+                    '*'
+                );
+            } catch (e) { /* no parent listener — harmless */ }
+        };
+        report('launcher-ready');
+        window.addEventListener('error', (ev) => {
+            report('page-error', String((ev && ev.message) || ev));
+        });
+        const watchInnerStream = () => {
+            let last = '';
+            const poll = () => {
+                let state = 'inner-unreadable';
+                let detail = '';
+                try {
+                    const doc = frame.contentDocument;
+                    const el = doc && doc.querySelector('#noVNC_status');
+                    if (el) {
+                        state = 'inner-status';
+                        detail = (el.textContent || '').trim().slice(0, 120);
+                    } else if (doc && doc.querySelector('#noVNC_container, #noVNC_screen')) {
+                        state = 'inner-rendered';
+                    } else if (doc) {
+                        state = 'inner-loading';
+                    }
+                } catch (e) {
+                    state = 'inner-blocked';
+                    detail = String(e && e.message || e).slice(0, 120);
+                }
+                const key = state + '|' + detail;
+                if (key !== last) {
+                    last = key;
+                    report(state, detail);
+                }
+                setTimeout(poll, 2500);
+            };
+            poll();
+        };
+        let watchingStream = false;
+        frame.addEventListener('load', () => {
+            // Skip the initial about:blank load; watch only the real stream.
+            if (!String(frame.src || '').includes('/serve/')) return;
+            if (watchingStream) return;
+            watchingStream = true;
+            watchInnerStream();
+        });
         if (HOST_PORT) {
             // Tunnel the noVNC client page AND its WebSocket through the dashboard
             // origin (port 5000) so it works from a LAN, VPN, or external network.

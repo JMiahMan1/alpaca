@@ -150,6 +150,20 @@
       status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";
       btn.textContent = "↻ Restart sandbox";
       btn.disabled = false;
+      // Stream telemetry from the embedded launcher (same-origin parent,
+      // cross-origin child posts state). Surfaces silent phone-side stream
+      // failures that emulation cannot reproduce.
+      if (!window.__arcadeVncListener) {
+        window.__arcadeVncListener = true;
+        window.addEventListener("message", (ev) => {
+          const m = ev && ev.data;
+          if (!m || m.source !== "arcade-vnc") return;
+          const s = $("live-status");
+          if (!s) return;
+          const detail = m.detail ? ` — ${m.detail}` : "";
+          s.textContent = `🟢 Live! Stream: ${m.state}${detail}`;
+        });
+      }
     } catch (e) {
       status.textContent = `Launch failed: ${e.message}`;
       btn.textContent = "▶ Play";
