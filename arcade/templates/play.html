@@ -37,7 +37,7 @@
               <li><strong>Published:</strong> {{ card.published_at[:10] if card.published_at else '?' }}</li>
             </ul>
             <details><summary>Original prompt</summary><pre class="prompt-box">{{ prompt if prompt is string else prompt|join('\n\n---\n\n') }}</pre></details>
-            <a class="arcade-btn" href="/game/{{ card.slug }}/game.py" download>⬇ Download {{ card.slug }}.py</a>
+            <a class="arcade-btn" href="/game/{{ card.slug }}/game.py" download>⬇ Download game.py</a>
             <pre class="code-view">{{ code_text }}</pre>
           </details>
         </div>
@@ -46,7 +46,7 @@
       {% if kind == "playable" %}
       <p class="cabinet-hint">🎮 Click the screen, then use the keyboard (often <kbd>Space</kbd> to start) — sound on for the full effect</p>
       {% else %}
-      <p class="cabinet-hint">🎮 Run locally with <kbd>python {{ card.slug }}.py</kbd> (needs pygame: <kbd>pip install pygame</kbd>), then enter your score by hand</p>
+      <p class="cabinet-hint">🎮 Download the game below and run it locally with <kbd>python</kbd> (needs pygame: <kbd>pip install pygame</kbd>), then enter your score by hand</p>
       {% endif %}
     </div>
   </section>

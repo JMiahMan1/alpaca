@@ -94,6 +94,13 @@ def _iter_result_records(test_id: str):
                             "screenshot": t.get("screenshot"),
                             "score": score,
                             "model": data.get("model") or fp.stem,
+                            "prompt": t.get("prompt") or t.get("prompt_steps") or "",
+                            "run_date": t.get("run_date")
+                            or t.get("benchmark_date")
+                            or t.get("timestamp")
+                            or t.get("date")
+                            or "",
+                            "source_file": str(fp),
                         }
 
 
@@ -106,6 +113,35 @@ def find_model_response(model: str, test_id: str) -> dict | None:
         if best is None or len(rec["response"]) > len(best["response"]):
             best = rec
     return best
+
+
+def _catalog_prompt(test_id: str) -> str:
+    """The static test prompt from benchmark_tests.json (fallback when the
+    stored run record carries no prompt of its own)."""
+    try:
+        catalog = json.loads((Path(__file__).resolve().parent.parent / "benchmark_tests.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(catalog, dict):
+        return ""
+    for tests in catalog.values():
+        if not isinstance(tests, list):
+            continue
+        for t in tests:
+            if isinstance(t, dict) and (t.get("id") == test_id):
+                p = t.get("prompt") or ""
+                return p if isinstance(p, str) else ""
+    return ""
+
+
+def _file_date(path: str | Path | None) -> str:
+    """YYYY-MM-DD of a file's mtime (last-resort run-date fallback)."""
+    if not path:
+        return ""
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime).strftime("%Y-%m-%d")
+    except OSError:
+        return ""
 
 
 def publish_game(
@@ -140,6 +176,7 @@ def publish_game(
     screenshot_b64 = None
     src = Path(source_file) if source_file else find_artifact_file(model, test_id)
     code_text = None
+    rec = None
     if src is not None and not src.exists():
         src = None
     if src is None:
@@ -186,6 +223,18 @@ def publish_game(
         if not path.exists():
             path.write_text(json.dumps([] if name == "scores.json" else {}))
 
+    # Stored run records are minimal (often no prompt/date), so backfill from
+    # the record, the source file's mtime, then the static test catalog.
+    rec_prompt = (rec or {}).get("prompt") or ""
+    resolved_prompt = prompt or rec_prompt or _catalog_prompt(test_id)
+    rec_date = (rec or {}).get("run_date") or ""
+    src_for_date = None
+    if src is not None:
+        src_for_date = src
+    elif rec is not None:
+        src_for_date = rec.get("source_file")
+    resolved_date = run_date or rec_date or _file_date(src_for_date)
+
     meta = {
         "slug": slug,
         "title": title or test_id.replace("_", " ").replace("-", " ").title(),
@@ -196,9 +245,9 @@ def publish_game(
         "has_screenshot": (game_dir / "screenshot.png").exists(),
         "benchmark_score": benchmark_score,
         "max_score": max_score,
-        "prompt": prompt or "",
-        "run_date": run_date or "",
-        "benchmark_date": run_date or "",
+        "prompt": resolved_prompt,
+        "run_date": resolved_date,
+        "benchmark_date": resolved_date,
         "published_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "auto_published": bool(auto),
     }
