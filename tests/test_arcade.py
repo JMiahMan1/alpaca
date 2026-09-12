@@ -677,3 +677,16 @@ def test_arcade_code_page_has_live_button(arcade_client):
     # Under-screen info is minimized behind a click-here expander.
     assert 'class="under-screen"' in html
     assert "Click here for code, download, prompt" in html
+
+
+def test_arcade_js_no_commented_out_widget():
+    """Regression: `const widget = ...` was once merged into a `//` comment,
+    leaving `widget` undefined and killing the entire play-page script
+    (launch, scores, ratings — dead on mobile and desktop)."""
+    with open("arcade/static/arcade.js", encoding="utf-8") as f:
+        src = f.read()
+    assert 'const widget = $("rating-widget");' in src
+    for line in src.splitlines():
+        stripped = line.strip()
+        if "const widget" in stripped:
+            assert not stripped.startswith("//"), f"widget declaration commented out: {line!r}"
