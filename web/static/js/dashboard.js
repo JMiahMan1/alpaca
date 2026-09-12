@@ -3940,7 +3940,11 @@ const saved = _loadHumanRatings(t.id) || {};
             winRun.addEventListener('click', () => openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking));
         }
         winnerBar.appendChild(winRun);
-        if (isHtml || isUi) {
+        // Publish works for any displayable winner: playable HTML freezes
+        // as-is; desktop apps (pygame et al., fenced code) freeze as code +
+        // screenshot. Pure-prose answers get no button.
+        const _hasCode = /```/.test(String(winnerRow.response || ''));
+        if (winnerRow.response && String(winnerRow.response).trim() && (isHtml || isUi || _hasCode)) {
             const winPub = document.createElement('button');
             winPub.className = 'btn btn-secondary btn-sm';
             winPub.style.cssText = 'padding: 4px 12px; font-size: 0.75rem; cursor:pointer; margin-left:0.5rem;';

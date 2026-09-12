@@ -342,6 +342,17 @@ body > * { position: relative; z-index: 1; }
 .unlock-item { color: #fff; font-size: 0.85rem; margin-top: 0.25rem; }
 .confetti-canvas { position: fixed; inset: 0; z-index: 9998; pointer-events: none; }
 
+/* Code-kind games (pygame / desktop apps): screenshot + source + download. */
+.code-game { display: flex; flex-direction: column; gap: 0.7rem; padding: 0.8rem; }
+.code-screenshot { width: 100%; border-radius: 8px; border: 2px solid #22d3ee; box-shadow: 0 0 18px rgba(34, 211, 238, 0.45); }
+.code-run-hint { color: #ffd23f; font-size: 0.82rem; text-align: center; }
+.code-view {
+  max-height: 46dvh; overflow: auto; text-align: left;
+  background: #070b16; color: #c9f6ff; font: 0.72rem/1.5 ui-monospace, Menlo, Consolas, monospace;
+  border: 1px solid #22d3ee; border-radius: 8px; padding: 0.7rem; margin: 0; white-space: pre;
+}
+.code-game .arcade-btn { align-self: center; }
+
 @media (max-width: 640px) {
   .player-wrap { padding: 0.9rem 0.75rem 2.2rem; }
   .stat-grid { grid-template-columns: minmax(0, 1fr); gap: 0.55rem; }

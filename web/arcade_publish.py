@@ -47,7 +47,65 @@ def find_artifact_file(model: str, test_id: str) -> Path | None:
 
 def is_published(slug: str) -> bool:
     game_dir = GAMES_DIR / slug
-    return (game_dir / "game.html").exists() and (game_dir / "meta.json").exists()
+    if not game_dir.is_dir() or not (game_dir / "meta.json").exists():
+        return False
+    return (game_dir / "game.html").exists() or (game_dir / "game.py").exists()
+
+
+def _iter_result_records(test_id: str):
+    """Yield (response, screenshot, score) records for a test from all suites.
+
+    Scans general per-model files (data/llm_benchmarks/models/general_*.json)
+    plus multistep per-model files, keeping the same record shape the
+    /api/tests/responses endpoint serves.
+    """
+    for pattern in ("data/llm_benchmarks/models/general_*.json", "data/multistep_benchmarks/models/multistep_*.json"):
+        for fp in sorted(Path(".").glob(pattern)):
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            for run in data.get("results") or []:
+                if not isinstance(run, dict):
+                    continue
+                task_lists = []
+                for value in run.values():
+                    if isinstance(value, dict) and isinstance(value.get("tests"), list):
+                        task_lists.append(value["tests"])
+                    elif isinstance(value, list):
+                        task_lists.append(value)
+                for tasks in task_lists:
+                    for t in tasks:
+                        if not isinstance(t, dict):
+                            continue
+                        if (t.get("test_id") or t.get("id")) != test_id:
+                            continue
+                        resp = t.get("response") or ""
+                        if not str(resp).strip():
+                            continue
+                        try:
+                            score = float(t.get("score") or 0)
+                        except (TypeError, ValueError):
+                            score = 0.0
+                        yield {
+                            "response": str(resp),
+                            "screenshot": t.get("screenshot"),
+                            "score": score,
+                            "model": data.get("model") or fp.stem,
+                        }
+
+
+def find_model_response(model: str, test_id: str) -> dict | None:
+    """Longest stored response for a model+test across result files (or None)."""
+    best = None
+    for rec in _iter_result_records(test_id):
+        if rec["model"] != model:
+            continue
+        if best is None or len(rec["response"]) > len(best["response"]):
+            best = rec
+    return best
 
 
 def publish_game(
@@ -64,20 +122,64 @@ def publish_game(
 ) -> dict:
     """Copy a game into the arcade. Returns ``{"slug": ..., "url": ..., "republished": ...}``.
 
-    Raises FileNotFoundError when no game HTML can be found and ValueError
+    Raises FileNotFoundError when no game source can be found and ValueError
     when model/test_id are missing.
+
+    Source resolution, in order:
+    1. an explicit ``source_file`` (copied as-is, playable HTML assumed);
+    2. a saved ``data/artifacts/<model>__<test>.html`` file (playable);
+    3. the model's stored benchmark response: embedded HTML becomes a
+       playable ``game.html``; otherwise the extracted program (e.g. pygame
+       Python) is frozen as ``game.py`` plus the run screenshot, served as a
+       code-kind game page with download.
     """
     if not model or not test_id:
         raise ValueError("model and test_id are required to publish a game")
     slug = slugify(model, test_id)
+    kind = "playable"
+    screenshot_b64 = None
     src = Path(source_file) if source_file else find_artifact_file(model, test_id)
-    if src is None or not src.exists():
-        raise FileNotFoundError(f"no saved game HTML found for {model} / {test_id}")
+    code_text = None
+    if src is not None and not src.exists():
+        src = None
+    if src is None:
+        rec = find_model_response(model, test_id)
+        if rec is None:
+            raise FileNotFoundError(f"no saved game found for {model} / {test_id}")
+        resp = rec["response"]
+        if re.search(r"<!doctype|<html|<script|<canvas", resp, re.I):
+            from sandbox_exec import extract_clean_code
+
+            code_text = ("__html__", extract_clean_code(resp, "web"))
+        else:
+            from sandbox_exec import extract_clean_code
+
+            code_text = ("__py__", extract_clean_code(resp, "python"))
+        screenshot_b64 = rec.get("screenshot")
+        if benchmark_score is None:
+            benchmark_score = rec.get("score")
 
     game_dir = GAMES_DIR / slug
     game_dir.mkdir(parents=True, exist_ok=True)
     republished = (game_dir / "meta.json").exists()
-    shutil.copyfile(src, game_dir / "game.html")
+    if code_text is None:
+        assert src is not None
+        shutil.copyfile(src, game_dir / "game.html")
+        (game_dir / "game.py").unlink(missing_ok=True)
+    elif code_text[0] == "__html__":
+        (game_dir / "game.html").write_text(code_text[1], encoding="utf-8")
+        (game_dir / "game.py").unlink(missing_ok=True)
+    else:
+        kind = "code"
+        (game_dir / "game.py").write_text(code_text[1], encoding="utf-8")
+        (game_dir / "game.html").unlink(missing_ok=True)
+        if screenshot_b64:
+            import base64
+
+            with contextlib.suppress(Exception):
+                data = screenshot_b64.split(",", 1)[-1]
+                (game_dir / "screenshot.png").write_bytes(base64.b64decode(data))
+        # else: keep any previously saved screenshot on republish.
 
     for name in ("scores.json", "ratings.json"):
         path = game_dir / name
@@ -89,6 +191,9 @@ def publish_game(
         "title": title or test_id.replace("_", " ").replace("-", " ").title(),
         "model": model,
         "test_id": test_id,
+        "kind": kind,
+        "lang": "python" if kind == "code" else "html",
+        "has_screenshot": (game_dir / "screenshot.png").exists(),
         "benchmark_score": benchmark_score,
         "max_score": max_score,
         "prompt": prompt or "",
@@ -101,7 +206,15 @@ def publish_game(
     # The arcade container runs as a non-root user while publishes often
     # happen as root (web container / sudo). Leave everything group- and
     # world-writable so score/rating/play-count writes never 500.
-    for path in (game_dir, game_dir / "game.html", game_dir / "meta.json"):
+    for path in (
+        game_dir,
+        game_dir / "game.html",
+        game_dir / "game.py",
+        game_dir / "screenshot.png",
+        game_dir / "meta.json",
+    ):
+        if not path.exists():
+            continue
         with contextlib.suppress(OSError):
             os.chmod(path, 0o777 if path.is_dir() else 0o666)
     for name in ("scores.json", "ratings.json"):

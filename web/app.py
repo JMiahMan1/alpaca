@@ -471,13 +471,10 @@ def get_progress_callback(run_type):
 
                     _res = data.get("result") if isinstance(data.get("result"), dict) else {}
                     _score = _res.get("score")
-                    _artifact = _res.get("artifact") or ""
-                    if (
-                        isinstance(_score, (int, float))
-                        and _score >= get_auto_publish_score()
-                        and isinstance(_artifact, str)
-                        and _artifact.endswith(".html")
-                    ):
+                    # Any display-capable result qualifies: publish_game itself
+                    # resolves the source (saved HTML artifact, embedded HTML,
+                    # or extracted program + screenshot for desktop apps).
+                    if isinstance(_score, (int, float)) and _score >= get_auto_publish_score():
                         _prompt = _res.get("prompt_steps") or _res.get("prompt") or ""
                         if isinstance(_prompt, list):
                             _prompt = "\n\n".join(str(s) for s in _prompt)
