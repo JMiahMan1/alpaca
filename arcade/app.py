@@ -217,6 +217,8 @@ def _game_card(slug: str) -> dict | None:
         "test_label": meta.get("test_label", ""),
         "model": meta.get("model", ""),
         "benchmark_score": meta.get("benchmark_score"),
+        "max_score": meta.get("max_score"),
+        "lang": meta.get("lang", ""),
         "benchmark_date": meta.get("benchmark_date", ""),
         "published_at": meta.get("published_at", ""),
         "plays": int(meta.get("plays", 0) or 0),
@@ -242,7 +244,7 @@ def list_games() -> list:
 
 @app.after_request
 def _no_store_static(resp):
-    if request.path.startswith("/static/"):
+    if request.path.startswith("/static/") or resp.mimetype == "text/html":
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -280,7 +282,7 @@ def play(slug):
         validation=(meta.get("validation") or {}).get("breakdown", {}),
         kind=kind,
         code_text=code_text,
-        code_lang=meta.get("lang") or "python",
+        code_lang=meta.get("lang") or "",
         has_screenshot=(d / "screenshot.png").exists(),
     )
 

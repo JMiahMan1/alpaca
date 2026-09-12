@@ -723,3 +723,81 @@ def test_publish_backfills_prompt_and_date_from_catalog_and_file(games_dir, tmp_
     assert meta["run_date"] == "2026-09-10"
     assert meta["benchmark_date"] == "2026-09-10"
     assert meta["benchmark_score"] == 92.0
+
+
+def test_response_lang_uses_model_fence_tag():
+    """The extraction language comes from the model's own fenced block tag —
+    never a hardcoded per-kind default."""
+    assert ap._response_lang("```html\n<canvas></canvas>\n```") == "html"
+    assert ap._response_lang("```python\nimport pygame\n```") == "python"
+    assert ap._response_lang("```js\nconsole.log(1)\n```") == "javascript"
+    assert ap._response_lang("no fences here, just code") == "python"  # documented last resort
+
+
+def test_publish_meta_lang_follows_response(games_dir, monkeypatch):
+    """A JS-fenced response publishes with lang javascript, not python."""
+    monkeypatch.setattr(
+        ap,
+        "find_model_response",
+        lambda model, test_id: {
+            "response": "```js\nconsole.log('hi')\n```",
+            "screenshot": None,
+            "score": 70.0,
+            "model": model,
+            "prompt": "p",
+            "run_date": "2026-09-10",
+            "source_file": None,
+        },
+    )
+    res = ap.publish_game(model="demo-model", test_id="demo_js")
+    meta = json.loads((games_dir / res["slug"] / "meta.json").read_text())
+    assert meta["lang"] == "javascript"
+
+
+def test_publish_max_score_from_record(games_dir, monkeypatch):
+    """max_score falls back to the run record's own scale; None when unknown."""
+    monkeypatch.setattr(
+        ap,
+        "find_model_response",
+        lambda model, test_id: {
+            "response": "```python\nprint('hi')\n```",
+            "screenshot": None,
+            "score": 70.0,
+            "max_score": 200.0,
+            "model": model,
+            "prompt": "p",
+            "run_date": "2026-09-10",
+            "source_file": None,
+        },
+    )
+    res = ap.publish_game(model="demo-model", test_id="demo_max")
+    meta = json.loads((games_dir / res["slug"] / "meta.json").read_text())
+    assert meta["max_score"] == 200.0
+
+    monkeypatch.setattr(
+        ap,
+        "find_model_response",
+        lambda model, test_id: {
+            "response": "```python\nprint('hi')\n```",
+            "screenshot": None,
+            "score": 70.0,
+            "model": model,
+            "prompt": "p",
+            "run_date": "2026-09-10",
+            "source_file": None,
+        },
+    )
+    res = ap.publish_game(model="demo-model", test_id="demo_nomax")
+    meta = json.loads((games_dir / res["slug"] / "meta.json").read_text())
+    assert meta["max_score"] is None
+
+
+def test_arcade_html_responses_are_no_store():
+    """Play/index pages must not be cached (stale-phone-cache insurance)."""
+    import arcade.app as arcade_app
+
+    client = arcade_app.app.test_client()
+    for path in ("/", "/health"):
+        resp = client.get(path)
+        if path == "/" and resp.status_code == 200:
+            assert resp.headers.get("Cache-Control") == "no-store"

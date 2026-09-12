@@ -115,6 +115,29 @@ def find_model_response(model: str, test_id: str) -> dict | None:
     return best
 
 
+_FENCE_LANGS = {
+    "html": "html",
+    "python": "python",
+    "py": "python",
+    "javascript": "javascript",
+    "js": "javascript",
+    "typescript": "typescript",
+    "ts": "typescript",
+}
+
+
+def _response_lang(resp: str) -> str:
+    """Language evidenced by the model's own response (first fenced block tag).
+
+    Falls back to "python" only when the response carries no language marker
+    at all — the extraction library's own default for unfenced code.
+    """
+    m = re.search(r"```(\w+)", resp or "")
+    if m:
+        return _FENCE_LANGS.get(m.group(1).lower(), m.group(1).lower())
+    return "python"
+
+
 def _catalog_prompt(test_id: str) -> str:
     """The static test prompt from benchmark_tests.json (fallback when the
     stored run record carries no prompt of its own)."""
@@ -173,6 +196,7 @@ def publish_game(
         raise ValueError("model and test_id are required to publish a game")
     slug = slugify(model, test_id)
     kind = "playable"
+    resp_lang = "html"
     screenshot_b64 = None
     src = Path(source_file) if source_file else find_artifact_file(model, test_id)
     code_text = None
@@ -188,13 +212,18 @@ def publish_game(
             from sandbox_exec import extract_clean_code
 
             code_text = ("__html__", extract_clean_code(resp, "web"))
+            resp_lang = "html"
         else:
             from sandbox_exec import extract_clean_code
 
-            code_text = ("__py__", extract_clean_code(resp, "python"))
+            resp_lang = _response_lang(resp)
+            code_text = ("__py__", extract_clean_code(resp, resp_lang))
         screenshot_b64 = rec.get("screenshot")
         if benchmark_score is None:
             benchmark_score = rec.get("score")
+        if max_score is None:
+            with contextlib.suppress(TypeError, ValueError):
+                max_score = float(rec.get("max_score")) if rec.get("max_score") is not None else None
 
     game_dir = GAMES_DIR / slug
     game_dir.mkdir(parents=True, exist_ok=True)
@@ -241,7 +270,7 @@ def publish_game(
         "model": model,
         "test_id": test_id,
         "kind": kind,
-        "lang": "python" if kind == "code" else "html",
+        "lang": resp_lang,
         "has_screenshot": (game_dir / "screenshot.png").exists(),
         "benchmark_score": benchmark_score,
         "max_score": max_score,
