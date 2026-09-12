@@ -10266,6 +10266,13 @@ const saved = _loadHumanRatings(t.id) || {};
     const testResultGemini = document.getElementById('test-result-gemini');
     const badgeStatusGemini = document.getElementById('badge-status-gemini');
 
+    const inputLlmBudget = document.getElementById('input-llm-budget');
+    const inputLlmFormat = document.getElementById('input-llm-format');
+    const btnSaveLlmServer = document.getElementById('btn-save-llm-server');
+    const badgeStatusLlmServer = document.getElementById('badge-status-llm-server');
+    const llmServerCurrent = document.getElementById('llm-server-current');
+    const testResultLlmServer = document.getElementById('test-result-llm-server');
+
     function updateAlpacaSnippet(token) {
         if (snippetApiKeyVal) {
             snippetApiKeyVal.textContent = token ? `"${token}"` : '"YOUR_TOKEN_HERE"';
@@ -10368,6 +10375,77 @@ const saved = _loadHumanRatings(t.id) || {};
         } catch (err) {
             console.error('Error loading provider credentials:', err);
         }
+        await loadLlmServerSettings();
+    }
+
+    async function loadLlmServerSettings() {
+        try {
+            const res = await fetch('/api/settings/llm-server');
+            if (!res.ok) return;
+            const data = await res.json();
+            if (inputLlmBudget && data.budget != null) inputLlmBudget.value = data.budget;
+            if (inputLlmFormat && data.format) inputLlmFormat.value = data.format;
+            if (llmServerCurrent) {
+                llmServerCurrent.textContent =
+                    `Saved: budget=${data.budget ?? '(unset)'} format=${data.format ?? '(unset)'} | ` +
+                    `Running server: budget=${data.live_budget ?? '(unknown)'} format=${data.live_format ?? '(unknown)'}` +
+                    (data.needs_apply ? ' — ⚠ differs, press Save & Apply.' : ' — in sync.');
+            }
+            if (badgeStatusLlmServer) {
+                if (data.budget == null || data.format == null) {
+                    badgeStatusLlmServer.className = 'badge badge-warning';
+                    badgeStatusLlmServer.textContent = 'Unset';
+                } else if (data.needs_apply) {
+                    badgeStatusLlmServer.className = 'badge badge-warning';
+                    badgeStatusLlmServer.textContent = 'Needs Apply';
+                } else {
+                    badgeStatusLlmServer.className = 'badge badge-success';
+                    badgeStatusLlmServer.textContent = 'Applied';
+                }
+            }
+        } catch (err) {
+            console.error('Error loading llm-server settings:', err);
+        }
+    }
+
+    if (btnSaveLlmServer) {
+        btnSaveLlmServer.addEventListener('click', async () => {
+            const show = (msg, ok) => {
+                if (testResultLlmServer) {
+                    testResultLlmServer.style.display = 'block';
+                    testResultLlmServer.style.color = ok ? '#4ade80' : '#f87171';
+                    testResultLlmServer.textContent = msg;
+                }
+            };
+            const budget = parseInt(inputLlmBudget?.value, 10);
+            const format = inputLlmFormat?.value;
+            if (!Number.isInteger(budget) || budget < 0) {
+                show('Enter a budget in tokens (whole number, 0 or more).', false);
+                return;
+            }
+            try {
+                btnSaveLlmServer.disabled = true;
+                btnSaveLlmServer.textContent = 'Applying (recreates server)...';
+                const res = await fetch('/api/settings/llm-server', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ budget, format })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    show(`Saved budget=${data.budget} format=${data.format}; server recreated and applying.`, true);
+                    showToast('LLM server reasoning settings applied.', 'success');
+                } else {
+                    show(data.error || 'Save failed.', false);
+                }
+            } catch (err) {
+                show(`Error saving: ${err.message}`, false);
+            } finally {
+                btnSaveLlmServer.disabled = false;
+                btnSaveLlmServer.textContent = '💾 Save & Apply';
+                await loadLlmServerSettings();
+            }
+        });
     }
 
     if (btnGenerateAlpacaToken) {

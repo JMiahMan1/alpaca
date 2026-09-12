@@ -2708,6 +2708,35 @@
                     </div>
                 </div>
 
+                <!-- Local LLM Server Section (UI-owned reasoning settings, no defaults) -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>🧠</span> Local LLM Server
+                        </strong>
+                        <span id="badge-status-llm-server" class="badge badge-secondary" style="font-size:0.68rem;">Unknown</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Thinking budget cap + reasoning format for llama-server. These values are the single source of
+                        truth (stored in .env); saving recreates the server container so they apply. If the saved
+                        values differ from the running server, the badge warns until applied.
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                        <label style="font-size:0.75rem; color:var(--text-muted);">Thinking budget (tokens)</label>
+                        <input type="number" id="input-llm-budget" min="0" step="1" placeholder="e.g. 2048" style="width:9rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <label style="font-size:0.75rem; color:var(--text-muted);">Format</label>
+                        <select id="input-llm-format" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem;">
+                            <option value="deepseek">deepseek</option>
+                            <option value="deepseek-legacy">deepseek-legacy</option>
+                            <option value="auto">auto</option>
+                            <option value="none">none</option>
+                        </select>
+                        <button id="btn-save-llm-server" class="btn btn-primary btn-sm">💾 Save &amp; Apply</button>
+                    </div>
+                    <div id="llm-server-current" style="font-size:0.72rem; color:var(--text-muted);"></div>
+                    <div id="test-result-llm-server" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
                 <!-- OpenRouter Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">

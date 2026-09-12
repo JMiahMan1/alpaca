@@ -1160,6 +1160,7 @@ class OnlineModelProvider:
         client_ip: str = "web",
         max_retries: int = 4,
         reasoning_estimate: int = 0,
+        reasoning_budget: int = 0,
     ) -> dict[str, Any]:
         """Queries the specified online provider.
 
@@ -1176,8 +1177,11 @@ class OnlineModelProvider:
         headroom is at least ``2 * reasoning_estimate`` — mirroring the suite's
         ``base + 2 * estimate`` cap for thinking runs — so a small base (e.g.
         8000 for a UI game needing ~4096 thinking tokens) still reserves room
-        for the answer. Without it the headroom falls back to the legacy
-        ``max(2048, max_tokens // 2)`` heuristic.
+        for the answer. ``reasoning_budget`` carries the run's UI-owned thinking
+        budget (per-model profile, then [benchmark] default); it floors the
+        headroom so a thinking model with no estimate still gets a full
+        thinking phase plus answer room. No hardcoded token constants here:
+        every number in the headroom math arrives from the caller.
 
         Every online query is tracked in the in-process request queue so the web
         dashboard can display it alongside local requests. Tracking is fully
@@ -1201,14 +1205,19 @@ class OnlineModelProvider:
         # we never exceed a provider's (unknown) max output window by much.
         # The headroom mirrors the suite's thinking cap (base + 2 * estimate):
         # a caller-supplied reasoning_estimate guarantees at least that much,
-        # otherwise fall back to the legacy max(2048, max_tokens // 2).
+        # and the caller-supplied reasoning_budget (UI-owned) floors it so a
+        # thinking model with no estimate still gets a full thinking phase.
+        try:
+            budget_floor = int(reasoning_budget or 0)
+        except (TypeError, ValueError):
+            budget_floor = 0
+        try:
+            estimate_headroom = 2 * int(reasoning_estimate or 0)
+        except (TypeError, ValueError):
+            estimate_headroom = 0
         effective_max_tokens = max_tokens
         if thinking:
-            try:
-                estimate_headroom = 2 * int(reasoning_estimate or 0)
-            except (TypeError, ValueError):
-                estimate_headroom = 0
-            headroom = max(estimate_headroom, 2048, max_tokens // 2)
+            headroom = max(estimate_headroom, budget_floor, max_tokens // 2)
             effective_max_tokens = min(max_tokens + headroom, 65536)
             # Longer budget + reasoning phase => longer wall-clock time per call.
         timeout = 180.0 if thinking else 120.0
@@ -1267,7 +1276,7 @@ class OnlineModelProvider:
                     phase2 = await self._query_online_model_impl(
                         model_identifier,
                         f"{working_prompt}\n{result.get('response') or ''}\n{continuation}",
-                        max(2048, effective_max_tokens // 2),
+                        max(effective_max_tokens // 2, budget_floor, estimate_headroom),
                         temperature,
                         custom_keys,
                         request_timeout=timeout,

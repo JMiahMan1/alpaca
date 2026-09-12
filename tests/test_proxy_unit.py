@@ -2793,28 +2793,40 @@ async def test_chat_think_false_empty_content_and_no_thinking_stays_empty():
     assert body["message"]["content"] == ""
 
 
-def test_apply_thinking_override_pads_only_when_think_true():
-    # think=True + small budget -> padded +2048 (headroom for thinking phase).
+def test_apply_thinking_override_pads_from_env_budget(monkeypatch):
+    # Pad == UI-owned server budget from the environment, not a literal.
+    # thinking stays enabled upstream regardless of the caller's flag.
+    monkeypatch.setenv("LLAMA_REASONING_BUDGET", "2048")
+
+    # Small bounded budget -> padded by the full thinking cap (guaranteed answer room).
     payload = {"model": "x", "n_predict": 200, "thinking": None}
-    alpaca_proxy.apply_thinking_override(payload, {"think": True})
+    alpaca_proxy.apply_thinking_override(payload, {"think": False})
     assert payload["n_predict"] == 200 + 2048
     assert payload["thinking"] is True
 
-    # think=False -> NOT padded (budget stays exactly as the caller asked).
+    # Caller-supplied reasoning_budget wins over the env value.
     payload = {"model": "x", "n_predict": 200}
-    alpaca_proxy.apply_thinking_override(payload, {"think": False})
-    assert payload["n_predict"] == 200
-    assert payload["thinking"] is True
+    alpaca_proxy.apply_thinking_override(payload, {"think": True, "reasoning_budget": 512})
+    assert payload["n_predict"] == 200 + 512
 
-    # Large explicit budget -> never double-padded.
+    # Budget already >= pad -> never double-padded.
     payload = {"model": "x", "n_predict": 12000}
     alpaca_proxy.apply_thinking_override(payload, {"think": True})
     assert payload["n_predict"] == 12000
 
-    # No n_predict -> no padding key injected.
+    # Unbounded (None / missing / -1) -> untouched.
     payload = {"model": "x"}
     alpaca_proxy.apply_thinking_override(payload, {"think": True})
     assert "n_predict" not in payload
+    payload = {"model": "x", "n_predict": -1}
+    alpaca_proxy.apply_thinking_override(payload, {"think": True})
+    assert payload["n_predict"] == -1
+
+    # No budget anywhere -> no padding (loud UI-owned config, not a silent literal).
+    monkeypatch.delenv("LLAMA_REASONING_BUDGET", raising=False)
+    payload = {"model": "x", "n_predict": 200}
+    alpaca_proxy.apply_thinking_override(payload, {"think": True})
+    assert payload["n_predict"] == 200
 
 
 # ---------------------------------------------------------------------------
