@@ -23,7 +23,7 @@
           {% if has_screenshot %}
           <img id="code-hero" class="code-screenshot" src="/game/{{ card.slug }}/screenshot.png" alt="{{ card.title }} gameplay screenshot">
           {% endif %}
-          <button id="btn-play-live" class="arcade-btn" type="button">▶ Play live in sandbox</button>
+          <button id="btn-play-live" class="arcade-btn" type="button">▶ Play</button>
           <div id="live-status" class="form-msg" role="status"></div>
           <iframe id="live-frame" title="{{ card.title }} live sandbox" allowfullscreen allow="fullscreen" style="display:none;"></iframe>
           <div class="code-run-hint">🖥️ Desktop app ({{ code_lang }}) — play it live above, or run it locally and submit your score below</div>
@@ -86,7 +86,7 @@
     </div>
   </aside>
 </main>
-<script>const ARCADE_SLUG = {{ card.slug|tojson }};</script>
+<script>window.ARCADE_SLUG = {{ card.slug|tojson }};</script>
 <script src="/static/arcade.js"></script>
 </body>
 </html>

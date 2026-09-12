@@ -669,3 +669,8 @@ def test_arcade_code_page_has_live_button(arcade_client):
     html = res.get_data(as_text=True)
     assert "btn-play-live" in html
     assert "live-frame" in html
+    # Regression: arcade.js reads window.ARCADE_SLUG, so the page must set it
+    # on window (a top-level `const` never lands on window, leaving every
+    # /api/games/<slug>/... call pointed at "undefined").
+    assert f'window.ARCADE_SLUG = "{slug}"' in html
+    assert ">▶ Play<" in html
