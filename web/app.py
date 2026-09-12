@@ -467,14 +467,14 @@ def get_progress_callback(run_type):
                 # breaks the run. The arcade keeps its own copy, so the game
                 # survives later benchmark/model deletion.
                 try:
-                    from web.arcade_publish import AUTO_PUBLISH_SCORE, publish_game
+                    from web.arcade_publish import get_auto_publish_score, publish_game
 
                     _res = data.get("result") if isinstance(data.get("result"), dict) else {}
                     _score = _res.get("score")
                     _artifact = _res.get("artifact") or ""
                     if (
                         isinstance(_score, (int, float))
-                        and _score >= AUTO_PUBLISH_SCORE
+                        and _score >= get_auto_publish_score()
                         and isinstance(_artifact, str)
                         and _artifact.endswith(".html")
                     ):
@@ -4020,11 +4020,12 @@ def get_artifact(filename):
 
 @app.route("/api/arcade/published", methods=["GET"])
 def arcade_published():
-    """List published arcade slugs (drives dashboard Publish buttons)."""
+    """List published arcade slugs + game cards (drives dashboard Publish buttons + Arcade section)."""
     try:
-        from web.arcade_publish import published_slugs
+        from web.arcade_publish import published_games, published_slugs
 
-        return jsonify({"slugs": sorted(published_slugs())})
+        games = published_games()
+        return jsonify({"slugs": sorted(published_slugs()), "games": games})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -4070,6 +4071,53 @@ def arcade_unpublish():
             return jsonify({"success": False, "error": "slug is required"}), 400
         removed = unpublish_game(slug)
         return jsonify({"success": True, "slug": slug, "removed": removed})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/arcade/settings", methods=["GET"])
+def get_arcade_settings_api():
+    """UI-owned arcade settings: auto-publish score threshold (.env vs live)."""
+    try:
+        from web.arcade_publish import get_auto_publish_score
+
+        stored = _read_dotenv_values(["ARCADE_AUTO_PUBLISH_SCORE"])
+        live = get_auto_publish_score()
+        return jsonify(
+            {
+                "auto_publish_score": stored.get("ARCADE_AUTO_PUBLISH_SCORE"),
+                "live_auto_publish_score": live,
+                "needs_apply": stored.get("ARCADE_AUTO_PUBLISH_SCORE") is not None
+                and abs(float(stored["ARCADE_AUTO_PUBLISH_SCORE"]) - live) > 1e-9,
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/arcade/settings", methods=["POST"])
+def save_arcade_settings_api():
+    """Save the arcade auto-publish threshold to .env and apply it live (no restart needed)."""
+    try:
+        import web.arcade_publish as arcade_publish_mod
+        from online_providers import online_model_provider
+
+        data = request.get_json() or {}
+        try:
+            threshold = float(str(data.get("auto_publish_score", "")).strip())
+        except (TypeError, ValueError, AttributeError):
+            return jsonify({"success": False, "error": "auto_publish_score must be a number (e.g. 80)"}), 400
+        if not 0 <= threshold <= 100:
+            return jsonify({"success": False, "error": "auto_publish_score must be between 0 and 100"}), 400
+
+        saved = online_model_provider.save_credentials({"ARCADE_AUTO_PUBLISH_SCORE": str(threshold)})
+        if not saved.get("success"):
+            return jsonify(saved), 500
+        # Apply live: the benchmark runner reads the env-backed getter per event,
+        # and the module constant is refreshed for direct importers.
+        os.environ["ARCADE_AUTO_PUBLISH_SCORE"] = str(threshold)
+        arcade_publish_mod.AUTO_PUBLISH_SCORE = threshold
+        return jsonify({"success": True, "auto_publish_score": threshold})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

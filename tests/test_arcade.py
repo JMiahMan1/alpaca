@@ -268,10 +268,72 @@ def test_web_unpublish_requires_slug(web_client):
 def test_web_published_list(web_client, games_dir, source_html):
     res = web_client.get("/api/arcade/published")
     assert res.status_code == 200
-    assert json.loads(res.data.decode()) == {"slugs": []}
+    assert json.loads(res.data.decode()) == {"slugs": [], "games": []}
     slug = _publish(games_dir, source_html)["slug"]
     res = web_client.get("/api/arcade/published")
-    assert json.loads(res.data.decode()) == {"slugs": [slug]}
+    data = json.loads(res.data.decode())
+    assert data["slugs"] == [slug]
+    assert len(data["games"]) == 1
+    game = data["games"][0]
+    assert game["slug"] == slug
+    assert game["title"] == "Demo Breakout"
+    assert game["model"] == "demo-model"
+    assert game["benchmark_score"] == 92.5
+    assert game["run_date"] == "2026-09-11"
+    assert game["plays"] == 0
+    assert game["auto_published"] is False
+
+
+def test_published_games_skips_broken_entries(games_dir, source_html):
+    _publish(games_dir, source_html)
+    # Directory without meta.json is ignored.
+    (games_dir / "junk").mkdir()
+    # Corrupt meta is ignored.
+    bad = games_dir / "bad-game"
+    bad.mkdir()
+    (bad / "meta.json").write_text("{not json")
+    games = ap.published_games()
+    assert [g["slug"] for g in games] == ["demo-model_demo-breakout"]
+
+
+def test_get_auto_publish_score_default(monkeypatch):
+    monkeypatch.delenv("ARCADE_AUTO_PUBLISH_SCORE", raising=False)
+    assert ap.get_auto_publish_score() == 80.0
+    monkeypatch.setenv("ARCADE_AUTO_PUBLISH_SCORE", "70")
+    assert ap.get_auto_publish_score() == 70.0
+    monkeypatch.setenv("ARCADE_AUTO_PUBLISH_SCORE", "junk")
+    assert ap.get_auto_publish_score() == 80.0
+
+
+def test_web_arcade_settings_get(web_client, monkeypatch):
+    monkeypatch.setenv("ARCADE_AUTO_PUBLISH_SCORE", "75")
+    res = web_client.get("/api/arcade/settings")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["live_auto_publish_score"] == 75.0
+
+
+def test_web_arcade_settings_post_validates(web_client):
+    res = web_client.post("/api/arcade/settings", json={"auto_publish_score": "high"})
+    assert res.status_code == 400
+    res = web_client.post("/api/arcade/settings", json={"auto_publish_score": 150})
+    assert res.status_code == 400
+    assert "between 0 and 100" in json.loads(res.data.decode())["error"]
+
+
+def test_web_arcade_settings_post_saves_and_applies(web_client, monkeypatch):
+    saved = {}
+    monkeypatch.setattr(
+        "online_providers.online_model_provider.save_credentials",
+        lambda keys: saved.update(keys) or {"success": True},
+    )
+    res = web_client.post("/api/arcade/settings", json={"auto_publish_score": 70})
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data == {"success": True, "auto_publish_score": 70.0}
+    assert saved == {"ARCADE_AUTO_PUBLISH_SCORE": "70.0"}
+    # Live getter picks it up with no restart.
+    assert ap.get_auto_publish_score() == 70.0
 
 
 # --- players + achievements ---
