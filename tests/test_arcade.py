@@ -676,7 +676,7 @@ def test_arcade_code_page_has_live_button(arcade_client):
     assert ">▶ Play<" in html
     # Under-screen info is minimized behind a click-here expander.
     assert 'class="under-screen"' in html
-    assert "Click here for code, download, prompt" in html
+    assert "Game code, download" in html
 
 
 def test_arcade_js_no_commented_out_widget():
