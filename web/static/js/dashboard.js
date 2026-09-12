@@ -3940,6 +3940,22 @@ const saved = _loadHumanRatings(t.id) || {};
             winRun.addEventListener('click', () => openExpandedRunner(winnerRow.response, winnerRow.model, winnerRow.thinking));
         }
         winnerBar.appendChild(winRun);
+        if (isHtml || isUi) {
+            const winPub = document.createElement('button');
+            winPub.className = 'btn btn-secondary btn-sm';
+            winPub.style.cssText = 'padding: 4px 12px; font-size: 0.75rem; cursor:pointer; margin-left:0.5rem;';
+            winPub.textContent = '🕹 Publish to Arcade';
+            winPub.title = 'Freeze this winning game to the public arcade (own copy survives benchmark/model deletion)';
+            winPub.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                await publishGameToArcade(winnerRow.model, t.id, {
+                    score: winnerRow.score,
+                    prompt: t.prompt,
+                    run_date: winnerRow.last_run,
+                });
+            });
+            winnerBar.appendChild(winPub);
+        }
         if (winnerRow.last_run) {
             const winDate = document.createElement('span');
             winDate.style.marginLeft = '0.5rem';
@@ -9987,6 +10003,33 @@ const saved = _loadHumanRatings(t.id) || {};
         }
     }
 
+    // Shared arcade-publish call used by result rows and the test-browser
+    // winning-result block. meta may carry benchmark_score/max_score/prompt/run_date.
+    async function publishGameToArcade(model, testId, meta) {
+        const m = meta || {};
+        const body = { model, test_id: testId };
+        if (m.score !== undefined && m.score !== null) body.benchmark_score = m.score;
+        if (m.max_score !== undefined) body.max_score = m.max_score;
+        if (m.prompt) body.prompt = m.prompt;
+        if (m.run_date) body.run_date = m.run_date;
+        try {
+            const resp = await fetch('/api/arcade/publish', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast(`Published to arcade: ${data.slug}`, 'success');
+                window.open(`http://${window.location.hostname}:5001${data.url}`, '_blank');
+            } else {
+                showToast(`Publish failed: ${data.error || 'unknown error'}`, 'error');
+            }
+        } catch (err) {
+            showToast(`Publish failed: ${err.message}`, 'error');
+        }
+    }
+
     function addArtifactButtons(container, model, testId, response, info) {
         const code = extractCodeFromResponse(response);
         if (!code) return;
@@ -10026,28 +10069,7 @@ const saved = _loadHumanRatings(t.id) || {};
         pubBtn.title = 'Freeze this game to the public arcade (own copy survives benchmark/model deletion)';
         pubBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            const meta = info || {};
-            const body = { model, test_id: testId };
-            if (meta.score !== undefined && meta.score !== null) body.benchmark_score = meta.score;
-            if (meta.max_score !== undefined) body.max_score = meta.max_score;
-            if (meta.prompt) body.prompt = meta.prompt;
-            if (meta.run_date) body.run_date = meta.run_date;
-            try {
-                const resp = await fetch('/api/arcade/publish', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                const data = await resp.json();
-                if (data.success) {
-                    showToast(`Published to arcade: ${data.slug}`, 'success');
-                    window.open(`http://${window.location.hostname}:5001${data.url}`, '_blank');
-                } else {
-                    showToast(`Publish failed: ${data.error || 'unknown error'}`, 'error');
-                }
-            } catch (err) {
-                showToast(`Publish failed: ${err.message}`, 'error');
-            }
+            await publishGameToArcade(model, testId, info);
         });
         btnRow.appendChild(pubBtn);
 
