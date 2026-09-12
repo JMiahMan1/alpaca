@@ -10273,6 +10273,15 @@ const saved = _loadHumanRatings(t.id) || {};
     const llmServerCurrent = document.getElementById('llm-server-current');
     const testResultLlmServer = document.getElementById('test-result-llm-server');
 
+    const inputArcadeThreshold = document.getElementById('input-arcade-threshold');
+    const btnSaveArcade = document.getElementById('btn-save-arcade');
+    const btnRefreshArcade = document.getElementById('btn-refresh-arcade');
+    const badgeStatusArcade = document.getElementById('badge-status-arcade');
+    const arcadeCurrent = document.getElementById('arcade-current');
+    const testResultArcade = document.getElementById('test-result-arcade');
+    const arcadeGamesList = document.getElementById('arcade-games-list');
+    const linkOpenArcade = document.getElementById('link-open-arcade');
+
     function updateAlpacaSnippet(token) {
         if (snippetApiKeyVal) {
             snippetApiKeyVal.textContent = token ? `"${token}"` : '"YOUR_TOKEN_HERE"';
@@ -10376,6 +10385,144 @@ const saved = _loadHumanRatings(t.id) || {};
             console.error('Error loading provider credentials:', err);
         }
         await loadLlmServerSettings();
+        await loadArcadeSettings();
+        await loadArcadeGames();
+    }
+
+    function arcadeBaseUrl() {
+        return `http://${window.location.hostname}:5001`;
+    }
+
+    async function loadArcadeSettings() {
+        try {
+            if (linkOpenArcade) linkOpenArcade.href = arcadeBaseUrl();
+            const res = await fetch('/api/arcade/settings');
+            if (!res.ok) return;
+            const data = await res.json();
+            if (inputArcadeThreshold && data.auto_publish_score != null) {
+                inputArcadeThreshold.value = data.auto_publish_score;
+            }
+            if (arcadeCurrent) {
+                arcadeCurrent.textContent =
+                    `Saved threshold: ${data.auto_publish_score ?? '(unset, 80 in effect)'} | ` +
+                    `Live: ${data.live_auto_publish_score}` +
+                    (data.needs_apply ? ' — ⚠ restart web to apply.' : ' — in sync.');
+            }
+            if (badgeStatusArcade) {
+                if (data.auto_publish_score == null) {
+                    badgeStatusArcade.className = 'badge badge-warning';
+                    badgeStatusArcade.textContent = 'Default 80';
+                } else if (data.needs_apply) {
+                    badgeStatusArcade.className = 'badge badge-warning';
+                    badgeStatusArcade.textContent = 'Needs Apply';
+                } else {
+                    badgeStatusArcade.className = 'badge badge-success';
+                    badgeStatusArcade.textContent = 'Configured';
+                }
+            }
+        } catch (err) {
+            console.error('Error loading arcade settings:', err);
+        }
+    }
+
+    async function loadArcadeGames() {
+        if (!arcadeGamesList) return;
+        arcadeGamesList.innerHTML = '<div style="font-size:0.75rem; color:var(--text-muted);">Loading…</div>';
+        try {
+            const res = await fetch('/api/arcade/published');
+            const data = await res.json();
+            const games = data.games || [];
+            if (!games.length) {
+                arcadeGamesList.innerHTML = '<div style="font-size:0.75rem; color:var(--text-muted);">No games published yet.</div>';
+                return;
+            }
+            arcadeGamesList.innerHTML = '';
+            games.forEach(g => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex; align-items:center; gap:0.6rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; padding:0.45rem 0.6rem; font-size:0.78rem;';
+                const info = document.createElement('div');
+                info.style.cssText = 'flex:1; min-width:0;';
+                const scoreTxt = (g.benchmark_score !== undefined && g.benchmark_score !== null) ? ` · ★ ${g.benchmark_score}` : '';
+                const dateTxt = g.run_date ? ` · 📅 ${String(g.run_date).slice(0, 10)}` : '';
+                info.innerHTML = `<strong style="color:white;">${escapeHtml(g.title || g.slug)}</strong>` +
+                    `<div style="color:var(--text-muted); font-size:0.7rem;">${escapeHtml(g.model || '')}${scoreTxt}${dateTxt} · ▶ ${g.plays || 0} plays${g.auto_published ? ' · auto' : ''}</div>`;
+                row.appendChild(info);
+                const playBtn = document.createElement('button');
+                playBtn.textContent = '▶ Play';
+                playBtn.className = 'btn btn-secondary btn-sm btn-slate';
+                playBtn.addEventListener('click', () => window.open(`${arcadeBaseUrl()}/play/${g.slug}`, '_blank'));
+                row.appendChild(playBtn);
+                const unpubBtn = document.createElement('button');
+                unpubBtn.textContent = '🗑 Unpublish';
+                unpubBtn.className = 'btn btn-secondary btn-sm';
+                unpubBtn.style.color = '#f87171';
+                unpubBtn.title = 'Remove this game (and its player scores) from the arcade';
+                unpubBtn.addEventListener('click', async () => {
+                    if (!confirm(`Unpublish "${g.title || g.slug}"? Player scores go with it. This cannot be undone.`)) return;
+                    try {
+                        const r = await fetch('/api/arcade/unpublish', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ slug: g.slug })
+                        });
+                        const d = await r.json();
+                        if (d.success) {
+                            showToast(`Unpublished ${g.slug}`, 'success');
+                            await loadArcadeGames();
+                        } else {
+                            showToast(`Unpublish failed: ${d.error || 'unknown'}`, 'error');
+                        }
+                    } catch (err) {
+                        showToast(`Unpublish failed: ${err.message}`, 'error');
+                    }
+                });
+                row.appendChild(unpubBtn);
+                arcadeGamesList.appendChild(row);
+            });
+        } catch (err) {
+            arcadeGamesList.innerHTML = '<div style="font-size:0.75rem; color:#f87171;">Failed to load published games.</div>';
+        }
+    }
+
+    if (btnSaveArcade) {
+        btnSaveArcade.addEventListener('click', async () => {
+            const show = (msg, ok) => {
+                if (testResultArcade) {
+                    testResultArcade.style.display = 'block';
+                    testResultArcade.style.color = ok ? '#4ade80' : '#f87171';
+                    testResultArcade.textContent = msg;
+                }
+            };
+            const val = parseFloat(inputArcadeThreshold?.value);
+            if (!Number.isFinite(val) || val < 0 || val > 100) {
+                show('Enter a threshold between 0 and 100.', false);
+                return;
+            }
+            try {
+                const res = await fetch('/api/arcade/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ auto_publish_score: val })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    show(`Saved threshold ${data.auto_publish_score}; applies immediately.`, true);
+                    showToast('Arcade settings saved.', 'success');
+                } else {
+                    show(data.error || 'Save failed.', false);
+                }
+            } catch (err) {
+                show(`Error saving: ${err.message}`, false);
+            } finally {
+                await loadArcadeSettings();
+            }
+        });
+    }
+
+    if (btnRefreshArcade) {
+        btnRefreshArcade.addEventListener('click', async () => {
+            await loadArcadeGames();
+        });
     }
 
     async function loadLlmServerSettings() {

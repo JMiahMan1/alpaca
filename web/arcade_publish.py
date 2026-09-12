@@ -123,3 +123,49 @@ def published_slugs() -> set[str]:
     if not GAMES_DIR.is_dir():
         return set()
     return {p.name for p in GAMES_DIR.iterdir() if p.is_dir() and (p / "meta.json").exists()}
+
+
+def get_auto_publish_score() -> float:
+    """Live auto-publish threshold (UI-owned via ARCADE_AUTO_PUBLISH_SCORE)."""
+    try:
+        return float(os.getenv("ARCADE_AUTO_PUBLISH_SCORE", "80"))
+    except ValueError:
+        return 80.0
+
+
+def published_games() -> list:
+    """Metadata for every published game, newest first (drives the dashboard Arcade section)."""
+    games = []
+    if not GAMES_DIR.is_dir():
+        return games
+    for game_dir in sorted(GAMES_DIR.iterdir()):
+        meta_path = game_dir / "meta.json"
+        if not game_dir.is_dir() or not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, ValueError):
+            continue
+        try:
+            plays = (
+                sum(1 for _ in json.loads((game_dir / "scores.json").read_text()))
+                if (game_dir / "scores.json").exists()
+                else 0
+            )
+        except (OSError, ValueError):
+            plays = 0
+        games.append(
+            {
+                "slug": game_dir.name,
+                "title": meta.get("title") or game_dir.name,
+                "model": meta.get("model") or "",
+                "test_id": meta.get("test_id") or "",
+                "benchmark_score": meta.get("benchmark_score"),
+                "run_date": meta.get("benchmark_date") or meta.get("run_date") or "",
+                "published_at": meta.get("published_at") or "",
+                "auto_published": bool(meta.get("auto_published")),
+                "plays": plays,
+            }
+        )
+    games.sort(key=lambda g: g["published_at"] or "", reverse=True)
+    return games
