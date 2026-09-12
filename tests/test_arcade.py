@@ -902,3 +902,25 @@ def test_code_game_restores_line_height():
     css = Path("arcade/static/arcade.css").read_text()
     assert ".screen .code-game" in css
     assert "line-height" in css.split(".screen .code-game", 1)[1].split("}", 1)[0]
+
+
+def test_launcher_stream_telemetry_markup():
+    """Launcher reports inner-stream state to the arcade parent so a phone
+    can say what's failing (Live! status alone proved nothing)."""
+    from pathlib import Path
+
+    html = Path("web/templates/ui_launcher.html").read_text()
+    assert "arcade-vnc" in html
+    assert "watchInnerStream" in html
+    assert "noVNC_status" in html
+    assert "postMessage" in html
+
+
+def test_arcade_js_stream_status_handler():
+    """Arcade play page listens for the launcher's stream telemetry and
+    surfaces it on the live-status line."""
+    from pathlib import Path
+
+    js = Path("arcade/static/arcade.js").read_text()
+    assert "arcade-vnc" in js
+    assert "Stream:" in js
