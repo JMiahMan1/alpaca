@@ -25,6 +25,7 @@ import os
 import re
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -39,6 +40,9 @@ GAMES_DIR = ARCADE_DIR / "games"
 ADMIN_TOKEN = os.getenv("ARCADE_ADMIN_TOKEN", "")
 PORT = int(os.getenv("ARCADE_PORT", "5001"))
 MAX_SCORES = 5
+# Alpaca web backend, which owns the UI sandbox (Xvfb + x11vnc + noVNC).
+# Reachable as a compose service name in production; override for local dev.
+WEB_BASE = os.getenv("ARCADE_WEB_URL", "http://alpaca-web:5000").rstrip("/")
 
 SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
@@ -295,6 +299,36 @@ def serve_game_code(slug):
     if d is None or not (d / "game.py").exists():
         return jsonify({"error": "game not found"}), 404
     return send_file(d / "game.py", mimetype="text/plain", as_attachment=True, download_name=f"{slug}.py")
+
+
+@app.route("/api/games/<slug>/launch", methods=["POST"])
+def launch_game(slug):
+    """Run a code-kind game in the Alpaca UI sandbox (same one the Tests
+    page uses) and return the browser-facing noVNC launcher URL.
+
+    The sandbox lives in the web backend, so this proxies server-side
+    (the browser can't reach across origins). Spinning up the container
+    takes a while — callers should show a loading state (up to ~2 min).
+    """
+    d = _game_dir(slug)
+    if d is None or not (d / "game.py").exists():
+        return jsonify({"error": "no runnable code game found for this slug"}), 404
+    meta = _read_json(d / "meta.json", {})
+    code = (d / "game.py").read_text(encoding="utf-8", errors="replace")
+    payload = json.dumps({"code": code, "lang": meta.get("lang") or "python"}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{WEB_BASE}/api/sandbox/serve_ui", data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=150) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"sandbox launch failed: {str(e)[:200]}"}), 502
+    if res.get("error") or not res.get("container_id"):
+        return jsonify({"error": str(res.get("error") or "sandbox refused the launch")[:200]}), 502
+    host = (request.host or "").split(":")[0] or "localhost"
+    launcher_url = f"http://{host}:5000/ui/launcher/{res['container_id']}"
+    return jsonify({"success": True, "launcher_url": launcher_url, "container_id": res["container_id"]})
 
 
 @app.route("/game/<slug>/screenshot.png", methods=["GET"])

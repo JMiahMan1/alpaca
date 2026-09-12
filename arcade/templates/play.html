@@ -21,9 +21,12 @@
         {% else %}
         <div class="code-game">
           {% if has_screenshot %}
-          <img class="code-screenshot" src="/game/{{ card.slug }}/screenshot.png" alt="{{ card.title }} gameplay screenshot">
+          <img id="code-hero" class="code-screenshot" src="/game/{{ card.slug }}/screenshot.png" alt="{{ card.title }} gameplay screenshot">
           {% endif %}
-          <div class="code-run-hint">🖥️ Desktop app ({{ code_lang }}) — run it locally, then submit your score below</div>
+          <button id="btn-play-live" class="arcade-btn" type="button">▶ Play live in sandbox</button>
+          <div id="live-status" class="form-msg" role="status"></div>
+          <iframe id="live-frame" title="{{ card.title }} live sandbox" allowfullscreen allow="fullscreen" style="display:none;"></iframe>
+          <div class="code-run-hint">🖥️ Desktop app ({{ code_lang }}) — play it live above, or run it locally and submit your score below</div>
           <pre class="code-view">{{ code_text }}</pre>
           <a class="arcade-btn" href="/game/{{ card.slug }}/game.py" download>⬇ Download {{ card.slug }}.py</a>
         </div>
