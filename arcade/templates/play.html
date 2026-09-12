@@ -16,9 +16,24 @@
     <div class="cabinet">
       <div class="cabinet-marquee">★ {{ card.title }} ★</div>
       <div class="screen">
+        {% if kind == "playable" %}
         <iframe id="game-frame" src="/game/{{ card.slug }}/index.html" title="{{ card.title }}" sandbox="allow-scripts allow-same-origin allow-pointer-lock"></iframe>
+        {% else %}
+        <div class="code-game">
+          {% if has_screenshot %}
+          <img class="code-screenshot" src="/game/{{ card.slug }}/screenshot.png" alt="{{ card.title }} gameplay screenshot">
+          {% endif %}
+          <div class="code-run-hint">🖥️ Desktop app ({{ code_lang }}) — run it locally, then submit your score below</div>
+          <pre class="code-view">{{ code_text }}</pre>
+          <a class="arcade-btn" href="/game/{{ card.slug }}/game.py" download>⬇ Download {{ card.slug }}.py</a>
+        </div>
+        {% endif %}
       </div>
+      {% if kind == "playable" %}
       <p class="cabinet-hint">🎮 Click the screen, then use the keyboard (often <kbd>Space</kbd> to start) — sound on for the full effect</p>
+      {% else %}
+      <p class="cabinet-hint">🎮 Run locally with <kbd>python {{ card.slug }}.py</kbd> (needs pygame: <kbd>pip install pygame</kbd>), then enter your score by hand</p>
+      {% endif %}
     </div>
   </section>
   <aside class="score-pane">
@@ -47,7 +62,9 @@
       <div class="score-form">
         <input id="score-initials" maxlength="3" placeholder="ABC" aria-label="Initials">
         <input id="score-value" type="number" min="0" placeholder="Score" aria-label="Score">
+        {% if kind == "playable" %}
         <button id="btn-fetch-score" class="arcade-btn ghost" type="button" title="Try to read your score from the game">🎮 Get my score</button>
+        {% endif %}
         <button id="btn-submit-score" class="arcade-btn" type="button">Submit</button>
       </div>
       <div id="score-candidates" class="candidates"></div>

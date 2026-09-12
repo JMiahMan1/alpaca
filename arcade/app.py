@@ -4,10 +4,12 @@
 Standalone Flask service (own port, default 5001). Each published game is a
 fully self-contained directory under data/arcade/games/<slug>/:
 
-    game.html    frozen copy of the benchmark artifact (served same-origin so
+    game.html    frozen playable HTML artifact (served same-origin so
                  the arcade page can read the game's localStorage for
-                 score auto-capture)
-    meta.json    title, test id/label, model, benchmark score + date, prompt,
+                 score auto-capture); code-kind games (pygame/desktop apps)
+                 freeze game.py + screenshot.png instead, served with a
+                 code viewer and download
+    meta.json    title, test id/label, model, kind (playable/code), benchmark
                  validation breakdown, publish date, play count
     scores.json  persistent server-side top-5 scoreboard
     ratings.json player 1-5 star votes
@@ -53,6 +55,15 @@ def _game_dir(slug: str) -> Path | None:
     except ValueError:
         return None
     return d
+
+
+def _playable_file(d: Path) -> Path | None:
+    """The frozen game payload: playable game.html or a code-kind game.py."""
+    for name in ("game.html", "game.py"):
+        p = d / name
+        if p.exists():
+            return p
+    return None
 
 
 def _read_json(path: Path, default):
@@ -128,7 +139,7 @@ def player_stats(initials: str) -> dict:
         stats["achievements"] = evaluate(stats)
         return stats
     for child in sorted(GAMES_DIR.iterdir()):
-        if not child.is_dir() or not (child / "game.html").exists():
+        if not child.is_dir() or _playable_file(child) is None:
             continue
         meta = _read_json(child / "meta.json", {})
         scores = _read_json(child / "scores.json", {}).get("scores", [])
@@ -191,7 +202,7 @@ def player_stats(initials: str) -> dict:
 
 def _game_card(slug: str) -> dict | None:
     d = _game_dir(slug)
-    if d is None or not (d / "game.html").exists():
+    if d is None or _playable_file(d) is None:
         return None
     meta = _read_json(d / "meta.json", {})
     scores = _read_json(d / "scores.json", {}).get("scores", [])
@@ -245,7 +256,7 @@ def index():
 @app.route("/play/<slug>", methods=["GET"])
 def play(slug):
     d = _game_dir(slug)
-    if d is None or not (d / "game.html").exists():
+    if d is None or _playable_file(d) is None:
         return render_template("index.html", games=list_games(), error=f"Game '{slug}' not found."), 404
     card = _game_card(slug)
     meta = _read_json(d / "meta.json", {})
@@ -254,6 +265,8 @@ def play(slug):
         _write_json(d / "meta.json", meta)
         card["plays"] = meta["plays"]
     scores = _read_json(d / "scores.json", {}).get("scores", [])
+    kind = meta.get("kind") or ("code" if (d / "game.py").exists() else "playable")
+    code_text = (d / "game.py").read_text(encoding="utf-8", errors="replace") if (d / "game.py").exists() else ""
     return render_template(
         "play.html",
         card=card,
@@ -261,6 +274,10 @@ def play(slug):
         scores=scores,
         prompt=meta.get("prompt", ""),
         validation=(meta.get("validation") or {}).get("breakdown", {}),
+        kind=kind,
+        code_text=code_text,
+        code_lang=meta.get("lang") or "python",
+        has_screenshot=(d / "screenshot.png").exists(),
     )
 
 
@@ -270,6 +287,22 @@ def serve_game(slug):
     if d is None or not (d / "game.html").exists():
         return jsonify({"error": "game not found"}), 404
     return send_file(d / "game.html", mimetype="text/html")
+
+
+@app.route("/game/<slug>/game.py", methods=["GET"])
+def serve_game_code(slug):
+    d = _game_dir(slug)
+    if d is None or not (d / "game.py").exists():
+        return jsonify({"error": "game not found"}), 404
+    return send_file(d / "game.py", mimetype="text/plain", as_attachment=True, download_name=f"{slug}.py")
+
+
+@app.route("/game/<slug>/screenshot.png", methods=["GET"])
+def serve_game_screenshot(slug):
+    d = _game_dir(slug)
+    if d is None or not (d / "screenshot.png").exists():
+        return jsonify({"error": "screenshot not found"}), 404
+    return send_file(d / "screenshot.png", mimetype="image/png")
 
 
 @app.route("/api/games", methods=["GET"])
@@ -291,7 +324,7 @@ def api_game(slug):
 @app.route("/api/games/<slug>/scores", methods=["POST"])
 def api_submit_score(slug):
     d = _game_dir(slug)
-    if d is None or not (d / "game.html").exists():
+    if d is None or _playable_file(d) is None:
         return jsonify({"success": False, "error": "game not found"}), 404
     body = request.get_json(force=True, silent=True) or {}
     initials = _clean_initials(body.get("initials")) or "YOU"
@@ -347,7 +380,7 @@ def api_submit_score(slug):
 @app.route("/api/games/<slug>/rate", methods=["POST"])
 def api_rate(slug):
     d = _game_dir(slug)
-    if d is None or not (d / "game.html").exists():
+    if d is None or _playable_file(d) is None:
         return jsonify({"success": False, "error": "game not found"}), 404
     body = request.get_json(force=True, silent=True) or {}
     try:

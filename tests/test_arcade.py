@@ -457,3 +457,119 @@ def test_achievements_evaluate_all_locked_and_all_unlocked():
         gave_five_stars=True,
     )
     assert ach.unlocked_ids(hero) == {a["id"] for a in ach.ACHIEVEMENTS}
+
+
+# --- response-fallback publishing (pygame / desktop apps) ---
+
+PYGAME_RESP = """Here is your game:
+
+```python
+import pygame
+
+pygame.init()
+screen = pygame.display.set_mode((640, 480))
+print("space invaders")
+```
+
+Enjoy!"""
+
+HTML_RESP = """Here it is:
+
+```html
+<!DOCTYPE html><html><body><canvas id="g"></canvas></body></html>
+```"""
+
+
+def _write_general_result(root, model, test_id, response, screenshot=None, score=0, extra=()):
+    models_dir = root / "data" / "llm_benchmarks" / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    rec = {"test_id": test_id, "response": response, "score": score}
+    if screenshot is not None:
+        rec["screenshot"] = screenshot
+    models_dir.joinpath(f"general_{model}.json").write_text(
+        json.dumps({"model": model, "results": [{"retro": {"tests": [rec, *extra]}}]})
+    )
+
+
+def test_find_model_response_prefers_longest(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_general_result(
+        tmp_path,
+        "m",
+        "t1",
+        "x" * 10 + "much longer response here",
+        extra=[{"test_id": "t1", "response": "short", "score": 1}],
+    )
+    rec = ap.find_model_response("m", "t1")
+    assert rec is not None and len(rec["response"]) > 20
+    assert ap.find_model_response("other-model", "t1") is None
+    assert ap.find_model_response("m", "nope") is None
+
+
+def test_publish_from_python_response(games_dir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_general_result(tmp_path, "py-model", "retro_space_invaders", PYGAME_RESP, score=61.0)
+    res = ap.publish_game(model="py-model", test_id="retro_space_invaders")
+    game_dir = games_dir / res["slug"]
+    assert (game_dir / "game.py").exists()
+    assert not (game_dir / "game.html").exists()
+    code = (game_dir / "game.py").read_text()
+    assert "import pygame" in code and "Enjoy!" not in code
+    meta = json.loads((game_dir / "meta.json").read_text())
+    assert meta["kind"] == "code" and meta["lang"] == "python"
+    assert meta["benchmark_score"] == 61.0
+    assert ap.is_published(res["slug"]) is True
+
+
+def test_publish_from_response_saves_screenshot(games_dir, tmp_path, monkeypatch):
+    import base64
+
+    monkeypatch.chdir(tmp_path)
+    png = base64.b64encode(b"\x89PNG-fake-bytes").decode()
+    _write_general_result(tmp_path, "shot-model", "retro_game", PYGAME_RESP, screenshot=png)
+    res = ap.publish_game(model="shot-model", test_id="retro_game")
+    assert (games_dir / res["slug"] / "screenshot.png").exists()
+    meta = json.loads((games_dir / res["slug"] / "meta.json").read_text())
+    assert meta["has_screenshot"] is True
+
+
+def test_publish_from_html_response_is_playable(games_dir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_general_result(tmp_path, "html-model", "web_game", HTML_RESP)
+    res = ap.publish_game(model="html-model", test_id="web_game")
+    game_dir = games_dir / res["slug"]
+    assert (game_dir / "game.html").exists()
+    assert not (game_dir / "game.py").exists()
+    assert "<canvas" in (game_dir / "game.html").read_text()
+    meta = json.loads((game_dir / "meta.json").read_text())
+    assert meta["kind"] == "playable"
+
+
+def test_publish_nothing_found_raises(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="no saved game found"):
+        ap.publish_game(model="ghost", test_id="nope")
+
+
+def test_arcade_code_game_page(arcade_client):
+    import arcade.app as arcade_app
+
+    games_dir = arcade_app.GAMES_DIR
+    slug = "pymod_retro"
+    d = games_dir / slug
+    d.mkdir()
+    (d / "game.py").write_text("import pygame\n")
+    (d / "meta.json").write_text(
+        json.dumps({"slug": slug, "title": "Retro", "model": "pymod", "kind": "code", "lang": "python"})
+    )
+    res = arcade_client.get(f"/play/{slug}")
+    assert res.status_code == 200
+    html = res.get_data(as_text=True)
+    assert "import pygame" in html
+    assert "Download" in html
+    assert "game-frame" not in html
+    # Code + screenshot file routes.
+    res = arcade_client.get(f"/game/{slug}/game.py")
+    assert res.status_code == 200
+    res = arcade_client.get(f"/game/{slug}/screenshot.png")
+    assert res.status_code == 404

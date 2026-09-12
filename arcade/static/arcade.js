@@ -131,7 +131,8 @@
   // Score auto-capture: the game is served same-origin, so we can read its
   // localStorage. Scan for numeric candidates and let the player pick one.
   // Falls back to manual entry when nothing plausible is found.
-  $("btn-fetch-score").addEventListener("click", () => {
+  // (Absent on code-kind games, which have no iframe to read from.)
+  if ($("btn-fetch-score")) $("btn-fetch-score").addEventListener("click", () => {
     const box = $("score-candidates");
     const msg = $("score-msg");
     box.innerHTML = "";
@@ -190,8 +191,7 @@
     });
   });
 
-  // Star ratings.
-  const widget = $("rating-widget");
+  // Star ratings.  const widget = $("rating-widget");
   function paintRating(avg, count) {
     const full = Math.round(avg);
     widget.querySelector(".rating-stars").textContent = "★★★★★".slice(0, full) + "☆☆☆☆☆".slice(0, 5 - full);
