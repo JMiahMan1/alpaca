@@ -904,6 +904,18 @@ def test_code_game_restores_line_height():
     assert "line-height" in css.split(".screen .code-game", 1)[1].split("}", 1)[0]
 
 
+def test_play_layout_grid_blowout_guard():
+    """Regression: on mobile the collapsed 1fr .play-layout track blew out
+    to 929px (grid items default min-width:auto), pushing the live game
+    frame off-screen so the phone showed a dark sliver. Grid children must
+    be allowed to shrink to the track."""
+    from pathlib import Path
+
+    css = Path("arcade/static/arcade.css").read_text()
+    assert ".play-layout > *" in css
+    assert "min-width: 0" in css.split(".play-layout > *", 1)[1].split("}", 1)[0]
+
+
 def test_launcher_frame_fits_canvas():
     """The vnc frame wrap must shrink to the rendered canvas height: on a
     phone a 772px-tall container around a 273px letterboxed desktop reads

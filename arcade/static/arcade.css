@@ -97,6 +97,10 @@ body {
 /* ---------- Play layout / cabinet ---------- */
 .play-layout { display: grid; grid-template-columns: 1fr 350px; gap: 1.2rem; padding: 1.2rem 1.5rem 3rem; max-width: 1420px; margin: 0 auto; align-items: start; }
 @media (max-width: 1000px) { .play-layout { grid-template-columns: 1fr; } }
+/* Grid-blowout guard: a collapsed 1fr track may only shrink if its items
+allow it. Without this, wide content (game frames, code viewer) forces the
+track to content width and the whole page overflows the viewport. */
+.play-layout > * { min-width: 0; }
 .cabinet {
   background: linear-gradient(#2a1150, #170a30);
   border: 3px solid var(--pink);
