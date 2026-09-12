@@ -1519,3 +1519,79 @@ def test_sandbox_serve_ws_proxy_handshake_failure(client):
         )
     assert res.status_code == 400
     assert b"WebSocket handshake failed" in res.data
+
+
+def _write_multistep_model_file(ms_models_dir, model="openrouter:poolside/laguna-s-2.1:free"):
+    payload = {
+        "model": model,
+        "generated_at": "2026-08-25T01:43:47",
+        "results": [
+            {
+                "model": model,
+                "timestamp": "2026-08-25T01:43:47",
+                "tasks": [
+                    {
+                        "test_id": "glider_2026_house",
+                        "test_category": "multistep_gamedev",
+                        "test_label": "Multi-Step Agentic: Glider 2026",
+                        "success": "False",
+                        "score": "84.2",
+                        "latency": "547.0",
+                        "tokens_generated": "23501",
+                        "response": "<!DOCTYPE html><html><body>game</body></html>",
+                        "error": None,
+                    }
+                ],
+            }
+        ],
+    }
+    (ms_models_dir / "multistep_openrouter_poolside_laguna-s-2_1_free.json").write_text(json.dumps(payload))
+
+
+def test_get_tests_includes_multistep_workflows(client, tmp_path):
+    """Test Browser lists multistep workflows with stats, not just file tests."""
+    ms_models_dir = tmp_path / "ms_models"
+    ms_models_dir.mkdir()
+    _write_multistep_model_file(ms_models_dir)
+    with patch("web.app.multistep_benchmark.MODELS_DIR", ms_models_dir):
+        res = client.get("/api/tests")
+    assert res.status_code == 200
+    tests_by_id = {t["id"]: t for t in json.loads(res.data.decode("utf-8"))["tests"]}
+    assert "glider_2026_house" in tests_by_id
+    g = tests_by_id["glider_2026_house"]
+    assert g["type"] == "multistep"
+    assert g["kind"] == "multistep"
+    assert g["models_tested"] == ["openrouter:poolside/laguna-s-2.1:free"]
+    assert g["models_scores"]["openrouter:poolside/laguna-s-2.1:free"] == 84.2
+    # 84.2 >= 50 counts as passed even though success is the string "False".
+    assert g["models_passed_count"] == 1
+    assert g["models_failed_count"] == 0
+    assert g["last_run"] == "2026-08-25T01:43:47"
+    assert g["is_out_of_date"] is False
+
+
+def test_multistep_success_normalization():
+    from web.app import _multistep_success
+
+    assert _multistep_success(True) is True
+    assert _multistep_success("True") is True
+    assert _multistep_success("False") is False
+    assert _multistep_success(False) is False
+    assert _multistep_success(None) is False
+
+
+def test_test_responses_multistep(client, tmp_path):
+    """Winning-response replay serves the multistep game HTML per model."""
+    ms_models_dir = tmp_path / "ms_models"
+    ms_models_dir.mkdir()
+    _write_multistep_model_file(ms_models_dir)
+    with patch("web.app.multistep_benchmark.MODELS_DIR", ms_models_dir):
+        res = client.get("/api/tests/glider_2026_house/responses")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode("utf-8"))
+    assert data["test_id"] == "glider_2026_house"
+    assert len(data["responses"]) == 1
+    r = data["responses"][0]
+    assert r["model"] == "openrouter:poolside/laguna-s-2.1:free"
+    assert r["is_html"] is True
+    assert "game" in r["response"]
