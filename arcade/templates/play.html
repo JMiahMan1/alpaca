@@ -26,9 +26,20 @@
           <button id="btn-play-live" class="arcade-btn" type="button">▶ Play</button>
           <div id="live-status" class="form-msg" role="status"></div>
           <iframe id="live-frame" title="{{ card.title }} live sandbox" allowfullscreen allow="fullscreen" style="display:none;"></iframe>
-          <div class="code-run-hint">🖥️ Desktop app ({{ code_lang }}) — play it live above, or run it locally and submit your score below</div>
-          <pre class="code-view">{{ code_text }}</pre>
-          <a class="arcade-btn" href="/game/{{ card.slug }}/game.py" download>⬇ Download {{ card.slug }}.py</a>
+          <details class="under-screen">
+            <summary>📦 Click here for code, download, prompt &amp; benchmark info</summary>
+            <div class="code-run-hint">🖥️ Desktop app ({{ code_lang }}) — play it live above, or run it locally and submit your score below</div>
+            <ul class="meta-list">
+              <li><strong>Model:</strong> {{ card.model }}</li>
+              <li><strong>Test:</strong> {{ card.test_label or card.test_id }}</li>
+              <li><strong>Benchmark score:</strong> {{ card.benchmark_score if card.benchmark_score is not none else '—' }} / 100</li>
+              <li><strong>Benchmark date:</strong> {{ card.benchmark_date[:10] if card.benchmark_date else '?' }}</li>
+              <li><strong>Published:</strong> {{ card.published_at[:10] if card.published_at else '?' }}</li>
+            </ul>
+            <details><summary>Original prompt</summary><pre class="prompt-box">{{ prompt if prompt is string else prompt|join('\n\n---\n\n') }}</pre></details>
+            <a class="arcade-btn" href="/game/{{ card.slug }}/game.py" download>⬇ Download {{ card.slug }}.py</a>
+            <pre class="code-view">{{ code_text }}</pre>
+          </details>
         </div>
         {% endif %}
       </div>

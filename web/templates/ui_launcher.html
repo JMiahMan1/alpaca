@@ -120,6 +120,14 @@
             border: 1px solid var(--border-color);
             border-radius: 8px;
         }
+        /* Embed mode (?embed=1): clean player screen for the arcade. The
+        game stream takes the whole area — no terminal sidebar, no Stop
+        or App Log buttons. The Tests page keeps the full console. */
+        body.embed #launcher-panel,
+        body.embed #btn-stop,
+        body.embed #btn-log {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -152,6 +160,9 @@
     <script>
         const CONTAINER_ID = {{ container_id|tojson }};
         const HOST_PORT = {{ host_port|tojson }};
+        if (new URLSearchParams(location.search).get('embed')) {
+            document.body.classList.add('embed');
+        }
         const statusEl = document.getElementById('launcher-status');
         const setStatus = (m) => { statusEl.textContent = m; };
         const uiFetch = (path, body) =>
