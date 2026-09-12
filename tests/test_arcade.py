@@ -573,3 +573,99 @@ def test_arcade_code_game_page(arcade_client):
     assert res.status_code == 200
     res = arcade_client.get(f"/game/{slug}/screenshot.png")
     assert res.status_code == 404
+
+
+def _code_slug(arcade_client):
+    import arcade.app as arcade_app
+
+    slug = "pymod_launch"
+    d = arcade_app.GAMES_DIR / slug
+    d.mkdir(exist_ok=True)
+    (d / "game.py").write_text("import pygame\n")
+    (d / "meta.json").write_text(
+        json.dumps({"slug": slug, "title": "Launch", "model": "pymod", "kind": "code", "lang": "python"})
+    )
+    return slug
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_arcade_launch_code_game(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode())
+        return _FakeResp({"container_id": "abc123", "host_port": 6901})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(f"/api/games/{slug}/launch")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["launcher_url"].endswith("/ui/launcher/abc123")
+    assert data["launcher_url"].startswith("http://")
+    assert ":5000/ui/launcher/" in data["launcher_url"]
+    # The frozen code + lang are forwarded to the web sandbox.
+    assert seen["body"]["code"] == "import pygame\n"
+    assert seen["body"]["lang"] == "python"
+
+
+def test_arcade_launch_missing_game(arcade_client):
+    res = arcade_client.post("/api/games/nope-not-here/launch")
+    assert res.status_code == 404
+
+
+def test_arcade_launch_playable_has_no_code(arcade_client):
+    res = arcade_client.post("/api/games/demo-model_demo-breakout/launch")
+    assert res.status_code == 404
+
+
+def test_arcade_launch_sandbox_error(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({"error": "docker unavailable"})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(f"/api/games/{slug}/launch")
+    assert res.status_code == 502
+
+
+def test_arcade_launch_unreachable(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(f"/api/games/{slug}/launch")
+    assert res.status_code == 502
+
+
+def test_arcade_code_page_has_live_button(arcade_client):
+    slug = _code_slug(arcade_client)
+    res = arcade_client.get(f"/play/{slug}")
+    assert res.status_code == 200
+    html = res.get_data(as_text=True)
+    assert "btn-play-live" in html
+    assert "live-frame" in html

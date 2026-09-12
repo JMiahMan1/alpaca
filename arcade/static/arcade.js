@@ -128,6 +128,35 @@
     }
   });
 
+  // Live sandbox play for code-kind games: same UI sandbox the Tests page
+  // uses (Xvfb + x11vnc + noVNC). The backend launches the container and
+  // hands back a launcher URL, which streams into the cabinet screen.
+  // (Absent on playable games, which already run in an iframe.)
+  if ($("btn-play-live")) $("btn-play-live").addEventListener("click", async () => {
+    const btn = $("btn-play-live");
+    const status = $("live-status");
+    const frame = $("live-frame");
+    const hero = $("code-hero");
+    btn.disabled = true;
+    btn.textContent = "⏳ Starting sandbox…";
+    status.textContent = "Spinning up a display sandbox (up to ~2 min on first launch)…";
+    try {
+      const res = await fetch(`/api/games/${slug}/launch`, { method: "POST" });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Launch failed.");
+      if (hero) hero.style.display = "none";
+      frame.src = data.launcher_url;
+      frame.style.display = "block";
+      status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";
+      btn.textContent = "↻ Restart sandbox";
+      btn.disabled = false;
+    } catch (e) {
+      status.textContent = `Launch failed: ${e.message}`;
+      btn.textContent = "▶ Play live in sandbox";
+      btn.disabled = false;
+    }
+  });
+
   // Score auto-capture: the game is served same-origin, so we can read its
   // localStorage. Scan for numeric candidates and let the player pick one.
   // Falls back to manual entry when nothing plausible is found.
