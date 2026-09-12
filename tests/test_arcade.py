@@ -904,6 +904,21 @@ def test_code_game_restores_line_height():
     assert "line-height" in css.split(".screen .code-game", 1)[1].split("}", 1)[0]
 
 
+def test_launcher_frame_fits_canvas():
+    """The vnc frame wrap must shrink to the rendered canvas height: on a
+    phone a 772px-tall container around a 273px letterboxed desktop reads
+    as a mostly-black screen. fitFrameToCanvas (run from the existing
+    inner-stream poll, no extra timer) sizes the wrap from the live
+    canvas clientHeight with a sane minimum."""
+    from pathlib import Path
+
+    html = Path("web/templates/ui_launcher.html").read_text()
+    assert "fitFrameToCanvas" in html
+    assert "min-height: 240px" in html
+    assert "noVNC_container canvas" in html
+    assert "clientHeight" in html
+
+
 def test_launcher_stream_telemetry_markup():
     """Launcher reports inner-stream state to the arcade parent so a phone
     can say what's failing (Live! status alone proved nothing)."""

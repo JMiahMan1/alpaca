@@ -68,6 +68,10 @@
             flex: 1 1 auto;
             padding: 0.75rem;
             min-width: 0;
+            /* JS (fitFrameToCanvas) shrinks this to the displayed canvas
+            height so phones don't get a tall black letterbox around a
+            short 4:3 stream. Default keeps a sane pre-connect size. */
+            min-height: 240px;
         }
         #vnc-frame {
             width: 100%;
@@ -219,6 +223,21 @@
         window.addEventListener('error', (ev) => {
             report('page-error', String((ev && ev.message) || ev));
         });
+        // Shrink the frame wrap to the displayed canvas height. noVNC
+        // letterboxes a 4:3 desktop inside a tall container, which reads
+        // on phones as a mostly-black screen. Same-origin (/serve/ tunnel)
+        // so the inner DOM is readable; failures stay silent (default CSS).
+        const fitFrameToCanvas = () => {
+            try {
+                const doc = frame.contentDocument;
+                const canvas = doc && (doc.querySelector('#noVNC_container canvas')
+                    || doc.querySelector('#noVNC_canvas'));
+                const h = canvas && canvas.clientHeight;
+                if (h && h >= 120) {
+                    document.getElementById('vnc-frame-wrap').style.height = h + 24 + 'px';
+                }
+            } catch (e) { /* cross-origin or pre-load — keep default */ }
+        };
         const watchInnerStream = () => {
             let last = '';
             const poll = () => {
@@ -244,6 +263,7 @@
                     last = key;
                     report(state, detail);
                 }
+                fitFrameToCanvas();
                 setTimeout(poll, 2500);
             };
             poll();
