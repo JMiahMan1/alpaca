@@ -3446,7 +3446,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let ALL_TESTS = [];
     let TEST_BROWSER_FILTER = { q: '', kind: 'all', status: 'all', model: '', date_from: '', date_to: '' };
 
-    const TEST_KIND_ICON = { text: '📝', image: '🖼️', html: '🌐', node: '⚡' };
+    const TEST_KIND_ICON = { text: '📝', image: '🖼️', html: '🌐', node: '⚡', multistep: '🕹️' };
 
     // Effective last-run date (YYYY-MM-DD) for a test: per-model when a model
     // filter is active, otherwise the test's overall last run. '' when never run.

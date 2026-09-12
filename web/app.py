@@ -1006,6 +1006,132 @@ def _get_test_benchmark_stats():
     return stats
 
 
+def _multistep_success(value) -> bool:
+    """Normalize a multistep success flag (bool or 'True'/'False' string)."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "pass", "passed")
+    return bool(value)
+
+
+def _get_multistep_stats() -> dict[str, dict]:
+    """Aggregate run stats for multi-step workflows from per-model result files.
+
+    Multistep workflows live outside benchmark_tests.json, so they need their
+    own scan (data/multistep_benchmarks/models/multistep_*.json). Returns the
+    same stat shape as _get_test_benchmark_stats (minus outdated tracking,
+    which compares prompt hashes that multistep task records don't carry).
+    """
+    stats: dict[str, dict] = {}
+    try:
+        models_dir = multistep_benchmark.MODELS_DIR
+    except Exception:
+        return stats
+    if not models_dir.exists():
+        return stats
+    for fp in sorted(models_dir.glob("multistep_*.json")):
+        try:
+            with open(fp, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for run in data.get("results") or []:
+            if not isinstance(run, dict):
+                continue
+            run_time = run.get("timestamp") or data.get("generated_at")
+            model_name = run.get("model") or data.get("model") or fp.stem.replace("multistep_", "")
+            for t in run.get("tasks") or []:
+                if not isinstance(t, dict):
+                    continue
+                tid = t.get("test_id") or t.get("id")
+                if not tid:
+                    continue
+                if tid not in stats:
+                    stats[tid] = {
+                        "models_tested": [],
+                        "models_passed": [],
+                        "models_failed": [],
+                        "models_tested_count": 0,
+                        "models_passed_count": 0,
+                        "models_failed_count": 0,
+                        "is_out_of_date": False,
+                        "out_of_date_count": 0,
+                        "out_of_date_models": [],
+                        "last_run": None,
+                        "models_scores": {},
+                        "models_lint": {},
+                        "models_breakdown": {},
+                        "models_last_run": {},
+                        "models_run_count": {},
+                        "models_fail_count": {},
+                        "models_latency": {},
+                        "models_tokens": {},
+                        "models_speed": {},
+                    }
+                st = stats[tid]
+                score = t.get("score", 0)
+                if isinstance(score, str):
+                    try:
+                        score = float(score)
+                    except (TypeError, ValueError):
+                        score = 0
+                passed = _multistep_success(t.get("success")) or (score >= 50)
+                if model_name not in st["models_tested"]:
+                    st["models_tested"].append(model_name)
+                    st["models_tested_count"] += 1
+                    st["models_scores"][model_name] = score
+                    st["models_lint"][model_name] = passed
+                    st["models_breakdown"][model_name] = {
+                        "score": score,
+                        "functional_pass": passed,
+                        "code_ran": passed,
+                        "code_score": score,
+                        "lint_passed": passed,
+                        "code_quality": None,
+                        "code_quality_notes": [],
+                        "code_quality_lang": None,
+                        "watermark": None,
+                        "watermark_flags": [],
+                        "rubric": None,
+                        "error": t.get("error") or "",
+                        "last_run": run_time,
+                    }
+                    if passed:
+                        st["models_passed"].append(model_name)
+                        st["models_passed_count"] += 1
+                    else:
+                        st["models_failed"].append(model_name)
+                        st["models_failed_count"] += 1
+                else:
+                    # Keep the best score across repeated runs of the same model.
+                    if score > st["models_scores"].get(model_name, 0):
+                        st["models_scores"][model_name] = score
+                if run_time and (not st["last_run"] or run_time > st["last_run"]):
+                    st["last_run"] = run_time
+                if run_time:
+                    prev = st["models_last_run"].get(model_name)
+                    if not prev or run_time > prev:
+                        st["models_last_run"][model_name] = run_time
+                st["models_run_count"][model_name] = st["models_run_count"].get(model_name, 0) + 1
+                if not passed:
+                    st["models_fail_count"][model_name] = st["models_fail_count"].get(model_name, 0) + 1
+                else:
+                    st["models_fail_count"].setdefault(model_name, 0)
+                try:
+                    latency = float(t.get("latency") or 0.0)
+                except (TypeError, ValueError):
+                    latency = 0.0
+                st["models_latency"][model_name] = latency
+                try:
+                    tokens = int(t.get("tokens_generated") or 0)
+                except (TypeError, ValueError):
+                    tokens = 0
+                st["models_tokens"][model_name] = tokens
+                st["models_speed"][model_name] = round(tokens / latency, 2) if latency else 0.0
+    return stats
+
+
 def _outdated_test_ids(models: list[str]) -> list[str]:
     """Return the test IDs whose definitions have changed for any of the given
     models. Used by ``outdated_only`` runs so a model can redo just the
@@ -1032,6 +1158,11 @@ def get_tests():
     try:
         all_tests = []
         run_stats = _get_test_benchmark_stats()
+        # Multi-step workflows live outside benchmark_tests.json — merge their
+        # stats so the Test Browser lists every benchmark, not just file-based
+        # tests. File-based stats win on the (unexpected) id collision.
+        for _ms_tid, _ms_st in _get_multistep_stats().items():
+            run_stats.setdefault(_ms_tid, _ms_st)
 
         for cat, t in _iter_all_tests():
             tid = t["id"]
@@ -1102,6 +1233,53 @@ def get_tests():
                     "last_run": st.get("last_run"),
                 }
             )
+        # Multi-step agentic workflows (e.g. glider_2026_house): registered in
+        # code, not in benchmark_tests.json. Same card shape so the browser,
+        # filters, preview, and winning-response replay all work unchanged.
+        try:
+            _ms_workflows = multistep_benchmark.get_all_workflows()
+        except Exception:
+            _ms_workflows = []
+        for w in _ms_workflows:
+            if not isinstance(w, dict) or not w.get("id"):
+                continue
+            st = run_stats.get(w["id"], {})
+            _ms_steps = w.get("steps") or []
+            _ms_step_labels = [s.get("label") or s.get("step_id") or "" for s in _ms_steps if isinstance(s, dict)]
+            _ms_prompt = (w.get("description") or "").strip()
+            if _ms_step_labels:
+                _ms_prompt = (_ms_prompt + "\n\nSteps: " + " | ".join(_ms_step_labels)).strip()
+            all_tests.append(
+                {
+                    "id": w["id"],
+                    "category": w.get("category", "multistep"),
+                    "label": w.get("label", w["id"]),
+                    "type": "multistep",
+                    "kind": "multistep",
+                    "prompt": _ms_prompt,
+                    "expected": "",
+                    "attachments": [],
+                    "test_hash": f"multistep:{w['id']}",
+                    "models_tested_count": st.get("models_tested_count", 0),
+                    "models_passed_count": st.get("models_passed_count", 0),
+                    "models_failed_count": st.get("models_failed_count", 0),
+                    "models_tested": st.get("models_tested", []),
+                    "models_passed": st.get("models_passed", []),
+                    "models_scores": st.get("models_scores", {}),
+                    "models_lint": st.get("models_lint", {}),
+                    "models_breakdown": st.get("models_breakdown", {}),
+                    "models_last_run": st.get("models_last_run", {}),
+                    "models_run_count": st.get("models_run_count", {}),
+                    "models_fail_count": st.get("models_fail_count", {}),
+                    "models_latency": st.get("models_latency", {}),
+                    "models_tokens": st.get("models_tokens", {}),
+                    "models_speed": st.get("models_speed", {}),
+                    "is_out_of_date": st.get("is_out_of_date", False),
+                    "out_of_date_count": st.get("out_of_date_count", 0),
+                    "out_of_date_models": st.get("out_of_date_models", []),
+                    "last_run": st.get("last_run"),
+                }
+            )
         return jsonify({"tests": all_tests})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1126,6 +1304,21 @@ def _find_test(test_id):
     for cat, t in _iter_all_tests():
         if t.get("id") == test_id:
             return cat, t
+    # Multi-step workflows are registered in code, not benchmark_tests.json.
+    try:
+        for w in multistep_benchmark.get_all_workflows():
+            if isinstance(w, dict) and w.get("id") == test_id:
+                entry = {
+                    "id": w["id"],
+                    "category": w.get("category", "multistep"),
+                    "label": w.get("label", w["id"]),
+                    "type": "multistep",
+                    "kind": "multistep",
+                    "prompt": (w.get("description") or "").strip(),
+                }
+                return entry["category"], entry
+    except Exception:
+        pass
     return None, None
 
 
@@ -1259,6 +1452,77 @@ def get_test_responses(test_id):
         if not test:
             return jsonify({"error": "test not found"}), 404
         out = []
+        # Multi-step tasks store the game HTML in task records, not in
+        # general_* files — scan the multistep per-model results instead.
+        if (test.get("type") or "") == "multistep":
+            try:
+                _ms_dir = multistep_benchmark.MODELS_DIR
+                _ms_files = sorted(_ms_dir.glob("multistep_*.json")) if _ms_dir.exists() else []
+            except Exception:
+                _ms_files = []
+            for fp in _ms_files:
+                try:
+                    with open(fp, encoding="utf-8") as fh:
+                        data = json.load(fh)
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                for run in data.get("results") or []:
+                    if not isinstance(run, dict):
+                        continue
+                    _ms_model = run.get("model") or data.get("model") or fp.stem
+                    _ms_time = run.get("timestamp") or data.get("generated_at")
+                    for t in run.get("tasks") or []:
+                        if not isinstance(t, dict):
+                            continue
+                        if (t.get("test_id") or t.get("id")) != test_id:
+                            continue
+                        resp = t.get("response") or ""
+                        if not str(resp).strip():
+                            continue
+                        is_html = bool(re.search(r"<!doctype|<html|<script|<canvas", str(resp), re.I))
+                        try:
+                            _ms_score = float(t.get("score") or 0)
+                        except (TypeError, ValueError):
+                            _ms_score = 0.0
+                        _ms_passed = _multistep_success(t.get("success")) or (_ms_score >= 50)
+                        try:
+                            _ms_tg = float(t.get("tokens_generated") or 0)
+                        except (TypeError, ValueError):
+                            _ms_tg = 0.0
+                        try:
+                            _ms_la = float(t.get("latency") or 0)
+                        except (TypeError, ValueError):
+                            _ms_la = 0.0
+                        out.append(
+                            {
+                                "model": _ms_model,
+                                "run_file": fp.name,
+                                "response": resp,
+                                "thinking": None,
+                                "response_len": len(str(resp)),
+                                "is_html": is_html,
+                                "passed": _ms_passed,
+                                "score": _ms_score,
+                                "lint_passed": _ms_passed,
+                                "code_error": None,
+                                "code_output": None,
+                                "screenshot": None,
+                                "latency": t.get("latency"),
+                                "tokens_generated": t.get("tokens_generated"),
+                                "speed": round(_ms_tg / _ms_la, 2) if _ms_la else 0.0,
+                                "run_count": 1,
+                                "fail_count": 0 if _ms_passed else 1,
+                                "last_run": _ms_time,
+                            }
+                        )
+            best = {}
+            for o in out:
+                k = o["model"]
+                if k not in best or o["response_len"] > best[k]["response_len"]:
+                    best[k] = o
+            return jsonify({"test_id": test_id, "responses": list(best.values())})
         models_dir = benchmark.MODELS_DIR
         if models_dir.exists():
             for fp in sorted(models_dir.glob("general_*.json")):
