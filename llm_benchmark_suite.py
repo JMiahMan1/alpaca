@@ -3024,6 +3024,7 @@ class LLMModelBenchmark:
                     prompt=test["prompt"],
                     max_tokens=_test_num_predict(test, model),
                     reasoning_estimate=_test_reasoning_estimate(test),
+                    reasoning_budget=_test_reasoning_budget(test, model) or 0,
                 )
                 if sampler:
                     await sampler.stop()
@@ -3705,6 +3706,7 @@ class LLMModelBenchmark:
                 prompt=test["prompt"],
                 max_tokens=_test_num_predict(test, model),
                 reasoning_estimate=_test_reasoning_estimate(test),
+                reasoning_budget=_test_reasoning_budget(test, model) or 0,
             )
             if sampler:
                 await sampler.stop()

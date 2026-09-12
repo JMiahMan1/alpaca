@@ -123,6 +123,56 @@ async def test_online_model_query_orcarouter_mock():
 
 
 @pytest.mark.asyncio
+async def test_online_headroom_uses_run_budget_floor():
+    """Headroom math uses caller-supplied UI values only: max(2*est, budget, base//2)."""
+    provider = OnlineModelProvider()
+
+    async def fake_impl(model_id, prompt, max_tokens, *args, **kwargs):
+        return {
+            "success": True,
+            "latency": 0.1,
+            "response": "done",
+            "thinking": None,
+            "finish_reason": "stop",
+            "tokens_generated": 5,
+            "error": None,
+        }
+
+    captured = {}
+
+    async def spy_impl(model_id, prompt, max_tokens, *args, **kwargs):
+        captured["max_tokens"] = max_tokens
+        return await fake_impl(model_id, prompt, max_tokens, *args, **kwargs)
+
+    with (
+        patch.object(provider, "_query_online_model_impl", side_effect=spy_impl),
+        patch.object(provider, "_resolve_thinking_model", new_callable=AsyncMock, return_value=True),
+    ):
+        # base 8000, estimate 0, run budget 2048 -> headroom max(0, 2048, 4000) = 4000
+        res = await provider.query_online_model(
+            "openrouter:deepseek/deepseek-r1", prompt="hi", max_tokens=8000, reasoning_budget=2048
+        )
+        assert res["success"] is True
+        assert captured["max_tokens"] == 8000 + 4000
+
+        # base 8000, estimate 4096, budget 1024 -> headroom max(8192, 1024, 4000) = 8192
+        res = await provider.query_online_model(
+            "openrouter:deepseek/deepseek-r1",
+            prompt="hi",
+            max_tokens=8000,
+            reasoning_estimate=4096,
+            reasoning_budget=1024,
+        )
+        assert res["success"] is True
+        assert captured["max_tokens"] == 8000 + 8192
+
+        # no UI values at all -> headroom max(0, 0, 4000) = base//2, no literals
+        res = await provider.query_online_model("openrouter:deepseek/deepseek-r1", prompt="hi", max_tokens=8000)
+        assert res["success"] is True
+        assert captured["max_tokens"] == 8000 + 4000
+
+
+@pytest.mark.asyncio
 async def test_online_model_query_orcarouter_no_key():
     provider = OnlineModelProvider()
     provider.orcarouter_api_key = ""

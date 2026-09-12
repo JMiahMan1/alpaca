@@ -724,6 +724,7 @@ class SharedLLMModelBenchmark:
                 max_tokens=max_tokens,
                 custom_keys=custom_keys,
                 reasoning_estimate=reasoning_estimate,
+                reasoning_budget=_effective_reasoning_budget(model) or 0,
             )
 
         # 2. Local GPU Inference (Proxy or direct llama-server)

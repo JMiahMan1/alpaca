@@ -1119,6 +1119,94 @@ def test_model_tracker_hidden_survives_history_rescan(tmp_path):
     assert summary["all_tracked"][model]["latest_score"] == 90.0
 
 
+def test_llm_server_settings_get_reports_saved_vs_live(client):
+    with (
+        patch(
+            "web.app._read_dotenv_values",
+            return_value={"LLAMA_REASONING_BUDGET": "2048", "LLAMA_REASONING_FORMAT": "deepseek"},
+        ),
+        patch("web.app._llama_server_live_env", return_value={"LLAMA_REASONING_BUDGET": "1024"}),
+    ):
+        res = client.get("/api/settings/llm-server")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["budget"] == "2048"
+        assert data["live_budget"] == "1024"
+        assert data["needs_apply"] is True
+
+
+def test_llm_server_settings_post_rejects_bad_values(client):
+    res = client.post("/api/settings/llm-server", json={"budget": "lots", "format": "deepseek"})
+    assert res.status_code == 400
+    res = client.post("/api/settings/llm-server", json={"budget": -5, "format": "deepseek"})
+    assert res.status_code == 400
+    res = client.post("/api/settings/llm-server", json={"budget": 2048, "format": "telepathy"})
+    assert res.status_code == 400
+
+
+def test_llm_server_settings_post_saves_and_recreates(client):
+    from online_providers import online_model_provider
+
+    fake_old = MagicMock()
+    fake_old.attrs = {"Config": {"Env": ["LLAMA_REASONING_BUDGET=1024", "OTHER=1"]}, "HostConfig": {}}
+    fake_client = MagicMock()
+    fake_client.containers.get.return_value = fake_old
+    fake_new = MagicMock()
+    fake_client.containers.run.return_value = fake_new
+
+    with (
+        patch.object(online_model_provider, "save_credentials", return_value={"success": True}),
+        patch("web.app.docker") as mock_docker,
+    ):
+        mock_docker.from_env.return_value = fake_client
+        mock_docker.types.DeviceRequest.side_effect = lambda **kw: kw
+        mock_docker.types.Ulimit.side_effect = lambda **kw: kw
+        mock_docker.types.LogConfig.side_effect = lambda **kw: kw
+        res = client.post("/api/settings/llm-server", json={"budget": 2048, "format": "deepseek"})
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["success"] is True and data["applied"] is True
+        _, kwargs = fake_client.containers.run.call_args
+        assert kwargs["environment"]["LLAMA_REASONING_BUDGET"] == "2048"
+        assert kwargs["environment"]["LLAMA_REASONING_FORMAT"] == "deepseek"
+        assert kwargs["environment"]["OTHER"] == "1"
+        assert kwargs["name"] == "llama-server"
+
+
+def test_llama_recreate_kwargs_preserves_config():
+    from web.app import _llama_recreate_kwargs
+
+    attrs = {
+        "Config": {
+            "Image": "img:tag",
+            "Cmd": None,
+            "Entrypoint": ["/bin/sh", "entry.sh"],
+            "Env": ["A=1", "LLAMA_REASONING_BUDGET=1024"],
+            "Labels": {"com.docker.compose.project": "alpaca"},
+        },
+        "HostConfig": {
+            "Binds": ["/host/models:/models:ro", "/host/data:/data:rw"],
+            "PortBindings": {"8080/tcp": [{"HostPort": "8080"}]},
+            "Memory": 100,
+            "CapAdd": ["IPC_LOCK"],
+            "RestartPolicy": {"Name": "always"},
+            "DeviceRequests": [
+                {"Driver": "nvidia", "Count": -1, "DeviceIDs": [], "Capabilities": [["gpu"]], "Options": {}}
+            ],
+        },
+        "NetworkSettings": {"Networks": {"alpaca_default": {}}},
+    }
+    kwargs, networks = _llama_recreate_kwargs(attrs, {"LLAMA_REASONING_BUDGET": "2048"})
+    assert kwargs["image"] == "img:tag"
+    assert kwargs["environment"] == {"A": "1", "LLAMA_REASONING_BUDGET": "2048"}
+    assert kwargs["volumes"] == {
+        "/host/models": {"bind": "/models", "mode": "ro"},
+        "/host/data": {"bind": "/data", "mode": "rw"},
+    }
+    assert kwargs["ports"] == {"8080": "8080"}
+    assert networks == ["alpaca_default"]
+
+
 @patch("llm_benchmark_suite.LLMModelBenchmark.discover_all_models")
 @patch("llm_benchmark_suite.LLMModelBenchmark.discover_all_proxy_models")
 def test_api_models_tracking(mock_discover_proxy, mock_discover_all, client):

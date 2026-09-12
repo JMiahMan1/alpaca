@@ -42,10 +42,11 @@ services:
       # it caps the thinking phase so the model cannot spend the whole
       # generation budget on thinking and return empty content. deepseek format
       # routes thoughts into message.thinking separate from scored content.
-      # 8192: heavy reasoning tasks exceed 2048 think tokens and get cut
-      # mid-thinking; 0 = unrestricted via .env if ever needed.
-      LLAMA_REASONING_BUDGET: "${LLAMA_REASONING_BUDGET:-8192}"
-      LLAMA_REASONING_FORMAT: "${LLAMA_REASONING_FORMAT:-deepseek}"
+      # NO DEFAULTS HERE: both values are owned by the Settings UI and stored
+      # in .env. Unset values fail loudly (compose :? and llama-server-flags.py
+      # both refuse to start) instead of silently running a wrong config.
+      LLAMA_REASONING_BUDGET: "${LLAMA_REASONING_BUDGET:?set LLAMA_REASONING_BUDGET in .env via the Settings UI}"
+      LLAMA_REASONING_FORMAT: "${LLAMA_REASONING_FORMAT:?set LLAMA_REASONING_FORMAT in .env via the Settings UI}"
     entrypoint: ["/bin/sh", "/scripts/llama-server-entrypoint.sh"]
     depends_on:
       alpaca-indexer:

@@ -2286,6 +2286,204 @@ def test_online_provider_connection_api():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+LLM_SERVER_REASONING_FORMATS = ("auto", "none", "deepseek", "deepseek-legacy")
+
+
+def _read_dotenv_values(keys):
+    """Read raw values for keys from the repo .env file (the UI-owned source of truth)."""
+    from online_providers import online_model_provider
+
+    path = online_model_provider._find_dotenv_path()
+    found = {}
+    if path and path.exists():
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        if k.strip() in keys:
+                            found[k.strip()] = v.strip().strip("\"'")
+        except Exception:
+            pass
+    return {k: found.get(k) for k in keys}
+
+
+def _llama_server_live_env():
+    """Environment of the running llama-server container, or None if unreachable."""
+    try:
+        client = docker.from_env()
+        container = client.containers.get("llama-server")
+        env = {}
+        for item in container.attrs.get("Config", {}).get("Env") or []:
+            if "=" in item:
+                k, _, v = item.partition("=")
+                env[k] = v
+        return env
+    except Exception:
+        return None
+
+
+@app.route("/api/settings/llm-server", methods=["GET"])
+def get_llm_server_settings_api():
+    """UI-owned llama-server reasoning settings: .env values vs live container values."""
+    try:
+        stored = _read_dotenv_values(["LLAMA_REASONING_BUDGET", "LLAMA_REASONING_FORMAT"])
+        live = _llama_server_live_env() or {}
+        live_budget = live.get("LLAMA_REASONING_BUDGET")
+        live_format = live.get("LLAMA_REASONING_FORMAT")
+        return jsonify(
+            {
+                "budget": stored.get("LLAMA_REASONING_BUDGET"),
+                "format": stored.get("LLAMA_REASONING_FORMAT"),
+                "live_budget": live_budget,
+                "live_format": live_format,
+                "needs_apply": (stored.get("LLAMA_REASONING_BUDGET") != live_budget)
+                or (stored.get("LLAMA_REASONING_FORMAT") != live_format),
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _llama_recreate_kwargs(attrs, new_env):
+    """Build docker-SDK create kwargs for llama-server from its live attrs.
+
+    Pure function (no docker calls) so it is unit-testable. Everything is
+    copied from the running container; only the two UI-owned reasoning values
+    are replaced. No defaults live here.
+    """
+    config = attrs.get("Config", {}) or {}
+    host_config = attrs.get("HostConfig", {}) or {}
+
+    env = {}
+    for item in config.get("Env") or []:
+        if "=" in item:
+            k, _, v = item.partition("=")
+            env[k] = v
+    env.update(new_env)
+
+    volumes = {}
+    for bind in host_config.get("Binds") or []:
+        parts = bind.split(":")
+        if len(parts) >= 2:
+            volumes[parts[0]] = {"bind": parts[1], "mode": parts[2] if len(parts) > 2 else "rw"}
+
+    ports = {}
+    for cport, bindings in (host_config.get("PortBindings") or {}).items():
+        host_ports = [b.get("HostPort") for b in (bindings or []) if b.get("HostPort")]
+        if host_ports:
+            ports[cport.split("/")[0]] = host_ports if len(host_ports) > 1 else host_ports[0]
+
+    device_requests = []
+    for d in host_config.get("DeviceRequests") or []:
+        device_requests.append(
+            docker.types.DeviceRequest(
+                driver=d.get("Driver", ""),
+                count=d.get("Count", 0),
+                device_ids=d.get("DeviceIDs") or [],
+                capabilities=d.get("Capabilities") or [],
+                options=d.get("Options") or {},
+            )
+        )
+
+    ulimits = []
+    for u in host_config.get("Ulimits") or []:
+        ulimits.append(docker.types.Ulimit(name=u.get("Name"), soft=u.get("Soft"), hard=u.get("Hard")))
+
+    restart = (host_config.get("RestartPolicy") or {}).get("Name") or "always"
+    log_cfg = host_config.get("LogConfig") or {}
+    log_config = None
+    if log_cfg.get("Type"):
+        log_config = docker.types.LogConfig(type=log_cfg["Type"], config=log_cfg.get("Config") or {})
+
+    kwargs = {
+        "image": config.get("Image"),
+        "command": config.get("Cmd"),
+        "entrypoint": config.get("Entrypoint"),
+        "environment": env,
+        "volumes": volumes,
+        "ports": ports,
+        "mem_limit": host_config.get("Memory") or None,
+        "cap_add": host_config.get("CapAdd"),
+        "ulimits": ulimits or None,
+        "device_requests": device_requests or None,
+        "labels": (attrs.get("Config", {}).get("Labels") or None),
+        "restart_policy": {"Name": restart},
+        "log_config": log_config,
+        "detach": True,
+        "name": "llama-server",
+    }
+    networks = list((attrs.get("NetworkSettings", {}).get("Networks") or {}).keys())
+    return kwargs, networks
+
+
+@app.route("/api/settings/llm-server", methods=["POST"])
+def save_llm_server_settings_api():
+    """Save UI-owned reasoning settings to .env and recreate llama-server so they apply.
+
+    A container recreate (not a restart) is required: compose .env values are
+    baked in at container creation. The replacement is rebuilt from the live
+    container's own attrs, so image/mounts/ports/GPU/networks are preserved.
+    """
+    try:
+        from online_providers import online_model_provider
+
+        data = request.get_json() or {}
+        raw_budget = data.get("budget")
+        fmt = str(data.get("format", "")).strip()
+        try:
+            budget = int(str(raw_budget).strip())
+        except (TypeError, ValueError, AttributeError):
+            return jsonify({"success": False, "error": "budget must be an integer (tokens, e.g. 2048)"}), 400
+        if budget < 0:
+            return jsonify({"success": False, "error": "budget must be >= 0"}), 400
+        if fmt not in LLM_SERVER_REASONING_FORMATS:
+            return (
+                jsonify({"success": False, "error": f"format must be one of {list(LLM_SERVER_REASONING_FORMATS)}"}),
+                400,
+            )
+
+        saved = online_model_provider.save_credentials(
+            {"LLAMA_REASONING_BUDGET": str(budget), "LLAMA_REASONING_FORMAT": fmt}
+        )
+        if not saved.get("success"):
+            return jsonify(saved), 500
+
+        try:
+            client = docker.from_env()
+            old = client.containers.get("llama-server")
+            kwargs, networks = _llama_recreate_kwargs(
+                old.attrs,
+                {"LLAMA_REASONING_BUDGET": str(budget), "LLAMA_REASONING_FORMAT": fmt},
+            )
+            with contextlib.suppress(Exception):
+                old.stop(timeout=30)
+            with contextlib.suppress(Exception):
+                old.remove(force=True)
+            new_container = client.containers.run(**kwargs)
+            for net in networks:
+                with contextlib.suppress(Exception):
+                    client.networks.get(net).connect(new_container)
+            with contextlib.suppress(Exception):
+                new_container.start()
+        except Exception as e:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "saved": True,
+                        "error": f".env saved but llama-server recreate failed: {e}. "
+                        "Recreate llama-server (docker compose up -d llama-server) to apply.",
+                    }
+                ),
+                500,
+            )
+        return jsonify({"success": True, "saved": True, "applied": True, "budget": budget, "format": fmt})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/online/models/search", methods=["GET"])
 def search_online_models_api():
     """Search and discover live online models from remote APIs."""

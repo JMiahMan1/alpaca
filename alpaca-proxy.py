@@ -1142,13 +1142,6 @@ def render_template_prompt(body):
 
 
 def apply_thinking_override(payload, body):
-    think_val = body.get("think")
-    if think_val is None:
-        think_val = body.get("enable_thinking")
-    if think_val is None and isinstance(body.get("options"), dict):
-        opts = body["options"]
-        think_val = opts.get("think") if opts.get("think") is not None else opts.get("enable_thinking")
-
     # Keep thinking enabled downstream so reasoning models do not crash.
     # The proxy filters/strips the thinking trace from responses when think is False.
     # Do NOT set thinking=False here; upstream always gets thinking=True.
@@ -1166,14 +1159,26 @@ def apply_thinking_override(payload, body):
             payload["reasoning_budget"] = int(budget)
 
     # Reasoning models ALWAYS consume tokens on a thinking phase before producing
-    # content (we keep thinking enabled upstream so the model does not crash),
-    # so a request that explicitly opts into thinking needs headroom for the
-    # thinking phase, otherwise the n_predict budget is consumed by thinking and
-    # the response comes back empty. Only pad when the caller asked for thinking.
-    if think_val is True:
+    # content (thinking stays enabled upstream so the model does not crash), so
+    # a bounded request needs headroom for the thinking phase, otherwise the
+    # n_predict budget is consumed by thinking and the response comes back
+    # empty. The pad is NOT a hardcoded number: it is the caller-supplied
+    # reasoning_budget when present, else the UI-owned server budget
+    # (LLAMA_REASONING_BUDGET, same value llama-server enforces). Padding
+    # n_predict by the full thinking cap guarantees room for the answer no
+    # matter how much thinking the model uses.
+    pad = None
+    if budget is not None:
+        with suppress(TypeError, ValueError):
+            pad = int(budget)
+    if pad is None:
+        with suppress(TypeError, ValueError):
+            env_budget = os.getenv("LLAMA_REASONING_BUDGET", "").strip()
+            pad = int(env_budget) if env_budget else None
+    if pad and pad > 0:
         original_n_predict = payload.get("n_predict")
-        if original_n_predict is not None and 0 < original_n_predict < 8192:
-            payload["n_predict"] = original_n_predict + 2048
+        if original_n_predict is not None and 0 < original_n_predict < pad:
+            payload["n_predict"] = original_n_predict + pad
 
 
 def build_generate_chat_payload(body, backend_model):
