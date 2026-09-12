@@ -220,13 +220,15 @@
     });
   });
 
-  // Star ratings.  const widget = $("rating-widget");
+  // Star ratings.
+  const widget = $("rating-widget");
   function paintRating(avg, count) {
+    if (!widget) return;
     const full = Math.round(avg);
     widget.querySelector(".rating-stars").textContent = "★★★★★".slice(0, full) + "☆☆☆☆☆".slice(0, 5 - full);
     widget.querySelector(".rating-count").textContent = count ? `${avg} (${count} vote${count === 1 ? "" : "s"})` : "not rated yet";
   }
-  paintRating(Number(widget.dataset.avg || 0), Number(widget.dataset.count || 0));
+  if (widget) paintRating(Number(widget.dataset.avg || 0), Number(widget.dataset.count || 0));
   document.querySelectorAll(".rate-buttons button").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const res = await fetch(`/api/games/${slug}/rate`, {
