@@ -881,3 +881,13 @@ def test_sandbox_image_includes_xdotool():
 
     dockerfile = Path("Dockerfile.sandbox").read_text()
     assert "xdotool" in dockerfile
+
+
+def test_code_game_restores_line_height():
+    """Regression: .screen zeroes line-height for game frames; the code-game
+    branch must restore it or under-screen text paints over itself."""
+    from pathlib import Path
+
+    css = Path("arcade/static/arcade.css").read_text()
+    assert ".screen .code-game" in css
+    assert "line-height" in css.split(".screen .code-game", 1)[1].split("}", 1)[0]
