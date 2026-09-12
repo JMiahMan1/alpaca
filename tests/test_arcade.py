@@ -690,3 +690,36 @@ def test_arcade_js_no_commented_out_widget():
         stripped = line.strip()
         if "const widget" in stripped:
             assert not stripped.startswith("//"), f"widget declaration commented out: {line!r}"
+
+
+def test_publish_backfills_prompt_and_date_from_catalog_and_file(games_dir, tmp_path, monkeypatch):
+    """Minimal run records (no prompt/date, like the real deepseek general
+    file) still publish with a prompt (static test catalog) and a run date
+    (source result-file mtime) instead of blank scorecard fields."""
+    import os
+    import time
+
+    src_file = tmp_path / "general_fake.json"
+    src_file.write_text("{}")
+    mtime = time.mktime(time.strptime("2026-09-10", "%Y-%m-%d"))
+    os.utime(src_file, (mtime, mtime))
+    monkeypatch.setattr(
+        ap,
+        "find_model_response",
+        lambda model, test_id: {
+            "response": "```python\nimport pygame\npygame.init()\n```",
+            "screenshot": None,
+            "score": 92.0,
+            "model": model,
+            "prompt": "",
+            "run_date": "",
+            "source_file": str(src_file),
+        },
+    )
+    res = ap.publish_game(model="demo-model", test_id="retro_space_invaders")
+    meta = json.loads((games_dir / res["slug"] / "meta.json").read_text())
+    assert meta["kind"] == "code"
+    assert len(meta["prompt"]) > 100  # from benchmark_tests.json catalog
+    assert meta["run_date"] == "2026-09-10"
+    assert meta["benchmark_date"] == "2026-09-10"
+    assert meta["benchmark_score"] == 92.0
