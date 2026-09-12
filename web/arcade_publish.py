@@ -138,6 +138,35 @@ def _response_lang(resp: str) -> str:
     return "python"
 
 
+def _js_shell(code: str, title: str) -> str:
+    """Wrap browser-runnable JavaScript in a minimal game page.
+
+    Lets JS benchmark responses play in the hero area exactly like HTML
+    games — no sandbox needed. The shell is intentionally generic (no
+    assumed canvas/DOM shape): scripts that create their own elements
+    just work; ``</script`` inside the code is escaped so the page can't
+    break out of its own script block (identical string semantics).
+    """
+    safe = code.replace("</script", "<\\/script")
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>html,body{{margin:0;padding:0;height:100%;background:#000;overflow:hidden}}canvas{{display:block;margin:0 auto;max-width:100vw;max-height:100vh}}#arcade-err{{position:fixed;left:8px;bottom:8px;max-width:90vw;font:12px monospace;color:#f66;display:none}}</style>
+</head>
+<body>
+<div id="arcade-err"></div>
+<script>
+window.addEventListener('error',function(e){{var d=document.getElementById('arcade-err');d.style.display='block';d.textContent='Error: '+(e.message||e.error);}});
+{safe}
+</script>
+</body>
+</html>
+"""
+
+
 def _catalog_prompt(test_id: str) -> str:
     """The static test prompt from benchmark_tests.json (fallback when the
     stored run record carries no prompt of its own)."""
@@ -217,7 +246,16 @@ def publish_game(
             from sandbox_exec import extract_clean_code
 
             resp_lang = _response_lang(resp)
-            code_text = ("__py__", extract_clean_code(resp, resp_lang))
+            code = extract_clean_code(resp, resp_lang)
+            if resp_lang in ("javascript", "typescript"):
+                # Browser-runnable: wrap in a minimal page so it plays in
+                # the hero area like any HTML game (no sandbox needed).
+                code_text = (
+                    "__html__",
+                    _js_shell(code, title or test_id.replace("_", " ").replace("-", " ").title()),
+                )
+            else:
+                code_text = ("__py__", code)
         screenshot_b64 = rec.get("screenshot")
         if benchmark_score is None:
             benchmark_score = rec.get("score")

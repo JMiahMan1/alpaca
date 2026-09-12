@@ -28,7 +28,7 @@
           <iframe id="live-frame" title="{{ card.title }} live sandbox" allowfullscreen allow="fullscreen" style="display:none;"></iframe>
           <details class="under-screen">
             <summary>📦 Game code, download &amp; prompt info</summary>
-            <div class="code-run-hint">🖥️ Desktop app{% if code_lang %} ({{ code_lang }}){% endif %} — play it live above, right in your browser, or download it below</div>
+            <div class="code-run-hint">{{ run_hint.short }}</div>
             <ul class="meta-list">
               <li><strong>Model:</strong> {{ card.model }}</li>
               <li><strong>Test:</strong> {{ card.test_label or card.test_id }}</li>
@@ -46,7 +46,7 @@
       {% if kind == "playable" %}
       <p class="cabinet-hint">🎮 Click the screen, then use the keyboard (often <kbd>Space</kbd> to start) — sound on for the full effect</p>
       {% else %}
-      <p class="cabinet-hint">🎮 Press ▶ Play above to run it live in your browser{% if code_lang == "python" %}, or download it below and run locally (<kbd>pip install pygame</kbd>){% endif %}, then enter your score by hand</p>
+      <p class="cabinet-hint">{{ run_hint.long }}</p>
       {% endif %}
     </div>
   </section>

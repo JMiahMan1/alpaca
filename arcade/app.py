@@ -259,6 +259,37 @@ def index():
     return render_template("index.html", games=list_games())
 
 
+def _launch_lang(meta: dict) -> str:
+    """Language tag for the sandbox, from the benchmark record's own meta.
+
+    Empty means 'unstated' — the key is then omitted from the launch payload
+    so the sandbox applies its own default instead of us hardcoding one.
+    """
+    return (meta.get("lang") or "").strip().lower()
+
+
+def _run_hint(lang: str) -> dict:
+    """Human run instructions for a code-kind game, keyed by its language.
+
+    Unknown/unstated languages get a generic sandbox-first hint; only
+    python mentions pip/pygame (its own ecosystem facts).
+    """
+    name = f" ({lang})" if lang else ""
+    short = f"🖥️ Desktop app{name} — play it live above, right in your browser, or download it below"
+    if lang == "python":
+        long = (
+            "🎮 Press ▶ Play above to run it live in your browser, "
+            "or download it below and run locally (pip install pygame), "
+            "then enter your score by hand"
+        )
+    else:
+        long = (
+            "🎮 Press ▶ Play above to run it live in your browser, "
+            "or download it below to run it yourself, then enter your score by hand"
+        )
+    return {"short": short, "long": long}
+
+
 @app.route("/play/<slug>", methods=["GET"])
 def play(slug):
     d = _game_dir(slug)
@@ -273,6 +304,7 @@ def play(slug):
     scores = _read_json(d / "scores.json", {}).get("scores", [])
     kind = meta.get("kind") or ("code" if (d / "game.py").exists() else "playable")
     code_text = (d / "game.py").read_text(encoding="utf-8", errors="replace") if (d / "game.py").exists() else ""
+    code_lang = _launch_lang(meta)
     return render_template(
         "play.html",
         card=card,
@@ -282,7 +314,8 @@ def play(slug):
         validation=(meta.get("validation") or {}).get("breakdown", {}),
         kind=kind,
         code_text=code_text,
-        code_lang=meta.get("lang") or "",
+        code_lang=code_lang,
+        run_hint=_run_hint(code_lang),
         has_screenshot=(d / "screenshot.png").exists(),
     )
 
@@ -317,7 +350,10 @@ def launch_game(slug):
         return jsonify({"error": "no runnable code game found for this slug"}), 404
     meta = _read_json(d / "meta.json", {})
     code = (d / "game.py").read_text(encoding="utf-8", errors="replace")
-    payload = json.dumps({"code": code, "lang": meta.get("lang") or "python"}).encode("utf-8")
+    payload_obj: dict = {"code": code}
+    if _launch_lang(meta):
+        payload_obj["lang"] = _launch_lang(meta)
+    payload = json.dumps(payload_obj).encode("utf-8")
     req = urllib.request.Request(
         f"{WEB_BASE}/api/sandbox/serve_ui", data=payload, headers={"Content-Type": "application/json"}
     )

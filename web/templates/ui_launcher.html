@@ -120,6 +120,21 @@
             border: 1px solid var(--border-color);
             border-radius: 8px;
         }
+        /* On-screen key bar: basic keyboard buttons that work on mobile
+        (no physical keyboard) and desktop alike. Sends X11 key taps via
+        the sandbox exec endpoint (xdotool, DISPLAY=:99). */
+        #key-bar {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            flex-wrap: wrap;
+        }
+        #key-bar button {
+            min-width: 44px;
+            min-height: 44px;
+            touch-action: manipulation;
+            font-size: 0.9rem;
+        }
         /* Embed mode (?embed=1): clean player screen for the arcade. The
         game stream takes the whole area — no terminal sidebar, no Stop
         or App Log buttons. The Tests page keeps the full console. */
@@ -138,6 +153,15 @@
         <button id="btn-shot">📷 Screenshot</button>
         <button id="btn-stop">⏹ Stop UI</button>
         <button id="btn-close">✕ Close</button>
+        <span id="key-bar" role="group" aria-label="Send keys to app">
+            <button type="button" data-xkey="Up" title="Arrow up">▲</button>
+            <button type="button" data-xkey="Down" title="Arrow down">▼</button>
+            <button type="button" data-xkey="Left" title="Arrow left">◀</button>
+            <button type="button" data-xkey="Right" title="Arrow right">▶</button>
+            <button type="button" data-xkey="space" title="Space">Space</button>
+            <button type="button" data-xkey="Return" title="Enter">Enter</button>
+            <button type="button" data-xkey="Escape" title="Escape">Esc</button>
+        </span>
         <span id="launcher-status"></span>
     </div>
     <div id="launcher-main">
@@ -255,6 +279,21 @@
 
         document.getElementById('btn-close').addEventListener('click', () => {
             window.close();
+        });
+
+        // On-screen key bar: tap a button to send that X11 key to the app
+        // (xdotool on DISPLAY=:99). Works with touch screens and keyboards.
+        document.querySelectorAll('#key-bar button').forEach((b) => {
+            b.addEventListener('click', () => {
+                uiFetch('/api/sandbox/ui/exec', {
+                    container_id: CONTAINER_ID,
+                    command: `DISPLAY=:99 xdotool key ${b.dataset.xkey}`,
+                })
+                    .then(({ ok, j }) => {
+                        if (!ok || j.error) throw new Error(j.error || 'key press failed');
+                    })
+                    .catch((e) => { setStatus('Key failed: ' + e.message); });
+            });
         });
     </script>
 </body>

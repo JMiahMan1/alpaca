@@ -176,13 +176,9 @@ def test_arcade_score_submit_and_top5(arcade_client):
 
 
 def test_arcade_score_validation(arcade_client):
-    res = arcade_client.post(
-        "/api/games/demo-model_demo-breakout/scores", json={"initials": "X", "score": "abc"}
-    )
+    res = arcade_client.post("/api/games/demo-model_demo-breakout/scores", json={"initials": "X", "score": "abc"})
     assert res.status_code == 400
-    res = arcade_client.post(
-        "/api/games/demo-model_demo-breakout/scores", json={"initials": "X", "score": -5}
-    )
+    res = arcade_client.post("/api/games/demo-model_demo-breakout/scores", json={"initials": "X", "score": -5})
     assert res.status_code == 400
     res = arcade_client.post("/api/games/missing-game/scores", json={"initials": "X", "score": 5})
     assert res.status_code == 404
@@ -202,13 +198,9 @@ def test_arcade_rating_average(arcade_client):
 def test_arcade_admin_delete_requires_token(arcade_client):
     res = arcade_client.delete("/api/admin/games/demo-model_demo-breakout")
     assert res.status_code == 401
-    res = arcade_client.delete(
-        "/api/admin/games/demo-model_demo-breakout", headers={"X-Arcade-Token": "wrong"}
-    )
+    res = arcade_client.delete("/api/admin/games/demo-model_demo-breakout", headers={"X-Arcade-Token": "wrong"})
     assert res.status_code == 401
-    res = arcade_client.delete(
-        "/api/admin/games/demo-model_demo-breakout", headers={"X-Arcade-Token": "test-token"}
-    )
+    res = arcade_client.delete("/api/admin/games/demo-model_demo-breakout", headers={"X-Arcade-Token": "test-token"})
     assert res.status_code == 200
     assert arcade_client.get("/play/demo-model_demo-breakout").status_code == 404
 
@@ -801,3 +793,91 @@ def test_arcade_html_responses_are_no_store():
         resp = client.get(path)
         if path == "/" and resp.status_code == 200:
             assert resp.headers.get("Cache-Control") == "no-store"
+
+
+JS_RESP = """Here is your game:
+
+```javascript
+const canvas = document.getElementById('g');
+console.log('breakout ready');
+```
+"""
+
+
+def test_publish_from_js_response_is_playable_in_hero(games_dir, tmp_path, monkeypatch):
+    """JavaScript responses publish as playable game.html (hero iframe)."""
+    monkeypatch.chdir(tmp_path)
+    _write_general_result(tmp_path, "js-model", "web_breakout", JS_RESP)
+    res = ap.publish_game(model="js-model", test_id="web_breakout")
+    game_dir = games_dir / res["slug"]
+    assert (game_dir / "game.html").exists()
+    assert not (game_dir / "game.py").exists()
+    html = (game_dir / "game.html").read_text()
+    assert "breakout ready" in html
+    meta = json.loads((game_dir / "meta.json").read_text())
+    assert meta["kind"] == "playable"
+    assert meta["lang"] == "javascript"
+
+
+def test_launch_lang_derivation_and_omit_when_unstated(arcade_client, monkeypatch):
+    """Sandbox lang comes from stored meta; unstated omits the key."""
+    import arcade.app as arcade_app
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["body"] = json.loads(req.data.decode())
+        return _FakeResp({"container_id": "xyz1", "host_port": 6901})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+
+    d = arcade_app.GAMES_DIR / "jslaunch"
+    d.mkdir(exist_ok=True)
+    (d / "game.py").write_text("console.log(1);\n")
+    (d / "meta.json").write_text(json.dumps({"slug": "jslaunch", "kind": "code", "lang": "javascript"}))
+    res = arcade_client.post("/api/games/jslaunch/launch")
+    assert res.status_code == 200
+    assert seen["body"]["lang"] == "javascript"
+
+    d2 = arcade_app.GAMES_DIR / "nolang"
+    d2.mkdir(exist_ok=True)
+    (d2 / "game.py").write_text("print(1)\n")
+    (d2 / "meta.json").write_text(json.dumps({"slug": "nolang", "kind": "code"}))
+    res = arcade_client.post("/api/games/nolang/launch")
+    assert res.status_code == 200
+    assert "lang" not in seen["body"]
+
+
+def test_run_hint_generic_for_unknown_languages(arcade_client):
+    """Non-python code games get a generic sandbox-first hint."""
+    import arcade.app as arcade_app
+
+    assert "pygame" in arcade_app._run_hint("python")["long"]
+    generic = arcade_app._run_hint("rust")
+    assert "pygame" not in generic["long"]
+    assert "browser" in generic["short"]
+    unstated = arcade_app._run_hint("")
+    assert "pygame" not in unstated["long"]
+
+
+def test_launcher_keybar_markup_and_js():
+    """VNC launcher has arrow/space/enter/esc bar posting xdotool keys."""
+    from pathlib import Path
+
+    html = Path("web/templates/ui_launcher.html").read_text()
+    assert 'id="key-bar"' in html
+    for label, xkey in [("▲", "Up"), ("▼", "Down"), ("◀", "Left"), ("▶", "Right")]:
+        assert label in html
+        assert f'data-xkey="{xkey}"' in html
+    for xkey in ("space", "Return", "Escape"):
+        assert f'data-xkey="{xkey}"' in html
+    assert "xdotool key ${b.dataset.xkey}" in html
+    assert "DISPLAY=:99" in html
+
+
+def test_sandbox_image_includes_xdotool():
+    """Sandbox image must ship xdotool (key-bar key injection)."""
+    from pathlib import Path
+
+    dockerfile = Path("Dockerfile.sandbox").read_text()
+    assert "xdotool" in dockerfile
