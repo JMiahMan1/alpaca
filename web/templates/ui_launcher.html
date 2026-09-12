@@ -137,10 +137,16 @@
         }
         /* Embed mode (?embed=1): clean player screen for the arcade. The
         game stream takes the whole area — no terminal sidebar, no Stop
-        or App Log buttons. The Tests page keeps the full console. */
+        or App Log buttons. The Tests page keeps the full console.
+        The toolbar is also trimmed to just the on-screen key bar (the
+        only input a phone has) plus the status line. */
         body.embed #launcher-panel,
         body.embed #btn-stop,
-        body.embed #btn-log {
+        body.embed #btn-log,
+        body.embed #launcher-toolbar .brand,
+        body.embed #btn-restart,
+        body.embed #btn-shot,
+        body.embed #btn-close {
             display: none;
         }
     </style>

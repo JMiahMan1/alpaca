@@ -875,6 +875,17 @@ def test_launcher_keybar_markup_and_js():
     assert "DISPLAY=:99" in html
 
 
+def test_launcher_embed_keeps_only_keybar():
+    """Embed mode trims toolbar chrome (brand/restart/shot/close) but the
+    on-screen key bar — a phone's only input — must stay visible."""
+    from pathlib import Path
+
+    html = Path("web/templates/ui_launcher.html").read_text()
+    for sel in ("#launcher-toolbar .brand", "#btn-restart", "#btn-shot", "#btn-close"):
+        assert f"body.embed {sel}" in html
+    assert "body.embed #key-bar" not in html
+
+
 def test_sandbox_image_includes_xdotool():
     """Sandbox image must ship xdotool (key-bar key injection)."""
     from pathlib import Path

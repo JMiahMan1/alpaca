@@ -1595,3 +1595,10 @@ def test_test_responses_multistep(client, tmp_path):
     assert r["model"] == "openrouter:poolside/laguna-s-2.1:free"
     assert r["is_html"] is True
     assert "game" in r["response"]
+
+
+def test_ui_launcher_page_no_store(client):
+    """Launcher HTML must not be cached (phones held stale toolbar without keys)."""
+    res = client.get("/ui/launcher/does-not-exist")
+    assert res.status_code == 404
+    assert res.headers.get("Cache-Control", "").startswith("no-store")

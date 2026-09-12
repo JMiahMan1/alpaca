@@ -77,8 +77,10 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 @app.after_request
 def add_cache_headers(response):
     """Prevent caching of static JS/CSS and API endpoints to avoid stale data/code."""
-    if (request.path.startswith("/static/") and request.path.endswith((".js", ".css"))) or request.path.startswith(
-        "/api/"
+    if (
+        (request.path.startswith("/static/") and request.path.endswith((".js", ".css")))
+        or request.path.startswith("/api/")
+        or request.path.startswith("/ui/launcher/")
     ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
