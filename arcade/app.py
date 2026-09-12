@@ -327,7 +327,7 @@ def launch_game(slug):
     if res.get("error") or not res.get("container_id"):
         return jsonify({"error": str(res.get("error") or "sandbox refused the launch")[:200]}), 502
     host = (request.host or "").split(":")[0] or "localhost"
-    launcher_url = f"http://{host}:5000/ui/launcher/{res['container_id']}"
+    launcher_url = f"http://{host}:5000/ui/launcher/{res['container_id']}?embed=1"
     return jsonify({"success": True, "launcher_url": launcher_url, "container_id": res["container_id"]})
 
 

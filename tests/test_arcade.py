@@ -618,7 +618,7 @@ def test_arcade_launch_code_game(arcade_client, monkeypatch):
     assert res.status_code == 200
     data = json.loads(res.data.decode())
     assert data["success"] is True
-    assert data["launcher_url"].endswith("/ui/launcher/abc123")
+    assert data["launcher_url"].endswith("/ui/launcher/abc123?embed=1")
     assert data["launcher_url"].startswith("http://")
     assert ":5000/ui/launcher/" in data["launcher_url"]
     # The frozen code + lang are forwarded to the web sandbox.
@@ -674,3 +674,6 @@ def test_arcade_code_page_has_live_button(arcade_client):
     # /api/games/<slug>/... call pointed at "undefined").
     assert f'window.ARCADE_SLUG = "{slug}"' in html
     assert ">▶ Play<" in html
+    # Under-screen info is minimized behind a click-here expander.
+    assert 'class="under-screen"' in html
+    assert "Click here for code, download, prompt" in html
