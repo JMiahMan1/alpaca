@@ -152,7 +152,7 @@
       btn.disabled = false;
     } catch (e) {
       status.textContent = `Launch failed: ${e.message}`;
-      btn.textContent = "▶ Play live in sandbox";
+      btn.textContent = "▶ Play";
       btn.disabled = false;
     }
   });
