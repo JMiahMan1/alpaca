@@ -68,10 +68,7 @@
             flex: 1 1 auto;
             padding: 0.75rem;
             min-width: 0;
-            /* JS (fitFrameToCanvas) shrinks this to the displayed canvas
-            height so phones don't get a tall black letterbox around a
-            short 4:3 stream. Default keeps a sane pre-connect size. */
-            min-height: 240px;
+            min-height: 0;
         }
         #vnc-frame {
             width: 100%;
@@ -142,9 +139,11 @@
         /* Embed mode (?embed=1): clean player screen for the arcade. The
         game stream takes the whole area — no terminal sidebar, no Stop
         or App Log buttons. The Tests page keeps the full console.
-        The toolbar is also trimmed to just the on-screen key bar (the
-        only input a phone has) plus the status line. */
+        The launcher toolbar is hidden entirely: the arcade overlay
+        provides its own bottom key bar + exit, and the stream state is
+        reported to the parent status line + server beacon. */
         body.embed #launcher-panel,
+        body.embed #launcher-toolbar,
         body.embed #btn-stop,
         body.embed #btn-log,
         body.embed #launcher-toolbar .brand,
@@ -152,6 +151,10 @@
         body.embed #btn-shot,
         body.embed #btn-close {
             display: none;
+        }
+        /* With the toolbar gone the stream fills the whole frame. */
+        body.embed #launcher-main {
+            height: 100%;
         }
         /* Arcade fullscreen: the arcade overlay provides its own bottom key
         bar + exit, so the launcher toolbar steps aside entirely and the
@@ -265,27 +268,7 @@
                 ].join('\n');
                 doc.head.appendChild(st);
                 hideNoVncChrome._done = true;
-                fitFrameToCanvas();
             } catch (e) { /* cross-origin or pre-load — retry next poll */ }
-        };
-        const fitFrameToCanvas = () => {
-            try {
-                const doc = frame.contentDocument;
-                const canvas = doc && (doc.querySelector('#noVNC_container canvas')
-                    || doc.querySelector('#noVNC_canvas'));
-                const h = canvas && canvas.clientHeight;
-                if (h && h >= 120) {
-                    document.getElementById('vnc-frame-wrap').style.height = h + 24 + 'px';
-                    // Tell the embedding arcade page the true video height so
-                    // it can shrink the tall default live-frame (62dvh) down
-                    // to the video — otherwise phones show the game as a
-                    // small strip over a big black gap. Change-guarded.
-                    if (Math.abs(h - (fitFrameToCanvas._last || 0)) > 2) {
-                        fitFrameToCanvas._last = h;
-                        report('video-height', String(h + 24));
-                    }
-                }
-            } catch (e) { /* cross-origin or pre-load — keep default */ }
         };
         const watchInnerStream = () => {
             let last = '';
@@ -352,7 +335,6 @@
                         }
                     } catch (e) { /* telemetry only */ }
                 }
-                fitFrameToCanvas();
                 hideNoVncChrome();
                 } finally {
                     // Never let a telemetry exception kill the watch loop.

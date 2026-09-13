@@ -271,18 +271,6 @@
         window.addEventListener("message", (ev) => {
           const m = ev && ev.data;
           if (!m || m.source !== "arcade-vnc") return;
-          // The launcher reports the true video height so the tall default
-          // live-frame (62dvh) can shrink to the video — no black gap.
-          // Fullscreen modes manage their own sizing; leave those alone.
-          if (m.state === "video-height") {
-            const px = parseInt(m.detail, 10);
-            const live = $("live-frame");
-            const screen = document.querySelector(".screen");
-            if (px > 0 && live && screen && !isFull() && !screen.classList.contains("fallback-full")) {
-              live.style.height = Math.min(px, Math.round(window.innerHeight * 0.7)) + "px";
-            }
-            return;
-          }
           const s = $("live-status");
           if (!s) return;
           const detail = m.detail ? ` — ${m.detail}` : "";

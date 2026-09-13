@@ -1000,18 +1000,28 @@ def test_play_layout_grid_blowout_guard():
 
 
 def test_launcher_frame_fits_canvas():
-    """The vnc frame wrap must shrink to the rendered canvas height: on a
-    phone a 772px-tall container around a 273px letterboxed desktop reads
-    as a mostly-black screen. fitFrameToCanvas (run from the existing
-    inner-stream poll, no extra timer) sizes the wrap from the live
-    canvas clientHeight with a sane minimum."""
+    """The vnc frame must be exactly the 4:3 desktop — no fixed tall frame
+    (black gap), no JS measure-and-shrink loop (feedback collapse), no
+    min-height floor (letterbox). CSS aspect-ratio owns the height; embed
+    launcher hides its own toolbar so noVNC fills the frame."""
     from pathlib import Path
 
+    import re
+
+    css = Path("arcade/static/arcade.css").read_text()
+    # Every #live-frame rule block sizes by aspect-ratio (never a fixed
+    # viewport height — that caused the black gap / measure-shrink loop).
+    # Generic .screen iframe dvh heights still exist for playable games.
+    blocks = re.findall(r"^#live-frame\s*\{([^}]*)\}", css, re.MULTILINE)
+    assert blocks, "no #live-frame rules found"
+    for b in blocks:
+        assert "aspect-ratio" in b
+        assert "dvh" not in b
+        assert re.search(r"(?<!min-)height\s*:", b) is None or "auto" in b
     html = Path("web/templates/ui_launcher.html").read_text()
-    assert "fitFrameToCanvas" in html
-    assert "min-height: 240px" in html
-    assert "noVNC_container canvas" in html
-    assert "clientHeight" in html
+    assert "fitFrameToCanvas" not in html
+    assert "min-height: 240px" not in html
+    assert "#launcher-toolbar" in html
 
 
 def test_launcher_stream_telemetry_markup():
