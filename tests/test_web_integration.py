@@ -1602,3 +1602,15 @@ def test_ui_launcher_page_no_store(client):
     res = client.get("/ui/launcher/does-not-exist")
     assert res.status_code == 404
     assert res.headers.get("Cache-Control", "").startswith("no-store")
+
+
+def test_ui_inner_status_accepts_beacon(client):
+    """Phone-side noVNC states must land in the server log path (200, no crash)."""
+    res = client.post(
+        "/api/sandbox/ui_inner_status",
+        json={"container_id": "abc123", "state": "inner-status", "detail": "Connecting..."},
+    )
+    assert res.status_code == 200
+    assert json.loads(res.data.decode("utf-8")) == {"ok": True}
+    res = client.post("/api/sandbox/ui_inner_status", json={})
+    assert res.status_code == 200
