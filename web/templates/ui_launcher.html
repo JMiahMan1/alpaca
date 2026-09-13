@@ -240,10 +240,43 @@
         window.addEventListener('error', (ev) => {
             report('page-error', String((ev && ev.message) || ev));
         });
-        // Shrink the frame wrap to the displayed canvas height. noVNC
-        // letterboxes a 4:3 desktop inside a tall container, which reads
-        // on phones as a mostly-black screen. Same-origin (/serve/ tunnel)
-        // so the inner DOM is readable; failures stay silent (default CSS).
+        // Strip noVNC's own chrome (top control bar, sidebar) inside the
+        // inner frame: on a phone it eats ~150px and squeezes the game
+        // into a strip. Same-origin (/serve/ tunnel) so the inner DOM is
+        // writable; guarded so missing elements are fine. Runs each poll
+        // until applied (noVNC builds its UI after connect).
+        const hideNoVncChrome = () => {
+            if (hideNoVncChrome._done) return;
+            try {
+                const doc = frame.contentDocument;
+                if (!doc) return;
+                let touched = false;
+                [
+                    '#noVNC_control_bar',
+                    '#noVNC_control_bar_anchor',
+                    '#noVNC_sidebar',
+                    '#noVNC_sidebar_button',
+                    '#noVNC_settings_button',
+                    '#noVNC_power_button',
+                    '#noVNC_clipboard_button',
+                ].forEach((sel) => {
+                    const el = doc.querySelector(sel);
+                    if (el && el.style.display !== 'none') {
+                        el.style.display = 'none';
+                        touched = true;
+                    }
+                });
+                const screen = doc.querySelector('#noVNC_screen');
+                if (screen && !screen.dataset.arcadeFit) {
+                    screen.dataset.arcadeFit = '1';
+                    screen.style.position = 'static';
+                    screen.style.width = '100%';
+                    screen.style.height = '100%';
+                    touched = true;
+                }
+                if (touched) fitFrameToCanvas();
+            } catch (e) { /* cross-origin or pre-load — retry next poll */ }
+        };
         const fitFrameToCanvas = () => {
             try {
                 const doc = frame.contentDocument;
@@ -329,6 +362,7 @@
                     } catch (e) { /* telemetry only */ }
                 }
                 fitFrameToCanvas();
+                hideNoVncChrome();
                 } finally {
                     // Never let a telemetry exception kill the watch loop.
                     setTimeout(poll, 2500);
