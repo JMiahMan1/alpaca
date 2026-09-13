@@ -445,26 +445,34 @@
             if (m.fullscreen === true) document.body.classList.add('arcade-full');
             if (m.fullscreen === false) document.body.classList.remove('arcade-full');
             if (m.xkey) {
+                // down=true (pressed) / down=false (released) gives
+                // press-and-hold; absent flag keeps the old tap behavior.
+                const verb = m.down === true ? 'keydown' : m.down === false ? 'keyup' : 'key';
                 uiFetch('/api/sandbox/ui/exec', {
                     container_id: CONTAINER_ID,
-                    command: `DISPLAY=:99 xdotool key ${m.xkey}`,
+                    command: `DISPLAY=:99 xdotool ${verb} ${m.xkey}`,
                 }).catch((e) => { setStatus('Key failed: ' + e.message); });
             }
         });
 
-        // On-screen key bar: tap a button to send that X11 key to the app
-        // (xdotool on DISPLAY=:99). Works with touch screens and keyboards.
+        // On-screen key bar: press-and-hold sends xdotool keydown/keyup to
+        // the app (xdotool on DISPLAY=:99). Works with touch and mouse.
         document.querySelectorAll('#key-bar button').forEach((b) => {
-            b.addEventListener('click', () => {
-                uiFetch('/api/sandbox/ui/exec', {
-                    container_id: CONTAINER_ID,
-                    command: `DISPLAY=:99 xdotool key ${b.dataset.xkey}`,
+            const keyCmd = (verb) => uiFetch('/api/sandbox/ui/exec', {
+                container_id: CONTAINER_ID,
+                command: `DISPLAY=:99 xdotool ${verb} ${b.dataset.xkey}`,
+            })
+                .then(({ ok, j }) => {
+                    if (!ok || j.error) throw new Error(j.error || 'key press failed');
                 })
-                    .then(({ ok, j }) => {
-                        if (!ok || j.error) throw new Error(j.error || 'key press failed');
-                    })
-                    .catch((e) => { setStatus('Key failed: ' + e.message); });
+                .catch((e) => { setStatus('Key failed: ' + e.message); });
+            b.addEventListener('pointerdown', (ev) => {
+                ev.preventDefault();
+                keyCmd('keydown');
             });
+            for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+                b.addEventListener(ev, () => keyCmd('keyup'));
+            }
         });
     </script>
 </body>
