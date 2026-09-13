@@ -1158,7 +1158,11 @@ def test_arcade_sync_score_invalid_json(arcade_client, monkeypatch):
         f"/api/games/{slug}/sync_score",
         json={"container_id": "abc123"},
     )
-    assert res.status_code == 502
+    # Invalid JSON in all candidate files → keep polling, not an error.
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["status"] == "no score yet"
 
 
 def test_arcade_sync_score_bad_payload(arcade_client, monkeypatch):
@@ -1176,4 +1180,41 @@ def test_arcade_sync_score_bad_payload(arcade_client, monkeypatch):
         f"/api/games/{slug}/sync_score",
         json={"container_id": "abc123"},
     )
-    assert res.status_code == 502
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["status"] == "no score yet"
+
+
+def test_arcade_sync_score_high_scores_fallback(arcade_client, monkeypatch):
+    """Game only wrote /tmp/high_scores.json (array of {name, score}).
+
+    Some games don't write /tmp/alpaca_score.json but use
+    high_scores.json. We should fall back and extract the latest.
+    """
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    call_count = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        call_count["n"] += 1
+        if "/api/sandbox/ui/exec" in req.full_url:
+            # First call (alpaca_score.json) → empty, second call (high_scores.json) → data
+            if call_count["n"] == 1:
+                return _FakeResp({"output": ""})
+            return _FakeResp({"output": '[{"name": "FOO", "score": 42}]'})
+        return _FakeResp({})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/sync_score",
+        json={"container_id": "abc123"},
+    )
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["initials"] == "FOO"
+    assert data["score"] == 42
+    assert data["auto"] is True
+    assert call_count["n"] == 2
