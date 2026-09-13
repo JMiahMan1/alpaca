@@ -378,7 +378,10 @@ video — no measuring JS, no black gap, no overflow cutoff. */
 .screen:-webkit-full-screen iframe#game-frame,
 .screen:fullscreen iframe#live-frame,
 .screen:-webkit-full-screen iframe#live-frame {
-  flex: 1 1 auto; width: 100%; height: auto; min-height: 0; border-radius: 0;
+  /* Fill exactly the leftover column space: flex-basis 0 + ratio off so a
+  wide landscape viewport can never push the frame past the screen bottom
+  (aspect-ratio sizing is inline-view only). noVNC letterboxes inside. */
+  flex: 1 1 0; aspect-ratio: auto; width: 100%; height: auto; min-height: 0; border-radius: 0;
 }
 .screen:fullscreen .cabinet-marquee,
 .screen:-webkit-full-screen .cabinet-marquee,
@@ -397,9 +400,9 @@ video — no measuring JS, no black gap, no overflow cutoff. */
 .screen:fullscreen #play-overlay-bar,
 .screen:-webkit-full-screen #play-overlay-bar {
   display: flex; align-items: center; justify-content: center; gap: 0.5rem;
-  /* Pinned to the true viewport bottom (not in-flow): on phones the flex
-  column can size to content and leave the bar floating mid-screen. */
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 61;
+  /* In-flow at the column bottom: the frame above flex-fills, so the bar
+  always sits exactly at the screen bottom with no overlap or cutoff. */
+  flex: 0 0 auto;
   padding: 0.5rem 0.5rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
   background: rgba(10, 4, 28, 0.95);
   border-top: 1px solid #6d28d9;
@@ -413,7 +416,7 @@ cabinet to the viewport with the same layout as native fullscreen. */
 }
 .screen.fallback-full iframe#game-frame,
 .screen.fallback-full iframe#live-frame {
-  flex: 1 1 auto; width: 100%; height: auto; min-height: 0; border-radius: 0;
+  flex: 1 1 0; aspect-ratio: auto; width: 100%; height: auto; min-height: 0; border-radius: 0;
 }
 .screen.fallback-full .cabinet-marquee,
 .screen.fallback-full #btn-fullscreen,
@@ -426,15 +429,18 @@ cabinet to the viewport with the same layout as native fullscreen. */
 }
 .screen.fallback-full #play-overlay-bar {
   display: flex; align-items: center; justify-content: center; gap: 0.5rem;
-  /* Same viewport-bottom pin as native fullscreen (see above). */
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 61;
+  /* Same in-flow bottom bar as native fullscreen (see above). */
+  flex: 0 0 auto;
   padding: 0.5rem 0.5rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
   background: rgba(10, 4, 28, 0.95);
   border-top: 1px solid #6d28d9;
 }
 #play-keys { display: inline-flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; justify-content: center; }
 #play-keys button, #btn-exit-full {
-  min-width: 48px; min-height: 48px; touch-action: manipulation;
+  min-width: 48px; min-height: 48px;
+  /* none (not manipulation): holding an arrow must not scroll/zoom the page,
+  and press-and-hold movement needs uninterrupted pointer capture. */
+  touch-action: none; user-select: none; -webkit-user-select: none;
   font-size: 1rem; border-radius: 10px; cursor: pointer;
   background: #1a1033; color: #fff; border: 1px solid #6d28d9;
 }

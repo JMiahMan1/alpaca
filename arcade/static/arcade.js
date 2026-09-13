@@ -80,42 +80,82 @@
   if ($("btn-exit-full")) $("btn-exit-full").addEventListener("click", exitFull);
   // Overlay key bar: code games forward X11 key names to the embedded
   // launcher (xdotool on :99); playable games get synthetic KeyboardEvents
-  // in the same-origin game iframe.
-  function sendArcadeKey(btn) {
+  // in the same-origin game iframe. Press-and-hold semantics: pointerdown
+  // sends keydown, release sends keyup — taps work for menus, holds work
+  // for movement (a click-only tap is too short for games that poll held
+  // keys, which is why arrows felt dead while Space worked).
+  function arcadeKeyTarget() {
     const live = $("live-frame");
-    if (live && live.style.display !== "none") {
+    if (live && live.style.display !== "none") return { kind: "live", live };
+    const gf = $("game-frame");
+    if (!gf) return null;
+    try {
+      const doc = gf.contentDocument;
+      if (!doc) return null;
+      return {
+        kind: "playable",
+        target:
+          doc.activeElement && doc.activeElement !== doc.body
+            ? doc.activeElement
+            : doc.querySelector("canvas") || doc.body,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+  function sendArcadeKey(btn, down) {
+    const t = arcadeKeyTarget();
+    if (!t) return;
+    if (t.kind === "live") {
       try {
-        live.contentWindow.postMessage({ source: "arcade-key", xkey: btn.dataset.xkey }, "*");
+        t.live.contentWindow.postMessage({ source: "arcade-key", xkey: btn.dataset.xkey, down }, "*");
       } catch (_) {
         /* cross-origin post is best-effort */
       }
       return;
     }
-    const gf = $("game-frame");
-    if (!gf) return;
     try {
-      const doc = gf.contentDocument;
-      if (!doc) return;
-      const target =
-        doc.activeElement && doc.activeElement !== doc.body
-          ? doc.activeElement
-          : doc.querySelector("canvas") || doc.body;
-      for (const type of ["keydown", "keyup"]) {
-        target.dispatchEvent(
-          new KeyboardEvent(type, { key: btn.dataset.key, code: btn.dataset.code, bubbles: true, cancelable: true }),
-        );
-      }
+      t.target.dispatchEvent(
+        new KeyboardEvent(down ? "keydown" : "keyup", {
+          key: btn.dataset.key,
+          code: btn.dataset.code,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     } catch (_) {
       /* cross-origin keys are best-effort */
     }
-    try {
-      gf.focus();
-      gf.contentWindow.focus();
-    } catch (_) {
-      /* cross-origin focus is best-effort */
+    if (down) {
+      try {
+        const gf = $("game-frame");
+        gf.focus();
+        gf.contentWindow.focus();
+      } catch (_) {
+        /* cross-origin focus is best-effort */
+      }
     }
   }
-  document.querySelectorAll("#play-keys button").forEach((b) => b.addEventListener("click", () => sendArcadeKey(b)));
+  document.querySelectorAll("#play-keys button").forEach((b) => {
+    b.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      try {
+        b.setPointerCapture(ev.pointerId);
+      } catch (_) {
+        /* older browsers */
+      }
+      sendArcadeKey(b, true);
+    });
+    for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) {
+      b.addEventListener(ev, () => sendArcadeKey(b, false));
+    }
+    b.addEventListener("keydown", (ev) => {
+      if (ev.key === " " || ev.key === "Enter") sendArcadeKey(b, true);
+    });
+    b.addEventListener("keyup", (ev) => {
+      if (ev.key === " " || ev.key === "Enter") sendArcadeKey(b, false);
+    });
+  });
   if (COARSE) {
     // Auto-fullscreen on touch devices: playable games once loaded, code
     // games once the sandbox goes live (hooked into both ready paths).

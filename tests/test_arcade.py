@@ -954,7 +954,9 @@ def test_launcher_keybar_markup_and_js():
         assert f'data-xkey="{xkey}"' in html
     for xkey in ("space", "Return", "Escape"):
         assert f'data-xkey="{xkey}"' in html
-    assert "xdotool key ${b.dataset.xkey}" in html
+    assert "xdotool ${verb} ${b.dataset.xkey}" in html
+    assert "xdotool ${verb} ${m.xkey}" in html
+    assert "pointerdown" in html
     assert "DISPLAY=:99" in html
 
 
@@ -1004,9 +1006,8 @@ def test_launcher_frame_fits_canvas():
     (black gap), no JS measure-and-shrink loop (feedback collapse), no
     min-height floor (letterbox). CSS aspect-ratio owns the height; embed
     launcher hides its own toolbar so noVNC fills the frame."""
-    from pathlib import Path
-
     import re
+    from pathlib import Path
 
     css = Path("arcade/static/arcade.css").read_text()
     # Every #live-frame rule block sizes by aspect-ratio (never a fixed
