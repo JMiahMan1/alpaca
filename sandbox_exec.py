@@ -936,30 +936,80 @@ def serve_ui(
 
     if lang in ("python", "py"):
         fname, bin_ = "code.py", "python3"
+        http_game = False
+        compile_cmd = ""
     elif lang in ("node", "js", "javascript"):
         fname, bin_ = "app.js", "node"
+        http_game = True
+        compile_cmd = ""
+    elif lang in ("go"):
+        fname, bin_ = "code.go", "go"
+        http_game = True
+        compile_cmd = "cd /tmp && go build -o app code.go\n"
+    elif lang in ("rust"):
+        fname, bin_ = "code.rs", "rustc"
+        http_game = True
+        compile_cmd = "cd /tmp && rustc -O code.rs -o app\n"
+    elif lang in ("cpp", "c++", "cxx"):
+        fname, bin_ = "code.cpp", "g++"
+        http_game = True
+        compile_cmd = "cd /tmp && g++ -O2 code.cpp -o app\n"
     else:
         result["error"] = f"unsupported language for UI serving: {lang}"
         return result
 
-    wrapper = (
-        "#!/bin/bash\n"
-        "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
-        "XVFB_PID=$!\n"
-        "sleep 1\n"
-        "export DISPLAY=:99\n"
-        "x11vnc -display :99 -rfbport 5900 -nopw -forever -shared >/dev/null 2>&1 &\n"
-        "VNC_PID=$!\n"
-        "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
-        "WS_PID=$!\n"
-        "sleep 1\n"
-        f"{bin_} /tmp/{fname} >/tmp/ui_stdout.txt 2>&1 &\n"
-        "APP_PID=$!\n"
-        "echo $APP_PID > /tmp/app.pid\n"
-        "wait $APP_PID\n"
-        "echo $? > /tmp/app.exitcode\n"
-        "sleep infinity\n"
-    )
+    if http_game:
+        # HTTP-rendered game: start HTTP server, then Chromium in Xvfb
+        # renders the page visually so it can be streamed via noVNC.
+        http_server = (
+            "node /tmp/app.js"
+            if lang in ("node", "js", "javascript")
+            else "/tmp/app"
+        )
+        wrapper = (
+            "#!/bin/bash\n"
+            "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
+            "XVFB_PID=$!\n"
+            "sleep 1\n"
+            "export DISPLAY=:99\n"
+            "x11vnc -display :99 -rfbport 5900 -nopw -forever -shared >/dev/null 2>&1 &\n"
+            "VNC_PID=$!\n"
+            "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
+            "WS_PID=$!\n"
+            "sleep 1\n"
+            f"{compile_cmd}"
+            f"{http_server} >/tmp/ui_stdout.txt 2>&1 &\n"
+            "HTTP_PID=$!\n"
+            "sleep 2\n"
+            "chromium --no-sandbox --disable-gpu --window-size=1024x768 "
+            "--start-fullscreen --no-first-run http://localhost:8080 "
+            ">/dev/null 2>&1 &\n"
+            "APP_PID=$!\n"
+            "echo $APP_PID > /tmp/app.pid\n"
+            "wait $APP_PID\n"
+            "echo $? > /tmp/app.exitcode\n"
+            "sleep infinity\n"
+        )
+    else:
+        # Native X11 app (e.g. pygame): run directly under Xvfb
+        wrapper = (
+            "#!/bin/bash\n"
+            "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
+            "XVFB_PID=$!\n"
+            "sleep 1\n"
+            "export DISPLAY=:99\n"
+            "x11vnc -display :99 -rfbport 5900 -nopw -forever -shared >/dev/null 2>&1 &\n"
+            "VNC_PID=$!\n"
+            "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
+            "WS_PID=$!\n"
+            "sleep 1\n"
+            f"{bin_} /tmp/{fname} >/tmp/ui_stdout.txt 2>&1 &\n"
+            "APP_PID=$!\n"
+            "echo $APP_PID > /tmp/app.pid\n"
+            "wait $APP_PID\n"
+            "echo $? > /tmp/app.exitcode\n"
+            "sleep infinity\n"
+        )
 
     client = None
     container = None
