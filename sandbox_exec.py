@@ -907,6 +907,8 @@ def serve_ui(
     code: str,
     lang: str = "python",
     timeout: int = 600,
+    name: str = "alpaca-ui",
+    exclusive: bool = False,
 ) -> dict[str, Any]:
     """Run ``code`` as a graphical (X11) app and stream it to the browser.
 
@@ -919,6 +921,11 @@ def serve_ui(
     The container stays up (bridge network, published port) until stopped via
     ``stop_serve``. Only use this for code the user explicitly asked to view; it
     intentionally enables networking (the grading sandbox does not).
+
+    ``name`` selects the container name (default ``alpaca-ui``). A new launch
+    always replaces the same-named leftover, so same-source sessions never
+    pile up. ``exclusive`` additionally sweeps ``<name>-*`` suffixed relics
+    (pre-fix strays) so only one game session exists at a time.
     """
     result: dict[str, Any] = {"container_id": None, "host_port": None, "error": ""}
     try:
@@ -962,7 +969,13 @@ def serve_ui(
         # launch replaces any leftover, so alpaca-ui-<suffix> strays can
         # never pile up again.
         with contextlib.suppress(Exception):
-            client.containers.get("alpaca-ui").remove(force=True)
+            client.containers.get(name).remove(force=True)
+        if exclusive:
+            with contextlib.suppress(Exception):
+                for c in client.containers.list(all=True, filters={"name": name}):
+                    if c.name == name or c.name.startswith(name + "-"):
+                        with contextlib.suppress(Exception):
+                            c.remove(force=True)
         container = client.containers.run(
             SANDBOX_IMAGE,
             command=["sleep", str(timeout + 60)],
@@ -975,7 +988,7 @@ def serve_ui(
             pids_limit=128,
             user="sandbox",
             working_dir="/tmp",
-            name="alpaca-ui",
+            name=name,
             remove=False,
         )
         cleaned_code = extract_clean_code(code, lang)

@@ -299,6 +299,34 @@ def test_serve_ui_launches_novnc_container():
         assert kwargs["name"] == "alpaca-ui"
         mock_client.containers.get.assert_called_once_with("alpaca-ui")
         mock_client.containers.get.return_value.remove.assert_called_once_with(force=True)
+        # Non-exclusive launches do not sweep by prefix.
+        mock_client.containers.list.assert_not_called()
+
+
+def test_serve_ui_exclusive_sweeps_suffixed_relics():
+    """exclusive=True removes <name> and <name>-* strays, keeps others."""
+    with patch("docker.DockerClient") as mock_docker:
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.run.return_value = mock_container
+        mock_container.ports = {"6080/tcp": [{"HostPort": "39781"}]}
+
+        def _named(n):
+            c = MagicMock()
+            c.name = n
+            return c
+
+        exact, stray, other = _named("alpaca-ui"), _named("alpaca-ui-deadbeef"), _named("alpaca-proxy")
+        mock_client.containers.list.return_value = [exact, stray, other]
+
+        res = serve_ui("print('hi')", lang="python", timeout=5, exclusive=True)
+
+        assert res["error"] == ""
+        mock_client.containers.list.assert_called_once_with(all=True, filters={"name": "alpaca-ui"})
+        exact.remove.assert_called_once_with(force=True)
+        stray.remove.assert_called_once_with(force=True)
+        other.remove.assert_not_called()
 
         # Wrapper script must chain Xvfb -> x11vnc -> websockify -> app.
         run_ui_tar = None

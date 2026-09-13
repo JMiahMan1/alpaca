@@ -3395,7 +3395,12 @@ def sandbox_serve_ui():
     lang = data.get("lang", "python")
     if not code:
         return jsonify({"error": "No code provided"}), 400
-    res = serve_ui(code, lang)
+    res = serve_ui(
+        code,
+        lang,
+        name=data.get("name", "alpaca-ui"),
+        exclusive=bool(data.get("exclusive", False)),
+    )
     if res.get("error"):
         return jsonify({"error": res["error"]}), 500
     return jsonify(res)
