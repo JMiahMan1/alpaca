@@ -657,6 +657,29 @@ def test_arcade_launch_missing_game(arcade_client):
     assert res.status_code == 404
 
 
+def test_arcade_stop_proxies_container_id(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode())
+        return _FakeResp({"stopped": True})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post("/api/games/any-slug/stop", json={"container_id": "abc123"})
+    assert res.status_code == 200
+    assert json.loads(res.data.decode()) == {"stopped": True}
+    assert seen["url"].endswith("/api/sandbox/stop_serve")
+    assert seen["body"] == {"container_id": "abc123"}
+
+
+def test_arcade_stop_requires_container_id(arcade_client):
+    res = arcade_client.post("/api/games/any-slug/stop", json={})
+    assert res.status_code == 400
+
+
 def test_arcade_launch_playable_has_no_code(arcade_client):
     res = arcade_client.post("/api/games/demo-model_demo-breakout/launch")
     assert res.status_code == 404

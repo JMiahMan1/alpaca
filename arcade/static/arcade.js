@@ -140,10 +140,25 @@
     btn.disabled = true;
     btn.textContent = "⏳ Starting sandbox…";
     status.textContent = "Spinning up a display sandbox (up to ~2 min on first launch)…";
+    // Relaunching without stopping leaks a container (the embedded
+    // launcher hides its own Stop button). Kill the previous session first.
+    if (window.__arcadeCid) {
+      const old = window.__arcadeCid;
+      window.__arcadeCid = null;
+      try {
+        await fetch(`/api/games/${slug}/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ container_id: old }),
+        });
+      } catch (e) { /* best effort — relaunch anyway */ }
+      frame.removeAttribute("src");
+    }
     try {
       const res = await fetch(`/api/games/${slug}/launch`, { method: "POST" });
       const data = await res.json();
       if (!data.success) throw new Error(data.error || "Launch failed.");
+      window.__arcadeCid = data.container_id || null;
       if (hero) hero.style.display = "none";
       frame.src = data.launcher_url;
       frame.style.display = "block";
@@ -169,6 +184,19 @@
       btn.textContent = "▶ Play";
       btn.disabled = false;
     }
+  });
+
+  // Leaving the page with a live sandbox leaks the container. Fire-and-
+  // forget stop on pagehide (sendBeacon survives navigation/close).
+  window.addEventListener("pagehide", () => {
+    if (!window.__arcadeCid) return;
+    try {
+      navigator.sendBeacon(
+        `/api/games/${slug}/stop`,
+        new Blob([JSON.stringify({ container_id: window.__arcadeCid })], { type: "application/json" }),
+      );
+    } catch (e) { /* nothing to do on unload */ }
+    window.__arcadeCid = null;
   });
 
   // Score auto-capture: the game is served same-origin, so we can read its

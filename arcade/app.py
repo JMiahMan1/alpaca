@@ -368,6 +368,31 @@ def launch_game(slug):
     return jsonify({"success": True, "launcher_url": launcher_url, "container_id": res["container_id"]})
 
 
+@app.route("/api/games/<slug>/stop", methods=["POST"])
+def stop_game(slug):
+    """Stop a sandbox container started by launch_game.
+
+    The embedded launcher hides its own Stop button, and the arcade page
+    never called stop_serve — so every Play leaked a container. The
+    play page calls this when relaunching (kills the previous session)
+    and on pagehide (fire-and-forget, so exiting stops the sandbox).
+    """
+    data = request.get_json(silent=True) or {}
+    cid = data.get("container_id")
+    if not cid:
+        return jsonify({"error": "No container_id provided"}), 400
+    payload = json.dumps({"container_id": cid}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{WEB_BASE}/api/sandbox/stop_serve", data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"sandbox stop failed: {str(e)[:200]}"}), 502
+    return jsonify(res)
+
+
 def _browser_launcher_url(container_id: str) -> str:
     """Browser-facing noVNC launcher URL for this request's origin.
 
