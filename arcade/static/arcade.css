@@ -395,7 +395,11 @@ body > * { position: relative; z-index: 1; }
 .screen:fullscreen #play-overlay-bar,
 .screen:-webkit-full-screen #play-overlay-bar {
   display: flex; align-items: center; justify-content: center; gap: 0.5rem;
-  flex: 0 0 auto; padding: 0.5rem; background: rgba(10, 4, 28, 0.95);
+  /* Pinned to the true viewport bottom (not in-flow): on phones the flex
+  column can size to content and leave the bar floating mid-screen. */
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 61;
+  padding: 0.5rem 0.5rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  background: rgba(10, 4, 28, 0.95);
   border-top: 1px solid #6d28d9;
 }
 /* No element Fullscreen API (iPhone Safari): .fallback-full pins the
@@ -420,7 +424,10 @@ cabinet to the viewport with the same layout as native fullscreen. */
 }
 .screen.fallback-full #play-overlay-bar {
   display: flex; align-items: center; justify-content: center; gap: 0.5rem;
-  flex: 0 0 auto; padding: 0.5rem; background: rgba(10, 4, 28, 0.95);
+  /* Same viewport-bottom pin as native fullscreen (see above). */
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 61;
+  padding: 0.5rem 0.5rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  background: rgba(10, 4, 28, 0.95);
   border-top: 1px solid #6d28d9;
 }
 #play-keys { display: inline-flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; justify-content: center; }
