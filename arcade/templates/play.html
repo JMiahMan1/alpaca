@@ -45,20 +45,47 @@
         <button id="btn-fullscreen" class="arcade-btn fs-toggle" type="button">⛶ Full screen</button>
         <div id="play-overlay-bar" hidden>
           <div id="play-keys" role="group" aria-label="Game keys">
+            {% if not smart_keys or smart_keys.arrows %}
             <div class="pad-cluster" role="group" aria-label="Move">
               <button type="button" class="pad-up" data-key="ArrowUp" data-code="ArrowUp" data-xkey="Up" title="Up">▲</button>
               <button type="button" class="pad-left" data-key="ArrowLeft" data-code="ArrowLeft" data-xkey="Left" title="Left">◀</button>
               <button type="button" class="pad-right" data-key="ArrowRight" data-code="ArrowRight" data-xkey="Right" title="Right">▶</button>
               <button type="button" class="pad-down" data-key="ArrowDown" data-code="ArrowDown" data-xkey="Down" title="Down">▼</button>
             </div>
-            <div class="action-cluster" role="group" aria-label="Actions">
-              <button type="button" class="action-fire" data-key=" " data-code="Space" data-xkey="space" title="Space">●</button>
-              <button type="button" data-key="Enter" data-code="Enter" data-xkey="Return" title="Enter">⏎</button>
-              <button type="button" data-key="Escape" data-code="Escape" data-xkey="Escape" title="Escape">✕</button>
+            {% endif %}
+            {% if smart_keys and smart_keys.wasd %}
+            <div class="wasd-cluster" role="group" aria-label="WASD">
+              <button type="button" class="pad-up" data-key="w" data-code="KeyW" data-xkey="w" title="W">W</button>
+              <button type="button" class="pad-left" data-key="a" data-code="KeyA" data-xkey="a" title="A">A</button>
+              <button type="button" class="pad-right" data-key="d" data-code="KeyD" data-xkey="d" title="D">D</button>
+              <button type="button" class="pad-down" data-key="s" data-code="KeyS" data-xkey="s" title="S">S</button>
             </div>
+            {% endif %}
+            {% if not smart_keys or smart_keys.space or smart_keys.enter or smart_keys.esc or smart_keys.other %}
+            <div class="action-cluster" role="group" aria-label="Actions">
+              {% if not smart_keys or smart_keys.space %}
+              <button type="button" class="action-fire" data-key=" " data-code="Space" data-xkey="space" title="Space">●</button>
+              {% endif %}
+              {% if not smart_keys or smart_keys.enter %}
+              <button type="button" data-key="Enter" data-code="Enter" data-xkey="Return" title="Enter">⏎</button>
+              {% endif %}
+              {% if not smart_keys or smart_keys.esc %}
+              <button type="button" data-key="Escape" data-code="Escape" data-xkey="Escape" title="Escape">✕</button>
+              {% endif %}
+              {% if smart_keys and smart_keys.other %}
+              {% for k in smart_keys.other %}
+              <button type="button" class="extra-key" data-key="{{ k }}" data-xkey="{{ k }}" title="{{ k|upper }}">{{ k|upper }}</button>
+              {% endfor %}
+              {% endif %}
+            </div>
+            {% endif %}
           </div>
-          <button id="btn-keyboard" type="button" title="High-score entry: open the initials form">⌨</button>
+          <button id="btn-keyboard" type="button" title="Type into the game (high-score names)" aria-pressed="false">⌨</button>
           <button id="btn-exit-full" type="button" title="Exit full screen">⛶</button>
+          <!-- Focus proxy: focusing a real input opens the device keyboard;
+          keystrokes are forwarded into the game (never leaves fullscreen). -->
+          <input id="kbd-proxy" type="text" autocomplete="off" autocapitalize="characters"
+            autocorrect="off" spellcheck="false" aria-label="Type letters into the game" />
         </div>
       </div>
       {% if kind == "playable" %}
