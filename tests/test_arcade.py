@@ -621,6 +621,8 @@ def test_arcade_launch_code_game(arcade_client, monkeypatch):
     # The frozen code + lang are forwarded to the web sandbox.
     assert seen["body"]["code"] == "import pygame\n"
     assert seen["body"]["lang"] == "python"
+    # Arcade launches are exclusive: one game session at a time.
+    assert seen["body"]["exclusive"] is True
 
 
 def test_arcade_launch_url_same_origin_behind_https_proxy(arcade_client, monkeypatch):

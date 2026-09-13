@@ -350,7 +350,7 @@ def launch_game(slug):
         return jsonify({"error": "no runnable code game found for this slug"}), 404
     meta = _read_json(d / "meta.json", {})
     code = (d / "game.py").read_text(encoding="utf-8", errors="replace")
-    payload_obj: dict = {"code": code}
+    payload_obj: dict = {"code": code, "exclusive": True}
     if _launch_lang(meta):
         payload_obj["lang"] = _launch_lang(meta)
     payload = json.dumps(payload_obj).encode("utf-8")
