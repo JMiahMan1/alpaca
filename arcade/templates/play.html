@@ -45,15 +45,20 @@
         <button id="btn-fullscreen" class="arcade-btn fs-toggle" type="button">⛶ Full screen</button>
         <div id="play-overlay-bar" hidden>
           <div id="play-keys" role="group" aria-label="Game keys">
-            <button type="button" data-key="ArrowUp" data-code="ArrowUp" data-xkey="Up" title="Up">▲</button>
-            <button type="button" data-key="ArrowDown" data-code="ArrowDown" data-xkey="Down" title="Down">▼</button>
-            <button type="button" data-key="ArrowLeft" data-code="ArrowLeft" data-xkey="Left" title="Left">◀</button>
-            <button type="button" data-key="ArrowRight" data-code="ArrowRight" data-xkey="Right" title="Right">▶</button>
-            <button type="button" data-key=" " data-code="Space" data-xkey="space" title="Space">Space</button>
-            <button type="button" data-key="Enter" data-code="Enter" data-xkey="Return" title="Enter">Enter</button>
-            <button type="button" data-key="Escape" data-code="Escape" data-xkey="Escape" title="Escape">Esc</button>
+            <div class="pad-cluster" role="group" aria-label="Move">
+              <button type="button" class="pad-up" data-key="ArrowUp" data-code="ArrowUp" data-xkey="Up" title="Up">▲</button>
+              <button type="button" class="pad-left" data-key="ArrowLeft" data-code="ArrowLeft" data-xkey="Left" title="Left">◀</button>
+              <button type="button" class="pad-right" data-key="ArrowRight" data-code="ArrowRight" data-xkey="Right" title="Right">▶</button>
+              <button type="button" class="pad-down" data-key="ArrowDown" data-code="ArrowDown" data-xkey="Down" title="Down">▼</button>
+            </div>
+            <div class="action-cluster" role="group" aria-label="Actions">
+              <button type="button" class="action-fire" data-key=" " data-code="Space" data-xkey="space" title="Space">●</button>
+              <button type="button" data-key="Enter" data-code="Enter" data-xkey="Return" title="Enter">⏎</button>
+              <button type="button" data-key="Escape" data-code="Escape" data-xkey="Escape" title="Escape">✕</button>
+            </div>
           </div>
-          <button id="btn-exit-full" type="button" title="Exit full screen">✕ Exit</button>
+          <button id="btn-keyboard" type="button" title="High-score entry: open the initials form">⌨</button>
+          <button id="btn-exit-full" type="button" title="Exit full screen">⛶</button>
         </div>
       </div>
       {% if kind == "playable" %}

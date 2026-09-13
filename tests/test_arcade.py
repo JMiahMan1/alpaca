@@ -158,6 +158,11 @@ def test_arcade_index_and_play(arcade_client):
     assert b"play-overlay-bar" in res.data
     assert b"play-keys" in res.data
     assert b"btn-exit-full" in res.data
+    # Mobile refactor: D-pad + action clusters, high-score keyboard button.
+    assert b"pad-cluster" in res.data
+    assert b"action-cluster" in res.data
+    assert b"btn-keyboard" in res.data
+    assert b'score-initials' in res.data
 
 
 def test_arcade_play_missing(arcade_client):
