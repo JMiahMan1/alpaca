@@ -243,38 +243,29 @@
         // Strip noVNC's own chrome (top control bar, sidebar) inside the
         // inner frame: on a phone it eats ~150px and squeezes the game
         // into a strip. Same-origin (/serve/ tunnel) so the inner DOM is
-        // writable; guarded so missing elements are fine. Runs each poll
-        // until applied (noVNC builds its UI after connect).
+        // writable. Injects a <style> with !important rules (noVNC's own
+        // stylesheet and UI.js state changes override plain inline styles).
+        // One-shot: noVNC never removes our style element.
         const hideNoVncChrome = () => {
             if (hideNoVncChrome._done) return;
             try {
                 const doc = frame.contentDocument;
-                if (!doc) return;
-                let touched = false;
-                [
-                    '#noVNC_control_bar',
-                    '#noVNC_control_bar_anchor',
-                    '#noVNC_sidebar',
-                    '#noVNC_sidebar_button',
-                    '#noVNC_settings_button',
-                    '#noVNC_power_button',
-                    '#noVNC_clipboard_button',
-                ].forEach((sel) => {
-                    const el = doc.querySelector(sel);
-                    if (el && el.style.display !== 'none') {
-                        el.style.display = 'none';
-                        touched = true;
-                    }
-                });
-                const screen = doc.querySelector('#noVNC_screen');
-                if (screen && !screen.dataset.arcadeFit) {
-                    screen.dataset.arcadeFit = '1';
-                    screen.style.position = 'static';
-                    screen.style.width = '100%';
-                    screen.style.height = '100%';
-                    touched = true;
+                if (!doc || !doc.head) return;
+                if (doc.getElementById('arcade-strip')) {
+                    hideNoVncChrome._done = true;
+                    return;
                 }
-                if (touched) fitFrameToCanvas();
+                const st = doc.createElement('style');
+                st.id = 'arcade-strip';
+                st.textContent = [
+                    '#noVNC_control_bar, #noVNC_control_bar_anchor,',
+                    '#noVNC_sidebar, #noVNC_sidebar_button,',
+                    '#noVNC_mobile_buttons, #noVNC_bell { display: none !important; }',
+                    '#noVNC_container { padding: 0 !important; margin: 0 !important; }',
+                ].join('\n');
+                doc.head.appendChild(st);
+                hideNoVncChrome._done = true;
+                fitFrameToCanvas();
             } catch (e) { /* cross-origin or pre-load — retry next poll */ }
         };
         const fitFrameToCanvas = () => {
