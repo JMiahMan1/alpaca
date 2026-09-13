@@ -257,6 +257,7 @@
         };
         const watchInnerStream = () => {
             let last = '';
+            let ticks = 0;
             const poll = () => {
                 let state = 'inner-unreadable';
                 let detail = '';
@@ -279,6 +280,29 @@
                 if (key !== last) {
                     last = key;
                     report(state, detail);
+                }
+                // Heartbeat every ~10s even when nothing changes (beacon-only,
+                // not shown in the parent status line): tells the server log
+                // whether the phone page is still alive and what it sees.
+                // Stops arriving = user left/closed; stuck state repeating =
+                // genuinely stalled client.
+                ticks += 1;
+                if (ticks % 4 === 0) {
+                    try {
+                        const hb = JSON.stringify({
+                            container_id: CONTAINER_ID,
+                            state: 'heartbeat',
+                            detail: `${key} online=${navigator.onLine}`,
+                        });
+                        if (!navigator.sendBeacon('/api/sandbox/ui_inner_status', hb)) {
+                            fetch('/api/sandbox/ui_inner_status', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: hb,
+                                keepalive: true,
+                            }).catch(() => {});
+                        }
+                    } catch (e) { /* telemetry only */ }
                 }
                 fitFrameToCanvas();
                 setTimeout(poll, 2500);
