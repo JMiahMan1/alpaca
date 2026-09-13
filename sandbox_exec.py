@@ -958,6 +958,11 @@ def serve_ui(
     container = None
     try:
         client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+        # Single fixed name: only one UI session exists at a time. A new
+        # launch replaces any leftover, so alpaca-ui-<suffix> strays can
+        # never pile up again.
+        with contextlib.suppress(Exception):
+            client.containers.get("alpaca-ui").remove(force=True)
         container = client.containers.run(
             SANDBOX_IMAGE,
             command=["sleep", str(timeout + 60)],
@@ -970,7 +975,7 @@ def serve_ui(
             pids_limit=128,
             user="sandbox",
             working_dir="/tmp",
-            name=f"alpaca-ui-{uuid.uuid4().hex[:8]}",
+            name="alpaca-ui",
             remove=False,
         )
         cleaned_code = extract_clean_code(code, lang)
