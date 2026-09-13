@@ -3411,6 +3411,25 @@ def sandbox_stop_serve():
     return jsonify(stop_serve(cid))
 
 
+@app.route("/api/sandbox/ui_inner_status", methods=["POST"])
+def sandbox_ui_inner_status():
+    """Log a noVNC inner-frame state reported by the launcher page.
+
+    The phone's noVNC client runs where we can't see it; the launcher
+    already polls the inner #noVNC_status DOM and beacons it here so a
+    silent mobile stream failure shows up in the web logs with the
+    exact noVNC state text (connecting/connected/disconnect reason).
+    """
+    data = request.get_json(silent=True) or {}
+    app.logger.info(
+        "UI inner status: session %s state=%s detail=%s",
+        str(data.get("container_id") or "?")[:12],
+        data.get("state"),
+        str(data.get("detail") or "")[:160],
+    )
+    return jsonify({"ok": True})
+
+
 @app.route("/api/sandbox/ui/exec", methods=["POST"])
 def sandbox_ui_exec():
     """Run an arbitrary shell command inside a UI container (launcher terminal)."""

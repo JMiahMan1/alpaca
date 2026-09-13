@@ -224,6 +224,17 @@
                     '*'
                 );
             } catch (e) { /* no parent listener — harmless */ }
+            // Mirror to the server log so a phone-side stall is visible
+            // without reading the phone screen (fire-and-forget).
+            try {
+                const url = '/api/sandbox/ui_inner_status';
+                const body = JSON.stringify({ container_id: CONTAINER_ID, state, detail: detail || '' });
+                if (navigator.sendBeacon) {
+                    navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+                } else {
+                    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+                }
+            } catch (e) { /* telemetry must never break the stream */ }
         };
         report('launcher-ready');
         window.addEventListener('error', (ev) => {
