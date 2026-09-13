@@ -532,34 +532,49 @@ def _store_score(d: Path, initials: str, score: int) -> dict:
 
 
 def _sync_score_from_container(container_id: str) -> dict | None:
-    """Read /tmp/alpaca_score.json from a running UI sandbox container.
+    """Read the latest run score from a running UI sandbox container.
 
-    The game writes {initials, score} there when a run finishes.
-    Returns the parsed score dict or None if nothing is there yet.
+    Tries multiple files in order (first hit wins):
+    1. /tmp/alpaca_score.json — canonical per benchmark prompt,
+       format {initials, score}
+    2. /tmp/high_scores.json — some games write only this
+       (array of {name, score}); we use the latest entry.
+
+    Returns the parsed score dict, None if nothing exists yet,
+    or {"error": ...} on failure.
     """
-    payload = json.dumps(
-        {"container_id": container_id, "command": "cat /tmp/alpaca_score.json 2>/dev/null || echo ''"}
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        f"{WEB_BASE}/api/sandbox/ui/exec", data=payload, headers={"Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            res = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        return {"error": f"score read failed: {str(e)[:200]}"}
-    if res.get("error"):
-        return {"error": res["error"]}
-    raw = (res.get("output") or "").strip()
-    if not raw or raw == "":
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "invalid score file content"}
-    if not isinstance(data, dict) or "initials" not in data or "score" not in data:
-        return {"error": "score file missing initials/score"}
-    return data
+    candidates = [
+        ("/tmp/alpaca_score.json", "initials", "score"),
+        ("/tmp/high_scores.json", "name", "score"),
+    ]
+    for path, name_key, score_key in candidates:
+        payload = json.dumps({"container_id": container_id, "command": f"cat {path} 2>/dev/null || echo ''"}).encode(
+            "utf-8"
+        )
+        req = urllib.request.Request(
+            f"{WEB_BASE}/api/sandbox/ui/exec", data=payload, headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            return {"error": f"score read failed: {str(e)[:200]}"}
+        if res.get("error"):
+            return {"error": res["error"]}
+        raw = (res.get("output") or "").strip()
+        if not raw or raw == "":
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and name_key in data and score_key in data:
+            return data
+        if isinstance(data, list) and data:
+            entry = data[-1]
+            if isinstance(entry, dict) and name_key in entry and score_key in entry:
+                return {"initials": entry[name_key], "score": entry[score_key]}
+    return None
 
 
 @app.route("/api/games/<slug>/sync_score", methods=["POST"])
