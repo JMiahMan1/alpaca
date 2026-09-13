@@ -295,6 +295,10 @@ def test_serve_ui_launches_novnc_container():
         assert kwargs["user"] == "sandbox"
         assert kwargs["mem_limit"] == "256m"
         assert kwargs["pids_limit"] == 128
+        # Single fixed name: a leftover UI session is replaced, never piled up.
+        assert kwargs["name"] == "alpaca-ui"
+        mock_client.containers.get.assert_called_once_with("alpaca-ui")
+        mock_client.containers.get.return_value.remove.assert_called_once_with(force=True)
 
         # Wrapper script must chain Xvfb -> x11vnc -> websockify -> app.
         run_ui_tar = None
