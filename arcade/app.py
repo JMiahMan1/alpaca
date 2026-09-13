@@ -393,6 +393,33 @@ def stop_game(slug):
     return jsonify(res)
 
 
+@app.route("/api/sandbox/ui_inner_status", methods=["POST"])
+def sandbox_ui_inner_status():
+    """Relay a launcher noVNC-state beacon to the web backend.
+
+    The public proxy maps /api/* to the arcade, not the web backend —
+    so the launcher page's relative beacon would 404. Proxy it
+    server-side (same pattern as stop_game).
+    """
+    data = request.get_json(silent=True) or {}
+    payload = json.dumps(
+        {
+            "container_id": data.get("container_id"),
+            "state": data.get("state"),
+            "detail": data.get("detail", ""),
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{WEB_BASE}/api/sandbox/ui_inner_status", data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"inner-status relay failed: {str(e)[:200]}"}), 502
+    return jsonify(res)
+
+
 def _browser_launcher_url(container_id: str) -> str:
     """Browser-facing noVNC launcher URL for this request's origin.
 
