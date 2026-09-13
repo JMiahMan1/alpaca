@@ -685,6 +685,27 @@ def test_arcade_stop_requires_container_id(arcade_client):
     assert res.status_code == 400
 
 
+def test_arcade_inner_status_relays_to_web(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode())
+        return _FakeResp({"ok": True})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        "/api/sandbox/ui_inner_status",
+        json={"container_id": "abc123", "state": "inner-status", "detail": "Connecting..."},
+    )
+    assert res.status_code == 200
+    assert json.loads(res.data.decode()) == {"ok": True}
+    assert seen["url"].endswith("/api/sandbox/ui_inner_status")
+    assert seen["body"]["state"] == "inner-status"
+
+
 def test_arcade_launch_playable_has_no_code(arcade_client):
     res = arcade_client.post("/api/games/demo-model_demo-breakout/launch")
     assert res.status_code == 404
