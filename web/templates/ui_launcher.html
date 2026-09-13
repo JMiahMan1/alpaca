@@ -258,7 +258,22 @@
         const watchInnerStream = () => {
             let last = '';
             let ticks = 0;
+            let innerHooked = false;
             const poll = () => {
+                try {
+                // Same-origin inner window: capture its JS errors (module
+                // import failures etc. never reach the outer window).
+                if (!innerHooked) {
+                    try {
+                        const iw = frame.contentWindow;
+                        if (iw && iw.document && iw.document.querySelector('#noVNC_status')) {
+                            iw.onerror = (msg, src, line) => {
+                                report('inner-error', `${msg} @${String(src || '').split('/').pop()}:${line || '?'}`.slice(0, 160));
+                            };
+                            innerHooked = true;
+                        }
+                    } catch (e) { /* inner not ready — retry next poll */ }
+                }
                 let state = 'inner-unreadable';
                 let detail = '';
                 try {
@@ -289,15 +304,16 @@
                 ticks += 1;
                 if (ticks % 4 === 0) {
                     try {
-                        const hb = JSON.stringify({
+                        // Blob (not a bare string) so the body arrives as
+                        // application/json and parses server-side.
+                        const hb = new Blob([JSON.stringify({
                             container_id: CONTAINER_ID,
                             state: 'heartbeat',
                             detail: `${key} online=${navigator.onLine}`,
-                        });
+                        })], { type: 'application/json' });
                         if (!navigator.sendBeacon('/api/sandbox/ui_inner_status', hb)) {
                             fetch('/api/sandbox/ui_inner_status', {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
                                 body: hb,
                                 keepalive: true,
                             }).catch(() => {});
@@ -305,7 +321,10 @@
                     } catch (e) { /* telemetry only */ }
                 }
                 fitFrameToCanvas();
-                setTimeout(poll, 2500);
+                } finally {
+                    // Never let a telemetry exception kill the watch loop.
+                    setTimeout(poll, 2500);
+                }
             };
             poll();
         };
