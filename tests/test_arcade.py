@@ -153,6 +153,11 @@ def test_arcade_index_and_play(arcade_client):
     assert res.status_code == 200
     assert b"2026-09-11" in res.data
     assert b"build breakout" in res.data
+    # Fullscreen play mode: toggle, overlay key bar + exit present.
+    assert b"btn-fullscreen" in res.data
+    assert b"play-overlay-bar" in res.data
+    assert b"play-keys" in res.data
+    assert b"btn-exit-full" in res.data
 
 
 def test_arcade_play_missing(arcade_client):

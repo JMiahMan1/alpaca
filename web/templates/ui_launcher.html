@@ -153,6 +153,12 @@
         body.embed #btn-close {
             display: none;
         }
+        /* Arcade fullscreen: the arcade overlay provides its own bottom key
+        bar + exit, so the launcher toolbar steps aside entirely and the
+        VNC stream takes the whole frame. */
+        body.arcade-full #launcher-toolbar {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -358,6 +364,23 @@
 
         document.getElementById('btn-close').addEventListener('click', () => {
             window.close();
+        });
+
+        // Arcade fullscreen channel: the arcade play page wraps this launcher
+        // in a fullscreen overlay with its own bottom key bar, so it tells
+        // us (a) which keys to inject and (b) when to hide our own toolbar
+        // for maximum game area. Ignored on the Tests page (no messages).
+        window.addEventListener('message', (ev) => {
+            const m = ev && ev.data;
+            if (!m || m.source !== 'arcade-key') return;
+            if (m.fullscreen === true) document.body.classList.add('arcade-full');
+            if (m.fullscreen === false) document.body.classList.remove('arcade-full');
+            if (m.xkey) {
+                uiFetch('/api/sandbox/ui/exec', {
+                    container_id: CONTAINER_ID,
+                    command: `DISPLAY=:99 xdotool key ${m.xkey}`,
+                }).catch((e) => { setStatus('Key failed: ' + e.message); });
+            }
         });
 
         // On-screen key bar: tap a button to send that X11 key to the app

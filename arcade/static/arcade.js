@@ -15,6 +15,10 @@
     return clean;
   }
 
+  // Fullscreen play: the game owns the screen, arcade-level keys pinned
+  // at the bottom + an exit. Uses the Fullscreen API (no iframe reload).
+  // Auto-enters on touch-first devices when play starts; ⛶ toggles.
+  const screenEl = document.querySelector(".screen");
   // Give the game keyboard focus once loaded so Space/arrows work immediately.
   const frame = $("game-frame");
   if (frame) {
@@ -26,6 +30,97 @@
         /* cross-origin focus is best-effort */
       }
     });
+  }
+  const COARSE = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  function isFull() {
+    return !!(
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      (screenEl && screenEl.classList.contains("fallback-full"))
+    );
+  }
+  // iPhone Safari has no element Fullscreen API: pin the cabinet to the
+  // viewport with a class styled identically to native fullscreen.
+  function setFallback(on) {
+    if (!screenEl) return;
+    screenEl.classList.toggle("fallback-full", on);
+    notifyLauncherFull(on);
+  }
+  function enterFull() {
+    if (!screenEl || isFull()) return;
+    if (!screenEl.requestFullscreen && !screenEl.webkitRequestFullscreen) {
+      setFallback(true);
+      return;
+    }
+    const p = screenEl.requestFullscreen ? screenEl.requestFullscreen() : screenEl.webkitRequestFullscreen();
+    if (p && p.catch) p.catch(() => setFallback(true));
+  }
+  function exitFull() {
+    if (screenEl && screenEl.classList.contains("fallback-full")) {
+      setFallback(false);
+      return;
+    }
+    if (document.exitFullscreen && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else if (document.webkitExitFullscreen && document.webkitFullscreenElement) document.webkitExitFullscreen();
+  }
+  // Tell the embedded launcher when we go full (it hides its own toolbar
+  // for max game area) and back (it restores it).
+  document.addEventListener("fullscreenchange", () => notifyLauncherFull(isFull()));
+  document.addEventListener("webkitfullscreenchange", () => notifyLauncherFull(isFull()));
+  function notifyLauncherFull(on) {
+    const live = $("live-frame");
+    if (!live || live.style.display === "none") return;
+    try {
+      live.contentWindow.postMessage({ source: "arcade-key", fullscreen: on }, "*");
+    } catch (_) {
+      /* cross-origin post is best-effort */
+    }
+  }
+  if ($("btn-fullscreen")) $("btn-fullscreen").addEventListener("click", () => (isFull() ? exitFull() : enterFull()));
+  if ($("btn-exit-full")) $("btn-exit-full").addEventListener("click", exitFull);
+  // Overlay key bar: code games forward X11 key names to the embedded
+  // launcher (xdotool on :99); playable games get synthetic KeyboardEvents
+  // in the same-origin game iframe.
+  function sendArcadeKey(btn) {
+    const live = $("live-frame");
+    if (live && live.style.display !== "none") {
+      try {
+        live.contentWindow.postMessage({ source: "arcade-key", xkey: btn.dataset.xkey }, "*");
+      } catch (_) {
+        /* cross-origin post is best-effort */
+      }
+      return;
+    }
+    const gf = $("game-frame");
+    if (!gf) return;
+    try {
+      const doc = gf.contentDocument;
+      if (!doc) return;
+      const target =
+        doc.activeElement && doc.activeElement !== doc.body
+          ? doc.activeElement
+          : doc.querySelector("canvas") || doc.body;
+      for (const type of ["keydown", "keyup"]) {
+        target.dispatchEvent(
+          new KeyboardEvent(type, { key: btn.dataset.key, code: btn.dataset.code, bubbles: true, cancelable: true }),
+        );
+      }
+    } catch (_) {
+      /* cross-origin keys are best-effort */
+    }
+    try {
+      gf.focus();
+      gf.contentWindow.focus();
+    } catch (_) {
+      /* cross-origin focus is best-effort */
+    }
+  }
+  document.querySelectorAll("#play-keys button").forEach((b) => b.addEventListener("click", () => sendArcadeKey(b)));
+  if (COARSE) {
+    // Auto-fullscreen on touch devices: playable games once loaded, code
+    // games once the sandbox goes live (hooked into both ready paths).
+    if (frame) frame.addEventListener("load", () => setTimeout(enterFull, 400));
+    window.__arcadeAutoFull = true;
   }
 
   // Achievement unlock celebration: toast + lightweight confetti burst.
@@ -165,6 +260,9 @@
       status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";
       btn.textContent = "↻ Restart sandbox";
       btn.disabled = false;
+      // Touch devices go fullscreen once the sandbox is live (playable
+      // games hook the game-frame load event instead).
+      if (window.__arcadeAutoFull) setTimeout(enterFull, 400);
       // Stream telemetry from the embedded launcher (same-origin parent,
       // cross-origin child posts state). Surfaces silent phone-side stream
       // failures that emulation cannot reproduce.
