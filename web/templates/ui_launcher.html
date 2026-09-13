@@ -252,6 +252,14 @@
                 const h = canvas && canvas.clientHeight;
                 if (h && h >= 120) {
                     document.getElementById('vnc-frame-wrap').style.height = h + 24 + 'px';
+                    // Tell the embedding arcade page the true video height so
+                    // it can shrink the tall default live-frame (62dvh) down
+                    // to the video — otherwise phones show the game as a
+                    // small strip over a big black gap. Change-guarded.
+                    if (Math.abs(h - (fitFrameToCanvas._last || 0)) > 2) {
+                        fitFrameToCanvas._last = h;
+                        report('video-height', String(h + 24));
+                    }
                 }
             } catch (e) { /* cross-origin or pre-load — keep default */ }
         };
