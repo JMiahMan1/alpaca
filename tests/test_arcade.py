@@ -162,7 +162,11 @@ def test_arcade_index_and_play(arcade_client):
     assert b"pad-cluster" in res.data
     assert b"action-cluster" in res.data
     assert b"btn-keyboard" in res.data
-    assert b'score-initials' in res.data
+    assert b"score-initials" in res.data
+    # ⌨ types into the game via a focus-proxy input: stays in fullscreen,
+    # never scrolls to the score form (regression: old handler exited to it).
+    assert b'id="kbd-proxy"' in res.data
+    assert b"open the initials form" not in res.data
 
 
 def test_arcade_play_missing(arcade_client):
@@ -1052,3 +1056,124 @@ def test_arcade_js_stream_status_handler():
     js = Path("arcade/static/arcade.js").read_text()
     assert "arcade-vnc" in js
     assert "Stream:" in js
+
+
+def test_arcade_sync_score_success(arcade_client, monkeypatch):
+    """Game wrote {initials, score} to /tmp/alpaca_score.json — stored
+    through the same ledger as manual submit."""
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/sandbox/ui/exec" in req.full_url:
+            return _FakeResp({"output": '{"initials": "XYZ", "score": 350}'})
+        return _FakeResp({})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/sync_score",
+        json={"container_id": "abc123"},
+    )
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["initials"] == "XYZ"
+    assert data["score"] == 350
+    assert data["auto"] is True
+    assert data["rank"] == 1
+    assert data["made_board"] is True
+
+
+def test_arcade_sync_score_no_score_yet(arcade_client, monkeypatch):
+    """No score file yet — polling marker, not an error."""
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/sandbox/ui/exec" in req.full_url:
+            return _FakeResp({"output": ""})
+        return _FakeResp({})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/sync_score",
+        json={"container_id": "abc123"},
+    )
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["status"] == "no score yet"
+
+
+def test_arcade_sync_score_missing_container_id(arcade_client):
+    res = arcade_client.post(
+        "/api/games/demo-model_demo-breakout/sync_score",
+        json={},
+    )
+    assert res.status_code == 400
+    assert "container_id" in json.loads(res.data.decode())["error"]
+
+
+def test_arcade_sync_score_missing_game(arcade_client):
+    res = arcade_client.post(
+        "/api/games/nope-not-here/sync_score",
+        json={"container_id": "abc"},
+    )
+    assert res.status_code == 404
+
+
+def test_arcade_sync_score_web_backend_error(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/sandbox/ui/exec" in req.full_url:
+            return _FakeResp({"error": "container not found"})
+        return _FakeResp({})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/sync_score",
+        json={"container_id": "abc123"},
+    )
+    assert res.status_code == 502
+    assert "error" in json.loads(res.data.decode())
+
+
+def test_arcade_sync_score_invalid_json(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/sandbox/ui/exec" in req.full_url:
+            return _FakeResp({"output": "not json at all"})
+        return _FakeResp({})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/sync_score",
+        json={"container_id": "abc123"},
+    )
+    assert res.status_code == 502
+
+
+def test_arcade_sync_score_bad_payload(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/sandbox/ui/exec" in req.full_url:
+            return _FakeResp({"output": '{"name": "no score key"}'})
+        return _FakeResp({})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/sync_score",
+        json={"container_id": "abc123"},
+    )
+    assert res.status_code == 502

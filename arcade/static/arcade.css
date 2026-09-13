@@ -448,7 +448,8 @@ cabinet to the viewport with the same layout as native fullscreen. */
   flex: 1 1 auto; max-width: 560px; margin: 0 auto; width: 100%;
 }
 /* Thumb D-pad (left): cross layout, big touch targets, press-and-hold. */
-#play-keys .pad-cluster {
+#play-keys .pad-cluster,
+#play-keys .wasd-cluster {
   display: grid; grid-template-columns: repeat(3, 60px); grid-template-rows: repeat(2, 56px);
   gap: 4px; touch-action: none;
 }
@@ -474,6 +475,50 @@ cabinet to the viewport with the same layout as native fullscreen. */
 }
 #play-keys button:active, #btn-keyboard:active { background: #6d28d9; transform: scale(0.94); }
 #btn-exit-full { border-color: #f43f5e; }
+#btn-keyboard.on { background: #6d28d9; border-color: #a855f7; }
+/* Focus proxy for ⌨: a real input (opens the device keyboard) that stays
+invisible — 16px font so iOS doesn't zoom, pointer-events off so only
+programmatic focus lands here. */
+#kbd-proxy {
+  position: fixed; bottom: 2px; left: 50%; width: 8px; height: 8px;
+  opacity: 0.01; border: 0; padding: 0; font-size: 16px;
+  pointer-events: none; background: transparent; color: transparent;
+}
+/* Narrow portrait phones: the full-size bar (~500px) overflows a 390px
+viewport and pushes the D-pad off-screen. Two rows — sticks on top,
+⌨/exit centered below — with smaller touch targets. */
+@media (max-width: 480px) {
+  .screen:fullscreen #play-overlay-bar,
+  .screen:-webkit-full-screen #play-overlay-bar,
+  .screen.fallback-full #play-overlay-bar {
+    flex-wrap: wrap; justify-content: center; row-gap: 6px;
+  }
+  #play-keys { flex: 1 1 100%; max-width: 430px; }
+  #play-keys .pad-cluster,
+  #play-keys .wasd-cluster {
+    grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(2, 48px);
+  }
+  #play-keys button { min-width: 48px; min-height: 48px; font-size: 1.1rem; }
+  #play-keys .action-fire { min-width: 62px; min-height: 62px; }
+  #btn-keyboard, #btn-exit-full { min-width: 48px; min-height: 48px; }
+}
+/* Short landscape screens: compact single-row bar so the game keeps its
+height — full-size two-row bar would eat a third of a 390px viewport. */
+@media (max-height: 500px) {
+  .screen:fullscreen #play-overlay-bar,
+  .screen:-webkit-full-screen #play-overlay-bar,
+  .screen.fallback-full #play-overlay-bar {
+    flex-wrap: nowrap; padding: 0.3rem;
+  }
+  #play-keys { flex: 1 1 auto; max-width: none; }
+  #play-keys .pad-cluster,
+  #play-keys .wasd-cluster {
+    grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(2, 40px); gap: 2px;
+  }
+  #play-keys button { min-width: 40px; min-height: 40px; font-size: 1rem; border-radius: 10px; }
+  #play-keys .action-fire { min-width: 54px; min-height: 54px; }
+  #btn-keyboard, #btn-exit-full { min-width: 42px; min-height: 42px; }
+}
 .code-game .arcade-btn { align-self: center; }
 /* Minimized under-screen info: code, download, prompt, benchmark facts. */
 .under-screen {

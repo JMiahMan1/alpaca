@@ -78,22 +78,105 @@
   }
   if ($("btn-fullscreen")) $("btn-fullscreen").addEventListener("click", () => (isFull() ? exitFull() : enterFull()));
   if ($("btn-exit-full")) $("btn-exit-full").addEventListener("click", exitFull);
-  // ⌨ High-score entry: leave fullscreen (the score form lives below the
-  // cabinet and is hidden while full), scroll to it, and focus initials
-  // so the on-screen keyboard opens for typing a name.
-  if ($("btn-keyboard")) $("btn-keyboard").addEventListener("click", () => {
-    exitFull();
-    setTimeout(() => {
-      const initials = $("score-initials");
-      if (!initials) return;
-      initials.scrollIntoView({ block: "center", behavior: "smooth" });
+  // ⌨ Type into the game: focus a hidden proxy input so the device
+  // keyboard opens, then forward keystrokes into the game (high-score
+  // name entry etc). Stays in fullscreen — never navigates away.
+  // Whitelist: single letters/digits pass through, named keys map to
+  // xdotool names; everything else (notably shell metacharacters) is
+  // dropped before it can reach the launcher command line.
+  function mapXkey(key) {
+    if (/^[a-zA-Z0-9]$/.test(key)) return key;
+    const named = {
+      " ": "space",
+      Enter: "Return",
+      Escape: "Escape",
+      Tab: "Tab",
+      Backspace: "BackSpace",
+      Delete: "Delete",
+      ArrowUp: "Up",
+      ArrowDown: "Down",
+      ArrowLeft: "Left",
+      ArrowRight: "Right",
+    };
+    return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : null;
+  }
+  function sendGameKey(key, code, xkey, down) {
+    if (xkey === null || xkey === undefined) return;
+    const t = arcadeKeyTarget();
+    if (!t) return;
+    if (t.kind === "live") {
       try {
-        initials.focus({ preventScroll: true });
+        t.live.contentWindow.postMessage({ source: "arcade-key", xkey, down }, "*");
       } catch (_) {
-        initials.focus();
+        /* cross-origin post is best-effort */
       }
-    }, 350);
-  });
+      return;
+    }
+    try {
+      t.target.dispatchEvent(
+        new KeyboardEvent(down ? "keydown" : "keyup", {
+          key,
+          code,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    } catch (_) {
+      /* cross-origin keys are best-effort */
+    }
+    if (down) {
+      try {
+        const gf = $("game-frame");
+        gf.focus();
+        gf.contentWindow.focus();
+      } catch (_) {
+        /* cross-origin focus is best-effort */
+      }
+    }
+  }
+  const kbdProxy = $("kbd-proxy");
+  if ($("btn-keyboard") && kbdProxy) {
+    $("btn-keyboard").addEventListener("click", () => {
+      // Toggle: tap again (or Exit) to dismiss the keyboard.
+      if (document.activeElement === kbdProxy) {
+        kbdProxy.blur();
+        return;
+      }
+      try {
+        kbdProxy.focus({ preventScroll: true });
+      } catch (_) {
+        kbdProxy.focus();
+      }
+    });
+    kbdProxy.addEventListener("focus", () => {
+      $("btn-keyboard").setAttribute("aria-pressed", "true");
+      $("btn-keyboard").classList.add("on");
+    });
+    kbdProxy.addEventListener("blur", () => {
+      $("btn-keyboard").setAttribute("aria-pressed", "false");
+      $("btn-keyboard").classList.remove("on");
+      kbdProxy.value = "";
+    });
+    kbdProxy.addEventListener("keydown", (ev) => {
+      sendGameKey(ev.key, ev.code, mapXkey(ev.key), true);
+      // Keep the proxy empty so every keystroke arrives as a fresh event;
+      // (Backspace still reaches the game via the keydown above.)
+      if (ev.key !== "Backspace") kbdProxy.value = "";
+    });
+    kbdProxy.addEventListener("keyup", (ev) => {
+      sendGameKey(ev.key, ev.code, mapXkey(ev.key), false);
+    });
+    // Mobile soft keyboards often emit text without key events: forward
+    // any materialized characters as taps and clear the field.
+    kbdProxy.addEventListener("input", () => {
+      const text = kbdProxy.value;
+      kbdProxy.value = "";
+      for (const ch of text) {
+        sendGameKey(ch, "", mapXkey(ch), true);
+        sendGameKey(ch, "", mapXkey(ch), false);
+      }
+    });
+  }
   // Overlay key bar: code games forward X11 key names to the embedded
   // launcher (xdotool on :99); playable games get synthetic KeyboardEvents
   // in the same-origin game iframe. Press-and-hold semantics: pointerdown
@@ -120,37 +203,7 @@
     }
   }
   function sendArcadeKey(btn, down) {
-    const t = arcadeKeyTarget();
-    if (!t) return;
-    if (t.kind === "live") {
-      try {
-        t.live.contentWindow.postMessage({ source: "arcade-key", xkey: btn.dataset.xkey, down }, "*");
-      } catch (_) {
-        /* cross-origin post is best-effort */
-      }
-      return;
-    }
-    try {
-      t.target.dispatchEvent(
-        new KeyboardEvent(down ? "keydown" : "keyup", {
-          key: btn.dataset.key,
-          code: btn.dataset.code,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-    } catch (_) {
-      /* cross-origin keys are best-effort */
-    }
-    if (down) {
-      try {
-        const gf = $("game-frame");
-        gf.focus();
-        gf.contentWindow.focus();
-      } catch (_) {
-        /* cross-origin focus is best-effort */
-      }
-    }
+    sendGameKey(btn.dataset.key, btn.dataset.code, btn.dataset.xkey, down);
   }
   document.querySelectorAll("#play-keys button").forEach((b) => {
     b.addEventListener("pointerdown", (ev) => {
@@ -316,6 +369,10 @@
       status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";
       btn.textContent = "↻ Restart sandbox";
       btn.disabled = false;
+      // Auto-pickup: poll for /tmp/alpaca_score.json the game
+      // writes when a run finishes (initials + score). Stops on
+      // first success, on stop, or on error.
+      startScorePoll(status);
       // Touch devices go fullscreen once the sandbox is live (playable
       // games hook the game-frame load event instead).
       if (window.__arcadeAutoFull) setTimeout(enterFull, 400);
@@ -352,6 +409,54 @@
     } catch (e) { /* nothing to do on unload */ }
     window.__arcadeCid = null;
   });
+
+  // Auto-pickup polling: the sandbox game writes /tmp/alpaca_score.json
+  // (initials + score) when a run finishes. Poll every 3 s; stop on
+  // first store, on sandbox stop, or on error. Keeps the status line
+  // honest (no silent silent score drift).
+  function startScorePoll(status) {
+    if (!window.__arcadePollToken) {
+      window.__arcadePollToken = 0;
+    }
+    const token = ++window.__arcadePollToken;
+    function tick() {
+      if (token !== window.__arcadePollToken) return; // stopped/replaced
+      if (!window.__arcadeCid) return; // sandbox stopped
+      fetch(`/api/games/${slug}/sync_score`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ container_id: window.__arcadeCid }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (token !== window.__arcadePollToken) return;
+          if (!data.success) {
+            status.textContent = `Score sync: ${data.error || "failed"}`;
+            return;
+          }
+          if (data.status === "no score yet") return; // keep polling
+          // Score stored. Fill the form, show the result, stop polling.
+          window.__arcadePollToken = null;
+          const initials = $("score-initials");
+          const value = $("score-value");
+          if (initials && !initials.value) initials.value = data.initials || "";
+          if (value) value.value = data.score ?? "";
+          const msg = $("score-msg");
+          if (msg) {
+            msg.textContent = data.auto
+              ? `🎮 Auto-captured: ${data.score} points (${data.rank ? "#" + data.rank + " on the board" : "saved"})`
+              : "Score submitted.";
+          }
+          refreshScores();
+          if (data.new_unlocks) celebrate(data.new_unlocks);
+        })
+        .catch(() => {
+          /* transient — keep polling */
+        });
+      setTimeout(tick, 3000);
+    }
+    tick();
+  }
 
   // Score auto-capture: the game is served same-origin, so we can read its
   // localStorage. Scan for numeric candidates and let the player pick one.

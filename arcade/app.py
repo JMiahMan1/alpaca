@@ -268,6 +268,33 @@ def _launch_lang(meta: dict) -> str:
     return (meta.get("lang") or "").strip().lower()
 
 
+def detect_game_keys(code: str) -> dict:
+    """Smart keys: which controls a code-kind game actually uses.
+
+    Scans the frozen source for pygame ``K_*`` constants and groups them
+    into overlay clusters (arrows D-pad, WASD, space/enter/esc, extras).
+    The play page renders only the clusters the game uses, plus the
+    keyboard (high-score entry) and exit buttons. Empty/unreadable code
+    returns every cluster (safe fallback = current full key set).
+    """
+    tokens = set(re.findall(r"K_([A-Z0-9]+)", code or ""))
+    if not tokens:
+        return {"arrows": True, "wasd": True, "space": True, "enter": True, "esc": True, "other": []}
+    arrows = bool(tokens & {"UP", "DOWN", "LEFT", "RIGHT"})
+    wasd = bool(tokens & {"W", "A", "S", "D"})
+    # Extra single-letter keys (pause, mute, restart, ...). WASD ride
+    # in their own cluster; everything else becomes compact buttons.
+    other = sorted({t.lower() for t in tokens if len(t) == 1 and t.isalpha()} - {"w", "a", "s", "d"})[:6]
+    return {
+        "arrows": arrows,
+        "wasd": wasd,
+        "space": "SPACE" in tokens,
+        "enter": bool(tokens & {"RETURN", "KP_ENTER"}),
+        "esc": "ESCAPE" in tokens,
+        "other": other,
+    }
+
+
 def _run_hint(lang: str) -> dict:
     """Human run instructions for a code-kind game, keyed by its language.
 
@@ -316,6 +343,7 @@ def play(slug):
         code_text=code_text,
         code_lang=code_lang,
         run_hint=_run_hint(code_lang),
+        smart_keys=detect_game_keys(code_text) if kind == "code" else None,
         has_screenshot=(d / "screenshot.png").exists(),
     )
 
@@ -459,19 +487,10 @@ def api_game(slug):
     return jsonify({"success": True, "game": card})
 
 
-@app.route("/api/games/<slug>/scores", methods=["POST"])
-def api_submit_score(slug):
-    d = _game_dir(slug)
-    if d is None or _playable_file(d) is None:
-        return jsonify({"success": False, "error": "game not found"}), 404
-    body = request.get_json(force=True, silent=True) or {}
-    initials = _clean_initials(body.get("initials")) or "YOU"
-    try:
-        score = int(body.get("score", 0))
-    except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "score must be an integer"}), 400
-    if score < 0 or score > 999_999_999:
-        return jsonify({"success": False, "error": "score out of range"}), 400
+def _store_score(d: Path, initials: str, score: int) -> dict:
+    """Append a validated score to a game's board. Shared by the manual
+    submit form and the sandbox score-file sync (same validation ledger,
+    achievements, and top-5 trim either way)."""
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
     with _lock:
         before = unlocked_ids(player_stats(initials))
@@ -501,18 +520,97 @@ def api_submit_score(slug):
         after_stats = player_stats(initials)
     new_unlocks = [a for a in after_stats["achievements"] if a["unlocked"] and a["id"] not in before]
     rank = next((i + 1 for i, s in enumerate(scores) if s["initials"] == initials and s["score"] == score), None)
-    return jsonify(
-        {
-            "success": True,
-            "scores": scores,
-            "rank": rank,
-            "made_board": rank is not None,
-            "personal_best": personal_best,
-            "pioneer": pioneer,
-            "new_unlocks": new_unlocks,
-            "player_url": f"/player/{initials}",
-        }
+    return {
+        "scores": scores,
+        "rank": rank,
+        "made_board": rank is not None,
+        "personal_best": personal_best,
+        "pioneer": pioneer,
+        "new_unlocks": new_unlocks,
+        "player_url": f"/player/{initials}",
+    }
+
+
+def _sync_score_from_container(container_id: str) -> dict | None:
+    """Read /tmp/alpaca_score.json from a running UI sandbox container.
+
+    The game writes {initials, score} there when a run finishes.
+    Returns the parsed score dict or None if nothing is there yet.
+    """
+    payload = json.dumps(
+        {"container_id": container_id, "command": "cat /tmp/alpaca_score.json 2>/dev/null || echo ''"}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{WEB_BASE}/api/sandbox/ui/exec", data=payload, headers={"Content-Type": "application/json"}
     )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"error": f"score read failed: {str(e)[:200]}"}
+    if res.get("error"):
+        return {"error": res["error"]}
+    raw = (res.get("output") or "").strip()
+    if not raw or raw == "":
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"error": "invalid score file content"}
+    if not isinstance(data, dict) or "initials" not in data or "score" not in data:
+        return {"error": "score file missing initials/score"}
+    return data
+
+
+@app.route("/api/games/<slug>/sync_score", methods=["POST"])
+def api_sync_score(slug):
+    """Pick up a score auto-written by the sandbox game.
+
+    Code-kind games write {initials, score} to /tmp/alpaca_score.json
+    (working dir of the sandbox container) when a run finishes. This
+    endpoint reads that file via the web backend (which owns the
+    container), stores the score through the same ledger as manual
+    submission, and reports rank + achievements. Returns a marker when
+    no score file exists yet so the client can keep polling.
+    """
+    d = _game_dir(slug)
+    if d is None or _playable_file(d) is None:
+        return jsonify({"success": False, "error": "game not found"}), 404
+    data = request.get_json(silent=True) or {}
+    container_id = data.get("container_id")
+    if not container_id:
+        return jsonify({"success": False, "error": "No container_id provided"}), 400
+    score_data = _sync_score_from_container(container_id)
+    if score_data is None:
+        return jsonify({"success": True, "status": "no score yet"})
+    if "error" in score_data:
+        return jsonify({"success": False, "error": score_data["error"]}), 502
+    initials = _clean_initials(score_data.get("initials")) or "YOU"
+    try:
+        score = int(score_data.get("score", 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "score must be an integer"}), 400
+    if score < 0 or score > 999_999_999:
+        return jsonify({"success": False, "error": "score out of range"}), 400
+    return jsonify(
+        {"success": True, "initials": initials, "score": score, **_store_score(d, initials, score), "auto": True}
+    )
+
+
+@app.route("/api/games/<slug>/scores", methods=["POST"])
+def api_submit_score(slug):
+    d = _game_dir(slug)
+    if d is None or _playable_file(d) is None:
+        return jsonify({"success": False, "error": "game not found"}), 404
+    body = request.get_json(force=True, silent=True) or {}
+    initials = _clean_initials(body.get("initials")) or "YOU"
+    try:
+        score = int(body.get("score", 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "score must be an integer"}), 400
+    if score < 0 or score > 999_999_999:
+        return jsonify({"success": False, "error": "score out of range"}), 400
+    return jsonify({"success": True, **_store_score(d, initials, score)})
 
 
 @app.route("/api/games/<slug>/rate", methods=["POST"])
