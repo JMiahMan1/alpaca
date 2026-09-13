@@ -3309,16 +3309,18 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
     )
 
 
-def _ws_proxy_pump(src, dst):
+def _ws_proxy_pump(src, dst, counter):
     """Relay WebSocket frames from ``src`` to ``dst`` until either side closes."""
     try:
         while True:
             data = src.receive()
             if data is None:
                 break
+            counter[0] += 1
+            counter[1] += len(data) if isinstance(data, (bytes, str)) else 0
             dst.send(data)
-    except Exception:  # pragma: no cover - transport dependent
-        pass
+    except Exception as e:  # pragma: no cover - transport dependent
+        counter[2] = f"{type(e).__name__}: {e}"
     finally:
         with contextlib.suppress(Exception):
             dst.close()
@@ -3336,29 +3338,52 @@ def sandbox_serve_ws_proxy(container_id: str, ws_path: str = ""):
     """
     host_port = _serve_container_host_port(container_id)
     if not host_port:
+        app.logger.warning("WS bridge: unknown session %s", container_id[:12])
         return jsonify({"error": "Serving container not found or no published port"}), 404
 
     from simple_websocket import Client, Server
 
+    peer = request.environ.get("REMOTE_ADDR", "?")
     try:
-        ws = Server(request.environ)
+        # Negotiate the 'binary' subprotocol like a real websockify server:
+        # noVNC offers ['binary', 'base64'] and degrades without a selection.
+        ws = Server(request.environ, subprotocols=["binary", "base64"])
     except Exception as e:  # pragma: no cover - transport dependent
+        app.logger.warning("WS bridge: handshake failed for %s: %s", container_id[:12], e)
         return jsonify({"error": f"WebSocket handshake failed: {e}"}), 400
 
+    app.logger.info("WS bridge: browser %s connected for session %s", peer, container_id[:12])
     upstream = None
     try:
         upstream = Client.connect(f"ws://host.docker.internal:{host_port}/websockify")
     except Exception as e:
+        app.logger.warning("WS bridge: upstream unreachable for %s: %s", container_id[:12], e)
         with contextlib.suppress(Exception):
             ws.close()
         return jsonify({"error": f"Upstream websocket unreachable: {e}"}), 502
 
-    t1 = threading.Thread(target=_ws_proxy_pump, args=(ws, upstream), daemon=True)
-    t2 = threading.Thread(target=_ws_proxy_pump, args=(upstream, ws), daemon=True)
+    import time as _time
+
+    started = _time.monotonic()
+    up_frames = [0, 0, ""]
+    down_frames = [0, 0, ""]
+    t1 = threading.Thread(target=_ws_proxy_pump, args=(ws, upstream, up_frames), daemon=True)
+    t2 = threading.Thread(target=_ws_proxy_pump, args=(upstream, ws, down_frames), daemon=True)
     t1.start()
     t2.start()
     t1.join()
     t2.join()
+    app.logger.info(
+        "WS bridge: session %s closed after %.0fs (up %d frames/%dB %s, down %d frames/%dB %s)",
+        container_id[:12],
+        _time.monotonic() - started,
+        up_frames[0],
+        up_frames[1],
+        up_frames[2],
+        down_frames[0],
+        down_frames[1],
+        down_frames[2],
+    )
     return ""
 
 
