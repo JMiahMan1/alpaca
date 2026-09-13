@@ -364,9 +364,23 @@ def launch_game(slug):
         return jsonify({"error": f"sandbox launch failed: {str(e)[:200]}"}), 502
     if res.get("error") or not res.get("container_id"):
         return jsonify({"error": str(res.get("error") or "sandbox refused the launch")[:200]}), 502
-    host = (request.host or "").split(":")[0] or "localhost"
-    launcher_url = f"http://{host}:5000/ui/launcher/{res['container_id']}?embed=1"
+    launcher_url = _browser_launcher_url(res["container_id"])
     return jsonify({"success": True, "launcher_url": launcher_url, "container_id": res["container_id"]})
+
+
+def _browser_launcher_url(container_id: str) -> str:
+    """Browser-facing noVNC launcher URL for this request's origin.
+
+    Direct LAN access reaches the web backend on :5000, but behind the
+    public TLS proxy only :5001 is open (and browsers block https→http
+    mixed content) — so a forwarded-https request gets the same public
+    origin and relies on the proxy mapping /ui/launcher/* + /serve/*
+    through to the backend.
+    """
+    host = (request.host or "").split(":")[0] or "localhost"
+    if (request.headers.get("X-Forwarded-Proto", "") or "").split(",")[0].strip().lower() == "https":
+        return f"https://{host}/ui/launcher/{container_id}?embed=1"
+    return f"http://{host}:5000/ui/launcher/{container_id}?embed=1"
 
 
 @app.route("/game/<slug>/screenshot.png", methods=["GET"])

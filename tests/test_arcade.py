@@ -618,6 +618,40 @@ def test_arcade_launch_code_game(arcade_client, monkeypatch):
     assert seen["body"]["lang"] == "python"
 
 
+def test_arcade_launch_url_same_origin_behind_https_proxy(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({"container_id": "abc123", "host_port": 6901})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/launch",
+        base_url="https://games.sumemail.com",
+        headers=[("X-Forwarded-Proto", "https")],
+    )
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["launcher_url"] == "https://games.sumemail.com/ui/launcher/abc123?embed=1"
+
+
+def test_arcade_launch_url_direct_lan_uses_backend_port(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({"container_id": "abc123", "host_port": 6901})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(f"/api/games/{slug}/launch", base_url="http://192.168.2.43:5001")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["launcher_url"] == "http://192.168.2.43:5000/ui/launcher/abc123?embed=1"
+
+
 def test_arcade_launch_missing_game(arcade_client):
     res = arcade_client.post("/api/games/nope-not-here/launch")
     assert res.status_code == 404
