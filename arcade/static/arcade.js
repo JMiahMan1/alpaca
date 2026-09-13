@@ -78,6 +78,22 @@
   }
   if ($("btn-fullscreen")) $("btn-fullscreen").addEventListener("click", () => (isFull() ? exitFull() : enterFull()));
   if ($("btn-exit-full")) $("btn-exit-full").addEventListener("click", exitFull);
+  // ⌨ High-score entry: leave fullscreen (the score form lives below the
+  // cabinet and is hidden while full), scroll to it, and focus initials
+  // so the on-screen keyboard opens for typing a name.
+  if ($("btn-keyboard")) $("btn-keyboard").addEventListener("click", () => {
+    exitFull();
+    setTimeout(() => {
+      const initials = $("score-initials");
+      if (!initials) return;
+      initials.scrollIntoView({ block: "center", behavior: "smooth" });
+      try {
+        initials.focus({ preventScroll: true });
+      } catch (_) {
+        initials.focus();
+      }
+    }, 350);
+  });
   // Overlay key bar: code games forward X11 key names to the embedded
   // launcher (xdotool on :99); playable games get synthetic KeyboardEvents
   // in the same-origin game iframe. Press-and-hold semantics: pointerdown
