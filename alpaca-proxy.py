@@ -456,6 +456,39 @@ active_request_details_lock = threading.Lock()
 resubmittable_requests = {}
 resubmittable_requests_lock = threading.Lock()
 
+# Disk-persisted request history so completed requests survive proxy restarts.
+# The in-memory buffer is the working copy; it is synced to disk on every
+# completion so that a restart (OOM, docker restart, etc.) does not erase the
+# audit trail the user needs to debug issues like empty responses.
+_COMPLETED_REQUESTS_PATH = os.path.join(os.getenv("DATA_DIR", "data"), "completed_requests.json")
+_COMPLETED_REQUESTS_MAX = 200
+
+
+def _save_completed_requests() -> None:
+    """Persist completed_requests to disk (best-effort, never raises)."""
+    try:
+        with active_request_details_lock:
+            snapshot = list(completed_requests)
+        os.makedirs(os.path.dirname(_COMPLETED_REQUESTS_PATH), exist_ok=True)
+        with open(_COMPLETED_REQUESTS_PATH, "w") as f:
+            json.dump(snapshot, f, indent=1, default=str)
+    except Exception as e:
+        logger.debug(f"Failed to persist completed requests: {e}")
+
+
+def _load_completed_requests() -> None:
+    """Load completed_requests from disk on startup (best-effort)."""
+    global completed_requests
+    try:
+        if os.path.exists(_COMPLETED_REQUESTS_PATH):
+            with open(_COMPLETED_REQUESTS_PATH) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                completed_requests = data[-_COMPLETED_REQUESTS_MAX:]
+                logger.info(f"Restored {len(completed_requests)} completed requests from disk.")
+    except Exception as e:
+        logger.warning(f"Failed to load completed requests from disk: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Structured Model Error Logger
@@ -651,12 +684,14 @@ def complete_active_request(
             req["prompt_tokens"] = prompt_tokens
 
             completed_requests.append(req)
-            if len(completed_requests) > 50:
+            if len(completed_requests) > _COMPLETED_REQUESTS_MAX:
                 completed_requests.pop(0)
 
     if req is not None:
         with resubmittable_requests_lock:
             resubmittable_requests[request_id] = dict(req)
+        # Persist to disk so the audit trail survives proxy restarts.
+        _save_completed_requests()
     return req
 
 
@@ -1678,6 +1713,9 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(600.0, connect=10.0),
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
     )
+    # Restore completed request history from disk so the UI has the audit trail
+    # even after a proxy restart (OOM, docker restart, etc.).
+    _load_completed_requests()
     await restore_models_on_recovery()
 
     # Start SD VRAM tracking background task
@@ -4281,9 +4319,15 @@ async def admin_requests():
 
 @app.post("/admin/requests/clear")
 async def admin_requests_clear():
-    """Clear recently completed requests buffer."""
+    """Clear recently completed requests buffer (memory + disk)."""
     with active_request_details_lock:
         completed_requests.clear()
+    # Also remove the persisted file so a future restart doesn't reload stale data.
+    try:
+        if os.path.exists(_COMPLETED_REQUESTS_PATH):
+            os.remove(_COMPLETED_REQUESTS_PATH)
+    except Exception:
+        pass
     return {"status": "success", "message": "Completed requests history cleared."}
 
 
@@ -7389,7 +7433,7 @@ async def chat(request: Request):
             full_response_content = ""
             current_payload = build_chat_payload(body, resolved_backend)
             attempt = 0
-            max_attempts = 2
+            max_attempts = 4
 
             while attempt < max_attempts:
                 try:
@@ -7482,13 +7526,51 @@ async def chat(request: Request):
                         logger.error(f"Stream failed after {attempt} attempts: {e}")
                         raise
 
-                    logger.warning(f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery...")
-                    await restart_llama_server()
-                    if not await wait_for_llama_server_or_restart(timeout=60.0):
-                        raise HTTPException(
-                            status_code=502,
-                            detail="Failed to restore llama-server after mid-stream crash",
-                        ) from e
+                    # Classify the error: a 500 "model loading" error means the
+                    # child process received the request before the model weights
+                    # were fully loaded.  In that case, wait for the model to
+                    # finish loading instead of aggressively restarting the server.
+                    is_model_loading_error = False
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 500:
+                        try:
+                            err_text = e.response.text.lower()
+                            if "waiting for model" in err_text or "loading" in err_text:
+                                is_model_loading_error = True
+                        except Exception:
+                            pass
+
+                    if is_model_loading_error:
+                        # Model is still loading in the child — wait for it to
+                        # finish rather than killing the server.
+                        wait_seconds = 5 * attempt  # 5s, 10s, 15s
+                        logger.warning(
+                            f"llama-server returned 500 (model still loading) on attempt {attempt}. "
+                            f"Waiting {wait_seconds}s for model to finish loading..."
+                        )
+                        await asyncio.sleep(wait_seconds)
+                        # Re-probe the child health to confirm the model is ready
+                        try:
+                            async with httpx.AsyncClient(timeout=5.0) as probe:
+                                health = await probe.get(
+                                    f"{LLAMA_SERVER_URL}/health",
+                                    params={"model": resolved_backend},
+                                )
+                                if health.status_code == 200:
+                                    h = health.json()
+                                    if h.get("status") not in ("ok", "no slot available"):
+                                        logger.warning(f"Child health not ready after wait: {h}")
+                        except Exception as probe_exc:
+                            logger.warning(f"Health probe failed: {probe_exc}")
+                    else:
+                        logger.warning(
+                            f"Upstream stream error (attempt {attempt}): {e}. Attempting seamless recovery..."
+                        )
+                        await restart_llama_server()
+                        if not await wait_for_llama_server_or_restart(timeout=60.0):
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Failed to restore llama-server after mid-stream crash",
+                            ) from e
 
                     resolved = await ensure_model(model_name, options=body.get("options"))
                     resolved_backend = resolved["backend_model"]

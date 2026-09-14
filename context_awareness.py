@@ -83,7 +83,11 @@ async def scan_runtime_ctx(
 
 
 async def warm_model(client: httpx.AsyncClient, model: str, proxy_urls: list[str], source_tag: str) -> None:
-    """Send a minimal streamed chat through each proxy so it loads the model."""
+    """Send a minimal streamed chat through each proxy so it loads the model.
+
+    Retries up to 3 times per proxy with a short delay to handle the case
+    where the model is still loading in the child llama-server process.
+    """
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": "Reply with the single word OK."}],
@@ -93,13 +97,23 @@ async def warm_model(client: httpx.AsyncClient, model: str, proxy_urls: list[str
     }
     headers = _proxy_headers({"X-Request-Source": source_tag})
     for base_url in proxy_urls:
-        try:
-            async with client.stream("POST", f"{base_url}/api/chat", json=payload, headers=headers) as resp:
-                if resp.status_code == 200:
-                    await resp.aread()
-                    return
-        except Exception:
-            continue
+        for attempt in range(3):
+            try:
+                async with client.stream("POST", f"{base_url}/api/chat", json=payload, headers=headers) as resp:
+                    if resp.status_code == 200:
+                        data = await resp.aread()
+                        # Accept any 200 response — even empty means the proxy
+                        # received and processed the request (model is loading).
+                        return
+                    elif resp.status_code in (500, 503) and attempt < 2:
+                        # Model likely still loading — wait and retry
+                        await asyncio.sleep(3 * (attempt + 1))
+                        continue
+            except Exception:
+                if attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                break
 
 
 async def resolve_context_window(
