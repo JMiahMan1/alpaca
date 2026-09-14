@@ -23,6 +23,10 @@ import httpx
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_cors import CORS
 from flask_socketio import SocketIO
+try:
+    from flask_sockets import Sockets
+except ImportError:
+    Sockets = None
 
 # Add project root to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,6 +75,8 @@ if not DEBUG_LOGGING:
 app = Flask(__name__)
 CORS(app)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+if Sockets is not None:
+    sockets = Sockets(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
@@ -3336,7 +3342,6 @@ def sandbox_serve_ws_proxy(container_id: str, ws_path: str = ""):
     terminates the browser's WebSocket on the dashboard and relays frames to the
     sandbox container's websockify via ``host.docker.internal``.
     """
-    app.logger.info("WS bridge: incoming %s %s from %s, cid=%s", request.method, request.url, request.environ.get("REMOTE_ADDR", "?"), container_id[:16])
     host_port = _serve_container_host_port(container_id)
     if not host_port:
         app.logger.warning("WS bridge: unknown session %s", container_id[:12])
