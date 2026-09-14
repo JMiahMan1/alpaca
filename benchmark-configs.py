@@ -290,7 +290,7 @@ def main():
     parser.add_argument(
         "--public-name",
         required=True,
-        help="Ollama public tag name of the model (e.g. qwen3.5:9b or qwen3:8b)",
+        help="Ollama public tag name of the model (e.g. model-name:quantization)",
     )
     parser.add_argument(
         "--ctx-sizes",
