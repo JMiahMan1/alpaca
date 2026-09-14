@@ -903,6 +903,11 @@ def stop_serve(container_id: str) -> dict[str, Any]:
         return {"stopped": False, "error": str(e)}
 
 
+# Serializes serve_ui sweep-then-create so overlapping launches cannot hand
+# out a container another launch deleted (dead session in the browser).
+_UI_LAUNCH_LOCK = threading.Lock()
+
+
 def serve_ui(
     code: str,
     lang: str = "python",
@@ -922,10 +927,13 @@ def serve_ui(
     ``stop_serve``. Only use this for code the user explicitly asked to view; it
     intentionally enables networking (the grading sandbox does not).
 
-    ``name`` selects the container name (default ``alpaca-ui``). A new launch
-    always replaces the same-named leftover, so same-source sessions never
-    pile up. ``exclusive`` additionally sweeps ``<name>-*`` suffixed relics
-    (pre-fix strays) so only one game session exists at a time.
+    ``name`` selects the container name prefix (default ``alpaca-ui``). Each
+    launch gets a unique ``<name>-<suffix>`` container so overlapping launches
+    can never remove a session another in-flight launch already returned
+    (that left the browser pointing at a dead container with noVNC stuck at
+    "connecting"). ``exclusive`` additionally sweeps same-prefix sessions so
+    only one game session exists at a time; the sweep and the create run
+    under a lock so a returned container is always alive at return time.
     """
     result: dict[str, Any] = {"container_id": None, "host_port": None, "error": ""}
     try:
@@ -1013,34 +1021,41 @@ def serve_ui(
 
     client = None
     container = None
+    # Unique per launch: a fixed name let an overlapping launch force-remove
+    # the container this call was about to return (noVNC stuck connecting).
+    cname = f"{name}-{uuid.uuid4().hex[:8]}"
     try:
         client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
-        # Single fixed name: only one UI session exists at a time. A new
-        # launch replaces any leftover, so alpaca-ui-<suffix> strays can
-        # never pile up again.
-        with contextlib.suppress(Exception):
-            client.containers.get(name).remove(force=True)
-        if exclusive:
-            with contextlib.suppress(Exception):
-                for c in client.containers.list(all=True, filters={"name": name}):
-                    if c.name == name or c.name.startswith(name + "-"):
-                        with contextlib.suppress(Exception):
-                            c.remove(force=True)
-        container = client.containers.run(
-            SANDBOX_IMAGE,
-            command=["sleep", str(timeout + 60)],
-            detach=True,
-            tty=False,
-            stdin_open=False,
-            network_mode="bridge",
-            ports={"6080/tcp": None},
-            mem_limit="256m",
-            pids_limit=128,
-            user="sandbox",
-            working_dir="/tmp",
-            name=name,
-            remove=False,
-        )
+        # Sweep-then-create must be atomic: without the lock, launch B's
+        # sweep could delete launch A's container between A's create and A's
+        # return, handing the browser a dead session.
+        with _UI_LAUNCH_LOCK:
+            # A new launch replaces any same-prefix leftover, so sessions
+            # never pile up (pre-fix exact-name strays included).
+            if exclusive:
+                with contextlib.suppress(Exception):
+                    for c in client.containers.list(all=True, filters={"name": name}):
+                        if c.name == name or c.name.startswith(name + "-"):
+                            with contextlib.suppress(Exception):
+                                c.remove(force=True)
+            else:
+                with contextlib.suppress(Exception):
+                    client.containers.get(name).remove(force=True)
+            container = client.containers.run(
+                SANDBOX_IMAGE,
+                command=["sleep", str(timeout + 60)],
+                detach=True,
+                tty=False,
+                stdin_open=False,
+                network_mode="bridge",
+                ports={"6080/tcp": None},
+                mem_limit="256m",
+                pids_limit=128,
+                user="sandbox",
+                working_dir="/tmp",
+                name=cname,
+                remove=False,
+            )
         cleaned_code = extract_clean_code(code, lang)
         _put_file(container, f"/tmp/{fname}", cleaned_code.encode("utf-8"))
         _put_file(container, "/tmp/run_ui.sh", wrapper.encode("utf-8"))

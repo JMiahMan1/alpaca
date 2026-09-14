@@ -295,8 +295,12 @@ def test_serve_ui_launches_novnc_container():
         assert kwargs["user"] == "sandbox"
         assert kwargs["mem_limit"] == "256m"
         assert kwargs["pids_limit"] == 128
-        # Single fixed name: a leftover UI session is replaced, never piled up.
-        assert kwargs["name"] == "alpaca-ui"
+        # Unique per-launch name: a fixed name let an overlapping launch
+        # delete the container this call was about to return (dead session,
+        # noVNC stuck at "connecting"). Non-exclusive still clears the
+        # exact-name pre-fix leftover without a prefix sweep.
+        assert kwargs["name"].startswith("alpaca-ui-")
+        assert kwargs["name"] != "alpaca-ui"
         mock_client.containers.get.assert_called_once_with("alpaca-ui")
         mock_client.containers.get.return_value.remove.assert_called_once_with(force=True)
         # Non-exclusive launches do not sweep by prefix.
@@ -348,6 +352,31 @@ def test_serve_ui_exclusive_sweeps_suffixed_relics():
         # App pipeline launched detached.
         exec_calls = [c.args[0] for c in mock_container.exec_run.call_args_list]
         assert any(isinstance(a, list) and any("run_ui.sh" in x for x in a) for a in exec_calls)
+
+
+def test_serve_ui_overlapping_launches_get_unique_names():
+    """Two launches must never share a container name.
+
+    Regression test for noVNC stuck at "connecting": with a fixed name, a
+    second launch's sweep force-removed the first launch's container between
+    its create and return, handing the browser a dead session.
+    """
+    with patch("docker.DockerClient") as mock_docker:
+        mock_client = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.run.side_effect = [MagicMock(), MagicMock()]
+        for m in mock_client.containers.run.side_effect:
+            m.ports = {"6080/tcp": [{"HostPort": "39781"}]}
+        mock_client.containers.list.return_value = []
+
+        first = serve_ui("print('one')", lang="python", timeout=5, exclusive=True)
+        second = serve_ui("print('two')", lang="python", timeout=5, exclusive=True)
+
+        assert first["error"] == "" and second["error"] == ""
+        names = [c.kwargs["name"] for c in mock_client.containers.run.call_args_list]
+        assert len(names) == 2
+        assert names[0] != names[1]
+        assert all(n.startswith("alpaca-ui-") for n in names)
 
 
 def test_serve_ui_rejects_unsupported_language():
