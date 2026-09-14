@@ -702,7 +702,22 @@
                     };
                     one('if-defaults', `${base}/defaults.json`)
                         .then(() => one('if-mandatory', `${base}/mandatory.json`))
-                        .then(() => report('inner-ifetch', outs.join(' ')));
+                        .then(() => {
+                            report('inner-ifetch', outs.join(' '));
+                            // Execution trace: the proxy injects a fetch
+                            // call-tracer + body-end marker into vnc.html.
+                            // fetch> with no ok/fail = the module suspended
+                            // on that exact call; body-end missing = parser
+                            // never finished the page.
+                            try {
+                                const tr = iw.__vncTrace;
+                                report('inner-trace', Array.isArray(tr)
+                                    ? tr.join('|').slice(0, 200)
+                                    : `typeof=${typeof tr}`);
+                            } catch (e2) {
+                                report('inner-trace', 'unreadable');
+                            }
+                        });
                 } catch (e) {
                     report('inner-ifetch', `err:${String((e && e.message) || e).slice(0, 60)}`);
                 }
