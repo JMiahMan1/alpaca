@@ -243,6 +243,12 @@
         window.addEventListener('error', (ev) => {
             report('page-error', String((ev && ev.message) || ev));
         });
+        // Promise rejections (module import failures, fetch faults) never
+        // fire 'error' — without this they die completely silently.
+        window.addEventListener('unhandledrejection', (ev) => {
+            let r = ev && ev.reason;
+            report('page-rejection', String((r && (r.message || r)) || ev).slice(0, 160));
+        });
         // Strip noVNC's own chrome (top control bar, sidebar) inside the
         // inner frame: on a phone it eats ~150px and squeezes the game
         // into a strip. Same-origin (/serve/ tunnel) so the inner DOM is
@@ -285,6 +291,15 @@
                             iw.onerror = (msg, src, line) => {
                                 report('inner-error', `${msg} @${String(src || '').split('/').pop()}:${line || '?'}`.slice(0, 160));
                             };
+                            // Same gap as the outer page: rejected promises
+                            // (failed dynamic import, stalled fetch) skip
+                            // window.onerror entirely.
+                            try {
+                                iw.addEventListener('unhandledrejection', (ev) => {
+                                    let r = ev && ev.reason;
+                                    report('inner-rejection', String((r && (r.message || r)) || ev).slice(0, 160));
+                                });
+                            } catch (e) { /* hook best-effort */ }
                             innerHooked = true;
                         }
                     } catch (e) { /* inner not ready — retry next poll */ }
@@ -334,6 +349,70 @@
                             }).catch(() => {});
                         }
                     } catch (e) { /* telemetry only */ }
+                }
+                // One-shot deep diagnostics: when the inner client never leaves
+                // the connecting state, the status text alone cannot say why.
+                // Snapshot the inner runtime once the document is complete,
+                // then verify every script/stylesheet asset is fetchable from
+                // THIS client (a carrier-stalled noVNC module fails silently:
+                // no error event, no status text, spinner forever).
+                if (!watchInnerStream._diagSent) {
+                    try {
+                        const iw0 = frame.contentWindow;
+                        if (iw0 && iw0.document && iw0.document.readyState === 'complete') {
+                            watchInnerStream._diagSent = true;
+                            const d = {};
+                            try {
+                                const doc = iw0.document;
+                                d.ready = doc.readyState;
+                                const st = doc.querySelector('#noVNC_status');
+                                d.status = st ? `'${(st.textContent || '').trim().slice(0, 40)}'` : '<none>';
+                                const tr = doc.querySelector('#noVNC_transition');
+                                d.spinner = tr ? iw0.getComputedStyle(tr).display : '<none>';
+                                d.canvas = !!doc.querySelector('#noVNC_container canvas, #noVNC_canvas');
+                                d.rfb = typeof iw0.RFB;
+                                d.ui = typeof iw0.UI;
+                                d.scripts = doc.querySelectorAll('script[src]').length;
+                                d.ws = (function () {
+                                    try { return typeof iw0.WebSocket; } catch (e) { return 'blocked'; }
+                                })();
+                            } catch (e) {
+                                d.err = String((e && e.message) || e).slice(0, 80);
+                            }
+                            const diag = Object.entries(d).map(([k, v]) => `${k}=${v}`).join(' ');
+                            report('inner-diag', diag.slice(0, 200));
+                        }
+                    } catch (e) { /* inner not ready — retry next poll */ }
+                }
+                if (watchInnerStream._diagSent && !watchInnerStream._assetsTested) {
+                    watchInnerStream._assetsTested = true;
+                    try {
+                        const doc = frame.contentDocument;
+                        const urls = [...doc.querySelectorAll('script[src]')].map((s) => s.src)
+                            .concat([...doc.querySelectorAll('link[rel="stylesheet"]')].map((l) => l.href));
+                        if (!urls.length) {
+                            report('inner-asset', 'no script/link assets found in inner frame');
+                        } else {
+                            let pending = urls.length;
+                            const bad = [];
+                            urls.forEach((u) => {
+                                // HEAD is cheap and accepted by the /serve/ tunnel.
+                                fetch(u, { method: 'HEAD' }).then((r) => {
+                                    if (!r.ok) bad.push(`${r.status} ${u.split('/').pop()}`);
+                                }).catch(() => {
+                                    bad.push(`net-fail ${u.split('/').pop()}`);
+                                }).finally(() => {
+                                    pending -= 1;
+                                    if (pending === 0) {
+                                        const summary = bad.length ? bad.join(', ') : `all ${urls.length} ok`;
+                                        report('inner-asset', summary.slice(0, 200));
+                                    }
+                                });
+                            });
+                        }
+                    } catch (e) {
+                        report('inner-asset', `probe failed: ${String((e && e.message) || e).slice(0, 100)}`);
+                    }
                 }
                 hideNoVncChrome();
                 } finally {
