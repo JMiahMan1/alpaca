@@ -48,7 +48,10 @@
   }
   function enterFull() {
     if (!screenEl || isFull()) return;
-    if (!screenEl.requestFullscreen && !screenEl.webkitRequestFullscreen) {
+    // Touch devices: use CSS fallback fullscreen to avoid the
+    // browser's native "To exit full screen" overlay that covers
+    // the on-screen controls.
+    if (COARSE || !screenEl.requestFullscreen && !screenEl.webkitRequestFullscreen) {
       setFallback(true);
       return;
     }
@@ -227,7 +230,9 @@
   });
   if (COARSE) {
     // Auto-fullscreen on touch devices: playable games once loaded, code
-    // games once the sandbox goes live (hooked into both ready paths).
+    // games once the sandbox goes live. Uses CSS fallback (no native
+    // fullscreen API) to avoid the browser's "To exit full screen" overlay
+    // that covers the on-screen controls.
     if (frame) frame.addEventListener("load", () => setTimeout(enterFull, 400));
     window.__arcadeAutoFull = true;
   }
@@ -373,9 +378,8 @@
       // writes when a run finishes (initials + score). Stops on
       // first success, on stop, or on error.
       startScorePoll(status);
-      // Touch devices go fullscreen once the sandbox is live (playable
-      // games hook the game-frame load event instead).
-      if (window.__arcadeAutoFull) setTimeout(enterFull, 400);
+      // Touch devices: auto-fullscreen via CSS fallback (no native
+      // fullscreen API → no "To exit full screen" browser overlay).
       // Stream telemetry from the embedded launcher (same-origin parent,
       // cross-origin child posts state). Surfaces silent phone-side stream
       // failures that emulation cannot reproduce.
