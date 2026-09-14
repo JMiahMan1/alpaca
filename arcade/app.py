@@ -448,6 +448,57 @@ def sandbox_ui_inner_status():
     return jsonify(res)
 
 
+def _proxy_sandbox(path: str):
+    """Proxy a sandbox endpoint from the web backend (server-side relay).
+
+    The public proxy maps /api/* to the arcade, not the web backend —
+    so the launcher page's relative /api/sandbox/* calls would 404.
+    Relay them server-side so the key bar, log, screenshot, restart
+    and stop controls all work from the arcade domain.
+    """
+    data = request.get_json(silent=True) or {}
+    payload = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(
+        f"{WEB_BASE}{path}", data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return jsonify({"error": f"sandbox {path} failed: {str(e)[:200]}"}), 502
+    return jsonify(res)
+
+
+@app.route("/api/sandbox/ui/exec", methods=["POST"])
+def sandbox_ui_exec():
+    """Relay launcher terminal exec to the web backend."""
+    return _proxy_sandbox("/api/sandbox/ui/exec")
+
+
+@app.route("/api/sandbox/ui/status", methods=["POST"])
+def sandbox_ui_status():
+    """Relay launcher status to the web backend."""
+    return _proxy_sandbox("/api/sandbox/ui/status")
+
+
+@app.route("/api/sandbox/ui/screenshot", methods=["POST"])
+def sandbox_ui_screenshot():
+    """Relay launcher screenshot to the web backend."""
+    return _proxy_sandbox("/api/sandbox/ui/screenshot")
+
+
+@app.route("/api/sandbox/ui/restart", methods=["POST"])
+def sandbox_ui_restart():
+    """Relay launcher restart to the web backend."""
+    return _proxy_sandbox("/api/sandbox/ui/restart")
+
+
+@app.route("/api/sandbox/stop_serve", methods=["POST"])
+def sandbox_stop_serve():
+    """Relay stop_serve to the web backend."""
+    return _proxy_sandbox("/api/sandbox/stop_serve")
+
+
 def _browser_launcher_url(container_id: str) -> str:
     """Browser-facing noVNC launcher URL for this request's origin.
 
