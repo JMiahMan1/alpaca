@@ -3243,7 +3243,6 @@ def _serve_container_host_port(container_id: str) -> str | None:
         client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
         try:
             c = client.containers.get(container_id)
-            c.reload()
             for ports in (c.ports or {}).values():
                 if ports:
                     hp = ports[0].get("HostPort")
@@ -3251,7 +3250,8 @@ def _serve_container_host_port(container_id: str) -> str | None:
                         return str(hp)
         finally:
             client.close()
-    except Exception:  # pragma: no cover - runtime dependent
+    except Exception as e:  # pragma: no cover - runtime dependent
+        app.logger.warning("serve proxy: cannot resolve port for %s: %s", container_id[:12], e)
         return None
     return None
 

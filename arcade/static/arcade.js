@@ -378,8 +378,9 @@
       // writes when a run finishes (initials + score). Stops on
       // first success, on stop, or on error.
       startScorePoll(status);
-      // Touch devices: auto-fullscreen via CSS fallback (no native
-      // fullscreen API → no "To exit full screen" browser overlay).
+      // Touch devices: auto-fullscreen via CSS fallback once the
+      // live VNC stream is visible (3 s warmup for websockify/noVNC).
+      if (COARSE) setTimeout(enterFull, 3000);
       // Stream telemetry from the embedded launcher (same-origin parent,
       // cross-origin child posts state). Surfaces silent phone-side stream
       // failures that emulation cannot reproduce.
