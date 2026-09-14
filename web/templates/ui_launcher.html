@@ -712,7 +712,7 @@
                             try {
                                 const tr = iw.__vncTrace;
                                 report('inner-trace', Array.isArray(tr)
-                                    ? tr.join('|').slice(0, 200)
+                                    ? tr.join('|').slice(0, 2000)
                                     : `typeof=${typeof tr}`);
                             } catch (e2) {
                                 report('inner-trace', 'unreadable');
