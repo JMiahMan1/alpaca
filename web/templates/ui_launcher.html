@@ -454,6 +454,18 @@
                                         const len = doc2 ? doc2.documentElement.outerHTML.length : -1;
                                         report('inner-dom', `inline=${inl} htmllen=${len}`.slice(0, 200));
                                     } catch (e2) { report('inner-dom', 'unreadable'); }
+                                    // Loader truth: the iframe's resource-timing log
+                                    // shows what ITS loader actually fetched (module
+                                    // tree included). A stalled/failed module fetch
+                                    // is silent to window.onerror but visible here.
+                                    try {
+                                        const iw2 = frame.contentWindow;
+                                        const entries = iw2 && iw2.performance
+                                            ? iw2.performance.getEntriesByType('resource') : [];
+                                        const mods = entries.filter((r) => (r.initiatorType === 'script' || (r.name || '').endsWith('.js')))
+                                            .map((r) => `${String(r.name || '').split('/').pop()}:${Math.round(r.duration)}ms`);
+                                        report('inner-res', `n=${entries.length} js=[${mods.join(',')}]`.slice(0, 200));
+                                    } catch (e3) { report('inner-res', 'unreadable'); }
                                 }
                             });
                         });
