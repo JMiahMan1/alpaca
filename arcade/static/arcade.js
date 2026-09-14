@@ -349,6 +349,10 @@
     btn.disabled = true;
     btn.textContent = "⏳ Starting sandbox…";
     status.textContent = "Spinning up a display sandbox (up to ~2 min on first launch)…";
+    // Fresh auto-fullscreen state per launch attempt (a relaunch after
+    // exiting fullscreen must be able to re-enter on connect).
+    window.__arcadeFullDone = false;
+    if (window.__arcadeFullTimer) clearTimeout(window.__arcadeFullTimer);
     // Relaunching without stopping leaks a container (the embedded
     // launcher hides its own Stop button). Kill the previous session first.
     if (window.__arcadeCid) {
@@ -378,9 +382,20 @@
       // writes when a run finishes (initials + score). Stops on
       // first success, on stop, or on error.
       startScorePoll(status);
-      // Touch devices: auto-fullscreen via CSS fallback once the
-      // live VNC stream is visible (3 s warmup for websockify/noVNC).
-      if (COARSE) setTimeout(enterFull, 3000);
+      // Touch devices: auto-fullscreen via CSS fallback once the live VNC
+      // stream is actually connected — never on a fixed timer. A blind
+      // timer reshapes the stream iframe mid-handshake on slow links; the
+      // launcher reports its inner noVNC status (see listener below) and
+      // that event drives enterFull. 45 s backstop preserves the old
+      // behavior if the signal ever misses.
+      if (COARSE && !window.__arcadeFullDone) {
+        window.__arcadeFullTimer = setTimeout(() => {
+          if (!window.__arcadeFullDone) {
+            window.__arcadeFullDone = true;
+            enterFull();
+          }
+        }, 45000);
+      }
       // Stream telemetry from the embedded launcher (same-origin parent,
       // cross-origin child posts state). Surfaces silent phone-side stream
       // failures that emulation cannot reproduce.
@@ -393,12 +408,28 @@
           if (!s) return;
           const detail = m.detail ? ` — ${m.detail}` : "";
           s.textContent = `🟢 Live! Stream: ${m.state}${detail}`;
+          // Event-driven auto-fullscreen: enter only once the inner noVNC
+          // client reports connected. The backstop timer above covers a
+          // missed signal — clear it once we're in.
+          if (
+            COARSE &&
+            !window.__arcadeFullDone &&
+            m.state === "inner-status" &&
+            /connected/i.test(m.detail || "")
+          ) {
+            window.__arcadeFullDone = true;
+            if (window.__arcadeFullTimer) clearTimeout(window.__arcadeFullTimer);
+            enterFull();
+          }
         });
       }
     } catch (e) {
       status.textContent = `Launch failed: ${e.message}`;
       btn.textContent = "▶ Play";
       btn.disabled = false;
+      // No stream coming — cancel the fullscreen backstop so it can't
+      // fire over the failure message.
+      if (window.__arcadeFullTimer) clearTimeout(window.__arcadeFullTimer);
     }
   });
 

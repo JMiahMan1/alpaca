@@ -1058,6 +1058,18 @@ def test_arcade_js_stream_status_handler():
     assert "Stream:" in js
 
 
+def test_arcade_js_gated_auto_fullscreen():
+    """Auto-fullscreen waits for the noVNC connected signal instead of a
+    blind 3 s timer that reshapes the stream iframe mid-handshake."""
+    from pathlib import Path
+
+    js = Path("arcade/static/arcade.js").read_text()
+    assert "setTimeout(enterFull, 3000)" not in js
+    assert "__arcadeFullDone" in js
+    assert "inner-status" in js
+    assert "45000" in js
+
+
 def test_arcade_sync_score_success(arcade_client, monkeypatch):
     """Game wrote {initials, score} to /tmp/alpaca_score.json — stored
     through the same ledger as manual submit."""
