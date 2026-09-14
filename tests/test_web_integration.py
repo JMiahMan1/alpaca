@@ -1505,6 +1505,56 @@ def test_sandbox_serve_proxy_injects_vd_guard_in_vnc_html(client):
     assert b"__vncTrace" not in other.data
 
 
+def test_sandbox_serve_proxy_races_browser_js_tla(client):
+    """browser.js top-level await gets a 10s whole-check race; others pass.
+
+    The vendored capability check can wedge silently on a cold phone media
+    stack, suspending the viewer module with zero errors. The rewrite keeps
+    H.264 for healthy clients (race losers fall back to false) and refuses
+    to touch the file unless the anchor matches exactly once.
+    """
+    from unittest.mock import Mock
+
+    vendored = (
+        b"import * as Log from '../util/logging.js';\n"
+        b"export const supportsWebCodecsH264Decode = await _checkWebCodecsH264DecodeSupport();\n"
+        b"async function _checkWebCodecsH264DecodeSupport(){return true;}\n"
+    )
+
+    def _get(subpath, content):
+        with (
+            patch("web.app._serve_container_host_port", return_value="39876"),
+            patch("web.app.httpx.Client") as mock_client_cls,
+        ):
+            mock_resp = Mock()
+            mock_resp.status_code = 200
+            mock_resp.content = content
+            mock_resp.headers = {"content-type": "application/javascript"}
+            mock_client = Mock()
+            mock_client.request.return_value = mock_resp
+            mock_client_cls.return_value.__enter__.return_value = mock_client
+            return client.get(f"/serve/abc123def/{subpath}")
+
+    hit = _get("core/util/browser.js", vendored)
+    assert hit.status_code == 200
+    assert b"Promise.race" in hit.data
+    assert b"10000" in hit.data
+    assert b"catch(__e){return false;}" in hit.data
+    assert b"_checkWebCodecsH264DecodeSupport()" in hit.data  # check itself kept
+    assert hit.data.count(b"await _checkWebCodecsH264DecodeSupport()") == 0
+    assert hit.headers.get("Cache-Control") == "no-store"
+
+    # Anchor mismatch (vendored code changed shape): file passes untouched.
+    other = _get("core/util/browser.js", b"export const x = 1;\n")
+    assert other.status_code == 200
+    assert b"Promise.race" not in other.data
+    assert "Cache-Control" not in other.headers
+
+    # Non-JS and other JS files untouched.
+    plain = _get("app/ui.js", b"await _checkWebCodecsH264DecodeSupport();\n")
+    assert b"Promise.race" not in plain.data
+
+
 def test_sandbox_serve_proxy_unknown_container(client):
     with patch("web.app._serve_container_host_port", return_value=None):
         res = client.get("/serve/nope/")
