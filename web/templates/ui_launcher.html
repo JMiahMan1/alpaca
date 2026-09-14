@@ -436,6 +436,41 @@
             // The published sandbox port is random and not reachable off-box.
             frame.src = `/serve/${CONTAINER_ID}/vnc.html?autoconnect=true&resize=scale&path=/serve/ws/${CONTAINER_ID}/websockify`;
             setStatus('Connected to noVNC stream.');
+            // Independent socket probe: open a second WebSocket to the exact
+            // URL noVNC uses, from THIS client's own radio, and report what
+            // happens. The phone's noVNC sits in "connecting" with zero
+            // errors — this distinguishes "client never sends" (probe opens
+            // fine) from "path broken for this client" (probe fails/hangs).
+            setTimeout(() => {
+                try {
+                    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const url = `${scheme}//${location.host}/serve/ws/${CONTAINER_ID}/websockify`;
+                    let done = false;
+                    const finish = (msg) => {
+                        if (done) return;
+                        done = true;
+                        try { sock.close(); } catch (e) { /* already closed */ }
+                        report('ws-probe', `${msg} host=${location.host}`.slice(0, 200));
+                    };
+                    const sock = new WebSocket(url, ['binary']);
+                    const timer = setTimeout(() => {
+                        clearTimeout(timer);
+                        try {
+                            finish(`timeout readyState=${sock.readyState}`);
+                        } catch (e) {
+                            finish('timeout (unreadable)');
+                        }
+                    }, 15000);
+                    sock.onopen = () => { clearTimeout(timer); finish('open'); };
+                    sock.onerror = () => { clearTimeout(timer); finish('error'); };
+                    sock.onclose = (ev) => {
+                        clearTimeout(timer);
+                        finish(`close code=${ev && ev.code} wasClean=${ev && ev.wasClean}`);
+                    };
+                } catch (e) {
+                    report('ws-probe', `ctor-threw: ${String((e && e.message) || e).slice(0, 120)}`);
+                }
+            }, 5000);
         } else {
             setStatus('No VNC port found for container.');
         }
