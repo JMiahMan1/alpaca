@@ -471,6 +471,13 @@
                     report('ws-probe', `ctor-threw: ${String((e && e.message) || e).slice(0, 120)}`);
                 }
             }, 5000);
+            // Client identity for the silent-module theory: identical bytes
+            // work on desktop, so a phone-only module parse failure means an
+            // old engine. UA carries the Chrome version (vnc.html's inline
+            // module needs top-level await, Chrome 89+).
+            setTimeout(() => {
+                report('ua', `${navigator.userAgent}`.slice(0, 250));
+            }, 8000);
         } else {
             setStatus('No VNC port found for container.');
         }
