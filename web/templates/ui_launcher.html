@@ -628,6 +628,54 @@
                     report('frame-reload', `unreadable: ${String((e && e.message) || e).slice(0, 80)}`);
                 }
             }, 25000);
+            // WebCodecs probe: replicates noVNC core/util/browser.js top-level
+            // await (VideoDecoder.isConfigSupported + configure/decode/flush,
+            // the ONLY top-level await in its 55-file graph). If either never
+            // settles here, the phone's media stack wedges noVNC's whole
+            // module graph silently (spinner forever, zero errors).
+            setTimeout(() => {
+                const delay = (ms, v) =>
+                    new Promise((res) => setTimeout(() => res(v), ms));
+                (async () => {
+                    if (!('VideoDecoder' in window)) {
+                        report('webcodecs', 'no-decoder');
+                        return;
+                    }
+                    const cfg = { codec: 'avc1.42401f', codedWidth: 1920,
+                                  codedHeight: 1080, optimizeForLatency: true };
+                    let r;
+                    try {
+                        r = await Promise.race([
+                            VideoDecoder.isConfigSupported(cfg),
+                            delay(10000, 'time'),
+                        ]);
+                        report('webcodecs', `isConfig=${
+                            r === 'time' ? 'time' : JSON.stringify(r.supported)}`);
+                    } catch (e) {
+                        report('webcodecs', `isConfig=err:${String(e).slice(0, 60)}`);
+                        return;
+                    }
+                    if (r === 'time') return;
+                    try {
+                        const out = await Promise.race([
+                            (async () => {
+                                const d = new VideoDecoder({
+                                    output: () => {}, error: () => {} });
+                                d.configure(cfg);
+                                d.decode(new EncodedVideoChunk({
+                                    timestamp: 0, type: 'key',
+                                    data: new Uint8Array([0, 0, 0, 1]) }));
+                                await d.flush();
+                                return 'ok';
+                            })(),
+                            delay(10000, 'time'),
+                        ]);
+                        report('webcodecs', `flush=${out}`);
+                    } catch (e) {
+                        report('webcodecs', `flush=err:${String(e).slice(0, 60)}`);
+                    }
+                })();
+            }, 12000);
         } else {
             setStatus('No VNC port found for container.');
         }
