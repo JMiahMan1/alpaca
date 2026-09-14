@@ -3331,11 +3331,12 @@ def _ws_proxy_pump(src, dst, counter):
 def sandbox_serve_ws_proxy(container_id: str, ws_path: str = ""):
     """Tunnel a sandbox app's WebSocket endpoint through the dashboard origin.
 
-    noVNC connects to ``ws://<host>:<host_port>/websockify`` which is not
-    reachable from a remote machine — only port 5000 is forwarded. This route
+    noVNC connects to ``ws://<host>:<host_port>/websockify`` which is
+    not reachable from a remote machine — only port 5000 is forwarded. This route
     terminates the browser's WebSocket on the dashboard and relays frames to the
     sandbox container's websockify via ``host.docker.internal``.
     """
+    app.logger.info("WS bridge: incoming %s %s from %s, cid=%s", request.method, request.url, request.environ.get("REMOTE_ADDR", "?"), container_id[:16])
     host_port = _serve_container_host_port(container_id)
     if not host_port:
         app.logger.warning("WS bridge: unknown session %s", container_id[:12])
