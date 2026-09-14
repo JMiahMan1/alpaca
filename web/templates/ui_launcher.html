@@ -688,7 +688,7 @@
                         report('inner-ifetch', 'no-frame-fetch');
                         return;
                     }
-                    const base = frame.src.split('?')[0].rsplit('/', 1)[0];
+                    const base = window.location.origin + '/serve/' + CONTAINER_ID;
                     const outs = [];
                     const one = (nm, url) => {
                         const t0 = performance.now();
