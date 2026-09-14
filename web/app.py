@@ -3262,6 +3262,21 @@ def _serve_container_host_port(container_id: str) -> str | None:
     return None
 
 
+# Execution-trace markers injected into vnc.html (see sandbox_serve_proxy).
+# Head script arms window.__vncTrace + a fetch call-tracer; tail script
+# proves the parser reached end of body. Inert for normal use.
+_VNC_TRACE_HEAD = (
+    b'<script>window.__vncTrace=["head"];'
+    b"try{var _vf=window.fetch.bind(window);window.fetch=function(u,o){"
+    b'try{window.__vncTrace.push("fetch>"+String(u).slice(-48))}catch(_){}'
+    b"return _vf(u,o).then(function(r){"
+    b'try{window.__vncTrace.push("ok:"+r.status+">"+String(u).slice(-48))}catch(_){}return r},'
+    b"function(e){try{window.__vncTrace.push('fail>'+String(u).slice(-48))}catch(_){}throw e});};"
+    b"}catch(_){}</script>"
+)
+_VNC_TRACE_TAIL = b"<script>try{window.__vncTrace.push('body-end')}catch(_){}</script>"
+
+
 @app.route("/serve/<container_id>/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
 @app.route("/serve/<container_id>/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
 def sandbox_serve_proxy(container_id: str, subpath: str = ""):
@@ -3307,8 +3322,27 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
         if k.lower() in ("content-length", "connection", "transfer-encoding", "content-encoding"):
             continue
         resp_headers[k] = v
+    body_out = resp.content
+    # Phone-debug trace: the noVNC viewer page can sit at its "connecting"
+    # spinner with zero errors while its inline module silently suspends
+    # (e.g. on a never-settling fetch). Inject two inert marker scripts into
+    # vnc.html only: the head one arms a fetch call-tracer, the body-end one
+    # proves the parser reached the end. The launcher reads
+    # frame.__vncTrace, giving a direct execution trace of the module.
+    if (
+        request.method == "GET"
+        and resp.status_code == 200
+        and subpath.endswith("vnc.html")
+        and "html" in resp.headers.get("content-type", "")
+        and isinstance(body_out, (bytes, bytearray))
+    ):
+        marked = bytes(body_out)
+        if b"</head>" in marked and b"</body>" in marked:
+            marked = marked.replace(b"</head>", _VNC_TRACE_HEAD + b"</head>", 1)
+            marked = marked.replace(b"</body>", _VNC_TRACE_TAIL + b"</body>", 1)
+            body_out = marked
     return Response(
-        resp.content,
+        body_out,
         status=resp.status_code,
         headers=resp_headers,
         content_type=resp.headers.get("content-type", "text/html"),
