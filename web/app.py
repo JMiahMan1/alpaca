@@ -3265,6 +3265,11 @@ def _serve_container_host_port(container_id: str) -> str | None:
 # Execution-trace markers injected into vnc.html (see sandbox_serve_proxy).
 # Head script arms window.__vncTrace + a fetch call-tracer; tail script
 # proves the parser reached end of body. Inert for normal use.
+# _VNC_VD_GUARD races VideoDecoder.isConfigSupported with an 8s timeout:
+# noVNC's browser.js top-level await suspends the whole viewer module on a
+# never-settling media-stack call (seen on a phone with a cold media stack:
+# perpetual spinner, zero errors). A wedged check degrades to
+# {supported:false} so the viewer falls back to classic VNC encodings.
 _VNC_TRACE_HEAD = (
     b'<script>window.__vncTrace=["head"];'
     b"try{var _vf=window.fetch.bind(window);window.fetch=function(u,o){"
@@ -3273,6 +3278,16 @@ _VNC_TRACE_HEAD = (
     b'try{window.__vncTrace.push("ok:"+r.status+">"+String(u).slice(-48))}catch(_){}return r},'
     b"function(e){try{window.__vncTrace.push('fail>'+String(u).slice(-48))}catch(_){}throw e});};"
     b"}catch(_){}</script>"
+)
+_VNC_VD_GUARD = (
+    b"<script>try{var _VD=window.VideoDecoder;"
+    b"if(_VD&&_VD.isConfigSupported){"
+    b"var _VDis=_VD.isConfigSupported.bind(_VD);"
+    b"var _VDG=function(cfg){return new _VD(cfg);};"
+    b"Object.setPrototypeOf(_VDG,_VD);_VDG.prototype=_VD.prototype;"
+    b"_VDG.isConfigSupported=function(c){return Promise.race([_VDis(c),"
+    b"new Promise(function(res){setTimeout(function(){res({supported:false})},8000);})]);};"
+    b"window.VideoDecoder=_VDG;}}catch(_){}</script>"
 )
 _VNC_TRACE_TAIL = b"<script>try{window.__vncTrace.push('body-end')}catch(_){}</script>"
 
@@ -3329,6 +3344,9 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
     # vnc.html only: the head one arms a fetch call-tracer, the body-end one
     # proves the parser reached the end. The launcher reads
     # frame.__vncTrace, giving a direct execution trace of the module.
+    # _VNC_VD_GUARD is functional (not a marker): it timeout-guards the
+    # VideoDecoder capability check that noVNC top-level-awaits, so a wedged
+    # phone media stack degrades to classic encodings instead of hanging.
     if (
         request.method == "GET"
         and resp.status_code == 200
@@ -3338,7 +3356,7 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
     ):
         marked = bytes(body_out)
         if b"</head>" in marked and b"</body>" in marked:
-            marked = marked.replace(b"</head>", _VNC_TRACE_HEAD + b"</head>", 1)
+            marked = marked.replace(b"</head>", _VNC_TRACE_HEAD + _VNC_VD_GUARD + b"</head>", 1)
             marked = marked.replace(b"</body>", _VNC_TRACE_TAIL + b"</body>", 1)
             body_out = marked
     return Response(

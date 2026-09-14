@@ -1469,6 +1469,42 @@ def test_sandbox_serve_proxy_preserves_subpath_and_method(client):
     assert mock_client.request.call_args[0][0] == "POST"
 
 
+def test_sandbox_serve_proxy_injects_vd_guard_in_vnc_html(client):
+    """vnc.html gets the VideoDecoder wedge guard; other pages untouched.
+
+    noVNC top-level-awaits a VideoDecoder capability check: on a phone with
+    a cold media stack that call never settles and the viewer sits at its
+    spinner with zero errors. The guard races it with an 8s timeout.
+    """
+    from unittest.mock import Mock
+
+    page = b"<html><head><title>t</title></head><body>hi</body></html>"
+    with (
+        patch("web.app._serve_container_host_port", return_value="39876"),
+        patch("web.app.httpx.Client") as mock_client_cls,
+    ):
+        mock_resp = Mock()
+        mock_resp.status_code = 200
+        mock_resp.content = page
+        mock_resp.headers = {"content-type": "text/html"}
+        mock_client = Mock()
+        mock_client.request.return_value = mock_resp
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+
+        vnc = client.get("/serve/abc123def/vnc.html?autoconnect=true")
+        other = client.get("/serve/abc123def/index.html")
+
+    assert vnc.status_code == 200
+    assert b"__vncTrace" in vnc.data
+    assert b"VideoDecoder" in vnc.data
+    assert b"isConfigSupported" in vnc.data
+    assert b"supported:false" in vnc.data
+    assert b"8000" in vnc.data
+    assert b"hi" in vnc.data  # page itself intact
+    assert b"VideoDecoder" not in other.data
+    assert b"__vncTrace" not in other.data
+
+
 def test_sandbox_serve_proxy_unknown_container(client):
     with patch("web.app._serve_container_host_port", return_value=None):
         res = client.get("/serve/nope/")
