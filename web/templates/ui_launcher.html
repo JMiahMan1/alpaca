@@ -414,6 +414,42 @@
                         report('inner-asset', `probe failed: ${String((e && e.message) || e).slice(0, 100)}`);
                     }
                 }
+                // One-shot GET test of the exact files vnc.html's inline
+                // module needs (HEAD can succeed where GET stalls: the module
+                // uses GET for its static import + top-level-await fetches,
+                // and a hung GET suspends it silently — spinner forever).
+                if (watchInnerStream._diagSent && !watchInnerStream._moduleTested) {
+                    watchInnerStream._moduleTested = true;
+                    try {
+                        const base = String(frame.src || '').split('?')[0].replace(/vnc\.html$/, '');
+                        const files = ['app/ui.js', 'defaults.json', 'mandatory.json'];
+                        let pending = files.length;
+                        const out = [];
+                        files.forEach((f) => {
+                            const ctl = new AbortController();
+                            const timer = setTimeout(() => ctl.abort(), 20000);
+                            fetch(base + f, { signal: ctl.signal }).then((r) => {
+                                if (!r.ok) {
+                                    out.push(`${f}=http${r.status}`);
+                                } else {
+                                    return r.text().then((t) => {
+                                        out.push(`${f}=${t.length}b`);
+                                    });
+                                }
+                            }).catch((e) => {
+                                out.push(`${f}=${(e && e.name === 'AbortError') ? 'timeout' : 'net-fail'}`);
+                            }).finally(() => {
+                                clearTimeout(timer);
+                                pending -= 1;
+                                if (pending === 0) {
+                                    report('inner-get', out.join(' ').slice(0, 200));
+                                }
+                            });
+                        });
+                    } catch (e) {
+                        report('inner-get', `probe failed: ${String((e && e.message) || e).slice(0, 100)}`);
+                    }
+                }
                 hideNoVncChrome();
                 } finally {
                     // Never let a telemetry exception kill the watch loop.
