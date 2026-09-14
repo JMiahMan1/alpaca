@@ -3466,11 +3466,13 @@ def sandbox_ui_inner_status():
     exact noVNC state text (connecting/connected/disconnect reason).
     """
     data = request.get_json(silent=True) or {}
+    # Long probes (module-trace) need the full detail; keep the cap high
+    # so the log line carries the whole story, not a prefix.
     app.logger.info(
         "UI inner status: session %s state=%s detail=%s",
         str(data.get("container_id") or "?")[:12],
         data.get("state"),
-        str(data.get("detail") or "")[:160],
+        str(data.get("detail") or "")[:2000],
     )
     return jsonify({"ok": True})
 
