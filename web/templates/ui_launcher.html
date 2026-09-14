@@ -570,6 +570,42 @@
                     report('inner-import', `probe failed: ${String((e && e.message) || e).slice(0, 100)}`);
                 }
             }, 12000);
+            // Follow-up: cache-busted import + timed plain fetches of the
+            // inline module's own awaits. import(hung) + import(?bust=ok) =>
+            // poisoned cache entry for the exact URL (fix = bust the module
+            // URL); both hung => request-shape stall (module loader vs
+            // fetch); slow plain fetch of one JSON => that await is the
+            // silent hang. Runs after the warm reload settles.
+            setTimeout(() => {
+                try {
+                    const base = `/serve/${CONTAINER_ID}/`;
+                    const timed = (url, ms) => {
+                        const t0 = Date.now();
+                        const ctl = new AbortController();
+                        const timer = setTimeout(() => ctl.abort(), ms);
+                        return fetch(url, { signal: ctl.signal }).then(
+                            (r) => r.text().then((t) => `${url.split('/').pop()}=${Date.now() - t0}ms/${t.length}b`),
+                            (e) => `${url.split('/').pop()}=FAIL:${String((e && e.name) || e).slice(0, 20)}`,
+                        ).finally(() => clearTimeout(timer));
+                    };
+                    const bust = Promise.race([
+                        import(base + 'app/ui.js?alpaca_probe=' + Date.now()).then(
+                            () => 'bust-import=ok',
+                            (e) => `bust-import=rejected:${String((e && e.message) || e).slice(0, 50)}`),
+                        new Promise((res) => setTimeout(() => res('bust-import=hung'), 15000)),
+                    ]);
+                    Promise.all([
+                        bust,
+                        timed(base + 'defaults.json', 15000),
+                        timed(base + 'mandatory.json', 15000),
+                        timed(base + 'package.json', 15000),
+                    ]).then((parts) => {
+                        report('inner-import2', parts.join(' ').slice(0, 250));
+                    });
+                } catch (e) {
+                    report('inner-import2', `probe failed: ${String((e && e.message) || e).slice(0, 100)}`);
+                }
+            }, 40000);
             // One-shot warm reload: if the viewer still shows nothing after
             // every probe, reload the frame once. First load warms all
             // caches, so the second run executes with instant fetches — a
