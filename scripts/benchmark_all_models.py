@@ -3,7 +3,7 @@
 alpaca-benchmark - Multi-model benchmark suite for alpaca-proxy / llama-server
 Usage:
   python3 benchmark_all_models.py                  # benchmark all models
-  python3 benchmark_all_models.py gemma-4-12b-fable5:latest qwen3:8b
+  python3 benchmark_all_models.py gemma-4-12b-fable5:latest qwen3.6-35b-a3b:q4_k_m
   python3 benchmark_all_models.py --list           # list available models
   python3 benchmark_all_models.py --out /my/dir    # custom output dir
 
