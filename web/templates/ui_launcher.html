@@ -443,6 +443,17 @@
                                 pending -= 1;
                                 if (pending === 0) {
                                     report('inner-get', out.join(' ').slice(0, 200));
+                                    // DOM integrity: the inline module (no src) is
+                                    // what boots the viewer. A middlebox that
+                                    // strips scripts, or a truncated parse, leaves
+                                    // the spinner forever with no error. Expect
+                                    // exactly 1 inline script and ~17-18KB.
+                                    try {
+                                        const doc2 = frame.contentDocument;
+                                        const inl = doc2 ? doc2.querySelectorAll('script:not([src])').length : -1;
+                                        const len = doc2 ? doc2.documentElement.outerHTML.length : -1;
+                                        report('inner-dom', `inline=${inl} htmllen=${len}`.slice(0, 200));
+                                    } catch (e2) { report('inner-dom', 'unreadable'); }
                                 }
                             });
                         });
