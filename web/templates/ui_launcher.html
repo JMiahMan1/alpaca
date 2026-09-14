@@ -694,7 +694,8 @@
                         const t0 = performance.now();
                         return Promise.race([
                             iw.fetch(url, {cache: 'no-store'})
-                                .then((r) => r.text().then((t) => `${nm}=${Math.round(performance.now() - t0)}ms/${r.status}/${t.length}b`))
+                                .then((r) => r.text().then((t) => `${nm}=${Math.round(performance.now() - t0)}ms/`
+                                    + `${r.status}/${t.length}b`))
                                 .catch((e) => `${nm}=net-fail:${String((e && e.name) || e).slice(0, 20)}`),
                             new Promise((res) => setTimeout(() => res(`${nm}=hung`), 15000)),
                         ]).then((s) => outs.push(s));
