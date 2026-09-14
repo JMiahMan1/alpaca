@@ -3290,6 +3290,20 @@ _VNC_VD_GUARD = (
     b"window.VideoDecoder=_VDG;}}catch(_){}</script>"
 )
 _VNC_TRACE_TAIL = b"<script>try{window.__vncTrace.push('body-end')}catch(_){}</script>"
+# noVNC's core/util/browser.js top-level-awaits _checkWebCodecsH264DecodeSupport
+# at module evaluation. On a phone with a cold media stack that check never
+# settles (nor throws): the whole viewer module suspends silently and the page
+# sits at its spinner with zero errors. The VideoDecoder guard above only caps
+# isConfigSupported; the wedge can sit downstream (configure/decode/flush), so
+# the entire check is raced with a 10s `false` fallback instead. Healthy
+# clients keep H.264; wedged ones fall back to classic VNC encodings.
+# Rewritten only when the vendored line matches exactly once.
+_VNC_TLA_ANCHOR = b"await _checkWebCodecsH264DecodeSupport()"
+_VNC_TLA_RACED = (
+    b"await (async function(){try{return await Promise.race(["
+    b"_checkWebCodecsH264DecodeSupport(),new Promise(function(__ar){"
+    b"setTimeout(function(){__ar(false)},10000);})]);}catch(__e){return false;}})()"
+)
 
 
 @app.route("/serve/<container_id>/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
@@ -3347,18 +3361,27 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
     # _VNC_VD_GUARD is functional (not a marker): it timeout-guards the
     # VideoDecoder capability check that noVNC top-level-awaits, so a wedged
     # phone media stack degrades to classic encodings instead of hanging.
-    if (
-        request.method == "GET"
-        and resp.status_code == 200
-        and subpath.endswith("vnc.html")
-        and "html" in resp.headers.get("content-type", "")
-        and isinstance(body_out, (bytes, bytearray))
+    # Modified responses are marked no-store: the URLs are per-session, so
+    # caching buys nothing, and it guarantees a wedged client never replays
+    # a stale pre-fix copy of these files from its HTTP cache.
+    if request.method == "GET" and resp.status_code == 200 and isinstance(
+        body_out, (bytes, bytearray)
     ):
-        marked = bytes(body_out)
-        if b"</head>" in marked and b"</body>" in marked:
-            marked = marked.replace(b"</head>", _VNC_TRACE_HEAD + _VNC_VD_GUARD + b"</head>", 1)
-            marked = marked.replace(b"</body>", _VNC_TRACE_TAIL + b"</body>", 1)
-            body_out = marked
+        ctype = resp.headers.get("content-type", "")
+        if subpath.endswith("vnc.html") and "html" in ctype:
+            marked = bytes(body_out)
+            if b"</head>" in marked and b"</body>" in marked:
+                marked = marked.replace(b"</head>", _VNC_TRACE_HEAD + _VNC_VD_GUARD + b"</head>", 1)
+                marked = marked.replace(b"</body>", _VNC_TRACE_TAIL + b"</body>", 1)
+                body_out = marked
+                resp_headers["Cache-Control"] = "no-store"
+        elif (
+            subpath.endswith("core/util/browser.js")
+            and "javascript" in ctype
+            and bytes(body_out).count(_VNC_TLA_ANCHOR) == 1
+        ):
+            body_out = bytes(body_out).replace(_VNC_TLA_ANCHOR, _VNC_TLA_RACED, 1)
+            resp_headers["Cache-Control"] = "no-store"
     return Response(
         body_out,
         status=resp.status_code,
