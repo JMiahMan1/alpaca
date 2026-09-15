@@ -136,8 +136,6 @@ def get_llama_server_flags() -> list[str]:
         "8080",
         "--models-preset",
         "/router-models/models.ini",
-        "--threads",
-        "16",
     ]
 
     # Reasoning (thinking) budget control. Reasoning models (Qwen3 MoE etc.)
