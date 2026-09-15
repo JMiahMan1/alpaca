@@ -625,16 +625,75 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
                 client.close()
 
 
-def _run_ui(container, code: str, ext: str, bin_: str, timeout: int, result: dict[str, Any]) -> dict[str, Any]:
+# Markers (any language) of a program that serves its UI over HTTP instead of
+# opening a desktop window. Such programs paint nothing under Xvfb, so the
+# grader must load the served page in Chromium rather than screenshot X.
+_HTTP_SERVER_MARKERS = (
+    ".listen(",
+    "listen(",
+    "http.server",
+    "net/http",
+    "createserver",
+    "tcplistener",
+    "tcp listener",
+    "serve_forever",
+    "app.run(",
+    "httpserver",
+)
+
+
+def _looks_like_http_server(code: str) -> bool:
+    """True when the program serves its UI over HTTP (any language)."""
+    low = (code or "").lower()
+    return any(m in low for m in _HTTP_SERVER_MARKERS)
+
+
+def _http_server_port(code: str) -> int:
+    """Port the program serves on (default 8080)."""
+    for line in (code or "").splitlines():
+        low = line.lower()
+        if any(k in low for k in ("listen", "port", "serve", "bind")):
+            for m in re.finditer(r"(?<!\d)(\d{4,5})(?!\d)", line):
+                port = int(m.group(1))
+                if 1024 <= port <= 65535:
+                    return port
+    return 8080
+
+
+def _ui_launch_shell(code: str, lang: str, ext: str, bin_: str) -> str:
+    """Shell command that starts a UI program (desktop window or HTTP server).
+
+    Unlike the bare ``{bin_} /tmp/code.{ext}`` invocation, compiled languages
+    are built first and the resulting binary is executed — running only the
+    toolchain (``go`` with no subcommand, a bare ``rustc``/``g++`` compile)
+    never starts the program and grades a blank frame.
+    """
+    if lang == "go":
+        return "cd /tmp && GO111MODULE=off go build -o /tmp/a.out code.go && /tmp/a.out"
+    if lang == "rust":
+        return "rustc -O -o /tmp/a.out /tmp/code.rs && /tmp/a.out"
+    if lang == "cpp":
+        return "g++ -std=c++17 -O2 -o /tmp/a.out /tmp/code.cpp && /tmp/a.out"
+    if lang == "java":
+        match = re.search(r"public\s+class\s+([A-Za-z0-9_$]+)", code)
+        class_name = match.group(1) if match else "Main"
+        return f"cd /tmp && cp code.java {class_name}.java && javac {class_name}.java && java {class_name}"
+    return f"{bin_} /tmp/code.{ext}"
+
+
+def _run_ui(container, code: str, ext: str, bin_: str, timeout: int, result: dict[str, Any], launch: str | None = None) -> dict[str, Any]:
     """Launch ``code`` under Xvfb and capture a screenshot of the rendered UI."""
     capture_delay = max(2, min(timeout - 3, 8))
+    # Compiled languages must be built AND run; the bare toolchain command
+    # never starts the program (no window opens, blank frame, false fail).
+    start_cmd = launch or f"{bin_} /tmp/code.{ext}"
     wrapper = (
         "#!/bin/bash\n"
         "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
         "XVFB_PID=$!\n"
         "sleep 1\n"
         "export DISPLAY=:99\n"
-        f"{bin_} /tmp/code.{ext} >/tmp/ui_stdout.txt 2>&1 &\n"
+        f"{start_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
         "PY_PID=$!\n"
         f"sleep {capture_delay}\n"
         "scrot -o /tmp/out.png 2>/dev/null\n"
@@ -760,6 +819,106 @@ def _run_web_ui(container, code: str, timeout: int, result: dict[str, Any]) -> d
         result["ui_rendered"] = False
         result["ran"] = result["exit_code"] == 0
     return result
+
+
+def _run_http_ui(
+    container,
+    code: str,
+    ext: str,
+    launch: str,
+    port: int,
+    timeout: int,
+    result: dict[str, Any],
+) -> bool:
+    """Start an HTTP-server program and screenshot its served page.
+
+    Server programs (node/go/rust/cpp/python HTTP games) open no X window,
+    so the Xvfb path always grades them a blank frame. Instead the server is
+    started in the background, its port is polled, and headless Chromium
+    screenshots the served page — the same genuine render ``_run_web_ui``
+    gives static pages. Returns True when the port opened (grading done);
+    False leaves ``result`` untouched so the caller falls back to Xvfb
+    (covers non-servers whose text merely tripped the server heuristic).
+    """
+    capture_delay = max(2, min(timeout - 3, 8))
+    wrapper = (
+        "#!/bin/bash\n"
+        "cd /tmp\n"
+        # Make the bundled three.js available when the served page references
+        # <script src="three.min.js"> (same best-effort as the static path).
+        "if [ -f /usr/local/share/three.min.js ]; then cp /usr/local/share/three.min.js /tmp/three.min.js; fi\n"
+        f"{launch} >/tmp/ui_stdout.txt 2>&1 &\n"
+        "SRV_PID=$!\n"
+        "READY=0\n"
+        "for i in $(seq 1 20); do\n"
+        f"  if (echo > /dev/tcp/127.0.0.1/{port}) >/dev/null 2>&1; then READY=1; break; fi\n"
+        "  sleep 0.5\n"
+        "done\n"
+        'if [ "$READY" != "1" ]; then kill -9 $SRV_PID 2>/dev/null; exit 7; fi\n'
+        "timeout 25 chromium --headless --no-sandbox --disable-gpu "
+        "--disable-dev-shm-usage --hide-scrollbars --force-device-scale-factor=1 "
+        "--enable-logging=stderr --window-size=1024,768 --screenshot=/tmp/out.png "
+        f"--virtual-time-budget={capture_delay * 1000} http://127.0.0.1:{port}/ "
+        ">>/tmp/ui_stdout.txt 2>&1\n"
+        "kill -9 $SRV_PID 2>/dev/null\n"
+        "exit 0\n"
+    )
+    _put_file(container, f"/tmp/code.{ext}", code.encode("utf-8"))
+    _put_file(container, "/tmp/run_http.sh", wrapper.encode("utf-8"))
+    holder: dict = {}
+
+    def _exec():
+        try:
+            ec, out = container.exec_run(
+                ["bash", "/tmp/run_http.sh"],
+                stdout=True,
+                stderr=True,
+                tty=False,
+                demux=False,
+            )
+            holder["exit_code"] = ec
+            holder["output"] = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+        except Exception as e:  # pragma: no cover - runtime dependent
+            holder["error"] = str(e)
+
+    t = threading.Thread(target=_exec, daemon=True)
+    t.start()
+    t.join(timeout + 5)
+    if holder.get("exit_code") == 7:
+        # Port never opened: not actually a server (or it crashed on boot).
+        # Leave result for the Xvfb fallback when it might still paint.
+        with contextlib.suppress(Exception):
+            err = _read_file(container, "/tmp/ui_stdout.txt") or b""
+            holder["boot_output"] = err.decode("utf-8", "replace") if isinstance(err, bytes) else str(err)
+        result["_http_fallback_hint"] = holder.get("boot_output", "")
+        return False
+    result["output"] = _read_file(container, "/tmp/ui_stdout.txt") or b""
+    result["output"] = (
+        result["output"].decode("utf-8", "replace") if isinstance(result["output"], bytes) else str(result["output"])
+    )
+    png = _read_file(container, "/tmp/out.png")
+    if png:
+        result["screenshot"] = base64.b64encode(png).decode("ascii")
+    result["exit_code"] = holder.get("exit_code")
+    result["error"] = holder.get("error", "")
+    if png is not None:
+        try:
+            rendered = _screenshot_has_content(png)
+        except Exception:  # pragma: no cover - guard against image decode surprises
+            rendered = True
+        result["ui_rendered"] = rendered
+        result["ran"] = rendered
+        # Same static-overlay guard as the static path: fail a painted page
+        # whose game-loop JavaScript crashed.
+        console_error = _find_web_js_error(result["output"])
+        if console_error:
+            result["ran"] = False
+            result["ui_rendered"] = False
+            result["error"] = f"JS console error: {console_error}"
+    else:
+        result["ui_rendered"] = False
+        result["ran"] = result["exit_code"] == 0
+    return True
 
 
 def grade_code(
