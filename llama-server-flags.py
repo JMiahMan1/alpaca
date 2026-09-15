@@ -138,7 +138,6 @@ def get_llama_server_flags() -> list[str]:
         "/router-models/models.ini",
         "--threads",
         "16",
-        "--no-op-offload",
     ]
 
     # Reasoning (thinking) budget control. Reasoning models (Qwen3 MoE etc.)
