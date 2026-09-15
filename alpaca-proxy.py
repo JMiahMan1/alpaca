@@ -7638,7 +7638,7 @@ async def chat(request: Request):
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
                     active_requests_lock.notify_all()
-            complete_active_request(request_id)
+            complete_active_request(request_id, final_response=full_response_content or None)
 
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
