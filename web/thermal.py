@@ -29,8 +29,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pretest_max_wait_s": 600.0,
 }
 CONFIG_PATH = Path("data/thermal_watchdog.json")
+_THERMAL_LOG_PATH = Path("data/thermal_events.jsonl")
 
 _ABSENT = object()
+
+
+def log_thermal_event(event: str, detail: str, temps: dict[str, float] | None = None) -> None:
+    """Append one line to data/thermal_events.jsonl (best-effort, never raises)."""
+    try:
+        _THERMAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"event": event, "detail": detail, "temps": temps or {}, "ts": time.time()}
+        with open(_THERMAL_LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
 
 
 def _env_float(name: str) -> float | None:
