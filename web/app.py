@@ -39,7 +39,16 @@ import docker
 
 from llm_benchmark_suite import LLMModelBenchmark
 from multistep_benchmark import MultiStepBenchmark
-from sandbox_exec import serve_app, serve_ui, stop_serve, ui_exec, ui_restart, ui_screenshot, ui_status
+from sandbox_exec import (
+    ensure_audio_encoder,
+    serve_app,
+    serve_ui,
+    stop_serve,
+    ui_exec,
+    ui_restart,
+    ui_screenshot,
+    ui_status,
+)
 from web.model_tracker import model_tracker
 from web.shared_llm_benchmark import SharedLLMModelBenchmark
 
@@ -3406,23 +3415,29 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
 def sandbox_serve_audio(container_id: str):
     """Stream a serving container's game audio (MP3) through the dashboard origin.
 
-    The sandbox runs a virtual PulseAudio null sink plus an ffmpeg MP3 loop on
-    its port 8090 (noVNC/RFB carries video only, so game sound rides this side
-    channel). This route tunnels that stream through the dashboard's own origin
-    so the launcher page's ``<audio>`` element works from any network, exactly
-    like ``/serve/`` does for video. Infinite stream: short connect timeout
-    retried ~3s (the encoder serves one listener and needs ~1s to re-listen
-    after each disconnect), then no read timeout (MP3 frames flow continuously,
-    even for silence, so reads never idle).
+    The sandbox runs a virtual PulseAudio null sink (noVNC/RFB carries video
+    only, so game sound rides this side channel). The MP3 encoder is lazy: it
+    is started on demand here (one encoder per listener, joining the monitor
+    at the live edge), serves this connection, then exits when the browser
+    disconnects — so no stale backlog can accrue between listeners and idle
+    containers burn no encoder CPU. This route tunnels that stream through
+    the dashboard's own origin so the launcher page's ``<audio>`` element
+    works from any network, exactly like ``/serve/`` does for video.
+    Infinite stream: short connect timeout retried ~3s (covers encoder boot),
+    then no read timeout (MP3 frames flow continuously, even for silence, so
+    reads never idle).
     """
+    # Fire-and-forget: at most one encoder can bind port 8090, so a redundant
+    # start exits harmlessly. Never fails the request (retry + 502 below).
+    with contextlib.suppress(Exception):
+        ensure_audio_encoder(container_id)
     host_port = _serve_container_host_port(container_id, "8090")
     if not host_port:
         return jsonify({"error": "Serving container not found or has no audio stream"}), 404
     upstream = f"http://host.docker.internal:{host_port}/audio.mp3"
-    # The sandbox ffmpeg loop serves a single listener and takes ~1s to
-    # re-listen after each disconnect, so a connect raced into that dead
-    # window is routine (e.g. right after a probe or a player reconnect).
-    # Retry briefly before giving up with a 502.
+    # The encoder needs a moment to boot and bind (fresh process per
+    # listener), so a connect raced into that window is routine. Retry
+    # briefly before giving up with a 502.
     resp = None
     client = None
     last_error: Exception | None = None
