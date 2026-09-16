@@ -50,6 +50,40 @@ COPY three.min.js /usr/local/share/three.min.js
 RUN pip install --no-cache-dir --break-system-packages \
         numpy requests pillow pytest pygame PyOpenGL PyOpenGL-accelerate pyyaml
 
+# Native GUI/audio toolchain for compiled-language benchmarks (Go/Rust/C++
+# retro games run as real X11 programs, not served HTML):
+# - libasound2-dev: ALSA headers so C++/Rust (rodio) audio builds link
+# - pulseaudio: virtual null sink so game audio can be captured and streamed
+#   to the browser alongside the noVNC video (sandbox has no sound card)
+# - Go module cache: pure-Go X11 (xgb/xgbutil) + audio (oto) pre-seeded because
+#   sandbox containers run WITHOUT network (GOPROXY=off enforces cache-only)
+# - Cargo registry cache: x11rb (pure-Rust X11) + rodio (audio) pre-fetched
+#   because sandbox containers run WITHOUT network (CARGO_NET_OFFLINE=true)
+# Pin exact versions below into the go/rust benchmark prompts.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libasound2-dev pulseaudio \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV GOMODCACHE=/usr/local/go-mod-cache \
+    GOFLAGS=-mod=mod \
+    GOSUMDB=off \
+    GOPROXY=off \
+    CARGO_NET_OFFLINE=true
+RUN mkdir -p /tmp/goseed && cd /tmp/goseed && go mod init seed \
+    && export GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org \
+    && go get \
+        github.com/BurntSushi/xgb@latest \
+        github.com/BurntSushi/xgbutil@latest \
+        github.com/hajimehoshi/oto/v2@latest \
+    && go list -m all > /usr/local/go-mod-cache/SEED_VERSIONS.txt \
+    && go mod tidy \
+    && chmod -R a+rX /usr/local/go-mod-cache && rm -rf /tmp/goseed
+RUN mkdir -p /tmp/rsseed/src && cd /tmp/rsseed && echo 'fn main(){}' > src/main.rs \
+    && printf '[package]\nname = "seed"\nversion = "0.0.0"\nedition = "2021"\n[dependencies]\nx11rb = "0.13"\nrodio = "0.20"\n' > Cargo.toml \
+    && CARGO_NET_OFFLINE=false cargo fetch \
+    && (cargo tree --prefix none 2>/dev/null | sort -u > /usr/local/cargo/SEED_VERSIONS.txt || true) \
+    && chmod -R a+rX /usr/local/cargo && rm -rf /tmp/rsseed
+
 # Non-root sandbox user (no network, low privileges enforced at container run time)
 RUN useradd -m -s /bin/sh sandbox
 
