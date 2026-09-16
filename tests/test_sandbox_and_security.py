@@ -141,6 +141,40 @@ def test_extract_clean_code_markdown_prose_not_code():
     assert "## Requirements" not in cleaned
 
 
+def test_extract_clean_code_rust_use_imports():
+    # Unfenced Rust starting with third-party crate imports (not std): the
+    # `use` lines are code and must survive extraction, or the build dies
+    # with unresolved-import errors (E0425/E0433/E0599).
+    raw = (
+        "use x11rb::connection::Connection;\n"
+        "use x11rb::protocol::xproto::*;\n"
+        "use x11rb::COPY_DEPTH_FROM_PARENT;\n"
+        "\n"
+        "fn main() -> Result<(), Box<dyn std::error::Error>> {\n"
+        "    Ok(())\n"
+        "}\n"
+    )
+    cleaned = extract_clean_code(raw, "rust")
+    assert cleaned.startswith("use x11rb::connection::Connection;")
+    assert "use x11rb::protocol::xproto::*;" in cleaned
+    assert "fn main()" in cleaned
+
+
+def test_extract_clean_code_rust_use_prose_not_code():
+    # English prose starting with "Use the ..." must not anchor extraction,
+    # but the real `use <crate>::...` import below it must.
+    raw = (
+        "Here is the complete Rust solution:\n"
+        "Use the arrow keys to move the player.\n"
+        "use x11rb::protocol::xproto::*;\n"
+        "fn main() {\n"
+        "}\n"
+    )
+    cleaned = extract_clean_code(raw, "rust")
+    assert cleaned.startswith("use x11rb::protocol::xproto::*;")
+    assert "Use the arrow keys" not in cleaned
+
+
 def test_sandbox_exec_timeout_handling():
     with patch("docker.DockerClient") as mock_docker:
         mock_client = MagicMock()
