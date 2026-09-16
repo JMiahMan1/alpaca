@@ -152,6 +152,61 @@ _WEB_JS_ERROR_MARKERS = (
 )
 
 
+# Native X11 GUI toolchain. Sandbox containers have no network, so compiled GUI
+# languages build against dependencies baked into the image: Xlib/ALSA headers,
+# the Go module cache (/usr/local/go-mod-cache, usable as a file proxy), and
+# the cargo registry (/usr/local/cargo). Prompts pin the exact import paths
+# and crate versions below; anything not in the cache fails the build honestly.
+# The sandbox has no audio hardware, so prompts require audio init to be
+# optional (game must run video-only when opening the device fails).
+_GO_OFFLINE_ENV = (
+    "GOPROXY=file:///usr/local/go-mod-cache/cache/download "
+    "GOSUMDB=off GOFLAGS=-mod=mod GOMODCACHE=/usr/local/go-mod-cache"
+)
+
+
+def _go_build_sh(src: str, out: str) -> str:
+    """Shell snippet: build a single-file Go GUI program offline into ``out``.
+
+    Scaffolds a throwaway module (``go mod init`` + ``tidy`` resolves imports
+    against the baked module cache). Assumes the cleaned source is at ``src``.
+    """
+    return (
+        f"rm -rf /tmp/gomod && mkdir -p /tmp/gomod && cp {src} /tmp/gomod/main.go"
+        f" && cd /tmp/gomod && go mod init game >/dev/null 2>&1"
+        f" && {_GO_OFFLINE_ENV} go mod tidy >/tmp/go_build.log 2>&1"
+        f" && {_GO_OFFLINE_ENV} go build -o {out} . >>/tmp/go_build.log 2>&1"
+    )
+
+
+_RUST_TOML = (
+    '[package]\nname = "game"\nversion = "0.1.0"\nedition = "2021"\n'
+    '\n[dependencies]\nx11rb = "0.13"\nrodio = "0.20"\n'
+)
+
+
+def _rust_build_sh(src: str, profile: str = "debug") -> str:
+    """Shell snippet: build a single-file Rust GUI program offline.
+
+    Scaffolds a cargo project with the baked x11rb/rodio crates. ``debug`` for
+    grading (faster build), ``release`` for serving (smoother play). Returns
+    the snippet; the binary lands at /tmp/cargoproj/target/<profile>/game.
+    """
+    flag = " --release" if profile == "release" else ""
+    return (
+        f"rm -rf /tmp/cargoproj && mkdir -p /tmp/cargoproj/src && cp {src} /tmp/cargoproj/src/main.rs"
+        f" && printf '%s' '{_RUST_TOML}' > /tmp/cargoproj/Cargo.toml"
+        f" && cd /tmp/cargoproj && cargo build --offline{flag} >/tmp/cargo_build.log 2>&1"
+    )
+
+
+def _rust_bin(profile: str = "debug") -> str:
+    return f"/tmp/cargoproj/target/{profile}/game"
+
+
+_CPP_GUI_FLAGS = "-std=c++17 -O2 -lX11 -lasound"
+
+
 def _lint_html_js(container, code: str) -> tuple[bool, str]:
     """Syntax-check a web page and reject truncated/broken output.
 
@@ -267,6 +322,9 @@ _CODE_FIRST_LINE_STARTERS = {
     "node": ("const ", "let ", "var ", "function ", "import ", "export ", "require(", "//", "'use strict'", "#!/"),
     "typescript": ("const ", "let ", "var ", "function ", "import ", "export ", "require(", "//"),
     "rust": ("use ", "fn ", "mod ", "struct ", "enum ", "#!["),
+    "go": ("package ", "import ", "import (", "func ", "//"),
+    "cpp": ("#include", "int main", "using namespace", "class ", "//"),
+    "c": ("#include", "int main", "void ", "//"),
 }
 _DEFAULT_CODE_STARTERS = _CODE_FIRST_LINE_STARTERS["python"]
 
@@ -476,7 +534,7 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         cmd = ["bash", "/tmp/render_web.sh"]
     elif lang == "cpp":
         ext, bin_ = "cpp", "g++"
-        cmd = ["bash", "-c", "g++ -std=c++17 -O2 -o /tmp/a.out /tmp/code.cpp && /tmp/a.out"]
+        cmd = ["bash", "-c", f"g++ {_CPP_GUI_FLAGS} -o /tmp/a.out /tmp/code.cpp && /tmp/a.out"]
     elif lang == "go":
         ext, bin_ = "go", "go"
         cmd = ["bash", "-c", "cd /tmp && GO111MODULE=off go build -o /tmp/a.out code.go && /tmp/a.out"]
@@ -534,6 +592,10 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
 
     client = None
     container = None
+    # Toolchain RSS: bare rustc/go builds fit in 256m, but a cargo offline
+    # build (x11rb+rodio) and a Go module build need headroom. One-shot
+    # containers on a 30GB host: 2g/1g caps are still tightly bounded.
+    grade_mem = "2g" if lang == "rust" else ("1g" if lang == "go" else "256m")
     try:
         client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
         container = client.containers.run(
@@ -543,7 +605,7 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
             tty=False,
             stdin_open=True,
             network_mode="none",
-            mem_limit="256m",
+            mem_limit=grade_mem,
             pids_limit=1024 if ui else 128,
             user="sandbox",
             working_dir="/tmp",
@@ -565,7 +627,18 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         if ui:
             if lang in ("html", "htm", "web"):
                 return _run_web_ui(container, cleaned_code, timeout, result)
-            return _run_ui(container, cleaned_code, ext, bin_, timeout, result)
+            # Native compiled GUI: build AND run under Xvfb. The bare
+            # toolchain command never opens a window (blank frame, false
+            # fail), and single-file go/rust builds cannot resolve GUI
+            # crates — scaffold the offline module/cargo project first.
+            launch = None
+            if lang == "cpp":
+                launch = f"g++ {_CPP_GUI_FLAGS} -o /tmp/a.out /tmp/code.cpp && /tmp/a.out"
+            elif lang == "go":
+                launch = _go_build_sh("/tmp/code.go", "/tmp/a.out") + " && /tmp/a.out"
+            elif lang == "rust":
+                launch = _rust_build_sh("/tmp/code.rs") + f" && {_rust_bin()}"
+            return _run_ui(container, cleaned_code, ext, bin_, timeout, result, launch=launch)
 
         if lang in ("html", "htm", "web"):
             return _run_web_ui(container, cleaned_code, timeout, result)
@@ -937,6 +1010,9 @@ def grade_code(
     (score 100); a blank/black frame — an app that crashed before drawing —
     fails the run.
     """
+    if ui and lang in ("rust", "go", "cpp"):
+        # Cold offline builds (cargo/go modules) need minutes, not seconds.
+        timeout = max(timeout, 300)
     run = run_code_once(code, lang, timeout, ui=ui)
     ran = run.get("ran")
     out = run.get("output", "")
@@ -1102,25 +1178,31 @@ def serve_ui(
         return result
 
     if lang in ("python", "py"):
-        fname, bin_ = "code.py", "python3"
+        fname = "code.py"
         http_game = False
-        compile_cmd = ""
+        compile_cmd, run_cmd, serve_mem = "", "python3 /tmp/code.py", "256m"
     elif lang in ("node", "js", "javascript"):
-        fname, bin_ = "app.js", "node"
+        fname = "app.js"
         http_game = True
-        compile_cmd = ""
+        compile_cmd, run_cmd, serve_mem = "", "", "256m"
     elif lang in ("go"):
-        fname, bin_ = "code.go", "go"
-        http_game = True
-        compile_cmd = "cd /tmp && go build -o app code.go\n"
+        # Native X11 GUI: module-aware offline build, run under Xvfb.
+        fname = "code.go"
+        http_game = False
+        compile_cmd = _go_build_sh("/tmp/code.go", "/tmp/app") + "\n"
+        run_cmd, serve_mem = "/tmp/app", "1g"
     elif lang in ("rust"):
-        fname, bin_ = "code.rs", "rustc"
-        http_game = True
-        compile_cmd = "cd /tmp && rustc -O code.rs -o app\n"
+        # Native X11 GUI: cargo project over baked crates, release binary.
+        fname = "code.rs"
+        http_game = False
+        compile_cmd = _rust_build_sh("/tmp/code.rs", "release") + "\n"
+        run_cmd, serve_mem = _rust_bin("release"), "2g"
     elif lang in ("cpp", "c++", "cxx"):
-        fname, bin_ = "code.cpp", "g++"
-        http_game = True
-        compile_cmd = "cd /tmp && g++ -O2 code.cpp -o app\n"
+        # Native X11 GUI: link X11/ALSA, run under Xvfb.
+        fname = "code.cpp"
+        http_game = False
+        compile_cmd = f"g++ {_CPP_GUI_FLAGS} -o /tmp/app /tmp/code.cpp\n"
+        run_cmd, serve_mem = "/tmp/app", "256m"
     else:
         result["error"] = f"unsupported language for UI serving: {lang}"
         return result
@@ -1158,7 +1240,8 @@ def serve_ui(
             "sleep infinity\n"
         )
     else:
-        # Native X11 app (e.g. pygame): run directly under Xvfb
+        # Native X11 app (e.g. pygame, Xlib C++, xgb Go, x11rb Rust): compile
+        # first (no-op for interpreted langs), then run directly under Xvfb.
         wrapper = (
             "#!/bin/bash\n"
             "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
@@ -1170,7 +1253,8 @@ def serve_ui(
             "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
             "WS_PID=$!\n"
             "sleep 1\n"
-            f"{bin_} /tmp/{fname} >/tmp/ui_stdout.txt 2>&1 &\n"
+            f"{compile_cmd}"
+            f"{run_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
             "APP_PID=$!\n"
             "echo $APP_PID > /tmp/app.pid\n"
             "wait $APP_PID\n"
@@ -1208,7 +1292,7 @@ def serve_ui(
                 stdin_open=False,
                 network_mode="bridge",
                 ports={"6080/tcp": None},
-                mem_limit="256m",
+                mem_limit=serve_mem,
                 pids_limit=128,
                 user="sandbox",
                 working_dir="/tmp",
