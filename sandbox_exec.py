@@ -165,6 +165,13 @@ _GO_OFFLINE_ENV = (
 )
 
 
+# Xvfb needs a moment to create its socket; a bare `sleep 1` is racy (a fast
+# cold-cache-or-warm build can start the app before the socket exists, and
+# XOpenDisplay then fails silently -> no window, blank screenshot). Poll for
+# the socket instead (≤5s).
+_XVFB_WAIT = "for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.5; done\n"
+
+
 def _go_build_sh(src: str, out: str) -> str:
     """Shell snippet: build a single-file Go GUI program offline into ``out``.
 
@@ -202,6 +209,17 @@ def _rust_build_sh(src: str, profile: str = "debug") -> str:
 
 def _rust_bin(profile: str = "debug") -> str:
     return f"/tmp/cargoproj/target/{profile}/game"
+
+
+def _guarded_native_build(build_sh: str, log: str, binary: str, run_cmd: str) -> str:
+    """Chain an offline native build with its run, surfacing build failures.
+
+    The build itself logs to ``log`` (keeps UI stdout clean), but the tail is
+    always echoed so a failed build shows the compiler error in the run output
+    instead of dying as a silent blank frame. ``test -x`` keeps a failed
+    build from exec'ing a stale binary left by a previous run.
+    """
+    return f"{build_sh}; tail -5 {log} 2>/dev/null; test -x {binary} && {run_cmd}"
 
 
 _CPP_GUI_FLAGS = "-std=c++17 -O2 -lX11 -lasound"
@@ -635,9 +653,13 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
             if lang == "cpp":
                 launch = f"g++ {_CPP_GUI_FLAGS} -o /tmp/a.out /tmp/code.cpp && /tmp/a.out"
             elif lang == "go":
-                launch = _go_build_sh("/tmp/code.go", "/tmp/a.out") + " && /tmp/a.out"
+                launch = _guarded_native_build(
+                    _go_build_sh("/tmp/code.go", "/tmp/a.out"), "/tmp/go_build.log", "/tmp/a.out", "/tmp/a.out"
+                )
             elif lang == "rust":
-                launch = _rust_build_sh("/tmp/code.rs") + f" && {_rust_bin()}"
+                launch = _guarded_native_build(
+                    _rust_build_sh("/tmp/code.rs"), "/tmp/cargo_build.log", _rust_bin(), _rust_bin()
+                )
             return _run_ui(container, cleaned_code, ext, bin_, timeout, result, launch=launch)
 
         if lang in ("html", "htm", "web"):
@@ -764,7 +786,7 @@ def _run_ui(container, code: str, ext: str, bin_: str, timeout: int, result: dic
         "#!/bin/bash\n"
         "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
         "XVFB_PID=$!\n"
-        "sleep 1\n"
+        f"{_XVFB_WAIT}"
         "export DISPLAY=:99\n"
         f"{start_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
         "PY_PID=$!\n"
@@ -1180,29 +1202,36 @@ def serve_ui(
     if lang in ("python", "py"):
         fname = "code.py"
         http_game = False
-        compile_cmd, run_cmd, serve_mem = "", "python3 /tmp/code.py", "256m"
+        app_cmd, serve_mem = "python3 /tmp/code.py", "256m"
     elif lang in ("node", "js", "javascript"):
         fname = "app.js"
         http_game = True
-        compile_cmd, run_cmd, serve_mem = "", "", "256m"
+        app_cmd, serve_mem = "", "256m"
     elif lang in ("go"):
         # Native X11 GUI: module-aware offline build, run under Xvfb.
         fname = "code.go"
         http_game = False
-        compile_cmd = _go_build_sh("/tmp/code.go", "/tmp/app") + "\n"
-        run_cmd, serve_mem = "/tmp/app", "1g"
+        app_cmd = _guarded_native_build(
+            _go_build_sh("/tmp/code.go", "/tmp/app"), "/tmp/go_build.log", "/tmp/app", "/tmp/app"
+        )
+        serve_mem = "1g"
     elif lang in ("rust"):
         # Native X11 GUI: cargo project over baked crates, release binary.
         fname = "code.rs"
         http_game = False
-        compile_cmd = _rust_build_sh("/tmp/code.rs", "release") + "\n"
-        run_cmd, serve_mem = _rust_bin("release"), "2g"
+        app_cmd = _guarded_native_build(
+            _rust_build_sh("/tmp/code.rs", "release"),
+            "/tmp/cargo_build.log",
+            _rust_bin("release"),
+            _rust_bin("release"),
+        )
+        serve_mem = "2g"
     elif lang in ("cpp", "c++", "cxx"):
         # Native X11 GUI: link X11/ALSA, run under Xvfb.
         fname = "code.cpp"
         http_game = False
-        compile_cmd = f"g++ {_CPP_GUI_FLAGS} -o /tmp/app /tmp/code.cpp\n"
-        run_cmd, serve_mem = "/tmp/app", "256m"
+        app_cmd = f"g++ {_CPP_GUI_FLAGS} -o /tmp/app /tmp/code.cpp && /tmp/app"
+        serve_mem = "256m"
     else:
         result["error"] = f"unsupported language for UI serving: {lang}"
         return result
@@ -1219,14 +1248,13 @@ def serve_ui(
             "#!/bin/bash\n"
             "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
             "XVFB_PID=$!\n"
-            "sleep 1\n"
+            f"{_XVFB_WAIT}"
             "export DISPLAY=:99\n"
             "x11vnc -display :99 -rfbport 5900 -nopw -forever -shared >/dev/null 2>&1 &\n"
             "VNC_PID=$!\n"
             "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
             "WS_PID=$!\n"
             "sleep 1\n"
-            f"{compile_cmd}"
             f"{http_server} >/tmp/ui_stdout.txt 2>&1 &\n"
             "HTTP_PID=$!\n"
             "sleep 2\n"
@@ -1246,15 +1274,14 @@ def serve_ui(
             "#!/bin/bash\n"
             "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
             "XVFB_PID=$!\n"
-            "sleep 1\n"
+            f"{_XVFB_WAIT}"
             "export DISPLAY=:99\n"
             "x11vnc -display :99 -rfbport 5900 -nopw -forever -shared >/dev/null 2>&1 &\n"
             "VNC_PID=$!\n"
             "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
             "WS_PID=$!\n"
             "sleep 1\n"
-            f"{compile_cmd}"
-            f"{run_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
+            f"{app_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
             "APP_PID=$!\n"
             "echo $APP_PID > /tmp/app.pid\n"
             "wait $APP_PID\n"
