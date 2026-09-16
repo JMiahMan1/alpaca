@@ -1361,8 +1361,9 @@ def stop_serve(container_id: str) -> dict[str, Any]:
         return {"stopped": False, "error": str(e)}
 
 
-# Serializes serve_ui sweep-then-create so overlapping launches cannot hand
-# out a container another launch deleted (dead session in the browser).
+# Serializes the whole serve_ui launch (sweep -> create -> setup -> return)
+# so overlapping launches can never hand out a container another launch
+# deleted (dead session in the browser, noVNC stuck at "connecting").
 _UI_LAUNCH_LOCK = threading.Lock()
 
 
@@ -1385,13 +1386,13 @@ def serve_ui(
     ``stop_serve``. Only use this for code the user explicitly asked to view; it
     intentionally enables networking (the grading sandbox does not).
 
-    ``name`` selects the container name prefix (default ``alpaca-ui``). Each
-    launch gets a unique ``<name>-<suffix>`` container so overlapping launches
-    can never remove a session another in-flight launch already returned
-    (that left the browser pointing at a dead container with noVNC stuck at
-    "connecting"). ``exclusive`` additionally sweeps same-prefix sessions so
-    only one game session exists at a time; the sweep and the create run
-    under a lock so a returned container is always alive at return time.
+    ``name`` is the exact container name (default ``alpaca-ui``). Each launch
+    fully serializes with other launches under a lock — sweep, create, app
+    setup, and return — so an overlapping launch can never remove a session
+    another in-flight launch already returned (that left the browser pointing
+    at a dead container with noVNC stuck at "connecting"). ``exclusive``
+    additionally sweeps same-prefix sessions (including pre-fix suffixed
+    strays) so only one game session exists at a time.
     """
     result: dict[str, Any] = {"container_id": None, "host_port": None, "audio_host_port": None, "error": ""}
     try:
@@ -1496,17 +1497,14 @@ def serve_ui(
 
     client = None
     container = None
-    # Unique per launch: a fixed name let an overlapping launch force-remove
-    # the container this call was about to return (noVNC stuck connecting).
-    cname = f"{name}-{uuid.uuid4().hex[:8]}"
     try:
         client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
-        # Sweep-then-create must be atomic: without the lock, launch B's
-        # sweep could delete launch A's container between A's create and A's
-        # return, handing the browser a dead session.
+        # The whole launch holds the lock: an overlapping launch waits until
+        # this session is fully set up and returned, so it can only replace a
+        # live, already-returned session — never delete one mid-launch.
         with _UI_LAUNCH_LOCK:
-            # A new launch replaces any same-prefix leftover, so sessions
-            # never pile up (pre-fix exact-name strays included).
+            # A new launch replaces any leftover, so sessions never pile up.
+            # The prefix sweep also clears pre-fix "<name>-<suffix>" strays.
             if exclusive:
                 with contextlib.suppress(Exception):
                     for c in client.containers.list(all=True, filters={"name": name}):
@@ -1528,24 +1526,24 @@ def serve_ui(
                 pids_limit=128,
                 user="sandbox",
                 working_dir="/tmp",
-                name=cname,
+                name=name,
                 remove=False,
             )
-        cleaned_code = extract_clean_code(code, lang)
-        _put_file(container, f"/tmp/{fname}", cleaned_code.encode("utf-8"))
-        _put_file(container, "/tmp/run_ui.sh", wrapper.encode("utf-8"))
-        # Launch the Xvfb + VNC + app pipeline in the background.
-        container.exec_run(["/bin/bash", "/tmp/run_ui.sh"], detach=True)
-        # Give the services a moment to bind, then read the published port.
-        time.sleep(3)
-        container.reload()
-        port_info = (container.ports or {}).get("6080/tcp")
-        host_port = port_info[0]["HostPort"] if port_info else None
-        audio_info = (container.ports or {}).get(f"{_AUDIO_PORT}/tcp")
-        audio_host_port = audio_info[0]["HostPort"] if audio_info else None
-        result["container_id"] = container.id
-        result["host_port"] = host_port
-        result["audio_host_port"] = audio_host_port
+            cleaned_code = extract_clean_code(code, lang)
+            _put_file(container, f"/tmp/{fname}", cleaned_code.encode("utf-8"))
+            _put_file(container, "/tmp/run_ui.sh", wrapper.encode("utf-8"))
+            # Launch the Xvfb + VNC + app pipeline in the background.
+            container.exec_run(["/bin/bash", "/tmp/run_ui.sh"], detach=True)
+            # Give the services a moment to bind, then read the published port.
+            time.sleep(3)
+            container.reload()
+            port_info = (container.ports or {}).get("6080/tcp")
+            host_port = port_info[0]["HostPort"] if port_info else None
+            audio_info = (container.ports or {}).get(f"{_AUDIO_PORT}/tcp")
+            audio_host_port = audio_info[0]["HostPort"] if audio_info else None
+            result["container_id"] = container.id
+            result["host_port"] = host_port
+            result["audio_host_port"] = audio_host_port
     except Exception as e:  # pragma: no cover - runtime dependent
         result["error"] = str(e)
     finally:

@@ -414,12 +414,12 @@ def test_serve_ui_launches_novnc_container():
         assert kwargs["user"] == "sandbox"
         assert kwargs["mem_limit"] == "256m"
         assert kwargs["pids_limit"] == 128
-        # Unique per-launch name: a fixed name let an overlapping launch
-        # delete the container this call was about to return (dead session,
-        # noVNC stuck at "connecting"). Non-exclusive still clears the
-        # exact-name pre-fix leftover without a prefix sweep.
-        assert kwargs["name"].startswith("alpaca-ui-")
-        assert kwargs["name"] != "alpaca-ui"
+        # Exact container name: the whole launch (sweep -> create -> setup ->
+        # return) holds the UI launch lock, so an overlapping launch can only
+        # replace a live, already-returned session — never delete one
+        # mid-launch (dead session, noVNC stuck at "connecting"). Non-exclusive
+        # still clears the exact-name leftover without a prefix sweep.
+        assert kwargs["name"] == "alpaca-ui"
         mock_client.containers.get.assert_called_once_with("alpaca-ui")
         mock_client.containers.get.return_value.remove.assert_called_once_with(force=True)
         # Non-exclusive launches do not sweep by prefix.
@@ -450,6 +450,10 @@ def test_serve_ui_exclusive_sweeps_suffixed_relics():
         exact.remove.assert_called_once_with(force=True)
         stray.remove.assert_called_once_with(force=True)
         other.remove.assert_not_called()
+        # New containers use the exact name (the stray sweep is only legacy
+        # cleanup for pre-fix "<name>-<suffix>" containers).
+        run_kwargs = mock_client.containers.run.call_args.kwargs
+        assert run_kwargs["name"] == "alpaca-ui"
 
         # Wrapper script must chain Xvfb -> x11vnc -> websockify -> app.
         run_ui_tar = None
@@ -531,29 +535,41 @@ def test_ensure_audio_encoder_exec_error_is_false():
         mock_client.close.assert_called_once()
 
 
-def test_serve_ui_overlapping_launches_get_unique_names():
-    """Two launches must never share a container name.
+def test_serve_ui_overlapping_launches_keep_exact_name():
+    """Overlapping launches serialize and share the exact container name.
 
-    Regression test for noVNC stuck at "connecting": with a fixed name, a
-    second launch's sweep force-removed the first launch's container between
-    its create and return, handing the browser a dead session.
+    Regression test for noVNC stuck at "connecting": the whole launch
+    (sweep -> create -> setup -> return) holds the UI launch lock, so the
+    second launch waits for the first to finish returning its live session
+    and can only replace it afterwards — never delete it mid-launch. No
+    uuid suffix is needed to keep the returned session alive.
     """
-    with patch("docker.DockerClient") as mock_docker:
+    import threading
+
+    with patch("docker.DockerClient") as mock_docker, patch("time.sleep"):
         mock_client = MagicMock()
         mock_docker.return_value = mock_client
         mock_client.containers.run.side_effect = [MagicMock(), MagicMock()]
         for m in mock_client.containers.run.side_effect:
-            m.ports = {"6080/tcp": [{"HostPort": "39781"}]}
+            m.ports = {"6080/tcp": [{"HostPort": "39781"}], "8090/tcp": [{"HostPort": "39782"}]}
         mock_client.containers.list.return_value = []
 
-        first = serve_ui("print('one')", lang="python", timeout=5, exclusive=True)
-        second = serve_ui("print('two')", lang="python", timeout=5, exclusive=True)
+        results = []
 
-        assert first["error"] == "" and second["error"] == ""
+        def launch(code):
+            results.append(serve_ui(code, lang="python", timeout=5, exclusive=True))
+
+        first = threading.Thread(target=launch, args=("print('one')",))
+        second = threading.Thread(target=launch, args=("print('two')",))
+        first.start()
+        second.start()
+        first.join()
+        second.join()
+
+        assert len(results) == 2
+        assert all(r["error"] == "" for r in results)
         names = [c.kwargs["name"] for c in mock_client.containers.run.call_args_list]
-        assert len(names) == 2
-        assert names[0] != names[1]
-        assert all(n.startswith("alpaca-ui-") for n in names)
+        assert names == ["alpaca-ui", "alpaca-ui"]
 
 
 def test_serve_ui_rejects_unsupported_language():
