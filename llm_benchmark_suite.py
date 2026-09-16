@@ -1705,7 +1705,7 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["3", "three", "group", "two"])
             )
         # ---- Retro games ----
-        elif test_id in ("retro_space_invaders", "retro_space_invaders_py2", "retro_space_invaders_node", "retro_space_invaders_threejs", "retro_space_invaders_go", "retro_space_invaders_rust", "retro_space_invaders_cpp"):
+        elif test_id in ("retro_space_invaders", "retro_space_invaders_node", "retro_space_invaders_threejs", "retro_space_invaders_go", "retro_space_invaders_rust", "retro_space_invaders_cpp"):
             return (
                 any(x in cleaned for x in ["invader", "alien", "enemy"])
                 and any(x in cleaned for x in ["shoot", "bullet", "shot", "fire"])
