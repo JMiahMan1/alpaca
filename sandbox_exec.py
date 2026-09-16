@@ -198,7 +198,8 @@ _AUDIO_GRADE_SETUP = (
     "PAREC_PID=\n"
     "if command -v pulseaudio >/dev/null 2>&1 && command -v parec >/dev/null 2>&1 "
     "&& command -v pactl >/dev/null 2>&1; then\n"
-    "export XDG_RUNTIME_DIR=/tmp\n"
+    "export XDG_RUNTIME_DIR=/tmp/pulse-$(id -u)\n"
+    "mkdir -p \"$XDG_RUNTIME_DIR\"\n"
     "printf 'pcm.!default { type pulse }\\nctl.!default { type pulse }\\n' > ~/.asoundrc\n"
     "pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1\n"
     "for i in 1 2 3 4 5 6 7 8 9 10; do pactl info >/dev/null 2>&1 && break; sleep 0.5; done\n"
@@ -232,7 +233,8 @@ _XVFB_WAIT = "for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /tmp/.X11-unix/X99 ] && bre
 # so no idempotency guard is needed.
 _AUDIO_PORT = 8090
 _AUDIO_SETUP = (
-    "export XDG_RUNTIME_DIR=/tmp\n"
+    "export XDG_RUNTIME_DIR=/tmp/pulse-$(id -u)\n"
+    "mkdir -p \"$XDG_RUNTIME_DIR\"\n"
     "printf 'pcm.!default { type pulse }\\nctl.!default { type pulse }\\n' > ~/.asoundrc\n"
     "pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1\n"
     "for i in 1 2 3 4 5 6 7 8 9 10; do pactl info >/dev/null 2>&1 && break; sleep 0.5; done\n"
