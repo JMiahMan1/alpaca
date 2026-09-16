@@ -10,6 +10,8 @@ from PIL import Image, ImageDraw
 
 from online_providers import OnlineModelProvider
 from sandbox_exec import (
+    _AUDIO_PRESENT_RMS,
+    _audio_rms,
     _find_web_js_error,
     _lint_code,
     _lint_html_js,
@@ -252,6 +254,85 @@ def test_run_ui_rendered_screenshot_is_a_passing_ui():
         assert result["ran"] is True
 
 
+def _sine_raw(seconds=1.0, rate=22050, freq=440.0, amp=8000.0):
+    import math
+    import struct
+
+    n = int(seconds * rate)
+    return struct.pack(f"<{n}h", *(int(amp * math.sin(2 * math.pi * freq * i / rate)) for i in range(n)))
+
+
+def test_audio_rms_measures_signal_and_silence():
+    import struct
+
+    assert _audio_rms(b"") == 0.0
+    assert _audio_rms(b"\x00" * 44100) == 0.0
+    assert _audio_rms(_sine_raw()) > _AUDIO_PRESENT_RMS
+    # Near-black dither must not count as audio.
+    assert _audio_rms(struct.pack("<2205h", *([1] * 2205))) < _AUDIO_PRESENT_RMS
+
+
+def test_run_ui_reports_audio_present_when_monitor_has_signal():
+    with patch("sandbox_exec._put_file") as mock_put, patch("sandbox_exec._read_file") as mock_read:
+        content = _png_bytes(shapes=[(5, 5, 60, 60)])
+        tone = _sine_raw(seconds=2.0)
+
+        def _fake_read(c, p):
+            if p.endswith("out.png"):
+                return content
+            if p.endswith("audio.raw"):
+                return tone
+            if p.endswith("audio_state"):
+                return b"ok"
+            return b""
+
+        mock_read.side_effect = _fake_read
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, b"")
+
+        result = _run_ui(mock_container, "import pygame", "py", "python3", 30, {})
+        assert result["audio_present"] is True
+        assert result["audio_rms"] > _AUDIO_PRESENT_RMS
+        assert result["audio_error"] == ""
+        # Grade wrapper starts pulse and records the monitor after the build.
+        put = {str(c.args[1]): c.args[2] for c in mock_put.call_args_list}
+        script = next(v for k, v in put.items() if k.endswith("run_ui.sh")).decode()
+        assert "parec -d game_sink.monitor" in script
+        assert "kill $PAREC_PID" in script
+
+
+def test_run_ui_reports_audio_absent_on_silence_or_missing_toolchain():
+    # Digital-black monitor: capture worked, game played no sound.
+    with patch("sandbox_exec._put_file"), patch("sandbox_exec._read_file") as mock_read:
+        content = _png_bytes(shapes=[(5, 5, 60, 60)])
+        mock_read.side_effect = (
+            lambda c, p: content
+            if p.endswith("out.png")
+            else (b"\x00" * 44100 if p.endswith("audio.raw") else (b"ok" if p.endswith("audio_state") else b""))
+        )
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, b"")
+
+        result = _run_ui(mock_container, "import pygame", "py", "python3", 30, {})
+        assert result["audio_present"] is False
+        assert result["audio_rms"] == 0.0
+        assert result["audio_error"] == ""
+    # Pre-audio image: no toolchain, honestly reported (not "no audio").
+    with patch("sandbox_exec._put_file"), patch("sandbox_exec._read_file") as mock_read:
+        content = _png_bytes(shapes=[(5, 5, 60, 60)])
+        mock_read.side_effect = (
+            lambda c, p: content
+            if p.endswith("out.png")
+            else (b"no-pulseaudio-toolchain" if p.endswith("audio_state") else b"")
+        )
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, b"")
+
+        result = _run_ui(mock_container, "import pygame", "py", "python3", 30, {})
+        assert result["audio_present"] is False
+        assert result["audio_error"] == "no-pulseaudio-toolchain"
+
+
 def test_run_web_ui_rendered_screenshot_is_a_passing_ui():
     with patch("sandbox_exec._put_file") as mock_put, patch("sandbox_exec._read_file") as mock_read:
         content = _png_bytes(shapes=[(5, 5, 60, 60)])
@@ -311,21 +392,22 @@ def test_serve_ui_launches_novnc_container():
         mock_docker.return_value = mock_client
         mock_client.containers.run.return_value = mock_container
 
-        # Published websockify port (6080 -> host 39781)
-        mock_container.ports = {"6080/tcp": [{"HostPort": "39781"}]}
+        # Published websockify port (6080 -> host 39781) + audio MP3 port (8090 -> host 39782)
+        mock_container.ports = {"6080/tcp": [{"HostPort": "39781"}], "8090/tcp": [{"HostPort": "39782"}]}
 
         res = serve_ui("print('hello ui')", lang="python", timeout=5)
 
         assert res["error"] == ""
         assert res["container_id"] == mock_container.id
         assert res["host_port"] == "39781"
+        assert res["audio_host_port"] == "39782"
         assert "url" not in res
 
         # Sandbox container must be created on the bridge network with the
         # websockify port published to all interfaces (browser may be remote).
         kwargs = mock_client.containers.run.call_args.kwargs
         assert kwargs["network_mode"] == "bridge"
-        assert kwargs["ports"] == {"6080/tcp": None}
+        assert kwargs["ports"] == {"6080/tcp": None, "8090/tcp": None}
         assert kwargs["user"] == "sandbox"
         assert kwargs["mem_limit"] == "256m"
         assert kwargs["pids_limit"] == 128
@@ -348,7 +430,7 @@ def test_serve_ui_exclusive_sweeps_suffixed_relics():
         mock_container = MagicMock()
         mock_docker.return_value = mock_client
         mock_client.containers.run.return_value = mock_container
-        mock_container.ports = {"6080/tcp": [{"HostPort": "39781"}]}
+        mock_container.ports = {"6080/tcp": [{"HostPort": "39781"}], "8090/tcp": [{"HostPort": "39782"}]}
 
         def _named(n):
             c = MagicMock()
@@ -382,6 +464,10 @@ def test_serve_ui_exclusive_sweeps_suffixed_relics():
         assert "x11vnc -display :99" in script
         assert "websockify --web /usr/share/novnc 6080 127.0.0.1:5900" in script
         assert "python3 /tmp/code.py" in script
+        # Virtual audio chain: pulse null sink + MP3 stream on 8090.
+        assert "pulseaudio --start" in script
+        assert "module-null-sink sink_name=game_sink" in script
+        assert "audio.mp3" in script
 
         # App pipeline launched detached.
         exec_calls = [c.args[0] for c in mock_container.exec_run.call_args_list]

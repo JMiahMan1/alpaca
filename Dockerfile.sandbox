@@ -53,16 +53,21 @@ RUN pip install --no-cache-dir --break-system-packages \
 # Native GUI/audio toolchain for compiled-language benchmarks (Go/Rust/C++
 # retro games run as real X11 programs, not served HTML):
 # - libasound2-dev: ALSA headers so C++/Rust (rodio) audio builds link
-# - pulseaudio: virtual null sink so game audio can be captured and streamed
-#   to the browser alongside the noVNC video (sandbox has no sound card)
-# - Go module cache: pure-Go X11 (xgb/xgbutil) + audio (oto) pre-seeded because
-#   sandbox containers run WITHOUT network (GOPROXY=off enforces cache-only)
-# - Cargo registry cache: x11rb (pure-Rust X11) + rodio (audio) pre-fetched
-#   because sandbox containers run WITHOUT network (CARGO_NET_OFFLINE=true)
-# Pin exact versions below into the go/rust benchmark prompts.
+# - pulseaudio + pulseaudio-utils: virtual null sink so game audio can be
+#   captured (parec/pactl) and streamed to the browser alongside the noVNC
+#   video (sandbox has no sound card)
+# - libasound2-plugins: ALSA->Pulse redirect so ALSA clients (Go oto, Rust
+#   rodio) land on the null sink instead of a nonexistent sound card
+# - ffmpeg: encodes the sink monitor to MP3 and serves it on port 8090
+#   (MP3 plays in every desktop/mobile browser, incl. Safari which lacks Ogg)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libasound2-dev pulseaudio \
+        libasound2-dev libasound2-plugins pulseaudio pulseaudio-utils ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+# Go module cache: pure-Go X11 (xgb/xgbutil) + audio (oto) pre-seeded because
+# sandbox containers run WITHOUT network (GOPROXY=off enforces cache-only).
+# Cargo registry cache: x11rb (pure-Rust X11) + rodio (audio) pre-fetched
+# because sandbox containers run WITHOUT network (CARGO_NET_OFFLINE=true).
+# Pin exact versions below into the go/rust benchmark prompts.
 
 ENV GOMODCACHE=/usr/local/go-mod-cache \
     GOFLAGS=-mod=mod \

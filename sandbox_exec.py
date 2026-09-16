@@ -21,6 +21,7 @@ import contextlib
 import io
 import os
 import re
+import struct
 import tarfile
 import textwrap
 import threading
@@ -165,11 +166,84 @@ _GO_OFFLINE_ENV = (
 )
 
 
+# RMS energy threshold (16-bit PCM units) for the grade-path audio check:
+# digital black measures 0; any real tone/music/noise measures in the
+# hundreds-to-thousands. 30 sits far above dither/quantization noise while
+# catching quiet title music. Only ambient audio inside the screenshot window
+# counts — a game silent until first keypress measures absent (honest: the
+# grader cannot play it).
+_AUDIO_PRESENT_RMS = 30.0
+
+
+def _audio_rms(raw: bytes) -> float:
+    """RMS energy of raw s16le mono PCM bytes (0.0 for empty/undecodable)."""
+    if not raw or len(raw) < 2:
+        return 0.0
+    n = len(raw) // 2
+    try:
+        samples = struct.unpack(f"<{n}h", raw[: n * 2])
+    except struct.error:  # pragma: no cover - defensive
+        return 0.0
+    return (sum(s * s for s in samples) / n) ** 0.5
+
+
+# Grade-path audio capture (no ffmpeg/streaming here — just record the null
+# sink monitor to a file for the RMS check in _run_ui). Starts AFTER the
+# build prelude (recording a multi-minute cold cargo build would waste ~13MB
+# of disk) and stops right after the screenshot. Best-effort: pre-audio
+# images lack pulseaudio/parec, so the toolchain is probed and the outcome
+# (ok / reason) lands in /tmp/audio_state for the Python side to report
+# honestly instead of scoring silence as "no audio".
+_AUDIO_GRADE_SETUP = (
+    "PAREC_PID=\n"
+    "if command -v pulseaudio >/dev/null 2>&1 && command -v parec >/dev/null 2>&1 "
+    "&& command -v pactl >/dev/null 2>&1; then\n"
+    "export XDG_RUNTIME_DIR=/tmp\n"
+    "printf 'pcm.!default { type pulse }\\nctl.!default { type pulse }\\n' > ~/.asoundrc\n"
+    "pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1\n"
+    "for i in 1 2 3 4 5 6 7 8 9 10; do pactl info >/dev/null 2>&1 && break; sleep 0.5; done\n"
+    "pactl load-module module-null-sink sink_name=game_sink sink_properties=device.description=GameAudio "
+    "rate=44100 >/dev/null 2>&1\n"
+    "pactl set-default-sink game_sink >/dev/null 2>&1\n"
+    "parec -d game_sink.monitor --format=s16le --rate=22050 --channels=1 /tmp/audio.raw >/dev/null 2>&1 &\n"
+    "PAREC_PID=$!\n"
+    "echo ok > /tmp/audio_state\n"
+    "else\n"
+    "echo no-pulseaudio-toolchain > /tmp/audio_state\n"
+    "fi\n"
+)
+
+
 # Xvfb needs a moment to create its socket; a bare `sleep 1` is racy (a fast
 # cold-cache-or-warm build can start the app before the socket exists, and
 # XOpenDisplay then fails silently -> no window, blank screenshot). Poll for
 # the socket instead (≤5s).
 _XVFB_WAIT = "for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.5; done\n"
+
+
+# Virtual audio chain for served UI sessions. Sandbox containers have no sound
+# card, so games play into a PulseAudio null sink ("game_sink") and an ffmpeg
+# MP3 loop serves the sink monitor on container port 8090 (published to a
+# random host port; Flask proxies it at /serve/audio/<id>). ALSA clients (Go
+# oto, Rust rodio) are redirected into Pulse via ~/.asoundrc (needs
+# libasound2-plugins); SDL/pygame finds the server via XDG_RUNTIME_DIR. MP3
+# (not Ogg) so it plays in every desktop/mobile browser incl. Safari.
+# The wrapper runs once per container (ui_restart only relaunches the app),
+# so no idempotency guard is needed.
+_AUDIO_PORT = 8090
+_AUDIO_SETUP = (
+    "export XDG_RUNTIME_DIR=/tmp\n"
+    "printf 'pcm.!default { type pulse }\\nctl.!default { type pulse }\\n' > ~/.asoundrc\n"
+    "pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1\n"
+    "for i in 1 2 3 4 5 6 7 8 9 10; do pactl info >/dev/null 2>&1 && break; sleep 0.5; done\n"
+    "pactl load-module module-null-sink sink_name=game_sink sink_properties=device.description=GameAudio "
+    "rate=44100 >/dev/null 2>&1\n"
+    "pactl set-default-sink game_sink >/dev/null 2>&1\n"
+    "(while true; do ffmpeg -hide_banner -loglevel error -f pulse -i game_sink.monitor "
+    "-c:a libmp3lame -b:a 96k -ac 2 -ar 44100 -f mp3 -listen 1 "
+    f"http://127.0.0.1:{_AUDIO_PORT}/audio.mp3; sleep 0.5; done) >/dev/null 2>&1 &\n"
+    "AUDIO_PID=$!\n"
+)
 
 
 def _go_build_sh(src: str, out: str) -> str:
@@ -852,10 +926,12 @@ def _run_ui(
         f"{_XVFB_WAIT}"
         "export DISPLAY=:99\n"
         f"{prelude}"
+        f"{_AUDIO_GRADE_SETUP}"
         f"{run_line}"
         "PY_PID=$!\n"
         f"sleep {capture_delay}\n"
         "scrot -o /tmp/out.png 2>/dev/null\n"
+        "kill $PAREC_PID 2>/dev/null\n"
         "kill -9 $PY_PID 2>/dev/null\n"
         "kill -9 $XVFB_PID 2>/dev/null\n"
     )
@@ -905,6 +981,18 @@ def _run_ui(
     else:
         result["ui_rendered"] = False
         result["ran"] = result["exit_code"] == 0
+    # Measured audio check (replaces the honor-system AUDIO prompt clause for
+    # native apps): the wrapper records the null-sink monitor while the app
+    # runs; RMS energy above _AUDIO_PRESENT_RMS means the game audibly played.
+    audio_state = ((_read_file(container, "/tmp/audio_state") or b"").decode("utf-8", "replace")).strip()
+    if audio_state == "ok":
+        result["audio_rms"] = _audio_rms(_read_file(container, "/tmp/audio.raw") or b"")
+        result["audio_present"] = result["audio_rms"] >= _AUDIO_PRESENT_RMS
+        result["audio_error"] = ""
+    else:
+        result["audio_rms"] = 0.0
+        result["audio_present"] = False
+        result["audio_error"] = audio_state or "audio capture unavailable"
     return result
 
 
@@ -1256,7 +1344,7 @@ def serve_ui(
     only one game session exists at a time; the sweep and the create run
     under a lock so a returned container is always alive at return time.
     """
-    result: dict[str, Any] = {"container_id": None, "host_port": None, "error": ""}
+    result: dict[str, Any] = {"container_id": None, "host_port": None, "audio_host_port": None, "error": ""}
     try:
         import docker
     except Exception as e:  # pragma: no cover - environment dependent
@@ -1316,6 +1404,7 @@ def serve_ui(
             "XVFB_PID=$!\n"
             f"{_XVFB_WAIT}"
             "export DISPLAY=:99\n"
+            f"{_AUDIO_SETUP}"
             "x11vnc -display :99 -rfbport 5900 -nopw -forever -shared >/dev/null 2>&1 &\n"
             "VNC_PID=$!\n"
             "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
@@ -1342,6 +1431,7 @@ def serve_ui(
             "XVFB_PID=$!\n"
             f"{_XVFB_WAIT}"
             "export DISPLAY=:99\n"
+            f"{_AUDIO_SETUP}"
             "x11vnc -display :99 -rfbport 5900 -nopw -forever -shared >/dev/null 2>&1 &\n"
             "VNC_PID=$!\n"
             "websockify --web /usr/share/novnc 6080 127.0.0.1:5900 >/dev/null 2>&1 &\n"
@@ -1384,7 +1474,7 @@ def serve_ui(
                 tty=False,
                 stdin_open=False,
                 network_mode="bridge",
-                ports={"6080/tcp": None},
+                ports={"6080/tcp": None, f"{_AUDIO_PORT}/tcp": None},
                 mem_limit=serve_mem,
                 pids_limit=128,
                 user="sandbox",
@@ -1402,8 +1492,11 @@ def serve_ui(
         container.reload()
         port_info = (container.ports or {}).get("6080/tcp")
         host_port = port_info[0]["HostPort"] if port_info else None
+        audio_info = (container.ports or {}).get(f"{_AUDIO_PORT}/tcp")
+        audio_host_port = audio_info[0]["HostPort"] if audio_info else None
         result["container_id"] = container.id
         result["host_port"] = host_port
+        result["audio_host_port"] = audio_host_port
     except Exception as e:  # pragma: no cover - runtime dependent
         result["error"] = str(e)
     finally:

@@ -172,6 +172,11 @@
         <button id="btn-shot">📷 Screenshot</button>
         <button id="btn-stop">⏹ Stop UI</button>
         <button id="btn-close">✕ Close</button>
+        <button id="btn-sound">🔊 Sound</button>
+        <!-- Game audio side-channel (noVNC is video-only): the sandbox streams
+        game sound as MP3 via /serve/audio/<id>. No controls attribute — the
+        Sound button toggles playback. Hidden ancestors never block audio. -->
+        <audio id="game-audio" preload="none"></audio>
         <span id="key-bar" role="group" aria-label="Send keys to app">
             <button type="button" data-xkey="Up" title="Arrow up">▲</button>
             <button type="button" data-xkey="Down" title="Arrow down">▼</button>
@@ -726,6 +731,49 @@
             setStatus('No VNC port found for container.');
         }
 
+        // Game audio side-channel: noVNC/RFB carries video only, so the
+        // sandbox streams game sound as MP3 at /serve/audio/<id> (virtual
+        // PulseAudio null sink + ffmpeg — see sandbox_exec.py _AUDIO_SETUP).
+        // Browsers require a user gesture before audio may start, so playback
+        // begins on Sound click (Tests page) or on first interaction (arcade
+        // embed, whose toolbar is hidden). States ride the existing report()
+        // channel so the server log shows audio health per session.
+        const audioEl = document.getElementById('game-audio');
+        const btnSound = document.getElementById('btn-sound');
+        let audioOn = false;
+        const setAudio = (on) => {
+            audioOn = on;
+            btnSound.textContent = on ? '🔇 Mute' : '🔊 Sound';
+            if (!on) {
+                audioEl.pause();
+                report('audio-stopped');
+                return;
+            }
+            // Fresh connection each start: the in-container ffmpeg serves one
+            // listener at a time, then re-listens for the next.
+            audioEl.src = `/serve/audio/${CONTAINER_ID}`;
+            audioEl.load();
+            audioEl.play().then(
+                () => report('audio-playing'),
+                (e) => {
+                    audioOn = false;
+                    btnSound.textContent = '🔊 Sound';
+                    const msg = String((e && e.message) || e).slice(0, 120);
+                    report('audio-blocked', msg);
+                    setStatus('Sound unavailable: ' + msg);
+                }
+            );
+        };
+        btnSound.addEventListener('click', () => setAudio(!audioOn));
+        audioEl.addEventListener('error', () => {
+            report('audio-error', 'stream error (container audio down?)');
+        });
+        if (new URLSearchParams(location.search).get('embed')) {
+            document.addEventListener('pointerdown', () => {
+                if (!audioOn) setAudio(true);
+            }, { once: true });
+        }
+
         const termInput = document.getElementById('term-input');
         const termOut = document.getElementById('term-out');
         const runTerm = () => {
@@ -804,9 +852,16 @@
         // in a fullscreen overlay with its own bottom key bar, so it tells
         // us (a) which keys to inject and (b) when to hide our own toolbar
         // for maximum game area. Ignored on the Tests page (no messages).
+        // A separate 'arcade-audio' message ({on: bool}) toggles game sound
+        // for a future arcade-overlay sound button (embed has no toolbar).
         window.addEventListener('message', (ev) => {
             const m = ev && ev.data;
-            if (!m || m.source !== 'arcade-key') return;
+            if (!m) return;
+            if (m.source === 'arcade-audio') {
+                if (typeof m.on === 'boolean') setAudio(m.on);
+                return;
+            }
+            if (m.source !== 'arcade-key') return;
             if (m.fullscreen === true) document.body.classList.add('arcade-full');
             if (m.fullscreen === false) document.body.classList.remove('arcade-full');
             if (m.xkey) {
