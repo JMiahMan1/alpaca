@@ -373,6 +373,13 @@ def _block_starts_like_code(block: str, lang: str) -> bool:
     return False
 
 
+# Rust `use` imports name a crate/module path (`use x11rb::...;`), never an
+# English sentence: a bare startswith("use ") would also match prose like
+# "use the arrow keys...". Require a path separator, brace, alias, or the
+# trailing semicolon so only real imports anchor the start of extracted code.
+_RUST_USE_RE = re.compile(r"^use\s+[a-z_][\w:]*(\s*::|;|\s*\{|\s+as\s+)")
+
+
 def extract_clean_code(text: str, lang: str = "python") -> str:
     """Extract pure, executable code from an LLM response.
 
@@ -453,6 +460,9 @@ def extract_clean_code(text: str, lang: str = "python") -> str:
         if not stripped:
             continue
         if any(stripped.startswith(ind) for ind in code_indicators):
+            start_idx = idx
+            break
+        if _RUST_USE_RE.match(stripped):
             start_idx = idx
             break
         if any(
