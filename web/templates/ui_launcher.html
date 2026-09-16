@@ -745,22 +745,45 @@
         const btnSound = document.getElementById('btn-sound');
         const isEmbed = new URLSearchParams(location.search).get('embed');
         let audioOn = false;
+        // Generation guard: every off() or fresh start bumps audioGen, so a
+        // stale in-flight play() can never unmute or report after the user
+        // muted or a newer start replaced it. Redundant on() calls are
+        // no-ops (no src reset): each reset reboots the lazy encoder and
+        // forces seconds of browser rebuffer, which stacked autostart +
+        // parent unmute + button clicks into minute-long start delays.
+        let audioGen = 0;
+        const audioURL = `/serve/audio/${CONTAINER_ID}`;
         const setAudio = (on) => {
             audioOn = on;
             btnSound.textContent = on ? '🔇 Mute' : '🔊 Sound';
             if (!on) {
+                audioGen++;
                 audioEl.pause();
                 report('audio-stopped');
                 return;
             }
-            // Fresh connection each start: the lazy per-listener encoder
-            // serves one listener then exits.
-            audioEl.muted = false;
-            audioEl.src = `/serve/audio/${CONTAINER_ID}`;
+            // Already live: keep the running stream, just make sure it is
+            // playing unmuted. No src reset here.
+            if (audioEl.src && !audioEl.paused && !audioEl.ended) {
+                audioEl.muted = false;
+                return;
+            }
+            // Fresh start: muted first (autoplay-safe), unmute once the
+            // stream is actually playing. load() re-opens the connection so
+            // an unmute after mute rejoins the live edge instead of
+            // resuming a paused-backpressured (stale) connection.
+            const gen = ++audioGen;
+            audioEl.muted = true;
+            if (!audioEl.src) audioEl.src = audioURL;
             audioEl.load();
             audioEl.play().then(
-                () => report('audio-playing'),
+                () => {
+                    if (gen !== audioGen) return;
+                    audioEl.muted = false;
+                    report('audio-playing');
+                },
                 (e) => {
+                    if (gen !== audioGen) return;
                     audioOn = false;
                     btnSound.textContent = '🔊 Sound';
                     const msg = String((e && e.message) || e).slice(0, 120);
@@ -777,19 +800,9 @@
             // Muted autoplay connects the stream immediately (also boots
             // the lazy encoder), then unmute for sound-by-default. Taps
             // inside the nested VNC iframe never reach this document, so a
-            // gesture-gated start here would never fire. If the muted start
-            // is ever rejected, a real gesture retries it.
-            audioOn = true;
-            audioEl.muted = true;
-            audioEl.src = `/serve/audio/${CONTAINER_ID}`;
-            audioEl.load();
-            audioEl.play().then(
-                () => { audioEl.muted = false; report('audio-playing'); },
-                (e) => {
-                    audioOn = false;
-                    report('audio-blocked', String((e && e.message) || e).slice(0, 120));
-                }
-            );
+            // gesture-gated start here would never fire. setAudio starts
+            // muted (always allowed) and unmutes itself once playing.
+            setAudio(true);
             document.addEventListener('pointerdown', () => {
                 if (!audioOn) setAudio(true);
             }, { once: true });
