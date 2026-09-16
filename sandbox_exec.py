@@ -243,7 +243,7 @@ _AUDIO_SETUP = (
     "pactl set-default-sink game_sink >/dev/null 2>&1\n"
     "(while true; do ffmpeg -hide_banner -loglevel error -f pulse -i game_sink.monitor "
     "-c:a libmp3lame -b:a 96k -ac 2 -ar 44100 -f mp3 -listen 1 "
-    f"http://127.0.0.1:{_AUDIO_PORT}/audio.mp3; sleep 0.5; done) >/dev/null 2>&1 &\n"
+    f"http://0.0.0.0:{_AUDIO_PORT}/audio.mp3; sleep 0.5; done) >/dev/null 2>&1 &\n"
     "AUDIO_PID=$!\n"
 )
 
