@@ -468,6 +468,11 @@ def test_serve_ui_exclusive_sweeps_suffixed_relics():
         assert "pulseaudio --start" in script
         assert "module-null-sink sink_name=game_sink" in script
         assert "audio.mp3" in script
+        # A/V sync guard: without a capped input queue, ffmpeg buffers live
+        # audio while no listener is connected and firehoses stale backlog
+        # (~2.5x) at the next client, so heard audio drifts minutes behind play.
+        assert "-fflags nobuffer" in script
+        assert "-thread_queue_size 32" in script
 
         # App pipeline launched detached.
         exec_calls = [c.args[0] for c in mock_container.exec_run.call_args_list]

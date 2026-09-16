@@ -241,7 +241,14 @@ _AUDIO_SETUP = (
     "pactl load-module module-null-sink sink_name=game_sink sink_properties=device.description=GameAudio "
     "rate=44100 >/dev/null 2>&1\n"
     "pactl set-default-sink game_sink >/dev/null 2>&1\n"
-    "(while true; do ffmpeg -hide_banner -loglevel error -f pulse -i game_sink.monitor "
+    # Sync guard: ffmpeg opens the Pulse input BEFORE blocking in accept(),
+    # so with no listener connected it would swallow live audio into an
+    # unbounded input buffer and then firehose minutes of stale backlog at
+    # the next client (~2.5x wire speed, ever-growing A/V drift). Cap the
+    # input queue (overflow drops) + nobuffer so a fresh listener joins at
+    # most ~1-2s behind live gameplay instead of minutes.
+    "(while true; do ffmpeg -hide_banner -loglevel error -fflags nobuffer -thread_queue_size 32 "
+    "-f pulse -i game_sink.monitor "
     "-c:a libmp3lame -b:a 96k -ac 2 -ar 44100 -f mp3 -listen 1 "
     f"http://0.0.0.0:{_AUDIO_PORT}/audio.mp3; sleep 0.5; done) >/dev/null 2>&1 &\n"
     "AUDIO_PID=$!\n"
