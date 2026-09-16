@@ -632,6 +632,9 @@ def test_arcade_launch_code_game(arcade_client, monkeypatch):
     assert seen["body"]["lang"] == "python"
     # Arcade launches are exclusive: one game session at a time.
     assert seen["body"]["exclusive"] is True
+    # Arcade sessions get a 2 h lifetime: the default 10 min container
+    # sleep would reap long play sessions mid-game.
+    assert seen["body"]["timeout"] == 7200
 
 
 def test_arcade_launch_url_same_origin_behind_https_proxy(arcade_client, monkeypatch):
@@ -1050,8 +1053,10 @@ def test_launcher_stream_telemetry_markup():
 
 def test_launcher_game_audio_sidechannel():
     """Launcher streams game sound via <audio> + /serve/audio/<id> (noVNC is
-    video-only): toggle button, embed auto-start on first gesture, arcade
-    overlay control channel, and states on the report() telemetry channel."""
+    video-only): toggle button, embed muted-autoplay + self-unmute (taps
+    inside the nested VNC iframe never reach the launcher document, so a
+    gesture-gated start would never fire), arcade overlay control channel,
+    and states on the report() telemetry channel."""
     from pathlib import Path
 
     html = Path("web/templates/ui_launcher.html").read_text()
@@ -1061,6 +1066,31 @@ def test_launcher_game_audio_sidechannel():
     assert "arcade-audio" in html
     assert "audio-playing" in html
     assert "audio-blocked" in html
+    # Embed autostart: muted play (always allowed) then unmute — only
+    # play() is autoplay-gated, mute is a volume control.
+    assert "audioEl.muted = true" in html
+    assert "audioEl.muted = false" in html
+
+
+def test_arcade_js_live_sound_control():
+    """Arcade play page drives the launcher's arcade-audio channel: unmute
+    on live-frame load plus a Sound toggle (the launcher toolbar, with its
+    own Sound button, is hidden in embeds)."""
+    from pathlib import Path
+
+    js = Path("arcade/static/arcade.js").read_text()
+    assert "postLiveAudio" in js
+    assert "arcade-audio" in js
+    assert "btn-sound-live" in js
+
+
+def test_arcade_play_page_has_sound_button():
+    """Code-game branch offers a Sound toggle next to Play (embed has no
+    launcher toolbar of its own)."""
+    from pathlib import Path
+
+    html = Path("arcade/templates/play.html").read_text()
+    assert 'id="btn-sound-live"' in html
 
 
 def test_sandbox_image_includes_audio_chain():

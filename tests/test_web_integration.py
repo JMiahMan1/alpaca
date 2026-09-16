@@ -1684,6 +1684,28 @@ def test_sandbox_serve_audio_streams_mp3(client):
     mock_ensure.assert_called_once_with("cid123")
 
 
+def test_sandbox_serve_ui_timeout_passthrough(client):
+    """Client-requested session lifetime reaches serve_ui (clamped).
+
+    The container's PID1 sleep expires at timeout+60 s and reaps the
+    session, so a capped default would kill long play sessions mid-game.
+    """
+    from unittest.mock import patch
+
+    with patch("web.app.serve_ui", return_value={"container_id": "abc"}) as mock_serve:
+        res = client.post("/api/sandbox/serve_ui", json={"code": "print('hi')", "timeout": 7200})
+        assert res.status_code == 200
+        assert mock_serve.call_args.kwargs["timeout"] == 7200
+    with patch("web.app.serve_ui", return_value={"container_id": "abc"}) as mock_serve:
+        res = client.post("/api/sandbox/serve_ui", json={"code": "print('hi')"})
+        assert res.status_code == 200
+        assert mock_serve.call_args.kwargs["timeout"] == 600
+    with patch("web.app.serve_ui", return_value={"container_id": "abc"}) as mock_serve:
+        res = client.post("/api/sandbox/serve_ui", json={"code": "print('hi')", "timeout": 999999})
+        assert res.status_code == 200
+        assert mock_serve.call_args.kwargs["timeout"] == 28800
+
+
 def _write_multistep_model_file(ms_models_dir, model="openrouter:poolside/laguna-s-2.1:free"):
     payload = {
         "model": model,

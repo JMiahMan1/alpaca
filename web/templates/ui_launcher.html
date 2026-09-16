@@ -734,12 +734,16 @@
         // Game audio side-channel: noVNC/RFB carries video only, so the
         // sandbox streams game sound as MP3 at /serve/audio/<id> (virtual
         // PulseAudio null sink + ffmpeg — see sandbox_exec.py _AUDIO_SETUP).
-        // Browsers require a user gesture before audio may start, so playback
-        // begins on Sound click (Tests page) or on first interaction (arcade
-        // embed, whose toolbar is hidden). States ride the existing report()
+        // Only play() is gated by autoplay policy — mute is just a volume
+        // control — so the arcade embed (toolbar hidden, ?embed=1) starts
+        // MUTED (always allowed, no gesture needed) and unmutes itself:
+        // sound is on from the first second. The Sound button (Tests page)
+        // toggles manually; the arcade overlay drives the same channel via
+        // the 'arcade-audio' message. States ride the existing report()
         // channel so the server log shows audio health per session.
         const audioEl = document.getElementById('game-audio');
         const btnSound = document.getElementById('btn-sound');
+        const isEmbed = new URLSearchParams(location.search).get('embed');
         let audioOn = false;
         const setAudio = (on) => {
             audioOn = on;
@@ -749,8 +753,9 @@
                 report('audio-stopped');
                 return;
             }
-            // Fresh connection each start: the in-container ffmpeg serves one
-            // listener at a time, then re-listens for the next.
+            // Fresh connection each start: the lazy per-listener encoder
+            // serves one listener then exits.
+            audioEl.muted = false;
             audioEl.src = `/serve/audio/${CONTAINER_ID}`;
             audioEl.load();
             audioEl.play().then(
@@ -768,7 +773,23 @@
         audioEl.addEventListener('error', () => {
             report('audio-error', 'stream error (container audio down?)');
         });
-        if (new URLSearchParams(location.search).get('embed')) {
+        if (isEmbed) {
+            // Muted autoplay connects the stream immediately (also boots
+            // the lazy encoder), then unmute for sound-by-default. Taps
+            // inside the nested VNC iframe never reach this document, so a
+            // gesture-gated start here would never fire. If the muted start
+            // is ever rejected, a real gesture retries it.
+            audioOn = true;
+            audioEl.muted = true;
+            audioEl.src = `/serve/audio/${CONTAINER_ID}`;
+            audioEl.load();
+            audioEl.play().then(
+                () => { audioEl.muted = false; report('audio-playing'); },
+                (e) => {
+                    audioOn = false;
+                    report('audio-blocked', String((e && e.message) || e).slice(0, 120));
+                }
+            );
             document.addEventListener('pointerdown', () => {
                 if (!audioOn) setAudio(true);
             }, { once: true });
@@ -852,8 +873,9 @@
         // in a fullscreen overlay with its own bottom key bar, so it tells
         // us (a) which keys to inject and (b) when to hide our own toolbar
         // for maximum game area. Ignored on the Tests page (no messages).
-        // A separate 'arcade-audio' message ({on: bool}) toggles game sound
-        // for a future arcade-overlay sound button (embed has no toolbar).
+        // The arcade overlay's Sound button drives game sound through this
+        // channel ({on: bool}); the embed also autostarts muted above, so
+        // this mostly re-syncs after a frame reload or manual mute.
         window.addEventListener('message', (ev) => {
             const m = ev && ev.data;
             if (!m) return;

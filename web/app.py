@@ -3568,11 +3568,20 @@ def sandbox_serve_ui():
     lang = data.get("lang", "python")
     if not code:
         return jsonify({"error": "No code provided"}), 400
+    try:
+        timeout = int(data.get("timeout", 600))
+    except (TypeError, ValueError):
+        timeout = 600
+    # Container PID1 (sleep timeout+60) reaps the session when it expires:
+    # an arcade play session outliving the default 600 s would otherwise
+    # die mid-game with no message. Clamp to [60 s, 8 h].
+    timeout = max(60, min(28800, timeout))
     res = serve_ui(
         code,
         lang,
         name=data.get("name", "alpaca-ui"),
         exclusive=bool(data.get("exclusive", False)),
+        timeout=timeout,
     )
     if res.get("error"):
         return jsonify({"error": res["error"]}), 500

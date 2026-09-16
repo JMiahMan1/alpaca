@@ -81,6 +81,27 @@
   }
   if ($("btn-fullscreen")) $("btn-fullscreen").addEventListener("click", () => (isFull() ? exitFull() : enterFull()));
   if ($("btn-exit-full")) $("btn-exit-full").addEventListener("click", exitFull);
+  // Code-game sound: the embedded launcher autoplays muted and unmutes
+  // itself, but a strict browser may keep it silent until a gesture-backed
+  // toggle arrives. Post the launcher's 'arcade-audio' channel (same
+  // postMessage family as arcade-key): unmute on iframe load, toggle on
+  // the Sound button. Mute is not autoplay-gated, so this needs no gesture.
+  let soundOn = true;
+  function postLiveAudio(on) {
+    const fr = $("live-frame");
+    if (!fr || fr.style.display === "none") return;
+    try {
+      fr.contentWindow.postMessage({ source: "arcade-audio", on: !!on }, "*");
+    } catch (_) {
+      /* cross-origin post is best-effort */
+    }
+  }
+  const soundBtn = $("btn-sound-live");
+  if (soundBtn) soundBtn.addEventListener("click", () => {
+    soundOn = !soundOn;
+    soundBtn.textContent = soundOn ? "🔇 Mute" : "🔊 Sound";
+    postLiveAudio(soundOn);
+  });
   // ⌨ Type into the game: focus a hidden proxy input so the device
   // keyboard opens, then forward keystrokes into the game (high-score
   // name entry etc). Stays in fullscreen — never navigates away.
@@ -375,6 +396,14 @@
       if (hero) hero.style.display = "none";
       frame.src = data.launcher_url;
       frame.style.display = "block";
+      // The launcher autoplays muted and unmutes itself; re-assert unmuted
+      // on iframe load in case the message raced the launcher script or
+      // the frame reloaded. Also resets the Sound toggle to on.
+      frame.addEventListener("load", () => {
+        soundOn = true;
+        if (soundBtn) soundBtn.textContent = "🔇 Mute";
+        postLiveAudio(true);
+      }, { once: true });
       status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";
       btn.textContent = "↻ Restart sandbox";
       btn.disabled = false;
