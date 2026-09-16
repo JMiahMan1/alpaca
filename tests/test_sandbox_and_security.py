@@ -500,6 +500,11 @@ def test_audio_ffmpeg_command_is_single_shot():
     # Replaces the shell so the ffmpeg process itself is the exec-session
     # leader (clean cmdline, reaped by the runtime on exit).
     assert "exec ffmpeg" in _AUDIO_FFMPEG_SH
+    assert "-probesize 32 -analyzeduration 1" in _AUDIO_FFMPEG_SH
+    assert "-fragment_size 3528" in _AUDIO_FFMPEG_SH
+    assert "-reservoir 0" in _AUDIO_FFMPEG_SH
+    assert "-flush_packets 1" in _AUDIO_FFMPEG_SH
+    assert _AUDIO_FFMPEG_SH.index("-fragment_size") < _AUDIO_FFMPEG_SH.index("-i game_sink.monitor")
 
 
 def test_ensure_audio_encoder_starts_detached_ffmpeg():

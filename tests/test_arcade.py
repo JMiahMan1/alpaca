@@ -1074,8 +1074,84 @@ def test_launcher_game_audio_sidechannel():
     # the encoder + forces browser rebuffer = minute-long start delays),
     # and a stale in-flight play() must not unmute after a mute (gen guard).
     assert "audioGen" in html
-    assert "if (!audioEl.src) audioEl.src = audioURL" in html
+    assert "if (audioEl.src && !audioEl.paused && !audioEl.ended)" in html
+    assert "openAudioStream();" in html
+    assert "MediaSource.isTypeSupported('audio/mpeg')" in html
+    assert "controller.abort()" in html
+    assert "URL.revokeObjectURL(audioStream.url)" in html
+    assert "buffer.remove(0, audioEl.currentTime - 5)" in html
     assert "if (gen !== audioGen) return" in html
+
+
+def test_launcher_audio_catches_up_to_live_edge():
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for launcher audio behavior test")
+    html = Path("web/templates/ui_launcher.html").read_text()
+    sync_code = html.split("        const syncAudio = () => {", 1)[1].split("        const setAudio =", 1)[0]
+    script = (
+        """
+const assert = require('node:assert/strict');
+let audioOn = true;
+let audioStream = {};
+let ranges = [[0, 10]];
+const listeners = {};
+const audioEl = {
+    paused: false, seeking: false, currentTime: 3,
+    buffered: {
+        get length() { return ranges.length; },
+        start: i => ranges[i][0], end: i => ranges[i][1],
+    },
+    addEventListener: (event, callback) => { listeners[event] = callback; },
+};
+const syncAudio = () => {
+"""
+        + sync_code
+        + """
+assert.deepEqual(Object.keys(listeners), ['playing', 'progress', 'timeupdate']);
+listeners.playing();
+assert.equal(audioEl.currentTime, 9.85);
+audioEl.currentTime = 9.7;
+listeners.timeupdate();
+assert.equal(audioEl.currentTime, 9.7);
+audioEl.currentTime = 3;
+audioStream = null;
+listeners.progress();
+assert.equal(audioEl.currentTime, 3);
+audioStream = {};
+audioEl.paused = true;
+listeners.progress();
+assert.equal(audioEl.currentTime, 3);
+audioEl.paused = false;
+audioOn = false;
+listeners.progress();
+assert.equal(audioEl.currentTime, 3);
+audioOn = true;
+audioEl.seeking = true;
+listeners.progress();
+assert.equal(audioEl.currentTime, 3);
+audioEl.seeking = false;
+ranges = [];
+listeners.progress();
+assert.equal(audioEl.currentTime, 3);
+ranges = [[0, 5], [20, 20.1]];
+listeners.progress();
+assert.equal(audioEl.currentTime, 20);
+ranges = [[0, Infinity]];
+listeners.progress();
+assert.equal(audioEl.currentTime, 20);
+ranges = [[0, 30]];
+Object.defineProperty(audioEl, 'currentTime', {
+    get: () => 3, set: () => { throw new Error('not seekable yet'); },
+});
+assert.doesNotThrow(listeners.progress);
+"""
+    )
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True, timeout=10)
 
 
 def test_arcade_js_live_sound_control():

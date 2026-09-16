@@ -753,12 +753,88 @@
         // parent unmute + button clicks into minute-long start delays.
         let audioGen = 0;
         const audioURL = `/serve/audio/${CONTAINER_ID}`;
+        let audioStream = null;
+        const stopAudioStream = () => {
+            if (!audioStream) return;
+            audioStream.controller.abort();
+            URL.revokeObjectURL(audioStream.url);
+            audioStream = null;
+        };
+        const openAudioStream = () => {
+            if (!window.MediaSource || !MediaSource.isTypeSupported('audio/mpeg')) {
+                audioEl.src = audioURL;
+                return;
+            }
+            const media = new MediaSource();
+            const controller = new AbortController();
+            const url = URL.createObjectURL(media);
+            const stream = { controller, url };
+            audioStream = stream;
+            audioEl.src = url;
+            media.addEventListener('sourceopen', async () => {
+                let reader;
+                try {
+                    const buffer = media.addSourceBuffer('audio/mpeg');
+                    const update = (operation) => new Promise((resolve, reject) => {
+                        const cleanup = () => {
+                            buffer.removeEventListener('updateend', done);
+                            buffer.removeEventListener('error', failed);
+                            controller.signal.removeEventListener('abort', failed);
+                        };
+                        const done = () => { cleanup(); resolve(); };
+                        const failed = () => { cleanup(); reject(new Error('Audio stream interrupted')); };
+                        if (controller.signal.aborted) { failed(); return; }
+                        buffer.addEventListener('updateend', done, { once: true });
+                        buffer.addEventListener('error', failed, { once: true });
+                        controller.signal.addEventListener('abort', failed, { once: true });
+                        try { operation(); } catch (error) { cleanup(); reject(error); }
+                    });
+                    const response = await fetch(audioURL, { signal: controller.signal, cache: 'no-store' });
+                    if (!response.ok || !response.body) throw new Error(`Audio HTTP ${response.status}`);
+                    reader = response.body.getReader();
+                    while (!controller.signal.aborted) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        if (buffer.buffered.length && audioEl.currentTime - buffer.buffered.start(0) > 10) {
+                            await update(() => buffer.remove(0, audioEl.currentTime - 5));
+                        }
+                        await update(() => buffer.appendBuffer(value));
+                        syncAudio();
+                    }
+                    if (!controller.signal.aborted && media.readyState === 'open') media.endOfStream();
+                } catch (error) {
+                    if (!controller.signal.aborted && audioStream === stream) {
+                        report('audio-error', String(error.message || error).slice(0, 120));
+                        setAudio(false);
+                    }
+                } finally {
+                    if (reader) {
+                        try { await reader.cancel(); } catch (_) {}
+                    }
+                }
+            }, { once: true });
+        };
+        const syncAudio = () => {
+            if (!audioStream || !audioOn || audioEl.paused || audioEl.seeking || !audioEl.buffered.length) return;
+            const range = audioEl.buffered.length - 1;
+            const liveEdge = audioEl.buffered.end(range);
+            if (!Number.isFinite(liveEdge) || liveEdge - audioEl.currentTime <= 0.5) return;
+            try {
+                audioEl.currentTime = Math.max(audioEl.buffered.start(range), liveEdge - 0.15);
+            } catch (_) {}
+        };
+        for (const event of ['playing', 'progress', 'timeupdate']) {
+            audioEl.addEventListener(event, syncAudio);
+        }
         const setAudio = (on) => {
             audioOn = on;
             btnSound.textContent = on ? '🔇 Mute' : '🔊 Sound';
             if (!on) {
                 audioGen++;
                 audioEl.pause();
+                stopAudioStream();
+                audioEl.removeAttribute('src');
+                audioEl.load();
                 report('audio-stopped');
                 return;
             }
@@ -774,7 +850,8 @@
             // resuming a paused-backpressured (stale) connection.
             const gen = ++audioGen;
             audioEl.muted = true;
-            if (!audioEl.src) audioEl.src = audioURL;
+            stopAudioStream();
+            openAudioStream();
             audioEl.load();
             audioEl.play().then(
                 () => {
@@ -785,6 +862,7 @@
                 (e) => {
                     if (gen !== audioGen) return;
                     audioOn = false;
+                    stopAudioStream();
                     btnSound.textContent = '🔊 Sound';
                     const msg = String((e && e.message) || e).slice(0, 120);
                     report('audio-blocked', msg);
@@ -794,7 +872,7 @@
         };
         btnSound.addEventListener('click', () => setAudio(!audioOn));
         audioEl.addEventListener('error', () => {
-            report('audio-error', 'stream error (container audio down?)');
+            if (!audioStream) report('audio-error', 'stream error (container audio down?)');
         });
         if (isEmbed) {
             // Muted autoplay connects the stream immediately (also boots

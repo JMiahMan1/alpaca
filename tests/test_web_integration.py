@@ -1681,7 +1681,39 @@ def test_sandbox_serve_audio_streams_mp3(client):
     assert res.status_code == 200
     assert res.content_type == "audio/mpeg"
     assert res.data == b"ID3\x04chunk1chunk2"
+    assert res.headers["X-Accel-Buffering"] == "no"
+    mock_resp.iter_bytes.assert_called_once_with()
+    mock_resp.close.assert_called_once()
+    mock_client.close.assert_called_once()
     mock_ensure.assert_called_once_with("cid123")
+
+
+def test_sandbox_audio_forwards_frames_without_waiting_for_batch(client):
+    import httpx
+
+    received = []
+
+    def frames():
+        yield b"frame1"
+        assert received == [b"frame1"]
+        yield b"frame2"
+
+    upstream = httpx.Response(200, content=frames())
+    with (
+        patch("web.app.ensure_audio_encoder"),
+        patch("web.app._serve_container_host_port", return_value="50003"),
+        patch("web.app.httpx.Client") as mock_client_cls,
+    ):
+        mock_client_cls.return_value.send.return_value = upstream
+        res = client.get("/serve/audio/cid123", buffered=False)
+        try:
+            for chunk in res.response:
+                received.append(chunk)
+        finally:
+            res.close()
+
+    assert received == [b"frame1", b"frame2"]
+    assert upstream.is_closed
 
 
 def test_sandbox_serve_ui_timeout_passthrough(client):
