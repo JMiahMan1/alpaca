@@ -10,6 +10,8 @@ from PIL import Image, ImageDraw
 
 from online_providers import OnlineModelProvider
 from sandbox_exec import (
+    _AUDIO_FFMPEG_SH,
+    _AUDIO_PORT,
     _AUDIO_PRESENT_RMS,
     _audio_rms,
     _find_web_js_error,
@@ -18,6 +20,7 @@ from sandbox_exec import (
     _run_ui,
     _run_web_ui,
     _screenshot_has_content,
+    ensure_audio_encoder,
     extract_clean_code,
     grade_code,
     run_code_once,
@@ -464,19 +467,68 @@ def test_serve_ui_exclusive_sweeps_suffixed_relics():
         assert "x11vnc -display :99" in script
         assert "websockify --web /usr/share/novnc 6080 127.0.0.1:5900" in script
         assert "python3 /tmp/code.py" in script
-        # Virtual audio chain: pulse null sink + MP3 stream on 8090.
+        # Virtual audio chain: pulse null sink is set up in the wrapper ...
         assert "pulseaudio --start" in script
         assert "module-null-sink sink_name=game_sink" in script
-        assert "audio.mp3" in script
-        # A/V sync guard: without a capped input queue, ffmpeg buffers live
-        # audio while no listener is connected and firehoses stale backlog
-        # (~2.5x) at the next client, so heard audio drifts minutes behind play.
-        assert "-fflags nobuffer" in script
-        assert "-thread_queue_size 32" in script
+        # ... but the MP3 encoder is deliberately NOT in the wrapper: it is
+        # started lazily per listener (ensure_audio_encoder), because a
+        # persistent encoder buffers live audio with no client connected and
+        # firehoses minutes of stale backlog at the next listener.
+        assert "ffmpeg" not in script
+        assert "audio.mp3" not in script
 
         # App pipeline launched detached.
         exec_calls = [c.args[0] for c in mock_container.exec_run.call_args_list]
         assert any(isinstance(a, list) and any("run_ui.sh" in x for x in a) for a in exec_calls)
+
+
+def test_audio_ffmpeg_command_is_single_shot():
+    """The lazy encoder serves one listener then exits (no restart loop).
+
+    A persistent loop re-opens the Pulse input with no client connected and
+    accrues minutes of stale backlog server-side; a fresh single-shot ffmpeg
+    always joins the monitor at the live edge.
+    """
+    assert "-listen 1" in _AUDIO_FFMPEG_SH
+    assert "while" not in _AUDIO_FFMPEG_SH
+    assert "audio.mp3" in _AUDIO_FFMPEG_SH
+    assert f"{_AUDIO_PORT}" in _AUDIO_FFMPEG_SH
+    # Replaces the shell so the ffmpeg process itself is the exec-session
+    # leader (clean cmdline, reaped by the runtime on exit).
+    assert "exec ffmpeg" in _AUDIO_FFMPEG_SH
+
+
+def test_ensure_audio_encoder_starts_detached_ffmpeg():
+    """ensure_audio_encoder fire-and-forget starts the encoder as sandbox."""
+    with patch("sandbox_exec._ui_container") as mock_ui:
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_ui.return_value = (mock_client, mock_container)
+        assert ensure_audio_encoder("cid123") is True
+        mock_container.exec_run.assert_called_once()
+        args, kwargs = mock_container.exec_run.call_args
+        assert args[0][:2] == ["/bin/bash", "-c"]
+        assert "ffmpeg" in args[0][2] and "audio.mp3" in args[0][2]
+        assert kwargs.get("user") == "sandbox"
+        assert kwargs.get("detach") is True
+        mock_client.close.assert_called_once()
+
+
+def test_ensure_audio_encoder_missing_container_is_false():
+    """Gone container (or no docker) reports False instead of raising."""
+    with patch("sandbox_exec._ui_container", return_value=(None, None)):
+        assert ensure_audio_encoder("gone") is False
+
+
+def test_ensure_audio_encoder_exec_error_is_false():
+    """A failed exec reports False; the Flask caller still tries to proxy."""
+    with patch("sandbox_exec._ui_container") as mock_ui:
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_container.exec_run.side_effect = RuntimeError("boom")
+        mock_ui.return_value = (mock_client, mock_container)
+        assert ensure_audio_encoder("cid123") is False
+        mock_client.close.assert_called_once()
 
 
 def test_serve_ui_overlapping_launches_get_unique_names():

@@ -1629,10 +1629,14 @@ def test_serve_container_host_port_prefers_requested_port():
 
 
 def test_sandbox_serve_audio_unknown_container(client):
-    with patch("web.app._serve_container_host_port", return_value=None):
+    with (
+        patch("web.app.ensure_audio_encoder") as mock_ensure,
+        patch("web.app._serve_container_host_port", return_value=None),
+    ):
         res = client.get("/serve/audio/nope")
     assert res.status_code == 404
     assert b"no audio stream" in res.data
+    mock_ensure.assert_called_once_with("nope")
 
 
 def test_sandbox_serve_audio_upstream_unreachable(client):
@@ -1641,6 +1645,7 @@ def test_sandbox_serve_audio_upstream_unreachable(client):
     import httpx
 
     with (
+        patch("web.app.ensure_audio_encoder") as mock_ensure,
         patch("web.app._serve_container_host_port", return_value="50003") as mock_port,
         patch("web.app.httpx.Client") as mock_client_cls,
     ):
@@ -1651,6 +1656,7 @@ def test_sandbox_serve_audio_upstream_unreachable(client):
         res = client.get("/serve/audio/cid123")
 
     assert res.status_code == 502
+    mock_ensure.assert_called_once_with("cid123")
     mock_port.assert_called_once_with("cid123", "8090")
 
 
@@ -1659,6 +1665,7 @@ def test_sandbox_serve_audio_streams_mp3(client):
     from unittest.mock import Mock
 
     with (
+        patch("web.app.ensure_audio_encoder") as mock_ensure,
         patch("web.app._serve_container_host_port", return_value="50003"),
         patch("web.app.httpx.Client") as mock_client_cls,
     ):
@@ -1674,6 +1681,7 @@ def test_sandbox_serve_audio_streams_mp3(client):
     assert res.status_code == 200
     assert res.content_type == "audio/mpeg"
     assert res.data == b"ID3\x04chunk1chunk2"
+    mock_ensure.assert_called_once_with("cid123")
 
 
 def _write_multistep_model_file(ms_models_dir, model="openrouter:poolside/laguna-s-2.1:free"):

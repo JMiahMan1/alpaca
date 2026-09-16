@@ -223,12 +223,17 @@ _XVFB_WAIT = "for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /tmp/.X11-unix/X99 ] && bre
 
 
 # Virtual audio chain for served UI sessions. Sandbox containers have no sound
-# card, so games play into a PulseAudio null sink ("game_sink") and an ffmpeg
-# MP3 loop serves the sink monitor on container port 8090 (published to a
-# random host port; Flask proxies it at /serve/audio/<id>). ALSA clients (Go
-# oto, Rust rodio) are redirected into Pulse via ~/.asoundrc (needs
-# libasound2-plugins); SDL/pygame finds the server via XDG_RUNTIME_DIR. MP3
-# (not Ogg) so it plays in every desktop/mobile browser incl. Safari.
+# card, so games play into a PulseAudio null sink ("game_sink"). This setup
+# snippet only starts the daemon + sink and redirects ALSA clients (Go oto,
+# Rust rodio) into Pulse via ~/.asoundrc (needs libasound2-plugins);
+# SDL/pygame finds the server via XDG_RUNTIME_DIR.
+# The MP3 encoder is NOT started here: it is lazy (see _AUDIO_FFMPEG_SH /
+# ensure_audio_encoder). A persistent ffmpeg would open the Pulse input while
+# no listener is connected and swallow live audio into a server-side backlog,
+# then firehose minutes of stale audio at the next client (~3-4x wire speed),
+# so heard audio would drift minutes behind play. A freshly started reader
+# always joins at the live edge, so each listener gets a fresh encoder.
+# MP3 (not Ogg) so it plays in every desktop/mobile browser incl. Safari.
 # The wrapper runs once per container (ui_restart only relaunches the app),
 # so no idempotency guard is needed.
 _AUDIO_PORT = 8090
@@ -241,18 +246,53 @@ _AUDIO_SETUP = (
     "pactl load-module module-null-sink sink_name=game_sink sink_properties=device.description=GameAudio "
     "rate=44100 >/dev/null 2>&1\n"
     "pactl set-default-sink game_sink >/dev/null 2>&1\n"
-    # Sync guard: ffmpeg opens the Pulse input BEFORE blocking in accept(),
-    # so with no listener connected it would swallow live audio into an
-    # unbounded input buffer and then firehose minutes of stale backlog at
-    # the next client (~2.5x wire speed, ever-growing A/V drift). Cap the
-    # input queue (overflow drops) + nobuffer so a fresh listener joins at
-    # most ~1-2s behind live gameplay instead of minutes.
-    "(while true; do ffmpeg -hide_banner -loglevel error -fflags nobuffer -thread_queue_size 32 "
-    "-f pulse -i game_sink.monitor "
-    "-c:a libmp3lame -b:a 96k -ac 2 -ar 44100 -f mp3 -listen 1 "
-    f"http://0.0.0.0:{_AUDIO_PORT}/audio.mp3; sleep 0.5; done) >/dev/null 2>&1 &\n"
-    "AUDIO_PID=$!\n"
 )
+
+# Single-shot MP3 encoder for the game_sink monitor (started on demand by
+# ensure_audio_encoder, NOT by the serve wrapper). Serves exactly one
+# listener on container port 8090 then exits (``-listen 1`` without a restart
+# loop): the browser closing/pausing the stream ends the encoder, so no
+# backlog can accrue between listeners and idle containers burn no CPU.
+# Started via ``/bin/bash -c`` as user ``sandbox`` with ``exec`` so the
+# ffmpeg process itself is the exec session leader (clean cmdline containing
+# "audio.mp3", reaped by the container runtime on exit).
+_AUDIO_FFMPEG_SH = (
+    "export XDG_RUNTIME_DIR=/tmp/pulse-$(id -u); "
+    "exec ffmpeg -hide_banner -loglevel error -f pulse -i game_sink.monitor "
+    "-c:a libmp3lame -b:a 96k -ac 2 -ar 44100 -f mp3 -listen 1 "
+    f"http://0.0.0.0:{_AUDIO_PORT}/audio.mp3"
+)
+
+
+def ensure_audio_encoder(container_id: str) -> bool:
+    """Start a serving container's MP3 audio encoder (fire-and-forget).
+
+    The encoder binds the container's port 8090, so at most one can run: if a
+    previous listener's encoder is still alive this start fails with
+    EADDRINUSE and exits harmlessly; if none is running this one binds and
+    serves the next connection from the live edge. Either way the caller just
+    proceeds to connect (with a short retry covering encoder boot). Returns
+    True if the start was issued, False when the container is gone or docker
+    is unreachable. Never raises.
+    """
+    client, container = _ui_container(container_id)
+    if container is None:
+        return False
+    try:
+        container.exec_run(
+            ["/bin/bash", "-c", _AUDIO_FFMPEG_SH],
+            user="sandbox",
+            workdir="/tmp",
+            detach=True,
+        )
+        return True
+    except Exception:
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            if client is not None:
+                client.close()
+
 
 
 def _go_build_sh(src: str, out: str) -> str:
