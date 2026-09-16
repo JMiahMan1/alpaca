@@ -3410,20 +3410,37 @@ def sandbox_serve_audio(container_id: str):
     its port 8090 (noVNC/RFB carries video only, so game sound rides this side
     channel). This route tunnels that stream through the dashboard's own origin
     so the launcher page's ``<audio>`` element works from any network, exactly
-    like ``/serve/`` does for video. Infinite stream: 10s connect timeout, then
-    no read timeout (the encoder emits MP3 frames continuously, even for
-    silence, so reads never idle).
+    like ``/serve/`` does for video. Infinite stream: short connect timeout
+    retried ~3s (the encoder serves one listener and needs ~1s to re-listen
+    after each disconnect), then no read timeout (MP3 frames flow continuously,
+    even for silence, so reads never idle).
     """
     host_port = _serve_container_host_port(container_id, "8090")
     if not host_port:
         return jsonify({"error": "Serving container not found or has no audio stream"}), 404
     upstream = f"http://host.docker.internal:{host_port}/audio.mp3"
-    try:
-        client = httpx.Client(timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0))
-        req = client.build_request("GET", upstream, headers={"Accept": "audio/mpeg"})
-        resp = client.send(req, stream=True)
-    except httpx.HTTPError as e:
-        return jsonify({"error": f"Audio upstream unreachable: {e}"}), 502
+    # The sandbox ffmpeg loop serves a single listener and takes ~1s to
+    # re-listen after each disconnect, so a connect raced into that dead
+    # window is routine (e.g. right after a probe or a player reconnect).
+    # Retry briefly before giving up with a 502.
+    resp = None
+    client = None
+    last_error: Exception | None = None
+    for _ in range(6):
+        try:
+            client = httpx.Client(timeout=httpx.Timeout(connect=2.0, read=None, write=10.0, pool=10.0))
+            req = client.build_request("GET", upstream, headers={"Accept": "audio/mpeg"})
+            resp = client.send(req, stream=True)
+            last_error = None
+            break
+        except httpx.HTTPError as e:
+            last_error = e
+            with contextlib.suppress(Exception):
+                client.close()
+            client = None
+            time.sleep(0.5)
+    if resp is None:
+        return jsonify({"error": f"Audio upstream unreachable: {last_error}"}), 502
     if resp.status_code != 200:
         with contextlib.suppress(Exception):
             resp.close()
