@@ -27,10 +27,15 @@ log() {
 }
 
 is_idle() {
+    # Idle = no run ACTIVE. /api/status reports "idle" only before the first
+    # run since boot; afterwards it sticks at "completed"/"cancelled"/"failed"
+    # (nothing resets it to "idle" — see active_run in web/app.py). Waiting
+    # for literal "idle" would therefore hang until max_wait even though the
+    # box is free, so anything except "running" counts as idle.
     local body status
     body="$(curl -s -m 10 "$STATUS_URL" 2>/dev/null)" || return 1
     status="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' <<<"$body" 2>/dev/null)" || return 1
-    [ "$status" = "idle" ]
+    [ "$status" != "running" ]
 }
 
 log "watching for idle (service=$SERVICE, max_wait=${MAX_WAIT_S}s, poll=${POLL_S}s)"
