@@ -378,7 +378,10 @@ def launch_game(slug):
         return jsonify({"error": "no runnable code game found for this slug"}), 404
     meta = _read_json(d / "meta.json", {})
     code = (d / "game.py").read_text(encoding="utf-8", errors="replace")
-    payload_obj: dict = {"code": code, "exclusive": True}
+    # 2 h session lifetime: the sandbox container's PID1 sleep expires at
+    # timeout+60 s and reaps the session, so the 10 min default would kill
+    # long play sessions mid-game with no message.
+    payload_obj: dict = {"code": code, "exclusive": True, "timeout": 7200}
     if _launch_lang(meta):
         payload_obj["lang"] = _launch_lang(meta)
     payload = json.dumps(payload_obj).encode("utf-8")
