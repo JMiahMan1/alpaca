@@ -222,7 +222,18 @@ def _guarded_native_build(build_sh: str, log: str, binary: str, run_cmd: str) ->
     return f"{build_sh}; tail -5 {log} 2>/dev/null; test -x {binary} && {run_cmd}"
 
 
-_CPP_GUI_FLAGS = "-std=c++17 -O2 -lX11 -lasound"
+_CPP_GUI_LIBS = "-lX11 -lasound"
+
+
+def _cpp_build_sh(src: str, out: str, log: str) -> str:
+    """Shell snippet: compile a single-file X11 C++ program offline.
+
+    Libraries come AFTER the source file: GNU ld resolves symbols
+    left-to-right, so ``-lX11`` before the source silently discards the
+    library and the link dies with undefined references (a blank frame
+    in the grader, not a loud error).
+    """
+    return f"g++ -std=c++17 -O2 -o {out} {src} {_CPP_GUI_LIBS} >{log} 2>&1"
 
 
 def _lint_html_js(container, code: str) -> tuple[bool, str]:
@@ -552,7 +563,7 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         cmd = ["bash", "/tmp/render_web.sh"]
     elif lang == "cpp":
         ext, bin_ = "cpp", "g++"
-        cmd = ["bash", "-c", f"g++ {_CPP_GUI_FLAGS} -o /tmp/a.out /tmp/code.cpp && /tmp/a.out"]
+        cmd = ["bash", "-c", "g++ -std=c++17 -O2 -o /tmp/a.out /tmp/code.cpp -lX11 -lasound && /tmp/a.out"]
     elif lang == "go":
         ext, bin_ = "go", "go"
         cmd = ["bash", "-c", "cd /tmp && GO111MODULE=off go build -o /tmp/a.out code.go && /tmp/a.out"]
@@ -649,18 +660,33 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
             # toolchain command never opens a window (blank frame, false
             # fail), and single-file go/rust builds cannot resolve GUI
             # crates — scaffold the offline module/cargo project first.
+            # The build runs in the FOREGROUND inside _run_ui (a cold cargo
+            # build takes minutes; backgrounding it would screenshot an
+            # empty display while the compiler is still running).
             launch = None
+            build = None
             if lang == "cpp":
-                launch = f"g++ {_CPP_GUI_FLAGS} -o /tmp/a.out /tmp/code.cpp && /tmp/a.out"
+                build = (
+                    _cpp_build_sh("/tmp/code.cpp", "/tmp/a.out", "/tmp/cpp_build.log"),
+                    "/tmp/cpp_build.log",
+                    "/tmp/a.out",
+                )
+                launch = "/tmp/a.out"
             elif lang == "go":
-                launch = _guarded_native_build(
-                    _go_build_sh("/tmp/code.go", "/tmp/a.out"), "/tmp/go_build.log", "/tmp/a.out", "/tmp/a.out"
+                build = (
+                    _go_build_sh("/tmp/code.go", "/tmp/a.out"),
+                    "/tmp/go_build.log",
+                    "/tmp/a.out",
                 )
+                launch = "/tmp/a.out"
             elif lang == "rust":
-                launch = _guarded_native_build(
-                    _rust_build_sh("/tmp/code.rs"), "/tmp/cargo_build.log", _rust_bin(), _rust_bin()
+                build = (
+                    _rust_build_sh("/tmp/code.rs"),
+                    "/tmp/cargo_build.log",
+                    _rust_bin(),
                 )
-            return _run_ui(container, cleaned_code, ext, bin_, timeout, result, launch=launch)
+                launch = _rust_bin()
+            return _run_ui(container, cleaned_code, ext, bin_, timeout, result, launch=launch, build=build)
 
         if lang in ("html", "htm", "web"):
             return _run_web_ui(container, cleaned_code, timeout, result)
@@ -776,19 +802,47 @@ def _ui_launch_shell(code: str, lang: str, ext: str, bin_: str) -> str:
     return f"{bin_} /tmp/code.{ext}"
 
 
-def _run_ui(container, code: str, ext: str, bin_: str, timeout: int, result: dict[str, Any], launch: str | None = None) -> dict[str, Any]:
-    """Launch ``code`` under Xvfb and capture a screenshot of the rendered UI."""
+def _run_ui(
+    container,
+    code: str,
+    ext: str,
+    bin_: str,
+    timeout: int,
+    result: dict[str, Any],
+    launch: str | None = None,
+    build: tuple[str, str, str] | None = None,
+) -> dict[str, Any]:
+    """Launch ``code`` under Xvfb and capture a screenshot of the rendered UI.
+
+    ``build`` is an optional ``(build_sh, build_log, binary)`` triple for
+    compiled languages: the build runs in the foreground (a cold cargo build
+    takes minutes — screenshotting before it finishes yields a false blank),
+    its log tail lands in the run output, and ``test -x`` keeps a failed
+    build from exec'ing a stale binary.
+    """
     capture_delay = max(2, min(timeout - 3, 8))
     # Compiled languages must be built AND run; the bare toolchain command
     # never starts the program (no window opens, blank frame, false fail).
     start_cmd = launch or f"{bin_} /tmp/code.{ext}"
+    if build is not None:
+        build_sh, build_log, binary = build
+        prelude = (
+            ": > /tmp/ui_stdout.txt\n"
+            f"{build_sh}\n"
+            f"tail -5 {build_log} >>/tmp/ui_stdout.txt 2>/dev/null\n"
+        )
+        run_line = f"test -x {binary} && {start_cmd} >>/tmp/ui_stdout.txt 2>&1 &\n"
+    else:
+        prelude = ""
+        run_line = f"{start_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
     wrapper = (
         "#!/bin/bash\n"
         "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
         "XVFB_PID=$!\n"
         f"{_XVFB_WAIT}"
         "export DISPLAY=:99\n"
-        f"{start_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
+        f"{prelude}"
+        f"{run_line}"
         "PY_PID=$!\n"
         f"sleep {capture_delay}\n"
         "scrot -o /tmp/out.png 2>/dev/null\n"
@@ -1230,7 +1284,9 @@ def serve_ui(
         # Native X11 GUI: link X11/ALSA, run under Xvfb.
         fname = "code.cpp"
         http_game = False
-        app_cmd = f"g++ {_CPP_GUI_FLAGS} -o /tmp/app /tmp/code.cpp && /tmp/app"
+        app_cmd = _guarded_native_build(
+            _cpp_build_sh("/tmp/code.cpp", "/tmp/app", "/tmp/cpp_build.log"), "/tmp/cpp_build.log", "/tmp/app", "/tmp/app"
+        )
         serve_mem = "256m"
     else:
         result["error"] = f"unsupported language for UI serving: {lang}"
