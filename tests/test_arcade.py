@@ -1070,6 +1070,12 @@ def test_launcher_game_audio_sidechannel():
     # play() is autoplay-gated, mute is a volume control.
     assert "audioEl.muted = true" in html
     assert "audioEl.muted = false" in html
+    # Sync guards: redundant on() must not reset src (each reset reboots
+    # the encoder + forces browser rebuffer = minute-long start delays),
+    # and a stale in-flight play() must not unmute after a mute (gen guard).
+    assert "audioGen" in html
+    assert "if (!audioEl.src) audioEl.src = audioURL" in html
+    assert "if (gen !== audioGen) return" in html
 
 
 def test_arcade_js_live_sound_control():
