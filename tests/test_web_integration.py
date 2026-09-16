@@ -1607,6 +1607,75 @@ def test_sandbox_serve_ws_proxy_handshake_failure(client):
     assert b"WebSocket handshake failed" in res.data
 
 
+def test_serve_container_host_port_prefers_requested_port():
+    """Port lookup pins the requested in-container port, falls back otherwise."""
+    from unittest.mock import MagicMock
+
+    from web.app import _serve_container_host_port
+
+    with patch("web.app.docker.DockerClient") as mock_docker:
+        mock_container = MagicMock()
+        mock_container.ports = {
+            "6080/tcp": [{"HostPort": "39781"}],
+            "8090/tcp": [{"HostPort": "39782"}],
+        }
+        mock_docker.return_value.containers.get.return_value = mock_container
+        assert _serve_container_host_port("cid123") == "39781"
+        assert _serve_container_host_port("cid123", "8090") == "39782"
+
+        # Pre-audio container (video port only): audio lookup falls back.
+        mock_container.ports = {"6080/tcp": [{"HostPort": "39781"}]}
+        assert _serve_container_host_port("cid123", "8090") == "39781"
+
+
+def test_sandbox_serve_audio_unknown_container(client):
+    with patch("web.app._serve_container_host_port", return_value=None):
+        res = client.get("/serve/audio/nope")
+    assert res.status_code == 404
+    assert b"no audio stream" in res.data
+
+
+def test_sandbox_serve_audio_upstream_unreachable(client):
+    from unittest.mock import Mock
+
+    import httpx
+
+    with (
+        patch("web.app._serve_container_host_port", return_value="50003") as mock_port,
+        patch("web.app.httpx.Client") as mock_client_cls,
+    ):
+        mock_client = Mock()
+        mock_client.send.side_effect = httpx.ConnectError("connect failed")
+        mock_client_cls.return_value = mock_client
+
+        res = client.get("/serve/audio/cid123")
+
+    assert res.status_code == 502
+    mock_port.assert_called_once_with("cid123", "8090")
+
+
+def test_sandbox_serve_audio_streams_mp3(client):
+    """Audio route relays the upstream MP3 bytes with the right content type."""
+    from unittest.mock import Mock
+
+    with (
+        patch("web.app._serve_container_host_port", return_value="50003"),
+        patch("web.app.httpx.Client") as mock_client_cls,
+    ):
+        mock_resp = Mock()
+        mock_resp.status_code = 200
+        mock_resp.iter_bytes.return_value = iter([b"ID3\x04chunk1", b"chunk2"])
+        mock_client = Mock()
+        mock_client.send.return_value = mock_resp
+        mock_client_cls.return_value = mock_client
+
+        res = client.get("/serve/audio/cid123")
+
+    assert res.status_code == 200
+    assert res.content_type == "audio/mpeg"
+    assert res.data == b"ID3\x04chunk1chunk2"
+
+
 def _write_multistep_model_file(ms_models_dir, model="openrouter:poolside/laguna-s-2.1:free"):
     payload = {
         "model": model,

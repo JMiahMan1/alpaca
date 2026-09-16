@@ -1048,6 +1048,32 @@ def test_launcher_stream_telemetry_markup():
     assert "postMessage" in html
 
 
+def test_launcher_game_audio_sidechannel():
+    """Launcher streams game sound via <audio> + /serve/audio/<id> (noVNC is
+    video-only): toggle button, embed auto-start on first gesture, arcade
+    overlay control channel, and states on the report() telemetry channel."""
+    from pathlib import Path
+
+    html = Path("web/templates/ui_launcher.html").read_text()
+    assert 'id="game-audio"' in html
+    assert "/serve/audio/${CONTAINER_ID}" in html
+    assert 'id="btn-sound"' in html
+    assert "arcade-audio" in html
+    assert "audio-playing" in html
+    assert "audio-blocked" in html
+
+
+def test_sandbox_image_includes_audio_chain():
+    """Sandbox image must ship the virtual-audio toolchain: parec/pactl
+    (pulseaudio-utils), ALSA->Pulse redirect (libasound2-plugins), and the
+    MP3 encoder/streamer (ffmpeg)."""
+    from pathlib import Path
+
+    dockerfile = Path("Dockerfile.sandbox").read_text()
+    for pkg in ("pulseaudio-utils", "libasound2-plugins", "ffmpeg"):
+        assert pkg in dockerfile
+
+
 def test_arcade_js_stream_status_handler():
     """Arcade play page listens for the launcher's stream telemetry and
     surfaces it on the live-status line."""

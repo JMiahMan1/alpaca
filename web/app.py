@@ -3243,15 +3243,27 @@ def sandbox_serve():
     return jsonify(res)
 
 
-def _serve_container_host_port(container_id: str) -> str | None:
-    """Resolve a serving container's published host port via the docker socket."""
+def _serve_container_host_port(container_id: str, container_port: str = "6080") -> str | None:
+    """Resolve a serving container's published host port via the docker socket.
+
+    ``container_port`` selects which in-container port to resolve (``6080`` =
+    websockify/noVNC video, ``8090`` = game-audio MP3 stream). Serve
+    containers publish both now, so the lookup pins the requested port and
+    only falls back to the first available binding for pre-audio containers.
+    """
+    wanted = f"{container_port}/tcp"
     try:
         client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
         try:
             c = client.containers.get(container_id)
-            for ports in (c.ports or {}).values():
-                if ports:
-                    hp = ports[0].get("HostPort")
+            ports = c.ports or {}
+            if ports.get(wanted):
+                hp = ports[wanted][0].get("HostPort")
+                if hp:
+                    return str(hp)
+            for bindings in ports.values():
+                if bindings:
+                    hp = bindings[0].get("HostPort")
                     if hp:
                         return str(hp)
         finally:
@@ -3387,6 +3399,54 @@ def sandbox_serve_proxy(container_id: str, subpath: str = ""):
         status=resp.status_code,
         headers=resp_headers,
         content_type=resp.headers.get("content-type", "text/html"),
+    )
+
+
+@app.route("/serve/audio/<container_id>")
+def sandbox_serve_audio(container_id: str):
+    """Stream a serving container's game audio (MP3) through the dashboard origin.
+
+    The sandbox runs a virtual PulseAudio null sink plus an ffmpeg MP3 loop on
+    its port 8090 (noVNC/RFB carries video only, so game sound rides this side
+    channel). This route tunnels that stream through the dashboard's own origin
+    so the launcher page's ``<audio>`` element works from any network, exactly
+    like ``/serve/`` does for video. Infinite stream: 10s connect timeout, then
+    no read timeout (the encoder emits MP3 frames continuously, even for
+    silence, so reads never idle).
+    """
+    host_port = _serve_container_host_port(container_id, "8090")
+    if not host_port:
+        return jsonify({"error": "Serving container not found or has no audio stream"}), 404
+    upstream = f"http://host.docker.internal:{host_port}/audio.mp3"
+    try:
+        client = httpx.Client(timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0))
+        req = client.build_request("GET", upstream, headers={"Accept": "audio/mpeg"})
+        resp = client.send(req, stream=True)
+    except httpx.HTTPError as e:
+        return jsonify({"error": f"Audio upstream unreachable: {e}"}), 502
+    if resp.status_code != 200:
+        with contextlib.suppress(Exception):
+            resp.close()
+        with contextlib.suppress(Exception):
+            client.close()
+        return jsonify({"error": f"Audio upstream returned HTTP {resp.status_code}"}), 502
+
+    def generate():
+        try:
+            for chunk in resp.iter_bytes(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        finally:
+            with contextlib.suppress(Exception):
+                resp.close()
+            with contextlib.suppress(Exception):
+                client.close()
+
+    return Response(
+        generate(),
+        status=200,
+        headers={"Cache-Control": "no-store", "Accept-Ranges": "none"},
+        content_type="audio/mpeg",
     )
 
 
