@@ -3465,7 +3465,7 @@ def sandbox_serve_audio(container_id: str):
 
     def generate():
         try:
-            for chunk in resp.iter_bytes(chunk_size=8192):
+            for chunk in resp.iter_bytes():
                 if chunk:
                     yield chunk
         finally:
@@ -3477,7 +3477,7 @@ def sandbox_serve_audio(container_id: str):
     return Response(
         generate(),
         status=200,
-        headers={"Cache-Control": "no-store", "Accept-Ranges": "none"},
+        headers={"Cache-Control": "no-store", "Accept-Ranges": "none", "X-Accel-Buffering": "no"},
         content_type="audio/mpeg",
     )
 

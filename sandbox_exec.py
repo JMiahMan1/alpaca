@@ -258,8 +258,10 @@ _AUDIO_SETUP = (
 # "audio.mp3", reaped by the container runtime on exit).
 _AUDIO_FFMPEG_SH = (
     "export XDG_RUNTIME_DIR=/tmp/pulse-$(id -u); "
-    "exec ffmpeg -hide_banner -loglevel error -f pulse -i game_sink.monitor "
-    "-c:a libmp3lame -b:a 96k -ac 2 -ar 44100 -f mp3 -listen 1 "
+    "exec ffmpeg -hide_banner -loglevel error -probesize 32 -analyzeduration 1 "
+    "-f pulse -sample_rate 44100 -channels 2 -fragment_size 3528 -i game_sink.monitor "
+    "-c:a libmp3lame -b:a 96k -ac 2 -ar 44100 -reservoir 0 "
+    "-f mp3 -avioflags direct -flush_packets 1 -listen 1 "
     f"http://0.0.0.0:{_AUDIO_PORT}/audio.mp3"
 )
 
