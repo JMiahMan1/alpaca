@@ -19,8 +19,10 @@ from __future__ import annotations
 import base64
 import contextlib
 import io
+import json
 import os
 import re
+import shlex
 import struct
 import tarfile
 import textwrap
@@ -394,7 +396,7 @@ def _lint_html_js(container, code: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _lint_code(container, code: str, lang: str) -> tuple[bool, str]:
+def _lint_code(container, code: str, lang: str) -> tuple[bool | None, str]:
     """Run a language-appropriate syntax check inside the container.
 
     Returns ``(ok, error)``. A syntax error means the model's code is malformed
@@ -414,7 +416,7 @@ def _lint_code(container, code: str, lang: str) -> tuple[bool, str]:
     elif lang == "cpp":
         fname, check = "/tmp/lint.cpp", ["bash", "-c", "g++ -std=c++17 -fsyntax-only /tmp/lint.cpp"]
     elif lang in ("basic", "bas"):
-        fname, check = "/tmp/lint.bas", ["bash", "-c", "yabasic /tmp/lint.bas </dev/null >/dev/null 2>&1"]
+        return None, ""
     elif lang in ("pascal", "pas"):
         fname, check = "/tmp/lint.pas", ["bash", "-c", "fpc -S2 -o/tmp/lint_pas /tmp/lint.pas >/dev/null 2>&1"]
     elif lang in ("typescript", "ts"):
@@ -527,7 +529,7 @@ def extract_clean_code(text: str, lang: str = "python") -> str:
 
     # 2. Check for markdown code fences (complete pairs only)
     fence_patterns = [
-        rf"```(?:{lang}|{lang.lower()}|python3|py|javascript|js|node|html|htm|web|cpp|c\+\+|java|sql|bash|sh|basic|bas|pascal|pas|typescript|ts|yaml|yml|terraform|hcl|spec|rpm)?\s*\n([\s\S]*?)```",
+        rf"```(?:{lang}|{lang.lower()}|python3|py|javascript|js|node|html|htm|web|cpp|c\+\+|c|kotlin|java|sql|bash|sh|basic|bas|pascal|pas|typescript|ts|yaml|yml|terraform|hcl|spec|rpm)?\s*\n([\s\S]*?)```",
         r"```[\w+-]*\s*\n([\s\S]*?)```",
         r"```([\s\S]*?)```",
     ]
@@ -654,7 +656,200 @@ def _read_file(container, path: str) -> bytes | None:
         return None
 
 
-def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool = False) -> dict[str, Any]:
+_CLI_FIXTURE_LANGS = {
+    "bash_backup_rotate": ("bash", "sh"),
+    "bash_csv_sums": ("bash", "sh"),
+    "bash_health_loop": ("bash", "sh"),
+    "net_http_client": ("python", "py"),
+    "net_echo_server": ("python", "py"),
+    "bas_grade_calc": ("basic", "bas"),
+}
+_BASIC_STDIN = {
+    "bas_guess_game": "".join(f"{n}\n" for n in range(1, 101)),
+    "bas_fibonacci": "8\n",
+}
+CLI_FIXTURE_TEST_IDS = frozenset(_CLI_FIXTURE_LANGS) | frozenset(_BASIC_STDIN)
+_CLI_FIXTURE_RUNNER = r'''
+import http.server
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+
+
+def execute(command, args=(), stdin="", expected=0):
+    completed = subprocess.run(command + list(args), input=stdin, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
+    print(completed.stdout, end="", flush=True)
+    assert completed.returncode == expected, f"expected exit {expected}, got {completed.returncode}"
+    return completed.stdout
+
+
+def backup(command, root):
+    source, dest = root / "source files", root / "backup files"
+    source.mkdir()
+    payload = source / "sample.txt"
+    payload.write_text("fixture backup contents\n")
+    output = execute(command, (str(source), str(dest)))
+    assert "Backup complete:" in output, "missing backup success message"
+    archives = list(dest.glob("backup-*.tar.gz"))
+    assert len(archives) == 1, "expected one archive in newly created destination"
+    archive = archives[0]
+    assert re.fullmatch(r"backup-\d{8}-\d{6}\.tar\.gz", archive.name), "invalid archive name"
+    with tarfile.open(archive) as bundle:
+        members = [m for m in bundle.getmembers() if m.isfile() and m.name.endswith("sample.txt")]
+        assert len(members) == 1, "source file missing from backup"
+        assert bundle.extractfile(members[0]).read() == payload.read_bytes(), "backup content mismatch"
+    archive.unlink()
+    old = []
+    for i in range(7):
+        path = dest / f"backup-20000101-00000{i}.tar.gz"
+        with tarfile.open(path, "w:gz") as bundle:
+            bundle.add(payload, arcname="sample.txt")
+        os.utime(path, (946684800 + i, 946684800 + i))
+        old.append(path)
+    execute(command, (str(source), str(dest)))
+    remaining = set(dest.glob("backup-*.tar.gz"))
+    assert len(remaining) == 5 and set(old[3:]) <= remaining, "rotation did not retain newest five"
+    failure = execute(command, (str(root / "missing source"), str(dest)), expected=1)
+    assert "Backup failed" in failure, "missing tar failure diagnostic"
+
+
+def csv_sums(command, root):
+    path = root / "numeric data.csv"
+    path.write_text("name,a,b,c\nalpha,2,3\nbeta,-1,4,8\ngamma,5.5,,2\n")
+    output = execute(command, (str(path),))
+    totals = {int(n): float(v) for n, v in re.findall(r"Column\s+(\d+)\s+total:\s*([-+\d.eE]+)", output)}
+    assert totals == {2: 6.5, 3: 7.0, 4: 10.0}, f"incorrect column totals: {totals}"
+    failure = execute(command, (str(root / "missing.csv"),), expected=1)
+    assert failure.strip(), "missing file error diagnostic"
+
+
+def http_fixture(command, test_id):
+    body = b"alpaca local HTTP fixture\n" + b"0123456789" * 40
+    requests = []
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            status = 503 if self.path == "/down" or (self.path == "/retry" and requests.count("/retry") < 3) else 200
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args):
+            pass
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        if test_id == "net_http_client":
+            output = execute(command, stdin=url + "/body\n")
+            assert requests == ["/body"], "client did not fetch local endpoint"
+            assert re.search(r"\b200\b", output), "missing HTTP status"
+            assert re.search(rf"\b{len(body)}\b", output), "incorrect body length"
+            assert body[:300].decode() in output, "missing body preview"
+        else:
+            output = execute(command, (url + "/retry",))
+            assert requests == ["/retry"] * 3, "expected two failures then success"
+            assert "Endpoint is healthy" in output, "missing healthy message"
+            assert re.findall(r"Attempt\s+(\d+):\s*HTTP\s+(\d+)", output) == [
+                ("1", "503"), ("2", "503"), ("3", "200")], "incorrect attempt reporting"
+            requests.clear()
+            output = execute(command, (url + "/down",), expected=1)
+            assert requests == ["/down"] * 5, "expected exactly five failed attempts"
+            assert "Endpoint is DOWN" in output, "missing DOWN message"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def echo_server(command, root):
+    with (root / "server.log").open("w+") as log:
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            deadline = time.monotonic() + 5
+            connection = None
+            while connection is None and time.monotonic() < deadline:
+                assert process.poll() is None, "echo server exited before accepting clients"
+                try:
+                    connection = socket.create_connection(("127.0.0.1", 9000), timeout=0.2)
+                except OSError:
+                    time.sleep(0.05)
+            assert connection is not None, "echo server never listened on localhost:9000"
+            for index in range(2):
+                if index:
+                    connection = socket.create_connection(("127.0.0.1", 9000), timeout=2)
+                with connection:
+                    connection.settimeout(2)
+                    for payload in (b"echo fixture\x00\xff", b"second message\n" * 40):
+                        connection.sendall(payload)
+                        received = b""
+                        while len(received) < len(payload):
+                            chunk = connection.recv(len(payload) - len(received))
+                            assert chunk, "echo connection closed prematurely"
+                            received += chunk
+                        assert received == payload, "echoed bytes differ"
+            process.send_signal(signal.SIGINT)
+            assert process.wait(timeout=3) == 0, "echo server did not exit cleanly on KeyboardInterrupt"
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=2)
+            log.seek(0)
+            print(log.read(), end="", flush=True)
+
+
+def basic_grade(command):
+    for score, grade in ((95, "A"), (85, "B"), (75, "C"), (65, "D"), (55, "F")):
+        output = execute(command, stdin=f"{score}\n")
+        assert re.search(rf"Score:\s*{score}(?:\.0+)?\s+Grade:\s*{grade}\b", output), "incorrect grade"
+    output = execute(command, stdin="-1\n101\n85\n")
+    assert output.lower().count("invalid score") >= 2, "invalid scores not rejected"
+    assert re.search(r"Grade:\s*B\b", output), "did not recover after invalid scores"
+
+
+def main():
+    test_id, command = sys.argv[1], json.loads(sys.argv[2])
+    with tempfile.TemporaryDirectory(prefix="alpaca-fixture-") as directory:
+        root = Path(directory)
+        os.chdir(root)
+        if test_id == "bash_backup_rotate":
+            backup(command, root)
+        elif test_id == "bash_csv_sums":
+            csv_sums(command, root)
+        elif test_id in ("bash_health_loop", "net_http_client"):
+            http_fixture(command, test_id)
+        elif test_id == "net_echo_server":
+            echo_server(command, root)
+        elif test_id == "bas_grade_calc":
+            basic_grade(command)
+        else:
+            raise ValueError("unknown execution fixture")
+    print("CLI fixture behavior passed", flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print(f"CLI fixture failed: {error}", file=sys.stderr, flush=True)
+        sys.exit(1)
+'''
+
+
+def run_code_once(
+    code: str, lang: str = "python", timeout: int = 30, ui: bool = False, test_id: str | None = None
+) -> dict[str, Any]:
     """Execute ``code`` once and capture the result.
 
     Returns a dict with keys: ``ran`` (bool|None), ``exit_code`` (int|None),
@@ -674,6 +869,9 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         "screenshot": None,
         "lint_passed": True,
     }
+    if test_id in _CLI_FIXTURE_LANGS and (ui or lang not in _CLI_FIXTURE_LANGS[test_id]):
+        result.update(ran=False, exit_code=1, error="execution fixture incompatible with language/UI mode")
+        return result
     try:
         import docker
     except Exception as e:  # pragma: no cover - environment dependent
@@ -722,7 +920,7 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         cmd = ["bash", "/tmp/code.sh"]
     elif lang in ("basic", "bas"):
         ext, bin_ = "bas", "yabasic"
-        cmd = ["bash", "-c", "yabasic /tmp/code.bas </dev/null 2>&1"]
+        cmd = ["yabasic", "/tmp/code.bas"]
     elif lang in ("pascal", "pas"):
         ext, bin_ = "pas", "fpc"
         cmd = [
@@ -781,8 +979,8 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         # token-budget cutoff (unclosed </script>, missing </html>, invalid JS)
         # fails the benchmark instead of grading a broken partial render.
         lint_ok, lint_err = _lint_code(container, cleaned_code, lang)
-        result["lint_passed"] = bool(lint_ok)
-        if not lint_ok:
+        result["lint_passed"] = lint_ok
+        if lint_ok is False:
             result["ran"] = False
             result["exit_code"] = 1
             result["error"] = f"syntax/lint error: {lint_err}"
@@ -832,12 +1030,16 @@ def run_code_once(code: str, lang: str = "python", timeout: int = 30, ui: bool =
         # games call input()/readline; without this they crash with EOFError
         # because exec_run attaches no stdin).
         stdin_redirect = lang not in ("sql",)
-        if stdin_redirect:
-            _put_file(container, "/tmp/stdin.txt", _SAMPLE_STDIN.encode("utf-8"))
+        if test_id in _CLI_FIXTURE_LANGS:
+            _put_file(container, "/tmp/cli_fixture.py", _CLI_FIXTURE_RUNNER.encode("utf-8"))
+            cmd = ["python3", "/tmp/cli_fixture.py", test_id, json.dumps(cmd)]
+        elif stdin_redirect:
+            stdin = _BASIC_STDIN.get(test_id or "", _SAMPLE_STDIN) if lang in ("basic", "bas") else _SAMPLE_STDIN
+            _put_file(container, "/tmp/stdin.txt", stdin.encode("utf-8"))
             if cmd[0] == "bash" and cmd[1] == "-c":
                 cmd = ["bash", "-c", f"{cmd[2]} < /tmp/stdin.txt"]
             else:
-                cmd = ["bash", "-c", f"{bin_} /tmp/code.{ext} < /tmp/stdin.txt"]
+                cmd = ["bash", "-c", f"{shlex.join(cmd)} < /tmp/stdin.txt"]
 
         holder: dict = {}
 
@@ -937,6 +1139,29 @@ def _ui_launch_shell(code: str, lang: str, ext: str, bin_: str) -> str:
     return f"{bin_} /tmp/code.{ext}"
 
 
+def _http_ready_shell(port: int) -> str:
+    return (
+        "READY=0\n"
+        "for i in $(seq 1 20); do\n"
+        "  kill -0 $SRV_PID 2>/dev/null || break\n"
+        f"  if (echo > /dev/tcp/localhost/{port}) >/dev/null 2>&1; then READY=1; break; fi\n"
+        "  sleep 0.5\n"
+        "done\n"
+    )
+
+
+def _http_capture_shell(port: int, timeout: int) -> str:
+    capture_delay = max(2, min(timeout - 3, 8))
+    return (
+        f"timeout {timeout} chromium --headless --no-sandbox --disable-gpu "
+        "--disable-dev-shm-usage --hide-scrollbars --force-device-scale-factor=1 "
+        "--enable-logging=stderr --window-size=1024,768 --screenshot=/tmp/out.png "
+        f"--virtual-time-budget={capture_delay * 1000} http://localhost:{port}/ "
+        ">>/tmp/ui_stdout.txt 2>&1\n"
+        "exit $?\n"
+    )
+
+
 def _run_ui(
     container,
     code: str,
@@ -959,6 +1184,8 @@ def _run_ui(
     # Compiled languages must be built AND run; the bare toolchain command
     # never starts the program (no window opens, blank frame, false fail).
     start_cmd = launch or f"{bin_} /tmp/code.{ext}"
+    if bin_ == "node":
+        return _run_http_ui(container, code, ext, start_cmd, _http_server_port(code), timeout, result)
     if build is not None:
         build_sh, build_log, binary = build
         prelude = (
@@ -970,6 +1197,20 @@ def _run_ui(
     else:
         prelude = ""
         run_line = f"{start_cmd} >/tmp/ui_stdout.txt 2>&1 &\n"
+    compiled = ext in ("go", "rs", "cpp", "c")
+    http_probe = ""
+    if compiled:
+        port = _http_server_port(code)
+        http_probe = (
+            "SRV_PID=$PY_PID\n"
+            "trap 'kill -9 $SRV_PID $XVFB_PID $PAREC_PID 2>/dev/null' EXIT\n"
+            f"{_http_ready_shell(port)}"
+            'if [ "$READY" = "1" ]; then\n'
+            "  touch /tmp/http_ui\n"
+            "  if [ -f /usr/local/share/three.min.js ]; then cp /usr/local/share/three.min.js /tmp/three.min.js; fi\n"
+            f"{_http_capture_shell(port, timeout)}"
+            "fi\n"
+        )
     wrapper = (
         "#!/bin/bash\n"
         "Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 &\n"
@@ -980,6 +1221,7 @@ def _run_ui(
         f"{_AUDIO_GRADE_SETUP}"
         f"{run_line}"
         "PY_PID=$!\n"
+        f"{http_probe}"
         f"sleep {capture_delay}\n"
         "scrot -o /tmp/out.png 2>/dev/null\n"
         "kill $PAREC_PID 2>/dev/null\n"
@@ -993,7 +1235,7 @@ def _run_ui(
     def _exec():
         try:
             ec, out = container.exec_run(
-                ["bash", "/tmp/run_ui.sh"],
+                (["timeout", "--kill-after=2", str(timeout)] if compiled else []) + ["bash", "/tmp/run_ui.sh"],
                 stdout=True,
                 stderr=True,
                 tty=False,
@@ -1016,6 +1258,11 @@ def _run_ui(
         result["screenshot"] = base64.b64encode(png).decode("ascii")
     result["exit_code"] = holder.get("exit_code")
     result["error"] = holder.get("error", "")
+    if compiled and _read_file(container, "/tmp/http_ui") is not None:
+        if t.is_alive():
+            result["exit_code"] = 124
+            result["error"] = "HTTP UI execution timed out"
+        return _http_ui_result(result, png, _http_server_port(code))
     # A GUI app that launches and renders is a working UI. A blank/black frame
     # (instant crash, never-opened window) must NOT count as rendered: the
     # screenshot exists, but it contains no content to grade.
@@ -1127,18 +1374,8 @@ def _run_http_ui(
     port: int,
     timeout: int,
     result: dict[str, Any],
-) -> bool:
-    """Start an HTTP-server program and screenshot its served page.
-
-    Server programs (node/go/rust/cpp/python HTTP games) open no X window,
-    so the Xvfb path always grades them a blank frame. Instead the server is
-    started in the background, its port is polled, and headless Chromium
-    screenshots the served page — the same genuine render ``_run_web_ui``
-    gives static pages. Returns True when the port opened (grading done);
-    False leaves ``result`` untouched so the caller falls back to Xvfb
-    (covers non-servers whose text merely tripped the server heuristic).
-    """
-    capture_delay = max(2, min(timeout - 3, 8))
+) -> dict[str, Any]:
+    """Start an HTTP-server program and screenshot its served page."""
     wrapper = (
         "#!/bin/bash\n"
         "cd /tmp\n"
@@ -1147,19 +1384,10 @@ def _run_http_ui(
         "if [ -f /usr/local/share/three.min.js ]; then cp /usr/local/share/three.min.js /tmp/three.min.js; fi\n"
         f"{launch} >/tmp/ui_stdout.txt 2>&1 &\n"
         "SRV_PID=$!\n"
-        "READY=0\n"
-        "for i in $(seq 1 20); do\n"
-        f"  if (echo > /dev/tcp/127.0.0.1/{port}) >/dev/null 2>&1; then READY=1; break; fi\n"
-        "  sleep 0.5\n"
-        "done\n"
-        'if [ "$READY" != "1" ]; then kill -9 $SRV_PID 2>/dev/null; exit 7; fi\n'
-        "timeout 25 chromium --headless --no-sandbox --disable-gpu "
-        "--disable-dev-shm-usage --hide-scrollbars --force-device-scale-factor=1 "
-        "--enable-logging=stderr --window-size=1024,768 --screenshot=/tmp/out.png "
-        f"--virtual-time-budget={capture_delay * 1000} http://127.0.0.1:{port}/ "
-        ">>/tmp/ui_stdout.txt 2>&1\n"
-        "kill -9 $SRV_PID 2>/dev/null\n"
-        "exit 0\n"
+        "trap 'kill -9 $SRV_PID 2>/dev/null' EXIT\n"
+        f"{_http_ready_shell(port)}"
+        'if [ "$READY" != "1" ]; then exit 7; fi\n'
+        f"{_http_capture_shell(port, timeout)}"
     )
     _put_file(container, f"/tmp/code.{ext}", code.encode("utf-8"))
     _put_file(container, "/tmp/run_http.sh", wrapper.encode("utf-8"))
@@ -1168,7 +1396,7 @@ def _run_http_ui(
     def _exec():
         try:
             ec, out = container.exec_run(
-                ["bash", "/tmp/run_http.sh"],
+                ["timeout", "--kill-after=2", str(timeout), "bash", "/tmp/run_http.sh"],
                 stdout=True,
                 stderr=True,
                 tty=False,
@@ -1182,14 +1410,9 @@ def _run_http_ui(
     t = threading.Thread(target=_exec, daemon=True)
     t.start()
     t.join(timeout + 5)
-    if holder.get("exit_code") == 7:
-        # Port never opened: not actually a server (or it crashed on boot).
-        # Leave result for the Xvfb fallback when it might still paint.
-        with contextlib.suppress(Exception):
-            err = _read_file(container, "/tmp/ui_stdout.txt") or b""
-            holder["boot_output"] = err.decode("utf-8", "replace") if isinstance(err, bytes) else str(err)
-        result["_http_fallback_hint"] = holder.get("boot_output", "")
-        return False
+    if t.is_alive():
+        holder["exit_code"] = 124
+        holder["error"] = "HTTP UI execution timed out"
     result["output"] = _read_file(container, "/tmp/ui_stdout.txt") or b""
     result["output"] = (
         result["output"].decode("utf-8", "replace") if isinstance(result["output"], bytes) else str(result["output"])
@@ -1199,24 +1422,27 @@ def _run_http_ui(
         result["screenshot"] = base64.b64encode(png).decode("ascii")
     result["exit_code"] = holder.get("exit_code")
     result["error"] = holder.get("error", "")
-    if png is not None:
-        try:
-            rendered = _screenshot_has_content(png)
-        except Exception:  # pragma: no cover - guard against image decode surprises
-            rendered = True
-        result["ui_rendered"] = rendered
-        result["ran"] = rendered
-        # Same static-overlay guard as the static path: fail a painted page
-        # whose game-loop JavaScript crashed.
-        console_error = _find_web_js_error(result["output"])
-        if console_error:
-            result["ran"] = False
-            result["ui_rendered"] = False
-            result["error"] = f"JS console error: {console_error}"
-    else:
+    return _http_ui_result(result, png, port)
+
+
+def _http_ui_result(result: dict[str, Any], png: bytes | None, port: int) -> dict[str, Any]:
+    result["ui_rendered"] = bool(png and _screenshot_has_content(png))
+    result["ran"] = result["ui_rendered"] and result["exit_code"] == 0 and not result["error"]
+    console_error = _find_web_js_error(result["output"])
+    if console_error:
+        result["ran"] = False
         result["ui_rendered"] = False
-        result["ran"] = result["exit_code"] == 0
-    return True
+        result["error"] = f"JS console error: {console_error}"
+    elif not result["error"]:
+        if result["exit_code"] in (124, 137):
+            result["error"] = "HTTP UI execution timed out"
+        elif result["exit_code"] == 7:
+            result["error"] = f"HTTP server did not become ready on port {port}"
+        elif result["exit_code"] != 0:
+            result["error"] = f"HTTP UI execution failed (exit code {result['exit_code']})"
+        elif not result["ui_rendered"]:
+            result["error"] = "UI render failed: blank screenshot" if png else "UI render failed: no screenshot"
+    return result
 
 
 def grade_code(
@@ -1225,6 +1451,7 @@ def grade_code(
     expected_output: str | None = None,
     timeout: int = 30,
     ui: bool = False,
+    test_id: str | None = None,
 ) -> dict:
     """Run ``code`` and translate the outcome into a 0-100 score.
 
@@ -1238,43 +1465,44 @@ def grade_code(
     if ui and lang in ("rust", "go", "cpp"):
         # Cold offline builds (cargo/go modules) need minutes, not seconds.
         timeout = max(timeout, 300)
-    run = run_code_once(code, lang, timeout, ui=ui)
+    fixture_args = {"test_id": test_id} if test_id in CLI_FIXTURE_TEST_IDS else {}
+    run = run_code_once(code, lang, timeout, ui=ui, **fixture_args)
     ran = run.get("ran")
     out = run.get("output", "")
-    if ran is None:
-        # Sandbox unavailable: caller decides fallback.
-        return {
-            "ran": None,
-            "score": None,
-            "output": out,
-            "error": run.get("error", ""),
-            "exit_code": None,
-            "screenshot": run.get("screenshot"),
-        }
-    if not ran:
-        # A hard crash or a timeout (e.g. a non-terminating program) is an honest
-        # failure: the code did not run to completion.
-        return {
-            "ran": False,
-            "score": 0,
-            "output": out,
-            "error": run.get("error", ""),
-            "exit_code": run.get("exit_code"),
-            "screenshot": run.get("screenshot"),
-        }
-    score = 100
-    if ui:
-        score = 100 if run.get("screenshot") else 60
-    elif expected_output and expected_output.strip():
-        score = 60 + (40 if expected_output.strip() in out else 0)
-    return {
-        "ran": True,
-        "score": score,
+    lint_passed = run.get("lint_passed")
+    error = run.get("error", "") if not ran else ""
+    if ran is False and not error:
+        if lint_passed is False:
+            error = "syntax/lint error"
+        elif run.get("exit_code") in (124, 137):
+            error = "execution timed out"
+        elif run.get("exit_code") not in (0, None):
+            error = f"runtime error: process exited with code {run['exit_code']}"
+        elif ui and run.get("ui_rendered") is False:
+            error = "UI render failed: blank screenshot" if run.get("screenshot") else "UI render failed: no screenshot"
+        else:
+            error = "runtime error: execution failed"
+        if out.strip():
+            error = f"{error}\n{out.strip()}"
+    result = {
+        "ran": ran,
+        "score": None if ran is None else 0,
         "output": out,
-        "error": "",
+        "error": error,
         "exit_code": run.get("exit_code"),
         "screenshot": run.get("screenshot"),
+        "lint_passed": lint_passed,
+        "run_error": error if ran is False and lint_passed is not False else "",
+        "ui_rendered": run.get("ui_rendered"),
     }
+    if ran:
+        score = 100
+        if ui:
+            score = 100 if run.get("screenshot") else 60
+        elif expected_output and expected_output.strip():
+            score = 60 + (40 if expected_output.strip() in out else 0)
+        result["score"] = score
+    return result
 
 
 def serve_app(code: str, lang: str = "html", port: int = 8080, timeout: int = 600) -> dict[str, Any]:
@@ -1356,6 +1584,8 @@ def stop_serve(container_id: str) -> dict[str, Any]:
         try:
             c = client.containers.get(container_id)
             c.remove(force=True)
+        except docker.errors.NotFound:
+            pass
         finally:
             client.close()
         return {"stopped": True}
@@ -1363,10 +1593,8 @@ def stop_serve(container_id: str) -> dict[str, Any]:
         return {"stopped": False, "error": str(e)}
 
 
-# Serializes the whole serve_ui launch (sweep -> create -> setup -> return)
-# so overlapping launches can never hand out a container another launch
-# deleted (dead session in the browser, noVNC stuck at "connecting").
 _UI_LAUNCH_LOCK = threading.Lock()
+_ARCADE_SESSION_PREFIX = "alpaca-arcade-"
 
 
 def serve_ui(
@@ -1388,13 +1616,11 @@ def serve_ui(
     ``stop_serve``. Only use this for code the user explicitly asked to view; it
     intentionally enables networking (the grading sandbox does not).
 
-    ``name`` is the exact container name (default ``alpaca-ui``). Each launch
-    fully serializes with other launches under a lock — sweep, create, app
-    setup, and return — so an overlapping launch can never remove a session
-    another in-flight launch already returned (that left the browser pointing
-    at a dead container with noVNC stuck at "connecting"). ``exclusive``
-    additionally sweeps same-prefix sessions (including pre-fix suffixed
-    strays) so only one game session exists at a time.
+    ``name`` is the exact container name (default ``alpaca-ui``). Ordinary
+    launches serialize replacement and setup under a shared lock. ``exclusive``
+    additionally removes same-prefix legacy sessions. Names starting with
+    ``alpaca-arcade-`` are independent sessions: they bypass the lock, never
+    replace existing containers, and are excluded from replacement sweeps.
     """
     result: dict[str, Any] = {"container_id": None, "host_port": None, "audio_host_port": None, "error": ""}
     try:
@@ -1499,21 +1725,19 @@ def serve_ui(
 
     client = None
     container = None
+    arcade_session = name.startswith(_ARCADE_SESSION_PREFIX)
     try:
         client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
-        # The whole launch holds the lock: an overlapping launch waits until
-        # this session is fully set up and returned, so it can only replace a
-        # live, already-returned session — never delete one mid-launch.
-        with _UI_LAUNCH_LOCK:
-            # A new launch replaces any leftover, so sessions never pile up.
-            # The prefix sweep also clears pre-fix "<name>-<suffix>" strays.
-            if exclusive:
+        with contextlib.nullcontext() if arcade_session else _UI_LAUNCH_LOCK:
+            if exclusive and not arcade_session:
                 with contextlib.suppress(Exception):
                     for c in client.containers.list(all=True, filters={"name": name}):
-                        if c.name == name or c.name.startswith(name + "-"):
+                        if not c.name.startswith(_ARCADE_SESSION_PREFIX) and (
+                            c.name == name or c.name.startswith(name + "-")
+                        ):
                             with contextlib.suppress(Exception):
                                 c.remove(force=True)
-            else:
+            elif not arcade_session:
                 with contextlib.suppress(Exception):
                     client.containers.get(name).remove(force=True)
             container = client.containers.run(

@@ -101,7 +101,7 @@ async def warm_model(client: httpx.AsyncClient, model: str, proxy_urls: list[str
             try:
                 async with client.stream("POST", f"{base_url}/api/chat", json=payload, headers=headers) as resp:
                     if resp.status_code == 200:
-                        data = await resp.aread()
+                        await resp.aread()
                         # Accept any 200 response — even empty means the proxy
                         # received and processed the request (model is loading).
                         return

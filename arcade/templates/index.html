@@ -18,14 +18,14 @@
 </header>
 <main class="game-grid">
   {% for g in games %}
-  <a class="game-card" href="/play/{{ g.slug }}">
+  <a class="game-card" href="/play/{{ g.slug }}" data-game-slug="{{ g.slug }}">
     <div class="game-title">{{ g.title }}</div>
     <div class="game-stars" title="Benchmark score {{ g.benchmark_score }}">★ {{ g.benchmark_score if g.benchmark_score is not none else '—' }}</div>
     <div class="game-rating">
       {% if g.rating.count %}★ {{ g.rating.average }} <span class="muted">({{ g.rating.count }})</span>{% else %}<span class="muted">not rated yet</span>{% endif %}
     </div>
     <div class="game-meta">🤖 {{ g.model }} · 📅 {{ g.benchmark_date[:10] if g.benchmark_date else '?' }} · ▶ {{ g.plays }}</div>
-    {% if g.top_score %}<div class="game-top">🏆 {{ g.top_score.initials }} — {{ g.top_score.score }}</div>{% endif %}
+    <div class="game-top">{% if g.top_score %}{{ g.top_score.initials }} — {{ g.top_score.score }}{% else %}No scores yet{% endif %}</div>
     <span class="play-now">▶ PLAY</span>
   </a>
   {% else %}
@@ -33,5 +33,6 @@
   {% endfor %}
 </main>
 <footer class="arcade-footer"><span class="coin">●</span> Alpaca Arcade · games stay published until explicitly removed <span class="coin">●</span></footer>
+<script src="/static/arcade.js"></script>
 </body>
 </html>

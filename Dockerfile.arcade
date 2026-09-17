@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir flask
 
 # Copy the standalone service
 COPY arcade/ /app/arcade/
+COPY three.min.js /app/
 
 EXPOSE 5001
 

@@ -17,6 +17,7 @@ COPY alpaca-puller.py /app/
 COPY alpaca_puller.py /app/
 COPY online_providers.py /app/
 COPY imageops.py /app/
+COPY three.min.js /app/
 COPY web/ /app/web/
 
 # Expose Dashboard Port

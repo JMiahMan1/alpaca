@@ -4,6 +4,48 @@
   const $ = (id) => document.getElementById(id);
   const CALLSIGN_KEY = "arcade_callsign";
 
+  function watchBoard(refresh) {
+    let pending = false;
+    const update = async () => {
+      if (document.hidden || pending) return;
+      pending = true;
+      try {
+        await refresh();
+      } catch (_) {
+      } finally {
+        pending = false;
+      }
+    };
+    setInterval(update, 15000);
+    window.addEventListener("focus", update);
+    document.addEventListener("visibilitychange", update);
+  }
+
+  if (!slug) {
+    watchBoard(async () => {
+      const player = document.querySelector(".player-wrap");
+      if (player) {
+        const res = await fetch(window.location.pathname, { cache: "no-store" });
+        if (!res.ok) return;
+        const page = new DOMParser().parseFromString(await res.text(), "text/html");
+        const updated = page.querySelector(".player-wrap");
+        if (updated) player.replaceWith(updated);
+        return;
+      }
+      await Promise.all(Array.from(document.querySelectorAll("[data-game-slug]"), async (card) => {
+        try {
+          const res = await fetch(`/api/games/${encodeURIComponent(card.dataset.gameSlug)}`, { cache: "no-store" });
+          const data = await res.json();
+          if (!data.success) return;
+          const top = (data.game.scores || [])[0];
+          card.querySelector(".game-top").textContent = top ? `${top.initials} — ${top.score}` : "No scores yet";
+        } catch (_) {
+        }
+      }));
+    });
+    return;
+  }
+
   // Remember the player's callsign across machines; it IS the arcade account.
   const savedCallsign = (localStorage.getItem(CALLSIGN_KEY) || "").toUpperCase();
   if (savedCallsign && $("score-initials") && !$("score-initials").value) {
@@ -32,6 +74,20 @@
     });
   }
   const COARSE = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  const controlsBtn = $("btn-controls");
+  let showControls = localStorage.getItem("arcade_show_controls") === "1";
+  function paintControls() {
+    if (!screenEl || !controlsBtn) return;
+    screenEl.classList.toggle("show-controls", showControls);
+    controlsBtn.textContent = showControls ? "Hide Controls" : "Show Controls";
+    controlsBtn.setAttribute("aria-pressed", String(showControls));
+  }
+  if (controlsBtn) controlsBtn.addEventListener("click", () => {
+    showControls = !showControls;
+    localStorage.setItem("arcade_show_controls", showControls ? "1" : "0");
+    paintControls();
+  });
+  paintControls();
   function isFull() {
     return !!(
       document.fullscreenElement ||
@@ -310,7 +366,7 @@
   }
 
   async function refreshScores() {
-    const res = await fetch(`/api/games/${slug}`);
+    const res = await fetch(`/api/games/${slug}`, { cache: "no-store" });
     const data = await res.json();
     if (!data.success) return;
     const list = $("score-list");
@@ -330,6 +386,8 @@
     });
     if (!(data.game.scores || []).length) list.innerHTML = `<li class="muted">No scores yet — be the first!</li>`;
   }
+
+  watchBoard(refreshScores);
 
   $("btn-submit-score").addEventListener("click", async () => {
     const msg = $("score-msg");
@@ -368,27 +426,16 @@
     const frame = $("live-frame");
     const hero = $("code-hero");
     btn.disabled = true;
+    if ($("btn-stop-live")) $("btn-stop-live").disabled = true;
     btn.textContent = "⏳ Starting sandbox…";
     status.textContent = "Spinning up a display sandbox (up to ~2 min on first launch)…";
     // Fresh auto-fullscreen state per launch attempt (a relaunch after
     // exiting fullscreen must be able to re-enter on connect).
     window.__arcadeFullDone = false;
     if (window.__arcadeFullTimer) clearTimeout(window.__arcadeFullTimer);
-    // Relaunching without stopping leaks a container (the embedded
-    // launcher hides its own Stop button). Kill the previous session first.
-    if (window.__arcadeCid) {
-      const old = window.__arcadeCid;
-      window.__arcadeCid = null;
-      try {
-        await fetch(`/api/games/${slug}/stop`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ container_id: old }),
-        });
-      } catch (e) { /* best effort — relaunch anyway */ }
-      frame.removeAttribute("src");
-    }
     try {
+      await stopLiveSession();
+      frame.removeAttribute("src");
       const res = await fetch(`/api/games/${slug}/launch`, { method: "POST" });
       const data = await res.json();
       if (!data.success) throw new Error(data.error || "Launch failed.");
@@ -407,9 +454,7 @@
       status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";
       btn.textContent = "↻ Restart sandbox";
       btn.disabled = false;
-      // Auto-pickup: poll for /tmp/alpaca_score.json the game
-      // writes when a run finishes (initials + score). Stops on
-      // first success, on stop, or on error.
+      if ($("btn-stop-live")) $("btn-stop-live").disabled = false;
       startScorePoll(status);
       // Touch devices: auto-fullscreen via CSS fallback once the live VNC
       // stream is actually connected — never on a fixed timer. A blind
@@ -454,6 +499,10 @@
       }
     } catch (e) {
       status.textContent = `Launch failed: ${e.message}`;
+      if (window.__arcadeCid) {
+        if ($("btn-stop-live")) $("btn-stop-live").disabled = false;
+        startScorePoll(status);
+      }
       btn.textContent = "▶ Play";
       btn.disabled = false;
       // No stream coming — cancel the fullscreen backstop so it can't
@@ -462,66 +511,138 @@
     }
   });
 
-  // Leaving the page with a live sandbox leaks the container. Fire-and-
-  // forget stop on pagehide (sendBeacon survives navigation/close).
-  window.addEventListener("pagehide", () => {
-    if (!window.__arcadeCid) return;
-    try {
-      navigator.sendBeacon(
-        `/api/games/${slug}/stop`,
-        new Blob([JSON.stringify({ container_id: window.__arcadeCid })], { type: "application/json" }),
-      );
-    } catch (e) { /* nothing to do on unload */ }
-    window.__arcadeCid = null;
-  });
+  let scorePollToken = 0;
+  let scorePollTimer;
+  let stoppingSession = null;
 
-  // Auto-pickup polling: the sandbox game writes /tmp/alpaca_score.json
-  // (initials + score) when a run finishes. Poll every 3 s; stop on
-  // first store, on sandbox stop, or on error. Keeps the status line
-  // honest (no silent silent score drift).
-  function startScorePoll(status) {
-    if (!window.__arcadePollToken) {
-      window.__arcadePollToken = 0;
+  function stopScorePoll() {
+    ++scorePollToken;
+    clearTimeout(scorePollTimer);
+  }
+
+  function applyScoreSync(data, status) {
+    if (!data) return;
+    if (!data.success) {
+      if (status) status.textContent = `Score sync: ${data.error || "failed"}`;
+      return;
     }
-    const token = ++window.__arcadePollToken;
-    function tick() {
-      if (token !== window.__arcadePollToken) return; // stopped/replaced
-      if (!window.__arcadeCid) return; // sandbox stopped
-      fetch(`/api/games/${slug}/sync_score`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ container_id: window.__arcadeCid }),
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          if (token !== window.__arcadePollToken) return;
-          if (!data.success) {
-            status.textContent = `Score sync: ${data.error || "failed"}`;
-            return;
-          }
-          if (data.status === "no score yet") return; // keep polling
-          // Score stored. Fill the form, show the result, stop polling.
-          window.__arcadePollToken = null;
-          const initials = $("score-initials");
-          const value = $("score-value");
-          if (initials && !initials.value) initials.value = data.initials || "";
-          if (value) value.value = data.score ?? "";
-          const msg = $("score-msg");
-          if (msg) {
-            msg.textContent = data.auto
-              ? `🎮 Auto-captured: ${data.score} points (${data.rank ? "#" + data.rank + " on the board" : "saved"})`
-              : "Score submitted.";
-          }
-          refreshScores();
-          if (data.new_unlocks) celebrate(data.new_unlocks);
-        })
-        .catch(() => {
-          /* transient — keep polling */
-        });
-      setTimeout(tick, 3000);
+    if (data.status === "no score yet" || data.duplicate) return;
+    const initials = $("score-initials");
+    const value = $("score-value");
+    if (initials && !initials.value) initials.value = data.initials || "";
+    if (value) value.value = data.score ?? "";
+    const msg = $("score-msg");
+    if (msg) msg.textContent = `Auto-captured: ${data.score} points (${data.rank ? "#" + data.rank + " on the board" : "saved"})`;
+    refreshScores().catch(() => {});
+    celebrate(data.new_unlocks);
+  }
+
+  async function syncScore(cid) {
+    const res = await fetch(`/api/games/${slug}/sync_score`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ container_id: cid }),
+    });
+    return res.json();
+  }
+
+  function startScorePoll(status) {
+    stopScorePoll();
+    const token = scorePollToken;
+    const cid = window.__arcadeCid;
+    async function tick() {
+      if (token !== scorePollToken || !cid || cid !== window.__arcadeCid) return;
+      try {
+        const data = await syncScore(cid);
+        if (token === scorePollToken && cid === window.__arcadeCid) applyScoreSync(data, status);
+      } catch (_) {
+      } finally {
+        if (token === scorePollToken && cid === window.__arcadeCid) scorePollTimer = setTimeout(tick, 3000);
+      }
     }
     tick();
   }
+
+  function stopLiveSession() {
+    if (stoppingSession) return stoppingSession;
+    const cid = window.__arcadeCid;
+    stopScorePoll();
+    if (!cid) return Promise.resolve();
+    stoppingSession = (async () => {
+      try {
+        try {
+          applyScoreSync(await syncScore(cid), $("live-status"));
+        } catch (_) {
+        }
+        const res = await fetch(`/api/games/${slug}/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ container_id: cid }),
+        });
+        const data = await res.json();
+        applyScoreSync(data.score_sync, $("live-status"));
+        if (!res.ok || data.error || data.success === false) throw new Error(data.error || "Stop failed.");
+        if (window.__arcadeCid === cid) window.__arcadeCid = null;
+      } finally {
+        stoppingSession = null;
+      }
+    })();
+    return stoppingSession;
+  }
+
+  if ($("btn-stop-live")) $("btn-stop-live").addEventListener("click", async () => {
+    const btn = $("btn-stop-live");
+    const play = $("btn-play-live");
+    btn.disabled = true;
+    play.disabled = true;
+    try {
+      await stopLiveSession();
+      if (window.__arcadeFullTimer) clearTimeout(window.__arcadeFullTimer);
+      exitFull();
+      $("live-frame").removeAttribute("src");
+      $("live-frame").style.display = "none";
+      if ($("code-hero")) $("code-hero").style.display = "";
+      play.textContent = "Play";
+    } catch (e) {
+      $("live-status").textContent = `Stop failed: ${e.message}`;
+      btn.disabled = false;
+      startScorePoll($("live-status"));
+    } finally {
+      play.disabled = false;
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    stopScorePoll();
+    const cid = window.__arcadeCid;
+    if (!cid) return;
+    const url = `/api/games/${slug}/stop`;
+    const body = JSON.stringify({ container_id: cid });
+    let queued = false;
+    try {
+      queued = navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+    } catch (_) {
+    }
+    if (!queued) {
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      }).catch(() => {});
+    }
+    window.__arcadeCid = null;
+  });
+
+  window.addEventListener("pageshow", (ev) => {
+    if (!ev.persisted || window.__arcadeCid) return;
+    if ($("live-frame")) {
+      $("live-frame").removeAttribute("src");
+      $("live-frame").style.display = "none";
+    }
+    if ($("btn-play-live")) $("btn-play-live").disabled = false;
+    if ($("btn-stop-live")) $("btn-stop-live").disabled = true;
+  });
 
   // Score auto-capture: the game is served same-origin, so we can read its
   // localStorage. Scan for numeric candidates and let the player pick one.

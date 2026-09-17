@@ -20,9 +20,12 @@ explicitly removed (DELETE /api/admin/games/<slug> with ARCADE_ADMIN_TOKEN,
 or the Unpublish button in the Alpaca dashboard).
 """
 
+import fcntl
+import hashlib
 import json
 import os
 import re
+import shlex
 import threading
 import time
 import urllib.request
@@ -84,6 +87,8 @@ def _write_json(path: Path, data) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
@@ -146,8 +151,11 @@ def player_stats(initials: str) -> dict:
         if not child.is_dir() or _playable_file(child) is None:
             continue
         meta = _read_json(child / "meta.json", {})
-        scores = _read_json(child / "scores.json", {}).get("scores", [])
-        bests = _read_json(child / "bests.json", {})
+        score_state = _read_json(child / "scores.json", {})
+        scores = score_state.get("scores", [])
+        bests = score_state.get("bests")
+        if not isinstance(bests, dict):
+            bests = _read_json(child / "bests.json", {})
         players = bests.get("players", {}) if isinstance(bests.get("players"), dict) else {}
         mine = players.get(initials, {}) if isinstance(players.get(initials), dict) else {}
         votes = _read_json(child / "ratings.json", {}).get("votes", [])
@@ -356,6 +364,17 @@ def serve_game(slug):
     return send_file(d / "game.html", mimetype="text/html")
 
 
+@app.route("/game/<slug>/three.min.js", methods=["GET"])
+def serve_game_three(slug):
+    d = _game_dir(slug)
+    if d is None or not (d / "game.html").is_file():
+        return jsonify({"error": "game not found"}), 404
+    bundle = Path(__file__).resolve().parent.parent / "three.min.js"
+    if not bundle.is_file():
+        return jsonify({"error": "Three.js bundle not installed"}), 404
+    return send_file(bundle, mimetype="application/javascript")
+
+
 @app.route("/game/<slug>/game.py", methods=["GET"])
 def serve_game_code(slug):
     d = _game_dir(slug)
@@ -373,6 +392,8 @@ def launch_game(slug):
     (the browser can't reach across origins). Spinning up the container
     takes a while — callers should show a loading state (up to ~2 min).
     """
+    import uuid
+
     d = _game_dir(slug)
     if d is None or not (d / "game.py").exists():
         return jsonify({"error": "no runnable code game found for this slug"}), 404
@@ -381,7 +402,12 @@ def launch_game(slug):
     # 2 h session lifetime: the sandbox container's PID1 sleep expires at
     # timeout+60 s and reaps the session, so the 10 min default would kill
     # long play sessions mid-game with no message.
-    payload_obj: dict = {"code": code, "exclusive": True, "timeout": 7200}
+    payload_obj: dict = {
+        "code": code,
+        "name": f"alpaca-arcade-{uuid.uuid4().hex}",
+        "exclusive": False,
+        "timeout": 7200,
+    }
     if _launch_lang(meta):
         payload_obj["lang"] = _launch_lang(meta)
     payload = json.dumps(payload_obj).encode("utf-8")
@@ -412,6 +438,13 @@ def stop_game(slug):
     cid = data.get("container_id")
     if not cid:
         return jsonify({"error": "No container_id provided"}), 400
+    score_sync = None
+    d = _game_dir(slug)
+    if d is not None and _playable_file(d) is not None:
+        try:
+            score_sync, _ = _capture_container_score(d, cid)
+        except Exception as e:
+            score_sync = {"success": False, "error": f"final score sync failed: {str(e)[:200]}"}
     payload = json.dumps({"container_id": cid}).encode("utf-8")
     req = urllib.request.Request(
         f"{WEB_BASE}/api/sandbox/stop_serve", data=payload, headers={"Content-Type": "application/json"}
@@ -420,7 +453,9 @@ def stop_game(slug):
         with urllib.request.urlopen(req, timeout=30) as resp:
             res = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        return jsonify({"error": f"sandbox stop failed: {str(e)[:200]}"}), 502
+        return jsonify({"error": f"sandbox stop failed: {str(e)[:200]}", "score_sync": score_sync}), 502
+    if score_sync is not None:
+        res["score_sync"] = score_sync
     return jsonify(res)
 
 
@@ -541,22 +576,34 @@ def api_game(slug):
     return jsonify({"success": True, "game": card})
 
 
-def _store_score(d: Path, initials: str, score: int) -> dict:
-    """Append a validated score to a game's board. Shared by the manual
-    submit form and the sandbox score-file sync (same validation ledger,
-    achievements, and top-5 trim either way)."""
+def _store_score(d: Path, initials: str, score: int, capture_id: str | None = None) -> dict:
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-    with _lock:
-        before = unlocked_ids(player_stats(initials))
+    with _lock, open(d / ".scores.lock", "a", encoding="utf-8") as score_lock:
+        fcntl.flock(score_lock, fcntl.LOCK_EX)
         data = _read_json(d / "scores.json", {})
         scores = data.get("scores", []) if isinstance(data.get("scores"), list) else []
+        captures = data.get("captures", [])
+        if not isinstance(captures, list):
+            captures = []
+        bests = data.get("bests")
+        if not isinstance(bests, dict):
+            bests = _read_json(d / "bests.json", {})
+        if capture_id is not None and capture_id in captures:
+            if _read_json(d / "bests.json", {}) != bests:
+                _write_json(d / "bests.json", bests)
+            return {
+                "scores": scores,
+                "status": "unchanged",
+                "duplicate": True,
+                "new_unlocks": [],
+                "personal_best": False,
+                "pioneer": False,
+            }
+        before = unlocked_ids(player_stats(initials))
         pioneer = not scores
         scores.append({"initials": initials, "score": score, "at": stamp})
         scores.sort(key=lambda s: -int(s.get("score", 0) or 0))
         scores = scores[:MAX_SCORES]
-        _write_json(d / "scores.json", {"scores": scores})
-        # Cross-game personal-best ledger (top-5 alone forgets old bests).
-        bests = _read_json(d / "bests.json", {})
         if not isinstance(bests.get("players"), dict):
             bests = {"submits": 0, "first_by": None, "players": {}}
         bests["submits"] = int(bests.get("submits", 0) or 0) + 1
@@ -570,6 +617,9 @@ def _store_score(d: Path, initials: str, score: int) -> dict:
         entry["pbs"] = int(entry.get("pbs", 0) or 0) + (1 if personal_best else 0)
         entry.setdefault("first_at", stamp)
         bests["players"][initials] = entry
+        if capture_id is not None:
+            captures.append(capture_id)
+        _write_json(d / "scores.json", {**data, "scores": scores, "bests": bests, "captures": captures})
         _write_json(d / "bests.json", bests)
         after_stats = player_stats(initials)
     new_unlocks = [a for a in after_stats["achievements"] if a["unlocked"] and a["id"] not in before]
@@ -582,6 +632,7 @@ def _store_score(d: Path, initials: str, score: int) -> dict:
         "pioneer": pioneer,
         "new_unlocks": new_unlocks,
         "player_url": f"/player/{initials}",
+        "duplicate": False,
     }
 
 
@@ -602,7 +653,22 @@ def _sync_score_from_container(container_id: str) -> dict | None:
         ("/tmp/high_scores.json", "name", "score"),
     ]
     for path, name_key, score_key in candidates:
-        payload = json.dumps({"container_id": container_id, "command": f"cat {path} 2>/dev/null || echo ''"}).encode(
+        script = (
+            "import hashlib,json,os\n"
+            "try:\n"
+            f" with open({path!r}, 'rb') as f:\n"
+            "  before = os.fstat(f.fileno())\n"
+            "  raw = f.read(1048577)\n"
+            "  after = os.fstat(f.fileno())\n"
+            f" current = os.stat({path!r})\n"
+            " revision = lambda s: [s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns]\n"
+            " if revision(before) == revision(after) == revision(current) and len(raw) <= 1048576:\n"
+            "  print(json.dumps({'data': json.loads(raw), 'revision': revision(after), "
+            "'digest': hashlib.sha256(raw).hexdigest()}))\n"
+            "except (OSError,ValueError):\n"
+            " pass\n"
+        )
+        payload = json.dumps({"container_id": container_id, "command": f"python3 -c {shlex.quote(script)}"}).encode(
             "utf-8"
         )
         req = urllib.request.Request(
@@ -613,8 +679,12 @@ def _sync_score_from_container(container_id: str) -> dict | None:
                 res = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             return {"error": f"score read failed: {str(e)[:200]}"}
+        if not isinstance(res, dict):
+            return {"error": "invalid score read response"}
         if res.get("error"):
             return {"error": res["error"]}
+        if res.get("exit_code") not in (None, 0):
+            return {"error": "score reader failed"}
         raw = (res.get("output") or "").strip()
         if not raw or raw == "":
             continue
@@ -622,13 +692,52 @@ def _sync_score_from_container(container_id: str) -> dict | None:
             data = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if isinstance(data, dict) and name_key in data and score_key in data:
-            return data
+        revision = None
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if isinstance(data, dict) and "data" in data and "revision" in data:
+            revision = data["revision"]
+            digest = data.get("digest", digest)
+            data = data["data"]
         if isinstance(data, list) and data:
-            entry = data[-1]
-            if isinstance(entry, dict) and name_key in entry and score_key in entry:
-                return {"initials": entry[name_key], "score": entry[score_key]}
+            data = data[-1]
+        if isinstance(data, dict) and name_key in data and score_key in data:
+            return {
+                "initials": data[name_key],
+                "score": data[score_key],
+                "source": path,
+                "revision": revision,
+                "digest": digest,
+            }
     return None
+
+
+def _capture_container_score(d: Path, container_id: str) -> tuple[dict, int]:
+    score_data = _sync_score_from_container(container_id)
+    if score_data is None:
+        return {"success": True, "status": "no score yet"}, 200
+    if "error" in score_data:
+        return {"success": False, "error": score_data["error"]}, 502
+    initials = _clean_initials(score_data.get("initials")) or "YOU"
+    try:
+        score = int(score_data.get("score", 0))
+    except (TypeError, ValueError, OverflowError):
+        return {"success": False, "error": "score must be an integer"}, 400
+    if score < 0 or score > 999_999_999:
+        return {"success": False, "error": "score out of range"}, 400
+    identity = [
+        container_id,
+        score_data.get("source", "/tmp/alpaca_score.json"),
+        score_data.get("revision"),
+        score_data.get("digest"),
+        initials,
+        score,
+    ]
+    capture_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+    try:
+        stored = _store_score(d, initials, score, capture_id=capture_id)
+    except OSError as e:
+        return {"success": False, "error": f"score store failed: {str(e)[:200]}"}, 502
+    return {"success": True, "initials": initials, "score": score, **stored, "auto": True}, 200
 
 
 @app.route("/api/games/<slug>/sync_score", methods=["POST"])
@@ -649,21 +758,8 @@ def api_sync_score(slug):
     container_id = data.get("container_id")
     if not container_id:
         return jsonify({"success": False, "error": "No container_id provided"}), 400
-    score_data = _sync_score_from_container(container_id)
-    if score_data is None:
-        return jsonify({"success": True, "status": "no score yet"})
-    if "error" in score_data:
-        return jsonify({"success": False, "error": score_data["error"]}), 502
-    initials = _clean_initials(score_data.get("initials")) or "YOU"
-    try:
-        score = int(score_data.get("score", 0))
-    except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "score must be an integer"}), 400
-    if score < 0 or score > 999_999_999:
-        return jsonify({"success": False, "error": "score out of range"}), 400
-    return jsonify(
-        {"success": True, "initials": initials, "score": score, **_store_score(d, initials, score), "auto": True}
-    )
+    result, status = _capture_container_score(d, container_id)
+    return jsonify(result), status
 
 
 @app.route("/api/games/<slug>/scores", methods=["POST"])

@@ -2738,7 +2738,6 @@
                     <div id="test-result-llm-server" style="font-size:0.72rem; display:none;"></div>
                 </div>
 
-                <!-- Arcade Section (published games + auto-publish threshold) -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
@@ -2748,17 +2747,13 @@
                     </div>
                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
                         Published games live on the arcade (:5001) with their own copies — they survive benchmark and
-                        model deletion until unpublished here. Games scoring at or above the threshold auto-publish.
+                        model deletion until unpublished here. Games are never published automatically; use Publish on a result to add one.
                         <a id="link-open-arcade" href="#" target="_blank" style="color:#38bdf8;">Open arcade →</a>
                     </p>
                     <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
-                        <label style="font-size:0.75rem; color:var(--text-muted);">Auto-publish score ≥</label>
-                        <input type="number" id="input-arcade-threshold" min="0" max="100" step="1" placeholder="e.g. 80" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
-                        <button id="btn-save-arcade" class="btn btn-primary btn-sm">💾 Save</button>
                         <button id="btn-refresh-arcade" class="btn btn-secondary btn-sm btn-slate">↻ Refresh list</button>
                     </div>
                     <div id="arcade-current" style="font-size:0.72rem; color:var(--text-muted);"></div>
-                    <div id="test-result-arcade" style="font-size:0.72rem; display:none;"></div>
                     <div id="arcade-games-list" style="display:flex; flex-direction:column; gap:0.4rem;"></div>
                 </div>
 

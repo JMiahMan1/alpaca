@@ -2,6 +2,8 @@
 
 import configparser
 
+import pytest
+
 import settings_scan
 
 # ---------- response gate ----------
@@ -94,10 +96,16 @@ def test_smart_baseline_tight_model_downgrades_kv_and_layers():
     assert 0 < int(s["n-gpu-layers"]) < 48
 
 
-def test_smart_baseline_unknown_shape_falls_back_conservative():
-    s, _est = settings_scan.compute_smart_baseline({}, 65536, ["q8_0", "q4_0"], 8188)
+@pytest.mark.parametrize(
+    ("kv_choices", "expected_kv"),
+    [(["q8_0", "q4_0"], "q8_0"), (["q8_0"], "q8_0"), (["q4_0"], "q4_0"), ([], "q8_0")],
+)
+def test_smart_baseline_unknown_shape_falls_back_conservative(kv_choices, expected_kv):
+    s, est = settings_scan.compute_smart_baseline({}, 65536, kv_choices, 8188)
     assert s["n-gpu-layers"] == "26"
-    assert s["cache-type-k"] == "q4_0"
+    assert s["cache-type-k"] == s["cache-type-v"] == expected_kv
+    assert s["ctx-size"] == "65536"
+    assert est == 0
 
 
 def test_smart_baseline_never_offloads_kv_to_ram(monkeypatch):
@@ -175,7 +183,7 @@ def test_hill_neighbors_excludes_upgrades_that_bust_vram():
         "flash-attn": "on",
     }
     neighbors = settings_scan.hill_neighbors(base, shape, is_moe=False, ctx=65536, vram_total=8188)
-    assert neighbors == []  # 14GB weights on 8GB VRAM: no upgrade can fit
+    assert neighbors == [dict(base, **{"ubatch-size": "512"}), dict(base, **{"cache-reuse": "0"})]
 
 
 def test_label_for_includes_moe_knob():
@@ -284,24 +292,23 @@ def test_probe_guard_allows_headroom(monkeypatch):
     assert reason == ""
 
 
-def test_load_section_unpins_large_ctx():
-    import configparser
-
+@pytest.mark.parametrize("ctx", [settings_scan.GUARD_UNPIN_CTX, 65536])
+@pytest.mark.parametrize("existing", [{}, {"mlock": "true", "no-mmap": "true", "load-mode": "mlock"}])
+def test_load_section_unpins_large_ctx(ctx, existing):
     ini = configparser.ConfigParser()
-    ini.add_section("m")
-    settings_scan.load_section(ini, "m", {"ctx-size": "65536"})
-    assert ini["m"]["mlock"] == "false"
-    assert ini["m"]["no-mmap"] == "false"
+    ini["m"] = existing
+    settings_scan.load_section(ini, "m", {"ctx-size": str(ctx)})
+    assert "mlock" not in ini["m"]
+    assert "no-mmap" not in ini["m"]
+    assert ini["m"]["load-mode"] == "mmap"
 
 
-def test_load_section_keeps_pin_small_ctx():
-    import configparser
-
+@pytest.mark.parametrize("ctx", [8192, settings_scan.GUARD_UNPIN_CTX - 1])
+def test_load_section_keeps_pin_small_ctx(ctx):
     ini = configparser.ConfigParser()
-    ini.add_section("m")
-    ini["m"]["mlock"] = "true"
-    settings_scan.load_section(ini, "m", {"ctx-size": "8192"})
-    assert ini["m"]["mlock"] == "true"
+    ini["m"] = {"load-mode": "mlock"}
+    settings_scan.load_section(ini, "m", {"ctx-size": str(ctx)})
+    assert ini["m"]["load-mode"] == "mlock"
 
 
 # ---------- in-run thermal watchdog ----------

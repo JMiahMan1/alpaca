@@ -19,6 +19,7 @@ import re
 import sys
 import time
 import unicodedata
+import uuid
 import wave
 from pathlib import Path
 from typing import Any, ClassVar
@@ -31,7 +32,7 @@ from online_providers import online_model_provider
 
 # One-shot code execution for grading coding benchmarks (runs Python/Node in the
 # locked-down alpaca-sandbox container and returns ran/output/exit_code).
-from sandbox_exec import extract_clean_code, grade_code
+from sandbox_exec import CLI_FIXTURE_TEST_IDS, extract_clean_code, grade_code
 
 # Proactive delay between requests when benchmarking online providers. Free-tier
 # endpoints (e.g. OpenRouter) rate-limit aggressively and answer throttled requests
@@ -573,6 +574,8 @@ class LLMModelBenchmark:
             "kind": test_dict.get("kind", "text"),
             "attachments": sorted(atts),
         }
+        if test_dict.get("review_only"):
+            canonical["review_only"] = True
         dumped = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(dumped.encode("utf-8")).hexdigest()[:12]
 
@@ -623,6 +626,12 @@ class LLMModelBenchmark:
         wins for all other fields.
         """
         merged = dict(incoming)
+        run_id = incoming.get("run_id")
+        if run_id and ((not existing and "run_count" in incoming) or (existing and existing.get("run_id") == run_id)):
+            merged["run_count"] = int((existing or incoming).get("run_count") or 1)
+            merged["fail_count"] = int((existing or incoming).get("fail_count") or 0)
+            return merged
+        merged["run_id"] = run_id or uuid.uuid4().hex
         prev_runs = 0
         prev_fails = 0
         if isinstance(existing, dict):
@@ -667,7 +676,9 @@ class LLMModelBenchmark:
                 cur_tests = entry.get(cat_key, {}).get("tests", []) if isinstance(entry.get(cat_key), dict) else []
                 by_id = {t.get("test_id"): t for t in cur_tests}
                 for t in incoming:
-                    by_id[t.get("test_id")] = self._merge_run_history(by_id.get(t.get("test_id")), t)
+                    merged_test = self._merge_run_history(by_id.get(t.get("test_id")), t)
+                    t.update(merged_test)
+                    by_id[t.get("test_id")] = merged_test
                 merged = list(by_id.values())
                 entry[cat_key] = self._calculate_category_stats(merged)
             entry["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -678,6 +689,10 @@ class LLMModelBenchmark:
             os.replace(tmp, file_path)
             return file_path
 
+        for cat_key, cat_block in model_data.items():
+            if cat_key.startswith("category_") and isinstance(cat_block, dict):
+                for test_result in cat_block.get("tests", []):
+                    test_result.update(self._merge_run_history(None, test_result))
         per_model = {
             "benchmark_version": "3.0.0",
             "generated_at": generated_at or time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -700,6 +715,7 @@ class LLMModelBenchmark:
         mode: str,
         use_proxy: bool,
         generated_at: str | None = None,
+        record_run: bool = True,
     ) -> Path | None:
         """Write a single test result to the per-model file immediately after it completes.
 
@@ -735,14 +751,24 @@ class LLMModelBenchmark:
         cat_block = entry.get(cat_key)
         tests = cat_block.get("tests", []) if isinstance(cat_block, dict) else []
         tid = test_result.get("test_id")
+        incoming = dict(test_result)
+        if record_run:
+            incoming["run_id"] = uuid.uuid4().hex
+        else:
+            incoming.setdefault("run_id", uuid.uuid4().hex)
+            incoming.setdefault("run_count", 1)
+            incoming.setdefault("fail_count", 0 if incoming.get("success") else 1)
         replaced = False
         for idx, t in enumerate(tests):
             if t.get("test_id") == tid:
-                tests[idx] = self._merge_run_history(t, test_result)
+                merged = self._merge_run_history(t, incoming) if record_run else {**t, **incoming}
+                tests[idx] = merged
                 replaced = True
                 break
         if not replaced:
-            tests.append(self._merge_run_history(None, test_result))
+            merged = self._merge_run_history(None, incoming) if record_run else incoming
+            tests.append(merged)
+        test_result.update(merged)
         entry[cat_key] = self._calculate_category_stats(tests)
         per_model["last_updated"] = now
         tmp = file_path.with_suffix(".json.tmp")
@@ -1261,6 +1287,58 @@ class LLMModelBenchmark:
         )
         return score_word and persist and name_entry and reset
 
+    @staticmethod
+    def _has_vertical_acceleration(response: str) -> bool:
+        blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", response, re.DOTALL | re.IGNORECASE)
+        try:
+            tree = ast.parse("\n".join(blocks) if blocks else response)
+        except (SyntaxError, ValueError):
+            return False
+
+        def positive_amount(node: ast.AST) -> bool:
+            if isinstance(node, ast.Constant):
+                return isinstance(node.value, (int, float)) and not isinstance(node.value, bool) and node.value > 0
+            return (
+                isinstance(node, ast.BinOp)
+                and isinstance(node.op, ast.Mult)
+                and (
+                    (positive_amount(node.left) and isinstance(node.right, (ast.Name, ast.Attribute)))
+                    or (positive_amount(node.right) and isinstance(node.left, (ast.Name, ast.Attribute)))
+                )
+            )
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AugAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                name = ast.unparse(target).lower()
+                if not re.search(
+                    r"(?:^|\.)(?:vy|vel_y|velocity_y|y_velocity|vertical_velocity|(?:vel|velocity)\.y)$", name
+                ):
+                    continue
+                if isinstance(node, ast.AugAssign):
+                    if isinstance(node.op, ast.Add) and positive_amount(node.value):
+                        return True
+                elif any(
+                    isinstance(part, ast.BinOp)
+                    and isinstance(part.op, ast.Add)
+                    and (
+                        (ast.unparse(part.left).lower() == name and positive_amount(part.right))
+                        or (ast.unparse(part.right).lower() == name and positive_amount(part.left))
+                    )
+                    for part in ast.walk(node.value)
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _has_fibonacci_sequence(response: str) -> bool:
+        code = extract_clean_code(response, "basic")
+        printed = re.findall(r"(?im)^\s*(?:\d+\s+)?print\b([^\n]*)", code)
+        numbers = [int(n) for line in printed for n in re.findall(r"(?<![\w.-])\d+(?![\w.])", line)]
+        return any(numbers[i : i + 6] in ([0, 1, 1, 2, 3, 5], [1, 1, 2, 3, 5, 8]) for i in range(len(numbers) - 5))
+
     def _verify_functional_response(self, test: "dict | str", response: str) -> bool:
         """Evaluate functional response correctness based on the target requirements.
 
@@ -1628,11 +1706,12 @@ class LLMModelBenchmark:
             )
         # ---- Debugging ----
         elif test_id == "debug_offbyone":
-            return (
-                any(x in cleaned for x in ["off", "one", "range", "len(", "index"])
-                and any(x in cleaned for x in ["loop", "<=", "<", "boundary", "array"])
-                and any(x in cleaned for x in ["error", "bug", "fix", "off-by"])
+            correction = re.search(r"\bi\s*<\s*n\b(?!\s*[-+*/])|\bi\s*<=\s*n\s*-\s*1\b(?!\s*[-+*/])", cleaned)
+            replacement = re.search(r"(?:change|replace)\s+`?<=`?\s+(?:to|with)\s+`?<`?(?![=\w])", cleaned)
+            explanation = re.search(r"\b(?:indices|index|bounds|elements)\b", cleaned) and re.search(
+                r"\bn\s*-\s*1\b|exactly\s+`?n`?\s+elements|(?:exclud|before|less than)\w*\s+`?n\b", cleaned
             )
+            return bool((correction or replacement) and explanation)
         elif test_id == "debug_null_deref":
             return (
                 any(x in cleaned for x in ["null", "none"])
@@ -1646,10 +1725,15 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["shared", "synchron", "volatile"])
             )
         elif test_id == "debug_infinite_loop":
-            return (
-                any(x in cleaned for x in ["infinite", "loop"])
-                and any(x in cleaned for x in ["condition", "terminate", "break", "while"])
-                and any(x in cleaned for x in ["fix", "never", "update"])
+            increment = re.search(
+                r"\bi\s*\+\+|\+\+\s*i\b|\bi\s*\+=\s*1\b|\bi\s*=\s*i\s*\+\s*1\b"
+                r"|\bincrement\s+`?i`?\b|\bincrease\s+`?i`?\s+by\s+(?:1|one)\b",
+                cleaned,
+            )
+            return bool(
+                increment
+                and re.search(r"\b(?:while|loop|iteration)\b", cleaned)
+                and re.search(r"terminat|eventually|reach\w*\s+`?n\b|condition\s+(?:becomes|is)\s+false", cleaned)
             )
         elif test_id == "debug_sql_injection":
             return (
@@ -1736,33 +1820,36 @@ class LLMModelBenchmark:
             return (
                 "speed" in cleaned
                 and "jump" in cleaned
-                and any(x in cleaned for x in ["slide", "duck"])
-                and any(x in cleaned for x in ["turn", "corner", "direction"])
-                and any(x in cleaned for x in ["pit", "barrier"])
+                and "lane" in cleaned
+                and all(x in cleaned for x in ["left", "right"])
+                and any(x in cleaned for x in ["obstacle", "pit", "barrier"])
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "retro_donkey_kong":
             return (
                 "ladder" in cleaned
                 and "barrel" in cleaned
-                and "platform" in cleaned
+                and any(x in cleaned for x in ["platform", "floor", "girder"])
                 and any(x in cleaned for x in ["jump", "climb"])
-                and any(x in cleaned for x in ["life", "top", "die"])
+                and "princess" in cleaned
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "retro_mario":
             return (
-                "gravity" in cleaned
-                and any(x in cleaned for x in ["goomba", "enemy"])
-                and any(x in cleaned for x in ["stomp", "jump"])
-                and any(x in cleaned for x in ["pit", "fall", "gap"])
+                ("gravity" in cleaned or self._has_vertical_acceleration(response))
+                and any(x in cleaned for x in ["platform", "floor", "solid"])
+                and any(x in cleaned for x in ["jump", "k_space"])
+                and "flag" in cleaned
                 and any(x in cleaned for x in ["velocity", "vx", "vy"])
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "retro_arcade_loop":
             return (
-                "class " in cleaned
-                and "score" in cleaned
+                "ship" in cleaned
+                and any(x in cleaned for x in ["asteroid", "rock"])
+                and any(x in cleaned for x in ["bullet", "shot"])
+                and any(x in cleaned for x in ["k_space", "fire", "shoot"])
+                and any(x in cleaned for x in ["split", "fragment", "size - 1", "size-1"])
+                and any(x in cleaned for x in ["thrust", "acceleration"])
+                and ("wrap" in cleaned or "%=" in cleaned)
                 and "lives" in cleaned
-                and "level" in cleaned
-                and "update" in cleaned
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "retro_crossy_road":
             return (
@@ -1781,10 +1868,10 @@ class LLMModelBenchmark:
         elif test_id == "retro_echo_dolphin":
             return (
                 "dolphin" in cleaned
-                and any(x in cleaned for x in ["fish", "eat"])
-                and any(x in cleaned for x in ["shark", "damage", "enemy"])
+                and any(x in cleaned for x in ["reef", "seaweed", "obstacle", "rock", "gate"])
+                and any(x in cleaned for x in ["collid", "collision", "overlap"])
                 and any(x in cleaned for x in ["water", "sea", "swim"])
-                and any(x in cleaned for x in ["velocity", "jump", "leap"])
+                and any(x in cleaned for x in ["k_left", "k_right", "arrow"])
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "retro_pacman":
             return (
@@ -1804,18 +1891,34 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["lock", "fall", "down"])
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "game_minecraft_voxel":
-            return (
-                any(x in cleaned for x in ["voxel", "block", "chunk"])
-                and any(x in cleaned for x in ["grid", "3d", " x ", " y ", " z "])
-                and any(x in cleaned for x in ["gravity", "fall", "land", "solid"])
-                and any(x in cleaned for x in ["get", "set", "block"])
+            mutation = re.search(
+                r"\bdel\s+\w*(?:block|voxel|world|chunk)\w*\s*\["
+                r"|\b\w*(?:block|voxel|world|chunk)\w*\.(?:pop|remove|append|add)\s*\("
+                r"|\b(?:remove|add|place|break|set)_?(?:block|voxel)\s*\(",
+                cleaned,
+            ) or re.search(
+                r"(?:mousebuttondown|keydown|event\.button|event\.key)[^\n]*:\s*\n"
+                r"\s+\w*(?:block|voxel|world|chunk)\w*\[[^\n]+\]\s*=(?!=)",
+                cleaned,
+            )
+            return bool(
+                mutation
+                and "pygame" in cleaned
+                and "perspective" in cleaned
+                and any(x in cleaned for x in ["glvertex3", "gl_quads"])
+                and "glrotate" in cleaned
+                and any(x in cleaned for x in ["mousebuttondown", "keydown", "get_pressed"])
+                and sum(x in cleaned for x in ["grass", "dirt", "stone"]) >= 2
             )
         elif test_id == "game_fps":
             return (
-                any(x in cleaned for x in ["raycast", "hitscan", "ray"])
-                and any(x in cleaned for x in ["wall", "box", "aabb"])
+                any(x in cleaned for x in ["projectile", "bullet", "hitscan", "raycast"])
+                and any(x in cleaned for x in ["fire", "shoot", "k_space", "mousebuttondown"])
+                and any(x in cleaned for x in ["wall", "corridor", "room", "aabb"])
                 and any(x in cleaned for x in ["yaw", "pitch", "angle"])
-                and any(x in cleaned for x in ["hit", "intersect", "distance"])
+                and "target" in cleaned
+                and "crosshair" in cleaned
+                and "perspective" in cleaned
             )
         elif test_id == "game_blockblast":
             return (
@@ -2132,11 +2235,18 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["ratio", "luminance", "relative"])
             )
         elif test_id == "uiux_wireframe":
-            return (
-                any(x in cleaned for x in ["wireframe", "ascii", "box"])
-                and any(x in cleaned for x in ["sign", "email", "password"])
-                and any(x in cleaned for x in ["button", "cta", "submit"])
+            fields = all(re.search(rf"\b{field}\b", cleaned) for field in ["name", "email", "password"])
+            layout = re.search(r"[\u2500-\u257f]|\+[-+]{3,}|\[[^\]\n]*\]", cleaned) or (
+                "\n" in cleaned and any(x in cleaned for x in ["region", "section", "box"])
             )
+            regions = sum(
+                bool(re.search(rf"\b{word}\b", cleaned)) for word in ["header", "form", "footer", "action", "cta"]
+            )
+            action = re.search(r"\b(?:sign\s*up|create\s+(?:your\s+)?account|register|submit)\b", cleaned)
+            button = re.search(
+                r"\b(?:button|cta|primary)\b|\[\s*(?:sign\s*up|create\s+account|register|submit)\s*\]", cleaned
+            )
+            return bool(fields and layout and regions >= 2 and action and button)
         elif test_id == "uiux_flow":
             return (
                 "reset" in cleaned
@@ -2271,11 +2381,23 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["share", "friend", "kind", "calm"])
             )
         elif test_id == "life_dad_joke":
-            return (
-                any(x in cleaned for x in ["joke", "punchline"])
-                and ("?" in cleaned or "why" in cleaned or "what" in cleaned or "how" in cleaned)
-                and any(x in cleaned for x in ["because", "knock", "dad", "groan"])
-            )
+            joke_text = re.sub(r"[*`]", "", cleaned)
+            numbered = re.split(r"(?m)^\s*\d+[.)]\s+", joke_text)
+            if len(numbered) > 1:
+                jokes = [part.strip() for part in numbered[1:]]
+            else:
+                jokes = [part.strip() for part in re.split(r"\n\s*\n", joke_text) if part.strip()]
+            if len(jokes) != 3 or len(set(jokes)) != 3:
+                return False
+            if re.search(r"\b(?:fuck\w*|shit\w*|bitch\w*|porn\w*)\b", joke_text):
+                return False
+            for joke in jokes:
+                labeled = re.fullmatch(r"\s*setup:\s*(.+?)\s+punchline:\s*(.+?)\s*", joke, re.DOTALL)
+                parts = list(labeled.groups()) if labeled else re.split(r"(?<=[?!.])\s+|\n+|\s+[\u2014\u2013]\s+", joke)
+                parts = [part for part in parts if len(re.findall(r"\b\w+\b", part)) >= 2]
+                if len(parts) < 2:
+                    return False
+            return True
         elif test_id == "life_cars":
             return (
                 any(x in cleaned for x in ["timing belt", "belt"])
@@ -2423,25 +2545,33 @@ class LLMModelBenchmark:
             return (
                 any(x in cleaned for x in ["tar", "backup", "cp "])
                 and any(x in cleaned for x in ["ls", "head", "find", "for"])
-                and "#!/bin/bash" in cleaned
+                and bool(
+                    re.search(r"(?m)^#![ \t]*/(?:[^\s/]+/)*(?:bash|env[ \t]+(?:-S[ \t]+)?bash)(?:[ \t]|$)", cleaned)
+                )
             )
         elif test_id == "bash_csv_sums":
             return (
                 any(x in cleaned for x in ["awk", "cut", "while read"])
                 and any(x in cleaned for x in ["sum", "total"])
-                and "#!/bin/bash" in cleaned
+                and bool(
+                    re.search(r"(?m)^#![ \t]*/(?:[^\s/]+/)*(?:bash|env[ \t]+(?:-S[ \t]+)?bash)(?:[ \t]|$)", cleaned)
+                )
             )
         elif test_id == "bash_health_loop":
             return (
                 any(x in cleaned for x in ["curl", "http_code", "wget"])
                 and any(x in cleaned for x in ["sleep", "while", "for"])
-                and "#!/bin/bash" in cleaned
+                and bool(
+                    re.search(r"(?m)^#![ \t]*/(?:[^\s/]+/)*(?:bash|env[ \t]+(?:-S[ \t]+)?bash)(?:[ \t]|$)", cleaned)
+                )
             )
         elif test_id == "bash_top_cpu":
             return (
                 any(x in cleaned for x in ["ps ", "top", "awk"])
                 and any(x in cleaned for x in ["cpu", "%cpu"])
-                and "#!/bin/bash" in cleaned
+                and bool(
+                    re.search(r"(?m)^#![ \t]*/(?:[^\s/]+/)*(?:bash|env[ \t]+(?:-S[ \t]+)?bash)(?:[ \t]|$)", cleaned)
+                )
             )
         # ---- BASIC (yabasic) ----
         elif test_id == "bas_guess_game":
@@ -2455,7 +2585,7 @@ class LLMModelBenchmark:
                 any(x in cleaned for x in ["fibonacci", "fib"])
                 and any(x in cleaned for x in ["for", "next"])
                 and any(x in cleaned for x in ["print"])
-            )
+            ) or self._has_fibonacci_sequence(cleaned)
         elif test_id == "bas_grade_calc":
             return (
                 any(x in cleaned for x in ["input", "grade", "score"])
@@ -2559,7 +2689,7 @@ class LLMModelBenchmark:
         {
             "label": "No placeholder/stub text",
             "check": ["todo", "your code here", "placeholder", "fixme", "insert code", "xxx", "implement this"],
-            "match": "absent",
+            "match": "absent_stubs",
             "points": 8,
         },
         {
@@ -2587,8 +2717,15 @@ class LLMModelBenchmark:
                 "print(",
                 "program ",
                 "#!/bin",
+                "DOMContentLoaded",
+                "addEventListener",
+                "window.onload",
+                "init()",
+                "render()",
+                "newGame()",
+                ".listen(",
             ],
-            "match": "any",
+            "match": "entry_point",
             "points": 8,
         },
         {
@@ -2598,6 +2735,81 @@ class LLMModelBenchmark:
             "points": 4,
         },
     ]
+
+    @staticmethod
+    def _has_stub_text(response: str) -> bool:
+        if re.search(r"\b(?:your code here|insert code|implement this|NotImplementedError)\b", response, re.I):
+            return True
+        if re.search(
+            r"(?://|/\*|<!--|#)\s*(?:\*\s*)?(?:TODO|FIXME|XXX|placeholder)\b"
+            r"|^\s*(?:TODO|FIXME|XXX|placeholder)(?:\s*:.*)?\s*$",
+            response,
+            re.I | re.M,
+        ):
+            return True
+        blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", response, re.S | re.I)
+        for code in blocks or [response]:
+            try:
+                tree = ast.parse(code.strip())
+            except (SyntaxError, ValueError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                if isinstance(node, ast.ClassDef) and node.bases:
+                    continue
+                body = node.body
+                if (
+                    body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    body = body[1:]
+                if len(body) == 1 and isinstance(body[0], ast.Pass):
+                    return True
+        return False
+
+    @staticmethod
+    def _has_truncated_tail(response: str) -> bool:
+        if response.count("```") % 2:
+            return True
+        tail = re.sub(r"(?m)^[ \t]*```[ \t]*$", "", response).rstrip()
+        return tail.endswith(("...", "…"))
+
+    @staticmethod
+    def _has_entry_point(response: str, checks: list[str]) -> bool:
+        blocks = re.findall(r"```[a-zA-Z0-9_+-]*\n(.*?)```", response, re.S)
+        source = "\n".join(blocks) if blocks else response
+        scripts = re.findall(r"<script\b[^>]*>(.*?)</script\s*>", source, re.S | re.I)
+        if scripts:
+            source = "\n".join(scripts)
+        tokens = re.compile(
+            r"\"\"\"[\s\S]*?\"\"\"|'''[\s\S]*?'''|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"
+            r"|`(?:\\.|[^`\\])*`|<!--[\s\S]*?-->|/\*[\s\S]*?\*/|//[^\n]*|(?m:^[ \t]*#(?!\!)[^\n]*)"
+        )
+        executable = tokens.sub(lambda match: " " * len(match.group()), source)
+        legacy_checks = [
+            check for check in checks
+            if check not in {"DOMContentLoaded", "addEventListener", "window.onload", "init()", "render()", "newGame()", ".listen("}
+        ]
+        if any(check.lower() in executable.lower() for check in legacy_checks):
+            return True
+        if re.search(
+            r"\b(?:init|render|newGame)\s*\([^;{}]*\)\s*(?:;|$)"
+            r"|\bwindow\s*\.\s*onload\s*=(?!=)\s*\S"
+            r"|\.\s*listen\s*\(\s*\S",
+            executable,
+            re.M,
+        ):
+            return True
+        for match in re.finditer(
+            r"\.\s*addEventListener\s*\(\s*(['\"])(?:DOMContentLoaded|click|keydown)\1\s*,\s*\S",
+            source,
+        ):
+            if executable[match.start()] == ".":
+                return True
+        return False
 
     def _score_code_quality(self, response: str, test: dict) -> dict:
         """Heuristic code-quality score (0-100) plus a syntax_valid flag.
@@ -2657,8 +2869,7 @@ class LLMModelBenchmark:
             notes.append("substantial length")
 
         # Penalties
-        placeholders = ["todo", "your code here", "fixme", "placeholder", "insert code", "xxx"]
-        if any(p in low for p in placeholders):
+        if self._has_stub_text(code):
             score -= 25
             notes.append("contains placeholder text")
         # Truncated / unbalanced braces
@@ -2667,7 +2878,7 @@ class LLMModelBenchmark:
         if opens and closes and abs(opens - closes) >= 2:
             score -= 12
             notes.append("unbalanced braces (possibly truncated)")
-        if low.rstrip().endswith(("```", "...")):
+        if self._has_truncated_tail(response):
             score -= 8
             notes.append("appears truncated")
 
@@ -2846,7 +3057,10 @@ class LLMModelBenchmark:
                 )
             )
             try:
-                gr = grade_code(repaired_resp, lang, None, ui=is_ui)
+                gr = grade_code(
+                    repaired_resp, lang, None, ui=is_ui,
+                    **({"test_id": test["id"]} if test.get("id") in CLI_FIXTURE_TEST_IDS else {}),
+                )
                 original_result["repaired_code_ran"] = gr.get("ran")
                 original_result["repaired_code_score"] = gr.get("score")
                 original_result["repaired_code_error"] = gr.get("error", "")
@@ -2914,10 +3128,14 @@ class LLMModelBenchmark:
             if isinstance(checks, str):
                 checks = [checks]
             match = (crit.get("match") or "any").lower()
-            if match == "absent":
+            if match == "absent_stubs":
+                passed = not self._has_stub_text(haystack)
+            elif match == "entry_point":
+                passed = self._has_entry_point(code or response, checks)
+            elif match == "absent":
                 passed = not any(c.lower() in low for c in checks)
             elif match == "absent_trailing":
-                passed = not (response.rstrip().endswith(("...", "```")))
+                passed = not self._has_truncated_tail(response)
             elif match == "all":
                 passed = all(c.lower() in low for c in checks)
             else:  # any
@@ -4078,7 +4296,9 @@ class LLMModelBenchmark:
                         # Persist the reused result too so the per-model file stays complete
                         # even if the run is interrupted before the final merge.
                         try:
-                            self.save_test_result_incremental(model, category, reused, mode, use_proxy, generated_at)
+                            self.save_test_result_incremental(
+                                model, category, reused, mode, use_proxy, generated_at, record_run=False
+                            )
                         except Exception as e:
                             print(
                                 f"[benchmark] Warning: incremental save failed for skipped {category}/{test['id']}: {e}"
@@ -4124,7 +4344,8 @@ class LLMModelBenchmark:
                 # already retry internally; this covers local/proxy models, which
                 # otherwise score a transient empty as a permanent false negative.
                 test_result: dict = {}
-                for _attempt in range(3):
+                attempts = 1 if online_model_provider.is_online_model(model) else 3
+                for _attempt in range(attempts):
                     try:
                         run_test = test
                         # Tool benchmarks (image/tts/music/composite) talk to the
@@ -4157,7 +4378,7 @@ class LLMModelBenchmark:
                     _resp = test_result.get("response") or ""
                     _err = (test_result.get("error") or "").lower()
                     _empty = (not _resp) and ("empty" in _err or test_result.get("tokens_generated", 0) == 0)
-                    if test_result.get("success") or not _empty or _attempt >= 2:
+                    if test_result.get("success") or not _empty or _attempt >= attempts - 1:
                         break
                     print(f"[benchmark] empty result for {test['id']} (attempt {_attempt + 1}); retrying")
                     await asyncio.sleep(2.0 * (_attempt + 1))
@@ -4202,7 +4423,9 @@ class LLMModelBenchmark:
                 # outcome feeds the unified 0-100 score below. Only languages we
                 # can execute are run; others fall back to a structural check.
                 ttype = self._infer_type(test, resp_text)
-                if ttype in ("code", "ui") and resp_text:
+                if test.get("review_only"):
+                    test_result.update(lint_passed=True, code_ran=None, code_score=None)
+                elif ttype in ("code", "ui") and resp_text:
                     is_ui = (ttype == "ui") or any(
                         k in resp_text.lower()
                         for k in (
@@ -4222,7 +4445,10 @@ class LLMModelBenchmark:
                     if lang in self.EXEC_LANGS or is_ui:
                         expected_out = test.get("expected_output")
                         try:
-                            gr = grade_code(resp_text, lang, expected_out, ui=is_ui)
+                            gr = grade_code(
+                                resp_text, lang, expected_out, ui=is_ui,
+                                **({"test_id": test["id"]} if test.get("id") in CLI_FIXTURE_TEST_IDS else {}),
+                            )
                             test_result["code_ran"] = gr["ran"]
                             test_result["code_score"] = gr["score"]
                             test_result["lint_passed"] = gr.get("lint_passed", gr["ran"] is not False)
@@ -4255,7 +4481,6 @@ class LLMModelBenchmark:
                 # ---- Post-generation repair opportunity ----
                 # If a code/UI test produced runnable code that failed execution,
                 # give the model one repair attempt. Deduct points when repaired.
-                repair_triggered = False
                 repair_eligible = (
                     ttype in ("code", "ui")
                     and resp_text
@@ -4265,7 +4490,7 @@ class LLMModelBenchmark:
                 )
                 if repair_eligible:
                     repair_error = test_result.get("code_error", "")
-                    repair_attempted = await self._attempt_post_generation_repair(
+                    await self._attempt_post_generation_repair(
                         model, test, test_result, resp_text, repair_error, use_proxy
                     )
                     # The repair method updates test_result directly.
@@ -4275,7 +4500,6 @@ class LLMModelBenchmark:
                             "Post-generation repair applied: code needed fixing ("
                             f"original error: {repair_error})"
                         )
-                        repair_deduction = int(test_result.get("repair_points_deducted", 25))
                         test_result["repair_applied_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                         # Re-evaluate rubric on repaired response if repair changed it.
                         if "repaired_response" in test_result:
@@ -4325,7 +4549,7 @@ class LLMModelBenchmark:
                 # passed a compile/syntax check — an empty generation must not be
                 # reported as a green lint, or the dashboard would show "Lint/Compile
                 # ✓ passed" for a model that generated zero tokens.
-                if ttype in ("code", "ui") and not resp_text:
+                if ttype in ("code", "ui") and not resp_text and not test.get("review_only"):
                     test_result["lint_passed"] = False
                     test_result.setdefault("code_ran", False)
                     test_result["code_error"] = test_result.get("code_error") or "No code generated (empty response)"
@@ -4598,7 +4822,7 @@ class LLMModelBenchmark:
     # prose, which is what the sandbox execution step then verifies.
     # GRADER_DIRECTIVE_VERSION bumps whenever this text materially changes so
     # result hashing (_compute_test_hash) marks prior runs outdated.
-    GRADER_DIRECTIVE_VERSION: ClassVar[str] = "v2"
+    GRADER_DIRECTIVE_VERSION: ClassVar[str] = "v4"
     CODE_DIRECTIVE = (
         "\n\nREQUIREMENTS: Respond with a single, complete, self-contained, "
         "runnable program and nothing else (no preamble, no explanation outside "
@@ -4786,6 +5010,8 @@ class LLMModelBenchmark:
             if isinstance(raw, (int, float)):
                 return max(0, min(100, round(raw)))
             return 100 if result.get("success") else 0
+        if test.get("review_only"):
+            return 100 if resp and result.get("success") and result.get("functional_pass") is not False else 0
         if ttype in ("code", "ui"):
             ran = result.get("code_ran")
             if ran is None:

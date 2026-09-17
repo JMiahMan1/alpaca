@@ -2,9 +2,11 @@
 """Quick focused benchmark: retrogames with local model."""
 import asyncio
 import sys
+
 sys.path.insert(0, '.')
 
 from llm_benchmark_suite import LLMModelBenchmark
+
 
 async def main():
     suite = LLMModelBenchmark()

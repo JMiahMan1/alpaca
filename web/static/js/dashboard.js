@@ -4931,7 +4931,7 @@ const saved = _loadHumanRatings(t.id) || {};
                     let lintCell;
                     if (lp === true) lintCell = '<span class="test-stats-lint-ok">✓ passed</span>';
                     else if (lp === false) lintCell = '<span class="test-stats-lint-fail">✗ FAILED</span>';
-                    else lintCell = '<span style="color:var(--text-muted);">—</span>';
+                    else lintCell = '<span style="color:var(--text-muted);">not run / unknown</span>';
                     const lr = lastRun[m];
                     const dateCell = lr
                         ? `<span title="${escapeHtml(String(lr))}" style="color:var(--text-muted);white-space:nowrap;">${escapeHtml(String(lr).replace('T', ' ').slice(0, 16))}</span>`
@@ -10299,12 +10299,9 @@ const saved = _loadHumanRatings(t.id) || {};
     const llmServerCurrent = document.getElementById('llm-server-current');
     const testResultLlmServer = document.getElementById('test-result-llm-server');
 
-    const inputArcadeThreshold = document.getElementById('input-arcade-threshold');
-    const btnSaveArcade = document.getElementById('btn-save-arcade');
     const btnRefreshArcade = document.getElementById('btn-refresh-arcade');
     const badgeStatusArcade = document.getElementById('badge-status-arcade');
     const arcadeCurrent = document.getElementById('arcade-current');
-    const testResultArcade = document.getElementById('test-result-arcade');
     const arcadeGamesList = document.getElementById('arcade-games-list');
     const linkOpenArcade = document.getElementById('link-open-arcade');
 
@@ -10424,27 +10421,12 @@ const saved = _loadHumanRatings(t.id) || {};
             if (linkOpenArcade) linkOpenArcade.href = arcadeBaseUrl();
             const res = await fetch('/api/arcade/settings');
             if (!res.ok) return;
-            const data = await res.json();
-            if (inputArcadeThreshold && data.auto_publish_score != null) {
-                inputArcadeThreshold.value = data.auto_publish_score;
-            }
             if (arcadeCurrent) {
-                arcadeCurrent.textContent =
-                    `Saved threshold: ${data.auto_publish_score ?? '(unset, 80 in effect)'} | ` +
-                    `Live: ${data.live_auto_publish_score}` +
-                    (data.needs_apply ? ' — ⚠ restart web to apply.' : ' — in sync.');
+                arcadeCurrent.textContent = 'Publishing is manual only. Benchmark scores never add or update Arcade games.';
             }
             if (badgeStatusArcade) {
-                if (data.auto_publish_score == null) {
-                    badgeStatusArcade.className = 'badge badge-warning';
-                    badgeStatusArcade.textContent = 'Default 80';
-                } else if (data.needs_apply) {
-                    badgeStatusArcade.className = 'badge badge-warning';
-                    badgeStatusArcade.textContent = 'Needs Apply';
-                } else {
-                    badgeStatusArcade.className = 'badge badge-success';
-                    badgeStatusArcade.textContent = 'Configured';
-                }
+                badgeStatusArcade.className = 'badge badge-secondary';
+                badgeStatusArcade.textContent = 'Manual only';
             }
         } catch (err) {
             console.error('Error loading arcade settings:', err);
@@ -10508,41 +10490,6 @@ const saved = _loadHumanRatings(t.id) || {};
         } catch (err) {
             arcadeGamesList.innerHTML = '<div style="font-size:0.75rem; color:#f87171;">Failed to load published games.</div>';
         }
-    }
-
-    if (btnSaveArcade) {
-        btnSaveArcade.addEventListener('click', async () => {
-            const show = (msg, ok) => {
-                if (testResultArcade) {
-                    testResultArcade.style.display = 'block';
-                    testResultArcade.style.color = ok ? '#4ade80' : '#f87171';
-                    testResultArcade.textContent = msg;
-                }
-            };
-            const val = parseFloat(inputArcadeThreshold?.value);
-            if (!Number.isFinite(val) || val < 0 || val > 100) {
-                show('Enter a threshold between 0 and 100.', false);
-                return;
-            }
-            try {
-                const res = await fetch('/api/arcade/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ auto_publish_score: val })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    show(`Saved threshold ${data.auto_publish_score}; applies immediately.`, true);
-                    showToast('Arcade settings saved.', 'success');
-                } else {
-                    show(data.error || 'Save failed.', false);
-                }
-            } catch (err) {
-                show(`Error saving: ${err.message}`, false);
-            } finally {
-                await loadArcadeSettings();
-            }
-        });
     }
 
     if (btnRefreshArcade) {

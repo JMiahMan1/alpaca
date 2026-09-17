@@ -112,10 +112,12 @@ def test_parse_keep_alive_variants():
     assert alpaca_proxy.parse_keep_alive("250ms") == 0.25
 
 
-def test_router_model_candidates_include_blob_and_public_names():
+@pytest.mark.parametrize("router_dir", ["/router-models", ".alpaca-router"])
+def test_router_model_candidates_include_blob_and_public_names(monkeypatch, router_dir):
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", router_dir)
     manifest = make_manifest(digest="sha256:deadbeef", size=1)
     candidates = alpaca_proxy.router_model_candidates("tinyllama:latest", manifest)
-    assert "/router-models/tinyllama--latest.gguf" in candidates
+    assert str(pathlib.Path(router_dir) / "tinyllama--latest.gguf") in candidates
     assert "tinyllama--latest.gguf" in candidates
     assert "tinyllama--latest" in candidates
     assert "sha256-deadbeef" in candidates

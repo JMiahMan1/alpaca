@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ card.title }} — Alpaca Arcade</title>
 <link rel="stylesheet" href="/static/arcade.css">
+<style>
+.screen.show-controls #play-overlay-bar { display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex: 0 0 auto; }
+@media (pointer: fine) { .screen:not(.show-controls) #play-keys { display: none; } }
+</style>
 </head>
 <body>
 <header class="arcade-header slim">
@@ -25,6 +29,7 @@
           {% endif %}
           <button id="btn-play-live" class="arcade-btn" type="button">▶ Play</button>
           <button id="btn-sound-live" class="arcade-btn" type="button" title="Game sound">🔊 Sound</button>
+          <button id="btn-stop-live" class="arcade-btn" type="button" disabled>Stop</button>
           <div id="live-status" class="form-msg" role="status"></div>
           <iframe id="live-frame" title="{{ card.title }} live sandbox" allowfullscreen allow="fullscreen" style="display:none;"></iframe>
           <details class="under-screen">
@@ -44,6 +49,7 @@
         </div>
         {% endif %}
         <button id="btn-fullscreen" class="arcade-btn fs-toggle" type="button">⛶ Full screen</button>
+        <button id="btn-controls" class="arcade-btn fs-toggle" type="button" aria-pressed="false" aria-controls="play-keys">Show Controls</button>
         <div id="play-overlay-bar" hidden>
           <div id="play-keys" role="group" aria-label="Game keys">
             {% if not smart_keys or smart_keys.arrows %}
