@@ -514,6 +514,10 @@ class MultiStepBenchmark:
             val = sr.get("validation", {})
             total_w += val.get("weight_total", 0)
             passed_w += val.get("weight_passed", 0)
+        attempted_ids = {sr.get("step_id") for sr in orig_results}
+        for step in workflow["steps"]:
+            if step["id"] not in attempted_ids:
+                total_w += evaluate_checks(step.get("checks", []), None)["weight_total"]
         breakdown["step_content_checks"] = round(40.0 * (passed_w / total_w) if total_w else 0.0, 1)
 
         # The assembly pass exists to repair interrupted turns; when it
@@ -576,16 +580,9 @@ class MultiStepBenchmark:
         total_latency = 0.0
         total_tokens = 0
         error: str | None = None
+        provider_failed = False
 
         def _absorb_doc(doc: str | None) -> None:
-            """Adopt the best document so far.
-
-            A COMPLETE document always outranks a longer truncated one; among
-            documents of equal completeness the longer one wins. Without this,
-            a token-cut fragment from a late turn silently replaces an earlier
-            full delivery (and vice versa: the longest fragment wins over no
-            artifact at all).
-            """
             nonlocal final_doc, final_doc_complete
             if not doc:
                 return
@@ -593,9 +590,9 @@ class MultiStepBenchmark:
             if final_doc is None:
                 final_doc, final_doc_complete = doc, complete
                 return
-            if complete and not final_doc_complete:
+            if complete:
                 final_doc, final_doc_complete = doc, True
-            elif complete == final_doc_complete and len(doc) > len(final_doc):
+            elif not final_doc_complete and len(doc) > len(final_doc):
                 final_doc, final_doc_complete = doc, complete
 
         is_online = bool(online_model_provider and online_model_provider.is_online_model(model))
@@ -619,7 +616,17 @@ class MultiStepBenchmark:
             respawning llama-server mid-generation) are retried while the
             backend recovers; prose-without-document gets one redo.
             """
-            r = await self.query_model_turn(model, use_proxy, msgs, budget, custom_keys=custom_keys)
+            latency = 0.0
+            tokens = 0
+
+            async def query_attempt():
+                nonlocal latency, tokens
+                result = await self.query_model_turn(model, use_proxy, msgs, budget, custom_keys=custom_keys)
+                latency += result.get("latency") or 0.0
+                tokens += result.get("tokens_generated") or 0
+                return dict(result)
+
+            r = await query_attempt()
             c = strip_thinking(r.get("response") or "")
             retries = 0
             while (
@@ -631,8 +638,10 @@ class MultiStepBenchmark:
             ):
                 retries += 1
                 if _EMPTY_TURN_RETRY_DELAY_S:
+                    wait_started = time.monotonic()
                     await asyncio.sleep(_EMPTY_TURN_RETRY_DELAY_S)
-                r = await self.query_model_turn(model, use_proxy, msgs, budget, custom_keys=custom_keys)
+                    latency += time.monotonic() - wait_started
+                r = await query_attempt()
                 c = strip_thinking(r.get("response") or "")
             d = extract_html_document(c) if r["success"] else None
             if (
@@ -641,7 +650,7 @@ class MultiStepBenchmark:
                 and d is None
                 and not (cancel_event and cancel_event.is_set())
             ):
-                r = await self.query_model_turn(model, use_proxy, msgs, budget, custom_keys=custom_keys)
+                r = await query_attempt()
                 c = strip_thinking(r.get("response") or "")
                 d = extract_html_document(c) if r["success"] else None
             err = None
@@ -652,6 +661,8 @@ class MultiStepBenchmark:
                     f"empty generation after {retries} retries "
                     "(backend stream died mid-turn; server restart/OOM suspected)"
                 )
+            r["latency"] = latency
+            r["tokens_generated"] = tokens
             return r, c, d, err
 
         for idx, step in enumerate(workflow["steps"], start=1):
@@ -741,6 +752,9 @@ class MultiStepBenchmark:
                     "validation": validation,
                 }
             )
+            if not res["success"]:
+                provider_failed = True
+                break
 
         # Healing assembly pass: if any turn failed to deliver its code, the
         # shipped artifact would be missing whole rooms/features. One extra
@@ -753,7 +767,7 @@ class MultiStepBenchmark:
         # truncation triggers the healing pass exactly like a missing delivery.
         if assembly_cfg and not missing and final_doc and not final_doc_complete:
             missing = ["an untruncated document (current one was cut off mid-tag)"]
-        if assembly_cfg and missing and not (cancel_event and cancel_event.is_set()):
+        if assembly_cfg and missing and not provider_failed and not (cancel_event and cancel_event.is_set()):
             asm_idx = len(workflow["steps"]) + 1
             budget = int(assembly_cfg.get("max_tokens") or workflow["steps"][-1].get("max_tokens", 11000))
             doc_block = (
@@ -790,6 +804,7 @@ class MultiStepBenchmark:
                     },
                 )
                 res, content, doc, error = await _query_with_recovery(messages, budget)
+                provider_failed = not res["success"]
                 messages.append({"role": "assistant", "content": content})
                 total_latency += res["latency"]
                 total_tokens += res["tokens_generated"]
@@ -835,7 +850,7 @@ class MultiStepBenchmark:
                 print(f"Artifact save failed: {e}")
 
         ran = ui_render.get("ran")
-        success = score >= 60.0 if ran is None else bool(ran) and score >= 60.0
+        success = not provider_failed and (score >= 60.0 if ran is None else bool(ran) and score >= 60.0)
 
         return {
             "test_id": workflow["id"],

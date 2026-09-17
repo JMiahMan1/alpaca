@@ -14,6 +14,7 @@ import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 ARCADE_DIR = Path(os.getenv("ARCADE_DIR", "data/arcade"))
 GAMES_DIR = ARCADE_DIR / "games"
@@ -260,8 +261,10 @@ def publish_game(
         if benchmark_score is None:
             benchmark_score = rec.get("score")
         if max_score is None:
-            with contextlib.suppress(TypeError, ValueError):
-                max_score = float(rec.get("max_score")) if rec.get("max_score") is not None else None
+            record_max_score = rec.get("max_score")
+            if record_max_score is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    max_score = float(record_max_score)
 
     game_dir = GAMES_DIR / slug
     game_dir.mkdir(parents=True, exist_ok=True)
@@ -364,7 +367,7 @@ def get_auto_publish_score() -> float:
 
 def published_games() -> list:
     """Metadata for every published game, newest first (drives the dashboard Arcade section)."""
-    games = []
+    games: list[dict[str, Any]] = []
     if not GAMES_DIR.is_dir():
         return games
     for game_dir in sorted(GAMES_DIR.iterdir()):

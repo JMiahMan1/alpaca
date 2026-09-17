@@ -73,6 +73,32 @@ def test_publish_copies_game_and_meta(games_dir, source_html):
     assert json.loads((game_dir / "ratings.json").read_text()) == {}
 
 
+def test_published_threejs_game_loads_relative_bundle(arcade_client, games_dir, source_html):
+    from pathlib import Path
+    from urllib.parse import urljoin
+
+    source_html.write_text('<html><script src="three.min.js"></script></html>')
+    slug = _publish(games_dir, source_html)["slug"]
+    page_url = f"/game/{slug}/index.html"
+    assert arcade_client.get(page_url).status_code == 200
+    assert not (games_dir / slug / "three.min.js").exists()
+    response = arcade_client.get(urljoin(page_url, "three.min.js"))
+    assert response.status_code == 200
+    assert response.mimetype == "application/javascript"
+    assert response.data == (Path(__file__).resolve().parents[1] / "three.min.js").read_bytes()
+
+
+@pytest.mark.parametrize("asset", ["three.min.js", "other.js", "scores.json", "meta.json"])
+def test_game_assets_require_existing_game(arcade_client, asset):
+    assert arcade_client.get(f"/game/missing/{asset}").status_code == 404
+
+
+def test_threejs_route_does_not_expose_other_game_files(arcade_client, games_dir, source_html):
+    slug = _publish(games_dir, source_html)["slug"]
+    for asset in ("scores.json", "meta.json", "other.js"):
+        assert arcade_client.get(f"/game/{slug}/{asset}").status_code == 404
+
+
 def test_publish_leaves_files_writable_by_container_user(games_dir, source_html):
     """Publishes often happen as root while the arcade serves as non-root uid 1000:
     everything must stay world-writable or score/plays writes 500."""
@@ -630,8 +656,13 @@ def test_arcade_launch_code_game(arcade_client, monkeypatch):
     # The frozen code + lang are forwarded to the web sandbox.
     assert seen["body"]["code"] == "import pygame\n"
     assert seen["body"]["lang"] == "python"
-    # Arcade launches are exclusive: one game session at a time.
-    assert seen["body"]["exclusive"] is True
+    assert seen["body"]["exclusive"] is False
+    first_name = seen["body"]["name"]
+    assert first_name.startswith("alpaca-arcade-")
+    assert len(first_name.removeprefix("alpaca-arcade-")) == 32
+    assert arcade_client.post(f"/api/games/{slug}/launch").status_code == 200
+    assert seen["body"]["name"].startswith("alpaca-arcade-")
+    assert seen["body"]["name"] != first_name
     # Arcade sessions get a 2 h lifetime: the default 10 min container
     # sleep would reap long play sessions mid-game.
     assert seen["body"]["timeout"] == 7200
@@ -1368,3 +1399,264 @@ def test_arcade_sync_score_high_scores_fallback(arcade_client, monkeypatch):
     assert data["score"] == 42
     assert data["auto"] is True
     assert call_count["n"] == 2
+
+
+def _score_snapshot(score=100, initials="ABC", revision=1):
+    return {
+        "output": json.dumps(
+            {"data": {"initials": initials, "score": score}, "revision": [1, 2, 40, revision, revision]}
+        ),
+        "exit_code": 0,
+    }
+
+
+def test_arcade_sync_revision_dedup_is_durable(arcade_client, monkeypatch):
+    import threading
+
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    snapshot = _score_snapshot()
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", lambda *a, **kw: _FakeResp(snapshot))
+    url = f"/api/games/{slug}/sync_score"
+    first = arcade_client.post(url, json={"container_id": "session-a"}).get_json()
+    assert first["duplicate"] is False
+    monkeypatch.setattr(arcade_app, "_lock", threading.Lock())
+    for _ in range(3):
+        repeat = arcade_client.post(url, json={"container_id": "session-a"}).get_json()
+        assert repeat["duplicate"] is True
+        assert repeat["status"] == "unchanged"
+        assert repeat["new_unlocks"] == []
+    snapshot.update(_score_snapshot(score=150, revision=2))
+    changed = arcade_client.post(url, json={"container_id": "session-a"}).get_json()
+    assert changed["duplicate"] is False
+    assert changed["personal_best"] is True
+    snapshot.update(_score_snapshot(score=150, revision=3))
+    rewritten = arcade_client.post(url, json={"container_id": "session-a"}).get_json()
+    assert rewritten["duplicate"] is False
+    snapshot.update(_score_snapshot(revision=1))
+    assert arcade_client.post(url, json={"container_id": "session-a"}).get_json()["duplicate"] is True
+    assert arcade_client.post(url, json={"container_id": "session-b"}).get_json()["duplicate"] is False
+    state = json.loads((arcade_app.GAMES_DIR / slug / "scores.json").read_text())
+    bests = json.loads((arcade_app.GAMES_DIR / slug / "bests.json").read_text())
+    assert [s["score"] for s in state["scores"]] == [150, 150, 100, 100]
+    assert bests == state["bests"]
+    assert bests["players"]["ABC"]["count"] == 4
+    assert bests["players"]["ABC"]["pbs"] == 1
+    assert len(state["captures"]) == 4
+
+
+def test_arcade_sync_legacy_reader_dedups_by_content(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    snapshot = {"output": '{"initials": "ABC", "score": 100}'}
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", lambda *a, **kw: _FakeResp(snapshot))
+    url = f"/api/games/{slug}/sync_score"
+    assert arcade_client.post(url, json={"container_id": "a"}).get_json()["duplicate"] is False
+    assert arcade_client.post(url, json={"container_id": "a"}).get_json()["duplicate"] is True
+    snapshot["output"] = '{"initials": "ABC", "score": 101}'
+    assert arcade_client.post(url, json={"container_id": "a"}).get_json()["duplicate"] is False
+
+
+def test_arcade_sync_reads_real_nanosecond_revision(arcade_client, monkeypatch, tmp_path):
+    import contextlib
+    import io
+    import os
+    import shlex
+
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    score_file = tmp_path / "alpaca_score.json"
+    score_file.write_text('{"initials": "NS", "score": 42}')
+    stamp = 1_800_000_000_000_000_001
+    os.utime(score_file, ns=(stamp, stamp))
+
+    def read_locally(req, timeout=None):
+        command = json.loads(req.data)["command"]
+        executable, option, script = shlex.split(command)
+        assert (executable, option) == ("python3", "-c")
+        script = script.replace("/tmp/alpaca_score.json", str(score_file))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exec(script, {})
+        return _FakeResp({"output": output.getvalue(), "exit_code": 0})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", read_locally)
+    first = arcade_app._sync_score_from_container("a")
+    assert first["revision"][3] == score_file.stat().st_mtime_ns
+    url = f"/api/games/{slug}/sync_score"
+    assert arcade_client.post(url, json={"container_id": "a"}).get_json()["duplicate"] is False
+    assert arcade_client.post(url, json={"container_id": "a"}).get_json()["duplicate"] is True
+    score_file.write_text('{"initials": "NS", "score": 42}')
+    os.utime(score_file, ns=(stamp + 1000, stamp + 1000))
+    second = arcade_app._sync_score_from_container("a")
+    assert first["digest"] == second["digest"]
+    assert first["revision"] != second["revision"]
+    assert arcade_client.post(url, json={"container_id": "a"}).get_json()["duplicate"] is False
+
+
+@pytest.mark.parametrize("score, status", [("bad", 400), (-1, 400), (1_000_000_000, 400), (None, 400)])
+def test_arcade_sync_invalid_score_can_retry(arcade_client, monkeypatch, score, status):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    snapshot = _score_snapshot(score=score)
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", lambda *a, **kw: _FakeResp(snapshot))
+    url = f"/api/games/{slug}/sync_score"
+    assert arcade_client.post(url, json={"container_id": "a"}).status_code == status
+    assert not (arcade_app.GAMES_DIR / slug / "scores.json").exists()
+    snapshot.update(_score_snapshot())
+    assert arcade_client.post(url, json={"container_id": "a"}).get_json()["duplicate"] is False
+
+
+@pytest.mark.parametrize("failure", ["network", "exec", "response"])
+def test_arcade_sync_reader_failures(arcade_client, monkeypatch, failure):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fail(*a, **kw):
+        if failure == "network":
+            raise ConnectionError("offline")
+        if failure == "exec":
+            return _FakeResp({"exit_code": 1, "output": "python failed"})
+        return _FakeResp([])
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fail)
+    res = arcade_client.post(f"/api/games/{slug}/sync_score", json={"container_id": "a"})
+    assert res.status_code == 502
+    assert res.get_json()["success"] is False
+
+
+@pytest.mark.parametrize("failed_file", ["scores.json", "bests.json"])
+def test_arcade_sync_store_failure_retry_is_exactly_once(arcade_client, monkeypatch, failed_file):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", lambda *a, **kw: _FakeResp(_score_snapshot()))
+    original_write = arcade_app._write_json
+
+    def failing_write(path, data):
+        if path.name == failed_file:
+            raise OSError("disk full")
+        return original_write(path, data)
+
+    monkeypatch.setattr(arcade_app, "_write_json", failing_write)
+    url = f"/api/games/{slug}/sync_score"
+    assert arcade_client.post(url, json={"container_id": "a"}).status_code == 502
+    monkeypatch.setattr(arcade_app, "_write_json", original_write)
+    result = arcade_client.post(url, json={"container_id": "a"}).get_json()
+    assert result["success"] is True
+    state = json.loads((arcade_app.GAMES_DIR / slug / "scores.json").read_text())
+    bests = json.loads((arcade_app.GAMES_DIR / slug / "bests.json").read_text())
+    assert state["bests"] == bests
+    assert len(state["scores"]) == 1
+    assert bests["submits"] == 1
+    assert arcade_app.player_stats("ABC")["submits"] == 1
+
+
+def test_arcade_stop_final_capture_precedes_stop_and_dedups(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    calls = []
+    snapshot = _score_snapshot()
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url.rsplit("/", 1)[-1])
+        if req.full_url.endswith("/exec"):
+            return _FakeResp(snapshot)
+        state = json.loads((arcade_app.GAMES_DIR / slug / "scores.json").read_text())
+        assert state["bests"]["submits"] == 2
+        return _FakeResp({"stopped": True})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    arcade_client.post(f"/api/games/{slug}/sync_score", json={"container_id": "a"})
+    snapshot.update(_score_snapshot(score=200, revision=2))
+    for duplicate in (False, True):
+        result = arcade_client.post(f"/api/games/{slug}/stop", json={"container_id": "a"}).get_json()
+        assert result["stopped"] is True
+        assert result["score_sync"]["duplicate"] is duplicate
+        assert calls[-2:] == ["exec", "stop_serve"]
+
+
+@pytest.mark.parametrize("failure", [None, "read", "store", "stop"])
+def test_arcade_stop_final_capture_errors(arcade_client, monkeypatch, failure):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url.rsplit("/", 1)[-1])
+        if req.full_url.endswith("/exec"):
+            if failure == "read":
+                raise ConnectionError("offline")
+            return _FakeResp({"output": ""} if failure is None else _score_snapshot())
+        if failure == "stop":
+            raise ConnectionError("stop offline")
+        return _FakeResp({"stopped": True})
+
+    def failing_store(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    if failure == "store":
+        monkeypatch.setattr(arcade_app, "_store_score", failing_store)
+    res = arcade_client.post(f"/api/games/{slug}/stop", json={"container_id": "a"})
+    assert calls[-1] == "stop_serve"
+    assert res.status_code == (502 if failure == "stop" else 200)
+    sync = res.get_json()["score_sync"]
+    assert sync["success"] is (failure not in ("read", "store"))
+    if failure is None:
+        assert sync["status"] == "no score yet"
+
+
+def test_arcade_concurrent_polls_and_players(arcade_client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    barrier = Barrier(12)
+
+    def fake_urlopen(req, timeout=None):
+        cid = json.loads(req.data)["container_id"]
+        player = int(cid.rsplit("-", 1)[-1])
+        barrier.wait(timeout=10)
+        return _FakeResp(_score_snapshot(score=player * 10, initials=f"P{player}"))
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+
+    def poll(i):
+        with arcade_app.app.test_client() as client:
+            res = client.post(f"/api/games/{slug}/sync_score", json={"container_id": f"session-{i % 6}"})
+            assert res.status_code == 200
+            return res.get_json()
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(poll, range(12)))
+    assert sum(not result["duplicate"] for result in results) == 6
+    state = json.loads((arcade_app.GAMES_DIR / slug / "scores.json").read_text())
+    assert [score["score"] for score in state["scores"]] == [50, 40, 30, 20, 10]
+    assert state["bests"]["submits"] == 6
+    assert all(player["count"] == 1 for player in state["bests"]["players"].values())
+    assert len(state["captures"]) == 6
+
+
+def test_arcade_manual_scores_remain_repeatable_and_migrate_ledger(arcade_client):
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+    d = arcade_app.GAMES_DIR / slug
+    legacy = {"submits": 3, "first_by": "ABC", "players": {"ABC": {"best": 10, "count": 3, "pbs": 1}}}
+    (d / "bests.json").write_text(json.dumps(legacy))
+    for _ in range(2):
+        assert arcade_client.post(f"/api/games/{slug}/scores", json={"initials": "ABC", "score": 10}).status_code == 200
+    state = json.loads((d / "scores.json").read_text())
+    assert state["bests"]["submits"] == 5
+    assert state["bests"]["players"]["ABC"]["count"] == 5
+    assert state["captures"] == []

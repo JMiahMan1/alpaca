@@ -3,9 +3,12 @@ import json
 import os
 import tarfile
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from PIL import Image, ImageDraw
 
 from online_providers import OnlineModelProvider
@@ -26,12 +29,39 @@ from sandbox_exec import (
     run_code_once,
     serve_app,
     serve_ui,
+    stop_serve,
     ui_exec,
     ui_restart,
     ui_screenshot,
     ui_status,
 )
 from web.model_tracker import ModelTracker
+
+
+@pytest.mark.parametrize("stage", ["get", "remove"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_stop_serve_missing_container_vs_api_failure(stage, missing):
+    from docker.errors import APIError, NotFound
+
+    client = MagicMock()
+    operation = client.containers.get if stage == "get" else client.containers.get.return_value.remove
+    operation.side_effect = NotFound("missing") if missing else APIError("daemon failure")
+    with patch("docker.DockerClient", return_value=client):
+        result = stop_serve("arcade-session")
+    assert result == ({"stopped": True} if missing else {"stopped": False, "error": "daemon failure"})
+    client.containers.get.assert_called_once_with("arcade-session")
+    if stage == "remove":
+        operation.assert_called_once_with(force=True)
+    client.close.assert_called_once_with()
+
+
+def test_stop_serve_removes_container():
+    client = MagicMock()
+    with patch("docker.DockerClient", return_value=client):
+        assert stop_serve("arcade-session") == {"stopped": True}
+    client.containers.get.assert_called_once_with("arcade-session")
+    client.containers.get.return_value.remove.assert_called_once_with(force=True)
+    client.close.assert_called_once_with()
 
 
 def test_extract_clean_code_with_think_tags():
@@ -255,6 +285,218 @@ def test_run_ui_rendered_screenshot_is_a_passing_ui():
         assert result["screenshot"] is not None
         assert result["ui_rendered"] is True
         assert result["ran"] is True
+
+
+@pytest.mark.parametrize("lang", ["node", "js", "javascript"])
+@pytest.mark.parametrize("timeout,budget", [(6, 3000), (30, 8000)])
+def test_node_http_ui_launches_chromium(lang, timeout, budget):
+    code = "const http = require('http'); http.createServer((req, res) => res.end('Game')).listen(3000, 'localhost');"
+    content = _png_bytes(shapes=[(5, 5, 60, 60)])
+    output = b"Server listening on localhost:3000\nChromium rendered page\n"
+    with (
+        patch("docker.DockerClient") as docker,
+        patch("sandbox_exec._lint_code", return_value=(True, "")),
+        patch("sandbox_exec._put_file") as put,
+        patch("sandbox_exec._read_file", side_effect=lambda c, p: content if p.endswith("out.png") else output),
+    ):
+        container = docker.return_value.containers.run.return_value
+        container.exec_run.return_value = (0, b"")
+        result = run_code_once(code, lang=lang, timeout=timeout, ui=True)
+
+    files = {call.args[1]: call.args[2] for call in put.call_args_list}
+    script = files["/tmp/run_http.sh"].decode()
+    assert files["/tmp/code.js"] == code.encode()
+    assert "node /tmp/code.js >/tmp/ui_stdout.txt 2>&1 &" in script
+    assert "/dev/tcp/localhost/3000" in script
+    assert f"timeout {timeout} chromium --headless --no-sandbox --disable-gpu" in script
+    assert "--disable-dev-shm-usage" in script
+    assert "--enable-logging=stderr" in script
+    assert f"--virtual-time-budget={budget} http://localhost:3000/" in script
+    assert ">>/tmp/ui_stdout.txt 2>&1" in script
+    assert "trap 'kill -9 $SRV_PID 2>/dev/null' EXIT" in script
+    assert "exit $?" in script
+    assert "/tmp/run_ui.sh" not in files
+    assert "Xvfb" not in script
+    assert result["ran"] is True
+    assert result["ui_rendered"] is True
+    assert result["screenshot"]
+    assert result["output"] == output.decode()
+    assert result["lint_passed"] is True
+    assert container.exec_run.call_args.args[0] == ["timeout", "--kill-after=2", str(timeout), "bash", "/tmp/run_http.sh"]
+    kwargs = docker.return_value.containers.run.call_args.kwargs
+    assert kwargs["network_mode"] == "none"
+    assert kwargs["user"] == "sandbox"
+    assert kwargs["pids_limit"] == 1024
+    container.remove.assert_called_once_with(force=True)
+
+
+@pytest.mark.parametrize(
+    "exit_code,png,output,error",
+    [
+        (7, None, b"Error: Cannot find module 'express'", "did not become ready"),
+        (124, None, b"Server started", "timed out"),
+        (1, None, b"Chromium failed", "execution failed"),
+        (0, None, b"Server started", "no screenshot"),
+        (0, _png_bytes(), b"Server started", "blank screenshot"),
+        (1, _png_bytes(shapes=[(5, 5, 60, 60)]), b"Chromium failed", "execution failed"),
+        (
+            0,
+            _png_bytes(shapes=[(5, 5, 60, 60)]),
+            b'CONSOLE: "Uncaught ReferenceError: game is not defined"',
+            "JS console error",
+        ),
+    ],
+)
+def test_node_http_ui_failures_preserve_evidence(exit_code, png, output, error):
+    with (
+        patch("sandbox_exec._put_file") as put,
+        patch("sandbox_exec._read_file", side_effect=lambda c, p: png if p.endswith("out.png") else output),
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (exit_code, b"")
+        result = _run_ui(container, "server.listen(3000)", "js", "node", 30, {"lint_passed": True})
+
+    assert result["ran"] is False
+    assert result["lint_passed"] is True
+    assert result["exit_code"] == exit_code
+    assert result["output"] == output.decode()
+    assert error in result["error"]
+    assert all(call.args[1] != "/tmp/run_ui.sh" for call in put.call_args_list)
+
+
+@pytest.mark.parametrize(
+    "ext,bin_,code,launch",
+    [
+        ("py", "python3", "import pygame\npygame.display.set_mode((640, 480))", None),
+        ("cpp", "g++", "int main() {}", "/tmp/a.out"),
+        ("go", "go", "package main", "/tmp/a.out"),
+        ("rs", "rustc", "fn main() {}", "/tmp/a.out"),
+    ],
+)
+def test_native_ui_keeps_desktop_screenshot_flow(ext, bin_, code, launch):
+    content = _png_bytes(shapes=[(5, 5, 60, 60)])
+    with (
+        patch("sandbox_exec._put_file") as put,
+        patch("sandbox_exec._read_file", side_effect=lambda c, p: content if p.endswith("out.png") else None),
+        patch("sandbox_exec._run_http_ui") as http,
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"")
+        result = _run_ui(container, code, ext, bin_, 30, {}, launch=launch)
+
+    http.assert_not_called()
+    files = {call.args[1]: call.args[2] for call in put.call_args_list}
+    script = files["/tmp/run_ui.sh"].decode()
+    assert "Xvfb :99" in script
+    assert "scrot -o /tmp/out.png" in script
+    assert "sleep 8" in script
+    assert (launch or f"{bin_} /tmp/code.{ext}") in script
+    if ext == "py":
+        assert "chromium" not in script
+    assert result["ran"] is True
+    assert result["ui_rendered"] is True
+
+
+@pytest.mark.parametrize(
+    "ext,bin_,code",
+    [
+        ("cpp", "g++", "int port = 3000;"),
+        ("go", "go", 'http.ListenAndServe(":3000", nil)'),
+        ("rs", "rustc", 'TcpListener::bind("127.0.0.1:3000")'),
+    ],
+)
+def test_compiled_ui_with_http_port_gets_chromium(ext, bin_, code):
+    content = _png_bytes(shapes=[(5, 5, 60, 60)])
+    output = b"server listening on 8080\nchromium\n"
+    with (
+        patch("sandbox_exec._put_file") as put,
+        patch("sandbox_exec._read_file", side_effect=lambda c, p: content if p.endswith("out.png") else output),
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"")
+        result = _run_ui(container, code, ext, bin_, 30, {}, launch="/tmp/a.out")
+
+    files = {call.args[1]: call.args[2] for call in put.call_args_list}
+    script = files["/tmp/run_ui.sh"].decode()
+    assert "Xvfb" in script
+    assert "scrot" in script
+    assert "/dev/tcp/localhost/3000" in script
+    browser_branch = script.split('if [ "$READY" = "1" ]; then\n', 1)[1].split("exit $?\nfi\n", 1)
+    assert "chromium" in browser_branch[0]
+    assert "scrot" not in browser_branch[0]
+    assert "scrot" in browser_branch[1]
+    assert script.index("touch /tmp/http_ui") < script.index("chromium")
+    assert "timeout 30 chromium" in script
+    assert "--virtual-time-budget=8000 http://localhost:3000/" in script
+    assert "trap 'kill -9 $SRV_PID" in script
+    assert container.exec_run.call_args.args[0][0:4] == ["timeout", "--kill-after=2", "30", "bash"]
+    assert result["ran"] is True
+    assert result["ui_rendered"] is True
+    assert result["output"] == output.decode()
+
+
+@pytest.mark.parametrize("ext,bin_", [("cpp", "g++"), ("go", "go"), ("rs", "rustc")])
+def test_compiled_ui_without_http_port_keeps_scrot(ext, bin_):
+    with (
+        patch("sandbox_exec._put_file") as put,
+        patch("sandbox_exec._read_file", side_effect=lambda c, p: None),
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"")
+        result = _run_ui(container, "int main() {}", ext, bin_, 30, {}, launch="/tmp/a.out")
+
+    script = {call.args[1]: call.args[2] for call in put.call_args_list}["/tmp/run_ui.sh"].decode()
+    browser_branch = script.split('if [ "$READY" = "1" ]; then\n', 1)[1].split("exit $?\nfi\n", 1)
+    assert "chromium" in browser_branch[0]
+    assert "scrot" not in browser_branch[0]
+    assert "chromium" not in browser_branch[1]
+    assert "scrot -o /tmp/out.png" in browser_branch[1]
+    assert "scrot -o /tmp/out.png" in script
+    assert "sleep 8" in script
+    assert result["ran"] is True
+    assert result["ui_rendered"] is False
+
+
+@pytest.mark.parametrize("ran", [True, False, None])
+@pytest.mark.parametrize("lint_passed", [True, False, None])
+def test_grade_code_propagates_lint_status_on_every_return(ran, lint_passed):
+    run = {"ran": ran, "lint_passed": lint_passed, "output": "evidence", "error": "", "screenshot": "frame"}
+    with patch("sandbox_exec.run_code_once", return_value=run):
+        result = grade_code("code")
+    assert result["lint_passed"] is lint_passed
+    assert result["ran"] is ran
+    assert result["output"] == "evidence"
+    assert result["screenshot"] == "frame"
+    assert result["score"] == (100 if ran else (0 if ran is False else None))
+
+
+@pytest.mark.parametrize(
+    "run,ui,error,run_error",
+    [
+        ({"lint_passed": False, "error": "syntax/lint error: invalid syntax"}, False, "syntax/lint error", False),
+        ({"lint_passed": True, "exit_code": 1, "output": "ZeroDivisionError"}, False, "runtime error", True),
+        ({"lint_passed": True, "exit_code": 124}, False, "timed out", True),
+        ({"lint_passed": True, "error": "execution timed out"}, False, "timed out", True),
+        (
+            {"lint_passed": True, "exit_code": 0, "ui_rendered": False, "screenshot": "black"},
+            True,
+            "blank screenshot",
+            True,
+        ),
+        ({"lint_passed": True, "exit_code": 0, "ui_rendered": False}, True, "no screenshot", True),
+        ({"lint_passed": True, "error": "JS console error: ReferenceError"}, True, "JS console error", True),
+    ],
+)
+def test_grade_code_distinguishes_lint_runtime_and_render_failures(run, ui, error, run_error):
+    with patch("sandbox_exec.run_code_once", return_value={"ran": False, **run}):
+        result = grade_code("code", ui=ui)
+    assert result["ran"] is False
+    assert result["score"] == 0
+    assert result["lint_passed"] is run["lint_passed"]
+    assert error in result["error"]
+    assert result["run_error"] == (result["error"] if run_error else "")
+    if run.get("output"):
+        assert run["output"] in result["error"]
 
 
 def _sine_raw(seconds=1.0, rate=22050, freq=440.0, amp=8000.0):
@@ -575,6 +817,127 @@ def test_serve_ui_overlapping_launches_keep_exact_name():
         assert all(r["error"] == "" for r in results)
         names = [c.kwargs["name"] for c in mock_client.containers.run.call_args_list]
         assert names == ["alpaca-ui", "alpaca-ui"]
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_arcade_launches_overlap_without_replacing_players_or_benchmarks(tmp_path, monkeypatch, exclusive):
+    import arcade.app as arcade
+
+    for slug in ("snake", "pong"):
+        game_dir = tmp_path / slug
+        game_dir.mkdir()
+        (game_dir / "game.py").write_text(f"print('{slug}')")
+        (game_dir / "meta.json").write_text(json.dumps({"lang": "python"}))
+    monkeypatch.setattr(arcade, "GAMES_DIR", tmp_path)
+    ready = threading.Barrier(4, timeout=5)
+    created = []
+    payloads = []
+    lock = threading.Lock()
+    grade = MagicMock()
+    grade.name = "alpaca-grade-running"
+    player = MagicMock()
+    player.name = "alpaca-arcade-existing"
+
+    def create_container(*args, **kwargs):
+        container = MagicMock()
+        container.name = kwargs["name"]
+        with lock:
+            index = len(created)
+            container.id = f"session-{index}"
+            container.ports = {
+                "6080/tcp": [{"HostPort": str(40000 + index * 2)}],
+                "8090/tcp": [{"HostPort": str(40001 + index * 2)}],
+            }
+            created.append(container)
+        container.exec_run.side_effect = lambda *a, **kw: ready.wait()
+        return container
+
+    def forward_launch(req, timeout):
+        payload = json.loads(req.data)
+        payloads.append(payload)
+        result = serve_ui(**payload)
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(result).encode()
+        return response
+
+    def launch(slug):
+        with arcade.app.test_client() as client:
+            response = client.post(f"/api/games/{slug}/launch")
+            assert response.status_code == 200
+            return response.get_json()
+
+    with (
+        patch("docker.DockerClient") as docker,
+        patch("sandbox_exec.time.sleep"),
+        patch.object(arcade.urllib.request, "urlopen", side_effect=forward_launch),
+    ):
+        client = docker.return_value
+        client.containers.run.side_effect = create_container
+        client.containers.list.return_value = [grade, player]
+        client.containers.get.side_effect = KeyError("no previous default session")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            benchmark = pool.submit(serve_ui, "print('benchmark')", exclusive=exclusive)
+            futures = [pool.submit(launch, slug) for slug in ("snake", "snake", "pong")]
+            results = [future.result(timeout=10) for future in futures]
+            benchmark_result = benchmark.result(timeout=10)
+
+    assert not benchmark_result["error"]
+    assert len({r["container_id"] for r in results} | {benchmark_result["container_id"]}) == 4
+    assert len({p["name"] for p in payloads}) == 3
+    for payload in payloads:
+        assert payload["name"].startswith("alpaca-arcade-")
+        assert len(payload["name"].removeprefix("alpaca-arcade-")) == 32
+        assert payload["exclusive"] is False
+        assert payload["timeout"] == 7200
+        assert payload["lang"] == "python"
+    for result in results:
+        assert result["launcher_url"].endswith(f"/ui/launcher/{result['container_id']}?embed=1")
+    assert len({c.ports["6080/tcp"][0]["HostPort"] for c in created}) == 4
+    for container in [grade, player, *created]:
+        container.remove.assert_not_called()
+    if exclusive:
+        client.containers.get.assert_not_called()
+        client.containers.list.assert_called_once_with(all=True, filters={"name": "alpaca-ui"})
+    else:
+        client.containers.get.assert_called_once_with("alpaca-ui")
+        client.containers.list.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["alpaca-ui", "alpaca", "alpaca-arcade"])
+def test_exclusive_launch_preserves_arcade_namespace(name):
+    with patch("docker.DockerClient") as docker, patch("sandbox_exec.time.sleep"):
+        client = docker.return_value
+        player = MagicMock()
+        player.name = "alpaca-arcade-session"
+        exact = MagicMock()
+        exact.name = name
+        stray = MagicMock()
+        stray.name = name + "-legacy"
+        client.containers.list.return_value = [player, exact, stray]
+        result = serve_ui("print('benchmark')", name=name, exclusive=True)
+
+    assert not result["error"]
+    player.remove.assert_not_called()
+    exact.remove.assert_called_once_with(force=True)
+    if stray.name.startswith("alpaca-arcade-"):
+        stray.remove.assert_not_called()
+    else:
+        stray.remove.assert_called_once_with(force=True)
+    assert client.containers.run.call_args.kwargs["name"] == name
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_arcade_name_collision_does_not_remove_existing_session(exclusive):
+    with patch("docker.DockerClient") as docker:
+        client = docker.return_value
+        client.containers.run.side_effect = RuntimeError("container name already in use")
+        result = serve_ui("print('player')", name="alpaca-arcade-session", exclusive=exclusive)
+
+    assert result["container_id"] is None
+    assert "already in use" in result["error"]
+    client.containers.get.assert_not_called()
+    client.containers.list.assert_not_called()
+    client.close.assert_called_once()
 
 
 def test_serve_ui_rejects_unsupported_language():
@@ -1082,3 +1445,229 @@ def test_run_web_ui_fails_on_js_console_error():
     assert result["ran"] is False
     assert result["ui_rendered"] is False
     assert "console" in (result["error"] or "").lower()
+
+
+@pytest.mark.parametrize("lang", ["basic", "bas"])
+def test_basic_lint_does_not_execute_input(lang, tmp_path):
+    from sandbox_exec import _lint_code
+
+    container = MagicMock()
+    assert _lint_code(container, 'input "Score: " score$', lang) == (None, "")
+    container.exec_run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "test_id,lang",
+    [
+        ("bash_backup_rotate", "bash"),
+        ("bash_csv_sums", "bash"),
+        ("bash_health_loop", "bash"),
+        ("net_http_client", "python"),
+        ("net_echo_server", "python"),
+        ("bas_grade_calc", "basic"),
+    ],
+)
+def test_cli_fixture_plumbing_and_isolation(test_id, lang, tmp_path):
+    import json
+
+    import sandbox_exec
+
+    files = {}
+    container = MagicMock()
+    container.exec_run.return_value = (0, b"CLI fixture behavior passed")
+    with patch("docker.DockerClient") as docker, patch.object(sandbox_exec, "_put_file") as put:
+        docker.return_value.containers.run.return_value = container
+        put.side_effect = lambda c, path, content: files.update({path: content})
+        result = sandbox_exec.grade_code('print "hello"' if lang == "basic" else "print('hello')", lang, test_id=test_id)
+    assert result["ran"] is True
+    options = docker.return_value.containers.run.call_args.kwargs
+    assert options["network_mode"] == "none"
+    assert "ports" not in options and "volumes" not in options
+    assert options["user"] == "sandbox"
+    command = container.exec_run.call_args.args[0]
+    assert command[:3] == ["python3", "/tmp/cli_fixture.py", test_id]
+    assert json.loads(command[3])[0] == {"basic": "yabasic", "python": "python3", "bash": "bash"}[lang]
+    assert "/tmp/stdin.txt" not in files
+    assert files["/tmp/cli_fixture.py"] == sandbox_exec._CLI_FIXTURE_RUNNER.encode()
+    container.remove.assert_called_once_with(force=True)
+
+
+def test_unknown_fixture_cannot_supply_shell_and_games_keep_stdin(tmp_path):
+    import sandbox_exec
+
+    files = {}
+    container = MagicMock()
+    container.exec_run.return_value = (0, b"ok")
+    with patch("docker.DockerClient") as docker, patch.object(sandbox_exec, "_put_file") as put:
+        docker.return_value.containers.run.return_value = container
+        put.side_effect = lambda c, path, content: files.update({path: content})
+        sandbox_exec.grade_code("print(input())", test_id="; touch /tmp/unwanted")
+    assert files["/tmp/stdin.txt"] == sandbox_exec._SAMPLE_STDIN.encode()
+    assert "/tmp/cli_fixture.py" not in files
+    assert "unwanted" not in str(container.exec_run.call_args)
+
+
+def test_fixture_rejects_incompatible_repair_language(tmp_path):
+    assert grade_code("print('wrong language')", "python", test_id="bash_csv_sums")["ran"] is False
+
+
+def test_basic_runtime_diagnostics_are_preserved(tmp_path):
+    import sandbox_exec
+
+    container = MagicMock()
+    container.exec_run.return_value = (1, b"line 3: invalid input at EOF")
+    with patch("docker.DockerClient") as docker, patch.object(sandbox_exec, "_put_file"):
+        docker.return_value.containers.run.return_value = container
+        result = grade_code('input "N: " n', "basic", test_id="bas_fibonacci")
+    assert result["lint_passed"] is None
+    assert "invalid input at EOF" in result["run_error"]
+    assert "syntax/lint" not in result["error"]
+    assert "</dev/null" not in str(container.exec_run.call_args)
+
+
+_CLI_REFERENCE_SCRIPTS = {
+    "bash_backup_rotate": r'''src="$1"
+dest="$2"
+mkdir -p "$dest"
+archive="$dest/backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+if tar -czf "$archive" -C "$src" .; then
+    ls -t "$dest"/backup-*.tar.gz | tail -n +6 | while IFS= read -r path; do rm -- "$path"; done
+    printf 'Backup complete: %s\n' "$archive"
+else
+    printf 'Backup failed\n'
+    exit 1
+fi
+''',
+    "bash_csv_sums": r'''if [ ! -f "$1" ]; then printf 'Error: missing file\n'; exit 1; fi
+awk -F, '{for (i=1;i<=NF;i++) if ($i ~ /^-?[0-9]+([.][0-9]+)?$/) {sum[i]+=$i; seen[i]=1}} END {for (i in seen) printf "Column %d total: %g\n", i, sum[i]}' "$1"
+''',
+    "bash_health_loop": r'''URL="$1"
+MAX_ATTEMPTS=5
+TIMEOUT=5
+n=1
+while [ "$n" -le "$MAX_ATTEMPTS" ]; do
+    code=$(curl -f --max-time "$TIMEOUT" -s -o /dev/null -w '%{http_code}' "$URL")
+    status=$?
+    printf 'Attempt %s: HTTP %s\n' "$n" "$code"
+    if [ "$status" -eq 0 ]; then printf 'Endpoint is healthy\n'; exit 0; fi
+    sleep 0.01
+    n=$((n+1))
+done
+printf 'Endpoint is DOWN\n'
+exit 1
+''',
+    "net_http_client": '''import urllib.request
+with urllib.request.urlopen(input("URL: ")) as response:
+    body = response.read()
+    print(response.status, len(body))
+    print(body[:300].decode())
+''',
+    "net_echo_server": '''import socket
+
+def main():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 9000))
+        listener.listen()
+        try:
+            while True:
+                connection, address = listener.accept()
+                print(address, flush=True)
+                with connection:
+                    while data := connection.recv(4096):
+                        connection.sendall(data)
+        except KeyboardInterrupt:
+            pass
+
+if __name__ == "__main__":
+    main()
+''',
+    "bas_grade_calc": '''score = float(input("Score: "))
+while not 0 <= score <= 100:
+    print("Invalid score")
+    score = float(input("Score: "))
+grade = next((g for threshold, g in [(90, "A"), (80, "B"), (70, "C"), (60, "D")] if score >= threshold), "F")
+print(f"Score: {score:g} Grade: {grade}")
+''',
+}
+
+
+@pytest.mark.parametrize("test_id", _CLI_REFERENCE_SCRIPTS)
+@pytest.mark.parametrize("broken", [False, True])
+def test_cli_behavior_runner_rejects_noops(tmp_path, test_id, broken):
+    import json
+    import os
+    import socket
+    import subprocess
+    import sys
+
+    from sandbox_exec import _CLI_FIXTURE_RUNNER
+
+    script = _CLI_REFERENCE_SCRIPTS[test_id]
+    runner_code = _CLI_FIXTURE_RUNNER
+    if test_id == "net_echo_server":
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        script = script.replace("9000", str(port))
+        runner_code = runner_code.replace("9000", str(port))
+    interpreter = "bash" if test_id.startswith("bash_") else sys.executable
+    if broken:
+        script = "exit 0" if interpreter == "bash" else "pass"
+    program = tmp_path / "code with spaces"
+    program.write_text(script)
+    runner = tmp_path / "fixture.py"
+    runner.write_text(runner_code)
+    result = subprocess.run(
+        [sys.executable, str(runner), test_id, json.dumps([interpreter, str(program)])],
+        cwd=tmp_path,
+        env={**os.environ, "TMPDIR": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        timeout=25,
+    )
+    assert result.returncode == (1 if broken else 0), result.stdout + result.stderr
+    assert ("CLI fixture failed" in result.stderr) is broken
+    assert not list(tmp_path.glob("alpaca-fixture-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("test_id", _CLI_REFERENCE_SCRIPTS)
+async def test_suite_repairs_keep_cli_fixture(tmp_path, monkeypatch, test_id):
+    from unittest.mock import AsyncMock
+
+    from llm_benchmark_suite import LLMModelBenchmark
+    from sandbox_exec import _CLI_FIXTURE_LANGS
+
+    monkeypatch.chdir(tmp_path)
+    benchmark = LLMModelBenchmark.__new__(LLMModelBenchmark)
+    lang = _CLI_FIXTURE_LANGS[test_id][0]
+    response = f"```{lang}\n{_CLI_REFERENCE_SCRIPTS[test_id]}\n```"
+    benchmark.test_model_proxy = AsyncMock(return_value={"response": response})
+    result = {}
+    with patch("llm_benchmark_suite.grade_code", return_value={"ran": False, "score": 0}) as grade:
+        await benchmark._attempt_post_generation_repair(
+            "test-model", {"id": test_id, "type": "code", "lang": lang}, result, response, "syntax error"
+        )
+    assert grade.call_args.kwargs["test_id"] == test_id
+    assert result["repaired"] is False
+
+
+@pytest.mark.asyncio
+async def test_suite_primary_execution_gets_cli_fixture(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from llm_benchmark_suite import LLMModelBenchmark
+
+    benchmark = LLMModelBenchmark()
+    benchmark.RESULTS_DIR = tmp_path
+    benchmark.ARTIFACTS_DIR = tmp_path / "artifacts"
+    response = "```bash\n" + _CLI_REFERENCE_SCRIPTS["bash_csv_sums"] + "\n```"
+    benchmark.test_model_proxy = AsyncMock(return_value={
+        "success": True, "tokens_generated": 50, "latency": 1.0, "response": response,
+    })
+    with patch("llm_benchmark_suite.grade_code", return_value={"ran": True, "score": 100}) as grade:
+        await benchmark.run_model_benchmarks(
+            models=["test-model"], use_proxy=True, mode="functional", test_ids=["bash_csv_sums"]
+        )
+    assert grade.call_args.kwargs["test_id"] == "bash_csv_sums"

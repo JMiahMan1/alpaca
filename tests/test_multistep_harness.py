@@ -59,6 +59,140 @@ const name = prompt('Enter your initials');
 # ------------------------------------------------------------------ #
 
 
+@pytest.mark.asyncio
+async def test_recovery_sums_attempt_latency_tokens_and_backoff(bench, glider, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    clock = [0.0]
+
+    async def sleep(delay):
+        clock[0] += delay
+
+    monkeypatch.setattr(msb, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(msb, "_EMPTY_TURN_RETRY_DELAY_S", 7)
+    monkeypatch.setattr(msb.asyncio, "sleep", sleep)
+    monkeypatch.setattr(bench, "ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(bench, "_resolve_context_window", AsyncMock(return_value=1_000_000))
+    monkeypatch.setattr(bench, "verify_ui_render", lambda doc: {"ran": None})
+    query = AsyncMock(
+        side_effect=[
+            {"success": True, "latency": 1.0, "tokens_generated": 0, "response": ""},
+            {"success": True, "latency": 2.0, "tokens_generated": 12, "response": "Let me build it."},
+            {"success": True, "latency": 3.0, "tokens_generated": 30, "response": GOOD_DOC},
+        ]
+    )
+    monkeypatch.setattr(bench, "query_model_turn", query)
+    result = await bench.run_workflow("m", True, {**glider, "steps": glider["steps"][:1]})
+    assert query.await_count == 3
+    assert result["latency"] == result["steps"][0]["latency"] == 13.0
+    assert result["tokens_generated"] == result["steps"][0]["tokens_generated"] == 42
+    assert result["steps"][0]["error"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_turn", [1, 4, 5])
+async def test_provider_failure_stops_workflow_and_assembly(bench, glider, tmp_path, monkeypatch, failed_turn):
+    from unittest.mock import AsyncMock, MagicMock
+
+    provider = MagicMock()
+    provider.is_online_model.return_value = True
+    responses = [
+        {"success": True, "latency": 1.0, "tokens_generated": 10, "response": GOOD_DOC, "error": None}
+        for _ in range(failed_turn - 1)
+    ]
+    if failed_turn == 5:
+        responses[-1] = {"success": True, "latency": 1.0, "tokens_generated": 0, "response": "", "error": None}
+    responses.append(
+        {"success": False, "latency": 602.0, "tokens_generated": 2, "response": None, "error": "Provider timeout 504"}
+    )
+    provider.query_online_model = AsyncMock(side_effect=responses)
+    monkeypatch.setattr(msb, "online_model_provider", provider)
+    monkeypatch.setattr(msb, "_EMPTY_TURN_RETRIES", 0)
+    monkeypatch.setattr(bench, "ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(bench, "verify_ui_render", lambda doc: {"ran": True, "screenshot": True})
+    monkeypatch.setattr(bench, "score_workflow", lambda *args, **kwargs: (100.0, {}))
+    result = await bench.run_workflow("openrouter:test-model", True, glider)
+    assert provider.query_online_model.await_count == failed_turn
+    assert len(result["steps"]) == failed_turn
+    assert not result["success"]
+    assert result["error"] == result["steps"][-1]["error"] == "Provider timeout 504"
+    assert result["steps_completed"] == min(failed_turn - 1, 3)
+    assert result["latency"] == 602.0 + failed_turn - 1
+    assert result["tokens_generated"] == 2 + 10 * min(failed_turn - 1, 3)
+    if failed_turn < 5:
+        assert all(step["step_id"] != "assembly_pass" for step in result["steps"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unattempted_weight,expected_content_score", [(5, 8.0), (15, 4.0)])
+async def test_provider_failure_scores_unattempted_steps(
+    bench, glider, tmp_path, monkeypatch, unattempted_weight, expected_content_score
+):
+    from unittest.mock import AsyncMock
+
+    workflow = {
+        **glider,
+        "steps": [
+            {
+                **step,
+                "checks": [{"type": "regex", "pattern": "canvas", "weight": weight}],
+            }
+            for step, weight in zip(glider["steps"][:3], [2, 3, unattempted_weight], strict=True)
+        ],
+    }
+    query = AsyncMock(
+        side_effect=[
+            {"success": True, "latency": 1.0, "tokens_generated": 10, "response": GOOD_DOC},
+            {"success": False, "latency": 2.0, "tokens_generated": 0, "response": None, "error": "Provider timeout"},
+        ]
+    )
+    monkeypatch.setattr(bench, "query_model_turn", query)
+    monkeypatch.setattr(bench, "_resolve_context_window", AsyncMock(return_value=1_000_000))
+    monkeypatch.setattr(bench, "verify_ui_render", lambda doc: {"ran": None})
+    monkeypatch.setattr(bench, "ARTIFACTS_DIR", tmp_path)
+
+    result = await bench.run_workflow("m", True, workflow)
+
+    assert query.await_count == 2
+    assert [step["step_id"] for step in result["steps"]] == [step["id"] for step in workflow["steps"][:2]]
+    assert result["steps_completed"] == 1
+    assert result["steps_total"] == 3
+    assert result["latency"] == 3.0
+    assert result["tokens_generated"] == 10
+    assert result["success"] is False
+    assert result["error"] == "Provider timeout"
+    assert result["validation"]["breakdown"]["step_content_checks"] == expected_content_score
+    assert result["validation"]["breakdown"]["delivery_chain"] == 5.0
+    assert sum(step["validation"]["weight_total"] for step in result["steps"]) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_complete", [True, False])
+async def test_later_shorter_complete_document_wins(bench, glider, tmp_path, monkeypatch, first_complete):
+    from unittest.mock import AsyncMock
+
+    first = "<html><body>" + "old " * 100
+    if first_complete:
+        first += "</body></html>"
+    latest = "<html><body>new revision</body></html>"
+    query = AsyncMock(
+        side_effect=[
+            {"success": True, "latency": 1, "tokens_generated": 20, "response": f"```html\n{doc}\n```"}
+            for doc in (first, latest)
+        ]
+    )
+    monkeypatch.setattr(bench, "query_model_turn", query)
+    monkeypatch.setattr(bench, "_resolve_context_window", AsyncMock(return_value=1_000_000))
+    monkeypatch.setattr(bench, "verify_ui_render", lambda doc: {"ran": None})
+    monkeypatch.setattr(bench, "ARTIFACTS_DIR", tmp_path)
+    result = await bench.run_workflow("m", True, {**glider, "steps": glider["steps"][:2]})
+    assert query.await_count == 2
+    assert result["response"] == latest
+    assert result["validation"]["final_document_chars"] == len(latest)
+    assert (tmp_path / "m__glider_2026_house.html").read_text() == latest
+
+
 def test_glider_workflow_registered(bench, glider):
     assert glider["category"] == "multistep_gamedev"
     assert len(glider["steps"]) == 4
@@ -183,7 +317,10 @@ def test_evaluate_checks_weighted_totals():
 
 def _fake_steps(workflow):
     """Step results that pass every check and delivered a doc each turn."""
-    return [{"doc_extracted": True, "validation": {"weight_total": 10, "weight_passed": 10}} for _ in workflow["steps"]]
+    return [
+        {"step_id": step["id"], "doc_extracted": True, "validation": {"weight_total": 10, "weight_passed": 10}}
+        for step in workflow["steps"]
+    ]
 
 
 def test_score_workflow_perfect(bench, glider):
@@ -408,7 +545,11 @@ async def test_persists_error_when_all_empty_retries_exhausted(bench, glider, mo
     assert not result["success"]
     # Each original turn: attempt + retry; assembly pass: attempt + retry.
     assert calls["n"] == 2 * len(glider["steps"]) + 2
+    assert len(result["steps"]) == len(glider["steps"]) + 1
+    assert result["steps_completed"] == 0
+    assert result["latency"] == 1.0
     for step in result["steps"]:
+        assert step["latency"] == 0.2
         assert "empty generation after" in (step["error"] or "")
 
 
@@ -928,6 +1069,73 @@ def test_artifact_route_serves_file_and_blocks_bad_paths(client, tmp_path, monke
     # Missing artifact -> 404.
     res_missing = client.get("/api/multistep/artifact/nobody__here.html")
     assert res_missing.status_code == 404
+
+
+@pytest.mark.parametrize("subdir", ["", "nested/"])
+def test_multistep_preview_serves_bundled_three_js(client, tmp_path, monkeypatch, subdir):
+    from pathlib import Path
+    from urllib.parse import urljoin
+
+    from web.app import multistep_benchmark as app_ms
+
+    monkeypatch.setattr(app_ms, "ARTIFACTS_DIR", tmp_path)
+    directory = tmp_path / subdir
+    directory.mkdir(exist_ok=True)
+    html = '<html><script src="three.min.js"></script></html>'
+    (directory / "game.html").write_text(html)
+    preview_url = f"/api/multistep/artifact/{subdir}game.html"
+    assert client.get(preview_url).data == html.encode()
+    dependency_url = urljoin(preview_url, "three.min.js")
+    bundled = (Path(__file__).resolve().parent.parent / "three.min.js").read_bytes()
+    for local_copy in (False, True):
+        if local_copy:
+            (directory / "three.min.js").write_text("artifact-local script")
+        res = client.get(dependency_url)
+        assert res.status_code == 200
+        assert res.data == bundled
+        assert res.mimetype == "application/javascript"
+        assert "no-store" in res.headers["Cache-Control"]
+        assert client.head(dependency_url).status_code == 200
+        assert client.head(dependency_url).data == b""
+    assert client.delete(dependency_url).status_code == 405
+    assert (directory / "three.min.js").read_text() == "artifact-local script"
+
+
+@pytest.mark.parametrize("filename", ["other.js", "three.js", "three.min.js.map", "three.min.js.html.js"])
+def test_multistep_dependency_keeps_extension_allowlist(client, tmp_path, monkeypatch, filename):
+    from web.app import multistep_benchmark as app_ms
+
+    monkeypatch.setattr(app_ms, "ARTIFACTS_DIR", tmp_path)
+    (tmp_path / filename).write_text("not an allowed artifact")
+    assert client.get("/api/multistep/artifact/" + filename).status_code == 400
+
+
+def test_multistep_dependency_keeps_path_containment(client, tmp_path, monkeypatch):
+    from web.app import multistep_benchmark as app_ms
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(app_ms, "ARTIFACTS_DIR", artifacts)
+    outside = tmp_path / "three.min.js"
+    outside.write_text("outside artifact directory")
+    (artifacts / "three.min.js").symlink_to(outside)
+    (artifacts / "linked").symlink_to(tmp_path, target_is_directory=True)
+    for filename in ("%2e%2e/three.min.js", "three.min.js", "linked/three.min.js"):
+        res = client.get("/api/multistep/artifact/" + filename)
+        assert res.status_code == 400
+        assert res.get_json()["error"] == "Invalid artifact path"
+    assert client.get("/api/multistep/artifact/Dockerfile.web").status_code == 404
+
+
+def test_multistep_text_artifact_unchanged(client, tmp_path, monkeypatch):
+    from web.app import multistep_benchmark as app_ms
+
+    monkeypatch.setattr(app_ms, "ARTIFACTS_DIR", tmp_path)
+    (tmp_path / "turn.txt").write_text("raw model response")
+    res = client.get("/api/multistep/artifact/turn.txt")
+    assert res.status_code == 200
+    assert res.mimetype == "text/plain"
+    assert res.data == b"raw model response"
 
 
 def test_result_detail_annotates_artifact_urls(client, tmp_path, monkeypatch):

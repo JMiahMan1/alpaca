@@ -23,6 +23,7 @@ import httpx
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_cors import CORS
 from flask_socketio import SocketIO
+
 try:
     from flask_sockets import Sockets
 except ImportError:
@@ -473,6 +474,8 @@ def get_progress_callback(run_type):
                     ms_state["done"] += ms_state["cur_total"]
                     ms_state["cur_total"] = total_i
                     ms_state["wf"] = wf_key
+                elif run_type == "multistep" and total_i > ms_state["cur_total"]:
+                    ms_state["cur_total"] = total_i
                 active_run["tests_completed"] = ms_state["done"] + max(0, step_i - 1)
                 if ms_state["done"] + ms_state["cur_total"]:
                     active_run["total_tests"] = ms_state["done"] + ms_state["cur_total"]
@@ -480,32 +483,6 @@ def get_progress_callback(run_type):
 
             elif event == "test_complete":
                 active_run["tests_completed"] += 1
-                # Auto-publish star games to the arcade: best-effort, never
-                # breaks the run. The arcade keeps its own copy, so the game
-                # survives later benchmark/model deletion.
-                try:
-                    from web.arcade_publish import get_auto_publish_score, publish_game
-
-                    _res = data.get("result") if isinstance(data.get("result"), dict) else {}
-                    _score = _res.get("score")
-                    # Any display-capable result qualifies: publish_game itself
-                    # resolves the source (saved HTML artifact, embedded HTML,
-                    # or extracted program + screenshot for desktop apps).
-                    if isinstance(_score, (int, float)) and _score >= get_auto_publish_score():
-                        _prompt = _res.get("prompt_steps") or _res.get("prompt") or ""
-                        if isinstance(_prompt, list):
-                            _prompt = "\n\n".join(str(s) for s in _prompt)
-                        publish_game(
-                            model=data.get("model") or "",
-                            test_id=data.get("test_id") or "",
-                            benchmark_score=float(_score),
-                            max_score=_res.get("max_score"),
-                            prompt=str(_prompt),
-                            run_date=_res.get("timestamp") or "",
-                            auto=True,
-                        )
-                except Exception:
-                    pass
                 socketio.emit(
                     "test_complete",
                     {
@@ -666,7 +643,7 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task
     loop.close()
 
 
-def run_multistep_in_thread(models, use_proxy, run_cancel_event, callback, workflow_ids=None):
+def run_multistep_in_thread(models, use_proxy, run_cancel_event, callback, workflow_ids=None, custom_keys=None):
     global active_run
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -679,6 +656,7 @@ def run_multistep_in_thread(models, use_proxy, run_cancel_event, callback, workf
                 progress_callback=callback,
                 cancel_event=run_cancel_event,
                 workflow_ids=workflow_ids,
+                custom_keys=custom_keys,
             )
         except Exception as e:
             print(f"Error in MultiStep execution: {e}")
@@ -852,6 +830,8 @@ def _compute_test_hash(test_dict):
         "attachments": sorted(atts),
         "grader_directive": directive_version,
     }
+    if test_dict.get("id") in {"life_dad_joke", "uiux_wireframe", "debug_offbyone", "debug_infinite_loop"}:
+        canonical["functional_grader"] = "v2"
     dumped = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(dumped.encode("utf-8")).hexdigest()[:12]
 
@@ -918,7 +898,7 @@ def _get_test_benchmark_stats():
                             score = 0
                     st["models_scores"][model_name] = score
 
-                    st["models_lint"][model_name] = bool(t.get("lint_passed", t.get("code_ran") is not False))
+                    st["models_lint"][model_name] = t.get("lint_passed", t.get("code_ran") is not False)
 
                     # Per-model score breakdown so the dashboard can explain WHY a
                     # model scored what it did (execution, functional check, code
@@ -3450,8 +3430,9 @@ def sandbox_serve_audio(container_id: str):
             break
         except httpx.HTTPError as e:
             last_error = e
-            with contextlib.suppress(Exception):
-                client.close()
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    client.close()
             client = None
             time.sleep(0.5)
     if resp is None:
@@ -3459,8 +3440,9 @@ def sandbox_serve_audio(container_id: str):
     if resp.status_code != 200:
         with contextlib.suppress(Exception):
             resp.close()
-        with contextlib.suppress(Exception):
-            client.close()
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
         return jsonify({"error": f"Audio upstream returned HTTP {resp.status_code}"}), 502
 
     def generate():
@@ -3471,8 +3453,9 @@ def sandbox_serve_audio(container_id: str):
         finally:
             with contextlib.suppress(Exception):
                 resp.close()
-            with contextlib.suppress(Exception):
-                client.close()
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    client.close()
 
     return Response(
         generate(),
@@ -3733,6 +3716,20 @@ def list_multistep_workflows():
         return jsonify({"tests": [], "error": str(e)})
 
 
+BUNDLED_THREE_JS = Path(__file__).resolve().parent.parent / "three.min.js"
+
+
+def _serve_artifact_three_js():
+    if not BUNDLED_THREE_JS.is_file():
+        return jsonify({"error": "Artifact dependency not found"}), 404
+    return send_file(
+        str(BUNDLED_THREE_JS),
+        mimetype="application/javascript",
+        as_attachment=request.args.get("download", "0") == "1",
+        download_name="three.min.js",
+    )
+
+
 @app.route("/api/multistep/artifact/<path:filename>", methods=["GET"])
 def serve_multistep_artifact(filename):
     """Serve a multi-step workflow artifact (final game HTML or per-turn raw text).
@@ -3745,6 +3742,8 @@ def serve_multistep_artifact(filename):
         target = (base / filename).resolve()
         if base != target and base not in target.parents:
             return jsonify({"error": "Invalid artifact path"}), 400
+        if filename.rsplit("/", 1)[-1] == "three.min.js":
+            return _serve_artifact_three_js()
         if not target.is_file():
             return jsonify({"error": "Artifact not found"}), 404
         if target.suffix.lower() not in (".html", ".txt"):
@@ -3793,6 +3792,7 @@ def start_multistep_benchmark():
     models = data.get("models", [])
     use_proxy = data.get("use_proxy", True)
     workflow_ids = data.get("workflow_ids") or None  # None means run all
+    custom_keys = data.get("custom_keys")
 
     if not models:
         return jsonify({"error": "No models specified"}), 400
@@ -3813,7 +3813,7 @@ def start_multistep_benchmark():
 
         benchmark_thread = threading.Thread(
             target=run_multistep_in_thread,
-            args=(models, use_proxy, cancel_event, callback, workflow_ids),
+            args=(models, use_proxy, cancel_event, callback, workflow_ids, custom_keys),
             daemon=True,
         )
         benchmark_thread.start()
@@ -4499,6 +4499,8 @@ def manage_artifacts():
 def get_artifact(filename):
     """Download or delete a saved benchmark artifact."""
     try:
+        if filename == "three.min.js" and request.method in ("GET", "HEAD"):
+            return _serve_artifact_three_js()
         filename = os.path.basename(filename)
         file_path = benchmark.ARTIFACTS_DIR / filename
         if not file_path.exists():
@@ -4573,7 +4575,7 @@ def arcade_unpublish():
 
 @app.route("/api/arcade/settings", methods=["GET"])
 def get_arcade_settings_api():
-    """UI-owned arcade settings: auto-publish score threshold (.env vs live)."""
+    """Return manual-only publishing status and the legacy score preference."""
     try:
         from web.arcade_publish import get_auto_publish_score
 
@@ -4581,6 +4583,7 @@ def get_arcade_settings_api():
         live = get_auto_publish_score()
         return jsonify(
             {
+                "auto_publish_enabled": False,
                 "auto_publish_score": stored.get("ARCADE_AUTO_PUBLISH_SCORE"),
                 "live_auto_publish_score": live,
                 "needs_apply": stored.get("ARCADE_AUTO_PUBLISH_SCORE") is not None
@@ -4593,7 +4596,7 @@ def get_arcade_settings_api():
 
 @app.route("/api/arcade/settings", methods=["POST"])
 def save_arcade_settings_api():
-    """Save the arcade auto-publish threshold to .env and apply it live (no restart needed)."""
+    """Save the legacy score preference without enabling automatic publishing."""
     try:
         import web.arcade_publish as arcade_publish_mod
         from online_providers import online_model_provider
@@ -4609,8 +4612,6 @@ def save_arcade_settings_api():
         saved = online_model_provider.save_credentials({"ARCADE_AUTO_PUBLISH_SCORE": str(threshold)})
         if not saved.get("success"):
             return jsonify(saved), 500
-        # Apply live: the benchmark runner reads the env-backed getter per event,
-        # and the module constant is refreshed for direct importers.
         os.environ["ARCADE_AUTO_PUBLISH_SCORE"] = str(threshold)
         arcade_publish_mod.AUTO_PUBLISH_SCORE = threshold
         return jsonify({"success": True, "auto_publish_score": threshold})
@@ -6207,7 +6208,7 @@ def get_ollama_model_tags():
         auth_url_tpl = "https://ollama.com/v2/auth/token?scope=repository:{repo}:pull&service=registry.ollama.ai"
 
         def _manifest_size(tag: str) -> dict:
-            info = {"tag": tag, "size": None, "size_bytes": None}
+            info: dict[str, str | int | None] = {"tag": tag, "size": None, "size_bytes": None}
             # Registry repo path: official library models live under library/,
             # user-published models already carry their namespace (author/name).
             repo = model if "/" in model else f"library/{model}"

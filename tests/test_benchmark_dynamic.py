@@ -1,6 +1,6 @@
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -769,6 +769,137 @@ def test_score_test_knowledge_partial_credit():
     result = {"response": "The sky is blue today", "success": True}
     score = benchmark._score_test(test, result)
     assert 0 < score < 100
+
+
+@pytest.mark.asyncio
+async def test_review_only_tests_skip_sandbox_execution(tmp_path):
+    test = {
+        "id": "and_retrofit",
+        "label": "Retrofit review",
+        "prompt": "The code is graded by functional review; it is not compiled in the sandbox.",
+        "review_only": True,
+        "type": "code",
+        "num_predict": 4000,
+    }
+    response = '```kotlin\npackage com.example\n@GET("users")\nsuspend fun getUsers(): List<User>\n```'
+    benchmark = LLMModelBenchmark()
+    benchmark.RESULTS_DIR = tmp_path
+    benchmark.MODELS_DIR = tmp_path
+
+    async def query_online(model, test, sampler=None, **kwargs):
+        return {"response": response, "tokens_generated": 120, "latency": 0.5, "success": True}
+
+    with (
+        patch.object(LLMModelBenchmark, "test_model_proxy", query_online),
+        patch("llm_benchmark_suite.grade_code") as grade,
+        patch("llm_benchmark_suite.extract_clean_code", side_effect=RuntimeError("must not run")),
+    ):
+        results = await benchmark.run_model_benchmarks(
+            models=["openrouter:stealth/union-alpha"], use_proxy=True, mode="functional", test_ids=["and_retrofit"]
+        )
+    grade.assert_not_called()
+    saved = results["results"][0]["category_android"]["tests"][0]
+    assert saved["code_ran"] is None
+    assert saved["code_score"] is None
+    assert saved["lint_passed"] is True
+    assert saved["success"] is True
+    assert saved["run_count"] == 1
+    assert saved["fail_count"] == 0
+    assert benchmark._score_test(test, {"response": response, "success": True, "functional_pass": True}) == 100
+    assert benchmark._score_test(test, {"response": response, "success": False, "functional_pass": True}) == 0
+
+
+def test_review_only_scores_pass_only_on_functional_pass():
+    benchmark = LLMModelBenchmark()
+    test = {"id": "ldrv_char_device", "type": "code", "review_only": True}
+    resp = "```c\n#include <linux/module.h>\nmodule_init(x);\nmodule_exit(y);\n```"
+    ok = {
+        "response": resp,
+        "success": True,
+        "functional_pass": True,
+        "code_ran": None,
+        "code_score": None,
+        "lint_passed": True,
+    }
+    assert benchmark._score_test(test, ok) == 100
+    assert benchmark._score_test(test, {**ok, "functional_pass": False}) == 0
+    assert benchmark._score_test(test, {**ok, "response": ""}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,attempts",
+    [
+        ("openrouter:test", 1),
+        ("huggingface:test", 1),
+        ("cloudflare:test", 1),
+        ("opencode_zen:test", 1),
+        ("local:test", 3),
+    ],
+)
+@pytest.mark.parametrize("use_proxy", [True, False])
+async def test_online_models_skip_outer_empty_retry(tmp_path, model, attempts, use_proxy):
+    benchmark = LLMModelBenchmark()
+    benchmark.MODELS_DIR = tmp_path
+    query = AsyncMock(
+        side_effect=lambda *args: {"response": "", "tokens_generated": 0, "success": False, "error": "Empty completion"}
+    )
+    with (
+        patch.object(benchmark, "test_model_proxy" if use_proxy else "test_model_direct", query),
+        patch("llm_benchmark_suite.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        results = await benchmark.benchmark_model_functional(
+            model, use_proxy=use_proxy, test_ids=["ldrv_char_device"], groups=["linux_driver"]
+        )
+    assert query.await_count == attempts
+    saved = results["category_linux_driver"]["tests"][0]
+    assert saved["success"] is False
+    assert saved["run_count"] == 1
+    assert saved["fail_count"] == 1
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_both_save_paths_increment_history_once(tmp_path, success):
+    benchmark = LLMModelBenchmark()
+    benchmark.MODELS_DIR = tmp_path
+    for run in range(1, 4):
+        result = {"test_id": "t", "success": success, "score": 100 if success else 0}
+        benchmark.save_test_result_incremental("model", "coding", result, "functional", True)
+        model_data = {"model": "model", "category_coding": {"tests": [result]}}
+        path = benchmark.save_per_model_result(model_data, "functional", True)
+        benchmark.save_per_model_result(model_data, "functional", True)
+        stored = json.loads(path.read_text())["results"][0]["category_coding"]["tests"][0]
+        assert stored["run_count"] == run
+        assert stored["fail_count"] == (0 if success else run)
+        assert stored["run_id"] == result["run_id"]
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+@pytest.mark.asyncio
+async def test_resume_reuse_preserves_history(tmp_path, legacy):
+    benchmark = LLMModelBenchmark()
+    benchmark.MODELS_DIR = tmp_path
+    test = benchmark._android_tests("")[0]
+    prior = {
+        "test_id": test["id"],
+        "success": False,
+        "score": 0,
+        "test_hash": benchmark.compute_test_hash(test),
+        "run_count": 4,
+        "fail_count": 2,
+    }
+    if not legacy:
+        prior["run_id"] = "previous-run"
+    with patch.object(benchmark, "test_model_proxy", new_callable=AsyncMock) as query:
+        benchmark.tests_config["android"] = [test]
+        model_data = await benchmark.benchmark_model_functional(
+            "model", use_proxy=True, resume=True, groups=["android"], prior_results={test["id"]: prior}
+        )
+    query.assert_not_called()
+    path = benchmark.save_per_model_result(model_data, "functional", True)
+    stored = json.loads(path.read_text())["results"][0]["category_android"]["tests"][0]
+    assert stored["run_count"] == 4
+    assert stored["fail_count"] == 2
 
 
 def test_merge_run_history_tracks_run_and_fail_counts():

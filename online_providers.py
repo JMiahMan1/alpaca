@@ -90,6 +90,8 @@ def complete_online_request(
     req["duration_seconds"] = round(req["completed_at"] - req["started_at"], 2)
 
     tokens = completion_tokens or int(result.get("tokens_generated") or 0)
+    req["completion_tokens_estimated"] = bool(not tokens and req["response"])
+    req["prompt_tokens_estimated"] = bool(not prompt_tokens and req.get("prompt"))
     if not tokens and req["response"]:
         tokens = max(1, int(len(req["response"]) / 4))
     req["completion_tokens"] = tokens
@@ -101,7 +103,7 @@ def complete_online_request(
         req["tps"] = round(tokens / req["duration_seconds"], 2)
     else:
         req["tps"] = 0.0
-    req["ttft_seconds"] = req["duration_seconds"]
+    req["ttft_seconds"] = None
 
     with _online_request_lock:
         _completed_online_requests.append(req)
@@ -918,28 +920,9 @@ class OnlineModelProvider:
                 content_type = ct
         text = getattr(resp, "text", "") or ""
 
-        if isinstance(content_type, str) and "text/event-stream" in content_type:
-            # Streaming response: accumulate deltas below.
-            pass
-        elif isinstance(text, str) and text.lstrip().startswith("data:"):
-            # Streaming response (no content-type header): accumulate deltas below.
-            pass
-        else:
-            try:
-                return resp.json(), None
-            except Exception as exc:
-                latency = resp.elapsed.total_seconds() if resp.elapsed else 0.0
-                return None, {
-                    "success": False,
-                    "latency": latency,
-                    "response": None,
-                    "tokens_generated": 0,
-                    "error": (
-                        f"{provider_label} returned HTTP {resp.status_code} with a non-JSON body ({exc}): "
-                        f"{resp.text[:200]!r}. Verify the provider base URL and credentials."
-                    ),
-                }
-            # Accumulate streamed deltas into one OpenAI-style completion.
+        if "text/event-stream" in content_type.lower() or (
+            isinstance(text, str) and text.lstrip().startswith("data:")
+        ):
             parts: list[str] = []
             finish_reason = None
             for raw in text.splitlines():
@@ -953,7 +936,9 @@ class OnlineModelProvider:
                     evt = _json.loads(payload)
                 except Exception:
                     continue
-                for ch in evt.get("choices", []) or []:
+                if evt.get("error") is not None:
+                    return evt, None
+                for ch in (evt.get("choices") or [])[:1]:
                     delta = ch.get("delta", {}) or {}
                     if delta.get("content"):
                         parts.append(delta["content"])
@@ -963,7 +948,9 @@ class OnlineModelProvider:
         try:
             return resp.json(), None
         except Exception as exc:
-            latency = resp.elapsed.total_seconds() if resp.elapsed else 0.0
+            latency = 0.0
+            with suppress(RuntimeError):
+                latency = resp.elapsed.total_seconds() if resp.elapsed else 0.0
             return None, {
                 "success": False,
                 "latency": latency,
@@ -990,6 +977,19 @@ class OnlineModelProvider:
         """
         import json as _json
 
+        embedded_error = data.get("error")
+        if embedded_error is not None:
+            if isinstance(embedded_error, dict):
+                metadata = embedded_error.get("metadata") or {}
+                error_type = metadata.get("error_type") if isinstance(metadata, dict) else None
+                detail = (
+                    f"code={embedded_error.get('code')}, status={embedded_error.get('status')}, "
+                    f"error_type={error_type or embedded_error.get('error_type')}: "
+                    f"{embedded_error.get('message') or 'Unknown provider error'}"
+                )
+            else:
+                detail = str(embedded_error)
+            return None, None, None, f"{provider_label} returned HTTP 200 with embedded provider error ({detail})"
         choices = data.get("choices") or []
         if not choices:
             return (
@@ -1188,9 +1188,9 @@ class OnlineModelProvider:
         separate from the proxy's slot management: online queries never consume
         llama-server slots.
         """
+        start_t = time.monotonic()
         provider, _ = self.parse_model_identifier(model_identifier)
         request_id = _make_request_id(model_identifier)
-        start_t = time.time()
         start_online_request(
             request_id,
             model_identifier,
@@ -1240,6 +1240,7 @@ class OnlineModelProvider:
             "tokens_generated": 0,
             "error": "Online request never executed.",
         }
+        provider_timeouts = 0
         for attempt in range(max_retries + 1):
             try:
                 result = await self._query_online_model_impl(
@@ -1253,7 +1254,7 @@ class OnlineModelProvider:
             except Exception as exc:
                 result = {
                     "success": False,
-                    "latency": time.time() - start_t,
+                    "latency": time.monotonic() - start_t,
                     "response": None,
                     "tokens_generated": 0,
                     "error": f"Online request failed: {exc}",
@@ -1329,6 +1330,10 @@ class OnlineModelProvider:
                     break
             # Retry transient free-tier failures (empty/length-truncated completions,
             # DNS/network blips, timeouts, 429/5xx) instead of scoring them as a miss.
+            if self._is_provider_timeout_failure(result):
+                provider_timeouts += 1
+                if provider_timeouts >= 2:
+                    break
             if not self._is_retryable_online_failure(result) or attempt >= max_retries:
                 break
             # Exponential backoff with jitter; honor a provider Retry-After when present.
@@ -1346,8 +1351,19 @@ class OnlineModelProvider:
             )
             await asyncio.sleep(backoff)
 
+        result["latency"] = time.monotonic() - start_t
         complete_online_request(request_id, result)
         return result
+
+    @staticmethod
+    def _is_provider_timeout_failure(result: dict) -> bool:
+        if result.get("success"):
+            return False
+        error = (result.get("error") or "").lower()
+        return "http 504" in error or (
+            "embedded provider error" in error
+            and any(token in error for token in ("504", "timeout", "timed out"))
+        )
 
     @staticmethod
     def _is_retryable_online_failure(result: dict) -> bool:
@@ -1360,6 +1376,15 @@ class OnlineModelProvider:
         if result.get("success"):
             return False
         err = (result.get("error") or "").lower()
+        embedded = re.search(r"embedded provider error \(code=([^,]*), status=([^,]*), error_type=", err)
+        if embedded:
+            codes = {int(value.strip()) for value in embedded.groups() if re.fullmatch(r"\s*\d{3}\s*", value)}
+        else:
+            codes = {int(code) for code in re.findall(r"\bhttp\s+(\d{3})\b", err)}
+        if codes & {401, 403}:
+            return False
+        if codes & {429, 500, 502, 503, 504}:
+            return True
         retryable_tokens = (
             "empty response",
             "no choices",
@@ -1367,10 +1392,6 @@ class OnlineModelProvider:
             "name or service not known",
             "timeout",
             "timed out",
-            "503",
-            "502",
-            "504",
-            "429",
         )
         return any(tok in err for tok in retryable_tokens)
 

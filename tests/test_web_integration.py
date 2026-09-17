@@ -27,12 +27,312 @@ def client():
         yield client
 
 
+@pytest.mark.parametrize("next_model,next_workflow", [("m", "next"), ("m2", "house")])
+def test_multistep_assembly_progress_adopts_larger_total(client, next_model, next_workflow):
+    from web.app import get_progress_callback
+
+    callback = get_progress_callback("multistep")
+    step = {"model": "m", "workflow": "house", "label": "Turn", "category": "c", "step": 1, "total": 4}
+    completion = {"model": "m", "test_id": "house", "test_label": "House", "category": "c", "result": {}}
+    with patch("web.app.socketio.emit") as emit:
+        callback("benchmark_start", {"models": ["m"], "use_proxy": True, "total_tests": 1, "timestamp": "t"})
+        callback("test_step", step)
+        callback("test_step", {**step, "step": 5, "total": 5})
+        assert (active_run["tests_completed"], active_run["total_tests"]) == (4, 5)
+        callback("test_complete", completion)
+        assert emit.call_args.args[1]["progress"] == {"completed": 5, "total": 5, "percentage": 100}
+        callback("test_step", {**step, "model": next_model, "workflow": next_workflow})
+        assert (active_run["tests_completed"], active_run["total_tests"]) == (5, 9)
+        callback("test_step", {**step, "model": next_model, "workflow": next_workflow, "step": 4})
+        callback("test_complete", {**completion, "model": next_model, "test_id": next_workflow})
+        assert emit.call_args.args[1]["progress"] == {"completed": 9, "total": 9, "percentage": 100}
+
+
+@pytest.mark.parametrize("run_type", ["general", "shared_llm"])
+def test_non_multistep_progress_denominator_unchanged(client, run_type):
+    from web.app import get_progress_callback
+
+    callback = get_progress_callback(run_type)
+    with patch("web.app.socketio.emit") as emit:
+        callback("benchmark_start", {"models": ["m"], "use_proxy": True, "total_tests": 4, "timestamp": "t"})
+        callback("test_complete", {"model": "m", "category": "c", "test_id": "t", "test_label": "T", "result": {}})
+        assert emit.call_args.args[1]["progress"] == {"completed": 1, "total": 4, "percentage": 25}
+
+
+@pytest.mark.parametrize("custom_keys", [None, {"openrouter_api_key": "test-key"}])
+def test_multistep_route_forwards_custom_keys_to_harness(client, custom_keys):
+    from unittest.mock import AsyncMock
+
+    import web.app as web_app
+
+    body = {"models": ["openrouter:test-model"], "workflow_ids": ["house"], "use_proxy": False}
+    if custom_keys is not None:
+        body["custom_keys"] = custom_keys
+    with (
+        patch("web.app.threading.Thread") as thread,
+        patch.object(web_app.multistep_benchmark, "run_multistep_benchmarks", new_callable=AsyncMock) as run,
+        patch("web.app.socketio.emit"),
+    ):
+        response = client.post("/api/run/multistep", json=body)
+        assert response.status_code == 200
+        assert "custom_keys" not in response.get_json()["active_run"]
+        thread.return_value.start.assert_called_once()
+        call = thread.call_args.kwargs
+        call["target"](*call["args"])
+        run.assert_awaited_once_with(
+            models=body["models"],
+            use_proxy=False,
+            progress_callback=call["args"][3],
+            cancel_event=call["args"][2],
+            workflow_ids=["house"],
+            custom_keys=custom_keys,
+        )
+
+
+def test_requests_preserves_online_estimate_labels_and_null_ttft(client, monkeypatch):
+    from collections import deque
+
+    import online_providers as online
+
+    monkeypatch.setattr(online, "_active_online_requests", {})
+    monkeypatch.setattr(online, "_completed_online_requests", deque(maxlen=50))
+    online.start_online_request("online-test", "openrouter:test", "openrouter", {"prompt": "hello"})
+    online.complete_online_request("online-test", {"success": True, "response": "answer", "tokens_generated": 2})
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"active_requests": [], "completed_requests": []}
+    with (
+        patch("web.app._find_proxy_url", return_value="http://proxy-test"),
+        patch("httpx.Client.get", return_value=response),
+    ):
+        result = client.get("/api/requests")
+    assert result.status_code == 200
+    record = result.get_json()["completed_requests"][0]
+    assert record["ttft_seconds"] is None
+    assert record["prompt_tokens_estimated"] is True
+    assert record["completion_tokens_estimated"] is False
+    assert record["completion_tokens"] == 2
+
+
+@pytest.fixture
+def arcade_source(tmp_path, monkeypatch):
+    import web.arcade_publish as arcade
+
+    games_dir = tmp_path / "games"
+    source = tmp_path / "game.html"
+    source.write_text("<!doctype html><html><body>Original game</body></html>")
+    monkeypatch.setattr(arcade, "GAMES_DIR", games_dir)
+    monkeypatch.setattr(arcade, "find_artifact_file", lambda model, test_id: source)
+    return games_dir, source
+
+
+@pytest.mark.parametrize("run_type", ["general", "shared_llm", "multistep"])
+@pytest.mark.parametrize("threshold", [None, "0", "80"])
+@pytest.mark.parametrize("published", [False, True])
+def test_benchmark_completion_never_publishes_arcade(client, arcade_source, monkeypatch, run_type, threshold, published):
+    import web.arcade_publish as arcade
+    from web.app import get_progress_callback
+
+    if threshold is None:
+        monkeypatch.delenv("ARCADE_AUTO_PUBLISH_SCORE", raising=False)
+    else:
+        monkeypatch.setenv("ARCADE_AUTO_PUBLISH_SCORE", threshold)
+    games_dir, source = arcade_source
+    body = {"model": "demo-model", "test_id": "demo_game", "benchmark_score": 90}
+    if published:
+        assert client.post("/api/arcade/publish", json=body).status_code == 200
+    before = {p.relative_to(games_dir): p.read_bytes() for p in games_dir.rglob("*") if p.is_file()}
+    source.write_text("<!doctype html><html><body>New benchmark game</body></html>")
+    callback = get_progress_callback(run_type)
+    event_data = {
+        "model": body["model"],
+        "test_id": body["test_id"],
+        "test_label": "Demo game",
+        "category": "gamedev",
+        "result": {"score": 100, "max_score": 100, "response": source.read_text()},
+    }
+    with (
+        patch("web.arcade_publish.publish_game", wraps=arcade.publish_game) as publish,
+        patch("web.app.socketio.emit") as emit,
+    ):
+        callback(
+            "benchmark_start",
+            {"models": [body["model"]], "use_proxy": True, "total_tests": 1, "timestamp": "2026-09-16"},
+        )
+        callback("test_complete", event_data)
+        publish.assert_not_called()
+        emit.assert_called_with(
+            "test_complete",
+            {**event_data, "progress": {"completed": 1, "total": 1, "percentage": 100}},
+        )
+    assert active_run["tests_completed"] == 1
+    assert {p.relative_to(games_dir): p.read_bytes() for p in games_dir.rglob("*") if p.is_file()} == before
+    assert games_dir.exists() is published
+
+
+@pytest.mark.parametrize("lang", ["html", "python"])
+def test_arcade_manual_publish_republish_and_unpublish(client, arcade_source, monkeypatch, lang):
+    import web.arcade_publish as arcade
+
+    games_dir, source = arcade_source
+    if lang == "python":
+        monkeypatch.setattr(arcade, "find_artifact_file", lambda model, test_id: None)
+        monkeypatch.setattr(
+            arcade,
+            "find_model_response",
+            lambda model, test_id: {"response": "```python\nprint('game')\n```", "score": 10},
+        )
+    body = {"model": "demo-model", "test_id": "demo_game", "benchmark_score": 10}
+    res = client.post("/api/arcade/publish", json=body)
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["republished"] is False
+    slug = data["slug"]
+    game_dir = games_dir / slug
+    assert (game_dir / ("game.html" if lang == "html" else "game.py")).is_file()
+    assert json.loads((game_dir / "meta.json").read_text())["auto_published"] is False
+    assert client.get("/api/arcade/published").get_json()["slugs"] == [slug]
+    scores = '[{"initials": "ABC", "score": 123}]'
+    ratings = '{"ABC": 5}'
+    (game_dir / "scores.json").write_text(scores)
+    (game_dir / "ratings.json").write_text(ratings)
+    source.write_text("<!doctype html><html><body>Manually updated game</body></html>")
+    res = client.post("/api/arcade/publish", json={**body, "benchmark_score": 20})
+    assert res.status_code == 200
+    assert res.get_json()["republished"] is True
+    assert (game_dir / "scores.json").read_text() == scores
+    assert (game_dir / "ratings.json").read_text() == ratings
+    assert json.loads((game_dir / "meta.json").read_text())["benchmark_score"] == 20
+    if lang == "html":
+        assert (game_dir / "game.html").read_text() == source.read_text()
+    assert client.post("/api/arcade/unpublish", json={"slug": slug}).get_json()["removed"] is True
+    assert client.get("/api/arcade/published").get_json()["slugs"] == []
+
+
+def test_arcade_legacy_settings_cannot_enable_publishing(client, arcade_source, monkeypatch):
+    import web.arcade_publish as arcade
+    from web.app import get_progress_callback
+
+    monkeypatch.setenv("ARCADE_AUTO_PUBLISH_SCORE", "80")
+    monkeypatch.setattr(arcade, "AUTO_PUBLISH_SCORE", 80)
+    with (
+        patch("online_providers.online_model_provider.save_credentials", return_value={"success": True}),
+        patch("web.app._read_dotenv_values", return_value={"ARCADE_AUTO_PUBLISH_SCORE": "0"}),
+        patch("web.arcade_publish.publish_game") as publish,
+        patch("web.app.socketio.emit"),
+    ):
+        assert client.get("/api/arcade/settings").get_json()["auto_publish_enabled"] is False
+        assert client.post("/api/arcade/settings", json={"auto_publish_score": 0}).status_code == 200
+        assert client.get("/api/arcade/settings").get_json()["auto_publish_enabled"] is False
+        active_run["total_tests"] = 1
+        get_progress_callback("general")(
+            "test_complete",
+            {
+                "model": "demo-model",
+                "test_id": "demo_game",
+                "test_label": "Demo game",
+                "category": "gamedev",
+                "result": {"score": 100},
+            },
+        )
+        publish.assert_not_called()
+    assert not arcade_source[0].exists()
+
+
+def test_arcade_dashboard_manual_only(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert b"Games are never published automatically" in res.data
+    assert b"input-arcade-threshold" not in res.data
+    assert b"btn-save-arcade" not in res.data
+
+
 def test_index_route(client):
     """Test that the index route serves the template and returns 200 OK"""
     res = client.get("/")
     assert res.status_code == 200
     assert b"Alpaca Benchmarks v2" in res.data
     assert b"Pipeline Controls" in res.data
+
+
+@pytest.mark.parametrize("download", [False, True])
+def test_artifact_preview_serves_bundled_three_js(client, tmp_path, monkeypatch, download):
+    from pathlib import Path
+
+    from web.app import benchmark
+
+    monkeypatch.setattr(benchmark, "ARTIFACTS_DIR", tmp_path)
+    html = '<html><script src="three.min.js"></script></html>'
+    (tmp_path / "game.html").write_text(html)
+    (tmp_path / "three.min.js").write_text("artifact-local script")
+    assert client.get("/api/artifacts/game.html").data == html.encode()
+    url = "/api/artifacts/three.min.js" + ("?download=1" if download else "")
+    res = client.get(url)
+    assert res.status_code == 200
+    assert res.data == (Path(__file__).resolve().parent.parent / "three.min.js").read_bytes()
+    assert res.mimetype == "application/javascript"
+    assert res.headers["Content-Disposition"].startswith("attachment" if download else "inline")
+    assert "no-store" in res.headers["Cache-Control"]
+    assert client.head(url).status_code == 200
+    assert client.head(url).data == b""
+    assert (tmp_path / "three.min.js").read_text() == "artifact-local script"
+    assert client.get("/api/artifacts").get_json()["artifacts"][0]["filename"] == "game.html"
+
+
+def test_artifact_three_js_delete_does_not_touch_bundle(client, tmp_path, monkeypatch):
+    from web.app import BUNDLED_THREE_JS, benchmark
+
+    monkeypatch.setattr(benchmark, "ARTIFACTS_DIR", tmp_path)
+    bundled = BUNDLED_THREE_JS.read_bytes()
+    assert client.delete("/api/artifacts/three.min.js").status_code == 404
+    local = tmp_path / "three.min.js"
+    local.write_text("artifact-local script")
+    assert client.delete("/api/artifacts/three.min.js").status_code == 200
+    assert not local.exists()
+    assert BUNDLED_THREE_JS.read_bytes() == bundled
+    assert client.get("/api/artifacts/three.min.js").data == bundled
+
+
+@pytest.mark.parametrize("prefix", ["/api/artifacts/", "/api/multistep/artifact/"])
+def test_artifact_three_js_missing_bundle(client, tmp_path, monkeypatch, prefix):
+    import web.app as web_app
+
+    monkeypatch.setattr(web_app, "BUNDLED_THREE_JS", tmp_path / "missing-three.min.js")
+    monkeypatch.setattr(web_app.benchmark, "ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(web_app.multistep_benchmark, "ARTIFACTS_DIR", tmp_path)
+    (tmp_path / "three.min.js").write_text("artifact-local script")
+    assert client.get(prefix + "three.min.js").status_code == 404
+
+
+@pytest.mark.parametrize("prefix", ["/api/artifacts/", "/api/multistep/artifact/"])
+def test_artifact_three_js_requires_authentication(client, monkeypatch, prefix):
+    monkeypatch.setenv("ALPACA_API_KEY", "test-artifact-key")
+    with patch("web.app.is_flask_client_local", return_value=False):
+        assert client.get(prefix + "three.min.js").status_code == 401
+        assert client.get(prefix + "three.min.js", headers={"X-API-Key": "test-artifact-key"}).status_code == 200
+
+
+@pytest.mark.parametrize("filename", ["three.js", "three.min.js.map", "Dockerfile.web", "web/app.py", "../three.min.js"])
+def test_artifact_dependency_does_not_expose_other_project_files(client, tmp_path, monkeypatch, filename):
+    from web.app import benchmark
+
+    monkeypatch.setattr(benchmark, "ARTIFACTS_DIR", tmp_path)
+    assert client.get("/api/artifacts/" + filename).status_code == 404
+
+
+def test_artifact_download_and_delete_unchanged(client, tmp_path, monkeypatch):
+    from web.app import benchmark
+
+    monkeypatch.setattr(benchmark, "ARTIFACTS_DIR", tmp_path)
+    artifact = tmp_path / "game.html"
+    artifact.write_text("<html>game</html>")
+    res = client.get("/api/artifacts/game.html?download=1")
+    assert res.status_code == 200
+    assert res.data == artifact.read_bytes()
+    assert res.headers["Content-Disposition"].startswith("attachment")
+    assert client.delete("/api/artifacts/game.html").status_code == 200
+    assert not artifact.exists()
+    assert client.get("/api/artifacts/game.html").status_code == 404
 
 
 def test_api_status_route(client):
@@ -1339,6 +1639,59 @@ def test_clear_all_benchmarks(client, tmp_path):
         assert data["status"] == "cleared"
         assert data["files_removed"] == 4
         mock_clear.assert_called_once()
+
+
+@pytest.mark.parametrize("lint_fields", [{"lint_passed": None}, {"lint_passed": True}, {"lint_passed": False}, {}])
+@pytest.mark.parametrize("code_ran", [None, True, False])
+def test_api_tests_preserves_unknown_lint(client, tmp_path, lint_fields, code_ran):
+    from web.app import benchmark
+
+    record = {
+        "model": "basic-model",
+        "results": [
+            {
+                "category_coding": {
+                    "tests": [
+                        {
+                            "test_id": "debug_fix",
+                            "score": 0,
+                            "code_ran": code_ran,
+                            "code_quality": {"language": "basic"},
+                            **lint_fields,
+                        }
+                    ]
+                }
+            }
+        ],
+    }
+    (tmp_path / "general_basic-model.json").write_text(json.dumps(record))
+    with patch.object(benchmark, "MODELS_DIR", tmp_path), patch.object(benchmark, "RESULTS_DIR", tmp_path):
+        response = client.get("/api/tests")
+    assert response.status_code == 200
+    test = next(t for t in response.get_json()["tests"] if t["id"] == "debug_fix")
+    assert test["models_lint"]["basic-model"] is lint_fields.get("lint_passed", code_ran is not False)
+    assert test["models_breakdown"]["basic-model"]["lint_passed"] is lint_fields.get("lint_passed")
+
+
+@pytest.mark.parametrize("value,label", [(None, "not run / unknown"), (True, "passed"), (False, "FAILED")])
+def test_dashboard_lint_rendering(client, value, label):
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for dashboard rendering tests")
+    response = client.get("/static/js/dashboard.js")
+    assert response.status_code == 200
+    source = response.get_data(as_text=True)
+    start = source.index("const lp = lint[m];")
+    end = source.index("const lr = lastRun[m];", start)
+    script = f"const m = 'basic-model'; const lint = {{[m]: {json.dumps(value)}}};\n" + source[start:end]
+    result = subprocess.run([node, "-e", script + "\nconsole.log(lintCell);"], capture_output=True, text=True, check=True)
+    assert label in result.stdout
+    if value is None:
+        assert "FAILED" not in result.stdout
+        assert "test-stats-lint-fail" not in result.stdout
 
 
 def test_api_tests_run_stats_and_currency(client, tmp_path):

@@ -7,6 +7,222 @@ from online_providers import OnlineModelProvider
 from web.shared_llm_benchmark import SharedLLMModelBenchmark
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers", [{"content-type": "text/event-stream"}, {}])
+async def test_openrouter_accumulates_sse_deltas(headers):
+    import httpx
+
+    provider = OnlineModelProvider()
+    provider.openrouter_api_key = "test-key"
+    body = (
+        'data: {"choices":[{"delta":{"content":"hello "}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"world"}}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    response = httpx.Response(200, headers=headers, content=body)
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=response):
+        result = await provider._query_online_model_impl("openrouter:test-model", "hi")
+    assert result["success"] is True
+    assert result["response"] == "hello world"
+    assert result["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "embedded",
+    [
+        {"message": "Provider timed out after 301s", "code": 504, "metadata": {"error_type": "timeout"}},
+        {"message": "Upstream unavailable", "code": 504, "status": "GATEWAY_TIMEOUT"},
+        {"message": "Upstream unavailable", "metadata": {"error_type": "timeout"}},
+    ],
+)
+async def test_openrouter_embedded_timeout_diagnosis_and_retry_cap(embedded):
+    import httpx
+
+    provider = OnlineModelProvider()
+    provider.openrouter_api_key = "test-key"
+    response = httpx.Response(200, json={"error": embedded})
+    with (
+        patch.object(provider, "_resolve_thinking_model", new_callable=AsyncMock, return_value=False),
+        patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=response) as post,
+        patch("online_providers.asyncio.sleep", new_callable=AsyncMock) as sleep,
+    ):
+        result = await provider.query_online_model("openrouter:test-model", "hi")
+    assert not result["success"]
+    assert "HTTP 200 with embedded provider error" in result["error"]
+    assert embedded["message"] in result["error"]
+    if "code" in embedded:
+        assert f"code={embedded['code']}" in result["error"]
+    if "metadata" in embedded:
+        assert "error_type=timeout" in result["error"]
+    if "status" in embedded:
+        assert "status=GATEWAY_TIMEOUT" in result["error"]
+    assert "possible content filter" not in result["error"]
+    assert post.await_count == 2
+    sleep.assert_awaited_once()
+    assert set(result) == {"success", "latency", "response", "thinking", "finish_reason", "tokens_generated", "error"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["code", "status"])
+@pytest.mark.parametrize("as_string", [False, True])
+@pytest.mark.parametrize("code, attempts", [(500, 5), (502, 5), (503, 5), (504, 2), (401, 1), (403, 1)])
+async def test_embedded_http_error_retry_budget(field, as_string, code, attempts):
+    import httpx
+
+    provider = OnlineModelProvider()
+    provider.openrouter_api_key = "test-key"
+    embedded = {field: str(code) if as_string else code, "message": "Provider request failed"}
+    response = httpx.Response(200, json={"error": embedded})
+    with (
+        patch.object(provider, "_resolve_thinking_model", new_callable=AsyncMock, return_value=False),
+        patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=response) as post,
+        patch("online_providers.asyncio.sleep", new_callable=AsyncMock) as sleep,
+    ):
+        result = await provider.query_online_model("openrouter:test-model", "hi")
+    assert result == {
+        "success": False,
+        "latency": result["latency"],
+        "response": None,
+        "thinking": None,
+        "finish_reason": None,
+        "tokens_generated": 0,
+        "error": (
+            "OpenRouter returned HTTP 200 with embedded provider error "
+            f"(code={embedded.get('code')}, status={embedded.get('status')}, "
+            "error_type=None: Provider request failed)"
+        ),
+    }
+    assert post.await_count == attempts
+    assert sleep.await_count == attempts - 1
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_permanent_error_does_not_retry_transient_message(code):
+    provider = OnlineModelProvider()
+    error = provider._extract_online_content(
+        {"error": {"code": code, "message": "timeout contacting upstream 503"}}, "OpenRouter"
+    )[3]
+    assert not provider._is_retryable_online_failure({"success": False, "error": error})
+
+
+@pytest.mark.parametrize("code", [500, 502, 503, 504])
+def test_retry_status_requires_explicit_code(code):
+    assert OnlineModelProvider._is_retryable_online_failure({"success": False, "error": f"OpenRouter HTTP {code}"})
+    assert not OnlineModelProvider._is_retryable_online_failure(
+        {"success": False, "error": f"Invalid request: identifier {code}"}
+    )
+
+
+def test_online_content_embedded_error_precedes_choices():
+    provider = OnlineModelProvider()
+    content, thinking, finish, error = provider._extract_online_content(
+        {"error": {"code": 504, "message": "Provider timeout"}, "choices": [{"message": {"content": "partial"}}]},
+        "OpenRouter",
+    )
+    assert content is thinking is finish is None
+    assert "code=504" in error
+    assert "embedded provider error" in error
+    assert "no choices" in provider._extract_online_content({}, "OpenRouter")[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", ["OpenRouter HTTP 429", "Online request failed: network timeout"])
+async def test_online_rate_limit_and_network_retry_budget_unchanged(error):
+    provider = OnlineModelProvider()
+    failure = {"success": False, "latency": 1, "response": None, "tokens_generated": 0, "error": error}
+    with (
+        patch.object(provider, "_resolve_thinking_model", new_callable=AsyncMock, return_value=False),
+        patch.object(provider, "_query_online_model_impl", new_callable=AsyncMock, return_value=failure) as query,
+        patch("online_providers.asyncio.sleep", new_callable=AsyncMock) as sleep,
+    ):
+        result = await provider.query_online_model("openrouter:test-model", "hi")
+    assert not result["success"]
+    assert query.await_count == 5
+    assert sleep.await_count == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exhausted_thinking", [False, True])
+async def test_online_latency_includes_retries_backoff_and_continuation(exhausted_thinking):
+    import time
+    from types import SimpleNamespace
+
+    provider = OnlineModelProvider()
+    clock = [100.0]
+    attempts = iter(
+        [
+            {"success": False, "response": None, "finish_reason": None, "error": "HTTP 429"},
+            {
+                "success": not exhausted_thinking,
+                "response": None if exhausted_thinking else "part",
+                "finish_reason": "length",
+                "error": "empty response" if exhausted_thinking else None,
+            },
+            {"success": True, "response": "done", "finish_reason": "stop", "error": None},
+        ]
+    )
+
+    async def query(*args, **kwargs):
+        clock[0] += 10
+        return {"latency": 10, "thinking": "reasoning", "tokens_generated": 5, **next(attempts)}
+
+    async def sleep(delay):
+        clock[0] += delay
+
+    with (
+        patch("online_providers.time", SimpleNamespace(time=time.time, monotonic=lambda: clock[0])),
+        patch.object(provider, "_resolve_thinking_model", new_callable=AsyncMock, return_value=True),
+        patch.object(provider, "_query_online_model_impl", side_effect=query) as impl,
+        patch("online_providers.asyncio.sleep", side_effect=sleep),
+    ):
+        result = await provider.query_online_model("openrouter:test-model", "hi")
+    assert result["success"]
+    assert result["response"].endswith("done")
+    assert result["latency"] == 35.5
+    assert result["latency"] > 10
+    assert impl.await_count == 3
+
+
+def test_online_decode_preserves_json_and_malformed_body():
+    import httpx
+
+    data, error = OnlineModelProvider._decode_json_response(httpx.Response(200, json={"choices": []}), "OpenRouter")
+    assert data == {"choices": []}
+    assert error is None
+    data, error = OnlineModelProvider._decode_json_response(httpx.Response(200, text="Not Found"), "OpenRouter")
+    assert data is None
+    assert not error["success"]
+    assert "non-JSON body" in error["error"]
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_online_tracker_marks_estimates_and_unknown_ttft(monkeypatch, measured):
+    from collections import deque
+
+    import online_providers as online
+
+    monkeypatch.setattr(online, "_active_online_requests", {})
+    monkeypatch.setattr(online, "_completed_online_requests", deque(maxlen=50))
+    online.start_online_request("tracker-test", "openrouter:test", "openrouter", {"prompt": "x" * 4000})
+    online.complete_online_request(
+        "tracker-test",
+        {"success": True, "response": "a response", "tokens_generated": 0, "error": None},
+        prompt_tokens=1000 if measured else 0,
+        completion_tokens=10 if measured else 0,
+    )
+    tracked = online.get_online_requests()
+    assert tracked["active_requests"] == []
+    record = tracked["completed_requests"][0]
+    assert record["ttft_seconds"] is None
+    assert record["prompt_tokens_estimated"] is not measured
+    assert record["completion_tokens_estimated"] is not measured
+    assert record["prompt_tokens"] == (1000 if measured else 500)
+    assert record["completion_tokens"] == (10 if measured else 2)
+    assert record["duration_seconds"] >= 0
+
+
 def test_online_model_provider_detection():
     provider = OnlineModelProvider()
     assert provider.is_online_model("openrouter:google/gemini-2.0-flash-exp:free") is True
