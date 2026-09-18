@@ -155,7 +155,8 @@
   const soundBtn = $("btn-sound-live");
   if (soundBtn) soundBtn.addEventListener("click", () => {
     soundOn = !soundOn;
-    soundBtn.textContent = soundOn ? "🔇 Mute" : "🔊 Sound";
+    soundBtn.textContent = soundOn ? "🔊 Sound" : "🔇 Muted";
+    soundBtn.title = soundOn ? "Mute game sound" : "Unmute game sound";
     postLiveAudio(soundOn);
   });
   // ⌨ Type into the game: focus a hidden proxy input so the device
@@ -448,7 +449,10 @@
       // the frame reloaded. Also resets the Sound toggle to on.
       frame.addEventListener("load", () => {
         soundOn = true;
-        if (soundBtn) soundBtn.textContent = "🔇 Mute";
+        if (soundBtn) {
+          soundBtn.textContent = "🔊 Sound";
+          soundBtn.title = "Mute game sound";
+        }
         postLiveAudio(true);
       }, { once: true });
       status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";

@@ -1114,6 +1114,23 @@ def test_launcher_game_audio_sidechannel():
     assert "if (gen !== audioGen) return" in html
 
 
+def test_arcade_sound_toggle_labels_show_state():
+    """Sound toggles show state, not action: on = speaker, off = muted.
+
+    Action labels ("🔇 Mute" while on) made the first click look dead: the
+    initial play.html button says "🔊 Sound" while soundOn is already true.
+    """
+    from pathlib import Path
+
+    js = Path("arcade/static/arcade.js").read_text()
+    assert 'soundOn ? "🔊 Sound" : "🔇 Muted"' in js
+    play = Path("arcade/templates/play.html").read_text()
+    assert "🔊 Sound" in play
+    launcher = Path("web/templates/ui_launcher.html").read_text()
+    assert "on ? '🔊 Sound' : '🔇 Muted'" in launcher
+    assert "'🔇 Muted';" in launcher
+
+
 def test_launcher_audio_catches_up_to_live_edge():
     import shutil
     import subprocess
