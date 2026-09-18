@@ -1339,6 +1339,19 @@ class LLMModelBenchmark:
         numbers = [int(n) for line in printed for n in re.findall(r"(?<![\w.-])\d+(?![\w.])", line)]
         return any(numbers[i : i + 6] in ([0, 1, 1, 2, 3, 5], [1, 1, 2, 3, 5, 8]) for i in range(len(numbers) - 5))
 
+    @staticmethod
+    def _has_fibonacci_accumulators(response: str) -> bool:
+        code = extract_clean_code(response, "basic") or response
+        found = re.search(r"(?im)^\s*(?:\d+\s+)?(\w+)\s*=\s*(\w+)\s*\+\s*(\w+)\s*$", code)
+        if not found:
+            return False
+        fol, prev, cur = (g.lower() for g in found.groups())
+        if len({fol, prev, cur}) < 3:
+            return False
+        shift_prev = re.search(rf"(?im)^\s*(?:\d+\s+)?{re.escape(prev)}\s*=\s*{re.escape(cur)}\s*$", code)
+        shift_cur = re.search(rf"(?im)^\s*(?:\d+\s+)?{re.escape(cur)}\s*=\s*{re.escape(fol)}\s*$", code)
+        return bool(shift_prev and shift_cur)
+
     def _verify_functional_response(self, test: "dict | str", response: str) -> bool:
         """Evaluate functional response correctness based on the target requirements.
 
@@ -2585,7 +2598,7 @@ class LLMModelBenchmark:
                 any(x in cleaned for x in ["fibonacci", "fib"])
                 and any(x in cleaned for x in ["for", "next"])
                 and any(x in cleaned for x in ["print"])
-            ) or self._has_fibonacci_sequence(cleaned)
+            ) or self._has_fibonacci_sequence(cleaned) or self._has_fibonacci_accumulators(cleaned)
         elif test_id == "bas_grade_calc":
             return (
                 any(x in cleaned for x in ["input", "grade", "score"])
