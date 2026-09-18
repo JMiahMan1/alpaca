@@ -291,6 +291,27 @@ assert.equal($('btn-controls').attrs['aria-pressed'], String(visible));
     )
 
 
+def test_sound_toggle_labels_show_state():
+    sound = JS[JS.index("  let soundOn = true;") : JS.index("  function mapXkey(key) {")]
+    run_node(
+        sound
+        + """
+const posted = [];
+const fr = $('live-frame');
+fr.style.display = 'block';
+fr.contentWindow = { postMessage: (msg, origin) => posted.push([msg, origin]) };
+const btn = $('btn-sound-live');
+btn.textContent = '🔊 Sound';
+btn.events['click']();
+assert.equal(btn.textContent, '🔇 Muted');
+assert.deepEqual(posted[0][0], { source: 'arcade-audio', on: false });
+btn.events['click']();
+assert.equal(btn.textContent, '🔊 Sound');
+assert.deepEqual(posted[1][0], { source: 'arcade-audio', on: true });
+"""
+    )
+
+
 def test_failed_stop_keeps_session_and_resumes_polling():
     run_node(
         "const slug = 'game';\n"

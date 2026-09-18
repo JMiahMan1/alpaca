@@ -172,7 +172,7 @@
         <button id="btn-shot">📷 Screenshot</button>
         <button id="btn-stop">⏹ Stop UI</button>
         <button id="btn-close">✕ Close</button>
-        <button id="btn-sound">🔊 Sound</button>
+        <button id="btn-sound">🔇 Muted</button>
         <!-- Game audio side-channel (noVNC is video-only): the sandbox streams
         game sound as MP3 via /serve/audio/<id>. No controls attribute — the
         Sound button toggles playback. Hidden ancestors never block audio. -->
@@ -828,7 +828,7 @@
         }
         const setAudio = (on) => {
             audioOn = on;
-            btnSound.textContent = on ? '🔇 Mute' : '🔊 Sound';
+            btnSound.textContent = on ? '🔊 Sound' : '🔇 Muted';
             if (!on) {
                 audioGen++;
                 audioEl.pause();
@@ -863,7 +863,7 @@
                     if (gen !== audioGen) return;
                     audioOn = false;
                     stopAudioStream();
-                    btnSound.textContent = '🔊 Sound';
+                    btnSound.textContent = '🔇 Muted';
                     const msg = String((e && e.message) || e).slice(0, 120);
                     report('audio-blocked', msg);
                     setStatus('Sound unavailable: ' + msg);
