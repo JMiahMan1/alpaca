@@ -23,6 +23,17 @@ def test_bash_verifier_accepts_bash_shebangs(test_id, shebang):
         ('print "1,1,2,3"', False),
         ('print "2,3,5,8,13,21"', False),
         ("for n = 1 to 10\nprint fib(n)\nnext n", True),
+        (
+            "previous = 0\ncurrent = 1\nfor i = 1 to n\nprint i, previous\n"
+            "following = previous + current\nprevious = current\ncurrent = following\nnext i",
+            True,
+        ),
+        (
+            "a = 0\nb = 1\nfor i = 1 to n\nprint b\nc = a + b\na = b\nb = c\nnext i",
+            True,
+        ),
+        ("fact = 1\nfor i = 1 to n\nfact = fact * i\nprint fact\nnext i", False),
+        ("x = 0\nfor i = 1 to n\nprint i\nnext i", False),
     ],
 )
 def test_basic_fibonacci_numeric_sequence(code, expected):
