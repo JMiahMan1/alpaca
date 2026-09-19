@@ -7462,27 +7462,10 @@ async def chat(request: Request):
                                     content_chunk = message.get("content") or ""
                                     thinking_chunk = message.get("thinking") or ""
 
-                                    # Blend/wrap or separate based on think_val
-                                    out_content = ""
-                                    if think_val is None:
-                                        # Default: blend/wrap thinking inside content field
-                                        if thinking_chunk:
-                                            if not in_thinking:
-                                                out_content = "<think>\n" + thinking_chunk
-                                                in_thinking = True
-                                            else:
-                                                out_content = thinking_chunk
-                                        elif content_chunk:
-                                            if in_thinking:
-                                                out_content = "</think>\n" + content_chunk
-                                                in_thinking = False
-                                            else:
-                                                out_content = content_chunk
-                                    else:
-                                        # Explicit True or False
-                                        if in_thinking:
-                                            in_thinking = False
-                                        out_content = content_chunk
+                                    # Never integrate thinking chunks directly into the content stream
+                                    if in_thinking:
+                                        in_thinking = False
+                                    out_content = content_chunk
 
                                     if out_content:
                                         full_response_content += out_content
@@ -7497,15 +7480,12 @@ async def chat(request: Request):
                                         "role": message.get("role", "assistant"),
                                         "content": out_content,
                                     }
-                                    if (thinking_chunk and think_val is True) or (thinking_chunk and think_val is None):
+                                    if thinking_chunk and think_val is not False:
                                         client_message["thinking"] = thinking_chunk
                                 else:
                                     client_message = {"role": "assistant", "content": ""}
 
                                 done = choice.get("finish_reason") is not None
-                                if done and in_thinking and think_val is None:
-                                    client_message["content"] = (client_message.get("content") or "") + "\n</think>"
-                                    in_thinking = False
 
                                 chunk = ollama_chat_chunk(model_name, client_message, done, choice.get("finish_reason"))
                                 if done:
@@ -7725,15 +7705,8 @@ async def chat(request: Request):
                 client_message["content"] = final_thinking.strip()
             final_thinking = None
         else:
-            if final_thinking:
-                if think_val is None:
-                    # Default: blend/wrap
-                    if "<think>" not in final_content:
-                        client_message["content"] = f"<think>\n{final_thinking}\n</think>\n{final_content}"
-                    client_message["thinking"] = final_thinking
-                elif think_val is True:
-                    # Explicit True: separate
-                    client_message["thinking"] = final_thinking
+            if final_thinking and think_val is not False:
+                client_message["thinking"] = final_thinking
 
         chunk = ollama_chat_chunk(model_name, client_message, True, choice.get("finish_reason"))
         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
@@ -7895,30 +7868,9 @@ async def generate(request: Request):
                                     thinking_chunk = message.get("thinking") if message else None
                                     done = choice.get("finish_reason") is not None
 
-                                    # Blend/wrap or separate based on think_val
-                                    out_content = ""
-                                    if think_val is None:
-                                        # Default: blend/wrap thinking inside response/content field
-                                        if thinking_chunk:
-                                            if not in_thinking:
-                                                out_content = "<think>\n" + thinking_chunk
-                                                in_thinking = True
-                                            else:
-                                                out_content = thinking_chunk
-                                        elif response_chunk:
-                                            if in_thinking:
-                                                out_content = "</think>\n" + response_chunk
-                                                in_thinking = False
-                                            else:
-                                                out_content = response_chunk
-                                        if done and in_thinking:
-                                            out_content += "\n</think>"
-                                            in_thinking = False
-                                    else:
-                                        # Explicit True or False
-                                        if in_thinking:
-                                            in_thinking = False
-                                        out_content = response_chunk
+                                    if in_thinking:
+                                        in_thinking = False
+                                    out_content = response_chunk
 
                                     chunk = ollama_generate_chunk(
                                         model_name,
@@ -7926,7 +7878,7 @@ async def generate(request: Request):
                                         done,
                                         choice.get("finish_reason"),
                                     )
-                                    if thinking_chunk is not None and think_val is True:
+                                    if thinking_chunk is not None and think_val is not False:
                                         chunk["thinking"] = thinking_chunk
                                     if done:
                                         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
@@ -7936,33 +7888,12 @@ async def generate(request: Request):
                                     response_chunk = data.get("content") or ""
                                     thinking_chunk = data.get("thinking")
 
-                                    # Blend/wrap or separate based on think_val
-                                    out_content = ""
-                                    if think_val is None:
-                                        # Default: blend/wrap thinking inside response/content field
-                                        if thinking_chunk:
-                                            if not in_thinking:
-                                                out_content = "<think>\n" + thinking_chunk
-                                                in_thinking = True
-                                            else:
-                                                out_content = thinking_chunk
-                                        elif response_chunk:
-                                            if in_thinking:
-                                                out_content = "</think>\n" + response_chunk
-                                                in_thinking = False
-                                            else:
-                                                out_content = response_chunk
-                                        if done and in_thinking:
-                                            out_content += "\n</think>"
-                                            in_thinking = False
-                                    else:
-                                        # Explicit True or False
-                                        if in_thinking:
-                                            in_thinking = False
-                                        out_content = response_chunk
+                                    if in_thinking:
+                                        in_thinking = False
+                                    out_content = response_chunk
 
                                     chunk = ollama_generate_chunk(model_name, out_content, done, done_reason)
-                                    if thinking_chunk is not None and think_val is True:
+                                    if thinking_chunk is not None and think_val is not False:
                                         chunk["thinking"] = thinking_chunk
                                     if done:
                                         apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
@@ -8148,14 +8079,8 @@ async def generate(request: Request):
                 ).strip()
                 final_thinking = None
             else:
-                if final_thinking:
-                    if think_val is None:
-                        # Default: blend/wrap
-                        if "<think>" not in final_response:
-                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
-                    elif think_val is True:
-                        # Explicit True: separate
-                        client_content = final_response
+                if final_thinking and think_val is not False:
+                    pass
 
             chunk = ollama_generate_chunk(model_name, client_content, True, choice.get("finish_reason"))
             if final_thinking is not None and think_val is not False:
@@ -8173,14 +8098,8 @@ async def generate(request: Request):
                 ).strip()
                 final_thinking = None
             else:
-                if final_thinking:
-                    if think_val is None:
-                        # Default: blend/wrap
-                        if "<think>" not in final_response:
-                            client_content = f"<think>\n{final_thinking}\n</think>\n{final_response}"
-                    elif think_val is True:
-                        # Explicit True: separate
-                        client_content = final_response
+                if final_thinking and think_val is not False:
+                    pass
 
             chunk = ollama_generate_chunk(model_name, client_content, done, done_reason)
             if final_thinking is not None and think_val is not False:
