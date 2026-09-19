@@ -208,7 +208,7 @@ _CANONICAL_TOOLS = {
 # Tier-2 regex aliases mirroring the app (agent_loop.py lines ~3690-3735).
 _TOOL_REGEX_ALIASES = [
     (re.compile(r".*light.*control.*"), "lightcontrolrequest"),
-    (re.compile(r".*media.*play.*"), "mediaplayrequest"),
+    (re.compile(r".*media.*\bplay\b.*"), "mediaplayrequest"),
     (re.compile(r".*media.*transport.*"), "mediatransportrequest"),
     (re.compile(r".*media.*status.*"), "mediastatusrequest"),
     (re.compile(r".*tv.*cast.*"), "tvcastrequest"),
@@ -262,6 +262,8 @@ def _resolve_tool_name(raw: str) -> str:
     lower = name.lower()
     if name in _CANONICAL_TOOLS:
         return name
+    if "__" in name:
+        return ""
     for pattern, canonical in _TOOL_REGEX_ALIASES:
         if pattern.match(lower):
             return canonical

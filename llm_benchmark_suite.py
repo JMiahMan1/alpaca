@@ -1802,11 +1802,49 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["3", "three", "group", "two"])
             )
         # ---- Retro games ----
-        elif test_id in ("retro_space_invaders", "retro_space_invaders_node", "retro_space_invaders_threejs", "retro_space_invaders_go", "retro_space_invaders_rust", "retro_space_invaders_cpp"):
+        elif test_id in ("retro_space_invaders_node", "retro_space_invaders_threejs"):
             return (
                 any(x in cleaned for x in ["invader", "alien", "enemy"])
                 and any(x in cleaned for x in ["shoot", "bullet", "shot", "fire"])
                 and any(x in cleaned for x in ["score", "collision", "hit"])
+            ) and self._has_persistent_scoreboard(cleaned)
+        elif test_id == "retro_space_invaders_go":
+            return (
+                any(x in cleaned for x in ["invader", "alien", "enemy"])
+                and any(x in cleaned for x in ["shoot", "bullet", "shot", "fire"])
+                and any(x in cleaned for x in ["score", "collision", "hit"])
+                and any(x in cleaned for x in ["xgb", "xgbutil", "x11"])
+                and "net/http" not in cleaned
+                and "listenandserve" not in cleaned
+            ) and self._has_persistent_scoreboard(cleaned)
+        elif test_id == "retro_space_invaders":
+            return (
+                any(x in cleaned for x in ["invader", "alien", "enemy"])
+                and any(x in cleaned for x in ["shoot", "bullet", "shot", "fire"])
+                and any(x in cleaned for x in ["score", "collision", "hit"])
+                and "pygame" in cleaned
+                and "http.server" not in cleaned
+                and "flask" not in cleaned
+            ) and self._has_persistent_scoreboard(cleaned)
+        elif test_id == "retro_space_invaders_cpp":
+            return (
+                any(x in cleaned for x in ["invader", "alien", "enemy"])
+                and any(x in cleaned for x in ["shoot", "bullet", "shot", "fire"])
+                and any(x in cleaned for x in ["score", "collision", "hit"])
+                and any(x in cleaned for x in ["xlib", "x11"])
+                and "canvas" not in cleaned
+                and "emscripten" not in cleaned
+            ) and self._has_persistent_scoreboard(cleaned)
+        elif test_id == "retro_space_invaders_rust":
+            return (
+                any(x in cleaned for x in ["invader", "alien", "enemy"])
+                and any(x in cleaned for x in ["shoot", "bullet", "shot", "fire"])
+                and any(x in cleaned for x in ["score", "collision", "hit"])
+                and any(x in cleaned for x in ["x11rb", "x11"])
+                and "hyper" not in cleaned
+                and "tiny_http" not in cleaned
+                and "tcplistener" not in cleaned
+                and "actix" not in cleaned
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "retro_maelstrom":
             return (
