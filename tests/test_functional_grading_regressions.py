@@ -383,3 +383,203 @@ def test_voxel_mutable_rotating_chunk_without_gravity(benchmark):
         'blocks[(0, 0, 0)] = "grass"', "selected = (0, 0, 0)"
     )
     assert not benchmark._verify_functional_response("game_minecraft_voxel", static)
+
+
+GO_INVADERS_NATIVE = """package main
+
+import (
+    "encoding/json"
+    "os"
+
+    "github.com/BurntSushi/xgb"
+    "github.com/BurntSushi/xgb/xproto"
+)
+
+type alien struct{ x, y int }
+type bullet struct{ x, y int }
+
+var enemies []alien
+var bullets []bullet
+var score, lives, wave int
+
+func fire() { bullets = append(bullets, bullet{x: playerX, y: playerY}) }
+func hit(a alien, b bullet) bool { return a.x == b.x && a.y == b.y }
+
+func saveScores(name string) {
+    data, _ := json.Marshal(top)
+    os.WriteFile("high_scores.json", data, 0644)
+    f, _ := os.OpenFile("/tmp/alpaca_score.json", os.O_WRONLY|os.O_CREATE, 0644)
+    defer f.Close()
+    enc := json.NewEncoder(f)
+    enc.Encode(map[string]any{"initials": name, "score": score})
+}
+
+func main() {
+    conn, _ := xgb.NewConn()
+    defer conn.Close()
+    win := createX11Window(conn, 800, 600)
+    _ = win
+    name := readNameInput(conn)
+    saveScores(name)
+    score = 0
+}
+"""
+
+
+def test_go_invaders_requires_native_x11_window(benchmark):
+    assert benchmark._verify_functional_response("retro_space_invaders_go", GO_INVADERS_NATIVE)
+
+
+def test_go_invaders_rejects_http_server_response(benchmark):
+    http_version = (
+        GO_INVADERS_NATIVE.replace('"github.com/BurntSushi/xgb"', '"net/http"')
+        .replace('"github.com/BurntSushi/xgb/xproto"', '"html/template"')
+        .replace("xgb.NewConn()", "http.ListenAndServe(addr, nil)")
+        .replace("createX11Window(conn, 800, 600)", "renderCanvas(w)")
+    )
+    assert "net/http" in http_version
+    assert "xgb" not in http_version
+    assert not benchmark._verify_functional_response("retro_space_invaders_go", http_version)
+
+
+def test_go_invaders_without_window_binding_fails(benchmark):
+    no_window = GO_INVADERS_NATIVE.replace("xgb", "missing").replace("X11", "missing").replace("x11", "missing")
+    assert not benchmark._verify_functional_response("retro_space_invaders_go", no_window)
+
+
+def test_node_invaders_branch_has_no_native_window_requirement(benchmark):
+    assert benchmark._verify_functional_response("retro_space_invaders_node", GO_INVADERS_NATIVE)
+
+
+PYGAME_INVADERS_NATIVE = """import pygame
+import json
+
+aliens = [{"x": i * 40, "y": 50} for i in range(11)]
+bullets = []
+score = 0
+lives = 3
+wave = 1
+
+def fire(x, y):
+    bullets.append({"x": x, "y": y})
+
+def hit(alien, bullet):
+    return alien["x"] == bullet["x"] and alien["y"] == bullet["y"]
+
+def save_scores(name):
+    top = [{"name": name, "score": score}]
+    with open("high_scores.json", "w") as f:
+        json.dump(top, f)
+    with open("/tmp/alpaca_score.json", "w") as f:
+        json.dump({"initials": name, "score": score}, f)
+
+screen = pygame.display.set_mode((800, 600))
+name = read_name_input(screen)
+save_scores(name)
+score = 0
+"""
+
+
+def test_pygame_invaders_requires_pygame_window(benchmark):
+    assert benchmark._verify_functional_response("retro_space_invaders", PYGAME_INVADERS_NATIVE)
+
+
+def test_pygame_invaders_rejects_web_server_response(benchmark):
+    web_version = PYGAME_INVADERS_NATIVE.replace("import pygame", "import flask").replace(
+        "pygame.display.set_mode((800, 600))", "flask.Flask(__name__).run()"
+    )
+    assert "flask" in web_version
+    assert "pygame" not in web_version
+    assert not benchmark._verify_functional_response("retro_space_invaders", web_version)
+
+
+CPP_INVADERS_NATIVE = """#include <X11/Xlib.h>
+#include <asoundlib.h>
+#include <string>
+
+struct Alien { int x, y; };
+struct Bullet { int x, y; };
+
+int score = 0, lives = 3, wave = 1;
+
+void fire() { /* spawn bullet, laser sound via ALSA */ }
+bool hit(const Alien& a, const Bullet& b) { return a.x == b.x && a.y == b.y; }
+
+void save_scores(const std::string& name) {
+    // json dump top 5 to high_scores.json, initials+score to /tmp/alpaca_score.json
+}
+
+int main() {
+    Display* dpy = XOpenDisplay(nullptr);
+    Window win = create_x11_window(dpy, 800, 600);
+    std::string name = read_name_input(dpy, win);
+    save_scores(name);
+    score = 0;
+    return 0;
+}
+"""
+
+
+def test_cpp_invaders_requires_native_x11_window(benchmark):
+    assert benchmark._verify_functional_response("retro_space_invaders_cpp", CPP_INVADERS_NATIVE)
+
+
+def test_cpp_invaders_rejects_canvas_response(benchmark):
+    canvas_version = (
+        CPP_INVADERS_NATIVE.replace("#include <X11/Xlib.h>", "#include <canvas_renderer.h>")
+        .replace("XOpenDisplay(nullptr)", "canvas_init(800, 600)")
+        .replace("create_x11_window(dpy, 800, 600)", "canvas_window(800, 600)")
+        .replace("read_name_input(dpy, win)", 'read_name_input(win)')
+    )
+    assert "canvas" in canvas_version
+    assert "x11" not in canvas_version and "xlib" not in canvas_version
+    assert not benchmark._verify_functional_response("retro_space_invaders_cpp", canvas_version)
+
+
+RUST_INVADERS_NATIVE = """use x11rb::connection::Connection;
+use x11rb::protocol::xproto::*;
+use rodio::{OutputStream, Sink};
+use serde_json::json;
+
+struct Alien { x: i16, y: i16 }
+struct Bullet { x: i16, y: i16 }
+
+fn fire(bullets: &mut Vec<Bullet>, x: i16, y: i16) {
+    bullets.push(Bullet { x, y });
+}
+
+fn hit(a: &Alien, b: &Bullet) -> bool { a.x == b.x && a.y == b.y }
+
+fn save_scores(name: &str, score: u32) {
+    let top = vec![(name.to_string(), score)];
+    std::fs::write("high_scores.json", serde_json::to_string(&top).unwrap()).unwrap();
+    std::fs::write("/tmp/alpaca_score.json", json!({"initials": name, "score": score}).to_string()).unwrap();
+}
+
+fn main() {
+    let (conn, screen) = x11rb::connect(None).unwrap();
+    let win = create_x11_window(&conn, screen, 800, 600);
+    let (_stream, handle) = OutputStream::try_default().unwrap();
+    let sink = Sink::try_new(&handle).unwrap();
+    let mut score: u32 = 0;
+    let name = read_name_input(&conn, win);
+    save_scores(&name, score);
+}
+"""
+
+
+def test_rust_invaders_requires_native_x11_window(benchmark):
+    assert benchmark._verify_functional_response("retro_space_invaders_rust", RUST_INVADERS_NATIVE)
+
+
+def test_rust_invaders_rejects_http_server_response(benchmark):
+    http_version = (
+        RUST_INVADERS_NATIVE.replace("use x11rb::connection::Connection;", "use hyper::Server;")
+        .replace("use x11rb::protocol::xproto::*;", "use hyper::service::{make_service_fn, service_fn};")
+        .replace("x11rb", "missing")
+        .replace("X11", "missing")
+        .replace("x11", "missing")
+    )
+    assert "hyper" in http_version
+    assert "x11" not in http_version
+    assert not benchmark._verify_functional_response("retro_space_invaders_rust", http_version)

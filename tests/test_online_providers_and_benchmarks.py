@@ -609,6 +609,11 @@ def test_shared_llm_tool_resolution():
     # Unresolvable returns empty.
     assert _resolve_tool_name("") == ""
     assert _resolve_tool_name("zzzz_nonsense") == ""
+    # Home-Assistant domain__Service names are never canonical request tools:
+    # neither the regex tier ("play" inside "player") nor the fuzzy tier may
+    # resolve them, matching the gateway's Unknown-tool rejection.
+    assert _resolve_tool_name("media_player__HassSetVolume") == ""
+    assert _resolve_tool_name("light__HassTurnOn") == ""
 
 
 def test_shared_llm_tool_request_tasks_and_validation():
