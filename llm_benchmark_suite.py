@@ -1940,7 +1940,7 @@ class LLMModelBenchmark:
             # Two weighings for eight balls only works from a 3/3/2 split. Any
             # digit used to satisfy the old "3 or three or two" check.
             splits_three_three = bool(
-                re.search(r"\b3\s*(?:vs\.?|v\.?|versus|against|and|,|-|–|—)\s*3\b", cleaned)
+                re.search(r"\b3\s*(?:vs\.?|v\.?|versus|against|and|,|-|\u2013|\u2014)\s*3\b", cleaned)
                 or re.search(r"\bthree\s*(?:vs\.?|versus|against|and|,)\s*three\b", cleaned)
                 or re.search(r"\bgroups?\s+of\s+(?:3|three)\b", cleaned)
                 or re.search(r"\b(?:3|three)[\s,/]+(?:3|three)[\s,/]+(?:and\s+)?(?:2|two)\b", cleaned)
