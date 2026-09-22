@@ -285,7 +285,7 @@ async def test_online_model_query_opencode_cli_mock():
 
     with (
         patch("shutil.which", return_value="/usr/local/bin/opencode"),
-        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc),
+        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc) as exec_mock,
     ):
         res = await provider.query_online_model(
             "opencode:opencode/mimo-v2.6-flash-free",
@@ -295,6 +295,8 @@ async def test_online_model_query_opencode_cli_mock():
         assert res["response"] == "BENCH_OK"
         assert res["tokens_generated"] == 5
         assert res["finish_reason"] == "stop"
+        argv = exec_mock.await_args[0]
+        assert argv[argv.index("-m") + 1] == "opencode/mimo-v2.6-flash-free"
 
 
 @pytest.mark.asyncio
@@ -337,7 +339,7 @@ async def test_zen_free_tier_403_falls_back_to_opencode_cli():
     with (
         patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp),
         patch("shutil.which", return_value="/usr/local/bin/opencode"),
-        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc),
+        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc) as exec_mock,
     ):
         res = await provider.query_online_model(
             "opencode_zen:mimo-v2.6-flash-free",
@@ -347,6 +349,9 @@ async def test_zen_free_tier_403_falls_back_to_opencode_cli():
     assert res["success"] is True
     assert res["response"] == "FALLBACK_OK"
     assert mock_proc.communicate.called
+    # Bare Zen ids must be namespace-qualified or `opencode run -m` 500s.
+    argv = exec_mock.await_args[0]
+    assert argv[argv.index("-m") + 1] == "opencode/mimo-v2.6-flash-free"
 
 
 @pytest.mark.asyncio
@@ -802,6 +807,8 @@ async def test_online_providers_discovery_all_providers():
         paid_m = [m for m in zen_models if m["free"] is False]
         assert len(free_m) == 1
         assert free_m[0]["name"] == "deepseek-v4-flash-free"
+        assert free_m[0]["id"] == "opencode:opencode/deepseek-v4-flash-free"
+        assert free_m[0]["provider"] == "opencode"
         assert free_m[0]["free_tier"] == "Free (Zen No-Key)"
         assert len(paid_m) == 1
         assert paid_m[0]["name"] == "claude-opus-5"
