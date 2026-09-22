@@ -2562,6 +2562,40 @@ def test_gguf_has_mtp_heads_missing_file(tmp_path):
     assert alpaca_proxy._gguf_has_mtp_heads(str(tmp_path / "nope.gguf")) is False
 
 
+def test_write_active_model_config_persists_last_good(tmp_path):
+    """Successful loads snapshot sd_last_model.json; unload blanks only active."""
+    orig_router = alpaca_proxy.ROUTER_MODELS_DIR
+    router_dir = tmp_path / "router"
+    router_dir.mkdir()
+    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+    try:
+        alpaca_proxy.write_active_model_config(
+            model_path="/models/qwen.gguf",
+            model_family="qwen-image",
+            vae_path="/models/vae.safetensors",
+            llm_path="/models/llm.gguf",
+            gpu_layers="40",
+            threads="6",
+            extra_args="--offload-to-cpu",
+        )
+
+        active = alpaca_proxy.get_active_model_config()
+        last = alpaca_proxy.get_last_model_config()
+        assert active and active["model_path"] == "/models/qwen.gguf"
+        assert last and last["model_path"] == "/models/qwen.gguf"
+        assert last["model_family"] == "qwen-image"
+        assert last["vae_path"] == "/models/vae.safetensors"
+        assert last["gpu_layers"] == "40"
+
+        # Simulate intentional unload: active blanks, last survives.
+        config_path = router_dir / "sd_active_model.json"
+        config_path.write_text(json.dumps({**active, "model_path": "", "vae_path": ""}))
+        assert (alpaca_proxy.get_active_model_config() or {}).get("model_path") == ""
+        assert alpaca_proxy.get_last_model_config()["model_path"] == "/models/qwen.gguf"
+    finally:
+        alpaca_proxy.ROUTER_MODELS_DIR = orig_router
+
+
 def test_write_ini_model_setting_persists_and_noops(tmp_path):
     """cache-reuse + spec-type persist to models.ini; repeated write is a no-op."""
     import configparser
