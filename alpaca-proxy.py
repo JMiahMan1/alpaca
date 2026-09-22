@@ -3327,6 +3327,21 @@ def get_active_model_config() -> dict[str, Any] | None:
     return None
 
 
+def get_last_model_config() -> dict[str, Any] | None:
+    """Reads the last successfully loaded SD model config (survives unload)."""
+    last_path = os.path.join(ROUTER_MODELS_DIR, "sd_last_model.json")
+    if not os.path.exists(last_path):
+        return None
+    try:
+        with open(last_path) as f:
+            data = json.load(f)
+            if isinstance(data, dict) and data.get("model_path"):
+                return data
+    except Exception as e:
+        logger.debug(f"Failed to read last SD model config: {e}")
+    return None
+
+
 def write_active_model_config(
     model_path: str,
     vae_path: str | None = None,
@@ -3365,6 +3380,19 @@ def write_active_model_config(
         with suppress(Exception):
             os.chmod(config_path, 0o666)
         logger.info(f"Wrote active model config: {config}")
+        # Persist the last *good* load separately so unload (which blanks
+        # sd_active_model.json for VRAM release) does not lose the recipe.
+        if model_path:
+            last_path = os.path.join(ROUTER_MODELS_DIR, "sd_last_model.json")
+            try:
+                temp_last = last_path + ".tmp"
+                with open(temp_last, "w") as f:
+                    json.dump(config, f, indent=2)
+                os.replace(temp_last, last_path)
+                with suppress(Exception):
+                    os.chmod(last_path, 0o666)
+            except Exception as last_err:
+                logger.warning(f"Failed to write sd_last_model.json: {last_err}")
     except Exception as e:
         logger.error(f"Failed to write active model configuration: {e}")
         raise
@@ -4173,9 +4201,19 @@ async def admin_sd_health():
     sd_healthy = await check_sd_server_health()
     total_vram, used_vram, free_vram = await _get_gpu_vram_telemetry()
 
+    last_model = None
+    if not active_model:
+        last_cfg = get_last_model_config()
+        if last_cfg:
+            last_model = {
+                "model_path": last_cfg.get("model_path") or "",
+                "model_family": last_cfg.get("model_family") or "",
+            }
+
     return {
         "online": True,
         "active_model": active_model,
+        "last_model": last_model,
         "sd_server_healthy": sd_healthy,
         "queue_depth": 0,
         "vram_total_mb": total_vram,

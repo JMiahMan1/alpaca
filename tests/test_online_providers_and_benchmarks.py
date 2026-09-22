@@ -310,6 +310,46 @@ async def test_online_model_query_opencode_cli_missing_binary():
 
 
 @pytest.mark.asyncio
+async def test_zen_free_tier_403_falls_back_to_opencode_cli():
+    """Zen's free tier 403s raw HTTP; the provider must retry via `opencode run`."""
+    provider = OnlineModelProvider()
+    provider.opencode_zen_base_url = "https://opencode.ai/zen/v1"
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 403
+    mock_resp.text = (
+        '{"error":{"message":"OpenCode\'s free tier can only be used from within OpenCode"}}'
+    )
+    mock_resp.json.return_value = {
+        "error": {"message": "OpenCode's free tier can only be used from within OpenCode"}
+    }
+
+    stdout = (
+        b'{"type":"text","part":{"text":"FALLBACK_OK"}}\n'
+        b'{"type":"step_finish","part":{"reason":"stop","tokens":{"output":3}}}\n'
+    )
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(stdout, b""))
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock(return_value=0)
+
+    with (
+        patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp),
+        patch("shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc),
+    ):
+        res = await provider.query_online_model(
+            "opencode_zen:mimo-v2.6-flash-free",
+            prompt="hi",
+        )
+
+    assert res["success"] is True
+    assert res["response"] == "FALLBACK_OK"
+    assert mock_proc.communicate.called
+
+
+@pytest.mark.asyncio
 async def test_online_model_query_openrouter_mock():
     provider = OnlineModelProvider()
     provider.openrouter_api_key = "test-key"

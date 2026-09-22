@@ -113,12 +113,78 @@ VAE_PATH=""
 CLIP_L_PATH=""
 T5XXL_PATH=""
 LLM_PATH=""
+MODEL_FAMILY=""
 LISTEN_IP="0.0.0.0"
 LISTEN_PORT="8081"
 EXTRA_ARGS=""
 OFFLOAD_ARGS=""
+GPU_LAYERS_CONF=""
+THREADS_CONF=""
+CONFIG_EXISTS=false
+INTENTIONAL_IDLE=false
+
+# Discover the first *image* model (never an LLM gguf): prefer a companion
+# .profile.json whose model_family is an SD family, else filename heuristics.
+# Broken symlinks are skipped so a dangling gemma/LLM link can never be picked.
+discover_image_model() {
+    python3 - <<'PY'
+import json, os, sys
+router = "/router-models"
+sd_families = {"stable-diffusion", "qwen-image", "flux"}
+heuristics = ("stable-diffusion", "qwen-image", "flux", "-sd-", "_sd_", "sdxl")
+candidates = []
+try:
+    entries = sorted(os.scandir(router), key=lambda e: e.name)
+except OSError:
+    sys.exit(0)
+for entry in entries:
+    if not (entry.is_file() or entry.is_symlink()):
+        continue
+    if not (entry.name.endswith(".gguf") or entry.name.endswith(".safetensors")):
+        continue
+    try:
+        target = os.path.realpath(entry.path)
+    except OSError:
+        continue
+    if not os.path.exists(target):
+        continue
+    profile = {}
+    pp = entry.path + ".profile.json"
+    if os.path.exists(pp):
+        try:
+            with open(pp) as f:
+                profile = json.load(f)
+        except Exception:
+            profile = {}
+    family = (profile.get("model_family") or "").lower()
+    lowered = entry.name.lower()
+    is_image = family in sd_families or any(h in lowered for h in heuristics)
+    if not is_image:
+        continue
+    # Prefer profile-backed models with companions (qwen-image needs vae/llm).
+    score = 0
+    if family in sd_families:
+        score += 4
+    if profile.get("vae") or profile.get("llm") or profile.get("vae_path") or profile.get("llm_path"):
+        score += 2
+    if "qwen-image-2" in lowered or "qwen_image_2" in lowered:
+        score += 1
+    candidates.append((-score, entry.path, target, profile))
+candidates.sort()
+if candidates:
+    _, path, target, profile = candidates[0]
+    print(path)
+    # Emit profile fields on subsequent lines for the shell to consume.
+    for key in ("model_family", "vae", "vae_path", "llm", "llm_path", "gpu_layers", "threads", "extra_args"):
+        val = profile.get(key) or ""
+        if isinstance(val, bool):
+            val = "true" if val else ""
+        print(str(val).replace("\n", " "))
+PY
+}
 
 if [ -f "$CONFIG_FILE" ]; then
+    CONFIG_EXISTS=true
     echo "[sd-entrypoint] Reading active model configuration from $CONFIG_FILE"
     # Helper to safely parse JSON keys using python
     MODEL_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('model_path') or '')")
@@ -132,6 +198,16 @@ if [ -f "$CONFIG_FILE" ]; then
     EXTRA_ARGS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('extra_args') or '')")
     GPU_LAYERS_CONF=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('gpu_layers') or '')")
     THREADS_CONF=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('threads') or '')")
+
+    if [ -z "$MODEL_PATH" ]; then
+        # Empty model_path is written by the proxy on intentional unload (VRAM
+        # release). Do NOT discover/fallback — stay idle until a load is requested.
+        INTENTIONAL_IDLE=true
+        echo "[sd-entrypoint] Config present but model_path is empty (intentional unload). Staying idle."
+    elif [ ! -e "$MODEL_PATH" ]; then
+        echo "[sd-entrypoint] Configured model_path is missing: $MODEL_PATH — attempting image-model discovery."
+        MODEL_PATH=""
+    fi
 
     # Qwen-Image / qwen-image-edit models use a Qwen2.5-VL LLM text encoder and a
     # separate diffusion model. They can be large (Q4_K_M ≈ 12 GB total), but the
@@ -156,17 +232,65 @@ if [ -f "$CONFIG_FILE" ]; then
         fi
     fi
 else
-    echo "[sd-entrypoint] No configuration file found at $CONFIG_FILE"
+    echo "[sd-entrypoint] No configuration file found at $CONFIG_FILE (first boot?) — will auto-discover an image model."
 fi
 
-if [ -z "$MODEL_PATH" ]; then
-    echo "[sd-entrypoint] Scanning for models in /router-models..."
-    MODEL_PATH=$(find /router-models -maxdepth 1 \( -name "*.safetensors" -o -name "*.gguf" \) | head -n 1)
+# Auto-discover only when we do not already have a valid model and are not
+# intentionally idling. Never fall back to a bare find|head -1: that used to
+# pick the first LLM gguf (often a broken symlink) and idle forever.
+if [ "$INTENTIONAL_IDLE" = false ] && [ -z "$MODEL_PATH" ]; then
+    echo "[sd-entrypoint] Scanning for *image* models (profile/family-aware) in /router-models..."
+    mapfile -t DISC < <(discover_image_model)
+    if [ "${#DISC[@]}" -ge 1 ] && [ -n "${DISC[0]}" ]; then
+        MODEL_PATH="${DISC[0]}"
+        # Only adopt profile fields when the config did not supply them.
+        [ -z "$MODEL_FAMILY" ] && MODEL_FAMILY="${DISC[1]:-}"
+        if [ -z "$VAE_PATH" ] && [ -n "${DISC[2]:-}" ]; then
+            # profile "vae" may be a bare filename — resolve under companions/
+            if [ -f "${DISC[2]}" ]; then
+                VAE_PATH="${DISC[2]}"
+            elif [ -f "/router-models/companions/${DISC[2]}" ]; then
+                VAE_PATH="/router-models/companions/${DISC[2]}"
+            elif [ -f "/models/companions/${DISC[2]}" ]; then
+                VAE_PATH="/models/companions/${DISC[2]}"
+            else
+                VAE_PATH="${DISC[2]}"
+            fi
+        fi
+        [ -z "$VAE_PATH" ] && [ -n "${DISC[3]:-}" ] && VAE_PATH="${DISC[3]}"
+        if [ -z "$LLM_PATH" ] && [ -n "${DISC[4]:-}" ]; then
+            if [ -f "${DISC[4]}" ]; then
+                LLM_PATH="${DISC[4]}"
+            elif [ -f "/router-models/companions/${DISC[4]}" ]; then
+                LLM_PATH="/router-models/companions/${DISC[4]}"
+            elif [ -f "/models/companions/${DISC[4]}" ]; then
+                LLM_PATH="/models/companions/${DISC[4]}"
+            else
+                LLM_PATH="${DISC[4]}"
+            fi
+        fi
+        [ -z "$LLM_PATH" ] && [ -n "${DISC[5]:-}" ] && LLM_PATH="${DISC[5]}"
+        [ -z "$GPU_LAYERS_CONF" ] && [ -n "${DISC[6]:-}" ] && GPU_LAYERS_CONF="${DISC[6]}"
+        [ -z "$THREADS_CONF" ] && [ -n "${DISC[7]:-}" ] && THREADS_CONF="${DISC[7]}"
+        [ -z "$EXTRA_ARGS" ] && [ -n "${DISC[8]:-}" ] && EXTRA_ARGS="${DISC[8]}"
+        if [ "$MODEL_FAMILY" = "qwen-image" ] || [ -n "$LLM_PATH" ] || echo "$MODEL_PATH" | grep -qi "qwen"; then
+            if [ -n "$GPU_LAYERS_CONF" ]; then
+                OFFLOAD_ARGS="--qwen-image-layers $GPU_LAYERS_CONF"
+            else
+                OFFLOAD_ARGS="--qwen-image-layers ${SD_GPU_LAYERS:-40}"
+            fi
+        fi
+        echo "[sd-entrypoint] Auto-discovered image model: $MODEL_PATH (family=${MODEL_FAMILY:-?})"
+    fi
 fi
 
-# If still no model, wait in an idle loop
-if [ -z "$MODEL_PATH" ] || [ ! -e "$MODEL_PATH" ]; then
-    echo "[sd-entrypoint] WARNING: No stable-diffusion model file found. Entering idle loop. Please pull a model to start."
+# If still no model (or intentional idle), wait in an idle loop
+if [ "$INTENTIONAL_IDLE" = true ] || [ -z "$MODEL_PATH" ] || [ ! -e "$MODEL_PATH" ]; then
+    if [ "$INTENTIONAL_IDLE" = true ]; then
+        echo "[sd-entrypoint] Idle: model unloaded by proxy. Load a model via the Image Studio / POST /v1/images/models/load."
+    else
+        echo "[sd-entrypoint] WARNING: No stable-diffusion image model file found. Entering idle loop. Please pull a model to start."
+    fi
     while true; do
         sleep 10
     done

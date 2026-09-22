@@ -663,7 +663,10 @@ class OnlineModelProvider:
                                     if free_only and not is_free:
                                         continue
 
-                                    zen_id = f"opencode_zen:{m_id}"
+                                    # Free-tier Zen models reject raw HTTP (403 from
+                                    # outside OpenCode), so advertise them under the
+                                    # opencode: prefix which always shells out to the CLI.
+                                    zen_id = (f"opencode:{m_id}" if is_free else f"opencode_zen:{m_id}")
                                     if query_lower and (
                                         query_lower not in zen_id.lower() and query_lower not in label.lower()
                                     ):
@@ -677,7 +680,7 @@ class OnlineModelProvider:
                                             "id": zen_id,
                                             "name": m_id,
                                             "label": f"OpenCode Zen {label}",
-                                            "provider": "opencode_zen",
+                                            "provider": "opencode" if is_free else "opencode_zen",
                                             "free": is_free,
                                             "free_tier": free_tier_str,
                                             "pricing_label": pricing_str,
@@ -1844,6 +1847,20 @@ class OnlineModelProvider:
                         err_msg = err_data.get("error", {}).get("message") or err_data.get("message") or resp.text[:300]
                     except Exception:
                         err_msg = resp.text[:300]
+                    # Zen's free tier only answers when the request comes from the
+                    # real OpenCode client (HTTP 403). Fall back to the CLI path so
+                    # free models still work instead of failing the whole benchmark.
+                    if resp.status_code == 403 and (
+                        "within opencode" in err_msg.lower() or "free tier" in err_msg.lower()
+                    ):
+                        return await self._query_opencode_cli(
+                            model_name,
+                            prompt,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            request_timeout=request_timeout,
+                            start_t=start_t,
+                        )
                     return {
                         "success": False,
                         "latency": latency,
