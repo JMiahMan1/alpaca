@@ -2124,13 +2124,30 @@ def sd_edit_api():
 
     try:
         data = {}
-        files = {}
         for key in request.form:
             vals = request.form.getlist(key)
             data[key] = vals[0] if len(vals) == 1 else vals
+
+        # Collect every uploaded part (multi-image edits send image[] repeats).
+        file_parts: list = []
         for key in request.files:
-            f = request.files[key]
-            files[key] = (f.filename, f.read(), f.mimetype)
+            for f in request.files.getlist(key):
+                if not f or not getattr(f, "filename", None):
+                    continue
+                content = f.read()
+                if not content:
+                    continue
+                file_parts.append(
+                    (
+                        key,
+                        (
+                            f.filename,
+                            content,
+                            f.mimetype or "application/octet-stream",
+                        ),
+                    )
+                )
+        files = file_parts if file_parts else {}
 
         qr_text = data.pop("qr_text", None) or data.pop("qr_url", None)
         qr_position = data.pop("qr_position", "bottom_right")
