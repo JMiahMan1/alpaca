@@ -1842,6 +1842,7 @@ def get_sd_status():
                     {
                         "online": True,
                         "active_model": data.get("active_model"),
+                        "last_model": data.get("last_model"),
                         "sd_server_healthy": data.get("sd_server_healthy"),
                         "queue_depth": data.get("queue_depth"),
                         "vram_total_mb": data.get("vram_total_mb"),
