@@ -1673,17 +1673,28 @@
                                     <div id="sd-photo-dropzone" style="border:2px dashed rgba(56, 189, 248, 0.4); background:#090d16; border-radius:10px; padding:1.25rem; text-align:center; cursor:pointer; transition:all 0.2s ease;">
                                         <div id="sd-photo-dropzone-empty">
                                             <div style="font-size:2rem; margin-bottom:0.25rem;">📁</div>
-                                            <div style="font-size:0.85rem; font-weight:600; color:white; margin-bottom:0.2rem;">Drag & drop your source photo here</div>
-                                            <div style="font-size:0.75rem; color:#94a3b8;">or click to browse from disk</div>
-                                            <input type="file" id="sd-edit-image" accept="image/*" style="display:none;">
+                                            <div style="font-size:0.85rem; font-weight:600; color:white; margin-bottom:0.2rem;">Drag & drop source photo(s) here</div>
+                                            <div style="font-size:0.75rem; color:#94a3b8;">One image to retouch — two or more for face swap / merge</div>
+                                            <input type="file" id="sd-edit-image" accept="image/*" multiple style="display:none;">
                                         </div>
                                         <div id="sd-photo-dropzone-preview" class="d-none" style="display:flex; align-items:center; justify-content:center; gap:1rem;">
                                             <img id="sd-photo-preview-img" style="max-height:90px; border-radius:6px; border:1px solid var(--border-color);">
                                             <div style="text-align:left;">
                                                 <div id="sd-photo-preview-name" style="font-size:0.8rem; font-weight:600; color:white;">photo.jpg</div>
                                                 <div id="sd-photo-preview-info" style="font-size:0.72rem; color:#94a3b8;">Ready for editing</div>
-                                                <button type="button" id="sd-photo-remove-btn" class="btn btn-secondary btn-xs btn-slate" style="margin-top:0.35rem;">Change Photo</button>
+                                                <button type="button" id="sd-photo-remove-btn" class="btn btn-secondary btn-xs btn-slate" style="margin-top:0.35rem;">Change Photo(s)</button>
                                             </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Multi-image quick prompts (face swap / merge) -->
+                                    <div>
+                                        <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Quick Actions <span style="font-weight:400; color:#94a3b8;">(face swap & merge need 2+ images)</span></label>
+                                        <div style="display:flex; flex-wrap:wrap; gap:0.4rem;">
+                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Swap the face from the second image onto the person in the first image. Keep the first image's pose, body, clothing, hair style, and background. Match skin tone, lighting, and camera angle exactly. Natural photographic result, no artifacts.">🙂 Face Swap</button>
+                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Merge all input images into one cohesive scene. Combine the subjects naturally with consistent lighting, perspective, and scale. Keep faces and identities intact. Photorealistic composite.">🖼️ Merge Images</button>
+                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Replace the background of the first image with the setting from the second image. Keep the foreground subject from the first image unchanged, with matching lighting and shadows.">🌄 Swap Background</button>
+                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Place the main subject from the second image into the first image's scene. Match lighting, perspective, and scale. Keep both faces and identities consistent.">🧩 Composite</button>
                                         </div>
                                     </div>
 

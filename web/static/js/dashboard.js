@@ -1103,7 +1103,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 if (typeof showPhotoPreview === 'function') {
-                    showPhotoPreview(currentPromptgenFile);
+                    showPhotoPreview([currentPromptgenFile]);
                 }
             }
 
@@ -1341,14 +1341,14 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             photoDropzone.style.borderColor = 'rgba(56, 189, 248, 0.4)';
             photoDropzone.style.background = '#090d16';
-            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+            if (e.dataTransfer.files && e.dataTransfer.files.length) {
                 photoInput.files = e.dataTransfer.files;
-                showPhotoPreview(e.dataTransfer.files[0]);
+                showPhotoPreview(Array.from(e.dataTransfer.files));
             }
         });
         photoInput.addEventListener('change', () => {
-            if (photoInput.files && photoInput.files[0]) {
-                showPhotoPreview(photoInput.files[0]);
+            if (photoInput.files && photoInput.files.length) {
+                showPhotoPreview(Array.from(photoInput.files));
             }
         });
         if (photoRemoveBtn) {
@@ -1361,16 +1361,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function showPhotoPreview(file) {
-        if (!file || !photoImg || !photoName) return;
-        photoName.textContent = file.name;
+    function showPhotoPreview(fileOrFiles) {
+        if (!photoImg || !photoName) return;
+        const files = Array.isArray(fileOrFiles) ? fileOrFiles : (fileOrFiles ? [fileOrFiles] : []);
+        if (!files.length) return;
+        const info = document.getElementById('sd-photo-preview-info');
+        if (files.length === 1) {
+            photoName.textContent = files[0].name;
+            if (info) info.textContent = 'Ready for editing';
+        } else {
+            photoName.textContent = `${files.length} images selected`;
+            if (info) info.textContent = 'Face swap / merge / composite ready';
+        }
         const reader = new FileReader();
         reader.onload = (e) => {
             photoImg.src = e.target.result;
             if (photoEmpty) photoEmpty.classList.add('d-none');
             if (photoPreview) photoPreview.classList.remove('d-none');
         };
-        reader.readAsDataURL(file);
+        reader.readAsDataURL(files[0]);
     }
 
     const strengthGuide = document.getElementById('sd-strength-guide');
@@ -1599,13 +1608,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const n = document.getElementById('sd-edit-n').value;
             const strength = document.getElementById('sd-edit-strength').value;
             const negative = document.getElementById('sd-edit-negative').value.trim();
+            const files = Array.from((fileInput && fileInput.files) || []);
             if (!model) { sdEditStatus.textContent = 'Load an image model first.'; return; }
-            if (!fileInput.files || fileInput.files.length === 0) { sdEditStatus.textContent = 'Choose a source image.'; return; }
+            if (files.length === 0) { sdEditStatus.textContent = 'Choose at least one source image.'; return; }
+            if (files.length > 4) { sdEditStatus.textContent = 'Maximum 4 source images.'; return; }
             if (!prompt) { sdEditStatus.textContent = 'Enter an edit prompt.'; return; }
 
             // Send the edit controls as plain form fields: the proxy folds them into
             // the native <sd_cpp_extra_args> block sd-server reads. Hand-building
             // that JSON here used to break on a quote or newline in the prompt.
+            // Multi-image uses image[] (sd-server preferred field); single uses image.
             const fd = new FormData();
             fd.append('model', model);
             fd.append('prompt', prompt);
@@ -1614,9 +1626,15 @@ document.addEventListener('DOMContentLoaded', () => {
             fd.append('strength', String(parseFloat(strength) || 0.45));
             if (negative) fd.append('negative_prompt', negative);
             Object.entries(collectSdAdvancedSettings()).forEach(([k, v]) => fd.append(k, String(v)));
-            fd.append('image', fileInput.files[0]);
+            if (files.length === 1) {
+                fd.append('image', files[0]);
+            } else {
+                files.forEach(f => fd.append('image[]', f));
+            }
 
-            sdEditStatus.textContent = 'Editing image (this can take a while)...';
+            sdEditStatus.textContent = files.length > 1
+                ? `Editing ${files.length} images (this can take a while)...`
+                : 'Editing image (this can take a while)...';
             sdEditBtn.disabled = true;
             try {
                 const res = await fetch('/api/sd/edit', { method: 'POST', body: fd });
@@ -1625,7 +1643,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     data.data.forEach(item => renderSDResultCard(item, sdResults, 'photo_edit', { prompt }));
                     sdEditStatus.textContent = `✅ Edited ${data.data.length} image(s).`;
                 } else {
-                    sdEditStatus.textContent = `❌ ${data.error || 'Edit failed'}`;
+                    sdEditStatus.textContent = `❌ ${data.error || data.detail || 'Edit failed'}`;
                 }
             } catch (e) {
                 sdEditStatus.textContent = `❌ ${e.message}`;
@@ -1634,6 +1652,23 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    document.querySelectorAll('.sd-edit-quick').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const promptEl = document.getElementById('sd-edit-prompt');
+            if (promptEl && btn.dataset.prompt) promptEl.value = btn.dataset.prompt;
+            const fileInput = document.getElementById('sd-edit-image');
+            const count = (fileInput && fileInput.files) ? fileInput.files.length : 0;
+            const status = document.getElementById('sd-edit-status');
+            if (status) {
+                if (count < 2) {
+                    status.textContent = 'Add 2+ source images below for this action.';
+                } else {
+                    status.textContent = `Ready — ${count} images queued.`;
+                }
+            }
+        });
+    });
 
     if (sdGenBtn) {
         sdGenBtn.addEventListener('click', async () => {

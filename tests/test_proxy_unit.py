@@ -3061,3 +3061,22 @@ def test_legacy_server_gets_flat_fields_and_a_clean_prompt():
     )
     assert prompt == "a cat"
     assert flat == {"seed": 7, "negative_prompt": "blurry", "strength": 0.45, "steps": 20, "cfg_scale": 8.0}
+
+
+def test_single_edit_image_uses_legacy_image_field():
+    parts = alpaca_proxy.normalize_edit_image_parts([("image[]", ("a.png", b"x", "image/png"))])
+    assert parts == [("image", ("a.png", b"x", "image/png"))]
+    assert alpaca_proxy.count_edit_images(parts) == 1
+
+
+def test_multi_edit_images_use_repeated_image_array_field():
+    parts = alpaca_proxy.normalize_edit_image_parts(
+        [
+            ("image", ("a.png", b"1", "image/png")),
+            ("image[]", ("b.png", b"2", "image/png")),
+            ("mask", ("m.png", b"3", "image/png")),
+            ("prompt", "swap faces"),
+        ]
+    )
+    assert [k for k, _ in parts] == ["image[]", "image[]", "mask", "prompt"]
+    assert alpaca_proxy.count_edit_images([("image[]", ("a", b"1", "image/png")), ("image[]", ("b", b"2", "image/png"))]) == 2

@@ -3111,6 +3111,42 @@ def validate_sd_parameters(payload: dict[str, Any]) -> tuple[bool, str | None]:
     return True, None
 
 
+# sd-server prefers `image[]` for multi-image edits and still accepts legacy
+# `image` for a single file (examples/server/api.md).
+_MAX_EDIT_IMAGES = 4
+
+
+def normalize_edit_image_parts(files: list) -> list:
+    """Re-key multipart image parts for sd-server's edits API.
+
+    Single image -> ``image``; multiple -> repeated ``image[]`` parts so
+    Qwen-Image-Edit multi-image instructions (face swap, merge) reach the
+    engine. Non-image parts (mask, etc.) keep their original field names.
+    """
+    image_parts: list = []
+    others: list = []
+    for key, part in files:
+        base = key[:-2] if isinstance(key, str) and key.endswith("[]") else key
+        if base in ("image", "images"):
+            image_parts.append(part)
+        else:
+            others.append((key, part))
+    if not image_parts:
+        return others
+    rebuilt = [("image", image_parts[0])] if len(image_parts) == 1 else [("image[]", part) for part in image_parts]
+    return rebuilt + others
+
+
+def count_edit_images(files: list) -> int:
+    """Number of image parts in an edits multipart file list."""
+    n = 0
+    for key, _part in files:
+        base = key[:-2] if isinstance(key, str) and key.endswith("[]") else key
+        if base in ("image", "images"):
+            n += 1
+    return n
+
+
 def is_image_model_manifest(manifest: dict) -> bool:
     """Returns True if a manifest describes a Stable Diffusion / image model.
 
@@ -3907,7 +3943,8 @@ async def edit_images(request: Request) -> Response:
             items = form.getlist(key)
             for item in items:
                 if isinstance(item, str):
-                    data[key] = item
+                    if key not in data:
+                        data[key] = item
                 else:
                     content = await item.read()
                     files.append(
@@ -3920,6 +3957,18 @@ async def edit_images(request: Request) -> Response:
                             ),
                         )
                     )
+
+        # Multi-image edits (face swap / merge): re-key to sd-server's
+        # image[] field before forwarding.
+        image_count = count_edit_images(files)
+        if image_count > _MAX_EDIT_IMAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"At most {_MAX_EDIT_IMAGES} source images are supported (got {image_count}).",
+            )
+        if image_count:
+            files = normalize_edit_image_parts(files)
+            logger.info("sd edit multi-image - sources=%d", image_count)
 
         if response_format in _IMAGE_FILE_FORMATS:
             # Force b64_json from sd-server so we can decode it into a raw file.
