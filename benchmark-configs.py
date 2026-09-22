@@ -7,9 +7,15 @@ KV cache type, flash attention) for any model in models.ini.
 Restarts the llama-server to apply configurations and measures responsiveness (TTFT)
 and generation throughput (tokens/sec) via the alpaca-proxy.
 
-After finding the optimal config, runs a quality test suite covering coding, reasoning,
-instruction-following, and creative tasks. Results are written to the .profile.json file
-under a 'quality' key - the 4 config keys read by alpaca-puller.py are unaffected.
+A second stage then sweeps batch-size / ubatch-size at the winning context and cache
+configuration. Those knobs only affect how fast a prompt is ingested, so the stage times
+a ~2k-token prompt with a single token of output - the short generation prompt used by
+the first stage cannot tell the settings apart.
+
+After finding the optimal config, applies it, restarts the backend, and runs a quality
+test suite covering coding, reasoning, instruction-following, and creative tasks against
+that config. Results are written to the .profile.json file under a 'quality' key - the
+config keys read by alpaca-puller.py are unaffected.
 """
 
 import argparse
@@ -34,6 +40,20 @@ BACKEND_URL = os.getenv(
     "http://llama-server:8080" if ROUTER_MODELS_DIR == "/router-models" else "http://localhost:8080",
 )
 BENCHMARK_PROMPT = "List 5 primary colors and write a very short sentence for each describing its mood."
+
+# Batch sizes govern prompt processing, which a one-line prompt cannot measure:
+# its time-to-first-token is dominated by scheduling. This filler is long enough
+# (~2k tokens) that TTFT is genuinely the cost of ingesting it, so the batch
+# sweep compares prefill throughput rather than noise.
+_PP_FILLER = (
+    "The deployment log records that the service restarted, reloaded its configuration, "
+    "revalidated every cached entry, and resumed serving traffic without dropping a request. "
+)
+LONG_PROMPT = (
+    "Read the log excerpt below and reply with the single word OK.\n\n" + _PP_FILLER * 110 + "\nReply with OK."
+)
+# Rough token count for the filler prompt, used to turn TTFT into tokens/sec.
+LONG_PROMPT_TOKENS = 2000
 
 
 def _model_temperature(model: str) -> float:
@@ -148,14 +168,14 @@ def restart_backend():
     return False
 
 
-def run_test(public_model_name):
+def run_test(public_model_name, prompt=BENCHMARK_PROMPT, n_predict=64, timeout=45.0):
     print(f"[benchmark] Triggering load & generation for {public_model_name}...")
     payload = {
         "model": public_model_name,
-        "messages": [{"role": "user", "content": BENCHMARK_PROMPT}],
+        "messages": [{"role": "user", "content": prompt}],
         "stream": True,
-        "n_predict": 25,
-        "options": {"num_predict": 25},
+        "n_predict": n_predict,
+        "options": {"num_predict": n_predict},
     }
 
     start_time = time.time()
@@ -165,7 +185,7 @@ def run_test(public_model_name):
     error_msg = ""
 
     try:
-        with httpx.stream("POST", f"{PROXY_URL}/api/chat", json=payload, timeout=45.0) as r:
+        with httpx.stream("POST", f"{PROXY_URL}/api/chat", json=payload, timeout=timeout) as r:
             if r.status_code != 200:
                 return False, None, None, f"HTTP {r.status_code}: {r.read().decode()}"
 
@@ -202,6 +222,41 @@ def run_test(public_model_name):
     gen_time = total_time - ttft if ttft else 0.1
     tps = tokens_count / gen_time if gen_time > 0 else 0
     return True, ttft, tps, ""
+
+
+def sweep_batch_sizes(model, public_model_name, config, pairs):
+    """Measure prefill throughput for each (batch-size, ubatch-size) pair.
+
+    Batch sizes are the one knob the context/cache sweep cannot rank, because
+    they only change how fast a prompt is ingested. Each pair is applied to the
+    already-chosen context and cache configuration and timed with a long prompt,
+    so the comparison isolates prefill. Returns a list of result rows, best first.
+    """
+    rows = []
+    for batch, ubatch in pairs:
+        if ubatch > batch:
+            print(f"\n--- Skipping batch={batch}, ubatch={ubatch} (physical batch cannot exceed logical) ---")
+            continue
+        print(f"\n--- Testing Prefill: batch-size={batch}, ubatch-size={ubatch} ---")
+        config[model]["batch-size"] = str(batch)
+        config[model]["ubatch-size"] = str(ubatch)
+        with open(INI_PATH, "w") as f:
+            config.write(f)
+        if not restart_backend():
+            rows.append({"batch": batch, "ubatch": ubatch, "status": "FAIL", "pp": None, "detail": "restart failed"})
+            continue
+        # One token of output: we are timing the prompt, not the generation.
+        ok, ttft, _tps, detail = run_test(public_model_name, prompt=LONG_PROMPT, n_predict=1, timeout=180.0)
+        if ok and ttft and ttft > 0:
+            pp = LONG_PROMPT_TOKENS / ttft
+            print(f"SUCCESS: prefill = {pp:.0f} tok/s (TTFT {ttft:.2f}s)")
+            rows.append({"batch": batch, "ubatch": ubatch, "status": "PASS", "pp": pp, "detail": "OK"})
+        else:
+            message = detail or "no first token"
+            print(f"FAILED: {message}")
+            rows.append({"batch": batch, "ubatch": ubatch, "status": "FAIL", "pp": None, "detail": message[:30]})
+    rows.sort(key=lambda r: (r["pp"] is not None, r["pp"] or 0), reverse=True)
+    return rows
 
 
 def run_quality_tests(public_model_name):
@@ -297,6 +352,15 @@ def main():
         default="8192,32768",
         help="Comma-separated context sizes to test (default: 8192,32768)",
     )
+    parser.add_argument(
+        "--batch-pairs",
+        default="2048x512,2048x1024,1024x1024,4096x1024",
+        help=(
+            "Comma-separated batch-size x ubatch-size pairs to sweep for prefill speed "
+            "after the best context/cache config is found (default: llama.cpp's default "
+            "2048x512 plus larger physical batches). Pass an empty string to skip the stage."
+        ),
+    )
     args = parser.parse_args()
 
     aliases = get_available_aliases()
@@ -305,6 +369,17 @@ def main():
         sys.exit(1)
 
     ctx_sizes = [int(x.strip()) for x in args.ctx_sizes.split(",") if x.strip()]
+    batch_pairs = []
+    for raw in args.batch_pairs.split(","):
+        raw = raw.strip().lower()
+        if not raw:
+            continue
+        try:
+            batch, ubatch = (int(part) for part in raw.split("x", 1))
+        except ValueError:
+            print(f"Error: malformed --batch-pairs entry {raw!r}; expected BATCHxUBATCH")
+            sys.exit(1)
+        batch_pairs.append((batch, ubatch))
 
     print(f"=== Starting Config Benchmarking for {args.model} ===")
 
@@ -317,6 +392,7 @@ def main():
     flash_attns = ["on", "off"]
 
     results = []
+    batch_results = []
 
     try:
         for ctx in ctx_sizes:
@@ -385,10 +461,29 @@ def main():
                                 "detail": detail_msg[:30],
                             }
                         )
+        # The prefill stage runs inside the same try block so a failure still
+        # restores the model's original settings.
+        passed_so_far = [r for r in results if r["status"] == "PASS"]
+        if passed_so_far and batch_pairs:
+            best_ctx = max(r["ctx"] for r in passed_so_far)
+            at_best_ctx = [r for r in passed_so_far if r["ctx"] == best_ctx]
+            fastest = max(at_best_ctx, key=lambda r: float(r["tps"].split()[0]))
+            print(
+                f"\n=== Prefill sweep at ctx={best_ctx}, cache={fastest['cache']}, "
+                f"flash_attn={fastest['flash_attn']} ==="
+            )
+            config[args.model]["ctx-size"] = str(best_ctx)
+            config[args.model]["cache-type-k"] = fastest["cache"]
+            config[args.model]["cache-type-v"] = fastest["cache"]
+            config[args.model]["flash-attn"] = fastest["flash_attn"]
+            batch_results = sweep_batch_sizes(args.model, args.public_name, config, batch_pairs)
     finally:
         # Restore original settings
         print("\n[benchmark] Restoring original model settings...")
         config.read(INI_PATH)
+        for k in list(config[args.model]):
+            if k not in original_settings:
+                config[args.model].pop(k, None)
         for k, v in original_settings.items():
             config[args.model][k] = v
         with open(INI_PATH, "w") as f:
@@ -440,6 +535,13 @@ def main():
             "flash-attn": best_run["flash_attn"],
         }
 
+        best_batch = next((r for r in batch_results if r["status"] == "PASS"), None)
+        if best_batch:
+            profile_settings["batch-size"] = str(best_batch["batch"])
+            profile_settings["ubatch-size"] = str(best_batch["ubatch"])
+            print(f"  Batch / Physical Batch: {best_batch['batch']} / {best_batch['ubatch']}")
+            print(f"  Prefill: {best_batch['pp']:.0f} tok/s")
+
         # Preserve original MoE and speculative decoding settings
         if "n-cpu-moe" in original_settings:
             profile_settings["n-cpu-moe"] = original_settings["n-cpu-moe"]
@@ -450,22 +552,25 @@ def main():
 
         profile_path = INI_PATH.parent / f"{args.model}.profile.json"
         try:
-            # Run quality tests against the now-loaded optimal config before saving
+            # Apply and load the optimal config FIRST: the restore step above put the
+            # original settings back, so quality tests run here would otherwise score
+            # the configuration we just replaced.
+            with open(profile_path, "w") as f:
+                json.dump(profile_settings, f, indent=2)
+            puller_path = Path(__file__).parent / "alpaca-puller.py"
+            subprocess.run(["python3", str(puller_path), "reindex"], capture_output=True)
+            print("[benchmark] Successfully applied profile to models.ini.")
+            restart_backend()
+
             quality_results = run_quality_tests(args.public_name)
 
             # Merge: config keys stay at top-level (alpaca-puller.py reads them),
             # quality results are nested under 'quality' (puller ignores unknown keys).
             full_profile = dict(profile_settings)
             full_profile["quality"] = quality_results
-
             with open(profile_path, "w") as f:
                 json.dump(full_profile, f, indent=2)
             print(f"[benchmark] Saved optimal model profile to {profile_path}")
-
-            puller_path = Path(__file__).parent / "alpaca-puller.py"
-            subprocess.run(["python3", str(puller_path), "reindex"], capture_output=True)
-            print("[benchmark] Successfully applied profile to models.ini.")
-            restart_backend()
         except Exception as e:
             print(f"[benchmark] Error saving model profile: {e}")
     else:
@@ -480,6 +585,14 @@ def main():
         print(
             f"| {r['ctx']} | {r['cache']} | {r['flash_attn']} | {r['status']} | {r['ttft']} | {r['tps']} | {r['detail']} |"
         )
+
+    if batch_results:
+        print("\n=== PREFILL (PROMPT PROCESSING) RESULTS ===\n")
+        print("| Batch | Physical Batch | Status | Prefill Speed | Notes |")
+        print("|-------|----------------|--------|---------------|-------|")
+        for r in batch_results:
+            speed = f"{r['pp']:.0f} tok/s" if r["pp"] else "-"
+            print(f"| {r['batch']} | {r['ubatch']} | {r['status']} | {speed} | {r['detail']} |")
 
 
 if __name__ == "__main__":

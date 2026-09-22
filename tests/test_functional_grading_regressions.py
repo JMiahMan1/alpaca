@@ -583,3 +583,102 @@ def test_rust_invaders_rejects_http_server_response(benchmark):
     assert "hyper" in http_version
     assert "x11" not in http_version
     assert not benchmark._verify_functional_response("retro_space_invaders_rust", http_version)
+
+
+# --- Objective-key grading: the model's stated answer, not its reasoning ------
+#
+# Keyed tests ("Answer with only the letter") used to pass whenever the key
+# appeared anywhere in the response. "A" and "I" are ordinary English words and
+# a chain of thought enumerates most small numbers, so a wrong answer scored as
+# correct measured the grader instead of the model.
+
+
+@pytest.mark.parametrize(
+    ("expected", "response", "correct"),
+    [
+        # Reasoning that mentions the key while answering something else.
+        ("A", "A pair of dice has 36 outcomes; 7 of them work.\n\nAnswer: D", False),
+        ("C", "Consider each option in turn. I pick B.", False),
+        # Every presentation of a right answer still passes.
+        ("A", "A", True),
+        ("A", "A) 1/6", True),
+        ("A", "(A)", True),
+        ("A", "**Answer: A**", True),
+        ("A", "\\boxed{A}", True),
+        ("A", "The probability is 1/6, which is option A.", True),
+        ("C", "Final answer: C", True),
+        ("C", "Working through it, the correct choice is C.", True),
+    ],
+)
+def test_choice_key_grades_the_stated_option(benchmark, expected, response, correct):
+    test = {"id": "mmlu_pro_example", "expected": expected}
+    assert benchmark._verify_functional_response(test, response) is correct
+
+
+@pytest.mark.parametrize(
+    ("expected", "response", "correct"),
+    [
+        # The key appears only as working; the stated result is wrong.
+        ("7", "There are 7 rounds of play, so the total is 8.", False),
+        ("7", "Step 1: 7 is a red herring.\nStep 2: the total is 8 matches.", False),
+        # Stated results in the shapes models actually emit.
+        ("7", "7", True),
+        ("7", "7 matches", True),
+        ("7", "Final answer: 7", True),
+        ("7", "\\boxed{7}", True),
+        ("7", "8 teams, each match eliminates one, so 7 matches.", True),
+        ("7", "Step 1: 8 teams.\nStep 2: one out per match.\nTotal matches: 7", True),
+        ("1000", "The total comes to 1,000.", True),
+    ],
+)
+def test_numeric_key_grades_the_stated_result(benchmark, expected, response, correct):
+    test = {"id": "math_hard_example", "expected": expected}
+    assert benchmark._verify_functional_response(test, response) is correct
+
+
+def test_unparseable_answer_falls_back_to_lenient_search(benchmark):
+    """A response with no identifiable answer span is graded the old, lenient way
+    rather than failed for presentation."""
+    test = {"id": "mmlu_pro_example", "expected": "B"}
+    assert benchmark._verify_functional_response(test, "   \n\n") is False
+    assert benchmark._verify_functional_response(test, "B") is True
+
+
+# --- Logic puzzles: grade the conclusion, not the vocabulary -----------------
+#
+# These graders used to check only that the answer mentioned the puzzle's nouns
+# and a connective, so restating the prompt scored full marks while a correct
+# answer phrased unusually could still fail. The category was close to free
+# marks for any model.
+
+
+@pytest.mark.parametrize(
+    ("test_id", "response", "correct"),
+    [
+        # Modus tollens: q false forces p false.
+        ("logic_modus", "Since q is false and 'if p then q' holds, p must be false.", True),
+        ("logic_modus", "p is false.", True),
+        ("logic_modus", "If p were true then q would be true. But q is false. Therefore p is false.", True),
+        ("logic_modus", "By modus ponens, therefore if p then q, so p is true.", False),
+        # A is the knight, B the knave.
+        ("logic_knights", "A is the knight and B is the knave, because A's claim only holds then.", True),
+        ("logic_knights", "The knight is A; the knave is B.", True),
+        ("logic_knights", "So: A = knight, B = knave.", True),
+        ("logic_knights", "A is the knave and B is the knight.", False),
+        ("logic_knights", "A says B is a knave. B says they match. Knight and knave, therefore a is b.", False),
+        # Every valid river crossing brings the goat back.
+        (
+            "logic_river",
+            "Take the goat across, return alone, take the wolf over and bring the goat back, "
+            "take the cabbage over, return, then take the goat.",
+            True,
+        ),
+        ("logic_river", "You must cross the river with the wolf, the goat and the cabbage in a boat.", False),
+        # Two weighings for eight balls needs a 3/3/2 split.
+        ("logic_weigh", "Weigh 3 balls against 3. If they balance the heavier one is in the other two.", True),
+        ("logic_weigh", "Split the 8 balls into groups of three, three and two, then weigh the threes.", True),
+        ("logic_weigh", "Weigh some balls on the balance and find the heavier one in two weighings.", False),
+    ],
+)
+def test_logic_graders_check_the_answer(benchmark, test_id, response, correct):
+    assert benchmark._verify_functional_response({"id": test_id}, response) is correct

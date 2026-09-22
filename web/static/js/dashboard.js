@@ -247,6 +247,7 @@ document.addEventListener('DOMContentLoaded', () => {
             tabBtnSd.classList.add('active');
             viewImageStudio.classList.remove('d-none');
             loadSdModels();
+            loadSdCapabilities();
         } else if (tabName === 'audio') {
             tabBtnAudio.classList.add('active');
             viewAudio.classList.remove('d-none');
@@ -266,6 +267,107 @@ document.addEventListener('DOMContentLoaded', () => {
     tabBtnAudio.addEventListener('click', () => switchTab('audio'));
 
     // Image Studio (Stable Diffusion)
+
+    // Samplers, schedulers and upscalers differ between stable-diffusion.cpp
+    // builds and between model families, so the advanced controls are filled
+    // from what the engine reports rather than a hard-coded list that may name
+    // options the running build does not have.
+    let sdCapabilities = null;
+
+    function fillSdOptionList(selectId, names, defaultLabel) {
+        const sel = document.getElementById(selectId);
+        if (!sel || !Array.isArray(names) || names.length === 0) return;
+        const previous = sel.value;
+        sel.innerHTML = `<option value="">${defaultLabel}</option>` +
+            names.map(n => {
+                const value = (typeof n === 'string') ? n : (n.name || '');
+                return value ? `<option value="${value}">${value}</option>` : '';
+            }).join('');
+        if (previous && Array.from(sel.options).some(o => o.value === previous)) sel.value = previous;
+    }
+
+    async function loadSdCapabilities() {
+        const note = document.getElementById('sd-gen-caps-note');
+        try {
+            const res = await fetch('/api/sd/capabilities');
+            const data = await res.json();
+            if (!res.ok || !data.native) throw new Error(data.error || 'engine did not report capabilities');
+            sdCapabilities = data;
+            fillSdOptionList('sd-gen-sampler', data.samplers, 'Engine default');
+            fillSdOptionList('sd-gen-scheduler', data.schedulers, 'Engine default');
+            fillSdOptionList('sd-gen-hires-upscaler', data.upscalers, 'Engine default');
+            if (note) {
+                const counts = [
+                    `${(data.samplers || []).length} samplers`,
+                    `${(data.schedulers || []).length} schedulers`,
+                    `${(data.upscalers || []).length} upscalers`,
+                ];
+                note.textContent = `Engine reports ${counts.join(', ')}. Blank = the model's own default.`;
+                note.style.color = '#64748b';
+            }
+        } catch (e) {
+            sdCapabilities = null;
+            if (note) {
+                note.textContent = `Engine capabilities unavailable (${e.message}) - advanced settings are not sent.`;
+                note.style.color = '#f59e0b';
+            }
+        }
+    }
+
+    // A seed of -1 asks the engine for a random one and it never tells us which,
+    // so a good image cannot be reproduced. Roll it here instead: every result
+    // then carries the exact seed that produced it.
+    function resolveSdSeed(rawValue) {
+        const parsed = parseInt(rawValue, 10);
+        if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+        return Math.floor(Math.random() * 2147483647);
+    }
+
+    // Advanced engine settings shared by the generation panels. Only keys the
+    // user actually set are returned, so the model's own defaults stand.
+    function collectSdAdvancedSettings() {
+        if (!sdCapabilities) return {};
+        const settings = {};
+        const value = id => {
+            const el = document.getElementById(id);
+            return el ? String(el.value).trim() : '';
+        };
+        const sampler = value('sd-gen-sampler');
+        const scheduler = value('sd-gen-scheduler');
+        const cacheMode = value('sd-gen-cache');
+        const cacheOption = value('sd-gen-cache-option');
+        const clipSkip = value('sd-gen-clip-skip');
+        if (sampler) settings.sampler = sampler;
+        if (scheduler) settings.scheduler = scheduler;
+        if (cacheMode) settings.cache_mode = cacheMode;
+        if (cacheOption) settings.cache_option = cacheOption;
+        if (clipSkip !== '') settings.clip_skip = parseInt(clipSkip, 10);
+
+        const hires = document.getElementById('sd-gen-hires-enable');
+        if (hires && hires.checked) {
+            settings.hires_enabled = true;
+            const upscaler = value('sd-gen-hires-upscaler');
+            if (upscaler) settings.hires_upscaler = upscaler;
+            const scale = parseFloat(value('sd-gen-hires-scale'));
+            if (scale > 0) settings.hires_scale = scale;
+            const steps = parseInt(value('sd-gen-hires-steps'), 10);
+            if (steps > 0) settings.hires_steps = steps;
+            const denoise = parseFloat(value('sd-gen-hires-denoise'));
+            if (denoise > 0) settings.hires_denoising_strength = denoise;
+        }
+        return settings;
+    }
+
+    const sdHiresEnable = document.getElementById('sd-gen-hires-enable');
+    if (sdHiresEnable) {
+        const syncHiresInputs = () => {
+            const box = document.getElementById('sd-gen-hires-inputs');
+            if (box) box.style.opacity = sdHiresEnable.checked ? '1' : '0.5';
+        };
+        sdHiresEnable.addEventListener('change', syncHiresInputs);
+        syncHiresInputs();
+    }
+
     async function loadSdModels() {
         const sel = document.getElementById('sd-model-select');
         if (!sel) return;
@@ -455,7 +557,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Helper to render SD result cards with Download & Send to Canvas
-    function renderSDResultCard(item, container, filePrefix = 'result') {
+    function renderSDResultCard(item, container, filePrefix = 'result', meta = {}) {
         if (item.b64_json) {
             const card = document.createElement('div');
             card.style.display = 'inline-block';
@@ -465,6 +567,9 @@ document.addEventListener('DOMContentLoaded', () => {
             card.style.padding = '8px';
             card.style.borderRadius = '8px';
             card.style.border = '1px solid var(--border-color)';
+            // Newest first: the gallery keeps previous runs so variations can be
+            // compared instead of each render wiping the one before it.
+            container.prepend(card);
 
             const img = document.createElement('img');
             img.src = 'data:image/png;base64,' + item.b64_json;
@@ -518,8 +623,58 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             btnBox.appendChild(canvasBtn);
 
+            // Reusing a result as the source of the next edit is the move this
+            // studio was missing: previously an image had to be downloaded and
+            // re-uploaded to refine it.
+            const editBtn = document.createElement('a');
+            editBtn.textContent = '🎨 Refine';
+            editBtn.href = '#';
+            editBtn.title = 'Send this image to the Photo Editor as the source';
+            editBtn.style.fontSize = '0.75rem';
+            editBtn.style.color = '#4ade80';
+            editBtn.style.textDecoration = 'none';
+            editBtn.style.cursor = 'pointer';
+            editBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                sendB64ToPhotoEditor(item.b64_json, meta.prompt || '');
+            });
+            btnBox.appendChild(editBtn);
+
             card.appendChild(btnBox);
-            container.appendChild(card);
+
+            if (meta.seed !== undefined && meta.seed !== null) {
+                const seedRow = document.createElement('div');
+                seedRow.style.marginTop = '6px';
+                seedRow.style.fontSize = '0.7rem';
+                seedRow.style.color = '#94a3b8';
+                seedRow.style.display = 'flex';
+                seedRow.style.gap = '0.4rem';
+                seedRow.style.alignItems = 'center';
+                seedRow.style.justifyContent = 'center';
+
+                const seedLabel = document.createElement('span');
+                seedLabel.textContent = `seed ${meta.seed}`;
+                seedRow.appendChild(seedLabel);
+
+                const reuse = document.createElement('a');
+                reuse.textContent = '♻ Reuse';
+                reuse.href = '#';
+                reuse.title = 'Put this seed back in the generator to vary one setting at a time';
+                reuse.style.color = '#c084fc';
+                reuse.style.textDecoration = 'none';
+                reuse.style.cursor = 'pointer';
+                reuse.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    const seedInput = document.getElementById('sd-gen-seed');
+                    if (seedInput) {
+                        seedInput.value = meta.seed;
+                        seedInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                    showToast(`Seed ${meta.seed} loaded into the generator.`, 'success');
+                });
+                seedRow.appendChild(reuse);
+                card.appendChild(seedRow);
+            }
         } else if (item.url) {
             const a = document.createElement('a');
             a.href = item.url;
@@ -1039,6 +1194,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const size = flyerAspectSel ? flyerAspectSel.value : '832x1216';
             const negative = 'garbled text, distorted letters, bad typography, misspelled text, blurry letters, low contrast, messy composition';
 
+            const flyerSeed = resolveSdSeed(-1);
             const payload = {
                 model,
                 prompt,
@@ -1046,7 +1202,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 n: 1,
                 negative_prompt: negative,
                 steps: 25,
-                guidance: 8.0
+                guidance: 8.0,
+                seed: flyerSeed,
+                ...collectSdAdvancedSettings(),
             };
 
             const qrEnable = document.getElementById('sd-flyer-qr-enable');
@@ -1070,9 +1228,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 const data = await res.json();
                 if (res.ok && data.data) {
-                    sdResults.innerHTML = '';
-                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'flyer'));
-                    flyerStatus.textContent = '✅ Flyer generated successfully!';
+                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'flyer', { seed: flyerSeed, prompt }));
+                    flyerStatus.textContent = `✅ Flyer generated (seed ${flyerSeed}).`;
                 } else {
                     flyerStatus.textContent = `❌ ${data.error || 'Flyer generation failed'}`;
                 }
@@ -1290,6 +1447,39 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Round-trip a generated image straight back into the Photo Editor so a
+    // result can be refined without a download/re-upload detour.
+    function sendB64ToPhotoEditor(b64Data, sourcePrompt) {
+        const bin = atob(b64Data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const file = new File([bytes], `render_${Date.now()}.png`, { type: 'image/png' });
+
+        const photoInput = document.getElementById('sd-edit-image');
+        if (photoInput) {
+            try {
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                photoInput.files = dt.files;
+            } catch (e) {
+                console.warn('Could not attach the rendered image to the photo editor:', e);
+                showToast('This browser blocked attaching the image automatically.', 'error');
+                return;
+            }
+        }
+        showPhotoPreview(file);
+
+        // Carry the prompt across so the refine pass starts from what made the image.
+        const photoPrompt = document.getElementById('sd-edit-prompt');
+        if (photoPrompt && sourcePrompt && !photoPrompt.value.trim()) {
+            photoPrompt.value = sourcePrompt;
+            const presetSel = document.getElementById('sd-photo-preset-select');
+            if (presetSel && Array.from(presetSel.options).some(o => o.value === 'custom')) presetSel.value = 'custom';
+        }
+        switchSDMode('photo');
+        showToast('Image sent to the Photo Editor.', 'success');
+    }
+
     function loadB64IntoCanvas(b64Data) {
         const img = new Image();
         img.onload = () => {
@@ -1412,13 +1602,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!fileInput.files || fileInput.files.length === 0) { sdEditStatus.textContent = 'Choose a source image.'; return; }
             if (!prompt) { sdEditStatus.textContent = 'Enter an edit prompt.'; return; }
 
-            const fullPrompt = `${prompt}<sd_cpp_extra_args>{"strength": ${parseFloat(strength) || 0.45}, "negative_prompt": "${negative.replace(/"/g, '\\"')}"}</sd_cpp_extra_args>`;
-
+            // Send the edit controls as plain form fields: the proxy folds them into
+            // the native <sd_cpp_extra_args> block sd-server reads. Hand-building
+            // that JSON here used to break on a quote or newline in the prompt.
             const fd = new FormData();
             fd.append('model', model);
-            fd.append('prompt', fullPrompt);
+            fd.append('prompt', prompt);
             fd.append('size', size);
             fd.append('n', n);
+            fd.append('strength', String(parseFloat(strength) || 0.45));
+            if (negative) fd.append('negative_prompt', negative);
+            Object.entries(collectSdAdvancedSettings()).forEach(([k, v]) => fd.append(k, String(v)));
             fd.append('image', fileInput.files[0]);
 
             sdEditStatus.textContent = 'Editing image (this can take a while)...';
@@ -1427,8 +1621,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const res = await fetch('/api/sd/edit', { method: 'POST', body: fd });
                 const data = await res.json();
                 if (res.ok && data.data) {
-                    sdResults.innerHTML = '';
-                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'photo_edit'));
+                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'photo_edit', { prompt }));
                     sdEditStatus.textContent = `✅ Edited ${data.data.length} image(s).`;
                 } else {
                     sdEditStatus.textContent = `❌ ${data.error || 'Edit failed'}`;
@@ -1450,22 +1643,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const negative = document.getElementById('sd-gen-negative').value.trim();
             const steps = document.getElementById('sd-gen-steps').value;
             const guidance = document.getElementById('sd-gen-guidance').value;
-            let seed = document.getElementById('sd-gen-seed').value;
             if (!model) { sdGenStatus.textContent = 'Load an image model first.'; return; }
             if (!prompt) { sdGenStatus.textContent = 'Enter a prompt.'; return; }
-            if (seed === '' || seed === '-1') seed = -1;
-            else seed = parseInt(seed, 10);
+            const seed = resolveSdSeed(document.getElementById('sd-gen-seed').value);
 
             const payload = {
                 model,
                 prompt,
                 size,
                 n: parseInt(n, 10) || 1,
+                seed,
+                ...collectSdAdvancedSettings(),
             };
             if (negative) payload.negative_prompt = negative;
             if (steps && parseInt(steps, 10) > 0) payload.steps = parseInt(steps, 10);
             if (guidance && parseFloat(guidance) > 0) payload.guidance = parseFloat(guidance);
-            if (seed >= 0) payload.seed = seed;
 
             sdGenStatus.textContent = 'Generating image (this can take a while)...';
             sdGenBtn.disabled = true;
@@ -1477,9 +1669,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 const data = await res.json();
                 if (res.ok && data.data) {
-                    sdResults.innerHTML = '';
-                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'generation'));
-                    sdGenStatus.textContent = `✅ Generated ${data.data.length} image(s).`;
+                    data.data.forEach(item => renderSDResultCard(item, sdResults, 'generation', { seed, prompt }));
+                    sdGenStatus.textContent = `✅ Generated ${data.data.length} image(s) with seed ${seed}.`;
                 } else {
                     sdGenStatus.textContent = `❌ ${data.error || 'Generation failed'}`;
                 }
@@ -7741,8 +7932,17 @@ const saved = _loadHumanRatings(t.id) || {};
             setSelectInput('spec-type', 'spec-type', 'none');
 
             setNumberInput('spec-draft-n-max', 'spec-draft-n-max', '0 (Disabled)');
-            setNumberInput('n-cpu-moe', 'n-cpu-moe', isSd ? 'Auto (nproc - 2)' : 'Auto');
+            setNumberInput('spec-draft-n-min', 'spec-draft-n-min', '0 (Default)');
+            setNumberInput('n-cpu-moe', 'n-cpu-moe', isSd ? 'Auto (nproc - 2)' : '0 (all experts on GPU)');
             setNumberInput('temperature', 'temperature', '0.6 (Recommended)');
+
+            // Throughput and prompt-cache knobs (llama.cpp server args)
+            setNumberInput('batch-size', 'batch-size', '2048 (Default)');
+            setNumberInput('ubatch-size', 'ubatch-size', '512 (Default)');
+            setNumberInput('cache-reuse', 'cache-reuse', '0 (Disabled)');
+            setSelectInput('reasoning-effort', 'reasoning-effort', '');
+            setSelectInput('swa-full', 'swa-full', '');
+            setSelectInput('split-mode', 'split-mode', '');
 
             // Thinking & reasoning (per-model, applied to every benchmark on this model)
             setNumberInput('reasoning-budget', 'reasoning-budget', '2048 (Recommended for heavy tests)');
@@ -7849,7 +8049,14 @@ const saved = _loadHumanRatings(t.id) || {};
                     'kv-unified': profileEditForm.elements['kv-unified'].value,
                     'spec-type': profileEditForm.elements['spec-type'].value,
                     'spec-draft-n-max': elVal('spec-draft-n-max'),
+                    'spec-draft-n-min': elVal('spec-draft-n-min'),
                     'n-cpu-moe': elVal('n-cpu-moe'),
+                    'batch-size': elVal('batch-size'),
+                    'ubatch-size': elVal('ubatch-size'),
+                    'cache-reuse': elVal('cache-reuse'),
+                    'reasoning-effort': profileEditForm.elements['reasoning-effort'].value,
+                    'swa-full': profileEditForm.elements['swa-full'].value,
+                    'split-mode': profileEditForm.elements['split-mode'].value,
                     'temperature': elVal('temperature'),
                     'reasoning-budget': elVal('reasoning-budget'),
                     'thinking': (thinkingRaw && thinkingRaw !== 'auto') ? thinkingRaw : null,

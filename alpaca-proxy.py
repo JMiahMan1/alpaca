@@ -2907,6 +2907,179 @@ async def sd_vram_poll_loop() -> None:
         await asyncio.sleep(5.0)
 
 
+# ---------------------------------------------------------------------------
+# Native stable-diffusion.cpp parameters
+#
+# sd-server's OpenAI-compatible routes read only `prompt`, `n`, `size`,
+# `output_format` and `output_compression` from the request. Every quality
+# control - steps, CFG, seed, sampler, scheduler, negative prompt, denoise
+# strength, diffusion cache, highres fix - reaches the sampler ONLY through an
+# `<sd_cpp_extra_args>` JSON block embedded in the prompt, which the server
+# parses and strips before generating. Sent as plain JSON fields they are
+# silently dropped: the request succeeds and the settings do nothing.
+#
+# So we keep accepting the OpenAI-shaped fields callers already send and
+# translate them into the native schema here, at the one place that talks to
+# sd-server.
+# ---------------------------------------------------------------------------
+
+_SD_EXTRA_ARGS_RE = re.compile(r"<sd_cpp_extra_args>(.*?)</sd_cpp_extra_args>", re.DOTALL)
+
+# Request field -> path in the native sdcpp schema.
+_SD_NATIVE_PARAM_PATHS: dict[str, tuple[str, ...]] = {
+    "negative_prompt": ("negative_prompt",),
+    "seed": ("seed",),
+    "clip_skip": ("clip_skip",),
+    "strength": ("strength",),
+    "batch_count": ("batch_count",),
+    "steps": ("sample_params", "sample_steps"),
+    "sample_steps": ("sample_params", "sample_steps"),
+    "sampler": ("sample_params", "sample_method"),
+    "sample_method": ("sample_params", "sample_method"),
+    "scheduler": ("sample_params", "scheduler"),
+    "eta": ("sample_params", "eta"),
+    "guidance": ("sample_params", "guidance", "txt_cfg"),
+    "cfg_scale": ("sample_params", "guidance", "txt_cfg"),
+    "img_cfg": ("sample_params", "guidance", "img_cfg"),
+    "distilled_guidance": ("sample_params", "guidance", "distilled_guidance"),
+    "cache_mode": ("cache_mode",),
+    "cache_option": ("cache_option",),
+    "hires_enabled": ("hires", "enabled"),
+    "hires_upscaler": ("hires", "upscaler"),
+    "hires_scale": ("hires", "scale"),
+    "hires_steps": ("hires", "steps"),
+    "hires_denoising_strength": ("hires", "denoising_strength"),
+}
+
+_SD_NUMERIC_PARAMS = {
+    "seed": int,
+    "clip_skip": int,
+    "strength": float,
+    "batch_count": int,
+    "steps": int,
+    "sample_steps": int,
+    "eta": float,
+    "guidance": float,
+    "cfg_scale": float,
+    "img_cfg": float,
+    "distilled_guidance": float,
+    "hires_scale": float,
+    "hires_steps": int,
+    "hires_denoising_strength": float,
+}
+
+_SD_BOOL_PARAMS = {"hires_enabled"}
+
+
+def _coerce_sd_param(key: str, value: Any) -> Any:
+    """Coerce a request value to the type the native schema expects, or None to skip it."""
+    if value is None or value == "":
+        return None
+    if key in _SD_BOOL_PARAMS:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+    caster = _SD_NUMERIC_PARAMS.get(key)
+    if caster is None:
+        return value
+    try:
+        # Numbers arrive as strings from multipart form data.
+        coerced = caster(float(value))
+    except (TypeError, ValueError):
+        return None
+    # A negative seed means "random", which is also the server default: leaving
+    # it out keeps the request minimal instead of pinning a nonsense seed.
+    if key == "seed" and coerced < 0:
+        return None
+    return coerced
+
+
+def _nest(target: dict, path: tuple[str, ...], value: Any) -> None:
+    for segment in path[:-1]:
+        target = target.setdefault(segment, {})
+    target[path[-1]] = value
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Merge override into base; override wins on conflicts."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _flatten_sd_native_params(prompt: str, native: dict) -> tuple[dict, str]:
+    """Legacy path: native params as flat form fields, plus the prompt with any
+    caller-supplied block removed.
+
+    Only used against an sd-server build that predates <sd_cpp_extra_args> on the
+    OpenAI-compatible routes, where the tag would otherwise reach the text encoder.
+    """
+    match = _SD_EXTRA_ARGS_RE.search(prompt or "")
+    if match:
+        try:
+            parsed = json.loads(match.group(1))
+            if isinstance(parsed, dict):
+                native = _deep_merge(native, parsed)
+        except ValueError:
+            logger.warning("Ignoring malformed sd_cpp_extra_args block: %s", match.group(1)[:200])
+        prompt = _SD_EXTRA_ARGS_RE.sub("", prompt).strip()
+    flat: dict[str, Any] = {}
+    for key, value in native.items():
+        if key == "sample_params" and isinstance(value, dict):
+            if "sample_steps" in value:
+                flat["steps"] = value["sample_steps"]
+            if "sample_method" in value:
+                flat["sample_method"] = value["sample_method"]
+            if "scheduler" in value:
+                flat["scheduler"] = value["scheduler"]
+            guidance = value.get("guidance")
+            if isinstance(guidance, dict) and "txt_cfg" in guidance:
+                flat["cfg_scale"] = guidance["txt_cfg"]
+        elif not isinstance(value, dict):
+            flat[key] = value
+    return flat, prompt
+
+
+def extract_sd_native_params(source: dict) -> dict:
+    """Pull native sd.cpp parameters out of an OpenAI-shaped request body."""
+    native: dict[str, Any] = {}
+    for key, path in _SD_NATIVE_PARAM_PATHS.items():
+        if key not in source:
+            continue
+        value = _coerce_sd_param(key, source[key])
+        if value is None:
+            continue
+        _nest(native, path, value)
+    return native
+
+
+def apply_sd_native_params(prompt: str, native: dict) -> str:
+    """Return the prompt carrying `native` inside its <sd_cpp_extra_args> block.
+
+    A block the caller already embedded is preserved and wins on conflicts, so
+    an explicit native request is never overwritten by a translated field.
+    """
+    prompt = prompt or ""
+    match = _SD_EXTRA_ARGS_RE.search(prompt)
+    existing: dict = {}
+    if match:
+        try:
+            parsed = json.loads(match.group(1))
+            if isinstance(parsed, dict):
+                existing = parsed
+        except ValueError:
+            logger.warning("Ignoring malformed sd_cpp_extra_args block: %s", match.group(1)[:200])
+        prompt = _SD_EXTRA_ARGS_RE.sub("", prompt).strip()
+    merged = _deep_merge(native, existing)
+    if not merged:
+        return prompt
+    return f"{prompt}<sd_cpp_extra_args>{json.dumps(merged, separators=(',', ':'))}</sd_cpp_extra_args>"
+
+
 def validate_sd_parameters(payload: dict[str, Any]) -> tuple[bool, str | None]:
     """Validates the input parameters for Stable Diffusion image generation."""
     size = payload.get("size", "512x512")
@@ -3208,6 +3381,36 @@ async def check_sd_server_health() -> bool:
     except Exception:
         pass
     return False
+
+
+# stable-diffusion.cpp's native capability report: which samplers, schedulers,
+# upscalers and LoRAs the loaded model actually supports, plus its defaults.
+# The Image Studio populates its controls from this instead of hard-coding
+# names that may not exist in the running build. The endpoint also tells us the
+# build is new enough to parse <sd_cpp_extra_args> on the OpenAI-compatible
+# routes, which is how every quality control reaches the sampler.
+_SD_CAPABILITIES_TTL_S = 60.0
+_sd_capabilities_cache: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+async def get_sd_capabilities(force: bool = False) -> dict | None:
+    """Fetch sd-server capabilities, cached briefly. None when unavailable."""
+    now = time.monotonic()
+    if not force and _sd_capabilities_cache["value"] is not None:
+        if now - _sd_capabilities_cache["at"] < _SD_CAPABILITIES_TTL_S:
+            return _sd_capabilities_cache["value"]
+    sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
+    try:
+        if client_sd_httpx:
+            resp = await client_sd_httpx.get(f"{sd_url}/sdcpp/v1/capabilities", timeout=3.0)
+            if resp.status_code == 200:
+                value = resp.json()
+                _sd_capabilities_cache.update({"at": now, "value": value})
+                return value
+    except Exception as e:
+        logger.debug(f"sd-server capabilities unavailable: {e}")
+    _sd_capabilities_cache.update({"at": now, "value": None})
+    return None
 
 
 async def _evict_llama_vram() -> None:
@@ -3602,6 +3805,19 @@ SD_PRESETS = {
 }
 
 
+@app.get("/v1/images/capabilities")
+async def get_image_capabilities() -> JSONResponse:
+    """Samplers, schedulers, upscalers, LoRAs and defaults reported by sd-server.
+
+    The Image Studio builds its advanced controls from this, so the options it
+    offers are the ones the running build supports rather than a hard-coded list.
+    """
+    caps = await get_sd_capabilities()
+    if caps is None:
+        return JSONResponse(status_code=503, content={"error": "sd-server capabilities unavailable", "native": False})
+    return JSONResponse(content={**caps, "native": True})
+
+
 @app.get("/v1/images/presets")
 async def get_image_presets() -> JSONResponse:
     """Returns curated presets for realistic photo editing and flyer text generation."""
@@ -3677,33 +3893,29 @@ async def edit_images(request: Request) -> Response:
             # Force b64_json from sd-server so we can decode it into a raw file.
             data["response_format"] = "b64_json"
 
-        # Strip <sd_cpp_extra_args> tag from prompt and apply as separate form fields.
-        # The UI embeds strength + negative_prompt as JSON inside the prompt string so they
-        # survive the multipart encoding, but sd-server (and especially Qwen Image Edit)
-        # must receive a clean prompt without this tag.
-        import json as _json
-        import re as _re
-
-        raw_prompt = data.get("prompt", "")
-        extra_args_match = _re.search(r"<sd_cpp_extra_args>(.*?)</sd_cpp_extra_args>", raw_prompt, _re.DOTALL)
-        if extra_args_match:
-            clean_prompt = _re.sub(
-                r"<sd_cpp_extra_args>.*?</sd_cpp_extra_args>", "", raw_prompt, flags=_re.DOTALL
-            ).strip()
+        # Fold the edit's quality controls into the native <sd_cpp_extra_args>
+        # block. sd-server reads only prompt/image/mask/n/size/output_* from the
+        # multipart body and parses everything else out of that block (removing
+        # it before generation), so denoise strength and the negative prompt only
+        # take effect from inside the prompt. Form fields a caller already sent
+        # are still forwarded: an older sd-server that read them keeps working.
+        native_params = extract_sd_native_params(data)
+        if await get_sd_capabilities() is not None:
+            data["prompt"] = apply_sd_native_params(str(data.get("prompt", "")), native_params)
+        else:
+            # Older sd-server: it does not parse the block, so leaving it in the
+            # prompt would feed the tag to the text encoder. Strip it and fall
+            # back to the flat form fields that build understood.
+            flat, clean_prompt = _flatten_sd_native_params(str(data.get("prompt", "")), native_params)
             data["prompt"] = clean_prompt
-            try:
-                extra = _json.loads(extra_args_match.group(1))
-                if "strength" in extra and "strength" not in data:
-                    data["strength"] = str(extra["strength"])
-                if "negative_prompt" in extra and "negative_prompt" not in data:
-                    data["negative_prompt"] = extra["negative_prompt"]
-                logger.info(
-                    "sd_cpp_extra_args parsed - strength=%s negative=%s",
-                    extra.get("strength"),
-                    bool(extra.get("negative_prompt")),
-                )
-            except Exception:
-                logger.warning("Failed to parse sd_cpp_extra_args JSON: %s", extra_args_match.group(1)[:200])
+            for key, value in flat.items():
+                data.setdefault(key, str(value))
+        logger.info(
+            "sd edit native params - strength=%s steps=%s negative=%s",
+            native_params.get("strength"),
+            (native_params.get("sample_params") or {}).get("sample_steps"),
+            bool(native_params.get("negative_prompt")),
+        )
 
         if client_sd_httpx:
             try:
@@ -3780,6 +3992,14 @@ async def generate_images(request: Request) -> JSONResponse:
 
     requested_model = payload.get("model", "")
     await ensure_sd_model_loaded(requested_model)
+
+    # Translate the OpenAI-shaped quality fields into the native block sd-server
+    # actually reads (see extract_sd_native_params). Without this, steps, CFG,
+    # seed, sampler and the negative prompt are accepted and then ignored.
+    native_params = extract_sd_native_params(payload)
+    if native_params and await get_sd_capabilities() is not None:
+        payload = {k: v for k, v in payload.items() if k not in _SD_NATIVE_PARAM_PATHS}
+        payload["prompt"] = apply_sd_native_params(str(payload.get("prompt", "")), native_params)
 
     # Track this request in the Active Requests UI (so SD generations are visible
     # alongside LLM chat/completion requests).

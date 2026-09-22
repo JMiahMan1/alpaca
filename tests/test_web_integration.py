@@ -545,6 +545,50 @@ mlock = true
     assert config["new-model"]["flash-attn"] == "on"
 
 
+def test_profile_save_keeps_harness_keys_out_of_models_ini(client, tmp_path, monkeypatch):
+    """llama-server's preset parser rejects keys that are not its own arguments and
+    the container crash-loops, so harness-only settings must stay in the overlay."""
+    mock_ini = tmp_path / "models.ini"
+    mock_ini.write_text("[*]\nmlock = true\n\n[thinker]\nthinking = on\n")
+    monkeypatch.setattr("web.app.get_models_ini_path", lambda: mock_ini)
+
+    payload = {
+        "section": "thinker",
+        "settings": {"ctx-size": 8192, "thinking": "off", "reasoning-budget": 2048, "cache-reuse": 256},
+    }
+    res = client.post("/api/profiles/save", json=payload)
+    assert res.status_code == 200
+
+    import configparser
+
+    config = configparser.ConfigParser(delimiters=("=",))
+    config.read(str(mock_ini))
+    assert config["thinker"]["ctx-size"] == "8192"
+    assert config["thinker"]["cache-reuse"] == "256"
+    assert config["thinker"]["reasoning-budget"] == "2048"
+    # Not a llama-server argument: dropped here, and the stale one is swept out.
+    assert "thinking" not in config["thinker"]
+
+    # ...but every setting still reaches the harness through the overlay.
+    overlay = json.loads((tmp_path / "thinker.profile.json").read_text())
+    assert overlay["thinking"] == "off"
+    assert overlay["cache-reuse"] == 256
+
+
+def test_profile_save_rejected_key_still_reaches_benchmark_suite(client, tmp_path, monkeypatch):
+    """The benchmark suite reads thinking from the overlay, so filtering the ini
+    must not change how a model is benchmarked."""
+    import llm_benchmark_suite
+
+    mock_ini = tmp_path / "models.ini"
+    mock_ini.write_text("[*]\ntemperature = 0.6\n")
+    monkeypatch.setattr("web.app.get_models_ini_path", lambda: mock_ini)
+    client.post("/api/profiles/save", json={"section": "thinker", "settings": {"thinking": "off"}})
+
+    monkeypatch.setenv("MODELS_INI_PATH", str(mock_ini))
+    assert llm_benchmark_suite._model_thinking("thinker") is False
+
+
 @patch("httpx.Client.post")
 def test_api_proxy_restart_route(mock_post, client):
     """Test that restarting proxy triggers proxy endpoints or fallback subprocess"""

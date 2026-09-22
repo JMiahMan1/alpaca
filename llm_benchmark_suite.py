@@ -229,6 +229,146 @@ def _ascii_fold(text: str) -> str:
     return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
 
 
+# ---------------------------------------------------------------------------
+# Final-answer extraction for objectively-keyed tests (multiple choice, numeric)
+#
+# Objective tests are keyed by a single letter or number, so the grader has to
+# decide WHICH answer the model actually gave. Searching the whole response for
+# the key passes any model whose reasoning happens to mention it - "A" and "I"
+# are ordinary English words and a chain of thought enumerates most digits - so
+# a wrong answer scored as correct measured the grader, not the model. Instead
+# we locate the span the model presented as its answer (boxed value, text after
+# an "answer:" marker, or the closing line) and grade only that span. The span
+# is read generously: any key named inside it counts, so a model that writes
+# "the answer is C" and one that writes "C) 1/9" both pass. When a response
+# offers no such span at all we fall back to the old whole-response search
+# rather than failing a model on presentation.
+# ---------------------------------------------------------------------------
+
+_THINK_TAG_RE = re.compile(r"<(think|thinking)>[\s\S]*?</\1>", re.IGNORECASE)
+_BOXED_RE = re.compile(r"\\boxed\s*\{([^{}]{1,160})\}")
+_ANSWER_MARKER_RE = re.compile(
+    r"(?:final\s+answer|correct\s+(?:option|choice|answer)|answer|option|choice|result)"
+    r"\s*(?:is\b|=|:|\u2014|-)?[ \t]*",
+    re.IGNORECASE,
+)
+# Explicit ways a model marks the option it picked, in descending confidence.
+_CHOICE_PATTERNS = (
+    re.compile(r"\*\*\s*\(?([A-J])\)?[.:]?\s*\*\*"),
+    re.compile(r"(?<![A-Za-z0-9])\(([A-J])\)(?![A-Za-z0-9])"),
+    re.compile(r"(?<![A-Za-z0-9])([A-J])[).:](?:\s|$)"),
+    re.compile(r"^\s*\(?([A-J])\)?[.:]?\s*$", re.MULTILINE),
+)
+# Last resort: a bare capital letter standing alone as a word.
+_BARE_CHOICE_RE = re.compile(r"(?<![A-Za-z0-9])([A-J])(?![A-Za-z0-9])")
+_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+# A response short enough to be nothing but the answer ("C", "7 matches").
+# Anything longer is prose that can still carry working, so only its last value
+# counts as the result.
+_TERSE_ANSWER_WORDS = 6
+
+
+def _answer_windows(response: str) -> list[tuple[str, bool]]:
+    r"""Spans where a model presents its final answer, most explicit first.
+
+    Each span is paired with whether it is *declared* - a ``\boxed{}`` value, the
+    text after an "answer:" marker, or a response terse enough to be nothing but
+    the answer. Everything inside a declared span is the answer, so every key it
+    names counts. The closing line of a longer response is not declared: it can
+    still carry working ("7 rounds, so the total is 8"), and only its last value
+    is the result.
+    """
+    text = _THINK_TAG_RE.sub("", response or "").strip()
+    if not text:
+        return []
+    windows: list[tuple[str, bool]] = []
+    boxed = _BOXED_RE.findall(text)
+    if boxed:
+        windows.append((boxed[-1], True))
+    markers = list(_ANSWER_MARKER_RE.finditer(text))
+    if markers:
+        tail = text[markers[-1].end() :].split("\n", 1)[0].strip()
+        if tail:
+            windows.append((tail[:160], True))
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines:
+        windows.append((lines[-1][:240], len(text.split()) <= _TERSE_ANSWER_WORDS))
+    return windows
+
+
+def _extract_choice_letters(response: str) -> set[str] | None:
+    """Option letters named in the model's final-answer span, or None if it named none."""
+    for window, _declared in _answer_windows(response):
+        explicit = {m.group(1) for pattern in _CHOICE_PATTERNS for m in pattern.finditer(window)}
+        if explicit:
+            return explicit
+        bare = {m.group(1) for m in _BARE_CHOICE_RE.finditer(window)}
+        if bare:
+            return bare
+    return None
+
+
+def _numbers_equal(candidate: str, expected: str) -> bool:
+    """Numeric equality that tolerates the decorations models add to a number."""
+    try:
+        return float(candidate) == float(expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _final_span_says(response: str, positives: tuple[str, ...], negatives: tuple[str, ...] = ()) -> bool | None:
+    """Whether the model's final-answer span settles on `positives` or `negatives`.
+
+    Returns None when the span commits to neither (or names both, which means the
+    sentence is still reasoning), so callers can fall back to a looser check
+    instead of failing a model on presentation.
+    """
+    for window, _declared in _answer_windows(response):
+        low = window.lower()
+        has_positive = any(token in low for token in positives)
+        has_negative = any(token in low for token in negatives)
+        if has_positive and not has_negative:
+            return True
+        if has_negative and not has_positive:
+            return False
+    return None
+
+
+# Text between a subject and its role that stays inside one clause: no sentence
+# end, no comma or semicolon, and no "and" starting the next assignment.
+_CLAUSE_GAP = r"(?:(?!\band\b)[^.\n,;]){0,30}?"
+
+
+def _assigns_roles(response: str, roles: dict[str, str]) -> bool:
+    """True when the response names each subject as its role and never as another.
+
+    Written for knights-and-knaves style puzzles, where the graded content is the
+    assignment itself. Matching is case-sensitive on the original response so the
+    subject "A" is not confused with the article "a", and both orders are
+    accepted ("A is the knight" and "the knight is A").
+    """
+    text = _THINK_TAG_RE.sub("", response or "")
+    all_roles = set(roles.values())
+    for subject, role in roles.items():
+        forward = re.search(rf"\b{re.escape(subject)}\b\s*(?:is|=|:|must be|has to be){_CLAUSE_GAP}\b{role}\b", text)
+        backward = re.search(rf"\b{role}\b{_CLAUSE_GAP}\b(?:is|=|:)\s*(?:person\s+)?{re.escape(subject)}\b", text)
+        if not (forward or backward):
+            return False
+        # Reject an answer that also hands the subject a different role.
+        for other in all_roles - {role}:
+            if re.search(rf"\b{re.escape(subject)}\b\s*(?:is|=|:|must be){_CLAUSE_GAP}\b{other}\b", text):
+                return False
+    return True
+
+
+def _extract_answer_numbers(response: str) -> set[str] | None:
+    """Numbers a model offered as its result, or None when it offered none."""
+    for window, declared in _answer_windows(response):
+        numbers = [m.group(0).replace(",", "") for m in _NUMBER_RE.finditer(window)]
+        if not numbers:
+            continue
+        return set(numbers) if declared else {numbers[-1]}
+    return None
 # Per-chunk stream timeouts: read applies to the gap BETWEEN stream lines, not
 # total request time. Large prompts (15k+ tokens) plus slow generation on big
 # MoE models can run for many minutes; a hard non-streaming deadline kills
@@ -1376,10 +1516,18 @@ class LLMModelBenchmark:
         # Expected-answer grading (objective tests such as the knowledge category)
         if expected is not None:
             exp = str(expected).strip()
-            norm = cleaned.upper()
             if re.fullmatch(r"[A-J]", exp):
+                chosen = _extract_choice_letters(response)
+                if chosen is not None:
+                    return exp in chosen
+                # No identifiable answer span: grade leniently rather than fail
+                # a model for an unusual presentation.
+                norm = cleaned.upper()
                 return bool(re.search(rf"(?:\(?{re.escape(exp)}\)?[\.\:\s]|(?<!\w){re.escape(exp)}(?!\w))", norm))
             if exp.isdigit():
+                answered = _extract_answer_numbers(response)
+                if answered is not None:
+                    return any(_numbers_equal(candidate, exp) for candidate in answered)
                 return bool(re.search(rf"(?<!\d){re.escape(exp)}(?!\d)", cleaned))
             # Fold diacritics so "Gödel" matches expected "godel".
             return _ascii_fold(exp) in _ascii_fold(cleaned)
@@ -1756,38 +1904,30 @@ class LLMModelBenchmark:
             )
         # ---- Logic ----
         elif test_id == "logic_knights":
-            return (
-                any(x in cleaned for x in ["knight", "knave"])
-                and any(
-                    x in cleaned
-                    for x in [
-                        "liar",
-                        "truth",
-                        "said",
-                        "statement",
-                        "is the",
-                        "a is",
-                        "b is",
-                        "because",
-                        "therefore",
-                        "reason",
-                    ]
-                )
-                and "a" in cleaned
-                and "b" in cleaned
-            )
+            # One consistent solution: A is the knight, B the knave. The previous
+            # check only asked that the answer used the words "knight"/"knave"
+            # and some connective, so restating the puzzle scored full marks.
+            return _assigns_roles(response, {"A": "knight", "B": "knave"})
         elif test_id == "logic_river":
-            return any(x in cleaned for x in ["wolf", "goat", "cabbage"]) and any(
+            mentions_puzzle = any(x in cleaned for x in ["wolf", "goat", "cabbage"]) and any(
                 x in cleaned for x in ["cross", "bank", "river", "boat"]
             )
-        elif test_id == "logic_modus":
-            return (
-                any(x in cleaned for x in ["modus", "ponens", "therefore"])
-                and "if" in cleaned
-                and "then" in cleaned
-                and "p" in cleaned
-                and "q" in cleaned
+            # Every valid sequence brings the goat back on the third trip. It is
+            # the step that makes the puzzle a puzzle, and naming the animals
+            # without it is a restatement rather than a solution.
+            returns_goat = bool(
+                re.search(r"goat[^.\n]{0,40}\b(?:back|return)", cleaned)
+                or re.search(r"\b(?:back|returns?|return with)[^.\n]{0,40}goat", cleaned)
             )
+            return mentions_puzzle and returns_goat
+        elif test_id == "logic_modus":
+            # Modus tollens: q false forces p false. Grade the conclusion the
+            # model reached, not whether it happened to name the rule - the old
+            # check passed any answer containing the word "therefore".
+            verdict = _final_span_says(response, ("false", "not true", "cannot be true"), ("true",))
+            if verdict is not None:
+                return verdict
+            return bool(re.search(r"\bp\b[^.\n]{0,40}\b(?:is|must be|has to be|=|:)\s*\w{0,12}false", cleaned))
         elif test_id == "logic_syllogism":
             # Stem match: models may answer with singular or plural forms.
             return (
@@ -1796,11 +1936,17 @@ class LLMModelBenchmark:
                 and "lazzi" in cleaned
             )
         elif test_id == "logic_weigh":
-            return (
-                any(x in cleaned for x in ["coin", "weigh", "balance", "scale"])
-                and any(x in cleaned for x in ["heavier", "lighter", "fake"])
-                and any(x in cleaned for x in ["3", "three", "group", "two"])
+            frames_puzzle = any(x in cleaned for x in ["ball", "weigh", "balance", "scale"])
+            # Two weighings for eight balls only works from a 3/3/2 split. Any
+            # digit used to satisfy the old "3 or three or two" check.
+            splits_three_three = bool(
+                re.search(r"\b3\s*(?:vs\.?|v\.?|versus|against|and|,|-|–|—)\s*3\b", cleaned)
+                or re.search(r"\bthree\s*(?:vs\.?|versus|against|and|,)\s*three\b", cleaned)
+                or re.search(r"\bgroups?\s+of\s+(?:3|three)\b", cleaned)
+                or re.search(r"\b(?:3|three)[\s,/]+(?:3|three)[\s,/]+(?:and\s+)?(?:2|two)\b", cleaned)
+                or re.search(r"\b(?:3|three)\s+balls?\s+(?:on|against|vs|versus)\b", cleaned)
             )
+            return frames_puzzle and splits_three_three
         # ---- Retro games ----
         elif test_id in ("retro_space_invaders_node", "retro_space_invaders_threejs"):
             return (

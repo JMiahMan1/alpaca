@@ -301,6 +301,26 @@ def test_review_only_config_matches_explicit_prompts():
     assert "USBDEVFS_BULKTRANSFER" not in usb["prompt"]
 
 
+def test_changed_functional_graders_are_recorded_for_rerun():
+    """A grader can change while its prompt does not; the version table is what
+    makes outdated_only re-run those tests instead of trusting a stale score."""
+    from web.app import FUNCTIONAL_GRADER_VERSIONS, _compute_test_hash
+
+    for test_id in ("logic_knights", "logic_river", "logic_modus", "logic_weigh"):
+        assert test_id in FUNCTIONAL_GRADER_VERSIONS
+        test = {"id": test_id, "prompt": "unchanged", "type": "functional"}
+        ungraded = dict(test, id=f"{test_id}__unversioned")
+        assert _compute_test_hash(test) != _compute_test_hash(ungraded)
+
+
+def test_objectively_keyed_tests_rerun_after_the_answer_grader_change():
+    from web.app import _compute_test_hash
+
+    keyed = {"id": "math_hard_x", "prompt": "p", "type": "functional", "expected": "7"}
+    unkeyed = {"id": "math_hard_x", "prompt": "p", "type": "functional"}
+    assert _compute_test_hash(keyed) != _compute_test_hash(unkeyed)
+
+
 def test_grading_version_invalidates_code_hash_only(monkeypatch):
     from web.app import _compute_test_hash
 

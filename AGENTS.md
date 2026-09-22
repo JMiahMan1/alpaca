@@ -139,6 +139,85 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
 - **Browser caching**: Flask must serve `Cache-Control: no-store` for `.js`/`.css` files — use `@app.after_request` decorator
 - Model pull triggers: `/api/models/pull` POST → starts background thread → emits SocketIO events
 
+### Objective (Keyed) Benchmark Grading
+- Tests carrying an `expected` letter or number are graded against the span the model
+  **presented as its answer**, not the whole response. `_answer_windows()` yields, most
+  explicit first: a `\boxed{}` value, the text after the last `answer:`/`option:` marker,
+  then the closing line. `_extract_choice_letters()` / `_extract_answer_numbers()` read
+  the first span that names a candidate; when none does, grading falls back to the old
+  whole-response search so an unusual presentation is not failed.
+- **Why**: "A" and "I" are ordinary English words and a chain of thought enumerates most
+  small numbers, so searching the whole response passed wrong answers whose reasoning
+  mentioned the key. That measured the grader, not the model.
+- A *declared* span (boxed / after a marker / a response of `_TERSE_ANSWER_WORDS` or
+  fewer) counts every value it names. A longer response's closing line can still carry
+  working ("7 rounds, so the total is 8"), so only its **last** number is the result.
+- **Answer-key balance**: `scripts/rebalance_choice_keys.py` permutes multiple-choice
+  options so the keys spread across the letters. Before it, 28 of 36 keyed tests answered
+  B or C and a model that always replied "B" scored 39%; now no single letter beats 25%.
+  The script is idempotent (options are sorted before the id-seeded shuffle) - run it with
+  `--apply` after adding multiple-choice tests, and re-run benchmarks, since rewriting a
+  prompt changes its `_compute_test_hash`.
+
+### Grader Versioning
+- A functional grader can change while its prompt does not, leaving stored results scored
+  by rules that no longer exist. `web/app.py` records this so `outdated_only` re-runs the
+  affected tests:
+  - `FUNCTIONAL_GRADER_VERSIONS` - per-test-id version; bump a test's entry whenever its
+    grading changes materially.
+  - `OBJECTIVE_GRADER_VERSION` - applies to every test with an `expected` key.
+  - `LLMModelBenchmark.GRADER_DIRECTIVE_VERSION` - the appended code/UI grading notice.
+- Logic-puzzle graders check the **conclusion** now, not the vocabulary: `logic_modus`
+  needs p false (it is modus *tollens*), `logic_knights` needs A=knight and B=knave,
+  `logic_river` needs the goat brought back, `logic_weigh` needs the 3/3/2 split. The old
+  checks passed a restatement of the prompt and failed correct answers phrased unusually.
+  `_assigns_roles()` matches case-sensitively so the subject "A" is not the article "a",
+  and `_CLAUSE_GAP` keeps the wrong-role guard from reading across "and".
+
+### llama.cpp Preset Keys (models.ini)
+- `llama-server --models-preset` **rejects keys that are not its own arguments and the
+  container then crash-loops.** `web/app.py` holds `LLAMA_PRESET_KEYS`; `split_preset_settings()`
+  sends only those to `models.ini` and everything else to the `<section>.profile.json`
+  overlay, which the proxy and `llm_benchmark_suite.py` read alongside the ini. Saving a
+  profile also sweeps a stale harness key out of the section.
+- `thinking` is the key that motivated this: it is a harness toggle, not a llama.cpp flag,
+  and the profile editor used to write it straight into `models.ini`.
+- Preset keys are long options without the dashes (`ctx-size`, `n-gpu-layers`); short names
+  and `LLAMA_ARG_*` env names also work. `[*]` is the defaults section.
+- Flags worth knowing, exposed in the Model Profiles editor: `cache-reuse` (min chunk
+  reused from the prompt cache via KV shifting, 0 = off), `batch-size` / `ubatch-size`
+  (llama.cpp defaults 2048 / 512), `swa-full`, `reasoning-effort`, `split-mode`,
+  `spec-draft-n-min`, `n-cpu-moe` (**MoE layers kept in RAM - not a thread count**).
+  Also available in presets but not in the editor: `cache-ram`, `ctx-checkpoints`,
+  `checkpoint-min-step`, `kv-unified-per-slot`, `cache-idle-slots`, `context-shift`,
+  `chat-template-kwargs` (e.g. `{"reasoning_effort": "high"}`).
+- `benchmark-configs.py` sweeps ctx x cache x flash-attn, then sweeps `batch-size` /
+  `ubatch-size` at the winner. Batch sizes only change **prefill**, so that stage times a
+  ~2k-token prompt with one token of output - the first stage's one-line prompt cannot
+  tell the settings apart. The chosen config is applied and the backend restarted *before*
+  the quality suite runs (it previously scored the restored original config).
+
+### Image Studio / stable-diffusion.cpp
+- sd-server's OpenAI-compatible routes read only `prompt`, `n`, `size`, `output_format`
+  and `output_compression`. **Every quality control - steps, CFG, seed, sampler,
+  scheduler, negative prompt, denoise strength, diffusion cache, highres fix - reaches the
+  sampler only inside an `<sd_cpp_extra_args>` JSON block embedded in the prompt**, which
+  the server parses and strips before generating. Sent as plain fields they are silently
+  ignored: the request succeeds and the settings do nothing.
+- The proxy translates the OpenAI-shaped fields into that block:
+  `extract_sd_native_params()` maps them to the native schema (`sample_params.sample_steps`,
+  `sample_params.guidance.txt_cfg`, `hires.*`, ...) and `apply_sd_native_params()` merges
+  them into the prompt. A block the caller already embedded wins on conflicts.
+  `_flatten_sd_native_params()` is the fallback for an sd-server too old to parse the block,
+  chosen by probing `GET /sdcpp/v1/capabilities` (`get_sd_capabilities()`, cached 60s).
+- `GET /v1/images/capabilities` (proxy) / `/api/sd/capabilities` (web) expose the engine's
+  samplers, schedulers, upscalers, LoRAs and defaults. The Image Studio's advanced drawer
+  is filled from it, so it only offers options the running build has.
+- The studio rolls a concrete seed when the field is `-1` (the engine never reports which
+  random seed it used), shows it on each result card with **♻ Reuse**, keeps previous
+  renders in the gallery instead of wiping it, and offers **🎨 Refine** to send a result
+  straight back into the Photo Editor.
+
 ### Error Types & Fixes
 | Symptom | Cause | Fix |
 |---------|-------|-----|

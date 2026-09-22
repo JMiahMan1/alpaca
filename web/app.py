@@ -810,6 +810,29 @@ def get_models():
         )
 
 
+# A functional grader can change without its prompt changing, and the stored
+# result was then scored by rules that no longer exist. Recording the grader's
+# version here makes `outdated_only` re-run exactly those tests, the same way a
+# prompt edit does. Bump a test's version whenever its grading changes
+# materially; drop the entry only if the test itself goes away.
+FUNCTIONAL_GRADER_VERSIONS = {
+    "life_dad_joke": "v2",
+    "uiux_wireframe": "v2",
+    "debug_offbyone": "v2",
+    "debug_infinite_loop": "v2",
+    # Logic puzzles now grade the conclusion the model reached rather than
+    # whether it used the puzzle's vocabulary.
+    "logic_knights": "v2",
+    "logic_river": "v2",
+    "logic_modus": "v2",
+    "logic_weigh": "v2",
+}
+
+# Objectively-keyed tests (a letter or a number) are now graded against the span
+# the model presented as its answer instead of a search of the whole response.
+OBJECTIVE_GRADER_VERSION = "v2"
+
+
 def _compute_test_hash(test_dict):
     """Compute deterministic SHA-256 hash for a test definition."""
     if not isinstance(test_dict, dict):
@@ -830,8 +853,11 @@ def _compute_test_hash(test_dict):
         "attachments": sorted(atts),
         "grader_directive": directive_version,
     }
-    if test_dict.get("id") in {"life_dad_joke", "uiux_wireframe", "debug_offbyone", "debug_infinite_loop"}:
-        canonical["functional_grader"] = "v2"
+    grader_version = FUNCTIONAL_GRADER_VERSIONS.get(test_dict.get("id"))
+    if grader_version:
+        canonical["functional_grader"] = grader_version
+    if canonical["expected"]:
+        canonical["objective_grader"] = OBJECTIVE_GRADER_VERSION
     dumped = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(dumped.encode("utf-8")).hexdigest()[:12]
 
@@ -1920,6 +1946,23 @@ def sd_models_api():
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e), "data": []}), 500
+
+
+@app.route("/api/sd/capabilities", methods=["GET"])
+def sd_capabilities_api():
+    """Samplers, schedulers, upscalers and LoRAs the loaded image model supports.
+
+    The Image Studio builds its advanced controls from this so it only offers
+    options the running stable-diffusion.cpp build actually has.
+    """
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{PROXY_URL}/v1/images/capabilities", headers=get_proxy_headers())
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e), "native": False}), 503
 
 
 @app.route("/api/sd/presets", methods=["GET"])
@@ -4619,6 +4662,124 @@ def save_arcade_settings_api():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# llama-server's --models-preset parser rejects keys it does not recognise and
+# the container then crash-loops, so only keys that are real llama-server
+# arguments may reach models.ini. Everything else a profile carries is
+# harness-side configuration and lives in the <section>.profile.json overlay,
+# which the proxy and the benchmark suite read alongside the ini.
+#
+# Key names are llama-server long options without the leading dashes, matching
+# the preset format documented in llama.cpp docs/preset.md.
+LLAMA_PRESET_KEYS = frozenset(
+    {
+        # Model, context and placement
+        "model",
+        "hf",
+        "alias",
+        "ctx-size",
+        "n-gpu-layers",
+        "gpu-layers",
+        "ngl",
+        "split-mode",
+        "main-gpu",
+        "tensor-split",
+        "device",
+        "mmap",
+        "mlock",
+        "load-mode",
+        "threads",
+        "threads-batch",
+        "cpu-moe",
+        "n-cpu-moe",
+        "override-tensor",
+        # Batching and slots
+        "batch-size",
+        "ubatch-size",
+        "parallel",
+        "cont-batching",
+        "keep",
+        # KV cache and prompt cache
+        "cache-type-k",
+        "cache-type-v",
+        "kv-unified",
+        "kv-unified-per-slot",
+        "kv-offload",
+        "cache-ram",
+        "cache-prompt",
+        "cache-reuse",
+        "cache-idle-slots",
+        "context-shift",
+        "swa-full",
+        "slot-save-path",
+        "ctx-checkpoints",
+        "checkpoint-min-step",
+        "defrag-thold",
+        # Attention
+        "flash-attn",
+        # Speculative decoding
+        "spec-type",
+        "spec-default",
+        "spec-draft-model",
+        "model-draft",
+        "spec-draft-n-max",
+        "spec-draft-n-min",
+        "spec-draft-p-split",
+        "spec-draft-p-min",
+        # Reasoning
+        "reasoning",
+        "reasoning-format",
+        "reasoning-effort",
+        "reasoning-budget",
+        "reasoning-preserve",
+        # Chat template
+        "jinja",
+        "chat-template",
+        "chat-template-file",
+        "chat-template-kwargs",
+        "prefill-assistant",
+        # Sampling
+        "temp",
+        "temperature",
+        "top-k",
+        "top-p",
+        "min-p",
+        "typical",
+        "typical-p",
+        "repeat-last-n",
+        "repeat-penalty",
+        "presence-penalty",
+        "frequency-penalty",
+        "dry-multiplier",
+        "dry-base",
+        "dry-allowed-length",
+        "dry-penalty-last-n",
+        "mirostat",
+        "mirostat-lr",
+        "mirostat-ent",
+        "seed",
+        "rope-scaling",
+        "rope-freq-base",
+        "rope-freq-scale",
+        "yarn-orig-ctx",
+        "yarn-ext-factor",
+        "yarn-attn-factor",
+        "yarn-beta-slow",
+        "yarn-beta-fast",
+        "grammar",
+        "grammar-file",
+        "lora",
+        "lora-scaled",
+    }
+)
+
+
+def split_preset_settings(settings: dict) -> tuple[dict, dict]:
+    """Split profile settings into (models.ini keys, overlay-only keys)."""
+    preset = {k: v for k, v in settings.items() if k in LLAMA_PRESET_KEYS}
+    harness = {k: v for k, v in settings.items() if k not in LLAMA_PRESET_KEYS}
+    return preset, harness
+
+
 def get_models_ini_path():
     # 1. Check ROUTER_MODELS_DIR env variable
     env_dir = os.environ.get("ROUTER_MODELS_DIR")
@@ -4780,7 +4941,11 @@ def save_profile():
         if not config.has_section(section):
             config.add_section(section)
 
-        for k, v in settings.items():
+        # Only real llama-server arguments may reach models.ini; anything else
+        # would crash-loop the router on its next start. The rest of the
+        # settings still persist in the .profile.json overlay written below.
+        preset_settings, harness_settings = split_preset_settings(settings)
+        for k, v in preset_settings.items():
             if v is True or v == "true":
                 config[section][k] = "true"
             elif v is False or v == "false":
@@ -4789,6 +4954,11 @@ def save_profile():
                 config[section].pop(k, None)
             else:
                 config[section][k] = str(v)
+        # Drop harness-only keys an earlier version of this endpoint wrote into
+        # the section, so saving a profile also repairs a file that would fail
+        # to parse.
+        for k in harness_settings:
+            config[section].pop(k, None)
 
         # Write back to file
         with open(ini_path, "w") as f:
