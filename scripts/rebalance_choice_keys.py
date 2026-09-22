@@ -90,7 +90,7 @@ def rebalance(tests_by_category: dict[str, list[dict]]) -> list[dict]:
         # twice then leaves the file unchanged.
         others = sorted(opt for i, opt in enumerate(options) if i != LETTERS.index(old_key))
         random.Random(f"{test['id']}:{count}").shuffle(others)
-        reordered = others[:target_index] + [correct] + others[target_index:]
+        reordered = [*others[:target_index], correct, *others[target_index:]]
 
         new_key = LETTERS[target_index]
         new_prompt = "\n".join(lead + [f"{LETTERS[i]}) {opt}" for i, opt in enumerate(reordered)])

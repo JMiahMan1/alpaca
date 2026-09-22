@@ -3396,9 +3396,13 @@ _sd_capabilities_cache: dict[str, Any] = {"at": 0.0, "value": None}
 async def get_sd_capabilities(force: bool = False) -> dict | None:
     """Fetch sd-server capabilities, cached briefly. None when unavailable."""
     now = time.monotonic()
-    if not force and _sd_capabilities_cache["value"] is not None:
-        if now - _sd_capabilities_cache["at"] < _SD_CAPABILITIES_TTL_S:
-            return _sd_capabilities_cache["value"]
+    cached_is_fresh = (
+        not force
+        and _sd_capabilities_cache["value"] is not None
+        and now - _sd_capabilities_cache["at"] < _SD_CAPABILITIES_TTL_S
+    )
+    if cached_is_fresh:
+        return _sd_capabilities_cache["value"]
     sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
     try:
         if client_sd_httpx:
