@@ -132,52 +132,52 @@
     {
       "id": "knowledge_mmlu_math_x",
       "label": "Knowledge: MMLU: solve for x",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nSolve for x: 3x + 5 = 20. What is x?\nA) 3\nB) 4\nC) 5\nD) 6",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nSolve for x: 3x + 5 = 20. What is x?\nA) 4\nB) 3\nC) 6\nD) 5",
       "num_predict": 300,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "C"
+      "expected": "D"
     },
     {
       "id": "knowledge_mmlu_gold",
       "label": "Knowledge: MMLU: chemical symbol for gold",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhat is the chemical symbol for gold?\nA) Ag\nB) Au\nC) Go\nD) Gd",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhat is the chemical symbol for gold?\nA) Go\nB) Ag\nC) Au\nD) Gd",
       "num_predict": 300,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "B"
+      "expected": "C"
     },
     {
       "id": "knowledge_mmlu_red_planet",
       "label": "Knowledge: MMLU: the Red Planet",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhich planet is known as the Red Planet?\nA) Venus\nB) Mars\nC) Jupiter\nD) Saturn",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhich planet is known as the Red Planet?\nA) Mars\nB) Jupiter\nC) Saturn\nD) Venus",
+      "num_predict": 300,
+      "type": "functional",
+      "reasoning_estimate": 1024,
+      "expected": "A"
+    },
+    {
+      "id": "knowledge_mmlu_atp",
+      "label": "Knowledge: MMLU: ATP organelle",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nIn which organelle is ATP primarily produced?\nA) Nucleus\nB) Mitochondria\nC) Golgi apparatus\nD) Ribosome",
       "num_predict": 300,
       "type": "functional",
       "reasoning_estimate": 1024,
       "expected": "B"
     },
     {
-      "id": "knowledge_mmlu_atp",
-      "label": "Knowledge: MMLU: ATP organelle",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nIn which organelle is ATP primarily produced?\nA) Nucleus\nB) Ribosome\nC) Mitochondria\nD) Golgi apparatus",
-      "num_predict": 300,
-      "type": "functional",
-      "reasoning_estimate": 1024,
-      "expected": "C"
-    },
-    {
       "id": "knowledge_mmlu_wwii",
       "label": "Knowledge: MMLU: WWII end year",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nIn what year did World War II end?\nA) 1943\nB) 1944\nC) 1945\nD) 1946",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nIn what year did World War II end?\nA) 1944\nB) 1945\nC) 1946\nD) 1943",
       "num_predict": 300,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "C"
+      "expected": "B"
     },
     {
       "id": "knowledge_gpqa_exothermic",
       "label": "Knowledge: GPQA: exothermic reaction",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nA reaction releases heat and the products have lower energy than the reactants. What type of reaction is it?\nA) Endothermic\nB) Exothermic\nC) Isothermal\nD) Adiabatic",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nA reaction releases heat and the products have lower energy than the reactants. What type of reaction is it?\nA) Isothermal\nB) Exothermic\nC) Endothermic\nD) Adiabatic",
       "num_predict": 400,
       "type": "functional",
       "reasoning_estimate": 1024,
@@ -186,11 +186,11 @@
     {
       "id": "knowledge_gpqa_pauli",
       "label": "Knowledge: GPQA: Pauli exclusion principle",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhat does the Pauli exclusion principle state?\nA) Energy is quantized\nB) No two electrons can occupy the same quantum state\nC) Light behaves as both wave and particle\nD) An electron cannot be precisely localized",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhat does the Pauli exclusion principle state?\nA) Energy is quantized\nB) An electron cannot be precisely localized\nC) No two electrons can occupy the same quantum state\nD) Light behaves as both wave and particle",
       "num_predict": 400,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "B"
+      "expected": "C"
     },
     {
       "id": "knowledge_gsm8k_trees",
@@ -222,38 +222,38 @@
     {
       "id": "knowledge_truthfulqa_brain",
       "label": "Knowledge: TruthfulQA: 10% brain myth",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nThe claim that humans use only 10 percent of their brain is:\nA) True\nB) False",
-      "num_predict": 400,
-      "type": "functional",
-      "reasoning_estimate": 1024,
-      "expected": "B"
-    },
-    {
-      "id": "knowledge_hellaswag_eggs",
-      "label": "Knowledge: HellaSwag: eggs at home",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nA person bought a dozen eggs, returned home, and\nA) ate them for breakfast\nB) the eggs started singing\nC) the eggs turned into a bird\nD) the eggs flew to the moon",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nThe claim that humans use only 10 percent of their brain is:\nA) False\nB) True",
       "num_predict": 400,
       "type": "functional",
       "reasoning_estimate": 1024,
       "expected": "A"
     },
     {
-      "id": "knowledge_hellaswag_fridge",
-      "label": "Knowledge: HellaSwag: opened the fridge",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nHe opened the fridge and took out\nA) a cloud\nB) a bottle of water\nC) a small car\nD) a tree",
+      "id": "knowledge_hellaswag_eggs",
+      "label": "Knowledge: HellaSwag: eggs at home",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nA person bought a dozen eggs, returned home, and\nA) the eggs flew to the moon\nB) the eggs started singing\nC) the eggs turned into a bird\nD) ate them for breakfast",
       "num_predict": 400,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "B"
+      "expected": "D"
+    },
+    {
+      "id": "knowledge_hellaswag_fridge",
+      "label": "Knowledge: HellaSwag: opened the fridge",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nHe opened the fridge and took out\nA) a bottle of water\nB) a small car\nC) a cloud\nD) a tree",
+      "num_predict": 400,
+      "type": "functional",
+      "reasoning_estimate": 1024,
+      "expected": "A"
     },
     {
       "id": "knowledge_winogrande_trophy",
       "label": "Knowledge: WinoGrande: trophy and suitcase",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nThe trophy does not fit into the suitcase because it is too small. What is too small?\nA) The trophy\nB) The suitcase",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nThe trophy does not fit into the suitcase because it is too small. What is too small?\nA) The suitcase\nB) The trophy",
       "num_predict": 400,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "B"
+      "expected": "A"
     },
     {
       "id": "knowledge_winogrande_cat_dog",
@@ -267,67 +267,27 @@
     {
       "id": "knowledge_arc_renewable",
       "label": "Knowledge: ARC: renewable energy",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhich of the following is a renewable source of energy?\nA) Coal\nB) Natural gas\nC) Solar\nD) Oil",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhich of the following is a renewable source of energy?\nA) Solar\nB) Oil\nC) Natural gas\nD) Coal",
       "num_predict": 300,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "C"
+      "expected": "A"
     },
     {
       "id": "knowledge_arc_gravity",
       "label": "Knowledge: ARC: force keeping planets in orbit",
-      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhat force keeps the planets in orbit around the Sun?\nA) Magnetism\nB) Gravity\nC) Friction\nD) Electricity",
+      "prompt": "Multiple choice. Answer with only the letter of the correct option.\nWhat force keeps the planets in orbit around the Sun?\nA) Friction\nB) Electricity\nC) Magnetism\nD) Gravity",
       "num_predict": 300,
       "type": "functional",
       "reasoning_estimate": 1024,
-      "expected": "B"
+      "expected": "D"
     }
   ],
   "mmlu_pro": [
     {
       "id": "mmlu_pro_dice_sum7",
       "label": "MMLU-Pro: probability two dice sum to 7",
-      "prompt": "Answer with only the letter of the correct option.\nTwo fair six-sided dice are rolled. What is the probability that the sum of the two faces is 7?\nA) 1/6\nB) 1/12\nC) 1/9\nD) 5/36\nE) 1/3\nF) 1/18\nG) 1/4\nH) 1/36\nI) 1/2\nJ) 2/9",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "A"
-    },
-    {
-      "id": "mmlu_pro_deriv_sinx2",
-      "label": "MMLU-Pro: derivative of sin(x^2)",
-      "prompt": "Answer with only the letter of the correct option.\nWhat is the derivative of sin(x^2) with respect to x?\nA) cos(x^2)\nB) 2x cos(x^2)\nC) -cos(x^2)\nD) x cos(x^2)\nE) 2 cos(x^2)\nF) sin(2x)\nG) 2x sin(x^2)\nH) cos(2x)\nI) -2x cos(x^2)\nJ) x^2 cos(x^2)",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "B"
-    },
-    {
-      "id": "mmlu_pro_relativity_length",
-      "label": "MMLU-Pro: special relativity length contraction",
-      "prompt": "Answer with only the letter of the correct option.\nAccording to special relativity, as an object moves at a speed approaching the speed of light relative to an observer, its length along the direction of motion (measured by that observer)...\nA) increases without bound\nB) remains constant\nC) contracts (decreases)\nD) becomes zero only at c\nE) oscillates\nF) doubles\nG) increases linearly\nH) becomes imaginary\nI) triples\nJ) is undefined",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "C"
-    },
-    {
-      "id": "mmlu_pro_noble_gas_bp",
-      "label": "MMLU-Pro: lowest boiling noble gas",
-      "prompt": "Answer with only the letter of the correct option.\nWhich noble gas has the lowest boiling point?\nA) Xenon\nB) Krypton\nC) Argon\nD) Neon\nE) Helium\nF) Radon\nG) Oganesson\nH) Crypton\nI) Boron\nJ) Chlorine",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "E"
-    },
-    {
-      "id": "mmlu_pro_photosynthesis",
-      "label": "MMLU-Pro: photosynthesis organelle",
-      "prompt": "Answer with only the letter of the correct option.\nIn plant cells, photosynthesis primarily takes place in which organelle?\nA) Mitochondrion\nB) Nucleus\nC) Ribosome\nD) Chloroplast\nE) Endoplasmic reticulum\nF) Golgi apparatus\nG) Lysosome\nH) Peroxisome\nI) Vacuole\nJ) Cytoskeleton",
+      "prompt": "Answer with only the letter of the correct option.\nTwo fair six-sided dice are rolled. What is the probability that the sum of the two faces is 7?\nA) 1/2\nB) 5/36\nC) 1/18\nD) 1/6\nE) 1/9\nF) 1/3\nG) 2/9\nH) 1/12\nI) 1/4\nJ) 1/36",
       "num_predict": 300,
       "reasoning_budget": 2048,
       "type": "functional",
@@ -335,86 +295,126 @@
       "expected": "D"
     },
     {
+      "id": "mmlu_pro_deriv_sinx2",
+      "label": "MMLU-Pro: derivative of sin(x^2)",
+      "prompt": "Answer with only the letter of the correct option.\nWhat is the derivative of sin(x^2) with respect to x?\nA) -2x cos(x^2)\nB) -cos(x^2)\nC) 2x cos(x^2)\nD) x^2 cos(x^2)\nE) sin(2x)\nF) 2 cos(x^2)\nG) cos(2x)\nH) x cos(x^2)\nI) cos(x^2)\nJ) 2x sin(x^2)",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "C"
+    },
+    {
+      "id": "mmlu_pro_relativity_length",
+      "label": "MMLU-Pro: special relativity length contraction",
+      "prompt": "Answer with only the letter of the correct option.\nAccording to special relativity, as an object moves at a speed approaching the speed of light relative to an observer, its length along the direction of motion (measured by that observer)...\nA) increases without bound\nB) is undefined\nC) increases linearly\nD) oscillates\nE) becomes zero only at c\nF) becomes imaginary\nG) remains constant\nH) doubles\nI) triples\nJ) contracts (decreases)",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "J"
+    },
+    {
+      "id": "mmlu_pro_noble_gas_bp",
+      "label": "MMLU-Pro: lowest boiling noble gas",
+      "prompt": "Answer with only the letter of the correct option.\nWhich noble gas has the lowest boiling point?\nA) Oganesson\nB) Xenon\nC) Neon\nD) Boron\nE) Krypton\nF) Crypton\nG) Chlorine\nH) Helium\nI) Argon\nJ) Radon",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "H"
+    },
+    {
+      "id": "mmlu_pro_photosynthesis",
+      "label": "MMLU-Pro: photosynthesis organelle",
+      "prompt": "Answer with only the letter of the correct option.\nIn plant cells, photosynthesis primarily takes place in which organelle?\nA) Mitochondrion\nB) Nucleus\nC) Lysosome\nD) Vacuole\nE) Golgi apparatus\nF) Peroxisome\nG) Cytoskeleton\nH) Endoplasmic reticulum\nI) Chloroplast\nJ) Ribosome",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "I"
+    },
+    {
       "id": "mmlu_pro_declaration_author",
       "label": "MMLU-Pro: US Declaration of Independence author",
-      "prompt": "Answer with only the letter of the correct option.\nWho was the principal author of the United States Declaration of Independence?\nA) Benjamin Franklin\nB) John Adams\nC) Thomas Jefferson\nD) George Washington\nE) Alexander Hamilton\nF) James Madison\nG) Thomas Paine\nH) John Jay\nI) Samuel Adams\nJ) Patrick Henry",
+      "prompt": "Answer with only the letter of the correct option.\nWho was the principal author of the United States Declaration of Independence?\nA) James Madison\nB) Thomas Jefferson\nC) Samuel Adams\nD) Patrick Henry\nE) John Adams\nF) George Washington\nG) Alexander Hamilton\nH) Thomas Paine\nI) Benjamin Franklin\nJ) John Jay",
       "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "C"
-    },
-    {
-      "id": "mmlu_pro_miranda_amendment",
-      "label": "MMLU-Pro: Miranda rights amendment",
-      "prompt": "Answer with only the letter of the correct option.\nIn the U.S. Constitution, the right to remain silent and protection against self-incrimination during custodial interrogation (the basis of Miranda warnings) derives from which amendment?\nA) First\nB) Second\nC) Third\nD) Fourth\nE) Fifth\nF) Sixth\nG) Seventh\nH) Eighth\nI) Ninth\nJ) Tenth",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "E"
-    },
-    {
-      "id": "mmlu_pro_kant",
-      "label": "MMLU-Pro: author of Critique of Pure Reason",
-      "prompt": "Answer with only the letter of the correct option.\nWho authored the 'Critique of Pure Reason'?\nA) David Hume\nB) John Locke\nC) Immanuel Kant\nD) Rene Descartes\nE) Aristotle\nF) Plato\nG) Friedrich Nietzsche\nH) Georg Hegel\nI) Socrates\nJ) Thomas Aquinas",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "C"
-    },
-    {
-      "id": "mmlu_pro_binary_search",
-      "label": "MMLU-Pro: binary search complexity",
-      "prompt": "Answer with only the letter of the correct option.\nWhat is the worst-case time complexity of binary search on a sorted array of n elements?\nA) O(n)\nB) O(n log n)\nC) O(log n)\nD) O(n^2)\nE) O(1)\nF) O(log log n)\nG) O(sqrt n)\nH) O(n!)\nI) O(2^n)\nJ) O(n^3)",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "C"
-    },
-    {
-      "id": "mmlu_pro_keynes",
-      "label": "MMLU-Pro: Keynesian recession policy",
-      "prompt": "Answer with only the letter of the correct option.\nAccording to Keynesian macroeconomics, what should the government do to counteract a deep recession with high unemployment?\nA) Increase taxes and reduce spending\nB) Increase interest rates sharply\nC) Do nothing and let markets clear\nD) Decrease the money supply\nE) Increase government spending\nF) Peg the currency\nG) Privatize the central bank\nH) Abolish the minimum wage only\nI) Reduce exports\nJ) Raise tariffs globally",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "E"
-    },
-    {
-      "id": "mmlu_pro_schwarzschild",
-      "label": "MMLU-Pro: Schwarzschild radius scaling",
-      "prompt": "Answer with only the letter of the correct option.\nFor a non-rotating black hole of mass M, the Schwarzschild radius (the event-horizon radius) is proportional to:\nA) M^2\nB) 1/M\nC) M\nD) sqrt M\nE) 1/M^2\nF) log M\nG) M^3\nH) 1/sqrt M\nI) e^M\nJ) a constant independent of M",
-      "num_predict": 300,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "C"
-    }
-  ],
-  "gpqa_diamond": [
-    {
-      "id": "gpqa_sn2_steric",
-      "label": "GPQA-Diamond: SN2 steric hindrance",
-      "prompt": "Answer with only the letter of the correct option.\nIn an SN2 reaction, increasing steric hindrance around the electrophilic carbon causes the reaction rate to:\nA) Increase\nB) Decrease\nC) Remain unchanged\nD) Become zero-order in the substrate",
-      "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
       "expected": "B"
     },
     {
-      "id": "gpqa_infinite_well_half",
-      "label": "GPQA-Diamond: infinite well ground state probability",
-      "prompt": "Answer with only the letter of the correct option.\nA particle is in the ground state of a one-dimensional infinite potential well of width L. What is the probability of finding the particle in the left half of the well (from 0 to L/2)?\nA) 1/4\nB) 1/3\nC) 1/2\nD) 2/3",
+      "id": "mmlu_pro_miranda_amendment",
+      "label": "MMLU-Pro: Miranda rights amendment",
+      "prompt": "Answer with only the letter of the correct option.\nIn the U.S. Constitution, the right to remain silent and protection against self-incrimination during custodial interrogation (the basis of Miranda warnings) derives from which amendment?\nA) Second\nB) Eighth\nC) Ninth\nD) First\nE) Tenth\nF) Third\nG) Fifth\nH) Sixth\nI) Fourth\nJ) Seventh",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "G"
+    },
+    {
+      "id": "mmlu_pro_kant",
+      "label": "MMLU-Pro: author of Critique of Pure Reason",
+      "prompt": "Answer with only the letter of the correct option.\nWho authored the 'Critique of Pure Reason'?\nA) Georg Hegel\nB) Aristotle\nC) Rene Descartes\nD) John Locke\nE) Immanuel Kant\nF) Thomas Aquinas\nG) Friedrich Nietzsche\nH) Plato\nI) Socrates\nJ) David Hume",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "E"
+    },
+    {
+      "id": "mmlu_pro_binary_search",
+      "label": "MMLU-Pro: binary search complexity",
+      "prompt": "Answer with only the letter of the correct option.\nWhat is the worst-case time complexity of binary search on a sorted array of n elements?\nA) O(log n)\nB) O(log log n)\nC) O(n^2)\nD) O(sqrt n)\nE) O(n log n)\nF) O(2^n)\nG) O(1)\nH) O(n!)\nI) O(n^3)\nJ) O(n)",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "A"
+    },
+    {
+      "id": "mmlu_pro_keynes",
+      "label": "MMLU-Pro: Keynesian recession policy",
+      "prompt": "Answer with only the letter of the correct option.\nAccording to Keynesian macroeconomics, what should the government do to counteract a deep recession with high unemployment?\nA) Privatize the central bank\nB) Do nothing and let markets clear\nC) Reduce exports\nD) Abolish the minimum wage only\nE) Increase taxes and reduce spending\nF) Increase government spending\nG) Increase interest rates sharply\nH) Peg the currency\nI) Raise tariffs globally\nJ) Decrease the money supply",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "F"
+    },
+    {
+      "id": "mmlu_pro_schwarzschild",
+      "label": "MMLU-Pro: Schwarzschild radius scaling",
+      "prompt": "Answer with only the letter of the correct option.\nFor a non-rotating black hole of mass M, the Schwarzschild radius (the event-horizon radius) is proportional to:\nA) M\nB) 1/M\nC) M^2\nD) e^M\nE) log M\nF) 1/sqrt M\nG) M^3\nH) 1/M^2\nI) sqrt M\nJ) a constant independent of M",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "A"
+    }
+  ],
+  "gpqa_diamond": [
+    {
+      "id": "gpqa_sn2_steric",
+      "label": "GPQA-Diamond: SN2 steric hindrance",
+      "prompt": "Answer with only the letter of the correct option.\nIn an SN2 reaction, increasing steric hindrance around the electrophilic carbon causes the reaction rate to:\nA) Decrease\nB) Increase\nC) Remain unchanged\nD) Become zero-order in the substrate",
       "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
-      "expected": "C"
+      "expected": "A"
+    },
+    {
+      "id": "gpqa_infinite_well_half",
+      "label": "GPQA-Diamond: infinite well ground state probability",
+      "prompt": "Answer with only the letter of the correct option.\nA particle is in the ground state of a one-dimensional infinite potential well of width L. What is the probability of finding the particle in the left half of the well (from 0 to L/2)?\nA) 1/3\nB) 2/3\nC) 1/4\nD) 1/2",
+      "num_predict": 500,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "D"
     },
     {
       "id": "gpqa_okazaki_pol",
@@ -429,27 +429,7 @@
     {
       "id": "gpqa_henderson_hasselbalch",
       "label": "GPQA-Diamond: Henderson-Hasselbalch ratio",
-      "prompt": "Answer with only the letter of the correct option.\nThe pKa of acetic acid is approximately 4.76. In a solution at pH 6.76, what is the ratio [acetate] / [acetic acid]?\nA) 10\nB) 100\nC) 2\nD) 0.01",
-      "num_predict": 500,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "B"
-    },
-    {
-      "id": "gpqa_photon_energy",
-      "label": "GPQA-Diamond: photon energy-momentum",
-      "prompt": "Answer with only the letter of the correct option.\nFor a photon, which relationship between its energy E and momentum p is correct? (c is the speed of light.)\nA) E = p / c\nB) E = p c\nC) E = p^2 c\nD) E = m c^2 with m > 0",
-      "num_predict": 500,
-      "reasoning_budget": 2048,
-      "type": "functional",
-      "reasoning_estimate": 2048,
-      "expected": "B"
-    },
-    {
-      "id": "gpqa_nitro_eas",
-      "label": "GPQA-Diamond: nitro group directing effect",
-      "prompt": "Answer with only the letter of the correct option.\nIn electrophilic aromatic substitution, a nitro (NO2) substituent on benzene acts as a:\nA) strongly activating ortho/para director\nB) weakly deactivating ortho/para director\nC) strongly deactivating meta director\nD) non-directing neutral group",
+      "prompt": "Answer with only the letter of the correct option.\nThe pKa of acetic acid is approximately 4.76. In a solution at pH 6.76, what is the ratio [acetate] / [acetic acid]?\nA) 0.01\nB) 2\nC) 100\nD) 10",
       "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
@@ -457,9 +437,19 @@
       "expected": "C"
     },
     {
-      "id": "gpqa_dna_ligase",
-      "label": "GPQA-Diamond: Okazaki fragment joining enzyme",
-      "prompt": "Answer with only the letter of the correct option.\nWhich enzyme catalyzes the formation of phosphodiester bonds to join adjacent Okazaki fragments after the RNA primer has been removed?\nA) DNA ligase\nB) DNA helicase\nC) DNA polymerase\nD) Primase",
+      "id": "gpqa_photon_energy",
+      "label": "GPQA-Diamond: photon energy-momentum",
+      "prompt": "Answer with only the letter of the correct option.\nFor a photon, which relationship between its energy E and momentum p is correct? (c is the speed of light.)\nA) E = p / c\nB) E = m c^2 with m > 0\nC) E = p^2 c\nD) E = p c",
+      "num_predict": 500,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "D"
+    },
+    {
+      "id": "gpqa_nitro_eas",
+      "label": "GPQA-Diamond: nitro group directing effect",
+      "prompt": "Answer with only the letter of the correct option.\nIn electrophilic aromatic substitution, a nitro (NO2) substituent on benzene acts as a:\nA) strongly deactivating meta director\nB) strongly activating ortho/para director\nC) weakly deactivating ortho/para director\nD) non-directing neutral group",
       "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
@@ -467,26 +457,36 @@
       "expected": "A"
     },
     {
-      "id": "gpqa_nitrogen_config",
-      "label": "GPQA-Diamond: nitrogen ground-state config",
-      "prompt": "Answer with only the letter of the correct option.\nWhat is the ground-state electron configuration of a neutral nitrogen atom (atomic number 7)?\nA) 1s2 2s2 2p2\nB) 1s2 2s2 2p4\nC) 1s2 2s2 2p3\nD) 1s2 2s1 2p4",
+      "id": "gpqa_dna_ligase",
+      "label": "GPQA-Diamond: Okazaki fragment joining enzyme",
+      "prompt": "Answer with only the letter of the correct option.\nWhich enzyme catalyzes the formation of phosphodiester bonds to join adjacent Okazaki fragments after the RNA primer has been removed?\nA) DNA polymerase\nB) DNA ligase\nC) DNA helicase\nD) Primase",
       "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
-      "expected": "C"
+      "expected": "B"
+    },
+    {
+      "id": "gpqa_nitrogen_config",
+      "label": "GPQA-Diamond: nitrogen ground-state config",
+      "prompt": "Answer with only the letter of the correct option.\nWhat is the ground-state electron configuration of a neutral nitrogen atom (atomic number 7)?\nA) 1s2 2s2 2p4\nB) 1s2 2s2 2p3\nC) 1s2 2s2 2p2\nD) 1s2 2s1 2p4",
+      "num_predict": 500,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "B"
     }
   ],
   "hle": [
     {
       "id": "hle_heisenberg",
       "label": "HLE: Heisenberg uncertainty conjugate variable",
-      "prompt": "Answer with only the letter of the correct option.\nIn quantum mechanics, the Heisenberg uncertainty principle sets a lower bound on the product of the uncertainties in position and which other quantity?\nA) Energy\nB) Momentum\nC) Charge\nD) Mass",
+      "prompt": "Answer with only the letter of the correct option.\nIn quantum mechanics, the Heisenberg uncertainty principle sets a lower bound on the product of the uncertainties in position and which other quantity?\nA) Charge\nB) Mass\nC) Momentum\nD) Energy",
       "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
-      "expected": "B"
+      "expected": "C"
     },
     {
       "id": "hle_lcm_1_to_10",
@@ -531,12 +531,12 @@
     {
       "id": "hle_halting_turing",
       "label": "HLE: halting problem 1936 paper",
-      "prompt": "Answer with only the letter of the correct option.\nIn his 1936 paper 'On Computable Numbers', who introduced the universal machine and proved the halting problem undecidable?\nA) Alan Turing\nB) Kurt Godel\nC) Alonzo Church\nD) Emil Post",
+      "prompt": "Answer with only the letter of the correct option.\nIn his 1936 paper 'On Computable Numbers', who introduced the universal machine and proved the halting problem undecidable?\nA) Alonzo Church\nB) Alan Turing\nC) Emil Post\nD) Kurt Godel",
       "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
-      "expected": "A"
+      "expected": "B"
     },
     {
       "id": "hle_moon_landing_year",

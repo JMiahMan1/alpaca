@@ -2901,3 +2901,95 @@ def test_host_lan_ips_and_external_ip_honor_caches(monkeypatch):
     monkeypatch.setattr(alpaca_proxy, "_external_ip_ts", time.time())
     assert alpaca_proxy.host_lan_ips() == ["10.0.0.2"]
     assert alpaca_proxy.host_external_ip() == "203.0.113.7"
+
+
+# --- Native stable-diffusion.cpp parameter translation -----------------------
+#
+# sd-server's OpenAI-compatible routes read only prompt/n/size/output_* from the
+# request body. Steps, CFG, seed, sampler, negative prompt and denoise strength
+# reach the sampler ONLY inside an <sd_cpp_extra_args> block in the prompt, so
+# sending them as plain fields makes the request succeed while doing nothing.
+
+
+def _embedded_args(prompt):
+    match = alpaca_proxy._SD_EXTRA_ARGS_RE.search(prompt)
+    assert match, f"no sd_cpp_extra_args block in {prompt!r}"
+    return json.loads(match.group(1))
+
+
+def test_openai_image_fields_become_native_params():
+    native = alpaca_proxy.extract_sd_native_params(
+        {
+            "prompt": "a cat",
+            "negative_prompt": "blurry",
+            "steps": 28,
+            "guidance": 7.5,
+            "seed": 42,
+            "sampler": "dpmpp2m",
+            "scheduler": "karras",
+            "clip_skip": 2,
+        }
+    )
+    assert native["negative_prompt"] == "blurry"
+    assert native["seed"] == 42
+    assert native["clip_skip"] == 2
+    assert native["sample_params"]["sample_steps"] == 28
+    assert native["sample_params"]["sample_method"] == "dpmpp2m"
+    assert native["sample_params"]["scheduler"] == "karras"
+    assert native["sample_params"]["guidance"]["txt_cfg"] == 7.5
+
+
+def test_multipart_string_values_are_coerced():
+    """Edit requests arrive as multipart, so every value is a string."""
+    native = alpaca_proxy.extract_sd_native_params({"strength": "0.45", "steps": "30", "hires_enabled": "true"})
+    assert native["strength"] == 0.45
+    assert native["sample_params"]["sample_steps"] == 30
+    assert native["hires"]["enabled"] is True
+
+
+def test_random_seed_is_omitted_rather_than_pinned():
+    assert "seed" not in alpaca_proxy.extract_sd_native_params({"seed": -1})
+    assert alpaca_proxy.extract_sd_native_params({"seed": 0})["seed"] == 0
+
+
+def test_blank_and_missing_values_are_skipped():
+    native = alpaca_proxy.extract_sd_native_params({"negative_prompt": "", "steps": None, "scheduler": "karras"})
+    assert native == {"sample_params": {"scheduler": "karras"}}
+
+
+def test_native_params_are_embedded_in_the_prompt():
+    prompt = alpaca_proxy.apply_sd_native_params("a cat", {"seed": 7, "sample_params": {"sample_steps": 20}})
+    assert prompt.startswith("a cat<sd_cpp_extra_args>")
+    assert _embedded_args(prompt) == {"seed": 7, "sample_params": {"sample_steps": 20}}
+
+
+def test_caller_supplied_block_wins_and_is_not_duplicated():
+    prompt = alpaca_proxy.apply_sd_native_params(
+        'a cat<sd_cpp_extra_args>{"strength":0.9,"sample_params":{"sample_steps":50}}</sd_cpp_extra_args>',
+        {"strength": 0.45, "seed": 7, "sample_params": {"sample_steps": 20, "scheduler": "karras"}},
+    )
+    assert prompt.count("<sd_cpp_extra_args>") == 1
+    args = _embedded_args(prompt)
+    assert args["strength"] == 0.9  # explicit native request preserved
+    assert args["sample_params"]["sample_steps"] == 50
+    assert args["seed"] == 7  # translated field fills the gap
+    assert args["sample_params"]["scheduler"] == "karras"
+
+
+def test_malformed_block_is_dropped_not_propagated():
+    prompt = alpaca_proxy.apply_sd_native_params("a cat<sd_cpp_extra_args>{not json}</sd_cpp_extra_args>", {"seed": 7})
+    assert _embedded_args(prompt) == {"seed": 7}
+
+
+def test_no_params_leaves_the_prompt_alone():
+    assert alpaca_proxy.apply_sd_native_params("a cat", {}) == "a cat"
+
+
+def test_legacy_server_gets_flat_fields_and_a_clean_prompt():
+    """An sd-server that predates the block must not be handed the raw tag."""
+    flat, prompt = alpaca_proxy._flatten_sd_native_params(
+        'a cat<sd_cpp_extra_args>{"strength":0.45}</sd_cpp_extra_args>',
+        {"seed": 7, "negative_prompt": "blurry", "sample_params": {"sample_steps": 20, "guidance": {"txt_cfg": 8.0}}},
+    )
+    assert prompt == "a cat"
+    assert flat == {"seed": 7, "negative_prompt": "blurry", "strength": 0.45, "steps": 20, "cfg_scale": 8.0}

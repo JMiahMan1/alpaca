@@ -1087,10 +1087,74 @@
                                          </div>
                                      </div>
 
-                                      <div>
-                                          <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">CPU threads for MoE (n-cpu-moe)</label>
-                                          <input type="number" name="n-cpu-moe" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                      </div>
+                                     <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Draft Floor (spec-draft-n-min)</label>
+                                             <input type="number" name="spec-draft-n-min" min="0" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Fewest tokens to draft before falling back to normal decoding.</div>
+                                         </div>
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">MoE layers kept on CPU (n-cpu-moe)</label>
+                                             <input type="number" name="n-cpu-moe" min="0" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Expert weights of the first N layers stay in RAM - trades speed for VRAM on MoE models. Not a thread count.</div>
+                                         </div>
+                                     </div>
+
+                                     <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Logical Batch (batch-size)</label>
+                                             <input type="number" name="batch-size" min="1" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Tokens per prompt-processing pass. llama.cpp default 2048.</div>
+                                         </div>
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Physical Batch (ubatch-size)</label>
+                                             <input type="number" name="ubatch-size" min="1" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Tokens per GPU kernel launch (default 512). Raising it speeds up long prompts but grows the compute buffer.</div>
+                                         </div>
+                                     </div>
+
+                                     <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Prompt Cache Reuse (cache-reuse)</label>
+                                             <input type="number" name="cache-reuse" min="0" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Smallest chunk reused from the prompt cache via KV shifting (0 = off). 256 skips reprocessing a shared prefix.</div>
+                                         </div>
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Reasoning Effort (reasoning-effort)</label>
+                                             <select name="reasoning-effort" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                 <option value="">default (model decides)</option>
+                                                 <option value="minimal">minimal</option>
+                                                 <option value="low">low</option>
+                                                 <option value="medium">medium</option>
+                                                 <option value="high">high</option>
+                                                 <option value="xhigh">xhigh</option>
+                                                 <option value="max">max</option>
+                                             </select>
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">For models whose chat template takes an effort level (GPT-OSS, Qwen3). Ignored by models that do not.</div>
+                                         </div>
+                                     </div>
+
+                                     <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Full SWA Cache (swa-full)</label>
+                                             <select name="swa-full" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                 <option value="">Default (windowed)</option>
+                                                 <option value="true">True (full-size SWA cache)</option>
+                                                 <option value="false">False</option>
+                                             </select>
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Sliding-window models only. Costs VRAM; lets the prompt cache survive a context shift.</div>
+                                         </div>
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Multi-GPU Split (split-mode)</label>
+                                             <select name="split-mode" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                 <option value="">Default (layer)</option>
+                                                 <option value="none">none (single GPU)</option>
+                                                 <option value="layer">layer</option>
+                                                 <option value="row">row</option>
+                                                 <option value="tensor">tensor</option>
+                                             </select>
+                                         </div>
+                                     </div>
 
                                       <div>
                                           <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Default Temperature (temperature)</label>
@@ -1422,36 +1486,71 @@
 
                                     <!-- ComfyUI-Capability Advanced Pro Settings Drawer -->
                                     <details style="background:#090d16; border:1px solid rgba(139, 92, 246, 0.2); border-radius:8px; padding:0.5rem 0.75rem;">
-                                        <summary style="font-size:0.78rem; font-weight:600; color:#c084fc; cursor:pointer; list-style:none; display:flex; align-items:center; justify-space-between;">
+                                        <summary style="font-size:0.78rem; font-weight:600; color:#c084fc; cursor:pointer; list-style:none; display:flex; align-items:center; justify-content:space-between;">
                                             <span>⚡ Advanced Engine Pipeline Settings (ComfyUI Features)</span>
                                             <span style="font-size:0.7rem; color:#94a3b8;">▼</span>
                                         </summary>
+                                        <div id="sd-gen-caps-note" style="font-size:0.68rem; color:#64748b; margin-top:0.5rem;">Reading engine capabilities...</div>
                                         <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-top:0.6rem;">
                                             <div>
                                                 <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Sampling Algorithm</label>
                                                 <select id="sd-gen-sampler" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
-                                                    <option value="euler_a">Euler Ancestral (Default)</option>
-                                                    <option value="euler">Euler</option>
-                                                    <option value="dpmpp_2m">DPM++ 2M Karras (Ultra Detail)</option>
-                                                    <option value="dpmpp_sde">DPM++ SDE Karras</option>
-                                                    <option value="unipc">UniPC (Fast convergence)</option>
+                                                    <option value="">Engine default</option>
                                                 </select>
                                             </div>
                                             <div>
                                                 <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Scheduler Schedule</label>
                                                 <select id="sd-gen-scheduler" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
-                                                    <option value="discrete">Discrete / Karras</option>
-                                                    <option value="exponential">Exponential</option>
-                                                    <option value="normal">Normal</option>
+                                                    <option value="">Engine default</option>
                                                 </select>
                                             </div>
                                             <div>
-                                                <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">DiT Diffusion Cache</label>
+                                                <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Diffusion Cache (speed)</label>
                                                 <select id="sd-gen-cache" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
-                                                    <option value="easycache">EasyCache (30% Speedup)</option>
-                                                    <option value="ucache">UCache (UNET)</option>
-                                                    <option value="none">Disabled</option>
+                                                    <option value="">Disabled (highest fidelity)</option>
+                                                    <option value="easycache">EasyCache (DiT models)</option>
+                                                    <option value="ucache">UCache (UNET models)</option>
+                                                    <option value="taylorseer">TaylorSeer</option>
                                                 </select>
+                                            </div>
+                                        </div>
+
+                                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-top:0.6rem;">
+                                            <div>
+                                                <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">CLIP Skip</label>
+                                                <input type="number" id="sd-gen-clip-skip" min="0" max="12" placeholder="Engine default" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                            </div>
+                                            <div style="grid-column: span 2;">
+                                                <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Cache Tuning (cache-option)</label>
+                                                <input type="text" id="sd-gen-cache-option" placeholder="e.g. threshold=0.1,start=0.2,end=0.8" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                            </div>
+                                        </div>
+
+                                        <!-- Highres fix: generate small, then upscale and re-diffuse (ComfyUI "Hires fix") -->
+                                        <div style="margin-top:0.75rem; padding-top:0.6rem; border-top:1px solid rgba(139, 92, 246, 0.2);">
+                                            <label style="font-size:0.72rem; color:#c084fc; cursor:pointer; display:flex; align-items:center; gap:0.4rem; font-weight:600;">
+                                                <input type="checkbox" id="sd-gen-hires-enable" style="accent-color:#a855f7;">
+                                                <span>🔍 Highres Fix - render at the size above, then upscale and refine</span>
+                                            </label>
+                                            <div id="sd-gen-hires-inputs" style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:0.75rem; margin-top:0.5rem; opacity:0.5;">
+                                                <div>
+                                                    <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Upscaler</label>
+                                                    <select id="sd-gen-hires-upscaler" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                        <option value="">Engine default</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Scale</label>
+                                                    <input type="number" id="sd-gen-hires-scale" value="1.5" step="0.25" min="1" max="4" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                </div>
+                                                <div>
+                                                    <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Refine Steps</label>
+                                                    <input type="number" id="sd-gen-hires-steps" value="12" min="1" max="60" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                </div>
+                                                <div>
+                                                    <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Denoise</label>
+                                                    <input type="number" id="sd-gen-hires-denoise" value="0.4" step="0.05" min="0.05" max="1" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
+                                                </div>
                                             </div>
                                         </div>
                                     </details>
