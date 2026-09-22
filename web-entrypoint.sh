@@ -18,6 +18,10 @@ fix_permissions() {
     chown -R alpaca:alpaca /app/data 2>/dev/null || true
     mkdir -p /app/data/llm_benchmarks/models /app/data/shared_llm_benchmarks/models
     chown -R alpaca:alpaca /app/data/llm_benchmarks/models /app/data/shared_llm_benchmarks/models 2>/dev/null || true
+    # Docker creates parents of single-file bind mounts (auth.json) as root;
+    # opencode needs to mkdir repos/ etc. under the data dir as the runtime user.
+    mkdir -p /home/alpaca/.local/share/opencode
+    chown -R alpaca:alpaca /home/alpaca/.local /home/alpaca/.config 2>/dev/null || true
 }
 
 restore_docker_group() {
