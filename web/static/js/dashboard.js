@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Online model prefix tester
     function isOnlineModelName(model) {
-        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|orcarouter|gemini):/i.test(String(model || '').trim());
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini):/i.test(String(model || '').trim());
     }
 
     // Socket initialization
@@ -6138,7 +6138,7 @@ const saved = _loadHumanRatings(t.id) || {};
 
     // Model comparison filter (graphs & stats)
     function isOnlineModelName(model) {
-        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|groq|orcarouter|gemini):/i.test(model || '');
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini):/i.test(model || '');
     }
 
     function getFilteredResults(results, type) {
@@ -11185,6 +11185,10 @@ const saved = _loadHumanRatings(t.id) || {};
                 provBadge.style.background = 'rgba(56, 189, 248, 0.2)';
                 provBadge.style.color = '#7dd3fc';
                 provBadge.textContent = 'Gemini';
+            } else if (m.provider === 'opencode') {
+                provBadge.style.background = 'rgba(163, 230, 53, 0.2)';
+                provBadge.style.color = '#bef264';
+                provBadge.textContent = 'OpenCode CLI';
             } else {
                 provBadge.style.background = 'rgba(168, 85, 247, 0.2)';
                 provBadge.style.color = '#c084fc';

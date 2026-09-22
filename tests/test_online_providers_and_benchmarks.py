@@ -232,6 +232,7 @@ def test_online_model_provider_detection():
     assert provider.is_online_model("groq:llama-3.3-70b-versatile") is True
     assert provider.is_online_model("orcarouter:openai/gpt-4o-mini") is True
     assert provider.is_online_model("gemini:gemini-2.5-flash") is True
+    assert provider.is_online_model("opencode:opencode/mimo-v2.6-flash-free") is True
     assert provider.is_online_model("qwen2.5-coder:7b") is False
 
 
@@ -260,6 +261,52 @@ def test_online_model_provider_parse():
     p, m = provider.parse_model_identifier("gemini:gemini-2.5-flash")
     assert p == "gemini"
     assert m == "gemini-2.5-flash"
+
+    p, m = provider.parse_model_identifier("opencode:opencode/mimo-v2.6-flash-free")
+    assert p == "opencode"
+    assert m == "opencode/mimo-v2.6-flash-free"
+
+
+@pytest.mark.asyncio
+async def test_online_model_query_opencode_cli_mock():
+    provider = OnlineModelProvider()
+
+    # Simulate `opencode run --format json` NDJSON stdout.
+    stdout = (
+        b'{"type":"text","part":{"text":"BENCH_OK"}}\n'
+        b'{"type":"step_finish","part":{"reason":"stop","tokens":{"output":5}}}\n'
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(stdout, b""))
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock(return_value=0)
+
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc),
+    ):
+        res = await provider.query_online_model(
+            "opencode:opencode/mimo-v2.6-flash-free",
+            prompt="Reply with exactly: BENCH_OK",
+        )
+        assert res["success"] is True
+        assert res["response"] == "BENCH_OK"
+        assert res["tokens_generated"] == 5
+        assert res["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_online_model_query_opencode_cli_missing_binary():
+    provider = OnlineModelProvider()
+    with patch("shutil.which", return_value=None):
+        res = await provider.query_online_model(
+            "opencode:opencode/mimo-v2.6-flash-free",
+            prompt="hi",
+        )
+    assert res["success"] is False
+    assert "opencode CLI" in res.get("error", "")
 
 
 @pytest.mark.asyncio

@@ -137,6 +137,13 @@ def _make_request_id(model_identifier: str) -> str:
     return f"online-{uuid.uuid4().hex}"
 
 
+def _opencode_cli_available() -> bool:
+    """True when the local `opencode` binary is on PATH (required for opencode: models)."""
+    import shutil
+
+    return shutil.which("opencode") is not None
+
+
 def _opencode_zen_project_id() -> str:
     """Derives the x-opencode-project id the CLI would send for this repo.
 
@@ -288,6 +295,7 @@ class OnlineModelProvider:
             "huggingface": bool(self.huggingface_token),
             "cloudflare": bool(self.cloudflare_api_token and self.cloudflare_account_id),
             "opencode_zen": bool(self.opencode_zen_base_url),
+            "opencode": _opencode_cli_available(),
             "groq": bool(self.groq_api_key),
             "orcarouter": bool(self.orcarouter_api_key),
             "gemini": bool(self.gemini_api_key),
@@ -331,6 +339,13 @@ class OnlineModelProvider:
                 "masked_key": mask(self.opencode_zen_api_key),
                 "base_url": self.opencode_zen_base_url,
                 "has_key": bool(self.opencode_zen_api_key),
+            },
+            "opencode": {
+                "configured": _opencode_cli_available(),
+                "masked_key": "",
+                "has_key": False,
+                "auth_required": False,
+                "note": "Uses the local opencode CLI (free-tier models only work from within OpenCode).",
             },
             "groq": {
                 "configured": bool(self.groq_api_key),
@@ -418,6 +433,33 @@ class OnlineModelProvider:
                         "error": self._format_http_error("Cloudflare", resp.status_code, resp.text[:200]),
                     }
 
+            elif provider == "opencode":
+                if not _opencode_cli_available():
+                    return {
+                        "success": False,
+                        "error": "opencode CLI not found on PATH. Install OpenCode to use opencode: models.",
+                    }
+                try:
+                    import subprocess
+
+                    proc = subprocess.run(
+                        ["opencode", "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if proc.returncode == 0:
+                        return {
+                            "success": True,
+                            "message": f"opencode CLI available ({proc.stdout.strip() or 'ok'}).",
+                        }
+                    return {
+                        "success": False,
+                        "error": (proc.stderr or proc.stdout or "opencode CLI failed.").strip()[:300],
+                    }
+                except Exception as e:
+                    return {"success": False, "error": f"opencode CLI error: {e}"}
+
             elif provider == "opencode_zen":
                 api_key = custom.get("opencode_zen_api_key") or self.opencode_zen_api_key
                 base_url = custom.get("opencode_zen_base_url") or self.opencode_zen_base_url
@@ -496,7 +538,7 @@ class OnlineModelProvider:
         """Dynamically fetch and search available models from remote provider APIs in real-time."""
         results: list[dict[str, Any]] = []
         providers_to_query = (
-            ["openrouter", "huggingface", "cloudflare", "opencode_zen", "groq", "orcarouter", "gemini"]
+            ["openrouter", "huggingface", "cloudflare", "opencode_zen", "opencode", "groq", "orcarouter", "gemini"]
             if provider == "all"
             else [provider]
         )
@@ -645,6 +687,56 @@ class OnlineModelProvider:
                                     )
                 except Exception as e:
                     logger.warning(f"Error discovering OpenCode Zen models: {e}")
+
+        # 3b. OpenCode CLI Live Discovery (models the local opencode binary can run;
+        # free-tier Zen models only answer when launched from within OpenCode).
+        if "opencode" in providers_to_query:
+            try:
+                if not _opencode_cli_available():
+                    if provider == "opencode":
+                        raise ValueError("opencode CLI not found on PATH. Install OpenCode to browse opencode: models.")
+                else:
+                    import subprocess
+
+                    proc = subprocess.run(
+                        ["opencode", "models"],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if proc.returncode != 0:
+                        raise RuntimeError((proc.stderr or proc.stdout or "opencode models failed").strip()[:300])
+                    for line in proc.stdout.splitlines():
+                        m_id = line.strip()
+                        if not m_id or m_id.startswith("#"):
+                            continue
+                        is_free = "-free" in m_id.lower() or ":free" in m_id.lower()
+                        if free_only and not is_free:
+                            continue
+                        oc_id = f"opencode:{m_id}"
+                        if query_lower and (
+                            query_lower not in oc_id.lower() and query_lower not in m_id.lower()
+                        ):
+                            continue
+                        results.append(
+                            {
+                                "id": oc_id,
+                                "name": m_id,
+                                "label": f"OpenCode {m_id}",
+                                "provider": "opencode",
+                                "free": is_free,
+                                "free_tier": "Free (OpenCode CLI)" if is_free else "OpenCode catalog",
+                                "pricing_label": "Free (via CLI)" if is_free else "OpenCode catalog",
+                                "context_length": 131072,
+                                "reasoning": "thinking" in m_id.lower() or "reason" in m_id.lower(),
+                                "description": (
+                                    f"Model {m_id} via the local opencode CLI. "
+                                    "Benchmarks shell out to `opencode run` so free-tier models work."
+                                ),
+                            }
+                        )
+            except Exception as e:
+                logger.warning(f"Error discovering OpenCode CLI models: {e}")
 
         # 4. Cloudflare Workers AI Live Discovery (10k Neurons/day free tier)
         if "cloudflare" in providers_to_query:
@@ -868,6 +960,7 @@ class OnlineModelProvider:
             "huggingface:",
             "cloudflare:",
             "opencode_zen:",
+            "opencode:",
             "hf:",
             "groq:",
             "orcarouter:",
@@ -884,6 +977,7 @@ class OnlineModelProvider:
             "hf",
             "cloudflare",
             "opencode_zen",
+            "opencode",
             "groq",
             "orcarouter",
             "gemini",
@@ -1992,6 +2086,16 @@ class OnlineModelProvider:
                                 fail["retry_after"] = float(m.group(1))
                     return fail
 
+            elif provider == "opencode":
+                return await self._query_opencode_cli(
+                    model_name,
+                    prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    request_timeout=request_timeout,
+                    start_t=start_t,
+                )
+
             else:
                 return {
                     "success": False,
@@ -2009,6 +2113,156 @@ class OnlineModelProvider:
                 "tokens_generated": 0,
                 "error": f"Online request failed: {exc}",
             }
+
+    async def _query_opencode_cli(
+        self,
+        model_name: str,
+        prompt: str,
+        max_tokens: int = 4000,
+        temperature: float = 0.2,
+        request_timeout: float = 120.0,
+        start_t: float | None = None,
+    ) -> dict[str, Any]:
+        """Query a model by shelling out to the local `opencode run` CLI.
+
+        Used only for models under the ``opencode:`` prefix. OpenCode Zen's free
+        tier rejects raw HTTP from outside the client (HTTP 403), so free models
+        must originate from the real CLI. All other providers keep their existing
+        HTTP paths in ``_query_online_model_impl``.
+
+        Command shape (headless, one-shot, JSON events on stdout):
+            opencode run -m <model> --format json --auto --pure <prompt>
+        """
+        import asyncio
+        import shutil
+
+        if not shutil.which("opencode"):
+            return {
+                "success": False,
+                "latency": (time.time() - start_t) if start_t else 0.0,
+                "response": None,
+                "tokens_generated": 0,
+                "error": "opencode CLI not found on PATH. Install OpenCode to use opencode: models.",
+            }
+
+        cmd = [
+            "opencode",
+            "run",
+            "-m",
+            model_name,
+            "--format",
+            "json",
+            "--auto",
+            "--pure",
+            prompt,
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(), timeout=request_timeout
+                )
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+                return {
+                    "success": False,
+                    "latency": time.time() - (start_t or time.time()),
+                    "response": None,
+                    "tokens_generated": 0,
+                    "error": f"opencode run timed out after {request_timeout:.0f}s (model={model_name}).",
+                }
+        except Exception as exc:
+            return {
+                "success": False,
+                "latency": time.time() - (start_t or time.time()),
+                "response": None,
+                "tokens_generated": 0,
+                "error": f"Failed to launch opencode CLI: {exc}",
+            }
+
+        stdout = (stdout_b or b"").decode("utf-8", errors="replace")
+        stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+        latency = time.time() - (start_t or time.time())
+
+        if proc.returncode not in (0, None) and not stdout.strip():
+            err_tail = (stderr or stdout).strip()[-400:]
+            return {
+                "success": False,
+                "latency": latency,
+                "response": None,
+                "tokens_generated": 0,
+                "error": f"opencode run failed (exit {proc.returncode}): {err_tail or 'no output'}",
+            }
+
+        # Parse NDJSON events: concatenate type=text parts; capture token counts
+        # from step_finish; map finish reason from step_finish.reason.
+        texts: list[str] = []
+        thinking_parts: list[str] = []
+        tokens_out = 0
+        finish: str | None = None
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                evt = json.loads(line)
+            except Exception:
+                continue
+            etype = evt.get("type")
+            part = evt.get("part") or {}
+            if etype == "text":
+                texts.append(str(part.get("text") or ""))
+            elif etype in ("thinking", "reasoning", "reasoning_delta"):
+                delta = part.get("text") or part.get("thinking") or ""
+                if delta:
+                    thinking_parts.append(str(delta))
+            elif etype == "step_finish":
+                tok = part.get("tokens") or {}
+                with suppress(TypeError, ValueError):
+                    tokens_out = int(tok.get("output") or 0)
+                reason = part.get("reason")
+                if reason:
+                    finish = str(reason)
+
+        content = "".join(texts).strip()
+        if not content:
+            # Fall back: some versions emit only non-JSON text on stdout.
+            fallback = stdout.strip()
+            if fallback and not fallback.startswith("{"):
+                content = fallback
+        if not content:
+            err_tail = (stderr or "").strip()[-400:]
+            return {
+                "success": False,
+                "latency": latency,
+                "response": None,
+                "thinking": "\n".join(thinking_parts) or None,
+                "tokens_generated": tokens_out,
+                "finish_reason": finish,
+                "error": (
+                    f"opencode run returned empty text (model={model_name}). "
+                    f"{err_tail}"
+                ).strip(),
+            }
+
+        if tokens_out <= 0:
+            tokens_out = max(1, len(content) // 4)
+
+        return {
+            "success": True,
+            "latency": latency,
+            "response": content,
+            "thinking": "\n".join(thinking_parts) or None,
+            "finish_reason": finish or "stop",
+            "tokens_generated": tokens_out,
+            "error": None,
+        }
 
 
 # Global instance
