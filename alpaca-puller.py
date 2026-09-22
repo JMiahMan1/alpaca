@@ -838,11 +838,17 @@ def parse_huggingface_ref(model_name):
         parsed = urlparse(model_name)
         full_path = parsed.netloc + "/" + parsed.path.lstrip("/")
         path_parts = [part for part in full_path.split("/") if part]
-        if len(path_parts) < 2:
-            raise ValueError("Expected hf://<repo>/<filename> for Hugging Face pulls.")
-        filename = path_parts[-1]
-        repo = "/".join(path_parts[:-1])
-        if not repo:
+        # Hugging Face repos are always owner/name; anything after that is a
+        # path within the repo (e.g. hf://owner/name/vae/file.safetensors).
+        if len(path_parts) >= 3:
+            repo = "/".join(path_parts[:2])
+            filename = "/".join(path_parts[2:])
+        elif len(path_parts) == 2:
+            repo = path_parts[0]
+            filename = path_parts[1]
+        else:
+            raise ValueError("Expected hf://<owner>/<repo>/<filename> for Hugging Face pulls.")
+        if not repo or not filename:
             raise ValueError("Expected hf://<repo>/<filename> for Hugging Face pulls.")
         return repo, filename
 
@@ -1273,7 +1279,9 @@ def pull_companion(model_name, no_resume=False):
         print(f"Error creating companions directory: {e}")
         return 1
 
-    output_path = companions_dir / filename
+    # Keep companions flat in companions/ even when the HF path has subdirs
+    # (e.g. vae/foo.safetensors) so discovery globs keep working.
+    output_path = companions_dir / Path(filename).name
 
     print(f"Downloading companion file: {repo}/{filename}")
     print(f"Destination: {output_path}")
@@ -1299,6 +1307,14 @@ def pull_companion(model_name, no_resume=False):
                 output_path.unlink()
         try:
             os.replace(partial_path, output_path)
+        except OSError:
+            # Cross-device (partials live on /models, companions on
+            # /router-models — different mounts inside the container).
+            import shutil
+
+            shutil.copy2(partial_path, output_path)
+            with contextlib.suppress(Exception):
+                partial_path.unlink()
         except Exception as e:
             print(f"Error moving companion file: {e}")
             return 1

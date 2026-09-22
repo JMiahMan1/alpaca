@@ -85,10 +85,23 @@ def test_parse_huggingface_ref_hf_prefix_multi_segment():
 
 def test_parse_huggingface_ref_hf_prefix_deep_nested():
     repo, filename = alpaca_puller.parse_huggingface_ref("hf://a/b/c/d/model.gguf")
-    assert repo == "a/b/c/d"
-    assert filename == "model.gguf"
+    assert repo == "a/b"
+    assert filename == "c/d/model.gguf"
     constructed = f"https://huggingface.co/{repo}/resolve/main/{filename}"
-    assert constructed == "https://huggingface.co/a/b/c/d/resolve/main/model.gguf"
+    assert constructed == "https://huggingface.co/a/b/resolve/main/c/d/model.gguf"
+
+
+def test_parse_huggingface_ref_hf_prefix_subdir_file():
+    repo, filename = alpaca_puller.parse_huggingface_ref(
+        "hf://Comfy-Org/Qwen-Image-2.1/vae/qwen_image_2.1_vae_bf16.safetensors"
+    )
+    assert repo == "Comfy-Org/Qwen-Image-2.1"
+    assert filename == "vae/qwen_image_2.1_vae_bf16.safetensors"
+    constructed = alpaca_puller.huggingface_blob_url(repo, filename)
+    assert (
+        constructed
+        == "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors"
+    )
 
 
 def test_infer_local_name_from_huggingface_uses_repo_and_filename():
