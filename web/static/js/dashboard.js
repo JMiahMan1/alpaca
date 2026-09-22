@@ -381,6 +381,7 @@ document.addEventListener('DOMContentLoaded', () => {
             /\bsd-/i,
             /-sd\b/i,
             /\bimage.gen\b/i,
+            /\bqwen[- ]image\b/i,
         ];
         const isImageModel = name =>
             SD_PATTERNS.some(re => re.test(name)) ||
@@ -394,7 +395,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Filter: prefer family tag from API; fall back to name heuristic
             const imageModels = allModels.filter(m => {
                 const family = (m.family || '').toLowerCase();
-                if (family === 'stable-diffusion' || family === 'flux' || family === 'sdxl') return true;
+                if (family === 'stable-diffusion' || family === 'flux' || family === 'sdxl' || family === 'qwen-image') return true;
                 return isImageModel(m.name || '');
             });
             if (imageModels.length === 0) {
@@ -2153,6 +2154,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 sdActiveModelBadge.textContent = "Model: None";
                 sdStatusBadge.className = "badge badge-danger";
                 sdStatusBadge.textContent = "Offline";
+                const offlineBtn = document.getElementById('sd-reload-last-btn');
+                if (offlineBtn) offlineBtn.remove();
                 return;
             }
 
@@ -2164,6 +2167,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 sdActiveModelBadge.textContent = data.active_model ? `Loading: ${data.active_model.split('/').pop()}` : "Model: Loading...";
                 sdStatusBadge.className = "badge badge-warning";
                 sdStatusBadge.textContent = "Loading";
+                const loadingBtn = document.getElementById('sd-reload-last-btn');
+                if (loadingBtn) loadingBtn.remove();
                 return;
             }
 
@@ -2176,9 +2181,52 @@ document.addEventListener('DOMContentLoaded', () => {
                 const modelName = data.active_model.split('/').pop();
                 sdActiveModelBadge.textContent = `Model: ${modelName}`;
                 sdConnectionSubtitle.textContent = `SD-Server is active. Queue depth: ${data.queue_depth || 0}. GPU VRAM: ${data.vram_used_mb}MB / ${data.vram_total_mb}MB`;
+                const activeBtn = document.getElementById('sd-reload-last-btn');
+                if (activeBtn) activeBtn.remove();
             } else {
-                sdActiveModelBadge.textContent = "Model: None (Idle)";
-                sdConnectionSubtitle.textContent = "SD-Server is active and idling. Waiting for generation requests.";
+                const last = data.last_model;
+                const lastPath = last && last.model_path ? last.model_path : '';
+                if (lastPath) {
+                    const lastName = lastPath.split('/').pop();
+                    sdActiveModelBadge.textContent = `Model: None (Idle) — Last: ${lastName}`;
+                    sdConnectionSubtitle.textContent = 'SD-Server is idling. Reload last-good model with one click.';
+                    if (!document.getElementById('sd-reload-last-btn')) {
+                        const btn = document.createElement('button');
+                        btn.id = 'sd-reload-last-btn';
+                        btn.type = 'button';
+                        btn.className = 'btn btn-sm btn-secondary';
+                        btn.textContent = '↻ Reload last';
+                        btn.title = 'Reload the last successfully loaded image model';
+                        btn.onclick = async () => {
+                            btn.disabled = true;
+                            try {
+                                const loadRes = await fetch('/api/sd/load', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        model: lastPath,
+                                        family: (last && last.model_family) || undefined,
+                                    }),
+                                });
+                                const loadJson = await loadRes.json().catch(() => ({}));
+                                if (!loadRes.ok) {
+                                    logToTerminal('SD reload failed: ' + (loadJson.error || loadRes.statusText), 'error');
+                                } else {
+                                    logToTerminal('SD reloading last model: ' + lastName, 'info');
+                                }
+                            } catch (err) {
+                                logToTerminal('SD reload failed: ' + err.message, 'error');
+                            } finally {
+                                btn.disabled = false;
+                                pollSDStatus();
+                            }
+                        };
+                        sdConnectionSubtitle.insertAdjacentElement('afterend', btn);
+                    }
+                } else {
+                    sdActiveModelBadge.textContent = "Model: None (Idle)";
+                    sdConnectionSubtitle.textContent = "SD-Server is active and idling. Waiting for generation requests.";
+                }
             }
 
         } catch (err) {

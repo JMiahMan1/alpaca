@@ -27,6 +27,8 @@ REAL_LOAD_LOCAL_MANIFEST = alpaca_proxy.load_local_manifest
 REAL_MANIFEST_MODEL_NAME = alpaca_proxy.manifest_model_name
 REAL_WAIT_FOR_SLOT = alpaca_proxy.wait_for_slot
 REAL_IS_CHILD_MODEL_HEALTHY = alpaca_proxy.is_child_model_healthy
+REAL_GET_ACTIVE_MODEL_CONFIG = alpaca_proxy.get_active_model_config
+REAL_GET_LAST_MODEL_CONFIG = alpaca_proxy.get_last_model_config
 
 # Globally mock network/docker boundary endpoints to protect unit tests
 alpaca_proxy.restart_llama_server = AsyncMock(return_value=True)
@@ -35,6 +37,18 @@ alpaca_proxy.wait_for_llama_server = AsyncMock(return_value=True)
 alpaca_proxy.restore_slot_cache = AsyncMock(return_value=True)
 alpaca_proxy.save_slot_cache = AsyncMock(return_value=True)
 alpaca_proxy.find_slot_for_request = AsyncMock(return_value=0)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_router_models_dir():
+    """Restore ROUTER_MODELS_DIR and SD config readers after every test."""
+    saved_dir = alpaca_proxy.ROUTER_MODELS_DIR
+    saved_active = alpaca_proxy.get_active_model_config
+    saved_last = alpaca_proxy.get_last_model_config
+    yield
+    alpaca_proxy.ROUTER_MODELS_DIR = saved_dir
+    alpaca_proxy.get_active_model_config = saved_active
+    alpaca_proxy.get_last_model_config = saved_last
 
 
 def make_manifest(digest="sha256:abcd", size=4):
@@ -296,10 +310,10 @@ async def test_ensure_model_falls_back_to_router_autoload_when_load_endpoint_mis
 
 
 @pytest.mark.asyncio
-async def test_resolve_router_model_falls_back_to_router_alias_when_symlink_exists(tmp_path):
+async def test_resolve_router_model_falls_back_to_router_alias_when_symlink_exists(tmp_path, monkeypatch):
     alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
-    alpaca_proxy.OLLAMA_BASE = str(tmp_path / "models")
-    alpaca_proxy.ROUTER_MODELS_DIR = str(tmp_path / "router-models")
+    monkeypatch.setattr(alpaca_proxy, "OLLAMA_BASE", str(tmp_path / "models"))
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path / "router-models"))
     manifest_path = tmp_path / "models" / "manifests" / "registry.ollama.ai" / "library" / "tinyllama" / "latest"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(json.dumps(make_manifest(digest="sha256:deadbeef", size=4)))
@@ -341,7 +355,7 @@ def test_router_filename_for_model_name_handles_dash_and_colon_forms():
 
 
 @pytest.mark.asyncio
-async def test_ensure_model_accepts_router_id_with_double_dash_latest(tmp_path):
+async def test_ensure_model_accepts_router_id_with_double_dash_latest(tmp_path, monkeypatch):
     """Regression: 'family--latest' router ids must resolve without double-tagging.
 
     with_default_tag appended ':latest' to any name lacking ':', so
@@ -351,8 +365,8 @@ async def test_ensure_model_accepts_router_id_with_double_dash_latest(tmp_path):
     """
     alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
     alpaca_proxy.resolve_router_model = REAL_RESOLVE_ROUTER_MODEL
-    alpaca_proxy.OLLAMA_BASE = str(tmp_path / "models")
-    alpaca_proxy.ROUTER_MODELS_DIR = str(tmp_path / "router-models")
+    monkeypatch.setattr(alpaca_proxy, "OLLAMA_BASE", str(tmp_path / "models"))
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path / "router-models"))
     router_path = tmp_path / "router-models" / "qwen3-6-35b-a3b-ud-iq4-nl-mtp--latest.gguf"
     router_path.parent.mkdir(parents=True)
     router_path.write_text("stub")
@@ -1263,7 +1277,9 @@ async def test_ensure_model_skip_swap_true_no_crash_prevents_model_swap():
 
 
 @pytest.mark.asyncio
-async def test_thinking_behavior_generate_think_false():
+async def test_thinking_behavior_generate_think_false(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "wait_for_slot", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=True))
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
     mock_http = MockHTTPClient(
@@ -1301,7 +1317,9 @@ async def test_thinking_behavior_generate_think_false():
 
 
 @pytest.mark.asyncio
-async def test_thinking_behavior_generate_think_none():
+async def test_thinking_behavior_generate_think_none(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "wait_for_slot", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=True))
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
     mock_http = MockHTTPClient(
@@ -1332,13 +1350,16 @@ async def test_thinking_behavior_generate_think_none():
 
     assert response.status_code == 200
     body = json.loads(response.body)
-    assert body["response"] == "<think>\ntrace\n</think>\ndone"
+    # think=None: thinking is a separate field, not blended into content (21679bf).
+    assert body["response"] == "done"
     assert body["thinking"] == "trace"
     assert mock_http.calls[0]["json"]["thinking"] is True
 
 
 @pytest.mark.asyncio
-async def test_thinking_behavior_chat_think_false():
+async def test_thinking_behavior_chat_think_false(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "wait_for_slot", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=True))
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
     mock_http = MockHTTPClient(
@@ -1375,7 +1396,9 @@ async def test_thinking_behavior_chat_think_false():
 
 
 @pytest.mark.asyncio
-async def test_thinking_behavior_chat_think_none():
+async def test_thinking_behavior_chat_think_none(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "wait_for_slot", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=True))
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
     mock_http = MockHTTPClient(
@@ -1405,13 +1428,16 @@ async def test_thinking_behavior_chat_think_none():
 
     assert response.status_code == 200
     body = json.loads(response.body)
-    assert body["message"]["content"] == "<think>\ntrace\n</think>\ndone"
+    # think=None: thinking is a separate field, not blended into content (21679bf).
+    assert body["message"]["content"] == "done"
     assert body["message"]["thinking"] == "trace"
     assert mock_http.calls[0]["json"]["thinking"] is True
 
 
 @pytest.mark.asyncio
-async def test_thinking_behavior_voice_origin_auto_override_chat():
+async def test_thinking_behavior_voice_origin_auto_override_chat(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "wait_for_slot", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=True))
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
     mock_http = MockHTTPClient(
@@ -1448,7 +1474,9 @@ async def test_thinking_behavior_voice_origin_auto_override_chat():
 
 
 @pytest.mark.asyncio
-async def test_thinking_behavior_voice_origin_auto_override_generate():
+async def test_thinking_behavior_voice_origin_auto_override_generate(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "wait_for_slot", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=True))
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
     alpaca_proxy.apply_keep_alive_policy = AsyncMock()
     mock_http = MockHTTPClient(
@@ -1927,6 +1955,8 @@ async def test_images_generation_endpoint_routes_to_sd_server():
         alpaca_proxy.iter_local_manifests = orig_iter
         alpaca_proxy.manifest_model_name = orig_mn
         alpaca_proxy.client_sd_httpx = None
+        alpaca_proxy.get_active_model_config = REAL_GET_ACTIVE_MODEL_CONFIG
+        alpaca_proxy.get_last_model_config = REAL_GET_LAST_MODEL_CONFIG
 
 
 class _SlotClient:
@@ -2562,41 +2592,45 @@ def test_gguf_has_mtp_heads_missing_file(tmp_path):
     assert alpaca_proxy._gguf_has_mtp_heads(str(tmp_path / "nope.gguf")) is False
 
 
-def test_write_active_model_config_persists_last_good(tmp_path):
+def test_write_active_model_config_persists_last_good(tmp_path, monkeypatch):
     """Successful loads snapshot sd_last_model.json; unload blanks only active."""
-    orig_router = alpaca_proxy.ROUTER_MODELS_DIR
+    monkeypatch.setattr(alpaca_proxy, "get_active_model_config", REAL_GET_ACTIVE_MODEL_CONFIG)
+    monkeypatch.setattr(alpaca_proxy, "get_last_model_config", REAL_GET_LAST_MODEL_CONFIG)
     router_dir = tmp_path / "router"
     router_dir.mkdir()
-    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
-    try:
-        alpaca_proxy.write_active_model_config(
-            model_path="/models/qwen.gguf",
-            model_family="qwen-image",
-            vae_path="/models/vae.safetensors",
-            llm_path="/models/llm.gguf",
-            gpu_layers="40",
-            threads="6",
-            extra_args="--offload-to-cpu",
-        )
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(router_dir))
 
-        active = alpaca_proxy.get_active_model_config()
-        last = alpaca_proxy.get_last_model_config()
-        assert active and active["model_path"] == "/models/qwen.gguf"
-        assert last and last["model_path"] == "/models/qwen.gguf"
-        assert last["model_family"] == "qwen-image"
-        assert last["vae_path"] == "/models/vae.safetensors"
-        assert last["gpu_layers"] == "40"
+    alpaca_proxy.write_active_model_config(
+        model_path="/models/qwen.gguf",
+        model_family="qwen-image",
+        vae_path="/models/vae.safetensors",
+        llm_path="/models/llm.gguf",
+        gpu_layers="40",
+        threads="6",
+        extra_args="--offload-to-cpu",
+    )
 
-        # Simulate intentional unload: active blanks, last survives.
-        config_path = router_dir / "sd_active_model.json"
-        config_path.write_text(json.dumps({**active, "model_path": "", "vae_path": ""}))
-        assert (alpaca_proxy.get_active_model_config() or {}).get("model_path") == ""
-        assert alpaca_proxy.get_last_model_config()["model_path"] == "/models/qwen.gguf"
-    finally:
-        alpaca_proxy.ROUTER_MODELS_DIR = orig_router
+    assert str(router_dir) == alpaca_proxy.ROUTER_MODELS_DIR
+    active_file = router_dir / "sd_active_model.json"
+    last_file = router_dir / "sd_last_model.json"
+    assert active_file.exists()
+    assert last_file.exists()
+    active = json.loads(active_file.read_text())
+    last = json.loads(last_file.read_text())
+    assert active["model_path"] == "/models/qwen.gguf"
+    assert last["model_path"] == "/models/qwen.gguf"
+    assert last["model_family"] == "qwen-image"
+    assert last["vae_path"] == "/models/vae.safetensors"
+    assert last["gpu_layers"] == "40"
+    assert alpaca_proxy.get_last_model_config()["model_path"] == "/models/qwen.gguf"
+
+    # Simulate intentional unload: active blanks, last survives.
+    active_file.write_text(json.dumps({**active, "model_path": "", "vae_path": ""}))
+    assert (alpaca_proxy.get_active_model_config() or {}).get("model_path") == ""
+    assert alpaca_proxy.get_last_model_config()["model_path"] == "/models/qwen.gguf"
 
 
-def test_write_ini_model_setting_persists_and_noops(tmp_path):
+def test_write_ini_model_setting_persists_and_noops(tmp_path, monkeypatch):
     """cache-reuse + spec-type persist to models.ini; repeated write is a no-op."""
     import configparser
 
@@ -2604,7 +2638,7 @@ def test_write_ini_model_setting_persists_and_noops(tmp_path):
     router_dir.mkdir()
     ini_path = router_dir / "models.ini"
     ini_path.write_text("[*]\nn-gpu-layers = 99\n")
-    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(router_dir))
 
     alpaca_proxy._write_ini_model_setting("qwen3.6--9b", "cache-reuse", "256")
     alpaca_proxy._write_ini_model_setting("qwen3.6--9b", "cache-reuse", "256")
@@ -2616,19 +2650,19 @@ def test_write_ini_model_setting_persists_and_noops(tmp_path):
     assert (router_dir / "qwen3.6--9b.profile.json").exists()
 
 
-def test_read_ini_model_setting_falls_back_to_defaults(tmp_path):
+def test_read_ini_model_setting_falls_back_to_defaults(tmp_path, monkeypatch):
     router_dir = tmp_path / "router"
     router_dir.mkdir()
     ini_path = router_dir / "models.ini"
     ini_path.write_text("[*]\nn-gpu-layers = 99\n")
-    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(router_dir))
 
     assert alpaca_proxy._read_ini_model_setting("qwen3.6--9b", "n-gpu-layers", "99") == "99"
     assert alpaca_proxy._read_ini_model_setting("qwen3.6--9b", "ctx-size", "32768") == "32768"
 
 
 @pytest.mark.asyncio
-async def test_ensure_model_enables_mtp_for_dense_model_with_heads(tmp_path):
+async def test_ensure_model_enables_mtp_for_dense_model_with_heads(tmp_path, monkeypatch):
     """Dense models with MTP heads in the GGUF must get spec_type=draft-mtp and n_parallel=1."""
     import configparser
 
@@ -2636,7 +2670,7 @@ async def test_ensure_model_enables_mtp_for_dense_model_with_heads(tmp_path):
     router_dir.mkdir()
     ini_path = router_dir / "models.ini"
     ini_path.write_text("[*]\nn-gpu-layers = 99\n")
-    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(router_dir))
 
     gguf_path = tmp_path / "qwen35--9b-mtp.gguf"
     write_synthetic_gguf(gguf_path, ["blk.40.nextn.eh_proj.weight"])
@@ -2676,13 +2710,13 @@ async def test_ensure_model_enables_mtp_for_dense_model_with_heads(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ensure_model_does_not_enable_mtp_without_heads(tmp_path):
+async def test_ensure_model_does_not_enable_mtp_without_heads(tmp_path, monkeypatch):
     """Dense model WITHOUT MTP heads keeps spec_type=none and auto n_parallel."""
     router_dir = tmp_path / "router"
     router_dir.mkdir()
     ini_path = router_dir / "models.ini"
     ini_path.write_text("[*]\nn-gpu-layers = 99\n")
-    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(router_dir))
 
     gguf_path = tmp_path / "qwen35--9b.gguf"
     write_synthetic_gguf(gguf_path, ["blk.0.attn_q.weight"])
@@ -2712,13 +2746,13 @@ async def test_ensure_model_does_not_enable_mtp_without_heads(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ensure_model_moe_never_zeroes_ngl(tmp_path):
+async def test_ensure_model_moe_never_zeroes_ngl(tmp_path, monkeypatch):
     """MoE models must never be pushed to n-gpu-layers=0 by the dense budgeter."""
     router_dir = tmp_path / "router"
     router_dir.mkdir()
     ini_path = router_dir / "models.ini"
     ini_path.write_text("[*]\nn-gpu-layers = 99\n")
-    alpaca_proxy.ROUTER_MODELS_DIR = str(router_dir)
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(router_dir))
 
     gguf_path = tmp_path / "kwaipilot--moe.gguf"
     write_synthetic_gguf(
