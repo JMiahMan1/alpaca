@@ -120,6 +120,11 @@ services:
       - ./analyzer.py:/app/analyzer.py:ro
       - ./sandbox_exec.py:/app/sandbox_exec.py:ro
       - /usr/share/ollama/.ollama/models:/models
+      # Host OpenCode CLI + auth/config so opencode: models work inside the container
+      # (free-tier Zen only accepts requests originating from the real CLI).
+      - /home/jeremiah/.opencode/bin/opencode:/usr/local/bin/opencode:ro
+      - /home/jeremiah/.local/share/opencode/auth.json:/home/alpaca/.local/share/opencode/auth.json:ro
+      - /home/jeremiah/.config/opencode:/home/alpaca/.config/opencode:ro
     env_file:
       - ./.env
     environment:
@@ -129,6 +134,7 @@ services:
       ROUTER_MODELS_DIR: "/router-models"
       MODELS_DIR: "/models"
       MODELS_INI_PATH: "/router-models/models.ini"
+      PATH: "/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
