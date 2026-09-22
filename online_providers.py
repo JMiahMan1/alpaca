@@ -666,7 +666,8 @@ class OnlineModelProvider:
                                     # Free-tier Zen models reject raw HTTP (403 from
                                     # outside OpenCode), so advertise them under the
                                     # opencode: prefix which always shells out to the CLI.
-                                    zen_id = (f"opencode:{m_id}" if is_free else f"opencode_zen:{m_id}")
+                                    # The CLI needs the opencode/ namespace on -m.
+                                    zen_id = (f"opencode:opencode/{m_id}" if is_free else f"opencode_zen:{m_id}")
                                     if query_lower and (
                                         query_lower not in zen_id.lower() and query_lower not in label.lower()
                                     ):
@@ -2162,11 +2163,18 @@ class OnlineModelProvider:
                 "error": "opencode CLI not found on PATH. Install OpenCode to use opencode: models.",
             }
 
+        # CLI -m needs the provider-qualified id (opencode/mimo-...). Zen discovery
+        # and the 403 fallback pass bare ids (mimo-...); those fail with a cryptic
+        # server error unless the opencode/ namespace is prepended.
+        cli_model = model_name.strip()
+        if "/" not in cli_model and not cli_model.startswith("provider/"):
+            cli_model = f"opencode/{cli_model}"
+
         cmd = [
             "opencode",
             "run",
             "-m",
-            model_name,
+            cli_model,
             "--format",
             "json",
             "--auto",
@@ -2223,6 +2231,7 @@ class OnlineModelProvider:
         thinking_parts: list[str] = []
         tokens_out = 0
         finish: str | None = None
+        cli_error: str | None = None
         for line in stdout.splitlines():
             line = line.strip()
             if not line.startswith("{"):
@@ -2246,6 +2255,14 @@ class OnlineModelProvider:
                 reason = part.get("reason")
                 if reason:
                     finish = str(reason)
+            elif etype == "error" and not cli_error:
+                err = evt.get("error") or {}
+                if isinstance(err, dict):
+                    msg = err.get("data", {}).get("message") or err.get("message") or ""
+                    name = err.get("name") or ""
+                    cli_error = ": ".join(x for x in (name, str(msg)) if x)
+                else:
+                    cli_error = str(err)
 
         content = "".join(texts).strip()
         if not content:
@@ -2254,7 +2271,7 @@ class OnlineModelProvider:
             if fallback and not fallback.startswith("{"):
                 content = fallback
         if not content:
-            err_tail = (stderr or "").strip()[-400:]
+            detail = " ".join(x for x in (cli_error or "", (stderr or "").strip()[-400:]) if x)
             return {
                 "success": False,
                 "latency": latency,
@@ -2263,8 +2280,8 @@ class OnlineModelProvider:
                 "tokens_generated": tokens_out,
                 "finish_reason": finish,
                 "error": (
-                    f"opencode run returned empty text (model={model_name}). "
-                    f"{err_tail}"
+                    f"opencode run returned empty text (model={cli_model}). "
+                    f"{detail}"
                 ).strip(),
             }
 
