@@ -3917,24 +3917,26 @@ async def edit_images(request: Request) -> Response:
 
     response_format = str(form.get("response_format", "b64_json")).lower()
 
-    await ensure_sd_model_loaded(requested_model)
-
-    # Track this request in the Active Requests UI
-    request_id = str(uuid.uuid4())[:8]
-    register_active_request(
-        request_id,
-        requested_model or "stable-diffusion",
-        "image_edit",
-        {"prompt": form.get("prompt", "")},
-        request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=get_client_ip(request),
-    )
-
+    # Claim the SD slot BEFORE ensure/load (same race as generate_images).
     async with active_sd_requests_lock:
         active_sd_requests += 1
 
     result_data = None
+    request_id = ""
     try:
+        await ensure_sd_model_loaded(requested_model)
+
+        # Track this request in the Active Requests UI
+        request_id = str(uuid.uuid4())[:8]
+        register_active_request(
+            request_id,
+            requested_model or "stable-diffusion",
+            "image_edit",
+            {"prompt": form.get("prompt", "")},
+            request_source=getattr(request.state, "request_source", "unknown"),
+            client_ip=get_client_ip(request),
+        )
+
         sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
         headers = {"Accept": "application/json", "User-Agent": "alpaca-proxy/1.0"}
         files = []
@@ -4042,24 +4044,25 @@ async def edit_images(request: Request) -> Response:
                     images.append({"type": "b64_json", "data": b64})
                 elif url:
                     images.append({"type": "url", "data": url})
-        with active_request_details_lock:
-            detail = active_request_details.get(request_id)
-            if detail is not None:
-                detail["images"] = images
-        if result_data is not None:
-            complete_active_request(
-                request_id,
-                final_response=f"Edited {len(images)} image(s).",
-                prompt_tokens=0,
-                completion_tokens=0,
-            )
-        else:
-            complete_active_request(
-                request_id,
-                final_response="Image edit failed.",
-                prompt_tokens=0,
-                completion_tokens=0,
-            )
+        if request_id:
+            with active_request_details_lock:
+                detail = active_request_details.get(request_id)
+                if detail is not None:
+                    detail["images"] = images
+            if result_data is not None:
+                complete_active_request(
+                    request_id,
+                    final_response=f"Edited {len(images)} image(s).",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                )
+            else:
+                complete_active_request(
+                    request_id,
+                    final_response="Image edit failed.",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                )
 
 
 @app.post("/v1/images/generations")
@@ -4077,34 +4080,37 @@ async def generate_images(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=err_msg)
 
     requested_model = payload.get("model", "")
-    await ensure_sd_model_loaded(requested_model)
 
-    # Translate the OpenAI-shaped quality fields into the native block sd-server
-    # actually reads (see extract_sd_native_params). Without this, steps, CFG,
-    # seed, sampler and the negative prompt are accepted and then ignored.
-    native_params = extract_sd_native_params(payload)
-    if native_params and await get_sd_capabilities() is not None:
-        payload = {k: v for k, v in payload.items() if k not in _SD_NATIVE_PARAM_PATHS}
-        payload["prompt"] = apply_sd_native_params(str(payload.get("prompt", "")), native_params)
-
-    # Track this request in the Active Requests UI (so SD generations are visible
-    # alongside LLM chat/completion requests).
-    request_id = str(uuid.uuid4())[:8]
-    register_active_request(
-        request_id,
-        requested_model or "stable-diffusion",
-        "image_generation",
-        payload,
-        request_source=getattr(request.state, "request_source", "unknown"),
-        client_ip=get_client_ip(request),
-    )
-
-    # Wrap the forwarding call with active request increment/decrement
+    # Claim the SD slot BEFORE ensure/load so unload_sd_model() cannot restart
+    # sd-server under us while shared-llm auto-load races the same VRAM.
     async with active_sd_requests_lock:
         active_sd_requests += 1
 
     result_data = None
+    request_id = ""
     try:
+        await ensure_sd_model_loaded(requested_model)
+
+        # Translate the OpenAI-shaped quality fields into the native block sd-server
+        # actually reads (see extract_sd_native_params). Without this, steps, CFG,
+        # seed, sampler and the negative prompt are accepted and then ignored.
+        native_params = extract_sd_native_params(payload)
+        if native_params and await get_sd_capabilities() is not None:
+            payload = {k: v for k, v in payload.items() if k not in _SD_NATIVE_PARAM_PATHS}
+            payload["prompt"] = apply_sd_native_params(str(payload.get("prompt", "")), native_params)
+
+        # Track this request in the Active Requests UI (so SD generations are visible
+        # alongside LLM chat/completion requests).
+        request_id = str(uuid.uuid4())[:8]
+        register_active_request(
+            request_id,
+            requested_model or "stable-diffusion",
+            "image_generation",
+            payload,
+            request_source=getattr(request.state, "request_source", "unknown"),
+            client_ip=get_client_ip(request),
+        )
+
         logger.info(f"Forwarding image generation request: {payload}")
         sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
         headers = {
@@ -4153,24 +4159,25 @@ async def generate_images(request: Request) -> JSONResponse:
                     images.append({"type": "b64_json", "data": b64})
                 elif url:
                     images.append({"type": "url", "data": url})
-        with active_request_details_lock:
-            detail = active_request_details.get(request_id)
-            if detail is not None:
-                detail["images"] = images
-        if result_data is not None:
-            complete_active_request(
-                request_id,
-                final_response=f"Generated {len(images)} image(s).",
-                prompt_tokens=0,
-                completion_tokens=0,
-            )
-        else:
-            complete_active_request(
-                request_id,
-                final_response="Image generation failed.",
-                prompt_tokens=0,
-                completion_tokens=0,
-            )
+        if request_id:
+            with active_request_details_lock:
+                detail = active_request_details.get(request_id)
+                if detail is not None:
+                    detail["images"] = images
+            if result_data is not None:
+                complete_active_request(
+                    request_id,
+                    final_response=f"Generated {len(images)} image(s).",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                )
+            else:
+                complete_active_request(
+                    request_id,
+                    final_response="Image generation failed.",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                )
 
 
 async def _get_host_cpu_tctl_c() -> float | None:
