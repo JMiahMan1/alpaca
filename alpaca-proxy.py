@@ -3508,13 +3508,8 @@ async def _evict_llama_vram() -> None:
     await wait_for_llama_server_or_restart(timeout=30.0)
 
 
-async def unload_sd_model() -> bool:
-    """Evicts Stable Diffusion model from VRAM to make room for LLM usage."""
-    async with active_sd_requests_lock:
-        while active_sd_requests > 0:
-            logger.info("Active Stable Diffusion requests in progress, waiting before unload...")
-            await active_sd_requests_lock.wait()
-
+async def _unload_sd_now() -> bool:
+    """Tear down sd-server with an empty config. Caller must hold no wait on active_sd."""
     logger.info("Evicting Stable Diffusion model from VRAM to make room for LLM...")
     config_path = os.path.join(ROUTER_MODELS_DIR, "sd_active_model.json")
     try:
@@ -3561,6 +3556,21 @@ async def unload_sd_model() -> bool:
     except Exception as e:
         logger.error(f"Error restarting sd-server: {e}")
     return False
+
+
+async def unload_sd_model() -> bool:
+    """Evicts Stable Diffusion model from VRAM to make room for LLM usage.
+
+    Waits for in-flight image jobs first so a generation cannot be killed mid-run.
+    Must NOT be called while holding ``backend_swap_lock`` if the caller also
+    needs image jobs that already claimed ``active_sd_requests`` (deadlock).
+    """
+    async with active_sd_requests_lock:
+        while active_sd_requests > 0:
+            logger.info("Active Stable Diffusion requests in progress, waiting before unload...")
+            await active_sd_requests_lock.wait()
+
+    return await _unload_sd_now()
 
 
 _IMAGE_FILE_FORMATS = {
@@ -6546,15 +6556,32 @@ async def _ensure_model_skip_swap(model_name: str):
 
 
 async def ensure_sd_unloaded():
-    """Unloads the Stable Diffusion model to free up VRAM for LLM usage."""
-    async with backend_swap_lock:
-        async with vram_monitoring_lock:
-            sd_active = active_sd_model is not None
-        if sd_active:
-            try:
-                await unload_sd_model()
-            except Exception as e:
-                logger.error(f"Failed to unload Stable Diffusion model: {e}")
+    """Unloads the Stable Diffusion model to free up VRAM for LLM usage.
+
+    Waits for in-flight image jobs *before* taking ``backend_swap_lock`` so an
+    active generation (which claimed ``active_sd_requests`` then awaits that
+    lock inside ``ensure_sd_model_loaded``) cannot deadlock against this path.
+    Also runs on the ensure_model early-return so LLM and SD never co-resident
+    on the 8 GB card (shared VRAM starves the Qwen VAE decode).
+    """
+    while True:
+        async with active_sd_requests_lock:
+            while active_sd_requests > 0:
+                logger.info("Active Stable Diffusion requests in progress, waiting before LLM load...")
+                await active_sd_requests_lock.wait()
+
+        async with backend_swap_lock:
+            async with active_sd_requests_lock:
+                if active_sd_requests > 0:
+                    continue  # New image job slipped in; drop the lock and retry.
+            async with vram_monitoring_lock:
+                sd_active = active_sd_model is not None
+            if sd_active:
+                try:
+                    await _unload_sd_now()
+                except Exception as e:
+                    logger.error(f"Failed to unload Stable Diffusion model: {e}")
+            return
 
 
 # Recognised online model provider prefixes - never route these to llama.cpp.
@@ -6606,6 +6633,9 @@ async def ensure_model(model_name: str, options: dict | None = None, skip_swap: 
         status = router_entry_status(entry)
 
         if status == "loaded" and await is_child_model_healthy(backend_model):
+            # Free SD VRAM first — on the 8 GB 4060 LLM and diffusion models
+            # cannot be co-resident (VAE decode OOMs if the LLM stays loaded).
+            await ensure_sd_unloaded()
             mark_model_loaded(model_name)
             await record_model_loaded(model_name)
             return {
