@@ -4006,7 +4006,9 @@ async def edit_images(request: Request) -> Response:
                         data=data,
                         files=files,
                         headers=headers,
-                        timeout=600.0,
+                        # Qwen multi-image edits on the 4060 can exceed 15 min
+                        # (14 steps @ ~68s/it + conditioning). 600s was killing them mid-run.
+                        timeout=httpx.Timeout(1800.0, connect=30.0),
                     )
                 if resp.status_code >= 400:
                     logger.error(f"sd-server edit error {resp.status_code}: {resp.text}")
@@ -4019,8 +4021,11 @@ async def edit_images(request: Request) -> Response:
             except HTTPException:
                 raise
             except Exception as e:
-                logger.error(f"Failed to forward edit request to sd-server: {e}")
-                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.") from e
+                logger.error(f"Failed to forward edit request to sd-server: {e!r}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"sd-server edit failed: {e.__class__.__name__}: {e}",
+                ) from e
         else:
             raise HTTPException(status_code=503, detail="SD HTTP client is not initialized.")
     finally:
@@ -4111,15 +4116,26 @@ async def generate_images(request: Request) -> JSONResponse:
         if client_sd_httpx:
             try:
                 async with sd_execution_lock:
-                    resp = await client_sd_httpx.post(f"{sd_url}/v1/images/generations", json=payload, headers=headers)
+                    resp = await client_sd_httpx.post(
+                        f"{sd_url}/v1/images/generations",
+                        json=payload,
+                        headers=headers,
+                        # Qwen on the 4060 can take 10+ min under VRAM pressure.
+                        timeout=httpx.Timeout(1800.0, connect=30.0),
+                    )
                 if resp.status_code >= 400:
                     logger.error(f"sd-server error {resp.status_code}: {resp.text}")
                     raise HTTPException(status_code=502, detail=f"sd-server error: {resp.text}")
                 result_data = resp.json()
                 return JSONResponse(content=result_data)
+            except HTTPException:
+                raise
             except Exception as e:
-                logger.error(f"Failed to forward request to sd-server: {e}")
-                raise HTTPException(status_code=503, detail="sd-server is currently unavailable.") from e
+                logger.error(f"Failed to forward request to sd-server: {e!r}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"sd-server generation failed: {e.__class__.__name__}: {e}",
+                ) from e
         else:
             raise HTTPException(status_code=503, detail="SD HTTP client is not initialized.")
     finally:

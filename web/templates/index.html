@@ -1685,6 +1685,7 @@
                                                 <button type="button" id="sd-photo-remove-btn" class="btn btn-secondary btn-xs btn-slate" style="margin-top:0.35rem;">Change Photo(s)</button>
                                             </div>
                                         </div>
+                                        <div id="sd-photo-thumb-strip" class="d-none" style="display:none;"></div>
                                     </div>
 
                                     <!-- Multi-image quick prompts (face swap / merge) -->
@@ -1743,7 +1744,11 @@
                                         </div>
                                     </div>
 
-                                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:0.75rem;">
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem;">
+                                        <div>
+                                            <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;">Steps</label>
+                                            <input type="number" id="sd-edit-steps" value="8" min="1" max="50" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;" title="Lower = faster multi-image edits on 8GB VRAM">
+                                        </div>
                                         <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;"># Images</label>
                                             <input type="number" id="sd-edit-n" value="1" min="1" max="4" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;">

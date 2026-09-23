@@ -1361,6 +1361,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    let photoThumbStrip = null;
+    function ensurePhotoThumbStrip() {
+        if (photoThumbStrip && photoThumbStrip.isConnected) return photoThumbStrip;
+        photoThumbStrip = document.getElementById('sd-photo-thumb-strip');
+        if (photoThumbStrip) return photoThumbStrip;
+        photoThumbStrip = document.createElement('div');
+        photoThumbStrip.id = 'sd-photo-thumb-strip';
+        photoThumbStrip.className = 'd-none';
+        photoThumbStrip.style.cssText = 'display:none;flex-wrap:wrap;gap:0.4rem;justify-content:center;margin-top:0.6rem;';
+        const zone = document.getElementById('sd-photo-dropzone');
+        if (zone) zone.appendChild(photoThumbStrip);
+        return photoThumbStrip;
+    }
+
     function showPhotoPreview(fileOrFiles) {
         if (!photoImg || !photoName) return;
         const files = Array.isArray(fileOrFiles) ? fileOrFiles : (fileOrFiles ? [fileOrFiles] : []);
@@ -1380,6 +1394,72 @@ document.addEventListener('DOMContentLoaded', () => {
             if (photoPreview) photoPreview.classList.remove('d-none');
         };
         reader.readAsDataURL(files[0]);
+
+        const strip = ensurePhotoThumbStrip();
+        strip.innerHTML = '';
+        files.forEach((f, i) => {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'text-align:center;';
+            const th = document.createElement('img');
+            th.title = f.name;
+            th.alt = f.name;
+            th.style.cssText = 'width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);';
+            const lbl = document.createElement('div');
+            lbl.style.cssText = 'font-size:0.65rem;color:#94a3b8;max-width:56px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            lbl.textContent = i === 0 ? `img ${i + 1} (base)` : `img ${i + 1}`;
+            th.onload = () => URL.revokeObjectURL(th.src);
+            th.src = URL.createObjectURL(f);
+            wrap.appendChild(th);
+            wrap.appendChild(lbl);
+            strip.appendChild(wrap);
+        });
+        if (files.length === 1) {
+            strip.classList.add('d-none');
+            strip.style.display = 'none';
+        } else {
+            strip.classList.remove('d-none');
+            strip.style.display = 'flex';
+        }
+    }
+
+    /** Downscale oversized JPEG/PNG sources in-browser so multi-image edits
+     *  do not push multi-MB camera files through the proxy onto 8GB VRAM. */
+    function downscaleEditFile(file, maxEdge = 1024) {
+        return new Promise((resolve) => {
+            if (!file || !file.type.startsWith('image/')) {
+                resolve(file);
+                return;
+            }
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => {
+                const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+                URL.revokeObjectURL(url);
+                if (scale >= 1 && file.size <= 2 * 1024 * 1024) {
+                    resolve(file);
+                    return;
+                }
+                const w = Math.max(1, Math.round(img.width * scale));
+                const h = Math.max(1, Math.round(img.height * scale));
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                canvas.toBlob((blob) => {
+                    if (!blob || blob.size >= file.size) {
+                        resolve(file);
+                        return;
+                    }
+                    const name = file.name.replace(/\.(png|jpe?g|webp)$/i, '') + '.jpg';
+                    resolve(new File([blob], name, { type: 'image/jpeg', lastModified: Date.now() }));
+                }, 'image/jpeg', 0.92);
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(url);
+                resolve(file);
+            };
+            img.src = url;
+        });
     }
 
     const strengthGuide = document.getElementById('sd-strength-guide');
@@ -1608,6 +1688,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const n = document.getElementById('sd-edit-n').value;
             const strength = document.getElementById('sd-edit-strength').value;
             const negative = document.getElementById('sd-edit-negative').value.trim();
+            const steps = document.getElementById('sd-edit-steps');
             const files = Array.from((fileInput && fileInput.files) || []);
             if (!model) { sdEditStatus.textContent = 'Load an image model first.'; return; }
             if (files.length === 0) { sdEditStatus.textContent = 'Choose at least one source image.'; return; }
@@ -1624,30 +1705,48 @@ document.addEventListener('DOMContentLoaded', () => {
             fd.append('size', size);
             fd.append('n', n);
             fd.append('strength', String(parseFloat(strength) || 0.45));
+            const stepVal = steps ? parseInt(steps.value, 10) : 0;
+            if (stepVal > 0) fd.append('steps', String(stepVal));
             if (negative) fd.append('negative_prompt', negative);
             Object.entries(collectSdAdvancedSettings()).forEach(([k, v]) => fd.append(k, String(v)));
-            if (files.length === 1) {
-                fd.append('image', files[0]);
-            } else {
-                files.forEach(f => fd.append('image[]', f));
-            }
-
-            sdEditStatus.textContent = files.length > 1
-                ? `Editing ${files.length} images (this can take a while)...`
-                : 'Editing image (this can take a while)...';
             sdEditBtn.disabled = true;
+            let progressTimer = null;
+            let progressStart = 0;
             try {
+                sdEditStatus.textContent = files.length > 1
+                    ? `Preparing ${files.length} images (downscaling if needed)...`
+                    : 'Preparing image...';
+                const prepared = await Promise.all(files.map(f => downscaleEditFile(f, 1024)));
+                if (prepared.length === 1) {
+                    fd.append('image', prepared[0]);
+                } else {
+                    prepared.forEach(f => fd.append('image[]', f));
+                }
+
+                progressStart = Date.now();
+                progressTimer = setInterval(() => {
+                    const secs = Math.round((Date.now() - progressStart) / 1000);
+                    sdEditStatus.textContent = prepared.length > 1
+                        ? `⚙ Editing ${prepared.length} images… ${secs}s (multi-image can take a few minutes)`
+                        : `⚙ Editing… ${secs}s (can take a few minutes)`;
+                }, 1000);
+                sdEditStatus.textContent = prepared.length > 1
+                    ? `Editing ${prepared.length} images…`
+                    : 'Editing image…';
+
                 const res = await fetch('/api/sd/edit', { method: 'POST', body: fd });
                 const data = await res.json();
                 if (res.ok && data.data) {
                     data.data.forEach(item => renderSDResultCard(item, sdResults, 'photo_edit', { prompt }));
-                    sdEditStatus.textContent = `✅ Edited ${data.data.length} image(s).`;
+                    const secs = Math.round((Date.now() - progressStart) / 1000);
+                    sdEditStatus.textContent = `✅ Edited ${data.data.length} image(s) in ${secs}s.`;
                 } else {
                     sdEditStatus.textContent = `❌ ${data.error || data.detail || 'Edit failed'}`;
                 }
             } catch (e) {
                 sdEditStatus.textContent = `❌ ${e.message}`;
             } finally {
+                if (progressTimer) clearInterval(progressTimer);
                 sdEditBtn.disabled = false;
             }
         });
