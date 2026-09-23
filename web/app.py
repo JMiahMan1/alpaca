@@ -2083,7 +2083,8 @@ def sd_generate_api():
     qr_label = data.pop("qr_label", "SCAN ME")
 
     try:
-        with httpx.Client(timeout=600.0) as client:
+        # Qwen image gen on the 4060 can exceed 10 minutes under load.
+        with httpx.Client(timeout=httpx.Timeout(1800.0, connect=30.0)) as client:
             resp = client.post(f"{PROXY_URL}/v1/images/generations", json=data, headers=get_proxy_headers())
             if resp.status_code == 200 and qr_text:
                 resp_json = resp.json()
@@ -2153,7 +2154,8 @@ def sd_edit_api():
         qr_position = data.pop("qr_position", "bottom_right")
         qr_label = data.pop("qr_label", "SCAN ME")
 
-        with httpx.Client(timeout=600.0) as client:
+        # Multi-image Qwen edits can run 15+ minutes on the 4060.
+        with httpx.Client(timeout=httpx.Timeout(1800.0, connect=30.0)) as client:
             resp = client.post(f"{PROXY_URL}/v1/images/edits", data=data, files=files, headers=get_proxy_headers())
             if resp.status_code == 200 and qr_text:
                 resp_json = resp.json()
