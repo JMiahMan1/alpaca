@@ -7,6 +7,7 @@ years, currency, and plain numbers well; this module covers what it misreads:
 - Scripture references  "Mark 14:3-9"  -> "Mark chapter 14, verses 3 through 9"
 - Roman numerals        "Henry VIII"   -> "Henry the Eighth", "Chapter IV" -> "Chapter 4"
 - Year ranges           "1703-1791"    -> "1703 to 1791"
+- Spoken dates          "May 24, 1738" -> "May 24th, 1738"
 - Titles                "Rev. Smith"   -> "Reverend Smith"
 - Parentheses           "(an aside)"   -> ", an aside,"  (Kokoro phrases commas better)
 - A lexicon file of ordered custom replacements and IPA pronunciation
@@ -177,6 +178,21 @@ def normalize_roman(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 _YEAR_RANGE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\s*[-–—]\s*(1[0-9]{3}|20[0-9]{2})\b")
+# "May 24, 1738" -> "May 24th, 1738" (spoken dates use ordinals). "May" also
+# needs a following comma/period/year context so "May 3 people" is left alone.
+_MONTHS = ("January|February|March|April|June|July|August|September|October|November|December|"
+           "Jan\\.|Feb\\.|Mar\\.|Apr\\.|Jun\\.|Jul\\.|Aug\\.|Sept?\\.|Oct\\.|Nov\\.|Dec\\.")
+_DATE_DAY = re.compile(rf"\b((?:{_MONTHS})\s+)([1-9]|[12][0-9]|3[01])\b(?![\d:.,]\d|(?:st|nd|rd|th)\b)")
+_MAY_DAY = re.compile(r"\b(May\s+)([1-9]|[12][0-9]|3[01])\b(?=\s*(?:,|\.(?!\d)|;|\s+(?:1[0-9]{3}|20[0-9]{2})\b|$))")
+
+
+def _ordinal_suffix(n: int) -> str:
+    return "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
+def normalize_dates(text: str) -> str:
+    day = lambda m: f"{m.group(1)}{m.group(2)}{_ordinal_suffix(int(m.group(2)))}"
+    return _MAY_DAY.sub(day, _DATE_DAY.sub(day, text))
 _TITLES = [
     (re.compile(r"\bRev\.\s+(?=[A-Z])"), "Reverend "),
     (re.compile(r"\bFr\.\s+(?=[A-Z])"), "Father "),
@@ -321,6 +337,7 @@ def normalize(text: str, lexicon: Lexicon | None = None) -> str:
     text = lex.apply_replacements(text)
     text = normalize_scripture(text)      # before parens: "(John 3:16)" keeps its book context
     text = _YEAR_RANGE.sub(r"\1 to \2", text)
+    text = normalize_dates(text)
     for pat, rep in _TITLES:
         text = pat.sub(rep, text)
     text = normalize_roman(text)
