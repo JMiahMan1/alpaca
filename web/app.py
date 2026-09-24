@@ -1940,13 +1940,17 @@ def audio_voices_api():
         return jsonify({"error": str(e)}), 502
 
 
-@app.route("/api/audio/voices/<pid>", methods=["DELETE"])
-def audio_voice_delete_api(pid):
+@app.route("/api/audio/voices/<pid>", methods=["PATCH", "DELETE"])
+def audio_voice_item_api(pid):
+    """Rename (PATCH {name}) or delete a custom voice."""
     import httpx
 
     try:
         with httpx.Client(timeout=30.0) as client:
-            resp = client.delete(f"{AUDIO_SERVER_URL}/api/voices/{pid}")
+            if request.method == "PATCH":
+                resp = client.patch(f"{AUDIO_SERVER_URL}/api/voices/{pid}", json=request.get_json() or {})
+            else:
+                resp = client.delete(f"{AUDIO_SERVER_URL}/api/voices/{pid}")
             return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 502

@@ -11772,6 +11772,9 @@ function showAudio(b64, filename) {
 // localhost); uploading a recording made elsewhere always works.
 // ---------------------------------------------------------------------------
 
+// dashboard.js's escapeHtml helpers are function-local, so keep our own.
+const vcEsc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 const _vc = { prompts: [], takes: {}, recorder: null, stream: null, meterRaf: null, timer: null };
 
 function vcSecureUrl() {
@@ -11787,7 +11790,7 @@ async function wireVoiceClone() {
     if (!canRecord) {
         const warn = document.getElementById('vc-secure-warning');
         warn.style.display = 'block';
-        warn.innerHTML = `🔒 Browsers only allow the microphone on secure pages. Open <a href="${vcSecureUrl()}" style="color:#fde68a;">${escapeHtml(vcSecureUrl())}</a> to record here (accept the one-time certificate prompt), or use <strong>Upload</strong> for recordings made on your phone.`;
+        warn.innerHTML = `🔒 Browsers only allow the microphone on secure pages. Open <a href="${vcSecureUrl()}" style="color:#fde68a;">${vcEsc(vcSecureUrl())}</a> to record here (accept the one-time certificate prompt), or use <strong>Upload</strong> for recordings made on your phone.`;
     }
 
     ['vc-name', 'vc-consent'].forEach(id => document.getElementById(id).addEventListener('input', vcUpdateBuildButton));
@@ -11810,11 +11813,11 @@ function vcPromptRow(p, canRecord) {
     row.style.cssText = 'background:#090d16; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:0.65rem 0.75rem;';
     row.innerHTML = `
         <div style="display:flex; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; align-items:baseline;">
-            <strong style="color:#e2e8f0; font-size:0.82rem;">${escapeHtml(p.title)}</strong>
-            <span style="font-size:0.7rem; color:#64748b;">${escapeHtml(p.why)}</span>
+            <strong style="color:#e2e8f0; font-size:0.82rem;">${vcEsc(p.title)}</strong>
+            <span style="font-size:0.7rem; color:#64748b;">${vcEsc(p.why)}</span>
         </div>
-        <p style="font-size:0.92rem; line-height:1.55; color:#f1f5f9; margin:0.45rem 0; font-family:Georgia, serif;">${escapeHtml(p.text)}</p>
-        <div style="font-size:0.7rem; color:#94a3b8; margin-bottom:0.45rem;">💡 ${escapeHtml(p.tip)}</div>
+        <p style="font-size:0.92rem; line-height:1.55; color:#f1f5f9; margin:0.45rem 0; font-family:Georgia, serif;">${vcEsc(p.text)}</p>
+        <div style="font-size:0.7rem; color:#94a3b8; margin-bottom:0.45rem;">💡 ${vcEsc(p.tip)}</div>
         <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
             <button type="button" class="btn btn-secondary btn-sm vc-rec" ${canRecord ? '' : 'disabled title="Open the HTTPS address to record"'}>● Record</button>
             <label class="btn btn-secondary btn-sm" style="cursor:pointer;">⬆ Upload<input type="file" accept="audio/*" class="vc-file" style="display:none;"></label>
@@ -11938,9 +11941,9 @@ async function vcBuild() {
         const data = await resp.json();
         if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
         const v = data.voice;
-        const rows = v.recordings.map((r, i) => `<li>Take ${i + 1}: ${r.speech_s}s of speech · SNR ${r.snr_db} dB${r.warnings.length ? ' · <span style="color:#fbbf24;">' + r.warnings.map(escapeHtml).join('; ') + '</span>' : ''}</li>`).join('');
+        const rows = v.recordings.map((r, i) => `<li>Take ${i + 1}: ${r.speech_s}s of speech · SNR ${r.snr_db} dB${r.warnings.length ? ' · <span style="color:#fbbf24;">' + r.warnings.map(vcEsc).join('; ') + '</span>' : ''}</li>`).join('');
         report.innerHTML = `<div style="background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.3); border-radius:8px; padding:0.55rem 0.7rem; color:#cbd5e1;">
-            ✅ <strong>${escapeHtml(v.name)}</strong> is ready (${v.speech_s}s of speech). It is selected in the Text-to-Speech pane above.
+            ✅ <strong>${vcEsc(v.name)}</strong> is ready (${v.speech_s}s of speech). It is selected in the Text-to-Speech pane above.
             <ul style="margin:0.35rem 0 0 1rem; padding:0;">${rows}</ul>
             ${v.warnings.length ? '<div style="margin-top:0.35rem; color:#fbbf24;">Re-recording in a quieter spot or at a better distance will improve the match.</div>' : ''}</div>`;
         report.style.display = 'block';
@@ -11966,7 +11969,7 @@ async function vcRefreshList(selectId) {
     }
     const current = selectId || sel.value;
     sel.innerHTML = '<option value="">None (Kokoro only)</option>' +
-        voices.map(v => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.name)}</option>`).join('');
+        voices.map(v => `<option value="${vcEsc(v.id)}">${vcEsc(v.name)}</option>`).join('');
     if (voices.some(v => v.id === current)) sel.value = current;
     if (!voices.length) { list.textContent = 'No custom voices yet.'; return; }
     list.innerHTML = '';
@@ -11974,8 +11977,9 @@ async function vcRefreshList(selectId) {
         const item = document.createElement('div');
         item.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:0.5rem; background:#090d16; border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:0.45rem 0.65rem;';
         const when = new Date(v.created * 1000).toLocaleDateString();
-        item.innerHTML = `<span><strong style="color:#e2e8f0;">${escapeHtml(v.name)}</strong> · ${v.speech_s}s of speech · ${when}${v.warnings && v.warnings.length ? ' · <span style="color:#fbbf24;" title="' + escapeHtml(v.warnings.join('; ')) + '">⚠ quality notes</span>' : ''}</span>
-            <span style="display:flex; gap:0.4rem;"><button type="button" class="btn btn-secondary btn-sm vc-use">Use</button><button type="button" class="btn btn-danger btn-sm vc-del">Delete</button></span>`;
+        item.innerHTML = `<span><strong style="color:#e2e8f0;">${vcEsc(v.name)}</strong> · ${v.speech_s}s of speech · ${when}${v.warnings && v.warnings.length ? ' · <span style="color:#fbbf24;" title="' + vcEsc(v.warnings.join('; ')) + '">⚠ quality notes</span>' : ''}</span>
+            <span style="display:flex; gap:0.4rem;"><button type="button" class="btn btn-secondary btn-sm vc-use">Use</button><button type="button" class="btn btn-secondary btn-sm vc-ren">Rename</button><button type="button" class="btn btn-danger btn-sm vc-del">Delete</button></span>`;
+        item.querySelector('.vc-ren').addEventListener('click', () => vcStartRename(item, v));
         item.querySelector('.vc-use').addEventListener('click', () => {
             sel.value = v.id;
             document.getElementById('tts-text').focus();
@@ -11987,4 +11991,38 @@ async function vcRefreshList(selectId) {
         });
         list.appendChild(item);
     });
+}
+
+function vcStartRename(item, v) {
+    const label = item.firstElementChild;
+    const form = document.createElement('span');
+    form.style.cssText = 'display:flex; gap:0.4rem; align-items:center; flex:1; flex-wrap:wrap;';
+    form.innerHTML = `<input type="text" maxlength="60" style="flex:1; min-width:160px; background:#0f172a; border:1px solid rgba(255,255,255,0.18); border-radius:6px; color:#e2e8f0; padding:0.3rem 0.45rem;">
+        <button type="button" class="btn btn-green btn-sm">Save</button><button type="button" class="btn btn-secondary btn-sm">Cancel</button>
+        <span class="vc-ren-err" style="color:#fca5a5; font-size:0.72rem; flex-basis:100%;"></span>`;
+    const input = form.querySelector('input');
+    const [save, cancel] = form.querySelectorAll('button');
+    input.value = v.name;
+    label.replaceWith(form);
+    input.focus(); input.select();
+    const done = () => vcRefreshList();
+    const submit = async () => {
+        const name = input.value.trim();
+        if (!name || name === v.name) return done();
+        save.disabled = true;
+        try {
+            const resp = await fetch(`/api/audio/voices/${encodeURIComponent(v.id)}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+            });
+            const data = await resp.json();
+            if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
+            done();
+        } catch (err) {
+            form.querySelector('.vc-ren-err').textContent = err.message;
+            save.disabled = false;
+        }
+    };
+    save.addEventListener('click', submit);
+    cancel.addEventListener('click', done);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); else if (e.key === 'Escape') done(); });
 }

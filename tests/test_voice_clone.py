@@ -50,3 +50,26 @@ def test_prompts_are_complete():
     ids = [p["id"] for p in vc.PROMPTS]
     assert len(ids) == len(set(ids)) >= 3
     assert all(p["text"] and p["min_s"] > 0 and p["title"] and p["tip"] for p in vc.PROMPTS)
+
+
+def _fake_profile(root, pid, name):
+    import json
+    d = root / pid
+    d.mkdir()
+    (d / "meta.json").write_text(json.dumps({"id": pid, "name": name, "created": 1}))
+
+
+def test_names_are_unique_and_renamable(tmp_path, monkeypatch):
+    monkeypatch.setattr(vc, "VOICES_DIR", str(tmp_path))
+    _fake_profile(tmp_path, "narrator-aaa111", "Narrator")
+    _fake_profile(tmp_path, "casual-bbb222", "Casual")
+    with pytest.raises(ValueError, match="already exists"):
+        vc._check_name("  narrator ")
+    assert vc._check_name("Narrator  v2") == "Narrator v2"
+    with pytest.raises(ValueError, match="already exists"):
+        vc.rename_profile("casual-bbb222", "NARRATOR")
+    assert vc.rename_profile("narrator-aaa111", "Narrator") ["name"] == "Narrator"  # same voice keeps its name
+    assert vc.rename_profile("casual-bbb222", "Sunday narrator")["name"] == "Sunday narrator"
+    assert vc.get_profile("casual-bbb222")["name"] == "Sunday narrator"
+    with pytest.raises(KeyError):
+        vc.rename_profile("missing-ccc333", "X")
