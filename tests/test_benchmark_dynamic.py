@@ -152,6 +152,255 @@ async def test_incremental_merging(tmp_path):
     assert "last_run" in reasoning_tests[0]
 
 
+def test_frontier_diagnostics_group_is_explicit_and_balanced():
+    suite = LLMModelBenchmark()
+    tests = suite._load_tests_config()["frontier_diagnostics"]
+    ids = [test["id"] for test in tests]
+
+    assert 14 <= len(tests) <= 18
+    assert len(ids) == len(set(ids))
+    assert all(test_id.startswith("frontier_") for test_id in ids)
+    for test in tests:
+        assert test["category"] == "frontier_diagnostics"
+        assert all(
+            test.get(field) not in (None, "") for field in ("type", "lang", "num_predict", "reasoning_estimate", "tier")
+        )
+        assert test["tier"] == "standard"
+        assert "attachments" not in test
+        assert len(test["prompt"]) < 2000
+
+    code_ui = [test for test in tests if test["type"] in {"code", "ui"}]
+    objective = [
+        test
+        for test in tests
+        if test["id"]
+        in {
+            "frontier_math_worker_rates",
+            "frontier_reasoning_label_swaps",
+            "frontier_knowledge_conflict_status",
+        }
+    ]
+    instructions = [
+        test
+        for test in tests
+        if test["id"]
+        in {
+            "frontier_json_feature_patch",
+            "frontier_tool_schema_call",
+            "frontier_transform_sorted_tsv",
+        }
+    ]
+    context_agentic = [
+        test
+        for test in tests
+        if test["id"]
+        in {
+            "frontier_context_first_stable_build",
+            "frontier_agent_idempotent_ledger",
+            "frontier_context_header_limit",
+        }
+    ]
+    reviews = [test for test in tests if test["type"] == "review"]
+
+    assert 3 <= len(code_ui) <= 4
+    assert all(4000 <= test["num_predict"] <= 8000 for test in code_ui)
+    assert len(objective) == 3
+    assert all("expected" in test for test in objective)
+    assert len(instructions) == 3
+    assert len(context_agentic) == 3
+    assert all("expected" in test for test in context_agentic)
+    assert 1 <= len(reviews) <= 2
+    assert len({test["type"] for test in code_ui}) == 2
+    assert suite._frontier_diagnostics_tests("") == tests
+
+
+@pytest.mark.asyncio
+async def test_frontier_group_only_filter_and_totals(tmp_path):
+    suite = LLMModelBenchmark()
+    suite.RESULTS_DIR = tmp_path
+    suite.MODELS_DIR = tmp_path
+    frontier_ids = [test["id"] for test in suite._frontier_diagnostics_tests("")]
+
+    assert suite.get_total_tests_per_model("functional", groups=["frontier_diagnostics"]) == len(frontier_ids)
+    assert (
+        suite.get_total_tests_per_model(
+            "functional",
+            test_ids=["frontier_math_worker_rates", "frontier_json_feature_patch"],
+            groups=["frontier_diagnostics"],
+        )
+        == 2
+    )
+    assert (
+        suite.get_total_tests_per_model(
+            "functional",
+            test_ids=["frontier_math_worker_rates"],
+            groups=["coding"],
+        )
+        == 0
+    )
+
+    async def query(model, test, sampler=None):
+        assert test["id"] == "frontier_math_worker_rates"
+        return {"success": True, "tokens_generated": 2, "latency": 0.1, "response": "90"}
+
+    suite.test_model_proxy = query
+    result = await suite.benchmark_model_functional(
+        "model",
+        use_proxy=True,
+        test_ids=["frontier_math_worker_rates"],
+        groups=["frontier_diagnostics"],
+    )
+
+    assert set(result) == {"model", "timestamp", "category_frontier_diagnostics"}
+    assert [test["test_id"] for test in result["category_frontier_diagnostics"]["tests"]] == [
+        "frontier_math_worker_rates"
+    ]
+
+
+def test_frontier_dedicated_functional_verifiers():
+    suite = LLMModelBenchmark()
+    by_id = {test["id"]: test for test in suite._frontier_diagnostics_tests("")}
+
+    code = (
+        "```python\n"
+        "def normalize(values):\n"
+        "    result = []\n"
+        "    for value in values:\n"
+        "        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:\n"
+        "            continue\n"
+        "        if value not in result:\n"
+        "            result.append(value)\n"
+        "    return result\n"
+        "def main():\n"
+        "    assert normalize([3, -1, 3, True, 0, 5, 5]) == [3, 5]\n"
+        "main()\n"
+        "```"
+    )
+    assert suite._verify_functional_response(by_id["frontier_debug_boundary"], code) is True
+    assert suite._verify_functional_response(by_id["frontier_debug_boundary"], code.replace("assert", "print")) is False
+
+    canvas = (
+        "<canvas id='view'></canvas><script>const c=document.querySelector('canvas');"
+        "const x=c.getContext('2d');x.clearRect(0,0,1,1);x.fillRect(0,0,2,2);"
+        "document.addEventListener('click',()=>{});function frame(){requestAnimationFrame(frame)}"
+        "const d=devicePixelRatio;frame();</script>"
+    )
+    assert suite._verify_functional_response(by_id["frontier_canvas_signal_lab"], canvas) is True
+    assert suite._verify_functional_response(by_id["frontier_canvas_signal_lab"], "<canvas></canvas>") is False
+
+    config = '{"name":"relay","features":{"beta":true,"legacy":false},"limits":{"max":50},"owners":["api","web"]}'
+    assert suite._verify_functional_response(by_id["frontier_json_feature_patch"], config) is True
+    assert suite._verify_functional_response(by_id["frontier_json_feature_patch"], f"```json\n{config}\n```") is False
+
+    tool = '{"tool":"search_users","arguments":{"team":"blue","limit":3,"include_disabled":false}}'
+    assert suite._verify_functional_response(by_id["frontier_tool_schema_call"], tool) is True
+    assert (
+        suite._verify_functional_response(
+            by_id["frontier_tool_schema_call"],
+            '{"tool":"search_users","arguments":{"team":"blue","limit":4,"include_disabled":false}}',
+        )
+        is False
+    )
+
+    tsv = "delta|7|true\nalpha|5|false\nbeta|2|true"
+    assert suite._verify_functional_response(by_id["frontier_transform_sorted_tsv"], tsv) is True
+    assert suite._verify_functional_response(by_id["frontier_transform_sorted_tsv"], tsv + "\nextra|1|true") is False
+
+    review = (
+        "RACE: Concurrent requests mutate the shared cache without synchronization.\n"
+        "TIMEOUT: A 60-second wait can block workers and exhaust the request pool.\n"
+        "RETRY: Use bounded exponential backoff only for transient failures."
+    )
+    assert suite._verify_functional_response(by_id["frontier_review_async_fetch"], review) is True
+    assert (
+        suite._verify_functional_response(by_id["frontier_review_async_fetch"], review.replace("RACE:", "NOTE:"))
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_frontier_latest_merge_preserves_existing_model_categories(tmp_path):
+    suite = LLMModelBenchmark()
+    suite.RESULTS_DIR = tmp_path
+    suite.MODELS_DIR = tmp_path
+    latest = tmp_path / "functional_benchmarks_latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "model": "model",
+                        "category_coding": {
+                            "tests": [{"test_id": "debug_fix", "success": True, "score": 100}],
+                            "tests_run": 1,
+                            "tests_passed": 1,
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    async def query(model, test, sampler=None):
+        return {"success": True, "tokens_generated": 2, "latency": 0.1, "response": "90"}
+
+    suite.test_model_proxy = query
+    await suite.run_model_benchmarks(
+        models=["model"],
+        use_proxy=True,
+        mode="functional",
+        test_ids=["frontier_math_worker_rates"],
+        groups=["frontier_diagnostics"],
+    )
+
+    model_data = json.loads(latest.read_text())["results"][0]
+    assert model_data["category_coding"]["tests"][0]["test_id"] == "debug_fix"
+    assert model_data["category_frontier_diagnostics"]["tests"][0]["test_id"] == "frontier_math_worker_rates"
+
+
+@pytest.mark.asyncio
+async def test_frontier_latest_merge_retains_prior_models_for_new_model_path(tmp_path):
+    suite = LLMModelBenchmark()
+    suite.RESULTS_DIR = tmp_path
+    suite.MODELS_DIR = tmp_path
+    latest = tmp_path / "functional_benchmarks_latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "model": "old-model",
+                        "category_coding": {
+                            "tests": [{"test_id": "debug_fix", "success": True, "score": 100}],
+                            "tests_run": 1,
+                            "tests_passed": 1,
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    async def query(model, test, sampler=None):
+        return {"success": True, "tokens_generated": 2, "latency": 0.1, "response": "107"}
+
+    suite.test_model_proxy = query
+    await suite.run_model_benchmarks(
+        models=["new-model"],
+        use_proxy=True,
+        mode="functional",
+        test_ids=["frontier_agent_idempotent_ledger"],
+        groups=["frontier_diagnostics"],
+    )
+
+    by_model = {model_data["model"]: model_data for model_data in json.loads(latest.read_text())["results"]}
+    assert set(by_model) == {"old-model", "new-model"}
+    assert by_model["old-model"]["category_coding"]["tests"][0]["test_id"] == "debug_fix"
+    assert by_model["new-model"]["category_frontier_diagnostics"]["tests"][0]["test_id"] == (
+        "frontier_agent_idempotent_ledger"
+    )
+
+
 def _chat_ndjson(chunks, final_metrics):
     lines = []
     for c in chunks:
@@ -761,6 +1010,8 @@ def test_score_test_graded_not_binary():
     # Did not run -> 0.
     not_ran = {"response": "code...", "code_ran": False, "code_score": 0, "success": False}
     assert benchmark._score_test(test, not_ran) == 0
+    repaired_failed = {**failed_fp, "repaired": True, "repair_points_deducted": 25}
+    assert benchmark._score_test(test, repaired_failed) == 20
 
 
 def test_score_test_knowledge_partial_credit():
@@ -1155,7 +1406,9 @@ async def test_online_empty_length_thinking_gets_direct_answer_recovery():
 
     call = {"n": 0}
 
-    async def fake_impl(model_identifier, prompt, max_tokens, temperature, custom_keys, request_timeout=None):
+    async def fake_impl(
+        model_identifier, prompt, max_tokens, temperature, custom_keys, request_timeout=None, thinking_enabled=None
+    ):
         call["n"] += 1
         if call["n"] == 1:
             return {
@@ -1191,7 +1444,9 @@ async def test_online_deterministic_exhaustion_stops_retry_loop():
     provider = OnlineModelProvider()
     call = {"n": 0}
 
-    async def fake_impl(model_identifier, prompt, max_tokens, temperature, custom_keys, request_timeout=None):
+    async def fake_impl(
+        model_identifier, prompt, max_tokens, temperature, custom_keys, request_timeout=None, thinking_enabled=None
+    ):
         call["n"] += 1
         if "previous attempt produced no final answer" in prompt:
             return {
@@ -1218,6 +1473,237 @@ async def test_online_deterministic_exhaustion_stops_retry_loop():
     assert res["success"] is False
     assert "reasoning exhausted" in res["error"]
     assert call["n"] == 2  # initial + one direct-answer retry, then stop
+
+
+@pytest.mark.asyncio
+async def test_online_code_ui_benchmark_disables_reasoning_and_bounds_continuation(monkeypatch):
+    suite = LLMModelBenchmark()
+    monkeypatch.setattr(suite, "_pace_online_request", lambda model: None)
+    captured = {}
+
+    async def fake_query(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "latency": 0.1,
+            "response": "complete code",
+            "tokens_generated": 12,
+            "effective_max_tokens": kwargs["max_tokens"],
+            "reasoning_enabled": False,
+            "reasoning_budget": 0,
+            "finish_reason": "stop",
+            "continuation_count": 0,
+            "retry_count": 0,
+        }
+
+    monkeypatch.setattr("llm_benchmark_suite.online_model_provider.query_online_model", fake_query)
+    result = await suite.test_model_proxy(
+        "openrouter:stealth/space-bunny-alpha",
+        {
+            "id": "game_test",
+            "category": "gamedev_alt",
+            "type": "ui",
+            "prompt": "Build the game",
+            "num_predict": 9000,
+            "reasoning_estimate": 4096,
+        },
+    )
+
+    assert result["success"] is True
+    assert captured["max_tokens"] == 9000
+    assert captured["benchmark_mode"] == "code"
+    assert captured["thinking_override"] is False
+    assert captured["allow_continuation"] is False
+    assert captured["max_retries"] == 1
+    assert result["requested_num_predict"] == 9000
+    assert result["num_predict"] == 9000
+    assert result["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_online_code_mode_skips_length_continuation_and_records_budget():
+    provider = OnlineModelProvider()
+    calls = []
+
+    async def fake_impl(
+        model_identifier, prompt, max_tokens, temperature, custom_keys, request_timeout=None, thinking_enabled=True
+    ):
+        calls.append({"max_tokens": max_tokens, "thinking_enabled": thinking_enabled})
+        return {
+            "success": True,
+            "latency": 0.1,
+            "response": "partial",
+            "tokens_generated": max_tokens,
+            "finish_reason": "length",
+            "error": None,
+        }
+
+    with (
+        patch.object(provider, "_resolve_thinking_model", new_callable=AsyncMock, return_value=True),
+        patch.object(provider, "_query_online_model_impl", side_effect=fake_impl),
+    ):
+        result = await provider.query_online_model(
+            "openrouter:stealth/space-bunny-alpha",
+            prompt="Build the game",
+            max_tokens=9000,
+            benchmark_mode="code",
+            thinking_override=False,
+            allow_continuation=False,
+            max_retries=1,
+        )
+
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert calls[0] == {"max_tokens": 9000, "thinking_enabled": False}
+    assert result["effective_max_tokens"] == 9000
+    assert result["reasoning_enabled"] is False
+    assert result["provider_thinking"] is True
+    assert result["continuation_count"] == 0
+    assert result["retry_count"] == 0
+    assert result["response_chars"] == len("partial")
+
+
+@pytest.mark.asyncio
+async def test_online_code_mode_does_not_retry_empty_length_cut():
+    provider = OnlineModelProvider()
+    calls = []
+
+    async def fake_impl(
+        model_identifier, prompt, max_tokens, temperature, custom_keys, request_timeout=None, thinking_enabled=True
+    ):
+        calls.append(max_tokens)
+        return {
+            "success": False,
+            "latency": 0.1,
+            "response": "",
+            "tokens_generated": max_tokens,
+            "finish_reason": "length",
+            "error": "OpenRouter returned an empty response (finish_reason=length)",
+        }
+
+    with (
+        patch.object(provider, "_resolve_thinking_model", new_callable=AsyncMock, return_value=True),
+        patch.object(provider, "_query_online_model_impl", side_effect=fake_impl),
+    ):
+        result = await provider.query_online_model(
+            "openrouter:stealth/space-bunny-alpha",
+            prompt="Build the game",
+            max_tokens=9000,
+            benchmark_mode="code",
+            thinking_override=False,
+            allow_continuation=False,
+            max_retries=4,
+        )
+
+    assert len(calls) == 1
+    assert result["retry_count"] == 0
+    assert result["continuation_count"] == 0
+    assert result["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_repair_exception_is_accounted():
+    suite = LLMModelBenchmark()
+    test = {"id": "game_demo", "type": "code", "lang": "python", "prompt": "Build a game"}
+    result = {"response": "bad", "tokens_generated": 10, "latency": 1.0}
+
+    async def fake_repair(*args, **kwargs):
+        raise RuntimeError("repair unavailable")
+
+    with patch.object(suite, "test_model_proxy", side_effect=fake_repair):
+        attempted = await suite._attempt_post_generation_repair(
+            "openrouter:stealth/space-bunny-alpha",
+            test,
+            result,
+            "bad",
+            "syntax error",
+        )
+
+    assert attempted is False
+    assert result["repair_tokens_generated"] == 0
+    assert result["repair_latency"] >= 0
+    assert result["latency"] >= 1.0
+    assert result["repair_metadata"]["error"] == "repair unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("functional_pass", [False, True])
+async def test_repaired_code_is_functionally_revalidated(functional_pass):
+    suite = LLMModelBenchmark()
+    test = {
+        "id": "game_snake_canvas",
+        "category": "gamedev_alt",
+        "type": "ui",
+        "lang": "html",
+        "prompt": "Build a snake game with a persistent scoreboard",
+    }
+    result = {
+        "success": False,
+        "functional_pass": False,
+        "code_ran": False,
+        "code_error": "syntax error",
+        "response": "original",
+        "tokens_generated": 100,
+        "latency": 2.0,
+    }
+
+    async def fake_repair(*args, **kwargs):
+        return {
+            "response": "repaired code",
+            "tokens_generated": 25,
+            "latency": 1.5,
+            "finish_reason": "stop",
+            "retry_count": 0,
+            "continuation_count": 0,
+        }
+
+    with (
+        patch.object(suite, "test_model_proxy", side_effect=fake_repair),
+        patch("llm_benchmark_suite.grade_code", return_value={"ran": True, "score": 80, "error": ""}),
+        patch.object(suite, "_verify_functional_response", return_value=functional_pass),
+    ):
+        attempted = await suite._attempt_post_generation_repair(
+            "openrouter:stealth/space-bunny-alpha",
+            test,
+            result,
+            "original",
+            "syntax error",
+        )
+
+    assert attempted is True
+    assert result["repaired_functional_pass"] is functional_pass
+    assert result["functional_pass"] is functional_pass
+    assert result["success"] is functional_pass
+    assert result["response"] == "repaired code"
+    assert result["tokens_generated"] == 125
+    assert result["latency"] == 3.5
+    assert result["repair_tokens_generated"] == 25
+    assert result["repair_latency"] == 1.5
+    assert result["repair_metadata"]["finish_reason"] == "stop"
+    assert result["response_chars"] == len("repaired code")
+    assert result["lint_passed"] is True
+    if functional_pass:
+        assert result["error"] == ""
+    else:
+        assert result["error"] == "Failed correctness verification check"
+
+
+def test_normalize_code_result_prioritizes_code_error():
+    suite = LLMModelBenchmark()
+    result = {
+        "response": "<html>",
+        "success": True,
+        "functional_pass": True,
+        "code_ran": False,
+        "error": "stale functional error",
+        "code_error": "syntax/lint error: HTML truncated: missing </html>",
+    }
+
+    suite._normalize_code_result(result)
+
+    assert result["success"] is False
+    assert result["error"] == "syntax/lint error: HTML truncated: missing </html>"
+    assert result["failure_kind"] == "syntax_failure"
 
 
 def test_get_fallback_models_requires_env_when_nothing_discovered():

@@ -198,6 +198,7 @@
 
                     <div class="control-group grid-3" style="margin-bottom: 0.5rem;">
                         <button id="btn-run" class="btn btn-primary btn-sm">▶ Run General</button>
+                        <button id="btn-run-frontier-all" class="btn btn-secondary btn-sm btn-slate" title="Run Frontier Diagnostics across every discovered local, proxy, and online model">▶ Run Frontier All</button>
                         <button id="btn-run-outdated" class="btn btn-primary btn-sm btn-amber" title="Re-run only benchmarks whose test definitions have changed since the last run">⚠ Run Outdated</button>
                         <button id="btn-run-shared" class="btn btn-primary btn-sm btn-cyan">⚙ Run SharedLLM</button>
                         <button id="btn-run-multistep" class="btn btn-primary btn-sm btn-cyan" title="Run multi-turn agentic workflows (e.g. Glider 2026 house odyssey)">🛩 Run MultiStep</button>
@@ -1257,13 +1258,20 @@
                                               </select>
                                           </div>
                                           <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
-                                              <div>
-                                                  <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">LLM Text Encoder (llm)</label>
-                                                  <select name="llm" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                                      <option value="">&lt;none&gt;</option>
-                                                  </select>
-                                              </div>
-                                              <div>
+                                               <div>
+                                                   <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.75rem; color:#e2e8f0;">LLM Text Encoder (llm)</label>
+                                                   <select name="llm" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                       <option value="">&lt;none&gt;</option>
+                                                   </select>
+                                               </div>
+                                               <div>
+                                                   <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.75rem; color:#e2e8f0;">Vision Projector (llm_vision)</label>
+                                                   <select name="llm_vision" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                                       <option value="">&lt;none&gt;</option>
+                                                   </select>
+                                               </div>
+                                               <div>
+
                                                   <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">CLIP-L (clip_l)</label>
                                                   <select name="clip_l" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
                                                       <option value="">&lt;none&gt;</option>
@@ -1686,9 +1694,54 @@
                                             </div>
                                         </div>
                                         <div id="sd-photo-thumb-strip" class="d-none" style="display:none;"></div>
-                                    </div>
+                                     </div>
 
-                                    <!-- Multi-image quick prompts (face swap / merge) -->
+                                     <div id="sd-identity-workflow" class="d-none" style="border:1px solid rgba(192,132,252,0.35); background:#090d16; border-radius:10px; padding:0.9rem; display:flex; flex-direction:column; gap:0.75rem;">
+                                         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap;">
+                                             <div>
+                                                 <div style="font-size:0.9rem; font-weight:700; color:#e9d5ff;">Qwen Image 2.1 Identity Composite</div>
+                                                 <div style="font-size:0.72rem; color:#94a3b8; margin-top:0.2rem;">Ordered native references: scene first, people second, face identity third. No pre-composited rectangles.</div>
+                                             </div>
+                                             <span id="sd-identity-recipe-note" style="font-size:0.7rem; color:#c084fc; border:1px solid rgba(192,132,252,0.3); border-radius:12px; padding:0.2rem 0.5rem;">32 steps · CFG 1 · Euler · Simple</span>
+                                         </div>
+                                         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.65rem;">
+                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                 Image 1 · Scene
+                                                 <input id="sd-identity-scene" type="file" accept="image/*" style="width:100%; font-size:0.7rem; color:#94a3b8;">
+                                             </label>
+                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                 Image 2 · People
+                                                 <input id="sd-identity-person" type="file" accept="image/*" style="width:100%; font-size:0.7rem; color:#94a3b8;">
+                                             </label>
+                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                 Image 3+ · Face identity
+                                                 <input id="sd-identity-face" type="file" accept="image/*" multiple style="width:100%; font-size:0.7rem; color:#94a3b8;">
+                                             </label>
+                                         </div>
+                                         <div id="sd-identity-reference-list" style="display:flex; gap:0.5rem; flex-wrap:wrap; min-height:1px;"></div>
+                                         <div style="font-size:0.7rem; color:#94a3b8; line-height:1.45;">The preset sends the three roles as native references and records the exact seed. Facial identity is improved, not pixel-guaranteed; avoid baking a face into a background before uploading.</div>
+                                         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.65rem; align-items:end;">
+                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                 Additional instruction
+                                                 <textarea id="sd-identity-prompt" rows="2" placeholder="Optional: describe placement, scale, or mood" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem; border-radius:6px; font-size:0.78rem; resize:vertical;"></textarea>
+                                             </label>
+                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                 Size
+                                                 <input id="sd-identity-size" value="640x768" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                             </label>
+                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                 Seed
+                                                 <input id="sd-identity-seed" type="number" value="-1" min="-1" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                             </label>
+                                         </div>
+                                         <div style="display:flex; align-items:center; gap:0.65rem; flex-wrap:wrap;">
+                                             <button id="sd-identity-btn" type="button" class="btn btn-primary" style="background:#7e22ce; border-color:#a855f7;">Render Identity Composite</button>
+                                             <button id="sd-identity-clear-btn" type="button" class="btn btn-secondary btn-slate">Clear References</button>
+                                             <div id="sd-identity-status" style="font-size:0.75rem; color:#94a3b8; min-height:1.1rem;"></div>
+                                         </div>
+                                     </div>
+
+                                     <!-- Multi-image quick prompts (face swap / merge) -->
                                     <div>
                                         <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Quick Actions <span style="font-weight:400; color:#94a3b8;">(face swap & merge need 2+ images)</span></label>
                                         <div style="display:flex; flex-wrap:wrap; gap:0.4rem;">

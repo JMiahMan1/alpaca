@@ -49,6 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const modeProxyBtn = document.getElementById('mode-proxy-btn');
     const modeDirectBtn = document.getElementById('mode-direct-btn');
     const btnRun = document.getElementById('btn-run');
+    const btnRunFrontierAll = document.getElementById('btn-run-frontier-all');
     const btnRunShared = document.getElementById('btn-run-shared');
     const btnRunMultistep = document.getElementById('btn-run-multistep');
     const btnRunOutdated = document.getElementById('btn-run-outdated');
@@ -248,6 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
             viewImageStudio.classList.remove('d-none');
             loadSdModels();
             loadSdCapabilities();
+            loadSdPresets();
         } else if (tabName === 'audio') {
             tabBtnAudio.classList.add('active');
             viewAudio.classList.remove('d-none');
@@ -273,6 +275,26 @@ document.addEventListener('DOMContentLoaded', () => {
     // from what the engine reports rather than a hard-coded list that may name
     // options the running build does not have.
     let sdCapabilities = null;
+    let sdPresets = {};
+    const sdIdentityRefs = { scene: null, person: null, face: [] };
+
+    function isQwenImage21Model(modelName) {
+        const normalized = String(modelName || '').toLowerCase().replace(/_/g, '-');
+        return normalized.includes('qwen') && normalized.includes('image-2.1');
+    }
+
+    async function loadSdPresets() {
+        try {
+            const res = await fetch('/api/sd/presets');
+            const data = await res.json();
+            if (res.ok && data && typeof data === 'object') {
+                sdPresets = data;
+                updateIdentityWorkflowVisibility(document.getElementById('sd-model-select')?.value || '');
+            }
+        } catch (e) {
+            console.warn('Could not load image presets:', e);
+        }
+    }
 
     function fillSdOptionList(selectId, names, defaultLabel) {
         const sel = document.getElementById(selectId);
@@ -448,11 +470,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function updateIdentityWorkflowVisibility(modelName) {
+        const workflow = document.getElementById('sd-identity-workflow');
+        if (!workflow) return;
+        const active = isQwenImage21Model(modelName);
+        workflow.classList.toggle('d-none', !active);
+        if (active) {
+            const preset = sdPresets['qwen_image_21.identity'];
+            const defaults = preset && preset.defaults ? preset.defaults : {};
+            const note = document.getElementById('sd-identity-recipe-note');
+            if (note) {
+                note.textContent = `${defaults.steps || 32} steps · CFG ${defaults.cfg_scale || 1} · ${defaults.scheduler || 'simple'}`;
+            }
+            const size = document.getElementById('sd-identity-size');
+            if (size && !size.value) size.value = defaults.size || '640x768';
+        }
+    }
+
     function updateSDUIForModel(modelName) {
         if (!modelName) return;
         const nameLower = modelName.toLowerCase();
         const isQwen = nameLower.includes('qwen');
         const isFlux = nameLower.includes('flux');
+        updateIdentityWorkflowVisibility(modelName);
 
         const badge = document.getElementById('sd-model-type-badge');
         const editNeg = document.getElementById('sd-edit-negative');
@@ -568,12 +608,15 @@ document.addEventListener('DOMContentLoaded', () => {
             card.style.padding = '8px';
             card.style.borderRadius = '8px';
             card.style.border = '1px solid var(--border-color)';
-            // Newest first: the gallery keeps previous runs so variations can be
-            // compared instead of each render wiping the one before it.
             container.prepend(card);
+            const outputFormat = String(meta.output_format || meta.outputFormat || 'png').toLowerCase();
+            const outputExt = outputFormat === 'jpeg' ? 'jpg' : outputFormat;
+            const outputMime = outputFormat === 'jpg' || outputFormat === 'jpeg'
+                ? 'image/jpeg'
+                : outputFormat === 'webp' ? 'image/webp' : 'image/png';
 
             const img = document.createElement('img');
-            img.src = 'data:image/png;base64,' + item.b64_json;
+            img.src = `data:${outputMime};base64,${item.b64_json}`;
             img.style.maxWidth = '320px';
             img.style.borderRadius = '6px';
             img.style.border = '1px solid var(--border-color)';
@@ -586,7 +629,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btnBox.style.marginTop = '6px';
 
             const dl = document.createElement('a');
-            dl.textContent = '⬇ Download PNG';
+            dl.textContent = `⬇ Download ${outputExt.toUpperCase()}`;
             dl.href = '#';
             dl.title = 'Download this image';
             dl.style.fontSize = '0.75rem';
@@ -598,11 +641,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const bin = atob(item.b64_json);
                 const bytes = new Uint8Array(bin.length);
                 for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                const blob = new Blob([bytes], { type: 'image/png' });
+                const blob = new Blob([bytes], { type: outputMime });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `${filePrefix}_${Date.now()}.png`;
+                a.download = `${filePrefix}_${Date.now()}.${outputExt}`;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -637,7 +680,7 @@ document.addEventListener('DOMContentLoaded', () => {
             editBtn.style.cursor = 'pointer';
             editBtn.addEventListener('click', (ev) => {
                 ev.preventDefault();
-                sendB64ToPhotoEditor(item.b64_json, meta.prompt || '');
+                sendB64ToPhotoEditor(item.b64_json, meta.prompt || '', outputFormat);
             });
             btnBox.appendChild(editBtn);
 
@@ -666,12 +709,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 reuse.style.cursor = 'pointer';
                 reuse.addEventListener('click', (ev) => {
                     ev.preventDefault();
-                    const seedInput = document.getElementById('sd-gen-seed');
+                    const seedInput = document.getElementById(meta.reuseTarget === 'identity' ? 'sd-identity-seed' : 'sd-gen-seed');
                     if (seedInput) {
                         seedInput.value = meta.seed;
                         seedInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     }
-                    showToast(`Seed ${meta.seed} loaded into the generator.`, 'success');
+                    showToast(`Seed ${meta.seed} loaded for the next render.`, 'success');
                 });
                 seedRow.appendChild(reuse);
                 card.appendChild(seedRow);
@@ -1422,6 +1465,86 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function identityReferenceEntries() {
+        const entries = [];
+        if (sdIdentityRefs.scene) entries.push({ role: 'scene', file: sdIdentityRefs.scene });
+        if (sdIdentityRefs.person) entries.push({ role: 'person', file: sdIdentityRefs.person });
+        sdIdentityRefs.face.forEach(file => entries.push({ role: 'face', file }));
+        return entries;
+    }
+
+    function renderIdentityReferences() {
+        const list = document.getElementById('sd-identity-reference-list');
+        if (!list) return;
+        list.innerHTML = '';
+        const entries = identityReferenceEntries();
+        entries.forEach((entry, index) => {
+            const card = document.createElement('div');
+            card.style.cssText = 'display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.45rem;border:1px solid rgba(192,132,252,0.25);border-radius:6px;background:#0f172a;';
+            const image = document.createElement('img');
+            image.src = URL.createObjectURL(entry.file);
+            image.alt = entry.file.name;
+            image.style.cssText = 'width:42px;height:42px;object-fit:cover;border-radius:4px;';
+            image.onload = () => URL.revokeObjectURL(image.src);
+            const label = document.createElement('span');
+            label.style.cssText = 'font-size:0.68rem;color:#cbd5e1;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            label.textContent = `${index + 1}. ${entry.role}`;
+            label.title = entry.file.name;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = '×';
+            remove.title = `Remove ${entry.role} reference`;
+            remove.style.cssText = 'border:0;background:transparent;color:#94a3b8;cursor:pointer;font-size:1rem;';
+            remove.addEventListener('click', () => {
+                if (entry.role === 'face') {
+                    const faceIndex = sdIdentityRefs.face.indexOf(entry.file);
+                    if (faceIndex >= 0) sdIdentityRefs.face.splice(faceIndex, 1);
+                } else {
+                    sdIdentityRefs[entry.role] = null;
+                }
+                renderIdentityReferences();
+            });
+            card.append(image, label, remove);
+            list.appendChild(card);
+        });
+    }
+
+    function clearIdentityReferences() {
+        sdIdentityRefs.scene = null;
+        sdIdentityRefs.person = null;
+        sdIdentityRefs.face = [];
+        ['sd-identity-scene', 'sd-identity-person', 'sd-identity-face'].forEach(id => {
+            const input = document.getElementById(id);
+            if (input) input.value = '';
+        });
+        renderIdentityReferences();
+    }
+
+    function bindIdentityReferenceInput(role, inputId) {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+        input.addEventListener('change', () => {
+            const files = Array.from(input.files || []).filter(file => file.type.startsWith('image/'));
+            if (role === 'face') {
+                sdIdentityRefs.face = files.slice(0, 2);
+                if (files.length > 2) {
+                    const status = document.getElementById('sd-identity-status');
+                    if (status) status.textContent = 'Only the first two face references are used.';
+                }
+            } else if (files[0]) {
+                sdIdentityRefs[role] = files[0];
+            }
+            renderIdentityReferences();
+        });
+    }
+
+    bindIdentityReferenceInput('scene', 'sd-identity-scene');
+    bindIdentityReferenceInput('person', 'sd-identity-person');
+    bindIdentityReferenceInput('face', 'sd-identity-face');
+    const clearIdentityBtn = document.getElementById('sd-identity-clear-btn');
+    if (clearIdentityBtn) clearIdentityBtn.addEventListener('click', clearIdentityReferences);
+    renderIdentityReferences();
+
     /** Downscale oversized JPEG/PNG sources in-browser so multi-image edits
      *  do not push multi-MB camera files through the proxy onto 8GB VRAM. */
     function downscaleEditFile(file, maxEdge = 1024) {
@@ -1445,14 +1568,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 canvas.width = w;
                 canvas.height = h;
                 canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                const sourceType = file.type.toLowerCase();
+                const outputType = sourceType === 'image/jpeg' || sourceType === 'image/jpg' ? 'image/jpeg' : 'image/png';
+                const extension = outputType === 'image/jpeg' ? 'jpg' : 'png';
                 canvas.toBlob((blob) => {
-                    if (!blob || blob.size >= file.size) {
+                    if (!blob || (blob.size >= file.size && scale >= 1)) {
                         resolve(file);
                         return;
                     }
-                    const name = file.name.replace(/\.(png|jpe?g|webp)$/i, '') + '.jpg';
-                    resolve(new File([blob], name, { type: 'image/jpeg', lastModified: Date.now() }));
-                }, 'image/jpeg', 0.92);
+                    const name = file.name.replace(/\.(png|jpe?g|webp)$/i, '') + '.' + extension;
+                    resolve(new File([blob], name, { type: outputType, lastModified: Date.now() }));
+                }, outputType, outputType === 'image/jpeg' ? 0.92 : undefined);
             };
             img.onerror = () => {
                 URL.revokeObjectURL(url);
@@ -1539,11 +1665,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Round-trip a generated image straight back into the Photo Editor so a
     // result can be refined without a download/re-upload detour.
-    function sendB64ToPhotoEditor(b64Data, sourcePrompt) {
+    function sendB64ToPhotoEditor(b64Data, sourcePrompt, outputFormat = 'png') {
         const bin = atob(b64Data);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const file = new File([bytes], `render_${Date.now()}.png`, { type: 'image/png' });
+        const normalizedFormat = String(outputFormat || 'png').toLowerCase();
+        const mimeType = normalizedFormat === 'jpg' || normalizedFormat === 'jpeg'
+            ? 'image/jpeg'
+            : normalizedFormat === 'webp' ? 'image/webp' : 'image/png';
+        const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+        const file = new File([bytes], `render_${Date.now()}.${extension}`, { type: mimeType });
 
         const photoInput = document.getElementById('sd-edit-image');
         if (photoInput) {
@@ -1676,6 +1807,66 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.appendChild(link);
             link.click();
             link.remove();
+        });
+    }
+
+    const sdIdentityBtn = document.getElementById('sd-identity-btn');
+    const sdIdentityStatus = document.getElementById('sd-identity-status');
+    if (sdIdentityBtn) {
+        sdIdentityBtn.addEventListener('click', async () => {
+            const model = document.getElementById('sd-model-select').value;
+            const entries = identityReferenceEntries();
+            if (!model || !isQwenImage21Model(model)) {
+                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Select the Qwen Image 2.1 model first.';
+                return;
+            }
+            if (!sdIdentityRefs.scene || !sdIdentityRefs.person || sdIdentityRefs.face.length === 0) {
+                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Add a scene, people image, and at least one face reference.';
+                return;
+            }
+            const size = document.getElementById('sd-identity-size').value.trim() || '640x768';
+            const instruction = document.getElementById('sd-identity-prompt').value.trim();
+            const seed = resolveSdSeed(document.getElementById('sd-identity-seed').value);
+            const fd = new FormData();
+            fd.append('model', model);
+            fd.append('preset', 'qwen_image_21.identity');
+            fd.append('reference_roles', JSON.stringify(entries.map(entry => entry.role)));
+            fd.append('prompt', instruction);
+            fd.append('size', size);
+            fd.append('n', '1');
+            fd.append('seed', String(seed));
+            fd.append('output_format', 'png');
+            sdIdentityBtn.disabled = true;
+            let progressTimer = null;
+            const progressStart = Date.now();
+            try {
+                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Preparing ordered references...';
+                const prepared = await Promise.all(entries.map(entry => downscaleEditFile(entry.file, 1024)));
+                prepared.forEach((file, index) => fd.append(`image__${entries[index].role}`, file));
+                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Qwen is conditioning the scene and identity references...';
+                progressTimer = setInterval(() => {
+                    const seconds = Math.round((Date.now() - progressStart) / 1000);
+                    if (sdIdentityStatus) sdIdentityStatus.textContent = `Rendering identity composite… ${seconds}s`;
+                }, 1000);
+                const res = await fetch('/api/sd/edit', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (!res.ok || !data.data) {
+                    throw new Error(data.error || data.detail || 'Identity composite failed');
+                }
+                const responseSeed = data.seed ?? seed;
+                data.data.forEach(item => renderSDResultCard(item, sdResults, 'identity_composite', {
+                    prompt: data.effective_prompt || instruction,
+                    seed: responseSeed,
+                    outputFormat: data.output_format || 'png',
+                    reuseTarget: 'identity',
+                }));
+                if (sdIdentityStatus) sdIdentityStatus.textContent = `Completed with seed ${responseSeed}.`;
+            } catch (e) {
+                if (sdIdentityStatus) sdIdentityStatus.textContent = `${e.message}. References kept; press Render Identity Composite to retry.`;
+            } finally {
+                if (progressTimer) clearInterval(progressTimer);
+                sdIdentityBtn.disabled = false;
+            }
         });
     }
 
@@ -3724,6 +3915,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!res.ok) throw new Error(`status ${res.status}`);
             const data = await res.json();
             const groups = Array.isArray(data) ? data : (data.groups || []);
+            const groupLabels = { frontier_diagnostics: 'Frontier Diagnostics' };
             groupCheckboxes.innerHTML = '';
             if (groups.length === 0) {
                 groupCheckboxes.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">No groups available</div>`;
@@ -3738,7 +3930,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 input.checked = false; // default: run all groups
                 const span = document.createElement('span');
                 span.className = 'checkbox-label';
-                span.textContent = grp.replace(/_/g, ' ');
+                span.textContent = groupLabels[grp] || grp.replace(/_/g, ' ');
                 item.appendChild(input);
                 item.appendChild(span);
                 groupCheckboxes.appendChild(item);
@@ -7514,6 +7706,29 @@ const saved = _loadHumanRatings(t.id) || {};
     // Trigger General Benchmarks
     btnRun.addEventListener('click', () => triggerBenchmark('/api/run'));
 
+    if (btnRunFrontierAll) {
+        btnRunFrontierAll.addEventListener('click', async () => {
+            btnRunFrontierAll.disabled = true;
+            try {
+                await Promise.all([loadModels(), loadTests(), loadBenchmarkGroups()]);
+                selectAllBtn.click();
+                selectAllTestsBtn.click();
+                let frontierFound = false;
+                groupCheckboxes?.querySelectorAll('input[type="checkbox"]').forEach(box => {
+                    box.checked = box.value === 'frontier_diagnostics';
+                    if (box.checked) frontierFound = true;
+                });
+                if (!frontierFound) {
+                    showToast('Frontier Diagnostics group is unavailable.', 'error');
+                    return;
+                }
+                await triggerBenchmark('/api/run');
+            } finally {
+                if (!btnRun.disabled) btnRunFrontierAll.disabled = false;
+            }
+        });
+    }
+
     // Trigger Outdated-Only Benchmarks: re-run just the tests whose
     // definitions have changed since each model's last run.
     btnRunOutdated.addEventListener('click', () => triggerBenchmark('/api/run', { outdatedOnly: true }));
@@ -7562,6 +7777,7 @@ const saved = _loadHumanRatings(t.id) || {};
         btnRunShared.disabled = true;
         btnRunMultistep.disabled = true;
         btnRunOutdated.disabled = true;
+        if (btnRunFrontierAll) btnRunFrontierAll.disabled = true;
 
         if (isMultistep) {
             btnRunMultistep.innerHTML = `<span class="loader"></span> Starting...`;
@@ -7713,6 +7929,7 @@ const saved = _loadHumanRatings(t.id) || {};
             btnRunShared.disabled = true;
             btnRunMultistep.disabled = true;
             btnRunOutdated.disabled = true;
+            if (btnRunFrontierAll) btnRunFrontierAll.disabled = true;
             btnCancel.disabled = false;
             progressCard.classList.remove('d-none');
 
@@ -7726,6 +7943,7 @@ const saved = _loadHumanRatings(t.id) || {};
             btnRunShared.disabled = false;
             btnRunMultistep.disabled = false;
             btnRunOutdated.disabled = false;
+            if (btnRunFrontierAll) btnRunFrontierAll.disabled = false;
             btnRun.innerHTML = 'Run General';
             btnRunShared.innerHTML = 'Run SharedLLM';
             btnRunMultistep.innerHTML = '🛩 Run MultiStep';
@@ -8176,6 +8394,7 @@ const saved = _loadHumanRatings(t.id) || {};
                             cachedCompanions = (d.companions || []);
                             populateCompanion('vae', 'vae');
                             populateCompanion('llm', 'llm');
+                            populateCompanion('llm_vision', 'llm_vision');
                             populateCompanion('clip_l', 'clip_l');
                             populateCompanion('t5xxl', 't5xxl');
                         })
@@ -8206,6 +8425,7 @@ const saved = _loadHumanRatings(t.id) || {};
                     'gpu_layers': get('gpu_layers'),
                     'vae': get('vae'),
                     'llm': get('llm'),
+                    'llm_vision': get('llm_vision'),
                     'clip_l': get('clip_l'),
                     't5xxl': get('t5xxl'),
                     'extra_args': get('extra_args'),

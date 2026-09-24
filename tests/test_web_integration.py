@@ -22,6 +22,7 @@ def client():
             active_run["models"] = []
             active_run["use_proxy"] = True
             active_run["results"] = []
+            active_run["test_results"] = []
             active_run["start_time"] = None
             active_run["saved_as"] = None
         yield client
@@ -57,6 +58,8 @@ def test_non_multistep_progress_denominator_unchanged(client, run_type):
         callback("benchmark_start", {"models": ["m"], "use_proxy": True, "total_tests": 4, "timestamp": "t"})
         callback("test_complete", {"model": "m", "category": "c", "test_id": "t", "test_label": "T", "result": {}})
         assert emit.call_args.args[1]["progress"] == {"completed": 1, "total": 4, "percentage": 25}
+        assert active_run["test_results"][0]["test_id"] == "t"
+        assert "response" not in active_run["test_results"][0]
 
 
 @pytest.mark.parametrize("custom_keys", [None, {"openrouter_api_key": "test-key"}])
@@ -253,6 +256,33 @@ def test_index_route(client):
     assert res.status_code == 200
     assert b"Alpaca Benchmarks v2" in res.data
     assert b"Pipeline Controls" in res.data
+
+
+def test_benchmark_groups_include_frontier_diagnostics(client):
+    response = client.get("/api/benchmark/groups")
+    assert response.status_code == 200
+    assert "frontier_diagnostics" in response.get_json()["groups"]
+
+
+def test_frontier_all_button_and_static_handler(client):
+    index = client.get("/")
+    assert index.status_code == 200
+    assert b'id="btn-run-frontier-all"' in index.data
+    assert b"Run Frontier All" in index.data
+    assert b'id="btn-run"' in index.data
+
+    response = client.get("/static/js/dashboard.js")
+    assert response.status_code == 200
+    source = response.get_data(as_text=True)
+    assert "frontier_diagnostics: 'Frontier Diagnostics'" in source
+    handler_start = source.index("btnRunFrontierAll.addEventListener('click'")
+    handler_end = source.index("async function triggerBenchmark", handler_start)
+    handler = source[handler_start:handler_end]
+    assert "Promise.all([loadModels(), loadTests(), loadBenchmarkGroups()])" in handler
+    assert "selectAllBtn.click()" in handler
+    assert "selectAllTestsBtn.click()" in handler
+    assert "box.checked = box.value === 'frontier_diagnostics'" in handler
+    assert "await triggerBenchmark('/api/run')" in handler
 
 
 @pytest.mark.parametrize("download", [False, True])
@@ -1088,6 +1118,45 @@ def test_api_errors_get_and_clear_proxy(client):
         assert res_clear.status_code == 200
         data_clear = json.loads(res_clear.data.decode("utf-8"))
         assert data_clear["status"] == "cleared"
+
+
+# Image Studio proxy adapter tests
+
+
+def test_sd_presets_api_forwards_proxy_presets(client):
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {"qwen_image_21.identity": {"version": 1}}
+    with patch("httpx.Client.get", return_value=mock_resp):
+        response = client.get("/api/sd/presets")
+    assert response.status_code == 200
+    assert response.get_json()["qwen_image_21.identity"]["version"] == 1
+
+
+def test_sd_edit_api_forwards_named_reference_files_in_order(client):
+    from io import BytesIO
+
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {"data": []}
+    with patch("httpx.Client.post", return_value=mock_resp) as post:
+        response = client.post(
+            "/api/sd/edit",
+            data={
+                "model": "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
+                "preset": "qwen_image_21.identity",
+                "reference_roles": '["scene", "person", "face"]',
+                "image__scene": (BytesIO(b"scene"), "scene.png"),
+                "image__person": (BytesIO(b"person"), "person.png"),
+                "image__face": (BytesIO(b"face"), "face.png"),
+            },
+            content_type="multipart/form-data",
+        )
+    assert response.status_code == 200
+    files = post.call_args.kwargs["files"]
+    assert [key for key, _file in files] == [
+        "image__scene",
+        "image__person",
+        "image__face",
+    ]
 
 
 # Vision & Image-to-Prompt Assistant API Tests

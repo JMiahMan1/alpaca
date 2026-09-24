@@ -672,6 +672,14 @@ class LLMModelBenchmark:
         # Resolved backend context windows (model -> n_ctx), cached per instance.
         self._ctx_cache: dict[str, int] = {}
 
+    def _is_code_or_ui_test(self, test: dict) -> bool:
+        return test.get("type") in {"code", "ui"} or test.get("category") in self.CODE_CATEGORIES
+
+    def _online_num_predict(self, test: dict, model: str) -> int:
+        if self._is_code_or_ui_test(test):
+            return max(1, int(test.get("num_predict", 4000)))
+        return _test_num_predict(test, model)
+
     async def _effective_num_predict(self, model: str, prompt: str, requested: int) -> int:
         """Clamp a generation budget into the live backend context window.
 
@@ -705,8 +713,12 @@ class LLMModelBenchmark:
         if not isinstance(test_dict, dict):
             return ""
         atts = [a.get("name", "") for a in test_dict.get("attachments", []) if isinstance(a, dict)]
+        test_id = str(test_dict.get("id") or "")
+        is_code_test = test_dict.get("type") in ("code", "ui") or test_dict.get("category") in (
+            LLMModelBenchmark.CODE_CATEGORIES
+        )
         canonical = {
-            "id": test_dict.get("id", ""),
+            "id": test_id,
             "prompt": (test_dict.get("prompt") or "").strip(),
             "expected": str(test_dict.get("expected") or "").strip(),
             "expected_output": str(test_dict.get("expected_output") or "").strip(),
@@ -714,6 +726,14 @@ class LLMModelBenchmark:
             "kind": test_dict.get("kind", "text"),
             "attachments": sorted(atts),
         }
+        if is_code_test:
+            canonical["grader_directive"] = LLMModelBenchmark.GRADER_DIRECTIVE_VERSION
+            canonical["code_grader"] = LLMModelBenchmark.CODE_GRADER_VERSION
+        grader_version = LLMModelBenchmark.FUNCTIONAL_GRADER_VERSIONS.get(test_id)
+        if grader_version:
+            canonical["functional_grader"] = grader_version
+        if canonical["expected"]:
+            canonical["objective_grader"] = LLMModelBenchmark.OBJECTIVE_GRADER_VERSION
         if test_dict.get("review_only"):
             canonical["review_only"] = True
         dumped = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
@@ -1310,6 +1330,9 @@ class LLMModelBenchmark:
     def _code_review_tests(self, model: str) -> list[dict]:
         return self.tests_config.get("code_review", [])
 
+    def _frontier_diagnostics_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("frontier_diagnostics", [])
+
     def _debugging_tests(self, model: str) -> list[dict]:
         return self.tests_config.get("debugging", [])
 
@@ -1566,6 +1589,104 @@ class LLMModelBenchmark:
             no_spaces = cleaned.replace(" ", "")
             set_comprehension = re.search(r"\{[^{}]*\bfor\b[^{}]*\bin\b", cleaned)
             return any(x in no_spaces for x in ["set(", "fromkeys("]) or bool(set_comprehension)
+
+        elif test_id == "frontier_debug_boundary":
+            return all(
+                token in cleaned
+                for token in (
+                    "def normalize",
+                    "def main",
+                    "assert",
+                    "isinstance",
+                    "bool",
+                    "int",
+                )
+            )
+        elif test_id == "frontier_refactor_anagrams":
+            return all(
+                token in cleaned
+                for token in (
+                    "def group_anagrams",
+                    "def main",
+                    "dict",
+                    "sorted",
+                    "join",
+                    "values",
+                )
+            )
+        elif test_id == "frontier_api_ticket_contract":
+            return all(
+                token in cleaned
+                for token in (
+                    "def create_ticket",
+                    "isinstance",
+                    "bool",
+                    "priority",
+                    "json.dumps",
+                    "201",
+                    "400",
+                )
+            )
+        elif test_id == "frontier_canvas_signal_lab":
+            return all(
+                token in cleaned
+                for token in (
+                    "<canvas",
+                    "getcontext",
+                    "requestanimationframe",
+                    "addeventlistener",
+                    "clearrect",
+                    "fillrect",
+                    "devicepixelratio",
+                )
+            )
+        elif test_id == "frontier_json_feature_patch":
+            try:
+                parsed = json.loads(response.strip())
+            except (json.JSONDecodeError, TypeError):
+                return False
+            return parsed == {
+                "name": "relay",
+                "features": {"beta": True, "legacy": False},
+                "limits": {"max": 50},
+                "owners": ["api", "web"],
+            }
+        elif test_id == "frontier_tool_schema_call":
+            try:
+                parsed = json.loads(response.strip())
+            except (json.JSONDecodeError, TypeError):
+                return False
+            return parsed == {
+                "tool": "search_users",
+                "arguments": {"team": "blue", "limit": 3, "include_disabled": False},
+            }
+        elif test_id == "frontier_transform_sorted_tsv":
+            lines = [line.strip() for line in response.strip().splitlines()]
+            return lines == ["delta|7|true", "alpha|5|false", "beta|2|true"]
+        elif test_id == "frontier_review_async_fetch":
+            lines = [line.strip() for line in response.strip().splitlines() if line.strip()]
+            if len(lines) != 3:
+                return False
+            race = next((line for line in lines if line.startswith("RACE:")), "")
+            timeout = next((line for line in lines if line.startswith("TIMEOUT:")), "")
+            retry = next((line for line in lines if line.startswith("RETRY:")), "")
+            return (
+                "cache" in race.lower()
+                and any(term in timeout.lower() for term in ("timeout", "wait", "hang", "block"))
+                and any(term in retry.lower() for term in ("retry", "backoff", "bounded", "transient"))
+            )
+        elif test_id == "frontier_review_atomic_publish":
+            lines = [line.strip() for line in response.strip().splitlines() if line.strip()]
+            if len(lines) != 3:
+                return False
+            atomic = next((line for line in lines if line.startswith("ATOMIC:")), "")
+            lock = next((line for line in lines if line.startswith("LOCK:")), "")
+            durability = next((line for line in lines if line.startswith("DURABILITY:")), "")
+            return (
+                any(term in atomic.lower() for term in ("partial", "reader", "incomplete"))
+                and any(term in lock.lower() for term in ("lock", "concurr", "publisher"))
+                and all(term in durability.lower() for term in ("fsync", "rename"))
+            )
 
         elif test_id == "guess_game":
             return (
@@ -3230,14 +3351,70 @@ class LLMModelBenchmark:
         repair_test = dict(test)
         repair_test["lang"] = repair_lang
         repair_test["prompt"] = repair_prompt
-        # Call the same model path used in the benchmark loop.
+        repair_started = time.monotonic()
         try:
             if use_proxy:
                 repair_result = await self.test_model_proxy(model, repair_test)
             else:
                 repair_result = await self.test_model_direct(model, repair_test)
-        except Exception:
+        except Exception as repair_error:
+            repair_wall_latency = time.monotonic() - repair_started
+            original_result["repair_latency"] = round(repair_wall_latency, 3)
+            original_result["repair_wall_latency"] = round(repair_wall_latency, 3)
+            original_result["repair_tokens_generated"] = 0
+            original_result["repair_metadata"] = {"error": str(repair_error)[:500]}
+            try:
+                original_latency = float(original_result.get("latency") or 0.0)
+            except (TypeError, ValueError):
+                original_latency = 0.0
+            original_result["latency"] = round(original_latency + repair_wall_latency, 3)
+            original_result["eval_duration"] = int(original_result["latency"] * 1e9)
             return False
+        repair_wall_latency = time.monotonic() - repair_started
+        try:
+            repair_latency = float(repair_result.get("latency") or repair_wall_latency)
+        except (TypeError, ValueError):
+            repair_latency = repair_wall_latency
+        try:
+            repair_tokens = int(repair_result.get("tokens_generated") or 0)
+        except (TypeError, ValueError):
+            repair_tokens = 0
+        original_result["repair_latency"] = round(repair_latency, 3)
+        original_result["repair_wall_latency"] = round(repair_wall_latency, 3)
+        original_result["repair_tokens_generated"] = repair_tokens
+        repair_metadata = {
+            key: repair_result.get(key)
+            for key in (
+                "success",
+                "latency",
+                "tokens_generated",
+                "requested_num_predict",
+                "num_predict",
+                "finish_reason",
+                "retry_count",
+                "continuation_count",
+                "response_chars",
+                "thinking_chars",
+                "think",
+                "reasoning_budget",
+                "error",
+            )
+            if key in repair_result
+        }
+        original_result["repair_metadata"] = repair_metadata
+        if repair_metadata.get("error") is not None:
+            repair_metadata["error"] = str(repair_metadata["error"])[:500]
+        try:
+            original_tokens = int(original_result.get("tokens_generated") or 0)
+        except (TypeError, ValueError):
+            original_tokens = 0
+        original_result["tokens_generated"] = original_tokens + repair_tokens
+        try:
+            original_latency = float(original_result.get("latency") or 0.0)
+        except (TypeError, ValueError):
+            original_latency = 0.0
+        original_result["latency"] = round(original_latency + repair_latency, 3)
+        original_result["eval_duration"] = int(original_result["latency"] * 1e9)
         repaired_resp = repair_result.get("response", "") or ""
         original_result["repaired_response"] = repaired_resp
         # Grade the repaired response.
@@ -3254,6 +3431,11 @@ class LLMModelBenchmark:
                 )
             )
             try:
+                repaired_functional_pass = self._verify_functional_response(test, repaired_resp)
+            except Exception:
+                repaired_functional_pass = False
+            original_result["repaired_functional_pass"] = repaired_functional_pass
+            try:
                 gr = grade_code(
                     repaired_resp, lang, None, ui=is_ui,
                     **({"test_id": test["id"]} if test.get("id") in CLI_FIXTURE_TEST_IDS else {}),
@@ -3261,18 +3443,19 @@ class LLMModelBenchmark:
                 original_result["repaired_code_ran"] = gr.get("ran")
                 original_result["repaired_code_score"] = gr.get("score")
                 original_result["repaired_code_error"] = gr.get("error", "")
-                original_result["repaired_lint_passed"] = gr.get(
-                    "lint_passed", gr.get("ran") is not False
-                )
-                # If repair produced runnable code, update the primary result.
+                repaired_lint_passed = gr.get("lint_passed", gr.get("ran") is not False)
+                original_result["repaired_lint_passed"] = repaired_lint_passed
                 if gr.get("ran") is True:
                     original_result["code_ran"] = True
-                    original_result["success"] = True
+                    original_result["lint_passed"] = repaired_lint_passed
+                    original_result["functional_pass"] = bool(repaired_functional_pass)
+                    original_result["success"] = bool(repaired_functional_pass)
                     original_result["code_score"] = gr.get("score", 60)
                     original_result["code_error"] = ""
-                    # Update response to repaired version for rubric/scoring.
                     original_result["response"] = repaired_resp
-                    # Apply deduction annotation.
+                    original_result["response_chars"] = len(repaired_resp)
+                    original_result["thinking_chars"] = len(repair_result.get("thinking") or "")
+                    original_result["error"] = "" if repaired_functional_pass else "Failed correctness verification check"
                     original_result["repaired"] = True
                     original_result["repair_annotation"] = (
                         "Post-generation repair applied: code needed fixing ("
@@ -3282,7 +3465,8 @@ class LLMModelBenchmark:
                     original_result["repair_applied_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                     return True
                 else:
-                    # Repair attempted but still failed; annotate.
+                    original_result["functional_pass"] = bool(repaired_functional_pass)
+                    original_result["success"] = False
                     original_result["repaired"] = False
                     original_result["repair_failed_note"] = (
                         f"Repair attempted but code still failed: {gr.get('error', '')}"
@@ -3292,6 +3476,34 @@ class LLMModelBenchmark:
         else:
             original_result["repair_failed_note"] = "Repair produced empty response"
         return True
+
+    def _normalize_code_result(self, result: dict) -> None:
+        response = result.get("response") or ""
+        if not response:
+            result["success"] = False
+            result.setdefault("error", "Empty response")
+            result["failure_kind"] = "empty_response"
+            return
+        if result.get("code_ran") is False:
+            result["success"] = False
+            code_error = str(result.get("code_error") or "").strip()
+            if code_error:
+                result["error"] = code_error
+            elif not result.get("error"):
+                result["error"] = "Code execution failed"
+            diagnostic_error = f"{code_error} {result.get('error') or ''}".lower()
+            if any(token in diagnostic_error for token in ("syntax", "lint", "truncated", "unexpected eof")):
+                result["failure_kind"] = "syntax_failure"
+            elif any(token in diagnostic_error for token in ("screenshot", "render", "blank")):
+                result["failure_kind"] = "ui_render_failure"
+            else:
+                result["failure_kind"] = "execution_failure"
+        elif result.get("functional_pass") is False:
+            result["success"] = False
+            result.setdefault("error", "Failed correctness verification check")
+            result["failure_kind"] = "functional_failure"
+        else:
+            result.pop("failure_kind", None)
 
     def _evaluate_rubric(self, test: dict, response: str, code: str = "") -> dict:
         """Score a response against the benchmark's rubric criteria.
@@ -3426,26 +3638,27 @@ class LLMModelBenchmark:
         """Test a model against a proxy endpoint or online provider."""
         if online_model_provider.is_online_model(model):
             try:
-                # Free-tier online providers throttle aggressively (e.g. Gemini
-                # free tier = 20 req/min). Pace requests so a fast local run does
-                # not blow through the whole quota window in seconds, which used
-                # to trigger cascade 429s that aborted the entire model run.
                 self._pace_online_request(model)
                 if sampler:
                     sampler.start()
+                code_ui = self._is_code_or_ui_test(test)
+                requested_num_predict = self._online_num_predict(test, model)
                 res = await online_model_provider.query_online_model(
                     model_identifier=model,
                     prompt=test["prompt"],
-                    max_tokens=_test_num_predict(test, model),
+                    max_tokens=requested_num_predict,
                     reasoning_estimate=_test_reasoning_estimate(test),
                     reasoning_budget=_test_reasoning_budget(test, model) or 0,
+                    benchmark_mode="code" if code_ui else "general",
+                    thinking_override=False if code_ui else None,
+                    allow_continuation=not code_ui,
+                    max_retries=1 if code_ui else 4,
                 )
                 if sampler:
                     await sampler.stop()
             except Exception as e:
                 if sampler:
                     await sampler.stop()
-                latency = 0.0
                 return {
                     "proxy": "online",
                     "success": False,
@@ -3469,6 +3682,15 @@ class LLMModelBenchmark:
                 "latency": round(latency, 3),
                 "response": resp_raw,
                 "thinking": thinking or res.get("thinking"),
+                "think": res.get("reasoning_enabled"),
+                "reasoning_budget": res.get("reasoning_budget"),
+                "requested_num_predict": requested_num_predict,
+                "num_predict": res.get("effective_max_tokens", requested_num_predict),
+                "finish_reason": res.get("finish_reason"),
+                "continuation_count": res.get("continuation_count", 0),
+                "retry_count": res.get("retry_count", 0),
+                "response_chars": len(resp_raw),
+                "thinking_chars": len(thinking or res.get("thinking") or ""),
                 "tokens_generated": res.get("tokens_generated", 0),
                 "eval_duration": int(latency * 1e9),
                 "prompt_eval_duration": 0,
@@ -4115,22 +4337,40 @@ class LLMModelBenchmark:
         if online_model_provider.is_online_model(model):
             if sampler:
                 sampler.start()
+            code_ui = self._is_code_or_ui_test(test)
+            requested_num_predict = self._online_num_predict(test, model)
             res = await online_model_provider.query_online_model(
                 model_identifier=model,
                 prompt=test["prompt"],
-                max_tokens=_test_num_predict(test, model),
+                max_tokens=requested_num_predict,
                 reasoning_estimate=_test_reasoning_estimate(test),
                 reasoning_budget=_test_reasoning_budget(test, model) or 0,
+                benchmark_mode="code" if code_ui else "general",
+                thinking_override=False if code_ui else None,
+                allow_continuation=not code_ui,
+                max_retries=1 if code_ui else 4,
             )
             if sampler:
                 await sampler.stop()
             latency = res.get("latency", 0.0)
+            response = res.get("response") or ""
+            response_text, thinking = self.strip_thinking(response)
             return {
                 "ollama_url": "online",
                 "success": res.get("success", False),
                 "prompt": test["prompt"],
                 "latency": round(latency, 3),
-                "response": res.get("response"),
+                "response": response_text,
+                "thinking": thinking or res.get("thinking"),
+                "think": res.get("reasoning_enabled"),
+                "reasoning_budget": res.get("reasoning_budget"),
+                "requested_num_predict": requested_num_predict,
+                "num_predict": res.get("effective_max_tokens", requested_num_predict),
+                "finish_reason": res.get("finish_reason"),
+                "continuation_count": res.get("continuation_count", 0),
+                "retry_count": res.get("retry_count", 0),
+                "response_chars": len(response_text),
+                "thinking_chars": len(thinking or res.get("thinking") or ""),
                 "tokens_generated": res.get("tokens_generated", 0),
                 "eval_duration": int(latency * 1e9),
                 "prompt_eval_duration": 0,
@@ -4432,6 +4672,7 @@ class LLMModelBenchmark:
             "math_hard": self._math_hard_tests,
             "ifeval": self._ifeval_tests,
             "code_review": self._code_review_tests,
+            "frontier_diagnostics": self._frontier_diagnostics_tests,
         }
 
         # Optional group filter: run only the selected groups (or all when None).
@@ -4690,30 +4931,22 @@ class LLMModelBenchmark:
                     await self._attempt_post_generation_repair(
                         model, test, test_result, resp_text, repair_error, use_proxy
                     )
-                    # The repair method updates test_result directly.
                     if test_result.get("repaired") is True:
-                        # Repair succeeded: annotate and apply deduction.
                         test_result["repair_annotation"] = (
                             "Post-generation repair applied: code needed fixing ("
                             f"original error: {repair_error})"
                         )
                         test_result["repair_applied_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                        # Re-evaluate rubric on repaired response if repair changed it.
-                        if "repaired_response" in test_result:
-                            repaired_resp = test_result["repaired_response"]
-                            ttype_repaired = self._infer_type(test, repaired_resp)
-                            if ttype_repaired in ("code", "ui"):
-                                try:
-                                    repaired_extracted = (
-                                        extract_clean_code(repaired_resp, (test.get("lang") or ""))
-                                        if test.get("lang")
-                                        else extract_clean_code(repaired_resp)
-                                    )
-                                except Exception:
-                                    repaired_extracted = ""
-                                test_result["rubric"] = self._evaluate_rubric(
-                                    test, repaired_resp, repaired_extracted
-                                )
+
+                resp_text = test_result.get("response") or resp_text
+                if ttype in ("code", "ui") and resp_text:
+                    if test_result.get("repaired") and "original_code_quality" not in test_result:
+                        test_result["original_code_quality"] = test_result.get("code_quality")
+                        test_result["original_watermark"] = test_result.get("watermark")
+                    test_result["code_quality"] = self._score_code_quality(resp_text, test)
+                    test_result["watermark"] = self._score_watermark(resp_text)
+                if ttype in ("code", "ui"):
+                    self._normalize_code_result(test_result)
 
                 # Rubric compliance: score the response against the benchmark's
                 # prompt-required, easily-checkable features (persistent high-score
@@ -4984,6 +5217,18 @@ class LLMModelBenchmark:
             },
         }
 
+    FUNCTIONAL_GRADER_VERSIONS: ClassVar[dict[str, str]] = {
+        "life_dad_joke": "v2",
+        "uiux_wireframe": "v2",
+        "debug_offbyone": "v2",
+        "debug_infinite_loop": "v2",
+        "logic_knights": "v2",
+        "logic_river": "v2",
+        "logic_modus": "v2",
+        "logic_weigh": "v2",
+    }
+    OBJECTIVE_GRADER_VERSION: ClassVar[str] = "v2"
+
     # Categories whose prompts ask for source code. These are graded by actually
     # executing the extracted code in the sandbox across the supported languages
     # (Python, Node, C++, Java, SQL, Bash) and, where a language cannot be executed,
@@ -5020,6 +5265,7 @@ class LLMModelBenchmark:
     # GRADER_DIRECTIVE_VERSION bumps whenever this text materially changes so
     # result hashing (_compute_test_hash) marks prior runs outdated.
     GRADER_DIRECTIVE_VERSION: ClassVar[str] = "v4"
+    CODE_GRADER_VERSION: ClassVar[str] = "v2"
     CODE_DIRECTIVE = (
         "\n\nREQUIREMENTS: Respond with a single, complete, self-contained, "
         "runnable program and nothing else (no preamble, no explanation outside "
@@ -5225,7 +5471,11 @@ class LLMModelBenchmark:
             # Functional verification against the prompt's expectations:
             # missing it means the code ran but did not actually do the task.
             if result.get("functional_pass") is False:
-                return min(round(0.6 * quality), 45)
+                score = min(round(0.6 * quality), 45)
+                if result.get("repaired") is True:
+                    deduction = int(result.get("repair_points_deducted", 25))
+                    score = max(0, score - deduction)
+                return score
             # Run outcome: 100 = screenshot/expected-output match, 60 = clean run.
             base = int(result.get("code_score", 60))
             # Rubric compliance: requested prompt features the model actually
@@ -5441,6 +5691,8 @@ class LLMModelBenchmark:
                 total += len(self._iter_category_tests("metacog", test_ids, tiers))
             if _include("code_review"):
                 total += len(self._iter_category_tests("code_review", test_ids, tiers))
+            if _include("frontier_diagnostics"):
+                total += len(self._iter_category_tests("frontier_diagnostics", test_ids, tiers))
             tests = []
             if test_ids:
                 chosen = [
@@ -5476,6 +5728,7 @@ class LLMModelBenchmark:
                     "biblical",
                     "metacog",
                     "code_review",
+                    "frontier_diagnostics",
                 ]
                 for name in chosen:
                     if _include(name):
@@ -5693,6 +5946,7 @@ class LLMModelBenchmark:
                             "category_life",
                             "category_biblical",
                             "category_metacog",
+                            "category_frontier_diagnostics",
                         ]:
                             if cat in new_model:
                                 if cat not in prev_model:
@@ -5746,6 +6000,7 @@ class LLMModelBenchmark:
                         "category_office",
                         "category_life",
                         "category_biblical",
+                        "category_frontier_diagnostics",
                     ]:
                         if cat in new_model:
                             for nt in new_model[cat].get("tests", []):

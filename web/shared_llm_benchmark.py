@@ -716,10 +716,19 @@ class SharedLLMModelBenchmark:
         custom_keys: dict[str, str] | None = None,
         watchdog: Any = None,
         reasoning_estimate: int = 0,
+        benchmark_mode: str | None = None,
+        thinking_override: bool | None = None,
+        allow_continuation: bool = True,
+        max_retries: int = 4,
     ) -> dict:
         """Execute request against online provider, local proxy, or direct llama-server."""
         # 1. Route to Online Provider if model is an online identifier
         if online_model_provider.is_online_model(model):
+            benchmark_code = benchmark_mode in {"code", "ui"}
+            if benchmark_code:
+                thinking_override = False
+                allow_continuation = False
+                max_retries = min(max_retries, 1)
             return await online_model_provider.query_online_model(
                 model_identifier=model,
                 prompt=prompt,
@@ -727,6 +736,10 @@ class SharedLLMModelBenchmark:
                 custom_keys=custom_keys,
                 reasoning_estimate=reasoning_estimate,
                 reasoning_budget=_effective_reasoning_budget(model) or 0,
+                benchmark_mode=benchmark_mode or "general",
+                thinking_override=thinking_override,
+                allow_continuation=allow_continuation,
+                max_retries=max_retries,
             )
 
         # 2. Local GPU Inference (Proxy or direct llama-server)
@@ -1514,6 +1527,8 @@ class SharedLLMModelBenchmark:
                 # Query endpoint (local or online)
                 prompt_val = task["prompt"] if isinstance(task["prompt"], str) else ""
                 tokens_val = task["max_tokens"] if isinstance(task["max_tokens"], int) else 4000
+                task_type = task.get("task_type", "general") if isinstance(task, dict) else "general"
+                benchmark_mode = "code" if task_type == "ast_code" else "general"
                 watchdog = ThermalWatchdog()
                 await watchdog.pre_test_wait()
                 res = await self.query_model(
@@ -1526,6 +1541,7 @@ class SharedLLMModelBenchmark:
                     reasoning_estimate=int(task.get("reasoning_estimate") or 0)
                     if isinstance(task, dict)
                     else 0,
+                    benchmark_mode=benchmark_mode,
                 )
 
                 if res.get("thermal_aborted"):
@@ -1553,7 +1569,6 @@ class SharedLLMModelBenchmark:
 
                 # Custom evaluations for SharedLLM tiers
                 validation_results: dict[str, Any] = {}
-                task_type = task.get("task_type", "general")
 
                 if res["success"]:
                     response_text = self.strip_thinking(res["response"] or "").strip()
@@ -1792,6 +1807,21 @@ class SharedLLMModelBenchmark:
                     "validation": validation_results,
                     "temps": res.get("temps"),
                 }
+                for key in (
+                    "think",
+                    "reasoning_budget",
+                    "requested_max_tokens",
+                    "effective_max_tokens",
+                    "reasoning_enabled",
+                    "provider_thinking",
+                    "continuation_count",
+                    "retry_count",
+                    "finish_reason",
+                    "response_chars",
+                    "thinking_chars",
+                ):
+                    if key in res:
+                        test_result[key] = res[key]
 
                 model_record["tasks"].append(test_result)
                 completed_count += 1

@@ -46,7 +46,7 @@ def main():
     # 1. Flyer Generation
     print("[1/3] Generating Flyer Poster Graphic via /api/sd/generate...")
     flyer_payload = {
-        "model": "qwen-image-edit-rapid-aio:q4_k",
+        "model": "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
         "prompt": 'flyer graphic design, main title text reading "GRAND OPENING SALE", subtext reading "UP TO 50% OFF THIS WEEKEND", product sale promo poster, vibrant blue and gold lighting, sharp typography, clean layout, 8k resolution',
         "size": "512x512",
         "n": 1,
@@ -79,7 +79,7 @@ def main():
         prompt1 = '8k RAW photo, portrait photograph of subject, detailed skin texture, natural soft studio lighting, sharp focus, 85mm lens f/1.8<sd_cpp_extra_args>{"strength": 0.45, "negative_prompt": "cgi, 3d render, plastic skin, distorted features, low quality"}</sd_cpp_extra_args>'
         with open(source1, "rb") as pf:
             files = {"image": (os.path.basename(source1), pf.read(), "image/jpeg")}
-        data = {"model": "qwen-image-edit-rapid-aio:q4_k", "prompt": prompt1, "size": "512x512", "n": "1"}
+        data = {"model": "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K", "prompt": prompt1, "size": "512x512", "n": "1"}
         resp2 = httpx.post("http://localhost:5000/api/sd/edit", data=data, files=files, timeout=300.0)
         if resp2.status_code == 200:
             raw2 = base64.b64decode(resp2.json()["data"][0]["b64_json"])
@@ -105,7 +105,7 @@ def main():
         prompt2 = 'cinematic photo color grading, balanced lighting, deep contrast, natural skin tones, professional photography<sd_cpp_extra_args>{"strength": 0.35, "negative_prompt": "flat color, oversaturated, washed out, noisy, artifact"}</sd_cpp_extra_args>'
         with open(source2, "rb") as pf2:
             files2 = {"image": (os.path.basename(source2), pf2.read(), "image/jpeg")}
-        data2 = {"model": "qwen-image-edit-rapid-aio:q4_k", "prompt": prompt2, "size": "512x512", "n": "1"}
+        data2 = {"model": "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K", "prompt": prompt2, "size": "512x512", "n": "1"}
         resp3 = httpx.post("http://localhost:5000/api/sd/edit", data=data2, files=files2, timeout=300.0)
         if resp3.status_code == 200:
             raw3 = base64.b64decode(resp3.json()["data"][0]["b64_json"])

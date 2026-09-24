@@ -57,7 +57,7 @@ def main():
         with open(source1, "rb") as pf:
             files = {"image": (os.path.basename(source1), pf.read(), "image/jpeg")}
         data = {
-            "model": "qwen-image-edit-rapid-aio:q4_k",
+            "model": "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
             "prompt": prompt1,
             "size": "512x512",
             "n": "1",
@@ -97,7 +97,7 @@ def main():
         with open(source2, "rb") as pf2:
             files2 = {"image": (os.path.basename(source2), pf2.read(), "image/jpeg")}
         data2 = {
-            "model": "qwen-image-edit-rapid-aio:q4_k",
+            "model": "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
             "prompt": prompt2,
             "size": "512x512",
             "n": "1",
@@ -127,7 +127,7 @@ def main():
     print("[3/3] Generating High-End 8K Text-to-Image Luxury Beach Portrait...", flush=True)
     t0 = time.time()
     gen_payload = {
-        "model": "qwen-image-edit-rapid-aio:q4_k",
+        "model": "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
         "prompt": "An 8k RAW photorealistic portrait photograph of a striking model on a luxury tropical beach at sunset, turquoise ocean waves, cinematic golden hour lighting, detailed skin textures, natural hair, professional 85mm lens f/1.4, masterpiece, ultra detailed",
         "size": "512x512",
         "n": 1,

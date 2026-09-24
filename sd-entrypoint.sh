@@ -113,6 +113,7 @@ VAE_PATH=""
 CLIP_L_PATH=""
 T5XXL_PATH=""
 LLM_PATH=""
+LLM_VISION_PATH=""
 MODEL_FAMILY=""
 LISTEN_IP="0.0.0.0"
 LISTEN_PORT="8081"
@@ -175,7 +176,7 @@ if candidates:
     _, path, target, profile = candidates[0]
     print(path)
     # Emit profile fields on subsequent lines for the shell to consume.
-    for key in ("model_family", "vae", "vae_path", "llm", "llm_path", "gpu_layers", "threads", "extra_args"):
+    for key in ("model_family", "vae", "vae_path", "llm", "llm_path", "gpu_layers", "threads", "extra_args", "llm_vision"):
         val = profile.get(key) or ""
         if isinstance(val, bool):
             val = "true" if val else ""
@@ -192,6 +193,7 @@ if [ -f "$CONFIG_FILE" ]; then
     CLIP_L_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('clip_l_path') or '')")
     T5XXL_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('t5xxl_path') or '')")
     LLM_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('llm_path') or '')")
+    LLM_VISION_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('llm_vision_path') or '')")
     MODEL_FAMILY=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('model_family') or '')")
     LISTEN_IP=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('host') or '0.0.0.0')")
     LISTEN_PORT=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('port') or '8081')")
@@ -273,6 +275,17 @@ if [ "$INTENTIONAL_IDLE" = false ] && [ -z "$MODEL_PATH" ]; then
         [ -z "$GPU_LAYERS_CONF" ] && [ -n "${DISC[6]:-}" ] && GPU_LAYERS_CONF="${DISC[6]}"
         [ -z "$THREADS_CONF" ] && [ -n "${DISC[7]:-}" ] && THREADS_CONF="${DISC[7]}"
         [ -z "$EXTRA_ARGS" ] && [ -n "${DISC[8]:-}" ] && EXTRA_ARGS="${DISC[8]}"
+        if [ -z "$LLM_VISION_PATH" ] && [ -n "${DISC[9]:-}" ]; then
+            if [ -f "${DISC[9]}" ]; then
+                LLM_VISION_PATH="${DISC[9]}"
+            elif [ -f "/router-models/companions/${DISC[9]}" ]; then
+                LLM_VISION_PATH="/router-models/companions/${DISC[9]}"
+            elif [ -f "/models/companions/${DISC[9]}" ]; then
+                LLM_VISION_PATH="/models/companions/${DISC[9]}"
+            else
+                LLM_VISION_PATH="${DISC[9]}"
+            fi
+        fi
         if [ "$MODEL_FAMILY" = "qwen-image" ] || [ -n "$LLM_PATH" ] || echo "$MODEL_PATH" | grep -qi "qwen"; then
             if [ -n "$GPU_LAYERS_CONF" ]; then
                 OFFLOAD_ARGS="--qwen-image-layers $GPU_LAYERS_CONF"
@@ -329,6 +342,15 @@ if [ "$MODEL_FAMILY" = "qwen-image" ] || echo "$MODEL_PATH" | grep -qi "qwen"; t
     else
         echo "[sd-entrypoint][check]     - VAE companion: <none specified>"
     fi
+    if [ -n "$LLM_VISION_PATH" ]; then
+        if [ -f "$LLM_VISION_PATH" ]; then
+            echo "[sd-entrypoint][check]     - Vision projector: $LLM_VISION_PATH (present)"
+        else
+            echo "[sd-entrypoint][check]     - Vision projector: $LLM_VISION_PATH (MISSING — load may fail)"
+        fi
+    else
+        echo "[sd-entrypoint][check]     - Vision projector: <none specified>"
+    fi
 fi
 echo "[sd-entrypoint][check]   Extra args : ${EXTRA_ARGS:-<none>}"
 echo "[sd-entrypoint][check] ────────────────────────────────────────────────"
@@ -357,10 +379,16 @@ if [ -n "$T5XXL_PATH" ] && [ -f "$T5XXL_PATH" ]; then
     CMD+=("--t5xxl" "$T5XXL_PATH")
 fi
 
-# qwen-image / qwen-image-edit use a Qwen2.5-VL text encoder passed via --llm.
+    # qwen-image / qwen-image-edit use a Qwen-VL text encoder passed via --llm.
+
 if [ -n "$LLM_PATH" ] && [ -f "$LLM_PATH" ]; then
     echo "[sd-entrypoint] Using LLM (text encoder) companion file: $LLM_PATH"
     CMD+=("--llm" "$LLM_PATH")
+fi
+
+if [ -n "$LLM_VISION_PATH" ] && [ -f "$LLM_VISION_PATH" ]; then
+    echo "[sd-entrypoint] Using vision projector companion file: $LLM_VISION_PATH"
+    CMD+=("--llm_vision" "$LLM_VISION_PATH")
 fi
 
 if [ -d "/router-models/companions/lora" ]; then

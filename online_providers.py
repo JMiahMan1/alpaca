@@ -1259,6 +1259,9 @@ class OnlineModelProvider:
         max_retries: int = 4,
         reasoning_estimate: int = 0,
         reasoning_budget: int = 0,
+        benchmark_mode: str | None = None,
+        thinking_override: bool | None = None,
+        allow_continuation: bool = True,
     ) -> dict[str, Any]:
         """Queries the specified online provider.
 
@@ -1298,13 +1301,12 @@ class OnlineModelProvider:
             client_ip=client_ip,
         )
 
-        thinking = await self._resolve_thinking_model(model_identifier)
-        # Give reasoning models headroom so thinking + answer both fit. Capped so
-        # we never exceed a provider's (unknown) max output window by much.
-        # The headroom mirrors the suite's thinking cap (base + 2 * estimate):
-        # a caller-supplied reasoning_estimate guarantees at least that much,
-        # and the caller-supplied reasoning_budget (UI-owned) floors it so a
-        # thinking model with no estimate still gets a full thinking phase.
+        benchmark_code = benchmark_mode in {"code", "ui"}
+        thinking_detected = await self._resolve_thinking_model(model_identifier)
+        thinking = bool(thinking_override) if thinking_override is not None else thinking_detected
+        if benchmark_code or thinking_override is False:
+            thinking = False
+            allow_continuation = False
         try:
             budget_floor = int(reasoning_budget or 0)
         except (TypeError, ValueError):
@@ -1313,15 +1315,16 @@ class OnlineModelProvider:
             estimate_headroom = 2 * int(reasoning_estimate or 0)
         except (TypeError, ValueError):
             estimate_headroom = 0
-        effective_max_tokens = max_tokens
+        try:
+            requested_max_tokens = max(1, int(max_tokens))
+        except (TypeError, ValueError):
+            requested_max_tokens = 4000
+        effective_max_tokens = requested_max_tokens
         if thinking:
-            headroom = max(estimate_headroom, budget_floor, max_tokens // 2)
-            effective_max_tokens = min(max_tokens + headroom, 65536)
-            # Longer budget + reasoning phase => longer wall-clock time per call.
+            headroom = max(estimate_headroom, budget_floor, requested_max_tokens // 2)
+            effective_max_tokens = min(requested_max_tokens + headroom, 65536)
         timeout = 180.0 if thinking else 120.0
 
-        # Inject a token/time budget warning for reasoning models so they wrap up
-        # instead of rambling in the think block and then hitting length limits.
         working_prompt = prompt
         if thinking:
             working_prompt = (
@@ -1339,6 +1342,8 @@ class OnlineModelProvider:
             "error": "Online request never executed.",
         }
         provider_timeouts = 0
+        continuation_count = 0
+        retry_count = 0
         for attempt in range(max_retries + 1):
             try:
                 result = await self._query_online_model_impl(
@@ -1348,6 +1353,7 @@ class OnlineModelProvider:
                     temperature,
                     custom_keys,
                     request_timeout=timeout,
+                    thinking_enabled=thinking,
                 )
             except Exception as exc:
                 result = {
@@ -1365,12 +1371,13 @@ class OnlineModelProvider:
             # reasoning text captured): that outcome is deterministic - plain
             # retries reproduce it forever - so the continuation IS the recovery.
             _length_cut = result.get("finish_reason") in ("length", "MAX_TOKENS", "max_tokens")
-            if result.get("success") and _length_cut:
+            if allow_continuation and result.get("success") and _length_cut:
                 continuation = (
                     "\n\n[System: You ran out of tokens before finishing. Provide ONLY the "
                     "remaining final answer now, continuing exactly where you left off. Do not "
                     "reason or repeat anything already written — finish quickly.]"
                 )
+                continuation_count += 1
                 try:
                     phase2 = await self._query_online_model_impl(
                         model_identifier,
@@ -1379,6 +1386,7 @@ class OnlineModelProvider:
                         temperature,
                         custom_keys,
                         request_timeout=timeout,
+                        thinking_enabled=thinking,
                     )
                     if phase2.get("success") and phase2.get("response"):
                         result["response"] = (result.get("response") or "") + "\n" + phase2["response"]
@@ -1388,11 +1396,12 @@ class OnlineModelProvider:
                         result["finish_reason"] = phase2.get("finish_reason") or "stop"
                 except Exception as exc2:
                     print(f"[online] {provider} phase-2 continuation failed: {exc2}")
-            elif not result.get("success") and _length_cut and result.get("thinking"):
+            elif allow_continuation and not result.get("success") and _length_cut and result.get("thinking"):
                 # Deterministic exhaustion: every token went to reasoning and the
                 # content came back empty. Ask for the final answer directly; if
                 # that still fails, stop retrying - backoff cannot fix a full
                 # reasoning field.
+                continuation_count += 1
                 try:
                     phase2 = await self._query_online_model_impl(
                         model_identifier,
@@ -1404,6 +1413,7 @@ class OnlineModelProvider:
                         temperature,
                         custom_keys,
                         request_timeout=timeout,
+                        thinking_enabled=thinking,
                     )
                     if phase2.get("success") and phase2.get("response"):
                         result.update(
@@ -1426,6 +1436,8 @@ class OnlineModelProvider:
                 except Exception as exc2:
                     print(f"[online] {provider} direct-answer retry failed: {exc2}")
                     break
+            if benchmark_code and _length_cut and not str(result.get("response") or "").strip():
+                break
             # Retry transient free-tier failures (empty/length-truncated completions,
             # DNS/network blips, timeouts, 429/5xx) instead of scoring them as a miss.
             if self._is_provider_timeout_failure(result):
@@ -1447,9 +1459,26 @@ class OnlineModelProvider:
                 f"[online] {provider} attempt {attempt + 1} returned a retryable failure "
                 f"({result.get('error')}); retrying in {backoff:.1f}s"
             )
+            retry_count += 1
             await asyncio.sleep(backoff)
 
         result["latency"] = time.monotonic() - start_t
+        if benchmark_mode is not None:
+            result.update(
+                {
+                    "benchmark_mode": benchmark_mode,
+                    "requested_max_tokens": requested_max_tokens,
+                    "effective_max_tokens": effective_max_tokens,
+                    "reasoning_enabled": thinking,
+                    "provider_thinking": thinking_detected,
+                    "reasoning_budget": budget_floor if thinking else 0,
+                    "continuation_count": continuation_count,
+                    "retry_count": retry_count,
+                    "finish_reason": result.get("finish_reason"),
+                    "response_chars": len(result.get("response") or ""),
+                    "thinking_chars": len(result.get("thinking") or ""),
+                }
+            )
         complete_online_request(request_id, result)
         return result
 
@@ -1512,6 +1541,7 @@ class OnlineModelProvider:
         temperature: float = 0.2,
         custom_keys: dict[str, str] | None = None,
         request_timeout: float = 120.0,
+        thinking_enabled: bool = True,
     ) -> dict[str, Any]:
         """Queries the specified online provider."""
         provider, model_name = self.parse_model_identifier(model_identifier)
@@ -1544,7 +1574,7 @@ class OnlineModelProvider:
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "stream": False,
-                    "think": True,
+                    "think": thinking_enabled,
                 }
                 async with httpx.AsyncClient(timeout=request_timeout) as client:
                     resp = await client.post(
