@@ -57,7 +57,7 @@ def main() -> int:
         "--method",
         choices=["model", "fill"],
         default="model",
-        help="model = qwen-image-edit via sd-server (default); fill = deterministic PIL fallback",
+        help="model = Qwen-Image-2.1 via sd-server (default); fill = deterministic PIL fallback",
     )
     parser.add_argument("--post", choices=["none", "vintage"], default="none")
     parser.add_argument("--output", type=Path, default=None, help="Output path")

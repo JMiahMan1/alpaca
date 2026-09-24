@@ -392,7 +392,7 @@ async def mark_request_queued(model_name: str | None) -> str | None:
     Must be paired with :func:`release_request_queued` (typically in the same
     ``finally`` that releases ``active_requests``) when the request completes.
     """
-    if not model_name:
+    if not model_name or _is_online_model(model_name):
         return None
     try:
         _tgt = await resolve_router_model(model_name, reload=False)
@@ -411,6 +411,15 @@ async def release_request_queued(backend: str | None) -> None:
         async with active_requests_lock:
             queued_requests[backend] = max(0, queued_requests.get(backend, 0) - 1)
             active_requests_lock.notify_all()
+
+
+async def activate_queued_request(queued_backend: str | None, backend_model: str) -> None:
+    """Atomically transfer a queued admission to the in-flight reference."""
+    async with active_requests_lock:
+        if queued_backend:
+            queued_requests[queued_backend] = max(0, queued_requests.get(queued_backend, 0) - 1)
+        active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
+        active_requests_lock.notify_all()
 
 
 async def acquire_slot(
@@ -440,9 +449,7 @@ async def acquire_slot(
     slot_ok = await wait_for_slot(backend_model, timeout=timeout)
     if not slot_ok:
         return None, None
-    # Slot confirmed - release the queued count immediately.
-    # The active_requests count will protect the slot for the request lifetime.
-    await release_request_queued(backend_model)
+    await activate_queued_request(backend_model, backend_model)
     return backend_model, None
 
 
@@ -1475,6 +1482,15 @@ async def unload_model(model_name):
             )
             return
     async with router_model_lock:
+        async with active_requests_lock:
+            active_count = active_requests.get(backend_model, 0)
+            queued_count = queued_requests.get(backend_model, 0)
+            if active_count > 0 or queued_count > 0:
+                logger.warning(
+                    f"Aborting unload of {backend_model} after lock because it currently has "
+                    f"{active_count} active and {queued_count} queued request(s)."
+                )
+                return
         try:
             await post_router_model_action("unload", backend_model)
         except RouterManagementUnsupported:
@@ -2062,62 +2078,80 @@ async def delete_schema(name: str):
 # Embedding Endpoints (Ollama-compatible)
 @app.post("/api/embed")
 async def embed(request: Request):
-    """Ollama-compatible embedding endpoint. Proxies to llama-server /v1/embeddings."""
+    """Ollama-compatible embedding endpoint with local slot admission."""
     body = await request.json()
     model_name = body.get("model")
     input_data = body.get("input")
+    online_rejection = _online_model_rejection(model_name)
+    if online_rejection is not None:
+        return online_rejection
     if not model_name:
         raise HTTPException(status_code=400, detail="model is required")
     if input_data is None:
         raise HTTPException(status_code=400, detail="input is required")
 
     started_ns = now_ns()
-    resolved = await ensure_model(model_name)
-    backend_model = resolved["backend_model"]
-
-    # Build OpenAI-compatible embedding request
-    llama_payload = {
-        "model": backend_model,
-        "input": input_data,
-    }
-    normalize = body.get("normalize", True)
-    if not normalize:
-        llama_payload["normalize"] = False
-
+    queued_backend = await mark_request_queued(model_name)
+    backend_model = None
+    admitted = False
     try:
-        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/embeddings", json=llama_payload)
-        resp.raise_for_status()
-        data = resp.json()
+        resolved = await ensure_model(model_name)
+        backend_model = resolved["backend_model"]
+        if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0)):
+            await release_request_queued(queued_backend)
+            queued_backend = None
+            raise HTTPException(status_code=503, detail="No llama-server slots available within timeout")
+        await activate_queued_request(queued_backend, backend_model)
+        queued_backend = None
+        admitted = True
 
-        # Convert OpenAI format to Ollama format
-        ollama_embeddings = []
-        for item in data.get("data", []):
-            ollama_embeddings.append(item.get("embedding", []))
-
-        load_duration = data.get("load_duration", 0)
-        total_duration = now_ns() - started_ns
-
-        result = {
-            "model": public_model_name(model_name),
-            "embeddings": ollama_embeddings,
-            "total_duration": total_duration,
-            "load_duration": load_duration,
-            "prompt_eval_count": data.get("usage", {}).get("prompt_tokens", 0),
+        llama_payload = {
+            "model": backend_model,
+            "input": input_data,
         }
-        if not body.get("truncate", True):
-            result["truncated"] = False
+        normalize = body.get("normalize", True)
+        if not normalize:
+            llama_payload["normalize"] = False
 
-        await record_metrics("/api/embed", total_duration / 1e6, prompt_tokens=result["prompt_eval_count"])
-        return JSONResponse(result)
-    except httpx.HTTPStatusError as e:
-        await record_metrics("/api/embed", 0, error=True)
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
-    except httpx.TimeoutException:
-        await record_metrics("/api/embed", 0, error=True)
-        raise HTTPException(status_code=504, detail="Upstream llama-server timed out") from None
-    except httpx.RequestError as e:
-        await record_metrics("/api/embed", 0, error=True)
-        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}") from e
+        try:
+            resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/embeddings", json=llama_payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+            ollama_embeddings = []
+            for item in data.get("data", []):
+                ollama_embeddings.append(item.get("embedding", []))
+
+            load_duration = data.get("load_duration", 0)
+            total_duration = now_ns() - started_ns
+            result = {
+                "model": public_model_name(model_name),
+                "embeddings": ollama_embeddings,
+                "total_duration": total_duration,
+                "load_duration": load_duration,
+                "prompt_eval_count": data.get("usage", {}).get("prompt_tokens", 0),
+            }
+            if not body.get("truncate", True):
+                result["truncated"] = False
+
+            await record_metrics("/api/embed", total_duration / 1e6, prompt_tokens=result["prompt_eval_count"])
+            return JSONResponse(result)
+        except httpx.HTTPStatusError as e:
+            await record_metrics("/api/embed", 0, error=True)
+            raise HTTPException(status_code=e.response.status_code, detail=e.response.text) from e
+        except httpx.TimeoutException:
+            await record_metrics("/api/embed", 0, error=True)
+            raise HTTPException(status_code=504, detail="Upstream llama-server timed out") from None
+        except httpx.RequestError as e:
+            await record_metrics("/api/embed", 0, error=True)
+            raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}") from e
+    finally:
+        if queued_backend:
+            await release_request_queued(queued_backend)
+        if backend_model and admitted:
+            async with active_requests_lock:
+                active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                active_requests_lock.notify_all()
 
 
 @app.post("/api/embeddings")
@@ -2236,6 +2270,9 @@ async def openai_chat_completions(request: Request):
     body = await request.json()
     started_ns = now_ns()
     model_name = body.get("model", "")
+    online_rejection = _online_model_rejection(model_name)
+    if online_rejection is not None:
+        return online_rejection
     backend_model = model_name
     stream = body.get("stream", False)
     request_id = getattr(request.state, "request_id", None)
@@ -2294,9 +2331,8 @@ async def openai_chat_completions(request: Request):
                                 }
                             },
                         )
-                    # Slot confirmed - release the queue counter NOW so other models
-                    # aren't blocked from swapping while this request is in-flight.
-                    await release_request_queued(queued_backend)
+                    await activate_queued_request(queued_backend, backend_model)
+                    queued_backend = None
                     body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
@@ -2317,8 +2353,6 @@ async def openai_chat_completions(request: Request):
 
                 async def stream_proxy(_bm=backend_model, _cl=client_httpx):
                     stream_started = False
-                    async with active_requests_lock:
-                        active_requests[_bm] = active_requests.get(_bm, 0) + 1
                     try:
                         for s_attempt in range(max_retries):
                             try:
@@ -2406,8 +2440,6 @@ async def openai_chat_completions(request: Request):
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
-                async with active_requests_lock:
-                    active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
                 try:
                     resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
                     if resp.status_code != 200:
@@ -2518,6 +2550,9 @@ async def openai_completions(request: Request):
     body = await request.json()
     started_ns = now_ns()
     model_name = body.get("model", "")
+    online_rejection = _online_model_rejection(model_name)
+    if online_rejection is not None:
+        return online_rejection
     backend_model = model_name
     stream = body.get("stream", False)
     request_id = getattr(request.state, "request_id", None)
@@ -2564,9 +2599,8 @@ async def openai_completions(request: Request):
                                 }
                             },
                         )
-                    # Slot confirmed - release the queue counter NOW so other models
-                    # aren't blocked from swapping while this request is in-flight.
-                    await release_request_queued(queued_backend)
+                    await activate_queued_request(queued_backend, backend_model)
+                    queued_backend = None
                     body["model"] = backend_model
                 except HTTPException as e:
                     # Client errors (like 404 Not Found) should fail immediately
@@ -2587,8 +2621,6 @@ async def openai_completions(request: Request):
 
                 async def stream_proxy(_bm=backend_model, _cl=client_httpx):
                     stream_started = False
-                    async with active_requests_lock:
-                        active_requests[_bm] = active_requests.get(_bm, 0) + 1
                     try:
                         for s_attempt in range(max_retries):
                             try:
@@ -2671,8 +2703,6 @@ async def openai_completions(request: Request):
 
                 return StreamingResponse(stream_proxy(), media_type="text/event-stream")
             else:
-                async with active_requests_lock:
-                    active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
                 try:
                     resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
                     if resp.status_code != 200:
@@ -2760,78 +2790,109 @@ async def openai_completions(request: Request):
 
 @app.post("/v1/embeddings")
 async def openai_embeddings(request: Request):
-    """OpenAI-compatible embeddings. Proxies directly to llama-server."""
+    """OpenAI-compatible embeddings with the same local slot admission as chat."""
     body = await request.json()
     started_ns = now_ns()
     model_name = body.get("model", "")
+    online_rejection = _online_model_rejection(model_name)
+    if online_rejection is not None:
+        return online_rejection
 
-    if model_name:
-        try:
-            resolved = await ensure_model(model_name)
-            body["model"] = resolved["backend_model"]
-        except HTTPException as e:
-            return JSONResponse(
-                status_code=e.status_code,
-                content={
-                    "error": {
-                        "message": f"Model resolution failed: {e.detail}",
-                        "type": "invalid_request_error",
-                        "param": "model",
-                        "code": "model_not_found",
-                    }
-                },
-            )
-
+    queued_backend = await mark_request_queued(model_name)
+    backend_model = None
+    admitted = False
     try:
-        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/embeddings", json=body)
-        if resp.status_code != 200:
-            err_msg = resp.text
+        if model_name:
             try:
-                upstream_err = resp.json()
-                if "error" in upstream_err:
-                    err_msg = upstream_err["error"].get("message", err_msg)
-            except Exception:
-                pass
+                resolved = await ensure_model(model_name)
+                backend_model = resolved["backend_model"]
+                body["model"] = backend_model
+            except HTTPException as e:
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content={
+                        "error": {
+                            "message": f"Model resolution failed: {e.detail}",
+                            "type": "invalid_request_error",
+                            "param": "model",
+                            "code": "model_not_found",
+                        }
+                    },
+                )
+            if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0)):
+                await release_request_queued(queued_backend)
+                queued_backend = None
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "message": "No llama-server slots available within timeout",
+                            "type": "rate_limit_error",
+                            "code": "queue_timeout",
+                        }
+                    },
+                )
+            await activate_queued_request(queued_backend, backend_model)
+            queued_backend = None
+            admitted = True
+
+        try:
+            resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/embeddings", json=body)
+            if resp.status_code != 200:
+                err_msg = resp.text
+                try:
+                    upstream_err = resp.json()
+                    if "error" in upstream_err:
+                        err_msg = upstream_err["error"].get("message", err_msg)
+                except Exception:
+                    pass
+                await record_metrics("/v1/embeddings", 0, error=True)
+                return JSONResponse(
+                    status_code=resp.status_code,
+                    content={
+                        "error": {
+                            "message": err_msg,
+                            "type": "invalid_request_error",
+                            "code": resp.status_code,
+                        }
+                    },
+                )
+            data = resp.json()
+            latency = (now_ns() - started_ns) / 1e6
+            prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+            await record_metrics("/v1/embeddings", latency, prompt_tokens)
+            return JSONResponse(data)
+        except httpx.TimeoutException:
             await record_metrics("/v1/embeddings", 0, error=True)
             return JSONResponse(
-                status_code=resp.status_code,
+                status_code=504,
                 content={
                     "error": {
-                        "message": err_msg,
-                        "type": "invalid_request_error",
-                        "code": resp.status_code,
+                        "message": "Upstream llama-server timed out",
+                        "type": "api_error",
+                        "code": "timeout",
                     }
                 },
             )
-        data = resp.json()
-        latency = (now_ns() - started_ns) / 1e6
-        prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-        await record_metrics("/v1/embeddings", latency, prompt_tokens)
-        return JSONResponse(data)
-    except httpx.TimeoutException:
-        await record_metrics("/v1/embeddings", 0, error=True)
-        return JSONResponse(
-            status_code=504,
-            content={
-                "error": {
-                    "message": "Upstream llama-server timed out",
-                    "type": "api_error",
-                    "code": "timeout",
-                }
-            },
-        )
-    except httpx.RequestError as e:
-        await record_metrics("/v1/embeddings", 0, error=True)
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error": {
-                    "message": f"Upstream request failed: {e}",
-                    "type": "api_error",
-                    "code": "bad_gateway",
-                }
-            },
-        )
+        except httpx.RequestError as e:
+            await record_metrics("/v1/embeddings", 0, error=True)
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "error": {
+                        "message": f"Upstream request failed: {e}",
+                        "type": "api_error",
+                        "code": "bad_gateway",
+                    }
+                },
+            )
+    finally:
+        if queued_backend:
+            await release_request_queued(queued_backend)
+        if backend_model and admitted:
+            async with active_requests_lock:
+                active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                active_requests_lock.notify_all()
 
 
 # Global state for VRAM tracking
@@ -3114,37 +3175,155 @@ def validate_sd_parameters(payload: dict[str, Any]) -> tuple[bool, str | None]:
 # sd-server prefers `image[]` for multi-image edits and still accepts legacy
 # `image` for a single file (examples/server/api.md).
 _MAX_EDIT_IMAGES = 4
+_MAX_EDIT_FILE_BYTES = 32 * 1024 * 1024
+_MAX_EDIT_TOTAL_BYTES = 128 * 1024 * 1024
+_IMAGE_ROLE_PREFIX = "image__"
+_REFERENCE_ROLE_ALIASES = {
+    "background": "scene",
+    "scene": "scene",
+    "person": "person",
+    "people": "person",
+    "face": "face",
+    "faces": "face",
+}
 
 
-def normalize_edit_image_parts(files: list) -> list:
+def _canonical_reference_role(role: Any) -> str | None:
+    if not isinstance(role, str):
+        return None
+    return _REFERENCE_ROLE_ALIASES.get(role.strip().lower())
+
+
+def _edit_image_role(key: Any) -> str | None:
+    if not isinstance(key, str):
+        return None
+    if key.startswith(_IMAGE_ROLE_PREFIX):
+        raw_role = key[len(_IMAGE_ROLE_PREFIX) :]
+        if raw_role.endswith("[]"):
+            raw_role = raw_role[:-2]
+        return _canonical_reference_role(raw_role) or raw_role
+    base = key[:-2] if key.endswith("[]") else key
+    if base in ("image", "images"):
+        return ""
+    return None
+
+
+def normalize_edit_image_parts(files: list, reference_roles: list[str] | None = None) -> list:
     """Re-key multipart image parts for sd-server's edits API.
 
     Single image -> ``image``; multiple -> repeated ``image[]`` parts so
     Qwen-Image-Edit multi-image instructions (face swap, merge) reach the
-    engine. Non-image parts (mask, etc.) keep their original field names.
+    engine. Named ``image__role`` parts can be ordered by ``reference_roles``.
+    Non-image parts (mask, etc.) keep their original field names.
     """
     image_parts: list = []
     others: list = []
     for key, part in files:
-        base = key[:-2] if isinstance(key, str) and key.endswith("[]") else key
-        if base in ("image", "images"):
-            image_parts.append(part)
+        if _edit_image_role(key) is not None:
+            image_parts.append((key, part))
         else:
             others.append((key, part))
     if not image_parts:
         return others
-    rebuilt = [("image", image_parts[0])] if len(image_parts) == 1 else [("image[]", part) for part in image_parts]
+    if reference_roles:
+        ordered_parts: list[tuple[str, Any]] = []
+        remaining = list(image_parts)
+        for role in reference_roles:
+            for image_key, part in list(remaining):
+                if _edit_image_role(image_key) == role:
+                    ordered_parts.append((image_key, part))
+                    remaining.remove((image_key, part))
+        image_parts = ordered_parts + remaining
+    parts = [part for _key, part in image_parts]
+    rebuilt = [("image", parts[0])] if len(parts) == 1 else [("image[]", part) for part in parts]
     return rebuilt + others
 
 
 def count_edit_images(files: list) -> int:
     """Number of image parts in an edits multipart file list."""
-    n = 0
-    for key, _part in files:
-        base = key[:-2] if isinstance(key, str) and key.endswith("[]") else key
-        if base in ("image", "images"):
-            n += 1
-    return n
+    return sum(1 for key, _part in files if _edit_image_role(key) is not None)
+
+
+def _parse_reference_roles(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        raw_roles = value
+    else:
+        try:
+            raw_roles = json.loads(str(value))
+        except (TypeError, ValueError):
+            raise ValueError("reference_roles must be a JSON array") from None
+    if not isinstance(raw_roles, list):
+        raise ValueError("reference_roles must be a JSON array")
+    roles = []
+    for role in raw_roles:
+        canonical = _canonical_reference_role(role)
+        if canonical is None:
+            raise ValueError(f"Unsupported reference role: {role!r}")
+        roles.append(canonical)
+    return roles
+
+
+def _is_qwen_image_21_model(model_name: str) -> bool:
+    normalized = (model_name or "").lower().replace("_", "-")
+    return "qwen" in normalized and "image-2.1" in normalized
+
+
+def _edit_seed(value: Any) -> int:
+    try:
+        seed = int(value)
+    except (TypeError, ValueError):
+        seed = -1
+    if seed < 0:
+        seed = uuid.uuid4().int % 2_147_483_647
+    return seed
+
+
+def _apply_edit_preset(
+    data: dict[str, Any], image_count: int, requested_model: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    preset_name = str(data.get("preset") or "").strip()
+    if not preset_name:
+        return data, {}
+    preset = SD_PRESETS.get(preset_name)
+    if not isinstance(preset, dict):
+        raise ValueError(f"Unknown image preset: {preset_name}")
+    if preset_name == "qwen_image_21.identity":
+        if not _is_qwen_image_21_model(requested_model):
+            raise ValueError("qwen_image_21.identity requires a Qwen Image 2.1 model")
+        roles = _parse_reference_roles(data.get("reference_roles"))
+        required = tuple(preset.get("required_roles", ()))
+        allowed = set(preset.get("allowed_roles", required))
+        if len(roles) != image_count:
+            raise ValueError("reference_roles must contain one role for each image")
+        if any(role not in allowed for role in roles):
+            raise ValueError("reference_roles contains a role not supported by this preset")
+        if any(role not in roles for role in required):
+            raise ValueError(f"This preset requires reference roles: {', '.join(required)}")
+        if roles.count("scene") != 1 or roles.count("person") != 1 or roles.count("face") not in (1, 2):
+            raise ValueError("Qwen identity composites require one scene, one people image, and one or two face references")
+        defaults = preset.get("defaults", {})
+        for key, value in defaults.items():
+            if key not in data or data.get(key) in (None, ""):
+                data[key] = str(value)
+        data.pop("negative_prompt", None)
+        data["negative_prompt"] = ""
+        data["seed"] = str(_edit_seed(data.get("seed")))
+        user_prompt = str(data.get("prompt") or "").strip()
+        prompt = str(preset.get("prompt", "")).strip()
+        if user_prompt and user_prompt not in prompt:
+            prompt = f"{prompt} User instruction: {user_prompt}"
+        data["prompt"] = prompt
+        data["reference_roles"] = json.dumps(roles)
+        return data, {
+            "preset": preset_name,
+            "preset_version": preset.get("version", 1),
+            "reference_roles": roles,
+            "effective_prompt": prompt,
+            "seed": int(data["seed"]),
+        }
+    return data, {"preset": preset_name, "preset_version": preset.get("version", 1)}
 
 
 def is_image_model_manifest(manifest: dict) -> bool:
@@ -3308,12 +3487,21 @@ def get_model_profile(model_path: str) -> dict[str, Any]:
     if "/blobs/" in model_path:
         try:
             real_blob = os.path.realpath(model_path)
+            blob_base = os.path.basename(model_path)
             for entry in os.scandir(ROUTER_MODELS_DIR):
                 if entry.is_symlink():
                     try:
                         target = os.readlink(entry.path)
                         abs_target = os.path.abspath(os.path.join(ROUTER_MODELS_DIR, target))
-                        if os.path.realpath(abs_target) == real_blob:
+                        real_target = os.path.realpath(abs_target)
+                        # Match full realpath OR blob basename: container mounts
+                        # blobs at /models while host symlinks may resolve to a
+                        # different absolute path, but share the sha256-* name.
+                        if real_target == real_blob or (
+                            "/blobs/" in real_target
+                            and blob_base
+                            and os.path.basename(real_target) == blob_base
+                        ):
                             profile_paths.append(entry.path + ".profile.json")
                             if "." in entry.name:
                                 profile_paths.append(entry.path.rsplit(".", 1)[0] + ".profile.json")
@@ -3384,6 +3572,7 @@ def write_active_model_config(
     clip_l_path: str | None = None,
     t5xxl_path: str | None = None,
     llm_path: str | None = None,
+    llm_vision_path: str | None = None,
     model_family: str | None = None,
     extra_args: str | None = None,
     gpu_layers: str | None = None,
@@ -3399,6 +3588,7 @@ def write_active_model_config(
         "clip_l_path": clip_l_path,
         "t5xxl_path": t5xxl_path,
         "llm_path": llm_path,
+        "llm_vision_path": llm_vision_path,
         "model_family": model_family,
         "host": "0.0.0.0",
         "port": "8081",
@@ -3518,6 +3708,8 @@ async def _unload_sd_now() -> bool:
             "vae_path": "",
             "clip_l_path": "",
             "t5xxl_path": "",
+            "llm_path": "",
+            "llm_vision_path": "",
             "host": "0.0.0.0",
             "port": "8081",
             "extra_args": "",
@@ -3624,6 +3816,9 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
     clip_l_path = resolve_companion_path(profile.get("clip_l", ""))
     t5xxl_path = resolve_companion_path(profile.get("t5xxl", ""))
     llm_path = resolve_companion_path(profile.get("llm", ""))
+    llm_vision_path = resolve_companion_path(
+        profile.get("llm_vision") or profile.get("llm-vision") or profile.get("llm_vision_path", "")
+    )
     model_family = profile.get("model_family", "")
     extra_args = profile.get("extra_args") or profile.get("extra-args") or ""
 
@@ -3679,10 +3874,16 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
             active_gpu = str(active_config.get("gpu_layers") or "")
             active_threads = str(active_config.get("threads") or "")
             active_extra = str(active_config.get("extra_args") or "")
+            active_vae = str(active_config.get("vae_path") or "")
+            active_llm = str(active_config.get("llm_path") or "")
+            active_llm_vision = str(active_config.get("llm_vision_path") or "")
 
             profile_gpu = str(gpu_layers or "")
             profile_threads = str(threads or "")
             profile_extra = str(extra_args or "")
+            profile_vae = str(vae_path or "")
+            profile_llm = str(llm_path or "")
+            profile_llm_vision = str(llm_vision_path or "")
 
             if (
                 os.path.abspath(target_path) == os.path.abspath(active_path)
@@ -3690,6 +3891,9 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
                 and active_gpu == profile_gpu
                 and active_threads == profile_threads
                 and active_extra == profile_extra
+                and active_vae == profile_vae
+                and active_llm == profile_llm
+                and active_llm_vision == profile_llm_vision
             ):
                 is_sd_loaded = True
 
@@ -3704,6 +3908,7 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
                 clip_l_path=clip_l_path,
                 t5xxl_path=t5xxl_path,
                 llm_path=llm_path,
+                llm_vision_path=llm_vision_path,
                 model_family=model_family,
                 extra_args=extra_args,
                 gpu_layers=gpu_layers,
@@ -3880,6 +4085,33 @@ SD_PRESETS = {
             "recommended_font": "sans-serif",
         },
     },
+    "qwen_image_21.identity": {
+        "version": 1,
+        "name": "Qwen Image 2.1 Identity Composite",
+        "model_family": "qwen-image",
+        "required_roles": ["scene", "person", "face"],
+        "allowed_roles": ["scene", "person", "face"],
+        "min_images": 3,
+        "max_images": 4,
+        "defaults": {
+            "size": "640x768",
+            "n": "1",
+            "strength": "0.95",
+            "steps": "32",
+            "sampler": "euler",
+            "scheduler": "simple",
+            "cfg_scale": "1",
+            "negative_prompt": "",
+        },
+        "prompt": (
+            "Use <image1> as the target scene and preserve its composition, perspective, lighting, and background. "
+            "Place the person or people from <image2> naturally into the scene as foreground subjects, matching scale, "
+            "camera angle, contact shadows, and lighting. Use <image3> only as a close identity reference for the people "
+            "in <image2>. Preserve facial identity, facial proportions, skin tone, hair, clothing, and pose as faithfully "
+            "as possible. Do not copy any rectangular source background or create a collage. Photorealistic result, "
+            "natural edges, consistent perspective, sharp details."
+        ),
+    },
 }
 
 
@@ -3916,18 +4148,72 @@ async def edit_images(request: Request) -> Response:
     if not requested_model:
         raise HTTPException(status_code=400, detail="`model` field is required.")
 
-    # Validate parameters we understand
+    data: dict[str, Any] = {}
+    files: list[tuple[str, tuple[str, bytes, str]]] = []
+    total_bytes = 0
+    for key in form:
+        for item in form.getlist(key):
+            if isinstance(item, str):
+                data.setdefault(key, item)
+                continue
+            content = await item.read()
+            if len(content) > _MAX_EDIT_FILE_BYTES:
+                raise HTTPException(status_code=413, detail=f"Image part '{key}' exceeds the 32 MiB limit.")
+            total_bytes += len(content)
+            files.append(
+                (
+                    key,
+                    (
+                        getattr(item, "filename", key),
+                        content,
+                        getattr(item, "content_type", "application/octet-stream"),
+                    ),
+                )
+            )
+
+    if total_bytes > _MAX_EDIT_TOTAL_BYTES:
+        raise HTTPException(status_code=413, detail="Image edit uploads exceed the 128 MiB limit.")
+    image_count = count_edit_images(files)
+    if image_count == 0:
+        raise HTTPException(status_code=400, detail="At least one source image is required.")
+    if image_count > _MAX_EDIT_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"At most {_MAX_EDIT_IMAGES} source images are supported (got {image_count}).",
+        )
+
     try:
-        n_val = int(str(form.get("n", "1")))
+        data, preset_metadata = _apply_edit_preset(data, image_count, requested_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    reference_roles = preset_metadata.get("reference_roles")
+    if reference_roles is None and data.get("reference_roles"):
+        try:
+            reference_roles = _parse_reference_roles(data["reference_roles"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    files = normalize_edit_image_parts(files, reference_roles)
+
+    try:
+        n_val = int(str(data.get("n", "1")))
     except (TypeError, ValueError):
         n_val = 1
-    ok, err = validate_sd_parameters({"size": form.get("size", "512x512"), "n": n_val})
+    ok, err = validate_sd_parameters({"size": data.get("size", "512x512"), "n": n_val, "steps": data.get("steps")})
     if not ok:
         raise HTTPException(status_code=400, detail=err)
+    if data.get("preset") == "qwen_image_21.identity":
+        try:
+            width, height = map(int, str(data["size"]).split("x"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Qwen Image 2.1 requires a WIDTHxHEIGHT size.") from None
+        if width % 32 or height % 32:
+            raise HTTPException(status_code=400, detail="Qwen Image 2.1 dimensions must be divisible by 32.")
 
-    response_format = str(form.get("response_format", "b64_json")).lower()
+    response_format = str(data.get("response_format", "b64_json")).lower()
+    data.pop("preset", None)
+    data.pop("reference_roles", None)
 
-    # Claim the SD slot BEFORE ensure/load (same race as generate_images).
     async with active_sd_requests_lock:
         active_sd_requests += 1
 
@@ -3935,70 +4221,25 @@ async def edit_images(request: Request) -> Response:
     request_id = ""
     try:
         await ensure_sd_model_loaded(requested_model)
-
-        # Track this request in the Active Requests UI
         request_id = str(uuid.uuid4())[:8]
         register_active_request(
             request_id,
             requested_model or "stable-diffusion",
             "image_edit",
-            {"prompt": form.get("prompt", "")},
+            {"prompt": data.get("prompt", ""), "preset": preset_metadata.get("preset")},
             request_source=getattr(request.state, "request_source", "unknown"),
             client_ip=get_client_ip(request),
         )
 
         sd_url = os.getenv("SD_SERVER_URL", "http://localhost:8081")
         headers = {"Accept": "application/json", "User-Agent": "alpaca-proxy/1.0"}
-        files = []
-        data = {}
-        for key in form:
-            items = form.getlist(key)
-            for item in items:
-                if isinstance(item, str):
-                    if key not in data:
-                        data[key] = item
-                else:
-                    content = await item.read()
-                    files.append(
-                        (
-                            key,
-                            (
-                                getattr(item, "filename", key),
-                                content,
-                                getattr(item, "content_type", "application/octet-stream"),
-                            ),
-                        )
-                    )
-
-        # Multi-image edits (face swap / merge): re-key to sd-server's
-        # image[] field before forwarding.
-        image_count = count_edit_images(files)
-        if image_count > _MAX_EDIT_IMAGES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"At most {_MAX_EDIT_IMAGES} source images are supported (got {image_count}).",
-            )
-        if image_count:
-            files = normalize_edit_image_parts(files)
-            logger.info("sd edit multi-image - sources=%d", image_count)
-
         if response_format in _IMAGE_FILE_FORMATS:
-            # Force b64_json from sd-server so we can decode it into a raw file.
             data["response_format"] = "b64_json"
 
-        # Fold the edit's quality controls into the native <sd_cpp_extra_args>
-        # block. sd-server reads only prompt/image/mask/n/size/output_* from the
-        # multipart body and parses everything else out of that block (removing
-        # it before generation), so denoise strength and the negative prompt only
-        # take effect from inside the prompt. Form fields a caller already sent
-        # are still forwarded: an older sd-server that read them keeps working.
         native_params = extract_sd_native_params(data)
         if await get_sd_capabilities() is not None:
             data["prompt"] = apply_sd_native_params(str(data.get("prompt", "")), native_params)
         else:
-            # Older sd-server: it does not parse the block, so leaving it in the
-            # prompt would feed the tag to the text encoder. Strip it and fall
-            # back to the flat form fields that build understood.
             flat, clean_prompt = _flatten_sd_native_params(str(data.get("prompt", "")), native_params)
             data["prompt"] = clean_prompt
             for key, value in flat.items():
@@ -4018,14 +4259,20 @@ async def edit_images(request: Request) -> Response:
                         data=data,
                         files=files,
                         headers=headers,
-                        # Qwen multi-image edits on the 4060 can exceed 15 min
-                        # (14 steps @ ~68s/it + conditioning). 600s was killing them mid-run.
                         timeout=httpx.Timeout(1800.0, connect=30.0),
                     )
                 if resp.status_code >= 400:
                     logger.error(f"sd-server edit error {resp.status_code}: {resp.text}")
                     raise HTTPException(status_code=502, detail=f"sd-server error: {resp.text}")
                 result_data = resp.json()
+                if isinstance(result_data, dict):
+                    result_data.setdefault("model", requested_model)
+                    result_data.setdefault("output_format", str(data.get("output_format", "png")))
+                    if preset_metadata:
+                        result_data.update(preset_metadata)
+                    if data.get("seed") not in (None, ""):
+                        with suppress(TypeError, ValueError):
+                            result_data.setdefault("seed", int(data["seed"]))
                 file_resp = _maybe_return_image_file(result_data, response_format)
                 if file_resp is not None:
                     return file_resp
@@ -4713,9 +4960,12 @@ async def get_resubmit_data(request_id: str):
 @app.get("/admin/runtime")
 async def admin_runtime():
     """Runtime state: loaded models, active requests, keep-alive timers, queue depth."""
-    # Active requests (convert backend -- IDs to public : names)
+    # Keep backend-keyed snapshots for internal lookups and public-keyed views for the UI.
     async with active_requests_lock:
-        active = {public_model_name(k): v for k, v in active_requests.items()}
+        active_by_backend = dict(active_requests)
+        queued_by_backend = dict(queued_requests)
+        active = {public_model_name(k): v for k, v in active_by_backend.items()}
+        queued = {public_model_name(k): v for k, v in queued_by_backend.items()}
 
     # Model expiry timers
     expiry_info = {}
@@ -4801,7 +5051,8 @@ async def admin_runtime():
                     "details": info["details"],
                     "context_length": info["context_length"],
                     "expires_at": model_expires_at.get(public_name, "0001-01-01T00:00:00Z"),
-                    "active_requests": active.get(backend_model, 0),
+                    "active_requests": active_by_backend.get(backend_model, 0),
+                    "queued_requests": queued_by_backend.get(backend_model, 0),
                     "running_settings": running_settings,
                     "peak_active_requests": 0,
                     "total_requests_processed": 0,
@@ -4845,7 +5096,8 @@ async def admin_runtime():
                             "details": {"format": "gguf", "family": pub_name.split(":")[0]},
                             "context_length": live_props.get("n_ctx", 8192),
                             "expires_at": model_expires_at.get(pub_name, "0001-01-01T00:00:00Z"),
-                            "active_requests": active.get(eid, 0),
+                            "active_requests": active_by_backend.get(eid, 0),
+                            "queued_requests": queued_by_backend.get(eid, 0),
                             "running_settings": running_settings,
                             "peak_active_requests": 0,
                             "total_requests_processed": 0,
@@ -4865,6 +5117,7 @@ async def admin_runtime():
         "loaded_models": loaded,
         "loading_models": loading,
         "active_requests": active,
+        "queued_requests": queued,
         "model_expiry_timers": expiry_info,
         "max_loaded_models": MAX_LOADED_MODELS,
         "default_keep_alive": DEFAULT_KEEP_ALIVE,
@@ -5373,12 +5626,17 @@ async def admin_model_unload(request: Request):
                 if is_resident_status(current_status):
                     backend_model = entry.get("id")
 
-                    # Check active requests before unloading
+                    # Check active and queued requests before unloading
                     async with active_requests_lock:
-                        if active_requests.get(backend_model, 0) > 0:
+                        active_count = active_requests.get(backend_model, 0)
+                        queued_count = queued_requests.get(backend_model, 0)
+                        if active_count > 0 or queued_count > 0:
                             raise HTTPException(
                                 status_code=409,
-                                detail=f"Cannot unload model {model} because it currently has {active_requests[backend_model]} active request(s).",
+                                detail=(
+                                    f"Cannot unload model {model} because it currently has "
+                                    f"{active_count} active and {queued_count} queued request(s)."
+                                ),
                             )
 
                     await post_router_model_action("unload", backend_model)
@@ -5446,10 +5704,12 @@ async def clear_model_errors():
 @app.post("/admin/vram/clear")
 async def admin_vram_clear():
     """Force clear all VRAM by unloading all active models and restarting llama-server."""
-    # Wait until there are no active LLM requests
+    # Wait until there are no active or queued LLM requests
     async with active_requests_lock:
-        while any(count > 0 for count in active_requests.values()):
-            logger.info("Active LLM requests in progress, waiting before VRAM clear...")
+        while any(count > 0 for count in active_requests.values()) or any(
+            count > 0 for count in queued_requests.values()
+        ):
+            logger.info("Active or queued LLM requests in progress, waiting before VRAM clear...")
             await active_requests_lock.wait()
 
     # Wait until there are no active Stable Diffusion requests
@@ -6607,6 +6867,21 @@ def _is_online_model(model_name: str) -> bool:
     return any(clean.startswith(p) for p in _ONLINE_MODEL_PREFIXES)
 
 
+def _online_model_rejection(model_name: str) -> JSONResponse | None:
+    if not _is_online_model(model_name):
+        return None
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": f"'{model_name}' is an online provider model and must bypass local slots.",
+                "type": "invalid_request_error",
+                "code": "online_model",
+            }
+        },
+    )
+
+
 async def ensure_model(model_name: str, options: dict | None = None, skip_swap: bool = False):
     # Online models are handled by the benchmark/web layer directly via the
     # online_providers module.  If one of their identifiers somehow reaches the
@@ -7693,6 +7968,9 @@ def prune_slots_cache(max_files: int = 15):
 async def chat(request: Request):
     body = await request.json()
     model_name = body.get("model")
+    online_rejection = _online_model_rejection(model_name)
+    if online_rejection is not None:
+        return online_rejection
     keep_alive = effective_keep_alive(body.get("keep_alive"))
 
     request_id = getattr(request.state, "request_id", None)
@@ -7756,9 +8034,8 @@ async def chat(request: Request):
             status_code=503,
         )
 
-    # Slot confirmed - release the queue counter NOW so other models
-    # aren't blocked from swapping while this request is in-flight.
-    await release_request_queued(_queued_backend)
+    await activate_queued_request(_queued_backend, resolved_backend)
+    _queued_backend = None
 
     # Capture the already-resolved backend for use inside stream_proxy via closure.
     # DO NOT call ensure_model() again inside stream_proxy - it was already called
@@ -7774,13 +8051,6 @@ async def chat(request: Request):
         try:
             started_ns = now_ns()
             load_started_ns = now_ns()
-
-            # Increment reference count using the already-resolved backend.
-            async with active_requests_lock:
-                active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
-                logger.info(
-                    f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                )
 
             load_duration = now_ns() - load_started_ns
 
@@ -7996,12 +8266,6 @@ async def chat(request: Request):
         resolved = await ensure_model(model_name, options=body.get("options"))
         resolved_backend = resolved["backend_model"]
 
-        async with active_requests_lock:
-            active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
-            logger.info(
-                f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-            )
-
         load_duration = now_ns() - load_started_ns
         payload = build_chat_payload(body, resolved_backend)
 
@@ -8127,6 +8391,9 @@ async def chat(request: Request):
 async def generate(request: Request):
     body = await request.json()
     model_name = body.get("model")
+    online_rejection = _online_model_rejection(model_name)
+    if online_rejection is not None:
+        return online_rejection
     use_chat_backend = should_generate_via_chat(body)
     endpoint = "/v1/chat/completions" if use_chat_backend else "/completion"
     keep_alive = effective_keep_alive(body.get("keep_alive"))
@@ -8149,20 +8416,14 @@ async def generate(request: Request):
     queued_backend = await mark_request_queued(model_name)
 
     async def stream_proxy():
+        nonlocal queued_backend
         resolved_backend = None
+        admitted = False
         try:
             started_ns = now_ns()
             load_started_ns = now_ns()
             resolved = await ensure_model(model_name, options=body.get("options"))
             resolved_backend = resolved["backend_model"]
-
-            # Increment reference count (before wait_for_slot so the finally
-            # decrement always pairs exactly once with this increment).
-            async with active_requests_lock:
-                active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
-                logger.info(
-                    f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                )
 
             # Shared queue: only proceed once a slot on this (same) model is
             # available, so the request never runs on a slot serving a different
@@ -8176,9 +8437,9 @@ async def generate(request: Request):
                 )
                 return
 
-            # Slot confirmed - release the queue counter NOW so other models
-            # aren't blocked from swapping while this request is in-flight.
-            await release_request_queued(queued_backend)
+            await activate_queued_request(queued_backend, resolved_backend)
+            queued_backend = None
+            admitted = True
 
             load_duration = now_ns() - load_started_ns
 
@@ -8330,11 +8591,8 @@ async def generate(request: Request):
             record_active_request_error(request_id, f"Stream failed: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
-            if resolved_backend:
-                # Clear the detailed tracking entry FIRST (synchronous, cannot be
-                # interrupted by a client disconnect / task cancellation). See the
-                # chat-stream finally for the full rationale.
-                complete_active_request(request_id)
+            complete_active_request(request_id)
+            if resolved_backend and admitted:
                 # Only decrement the active counter - the queued-slot was
                 # released right after wait_for_slot returned (see stream setup
                 # above), so it is already 0 here.
@@ -8350,19 +8608,12 @@ async def generate(request: Request):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
 
     resolved_backend = None
+    admitted = False
     try:
         started_ns = now_ns()
         load_started_ns = now_ns()
         resolved = await ensure_model(model_name, options=body.get("options"))
         resolved_backend = resolved["backend_model"]
-
-        # Increment reference count (before wait_for_slot so the finally
-        # decrement always pairs exactly once with this increment).
-        async with active_requests_lock:
-            active_requests[resolved_backend] = active_requests.get(resolved_backend, 0) + 1
-            logger.info(
-                f"In-flight request started for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-            )
 
         # Shared queue: only admit once a slot on this (same) model is available.
         # The request's queued count is released right after this point (on
@@ -8379,10 +8630,9 @@ async def generate(request: Request):
                 },
             )
 
-        # Slot confirmed - release the queue counter NOW so other models
-        # aren't blocked from swapping while this request is in-flight.
-        if queued_backend:
-            await release_request_queued(queued_backend)
+        await activate_queued_request(queued_backend, resolved_backend)
+        queued_backend = None
+        admitted = True
 
         load_duration = now_ns() - load_started_ns
 
@@ -8498,11 +8748,8 @@ async def generate(request: Request):
         record_active_request_error(request_id, f"Upstream llama-server request failed: {e}")
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
-        if resolved_backend:
-            # Clear the detailed tracking entry FIRST (synchronous, cannot be
-            # interrupted by a client disconnect / task cancellation). See the
-            # chat-stream finally for the full rationale.
-            complete_active_request(request_id)
+        complete_active_request(request_id)
+        if resolved_backend and admitted:
             # Only decrement the active counter - the queued-slot was
             # released right after wait_for_slot returned (see above), so it is
             # already 0 here.

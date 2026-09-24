@@ -33,7 +33,7 @@ def text_edit_model(
     band: tuple[int, int],
     text: str | None,
     proxy_url: str = "http://localhost:11434",
-    model: str = "qwen-image-edit-rapid-aio:q4_k",
+    model: str = "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
     min_glyph_px: int = 30,
     steps: int = 20,
     cfg: float = 2.5,

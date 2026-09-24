@@ -332,3 +332,42 @@ def test_grading_version_invalidates_code_hash_only(monkeypatch):
     monkeypatch.setattr(LLMModelBenchmark, "GRADER_DIRECTIVE_VERSION", "v2")
     assert _compute_test_hash(code) != current_code
     assert _compute_test_hash(text) == current_text
+
+
+def test_code_grader_version_invalidates_code_hash_only(monkeypatch):
+    import web.app as web_app
+
+    code = {"id": "game_checkers_web", "type": "ui", "prompt": "Build checkers"}
+    text = {"id": "story", "type": "knowledge", "prompt": "Tell a story"}
+    current_code = web_app._compute_test_hash(code)
+    current_text = web_app._compute_test_hash(text)
+    assert LLMModelBenchmark.CODE_GRADER_VERSION == "v2"
+    monkeypatch.setattr(LLMModelBenchmark, "CODE_GRADER_VERSION", "v1")
+    assert web_app._compute_test_hash(code) != current_code
+    assert web_app._compute_test_hash(text) == current_text
+
+
+def test_runner_hash_includes_code_grader_version(monkeypatch):
+    code = {"id": "game_checkers_web", "type": "ui", "prompt": "Build checkers"}
+    text = {"id": "story", "type": "knowledge", "prompt": "Tell a story"}
+    current_code = LLMModelBenchmark.compute_test_hash(code)
+    current_text = LLMModelBenchmark.compute_test_hash(text)
+    monkeypatch.setattr(LLMModelBenchmark, "CODE_GRADER_VERSION", "v1")
+    assert LLMModelBenchmark.compute_test_hash(code) != current_code
+    assert LLMModelBenchmark.compute_test_hash(text) == current_text
+
+
+@pytest.mark.parametrize(
+    "test",
+    [
+        {"id": "story", "prompt": "Tell a story", "type": "knowledge"},
+        {"id": "game_checkers_web", "prompt": "Build checkers", "type": "ui"},
+        {"id": "logic_knights", "prompt": "Solve this", "type": "functional"},
+        {"id": "math_hard_x", "prompt": "Compute", "type": "functional", "expected": "7"},
+        {"id": "review_only", "prompt": "Review this", "type": "functional", "review_only": True},
+    ],
+)
+def test_runner_and_web_hashes_match(test):
+    from web.app import _compute_test_hash
+
+    assert _compute_test_hash(test) == LLMModelBenchmark.compute_test_hash(test)

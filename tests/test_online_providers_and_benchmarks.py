@@ -236,6 +236,35 @@ def test_online_model_provider_detection():
     assert provider.is_online_model("qwen2.5-coder:7b") is False
 
 
+@pytest.mark.asyncio
+async def test_shared_benchmark_online_query_bypasses_local_slot_path(monkeypatch):
+    import web.shared_llm_benchmark as benchmark_module
+
+    bench = SharedLLMModelBenchmark()
+    online_query = AsyncMock(
+        return_value={
+            "success": True,
+            "latency": 0.01,
+            "response": "online",
+            "tokens_generated": 1,
+            "error": None,
+        }
+    )
+    monkeypatch.setattr(benchmark_module.online_model_provider, "is_online_model", lambda model: True)
+    monkeypatch.setattr(benchmark_module.online_model_provider, "query_online_model", online_query)
+    monkeypatch.setattr(
+        benchmark_module.context_awareness,
+        "resolve_context_window",
+        AsyncMock(side_effect=AssertionError("local context path was entered")),
+    )
+
+    result = await bench.query_model("openrouter:test/model", use_proxy=True, prompt="hello")
+
+    assert result["success"] is True
+    online_query.assert_awaited_once()
+    assert online_query.await_args.kwargs["model_identifier"] == "openrouter:test/model"
+
+
 def test_online_model_provider_parse():
     provider = OnlineModelProvider()
     p, m = provider.parse_model_identifier("openrouter:meta-llama/llama-3.3-70b-instruct:free")
@@ -1201,3 +1230,44 @@ async def test_suite_test_model_proxy_streams_payload(monkeypatch, tmp_path):
     assert res["success"] is True
     assert res["response"] == "42"
     assert res["tokens_generated"] == 3
+
+
+@pytest.mark.asyncio
+async def test_shared_llm_online_code_task_disables_reasoning(monkeypatch):
+    bench = SharedLLMModelBenchmark()
+    captured = {}
+
+    async def fake_query(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "latency": 0.1,
+            "response": "code",
+            "tokens_generated": 12,
+            "error": None,
+            "reasoning_enabled": False,
+            "provider_thinking": True,
+            "effective_max_tokens": kwargs["max_tokens"],
+            "continuation_count": 0,
+            "retry_count": 0,
+        }
+
+    monkeypatch.setattr("web.shared_llm_benchmark.online_model_provider.query_online_model", fake_query)
+    result = await bench.query_model(
+        "openrouter:stealth/space-bunny-alpha",
+        use_proxy=True,
+        prompt="Write code",
+        max_tokens=700,
+        reasoning_estimate=2048,
+        benchmark_mode="code",
+    )
+
+    assert result["success"] is True
+    assert captured["max_tokens"] == 700
+    assert captured["benchmark_mode"] == "code"
+    assert captured["thinking_override"] is False
+    assert captured["allow_continuation"] is False
+    assert captured["max_retries"] == 1
+    assert result["effective_max_tokens"] == 700
+    assert result["reasoning_enabled"] is False
+    assert result["provider_thinking"] is True

@@ -382,6 +382,7 @@ active_run: dict[str, Any] = {
     "models": [],
     "use_proxy": True,
     "results": [],
+    "test_results": [],
     "start_time": None,
     "saved_as": None,
 }
@@ -409,6 +410,7 @@ def get_progress_callback(run_type):
                 active_run["total_tests"] = data["total_tests"]
                 active_run["tests_completed"] = 0
                 active_run["results"] = []
+                active_run["test_results"] = []
                 active_run["start_time"] = data["timestamp"]
                 active_run["saved_as"] = None
 
@@ -483,6 +485,37 @@ def get_progress_callback(run_type):
 
             elif event == "test_complete":
                 active_run["tests_completed"] += 1
+                result = data.get("result") or {}
+                if not isinstance(result, dict):
+                    result = {}
+                error = result.get("error") or result.get("code_error") or ""
+                active_run.setdefault("test_results", []).append(
+                    {
+                        "model": data.get("model"),
+                        "test_id": data.get("test_id"),
+                        "test_label": data.get("test_label"),
+                        "category": data.get("category"),
+                        "success": result.get("success"),
+                        "score": result.get("score"),
+                        "functional_pass": result.get("functional_pass"),
+                        "code_ran": result.get("code_ran"),
+                        "lint_passed": result.get("lint_passed"),
+                        "failure_kind": result.get("failure_kind"),
+                        "error": str(error)[:500],
+                        "latency": result.get("latency"),
+                        "tokens_generated": result.get("tokens_generated"),
+                        "requested_num_predict": result.get("requested_num_predict"),
+                        "num_predict": result.get("num_predict"),
+                        "finish_reason": result.get("finish_reason"),
+                        "retry_count": result.get("retry_count"),
+                        "continuation_count": result.get("continuation_count"),
+                        "repair_tokens_generated": result.get("repair_tokens_generated"),
+                        "repair_latency": result.get("repair_latency"),
+                        "repair_wall_latency": result.get("repair_wall_latency"),
+                        "repaired": result.get("repaired"),
+                        "repair_failed_note": result.get("repair_failed_note"),
+                    }
+                )
                 socketio.emit(
                     "test_complete",
                     {
@@ -810,27 +843,8 @@ def get_models():
         )
 
 
-# A functional grader can change without its prompt changing, and the stored
-# result was then scored by rules that no longer exist. Recording the grader's
-# version here makes `outdated_only` re-run exactly those tests, the same way a
-# prompt edit does. Bump a test's version whenever its grading changes
-# materially; drop the entry only if the test itself goes away.
-FUNCTIONAL_GRADER_VERSIONS = {
-    "life_dad_joke": "v2",
-    "uiux_wireframe": "v2",
-    "debug_offbyone": "v2",
-    "debug_infinite_loop": "v2",
-    # Logic puzzles now grade the conclusion the model reached rather than
-    # whether it used the puzzle's vocabulary.
-    "logic_knights": "v2",
-    "logic_river": "v2",
-    "logic_modus": "v2",
-    "logic_weigh": "v2",
-}
-
-# Objectively-keyed tests (a letter or a number) are now graded against the span
-# the model presented as its answer instead of a search of the whole response.
-OBJECTIVE_GRADER_VERSION = "v2"
+FUNCTIONAL_GRADER_VERSIONS = LLMModelBenchmark.FUNCTIONAL_GRADER_VERSIONS
+OBJECTIVE_GRADER_VERSION = LLMModelBenchmark.OBJECTIVE_GRADER_VERSION
 
 
 def _compute_test_hash(test_dict):
@@ -838,11 +852,9 @@ def _compute_test_hash(test_dict):
     if not isinstance(test_dict, dict):
         return ""
     atts = [a.get("name", "") for a in test_dict.get("attachments", []) if isinstance(a, dict)]
-    # Code-category tests are graded with an appended grader directive; bump the
-    # recorded directive version when its text changes so outdated_only re-runs.
-    directive_version = ""
-    if test_dict.get("type") in ("code", "ui") or test_dict.get("category") in (LLMModelBenchmark.CODE_CATEGORIES):
-        directive_version = LLMModelBenchmark.GRADER_DIRECTIVE_VERSION
+    is_code_test = test_dict.get("type") in ("code", "ui") or test_dict.get("category") in (
+        LLMModelBenchmark.CODE_CATEGORIES
+    )
     canonical = {
         "id": test_dict.get("id", ""),
         "prompt": (test_dict.get("prompt") or "").strip(),
@@ -851,13 +863,17 @@ def _compute_test_hash(test_dict):
         "type": test_dict.get("type", "functional"),
         "kind": test_dict.get("kind", "text"),
         "attachments": sorted(atts),
-        "grader_directive": directive_version,
     }
+    if is_code_test:
+        canonical["grader_directive"] = LLMModelBenchmark.GRADER_DIRECTIVE_VERSION
+        canonical["code_grader"] = LLMModelBenchmark.CODE_GRADER_VERSION
     grader_version = FUNCTIONAL_GRADER_VERSIONS.get(test_dict.get("id"))
     if grader_version:
         canonical["functional_grader"] = grader_version
     if canonical["expected"]:
         canonical["objective_grader"] = OBJECTIVE_GRADER_VERSION
+    if test_dict.get("review_only"):
+        canonical["review_only"] = True
     dumped = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(dumped.encode("utf-8")).hexdigest()[:12]
 
@@ -4900,7 +4916,7 @@ def get_profiles():
 
                 # Smart classification: if the section has any SD-specific parameters,
                 # mark it as stable-diffusion backend instead of llama.cpp
-                sd_keys = {"vae", "clip_l", "t5xxl", "llm", "model_family", "gpu_layers", "threads"}
+                sd_keys = {"vae", "clip_l", "t5xxl", "llm", "llm_vision", "model_family", "gpu_layers", "threads"}
                 if any(k in profiles[section] for k in sd_keys):
                     profiles[section]["backend"] = "stable-diffusion"
                 else:
@@ -4935,7 +4951,7 @@ def get_profiles():
                         merge_companion_profiles(section_name, profiles[section_name])
 
                         # Smart classification for discovered profiles
-                        sd_keys = {"vae", "clip_l", "t5xxl", "llm", "model_family", "gpu_layers", "threads"}
+                        sd_keys = {"vae", "clip_l", "t5xxl", "llm", "llm_vision", "model_family", "gpu_layers", "threads"}
                         if any(k in profiles[section_name] for k in sd_keys):
                             profiles[section_name]["backend"] = "stable-diffusion"
                         else:

@@ -867,6 +867,7 @@ def client():
             active_run["models"] = []
             active_run["use_proxy"] = True
             active_run["results"] = []
+            active_run["test_results"] = []
             active_run["start_time"] = None
             active_run["saved_as"] = None
         yield c

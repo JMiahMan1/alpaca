@@ -1788,7 +1788,7 @@ async def test_openai_models_converts_router_ids_to_colon():
                         {"id": "qwen2.5-vl--7b", "object": "model"},
                         {"id": "ornith--35b-q4_K_M", "object": "model"},
                         {"id": "qwen3-6-35b-a3b-ud-iq4-nl--latest", "object": "model"},
-                        {"id": "qwen-image-edit-rapid-aio:q4_k", "object": "model"},
+                        {"id": "qwen-image-2.1--q4_k", "object": "model"},
                     ],
                 }
             )
@@ -1809,7 +1809,7 @@ async def test_openai_models_converts_router_ids_to_colon():
         assert "qwen2.5-vl:7b" in ids
         assert "ornith:35b-q4_K_M" in ids
         assert "qwen3-6-35b-a3b-ud-iq4-nl" in ids
-        assert "qwen-image-edit-rapid-aio:q4_k" in ids
+        assert "qwen-image-2.1:q4_k" in ids
         assert not any("--" in mid for mid in ids)
     finally:
         alpaca_proxy.client_httpx = orig_client
@@ -1974,6 +1974,114 @@ class _SlotClient:
 
     async def get(self, *args, **kwargs):
         return MockResponse(self._payload, self._status)
+
+
+def test_online_request_tracker_does_not_touch_local_slot_counters():
+    import online_providers as online
+
+    saved_active = dict(alpaca_proxy.active_requests)
+    saved_queued = dict(alpaca_proxy.queued_requests)
+    saved_online = dict(online._active_online_requests)
+    try:
+        alpaca_proxy.active_requests.clear()
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.active_requests["local--model"] = 2
+        alpaca_proxy.queued_requests["local--model"] = 1
+        online._active_online_requests.clear()
+        online.start_online_request("online-test", "openrouter:test", "benchmark", {"prompt": "hello"})
+        assert alpaca_proxy.active_requests == {"local--model": 2}
+        assert alpaca_proxy.queued_requests == {"local--model": 1}
+        assert online.get_online_requests()["active_requests"][0]["model"] == "openrouter:test"
+    finally:
+        alpaca_proxy.active_requests.clear()
+        alpaca_proxy.active_requests.update(saved_active)
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.queued_requests.update(saved_queued)
+        online._active_online_requests.clear()
+        online._active_online_requests.update(saved_online)
+
+
+@pytest.mark.asyncio
+async def test_online_model_never_enters_local_queue(monkeypatch):
+    saved_queue = dict(alpaca_proxy.queued_requests)
+    saved_resolve = alpaca_proxy.resolve_router_model
+    try:
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.resolve_router_model = AsyncMock(side_effect=AssertionError("online request resolved locally"))
+        assert await alpaca_proxy.mark_request_queued("openrouter:test/model") is None
+        assert alpaca_proxy.queued_requests == {}
+        alpaca_proxy.resolve_router_model.assert_not_awaited()
+    finally:
+        alpaca_proxy.resolve_router_model = saved_resolve
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.queued_requests.update(saved_queue)
+
+
+@pytest.mark.asyncio
+async def test_activate_queued_request_transfers_admission_atomically():
+    saved_active = dict(alpaca_proxy.active_requests)
+    saved_queue = dict(alpaca_proxy.queued_requests)
+    try:
+        alpaca_proxy.active_requests.clear()
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.queued_requests["router-backend"] = 1
+        await alpaca_proxy.activate_queued_request("router-backend", "router-backend")
+        assert alpaca_proxy.queued_requests["router-backend"] == 0
+        assert alpaca_proxy.active_requests["router-backend"] == 1
+    finally:
+        alpaca_proxy.active_requests.clear()
+        alpaca_proxy.active_requests.update(saved_active)
+        alpaca_proxy.queued_requests.clear()
+        alpaca_proxy.queued_requests.update(saved_queue)
+
+
+@pytest.mark.asyncio
+async def test_online_proxy_request_is_rejected_before_local_tracking():
+    saved_register = alpaca_proxy.register_active_request
+    try:
+        alpaca_proxy.register_active_request = MagicMock()
+        response = await alpaca_proxy.openai_chat_completions(
+            make_request(
+                "/v1/chat/completions",
+                {"model": "openrouter:test/model", "messages": [{"role": "user", "content": "hi"}]},
+            )
+        )
+        assert response.status_code == 400
+        alpaca_proxy.register_active_request.assert_not_called()
+    finally:
+        alpaca_proxy.register_active_request = saved_register
+
+
+@pytest.mark.asyncio
+async def test_embeddings_use_local_slot_admission_and_release_counters():
+    from types import SimpleNamespace
+
+    saved_state = _snapshot_tracking_state()
+    saved_resolve = alpaca_proxy.resolve_router_model
+    saved_ensure = alpaca_proxy.ensure_model
+    saved_wait = alpaca_proxy.wait_for_slot
+    saved_client = alpaca_proxy.client_httpx
+    _clear_tracking_state()
+    try:
+        alpaca_proxy.resolve_router_model = AsyncMock(return_value={"backend_model": "router-backend"})
+        alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
+        alpaca_proxy.wait_for_slot = AsyncMock(return_value=True)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"data": [{"embedding": [1.0, 2.0]}], "usage": {"prompt_tokens": 1}}
+        response.raise_for_status = MagicMock()
+        alpaca_proxy.client_httpx = SimpleNamespace(post=AsyncMock(return_value=response))
+        result = await alpaca_proxy.openai_embeddings(
+            make_request("/v1/embeddings", {"model": "local-model", "input": "hello"})
+        )
+        assert result.status_code == 200
+        assert alpaca_proxy.queued_requests.get("router-backend", 0) == 0
+        assert alpaca_proxy.active_requests.get("router-backend", 0) == 0
+    finally:
+        alpaca_proxy.resolve_router_model = saved_resolve
+        alpaca_proxy.ensure_model = saved_ensure
+        alpaca_proxy.wait_for_slot = saved_wait
+        alpaca_proxy.client_httpx = saved_client
+        _restore_tracking_state(saved_state)
 
 
 @pytest.mark.asyncio
@@ -2605,6 +2713,7 @@ def test_write_active_model_config_persists_last_good(tmp_path, monkeypatch):
         model_family="qwen-image",
         vae_path="/models/vae.safetensors",
         llm_path="/models/llm.gguf",
+        llm_vision_path="/models/mmproj.gguf",
         gpu_layers="40",
         threads="6",
         extra_args="--offload-to-cpu",
@@ -2621,6 +2730,7 @@ def test_write_active_model_config_persists_last_good(tmp_path, monkeypatch):
     assert last["model_path"] == "/models/qwen.gguf"
     assert last["model_family"] == "qwen-image"
     assert last["vae_path"] == "/models/vae.safetensors"
+    assert last["llm_vision_path"] == "/models/mmproj.gguf"
     assert last["gpu_layers"] == "40"
     assert alpaca_proxy.get_last_model_config()["model_path"] == "/models/qwen.gguf"
 
@@ -3080,3 +3190,119 @@ def test_multi_edit_images_use_repeated_image_array_field():
     )
     assert [k for k, _ in parts] == ["image[]", "image[]", "mask", "prompt"]
     assert alpaca_proxy.count_edit_images([("image[]", ("a", b"1", "image/png")), ("image[]", ("b", b"2", "image/png"))]) == 2
+
+
+def test_named_edit_parts_are_reordered_by_reference_roles():
+    parts = [
+        ("image__face", ("face.png", b"face", "image/png")),
+        ("image__scene", ("scene.png", b"scene", "image/png")),
+        ("image__person", ("person.png", b"person", "image/png")),
+        ("mask", ("mask.png", b"mask", "image/png")),
+    ]
+    normalized = alpaca_proxy.normalize_edit_image_parts(parts, ["scene", "person", "face"])
+    assert [key for key, _part in normalized] == ["image[]", "image[]", "image[]", "mask"]
+    assert [part[0] for _key, part in normalized[:3]] == ["scene.png", "person.png", "face.png"]
+
+
+def test_qwen_identity_preset_applies_canonical_recipe_and_metadata():
+    data = {
+        "preset": "qwen_image_21.identity",
+        "reference_roles": '["scene", "person", "faces"]',
+        "prompt": "Place them near the bench.",
+        "seed": -1,
+    }
+    updated, metadata = alpaca_proxy._apply_edit_preset(
+        data,
+        3,
+        "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
+    )
+    assert updated["size"] == "640x768"
+    assert updated["steps"] == "32"
+    assert updated["cfg_scale"] == "1"
+    assert updated["sampler"] == "euler"
+    assert updated["scheduler"] == "simple"
+    assert updated["negative_prompt"] == ""
+    assert int(updated["seed"]) >= 0
+    assert metadata["reference_roles"] == ["scene", "person", "face"]
+    assert "<image1>" in updated["prompt"]
+    assert "Place them near the bench." in updated["prompt"]
+
+
+def test_qwen_identity_preset_requires_each_reference_role():
+    with pytest.raises(ValueError, match="requires reference roles"):
+        alpaca_proxy._apply_edit_preset(
+            {"preset": "qwen_image_21.identity", "reference_roles": '["scene", "person"]'},
+            2,
+            "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
+        )
+
+
+@pytest.mark.asyncio
+async def test_edit_endpoint_applies_identity_preset_before_dispatch(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    class Upload:
+        def __init__(self, filename, content):
+            self.filename = filename
+            self.content_type = "image/png"
+            self.content = content
+
+        async def read(self):
+            return self.content
+
+    class Form:
+        def __init__(self):
+            self.items = [
+                ("model", "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K"),
+                ("preset", "qwen_image_21.identity"),
+                ("reference_roles", '["scene", "person", "face"]'),
+                ("prompt", "Place them near the bench."),
+                ("image__scene", Upload("scene.png", b"scene")),
+                ("image__person", Upload("person.png", b"person")),
+                ("image__face", Upload("face.png", b"face")),
+            ]
+
+        def __iter__(self):
+            return iter([key for key, _value in self.items])
+
+        def getlist(self, key):
+            return [value for item_key, value in self.items if item_key == key]
+
+        def get(self, key, default=None):
+            values = self.getlist(key)
+            return values[0] if values else default
+
+    class RequestStub:
+        state = SimpleNamespace(request_source="test")
+        client = SimpleNamespace(host="127.0.0.1")
+
+        def __init__(self):
+            self.headers = {}
+
+        async def form(self):
+            return Form()
+
+    sd_response = MagicMock(status_code=200, text="")
+    sd_response.json.return_value = {"data": [{"b64_json": "AAAA"}]}
+    sd_client = SimpleNamespace(post=AsyncMock(return_value=sd_response))
+    monkeypatch.setattr(alpaca_proxy, "ensure_sd_model_loaded", AsyncMock(return_value="/models/qwen.gguf"))
+    monkeypatch.setattr(alpaca_proxy, "get_sd_capabilities", AsyncMock(return_value={"native": True}))
+    monkeypatch.setattr(alpaca_proxy, "client_sd_httpx", sd_client)
+    monkeypatch.setattr(alpaca_proxy, "sd_execution_lock", asyncio.Lock())
+    monkeypatch.setattr(alpaca_proxy, "register_active_request", MagicMock())
+    monkeypatch.setattr(alpaca_proxy, "complete_active_request", MagicMock())
+
+    response = await alpaca_proxy.edit_images(RequestStub())
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["preset"] == "qwen_image_21.identity"
+    assert payload["reference_roles"] == ["scene", "person", "face"]
+    assert payload["seed"] >= 0
+    sent = sd_client.post.call_args.kwargs
+    assert [key for key, _file in sent["files"]] == ["image[]", "image[]", "image[]"]
+    assert [file[0] for _key, file in sent["files"]] == ["scene.png", "person.png", "face.png"]
+    assert "preset" not in sent["data"]
+    assert "reference_roles" not in sent["data"]
+    assert "seed" in sent["data"]
+    assert "sd_cpp_extra_args" in sent["data"]["prompt"]
