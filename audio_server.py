@@ -29,7 +29,6 @@ import base64
 import io
 import logging
 import os
-import re
 import time
 import wave
 
@@ -276,48 +275,6 @@ async def health():
 DEFAULT_SENTENCE_PAUSE_S = float(os.getenv("TTS_SENTENCE_PAUSE_S", "0.32"))
 DEFAULT_PARAGRAPH_PAUSE_S = float(os.getenv("TTS_PARAGRAPH_PAUSE_S", "0.7"))
 
-# Tokens ending in "." that do not end a sentence.
-_ABBREVIATIONS = {
-    "mr", "mrs", "ms", "dr", "st", "sr", "jr", "rev", "prof", "gen", "vol", "ch",
-    "no", "vs", "etc", "qtd", "ed", "eds", "trans", "p", "pp", "cf", "e.g", "i.e",
-    "a.m", "p.m", "u.s", "u.k", "mt", "ft", "approx", "dept", "jan", "feb", "mar",
-    "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
-}
-_SENTENCE_END = re.compile(r"""([.!?…]+["'”’)\]]*)\s+(?=["'“‘(\[]?[A-Z0-9])""")
-_MAX_SENTENCE_CHARS = 380
-
-
-def _paragraphs(text: str) -> list[str]:
-    return [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
-
-
-def _sentences(paragraph: str) -> list[str]:
-    """Split a paragraph into sentences, respecting initials and abbreviations."""
-    paragraph = re.sub(r"\s+", " ", paragraph).strip()
-    out, start = [], 0
-    for m in _SENTENCE_END.finditer(paragraph):
-        head = paragraph[start:m.start()]
-        last = head.rsplit(" ", 1)[-1].lower().strip("(\"'“‘")
-        # Initials ("P. F. Bresee") and known abbreviations do not end sentences.
-        if m.group(1).startswith(".") and (len(last) == 1 or last in _ABBREVIATIONS):
-            continue
-        out.append(paragraph[start:m.end(1)].strip())
-        start = m.end()
-    out.append(paragraph[start:].strip())
-    # Very long sentences are split at clause boundaries to stay well inside
-    # Kokoro's context, where its prosody is most stable.
-    result = []
-    for s in filter(None, out):
-        while len(s) > _MAX_SENTENCE_CHARS:
-            cut = max(s.rfind(sep, 0, _MAX_SENTENCE_CHARS) for sep in ("; ", ": ", ", ", " — "))
-            if cut < _MAX_SENTENCE_CHARS // 3:
-                break
-            result.append(s[:cut + 1].strip())
-            s = s[cut + 1:].strip()
-        result.append(s)
-    return result
-
-
 def _trim_and_fade(audio, sr: int, threshold: float = 0.004, margin_s: float = 0.03, fade_s: float = 0.008):
     """Trim edge silence to a consistent margin and apply short fades to avoid clicks."""
     import numpy as np
@@ -341,7 +298,7 @@ async def api_tts_normalize(request: Request):
     data = await request.json()
     text = str(data.get("text", ""))
     normalized = tts_text.normalize(text)
-    return {"text": normalized, "sentences": [s for p in _paragraphs(normalized) for s in _sentences(p)]}
+    return {"text": normalized, "sentences": [s for p in tts_text.paragraphs(normalized) for s in tts_text.sentences(p)]}
 
 
 @app.post("/api/tts")
@@ -396,8 +353,8 @@ async def api_tts(request: Request):
         # Holding _lock keeps the idle unloader / music eviction from pulling
         # the model out from under a long narration.
         async with _lock:
-            for p_idx, paragraph in enumerate(_paragraphs(text)):
-                for s_idx, sentence in enumerate(_sentences(paragraph)):
+            for p_idx, paragraph in enumerate(tts_text.paragraphs(text)):
+                for s_idx, sentence in enumerate(tts_text.sentences(paragraph)):
                     for audio in await asyncio.to_thread(_synth, sentence):
                         audio = _trim_and_fade(audio, sr)
                         if audio.size == 0:

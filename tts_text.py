@@ -190,6 +190,52 @@ def _paren_to_commas(text: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Sentence splitting                                                           #
+# --------------------------------------------------------------------------- #
+
+# Tokens ending in "." that do not end a sentence.
+_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "st", "sr", "jr", "rev", "prof", "gen", "vol", "ch",
+    "no", "vs", "etc", "qtd", "ed", "eds", "trans", "p", "pp", "cf", "e.g", "i.e",
+    "a.m", "p.m", "u.s", "u.k", "mt", "ft", "approx", "dept", "jan", "feb", "mar",
+    "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+}
+_SENTENCE_END = re.compile(r"""([.!?…]+["'”’)\]]*)\s+(?=["'“‘(\[]?[A-Z0-9])""")
+_MAX_SENTENCE_CHARS = 380
+
+
+def paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+
+
+def sentences(paragraph: str) -> list[str]:
+    """Split a paragraph into sentences, respecting initials and abbreviations."""
+    paragraph = re.sub(r"\s+", " ", paragraph).strip()
+    out, start = [], 0
+    for m in _SENTENCE_END.finditer(paragraph):
+        head = paragraph[start:m.start()]
+        last = head.rsplit(" ", 1)[-1].lower().strip("(\"'“‘")
+        # Initials ("P. F. Bresee") and known abbreviations do not end sentences.
+        if m.group(1).startswith(".") and ((len(last) == 1 and last.isalpha()) or last in _ABBREVIATIONS):
+            continue
+        out.append(paragraph[start:m.end(1)].strip())
+        start = m.end()
+    out.append(paragraph[start:].strip())
+    # Very long sentences are split at clause boundaries to stay well inside
+    # Kokoro's context, where its prosody is most stable.
+    result = []
+    for s in filter(None, out):
+        while len(s) > _MAX_SENTENCE_CHARS:
+            cut = max(s.rfind(sep, 0, _MAX_SENTENCE_CHARS) for sep in ("; ", ": ", ", ", " — "))
+            if cut < _MAX_SENTENCE_CHARS // 3:
+                break
+            result.append(s[:cut + 1].strip())
+            s = s[cut + 1:].strip()
+        result.append(s)
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # Lexicon                                                                      #
 # --------------------------------------------------------------------------- #
 

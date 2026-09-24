@@ -7,7 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import tts_text  # noqa: E402
-from tts_text import Lexicon, normalize, normalize_roman, normalize_scripture  # noqa: E402
+from tts_text import Lexicon, normalize, normalize_roman, normalize_scripture, paragraphs, sentences  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -90,3 +90,28 @@ def test_lexicon_hot_reload_and_bad_file(tmp_path):
 def test_shipped_lexicon_is_valid():
     lex = Lexicon(str(Path(tts_text.__file__).parent / "audio" / "tts_lexicon.json"))
     assert normalize("our NMI leaders, qtd. in Smith", lex) == "our Nazarene Missions International leaders, quoted in Smith"
+
+
+@pytest.mark.parametrize(
+    "src, want",
+    [
+        ("Phineas F. Bresee spoke. He left.", ["Phineas F. Bresee spoke.", "He left."]),
+        ('H. D. Brown said, "Mr. Chairman, let them go." Dr. Bresee answered.',
+         ['H. D. Brown said, "Mr. Chairman, let them go."', "Dr. Bresee answered."]),
+        ("Read verses 4 through 7. John Wesley preached.", ["Read verses 4 through 7.", "John Wesley preached."]),
+        ("It was 1908. Then came 1919!", ["It was 1908.", "Then came 1919!"]),
+        ("The U.S. church grew. Was it 30,000? Yes.", ["The U.S. church grew.", "Was it 30,000?", "Yes."]),
+    ],
+)
+def test_sentences(src, want):
+    assert sentences(src) == want
+
+
+def test_long_sentence_splits_at_clause():
+    s = "word " * 60 + "and then, " + "more " * 30 + "end."
+    parts = sentences(s)
+    assert len(parts) == 2 and all(len(p) <= 380 for p in parts) and parts[0].endswith(",")
+
+
+def test_paragraphs():
+    assert paragraphs("One.\n\n  Two.\n\n\n") == ["One.", "Two."]
