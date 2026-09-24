@@ -42,6 +42,10 @@ def test_scripture(src, want):
         ("Washington DC", "Washington DC"),
         ("Size XL", "Size XL"),
         ("CIVIL WAR", "CIVIL WAR"),
+        ("Dr. V. G. Santin of Mexico", "Dr. V. G. Santin of Mexico"),
+        ("John V. Smith", "John V. Smith"),
+        ("Mr. II", "Mr. II"),
+        ("Pope John XXIII.", "Pope John the Twenty-third."),
     ],
 )
 def test_roman(src, want):

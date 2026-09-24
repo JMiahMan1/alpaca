@@ -116,6 +116,7 @@ _CARDINAL_CUES = {
 _NOT_NAMES = {
     "I", "A", "The", "Then", "When", "So", "And", "But", "If", "As", "Now", "Here", "There",
     "What", "Why", "How", "Where", "Did", "Do", "Can", "May", "Will", "Should", "Would",
+    "Dr", "Mr", "Mrs", "Ms", "Rev", "Reverend", "Fr", "St", "Prof", "Sr", "Jr",
 }
 _ORDINALS = [
     "", "First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth",
@@ -147,6 +148,10 @@ def _ordinal(n: int) -> str:
 def _speak_roman(m: re.Match) -> str:
     prev, num = m.group("prev") or "", m.group("num")
     if not _ROMAN_VALID.fullmatch(num):
+        return m.group(0)
+    # A single letter followed by a period is an initial: "Dr. V. G. Santin",
+    # "John V. Smith".
+    if len(num) == 1 and m.string[m.end():m.end() + 1] == ".":
         return m.group(0)
     word = prev.strip().rstrip(".")
     value = _roman_to_int(num)
