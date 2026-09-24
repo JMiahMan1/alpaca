@@ -1,15 +1,53 @@
 {
   "_help": "Edit and save: audio-server reloads this file on the next TTS request (./audio is bind-mounted into the container). 'replacements' run first, in order; literal matches are whole-word and case-sensitive unless ignore_case is true; set regex: true for a regular expression (use \\1 for groups). 'pronunciations' map a word to IPA in misaki's phoneme set, emitted as [word](/ipa/). Preview with POST :8082/api/tts/normalize {\"text\": \"...\"}.",
   "replacements": [
-    {"match": "NMI", "replace": "Nazarene Missions International"},
-    {"match": "MLA", "replace": "M L A"},
-    {"match": "NIV", "replace": "N I V"},
-    {"match": "KJV", "replace": "K J V"},
-    {"match": "\\bqtd\\. in\\b", "replace": "quoted in", "regex": true},
-    {"match": "\\bch\\. (\\d+)", "replace": "chapter \\1", "regex": true},
-    {"match": "\\bvol\\. (\\d+)", "replace": "volume \\1", "regex": true, "ignore_case": true},
-    {"match": "\\bn\\.d\\.", "replace": "no date", "regex": true},
-    {"match": "\\bthe '(\\d0)s\\b", "replace": "the 19\\1s", "regex": true}
+    {
+      "match": "NMI",
+      "replace": "Nazarene Missions International"
+    },
+    {
+      "match": "MLA",
+      "replace": "M L A"
+    },
+    {
+      "match": "NIV",
+      "replace": "N I V"
+    },
+    {
+      "match": "KJV",
+      "replace": "K J V"
+    },
+    {
+      "match": "\\bqtd\\. in\\b",
+      "replace": "quoted in",
+      "regex": true
+    },
+    {
+      "match": "\\bch\\. (\\d+)",
+      "replace": "chapter \\1",
+      "regex": true
+    },
+    {
+      "match": "\\bvol\\. (\\d+)",
+      "replace": "volume \\1",
+      "regex": true,
+      "ignore_case": true
+    },
+    {
+      "match": "\\bn\\.d\\.",
+      "replace": "no date",
+      "regex": true
+    },
+    {
+      "match": "\\bthe '(\\d0)s\\b",
+      "replace": "the 19\\1s",
+      "regex": true
+    }
   ],
-  "pronunciations": {}
+  "pronunciations": {
+    "Los Angeles": "lɔs ˈænʤələs",
+    "Ingersol": "ˈɪŋɡəɹsɔl",
+    "Ingersol's": "ˈɪŋɡəɹsɔlz",
+    "Diaz": "dˈiɑz"
+  }
 }
