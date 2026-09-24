@@ -16,8 +16,10 @@ VRAM discipline (the card is shared with llama-server):
 
 Endpoints:
   GET  /health        -> status, loaded models, VRAM usage, voice list
-  POST /api/tts       -> {text, voice?, speed?, sentence_pause_s?, paragraph_pause_s?} -> wav b64
+  POST /api/tts       -> {text, voice?, speed?, sentence_pause_s?, paragraph_pause_s?, normalize?} -> wav b64
                          voice may blend several, e.g. "am_michael,am_fenrir"
+                         normalize (default true) runs tts_text + audio/tts_lexicon.json
+  POST /api/tts/normalize -> {text} -> {text, sentences}  preview of what will be spoken
   POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
   POST /api/unload    -> free all VRAM immediately
 """
@@ -33,6 +35,8 @@ import wave
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+import tts_text
 
 logger = logging.getLogger("audio_server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -331,6 +335,15 @@ def _trim_and_fade(audio, sr: int, threshold: float = 0.004, margin_s: float = 0
     return audio
 
 
+@app.post("/api/tts/normalize")
+async def api_tts_normalize(request: Request):
+    """Preview what the narrator will actually read (after lexicon + normalization)."""
+    data = await request.json()
+    text = str(data.get("text", ""))
+    normalized = tts_text.normalize(text)
+    return {"text": normalized, "sentences": [s for p in _paragraphs(normalized) for s in _sentences(p)]}
+
+
 @app.post("/api/tts")
 async def api_tts(request: Request):
     data = await request.json()
@@ -352,6 +365,9 @@ async def api_tts(request: Request):
     paragraph_pause = float(data.get("paragraph_pause_s", DEFAULT_PARAGRAPH_PAUSE_S))
     if not (0.0 <= sentence_pause <= 3.0 and 0.0 <= paragraph_pause <= 5.0):
         return JSONResponse({"error": "pauses must be within 0..3s (sentence) and 0..5s (paragraph)"}, status_code=400)
+    normalized = bool(data.get("normalize", True))
+    if normalized:
+        text = tts_text.normalize(text)
 
     t0 = time.perf_counter()
     try:
@@ -419,6 +435,7 @@ async def api_tts(request: Request):
                 "chunks": n_chunks,
                 "sentence_pause_s": sentence_pause,
                 "paragraph_pause_s": paragraph_pause,
+                "normalized": normalized,
             },
         }
     except Exception as e:
