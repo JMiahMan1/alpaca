@@ -11650,12 +11650,12 @@ function wireAudioStudio() {
             const resp = await fetch('/api/audio/tts', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, voice: document.getElementById('tts-voice').value, speed: parseFloat(speed.value) }),
+                body: JSON.stringify({ text, voice: document.getElementById('tts-voice').value, speed: parseFloat(speed.value), clone: document.getElementById('tts-clone').value || undefined }),
             });
             const data = await resp.json();
             if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
             showAudio(data.audio_b64, `alpaca-tts-${data.meta.voice}.wav`);
-            meta.textContent = `✅ ${data.meta.duration_s}s · RTF ${data.meta.rtf} · ${data.meta.chunks} chunk(s) · ${data.meta.elapsed_s}s elapsed`;
+            meta.textContent = `✅ ${data.meta.duration_s}s · RTF ${data.meta.rtf} · ${data.meta.chunks} chunk(s) · ${data.meta.elapsed_s}s elapsed${data.meta.clone ? ' · voice: ' + data.meta.clone.name : ''}`;
             refreshAudioStatus();
         } catch (err) {
             meta.textContent = '❌ ' + err.message;
@@ -11724,6 +11724,7 @@ function wireAudioStudio() {
             box.appendChild(chip);
         });
     }).catch(() => {});
+    wireVoiceClone();
 }
 
 async function refreshAudioStatus() {
@@ -11763,4 +11764,227 @@ function showAudio(b64, filename) {
     dl.href = player.src;
     dl.setAttribute('download', filename);
     box.style.display = 'block';
+}
+
+// ---------------------------------------------------------------------------
+// Custom voices: record the read-aloud prompts, build an OpenVoice V2 profile,
+// then pick it in the TTS pane. Recording needs a secure context (HTTPS or
+// localhost); uploading a recording made elsewhere always works.
+// ---------------------------------------------------------------------------
+
+const _vc = { prompts: [], takes: {}, recorder: null, stream: null, meterRaf: null, timer: null };
+
+function vcSecureUrl() {
+    return `https://${location.hostname}:5443${location.pathname}${location.hash || ''}`;
+}
+
+async function wireVoiceClone() {
+    const card = document.getElementById('voice-clone-card');
+    if (!card || card.dataset.wired) return;
+    card.dataset.wired = '1';
+
+    const canRecord = window.isSecureContext && navigator.mediaDevices && window.MediaRecorder;
+    if (!canRecord) {
+        const warn = document.getElementById('vc-secure-warning');
+        warn.style.display = 'block';
+        warn.innerHTML = `🔒 Browsers only allow the microphone on secure pages. Open <a href="${vcSecureUrl()}" style="color:#fde68a;">${escapeHtml(vcSecureUrl())}</a> to record here (accept the one-time certificate prompt), or use <strong>Upload</strong> for recordings made on your phone.`;
+    }
+
+    ['vc-name', 'vc-consent'].forEach(id => document.getElementById(id).addEventListener('input', vcUpdateBuildButton));
+    document.getElementById('btn-vc-build').addEventListener('click', vcBuild);
+
+    try {
+        const data = await (await fetch('/api/audio/voices/prompts')).json();
+        _vc.prompts = data.prompts || [];
+    } catch (err) {
+        document.getElementById('vc-prompts').innerHTML = '<div style="color:#ef4444; font-size:0.78rem;">Could not load the recording script (audio-server unreachable).</div>';
+    }
+    const box = document.getElementById('vc-prompts');
+    box.innerHTML = '';
+    _vc.prompts.forEach(p => box.appendChild(vcPromptRow(p, canRecord)));
+    vcRefreshList();
+}
+
+function vcPromptRow(p, canRecord) {
+    const row = document.createElement('div');
+    row.style.cssText = 'background:#090d16; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:0.65rem 0.75rem;';
+    row.innerHTML = `
+        <div style="display:flex; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; align-items:baseline;">
+            <strong style="color:#e2e8f0; font-size:0.82rem;">${escapeHtml(p.title)}</strong>
+            <span style="font-size:0.7rem; color:#64748b;">${escapeHtml(p.why)}</span>
+        </div>
+        <p style="font-size:0.92rem; line-height:1.55; color:#f1f5f9; margin:0.45rem 0; font-family:Georgia, serif;">${escapeHtml(p.text)}</p>
+        <div style="font-size:0.7rem; color:#94a3b8; margin-bottom:0.45rem;">💡 ${escapeHtml(p.tip)}</div>
+        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm vc-rec" ${canRecord ? '' : 'disabled title="Open the HTTPS address to record"'}>● Record</button>
+            <label class="btn btn-secondary btn-sm" style="cursor:pointer;">⬆ Upload<input type="file" accept="audio/*" class="vc-file" style="display:none;"></label>
+            <div class="vc-meter" style="display:none; width:120px; height:8px; background:#1e293b; border-radius:4px; overflow:hidden;"><div style="height:100%; width:0%; background:#34d399; transition:width 60ms;"></div></div>
+            <span class="vc-status" style="font-size:0.74rem; color:#64748b;">Not recorded yet</span>
+            <audio class="vc-play" controls style="display:none; height:32px; max-width:260px;"></audio>
+        </div>`;
+    row.querySelector('.vc-rec').addEventListener('click', () => vcToggleRecord(p, row));
+    row.querySelector('.vc-file').addEventListener('change', e => {
+        const f = e.target.files && e.target.files[0];
+        if (f) vcSetTake(p, row, f, null);
+    });
+    return row;
+}
+
+async function vcToggleRecord(p, row) {
+    const btn = row.querySelector('.vc-rec');
+    if (_vc.recorder && _vc.recorder.state === 'recording') {
+        _vc.recorder.stop();
+        return;
+    }
+    if (_vc.recorder) return; // another prompt is recording
+    let stream;
+    try {
+        // Disable browser voice processing: noise suppression and AGC reshape
+        // timbre, which is exactly what the embedding is trying to capture.
+        stream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        });
+    } catch (err) {
+        row.querySelector('.vc-status').textContent = '❌ Microphone blocked: ' + err.message;
+        return;
+    }
+    const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : undefined);
+    const chunks = [];
+    const started = Date.now();
+    _vc.recorder = rec;
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        cancelAnimationFrame(_vc.meterRaf); clearInterval(_vc.timer);
+        row.querySelector('.vc-meter').style.display = 'none';
+        btn.textContent = '● Re-record'; btn.classList.remove('btn-danger');
+        document.querySelectorAll('.vc-rec').forEach(b => { if (b !== btn && window.isSecureContext) b.disabled = false; });
+        _vc.recorder = null;
+        vcSetTake(p, row, new Blob(chunks, { type: rec.mimeType || 'audio/webm' }), (Date.now() - started) / 1000);
+    };
+
+    // Live level meter so the reader can see they're in a good range.
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    const bar = row.querySelector('.vc-meter > div');
+    row.querySelector('.vc-meter').style.display = 'block';
+    const tick = () => {
+        analyser.getFloatTimeDomainData(buf);
+        let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v));
+        bar.style.width = `${Math.min(100, peak * 110)}%`;
+        bar.style.background = peak > 0.95 ? '#ef4444' : peak < 0.08 ? '#f59e0b' : '#34d399';
+        if (rec.state === 'recording') _vc.meterRaf = requestAnimationFrame(tick); else ctx.close();
+    };
+    rec.start(250);
+    tick();
+    btn.textContent = '■ Stop'; btn.classList.add('btn-danger');
+    document.querySelectorAll('.vc-rec').forEach(b => { if (b !== btn) b.disabled = true; });
+    const status = row.querySelector('.vc-status');
+    _vc.timer = setInterval(() => { status.textContent = `🔴 Recording… ${Math.round((Date.now() - started) / 1000)}s`; }, 250);
+}
+
+function vcSetTake(p, row, blob, seconds) {
+    const status = row.querySelector('.vc-status');
+    const player = row.querySelector('.vc-play');
+    const reader = new FileReader();
+    reader.onload = () => {
+        _vc.takes[p.id] = String(reader.result).split(',')[1];
+        player.src = URL.createObjectURL(blob);
+        player.style.display = 'inline-block';
+        const tooShort = seconds != null && seconds < p.min_s;
+        status.style.color = tooShort ? '#fbbf24' : '#34d399';
+        status.textContent = seconds == null
+            ? `✔ Uploaded (${(blob.size / 1024).toFixed(0)} KB)`
+            : tooShort ? `⚠ ${seconds.toFixed(0)}s. Please read the whole passage (about ${p.min_s}s or more).`
+                       : `✔ ${seconds.toFixed(0)}s recorded`;
+        vcUpdateBuildButton();
+    };
+    reader.readAsDataURL(blob);
+}
+
+function vcUpdateBuildButton() {
+    const ready = _vc.prompts.length && _vc.prompts.every(p => _vc.takes[p.id]);
+    const name = document.getElementById('vc-name').value.trim();
+    const consent = document.getElementById('vc-consent').checked;
+    const btn = document.getElementById('btn-vc-build');
+    btn.disabled = !(ready && name && consent);
+    const missing = _vc.prompts.filter(p => !_vc.takes[p.id]).length;
+    document.getElementById('vc-build-meta').textContent = btn.disabled
+        ? (missing ? `${missing} of ${_vc.prompts.length} recordings still needed` : !name ? 'Name your voice' : !consent ? 'Confirm the permission checkbox' : '')
+        : 'Ready. This takes about 10-30 seconds.';
+}
+
+async function vcBuild() {
+    const btn = document.getElementById('btn-vc-build');
+    const meta = document.getElementById('vc-build-meta');
+    const report = document.getElementById('vc-report');
+    btn.disabled = true; btn.textContent = '⏳ Building…';
+    meta.textContent = 'Analyzing recordings and extracting your voice…';
+    report.style.display = 'none';
+    try {
+        const resp = await fetch('/api/audio/voices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: document.getElementById('vc-name').value.trim(),
+                consent: document.getElementById('vc-consent').checked,
+                recordings: _vc.prompts.map(p => ({ prompt_id: p.id, audio_b64: _vc.takes[p.id] })),
+            }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
+        const v = data.voice;
+        const rows = v.recordings.map((r, i) => `<li>Take ${i + 1}: ${r.speech_s}s of speech · SNR ${r.snr_db} dB${r.warnings.length ? ' · <span style="color:#fbbf24;">' + r.warnings.map(escapeHtml).join('; ') + '</span>' : ''}</li>`).join('');
+        report.innerHTML = `<div style="background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.3); border-radius:8px; padding:0.55rem 0.7rem; color:#cbd5e1;">
+            ✅ <strong>${escapeHtml(v.name)}</strong> is ready (${v.speech_s}s of speech). It is selected in the Text-to-Speech pane above.
+            <ul style="margin:0.35rem 0 0 1rem; padding:0;">${rows}</ul>
+            ${v.warnings.length ? '<div style="margin-top:0.35rem; color:#fbbf24;">Re-recording in a quieter spot or at a better distance will improve the match.</div>' : ''}</div>`;
+        report.style.display = 'block';
+        meta.textContent = '';
+        await vcRefreshList(v.id);
+    } catch (err) {
+        meta.textContent = '❌ ' + err.message;
+    } finally {
+        btn.textContent = '✨ Build My Voice';
+        vcUpdateBuildButton();
+    }
+}
+
+async function vcRefreshList(selectId) {
+    const list = document.getElementById('vc-list');
+    const sel = document.getElementById('tts-clone');
+    let voices = [];
+    try {
+        voices = (await (await fetch('/api/audio/voices')).json()).voices || [];
+    } catch (err) {
+        list.textContent = 'Could not load saved voices.';
+        return;
+    }
+    const current = selectId || sel.value;
+    sel.innerHTML = '<option value="">None (Kokoro only)</option>' +
+        voices.map(v => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.name)}</option>`).join('');
+    if (voices.some(v => v.id === current)) sel.value = current;
+    if (!voices.length) { list.textContent = 'No custom voices yet.'; return; }
+    list.innerHTML = '';
+    voices.forEach(v => {
+        const item = document.createElement('div');
+        item.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:0.5rem; background:#090d16; border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:0.45rem 0.65rem;';
+        const when = new Date(v.created * 1000).toLocaleDateString();
+        item.innerHTML = `<span><strong style="color:#e2e8f0;">${escapeHtml(v.name)}</strong> · ${v.speech_s}s of speech · ${when}${v.warnings && v.warnings.length ? ' · <span style="color:#fbbf24;" title="' + escapeHtml(v.warnings.join('; ')) + '">⚠ quality notes</span>' : ''}</span>
+            <span style="display:flex; gap:0.4rem;"><button type="button" class="btn btn-secondary btn-sm vc-use">Use</button><button type="button" class="btn btn-danger btn-sm vc-del">Delete</button></span>`;
+        item.querySelector('.vc-use').addEventListener('click', () => {
+            sel.value = v.id;
+            document.getElementById('tts-text').focus();
+        });
+        item.querySelector('.vc-del').addEventListener('click', async () => {
+            if (!confirm(`Delete the custom voice "${v.name}" and its recordings?`)) return;
+            await fetch(`/api/audio/voices/${encodeURIComponent(v.id)}`, { method: 'DELETE' });
+            vcRefreshList();
+        });
+        list.appendChild(item);
+    });
 }

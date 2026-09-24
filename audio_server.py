@@ -6,6 +6,7 @@ Alpaca audio generation server: voice (TTS) + music generation behind one
 FastAPI service, sized for an RTX 4060 (8 GB shared with llama-server).
 
 Voice   : Kokoro-82M  (hexgrad/Kokoro-82M, Apache-2.0) - 24 kHz narration.
+          + optional OpenVoice V2 tone color (myshell-ai/OpenVoiceV2, MIT) for custom voices.
 Music   : MusicGen    (facebook/musicgen-small, weights CC-BY-NC) - 32 kHz clips.
 
 VRAM discipline (the card is shared with llama-server):
@@ -19,7 +20,12 @@ Endpoints:
   POST /api/tts       -> {text, voice?, speed?, sentence_pause_s?, paragraph_pause_s?, normalize?} -> wav b64
                          voice may blend several, e.g. "am_michael,am_fenrir"
                          normalize (default true) runs tts_text + audio/tts_lexicon.json
+                         clone=<voice id>, clone_tau? re-timbres Kokoro into a custom voice
   POST /api/tts/normalize -> {text} -> {text, sentences}  preview of what will be spoken
+  GET  /api/voices/prompts -> read-aloud script for recording a custom voice
+  GET  /api/voices    -> custom voice profiles
+  POST /api/voices    -> {name, consent, recordings: [{prompt_id, audio_b64}]} -> profile
+  DELETE /api/voices/<id>
   POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
   POST /api/unload    -> free all VRAM immediately
 """
@@ -36,6 +42,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 import tts_text
+import voice_clone
 
 logger = logging.getLogger("audio_server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -155,8 +162,10 @@ def _empty_cache() -> None:
 async def _unload_model(name: str) -> bool:
     """Drop a loaded model and release its CUDA memory. Returns True if it was loaded."""
     async with _lock:
-        if name == "tts" and _state["tts"] is not None:
+        if name == "tts" and (_state["tts"] is not None or voice_clone.loaded()):
+            # The OpenVoice converter only runs alongside Kokoro, so it shares its lifetime.
             _state["tts"] = None
+            voice_clone.unload()
         elif name == "music" and _state["music"] is not None:
             _state["music"] = None
         else:
@@ -223,7 +232,8 @@ async def _idle_unloader() -> None:
         await asyncio.sleep(15)
         now = time.time()
         for name in ("tts", "music"):
-            if _state[name] is not None and now - _state["last_used"][name] > IDLE_UNLOAD_S:  # type: ignore[index]
+            active = _state[name] is not None or (name == "tts" and voice_clone.loaded())
+            if active and now - _state["last_used"][name] > IDLE_UNLOAD_S:  # type: ignore[index]
                 logger.info(f"[audio] idle timeout ({IDLE_UNLOAD_S}s) -> unloading {name}")
                 await _unload_model(name)
 
@@ -255,6 +265,11 @@ async def health():
             "model": TTS_MODEL_ID,
             "loaded": _state["tts"] is not None,
             "voices": KOKORO_VOICES,
+        },
+        "clone": {
+            "engine": "openvoice-v2",
+            "loaded": voice_clone.loaded(),
+            "profiles": len(voice_clone.list_profiles()),
         },
         "music": {
             "model": MUSIC_MODEL_ID,
@@ -301,6 +316,60 @@ async def api_tts_normalize(request: Request):
     return {"text": normalized, "sentences": [s for p in tts_text.paragraphs(normalized) for s in tts_text.sentences(p)]}
 
 
+# --------------------------------------------------------------------------- #
+# Custom voices (OpenVoice V2 tone color on top of Kokoro)                     #
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/api/voices/prompts")
+async def api_voice_prompts():
+    """Read-aloud script for building a custom voice; every prompt is required."""
+    return {"prompts": voice_clone.PROMPTS, "min_total_speech_s": voice_clone.MIN_TOTAL_SPEECH_S}
+
+
+@app.get("/api/voices")
+async def api_voices_list():
+    return {"voices": voice_clone.list_profiles()}
+
+
+@app.post("/api/voices")
+async def api_voices_create(request: Request):
+    """{name, consent: true, recordings: [{prompt_id, audio_b64}]} -> profile with quality report."""
+    data = await request.json()
+    if data.get("consent") is not True:
+        return JSONResponse({"error": "confirm this is your voice or that the speaker agreed to be cloned"},
+                            status_code=400)
+    try:
+        recordings = [(str(r.get("prompt_id", "")), base64.b64decode(r["audio_b64"]))
+                      for r in data.get("recordings") or []]
+    except Exception:
+        return JSONResponse({"error": "recordings must be [{prompt_id, audio_b64}]"}, status_code=400)
+    missing = [p["id"] for p in voice_clone.PROMPTS if p["id"] not in {pid for pid, _ in recordings}]
+    if missing:
+        return JSONResponse({"error": f"missing recordings for: {', '.join(missing)}"}, status_code=400)
+    try:
+        async with _lock:
+            meta = await asyncio.to_thread(voice_clone.create_profile, str(data.get("name", "")), recordings)
+            _state["last_used"]["tts"] = time.time()  # type: ignore[index]
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    except Exception as e:
+        logger.exception("custom voice creation failed")
+        return JSONResponse({"error": f"custom voice creation failed: {e}"}, status_code=500)
+    finally:
+        _empty_cache()
+    return {"voice": meta}
+
+
+@app.delete("/api/voices/{pid}")
+async def api_voices_delete(pid: str):
+    try:
+        voice_clone.delete_profile(pid)
+    except KeyError:
+        return JSONResponse({"error": f"unknown custom voice '{pid}'"}, status_code=404)
+    return {"deleted": pid}
+
+
 @app.post("/api/tts")
 async def api_tts(request: Request):
     data = await request.json()
@@ -325,6 +394,17 @@ async def api_tts(request: Request):
     normalized = bool(data.get("normalize", True))
     if normalized:
         text = tts_text.normalize(text)
+    # Optional custom voice: Kokoro speaks, OpenVoice re-timbres each sentence.
+    clone_id = str(data.get("clone") or "").strip()
+    clone_meta = None
+    clone_tau = float(data.get("clone_tau", voice_clone.DEFAULT_TAU))
+    if clone_id:
+        try:
+            clone_meta = voice_clone.get_profile(clone_id)
+        except KeyError:
+            return JSONResponse({"error": f"unknown custom voice '{clone_id}'"}, status_code=404)
+        if not 0.1 <= clone_tau <= 1.0:
+            return JSONResponse({"error": "clone_tau must be within 0.1..1.0"}, status_code=400)
 
     t0 = time.perf_counter()
     try:
@@ -353,9 +433,24 @@ async def api_tts(request: Request):
         # Holding _lock keeps the idle unloader / music eviction from pulling
         # the model out from under a long narration.
         async with _lock:
+            convert = None
+            if clone_meta:
+                def _synth_source(script: str):
+                    chunks = [np.asarray(r.audio, dtype=np.float32) for r in pipe(script, voice=voice, speed=1.0)
+                              if getattr(r, "audio", None) is not None]
+                    return np.concatenate(chunks), sr
+
+                src_se = await asyncio.to_thread(voice_clone.source_se, voice, _synth_source)
+                tgt_se = voice_clone.target_se(clone_id)
+
+                def convert(a):
+                    return voice_clone.convert(a, sr, src_se, tgt_se, clone_tau)
+
             for p_idx, paragraph in enumerate(tts_text.paragraphs(text)):
                 for s_idx, sentence in enumerate(tts_text.sentences(paragraph)):
                     for audio in await asyncio.to_thread(_synth, sentence):
+                        if convert is not None:
+                            audio = await asyncio.to_thread(convert, audio)
                         audio = _trim_and_fade(audio, sr)
                         if audio.size == 0:
                             continue
@@ -393,6 +488,7 @@ async def api_tts(request: Request):
                 "sentence_pause_s": sentence_pause,
                 "paragraph_pause_s": paragraph_pause,
                 "normalized": normalized,
+                "clone": {"id": clone_id, "name": clone_meta["name"], "tau": clone_tau} if clone_meta else None,
             },
         }
     except Exception as e:

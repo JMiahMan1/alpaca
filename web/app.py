@@ -1910,6 +1910,48 @@ def audio_unload_api():
         return jsonify({"error": str(e)}), 502
 
 
+@app.route("/api/audio/voices/prompts")
+def audio_voice_prompts_api():
+    """Read-aloud script for recording a custom voice."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(f"{AUDIO_SERVER_URL}/api/voices/prompts")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/audio/voices", methods=["GET", "POST"])
+def audio_voices_api():
+    """List custom voices, or build one from recordings (OpenVoice V2 on the audio-server)."""
+    import httpx
+
+    try:
+        # Building a voice decodes the takes and loads the converter on first use.
+        with httpx.Client(timeout=600.0) as client:
+            if request.method == "POST":
+                resp = client.post(f"{AUDIO_SERVER_URL}/api/voices", json=request.get_json() or {})
+            else:
+                resp = client.get(f"{AUDIO_SERVER_URL}/api/voices")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/audio/voices/<pid>", methods=["DELETE"])
+def audio_voice_delete_api(pid):
+    import httpx
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.delete(f"{AUDIO_SERVER_URL}/api/voices/{pid}")
+            return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
 @app.route("/api/sd/unload", methods=["POST"])
 def unload_sd_model_api():
     """Request sd-proxy to unload its active model."""
