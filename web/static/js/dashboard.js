@@ -11793,7 +11793,7 @@ async function wireVoiceClone() {
         warn.innerHTML = `🔒 Browsers only allow the microphone on secure pages. Open <a href="${vcSecureUrl()}" style="color:#fde68a;">${vcEsc(vcSecureUrl())}</a> to record here (accept the one-time certificate prompt), or use <strong>Upload</strong> for recordings made on your phone.`;
     }
 
-    ['vc-name', 'vc-consent'].forEach(id => document.getElementById(id).addEventListener('input', vcUpdateBuildButton));
+    ['input', 'change'].forEach(ev => ['vc-name', 'vc-consent'].forEach(id => document.getElementById(id).addEventListener(ev, vcUpdateBuildButton)));
     document.getElementById('btn-vc-build').addEventListener('click', vcBuild);
 
     try {
@@ -11805,6 +11805,7 @@ async function wireVoiceClone() {
     const box = document.getElementById('vc-prompts');
     box.innerHTML = '';
     _vc.prompts.forEach(p => box.appendChild(vcPromptRow(p, canRecord)));
+    vcUpdateBuildButton();
     vcRefreshList();
 }
 
@@ -11909,22 +11910,38 @@ function vcSetTake(p, row, blob, seconds) {
     reader.readAsDataURL(blob);
 }
 
-function vcUpdateBuildButton() {
-    const ready = _vc.prompts.length && _vc.prompts.every(p => _vc.takes[p.id]);
-    const name = document.getElementById('vc-name').value.trim();
-    const consent = document.getElementById('vc-consent').checked;
+// What still blocks a build, in the order the user fills the form.
+function vcMissing() {
+    const missing = _vc.prompts.filter(p => !_vc.takes[p.id]).map(p => `recording "${p.title.replace(/^\d+\s*·\s*/, '')}"`);
+    if (!document.getElementById('vc-name').value.trim()) missing.push('a voice name');
+    if (!document.getElementById('vc-consent').checked) missing.push('the permission checkbox');
+    return missing;
+}
+
+// The button stays clickable so a click can explain what's missing; it only
+// dims until everything is in place. `keepMessage` preserves an error.
+function vcUpdateBuildButton(keepMessage) {
     const btn = document.getElementById('btn-vc-build');
-    btn.disabled = !(ready && name && consent);
-    const missing = _vc.prompts.filter(p => !_vc.takes[p.id]).length;
-    document.getElementById('vc-build-meta').textContent = btn.disabled
-        ? (missing ? `${missing} of ${_vc.prompts.length} recordings still needed` : !name ? 'Name your voice' : !consent ? 'Confirm the permission checkbox' : '')
-        : 'Ready. This takes about 10-30 seconds.';
+    const meta = document.getElementById('vc-build-meta');
+    const missing = vcMissing();
+    btn.disabled = false;
+    btn.style.opacity = missing.length ? '0.6' : '1';
+    if (keepMessage === true) return;
+    meta.style.color = '#94a3b8';
+    meta.textContent = missing.length ? `Still needed: ${missing.join(', ')}.` : 'Ready. Building takes about 10-30 seconds.';
 }
 
 async function vcBuild() {
     const btn = document.getElementById('btn-vc-build');
     const meta = document.getElementById('vc-build-meta');
     const report = document.getElementById('vc-report');
+    const missing = vcMissing();
+    if (missing.length) {
+        meta.style.color = '#fbbf24';
+        meta.textContent = `Before building, add: ${missing.join(', ')}.`;
+        if (!document.getElementById('vc-name').value.trim()) document.getElementById('vc-name').focus();
+        return;
+    }
     btn.disabled = true; btn.textContent = '⏳ Building…';
     meta.textContent = 'Analyzing recordings and extracting your voice…';
     report.style.display = 'none';
@@ -11949,11 +11966,13 @@ async function vcBuild() {
         report.style.display = 'block';
         meta.textContent = '';
         await vcRefreshList(v.id);
-    } catch (err) {
-        meta.textContent = '❌ ' + err.message;
-    } finally {
         btn.textContent = '✨ Build My Voice';
-        vcUpdateBuildButton();
+        vcUpdateBuildButton(true);
+    } catch (err) {
+        meta.style.color = '#fca5a5';
+        meta.textContent = '❌ ' + err.message;
+        btn.textContent = '✨ Build My Voice';
+        vcUpdateBuildButton(true);
     }
 }
 
