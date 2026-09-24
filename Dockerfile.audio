@@ -1,4 +1,4 @@
-# Audio generation server: Kokoro-82M TTS + MusicGen-small on CUDA
+# Audio generation server: Kokoro-82M TTS (+ OpenVoice V2 custom voices) + MusicGen-small on CUDA
 FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,7 +24,22 @@ RUN pip install --no-cache-dir \
     accelerate \
     httpx
 
-COPY audio_server.py tts_text.py /app/
+# OpenVoice V2 tone-color converter for custom voices. Its setup.py pins
+# numpy 1.22 / gradio / whisper, which would break Kokoro, so install it
+# without deps and add only what the converter path imports.
+RUN pip install --no-cache-dir \
+    librosa \
+    wavmark==0.0.3 \
+    inflect \
+    unidecode \
+    eng_to_ipa \
+    pypinyin \
+    cn2an \
+    jieba \
+    && pip install --no-cache-dir --no-deps \
+    "MyShell-OpenVoice @ https://github.com/myshell-ai/OpenVoice/archive/74a1d147b17a8c3092dd5430504bd83ef6c7eb23.zip"
+
+COPY audio_server.py tts_text.py voice_clone.py /app/
 COPY audio/ /app/audio/
 
 WORKDIR /app

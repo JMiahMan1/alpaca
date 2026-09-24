@@ -224,6 +224,21 @@ services:
               count: all
               capabilities: [gpu]
 
+  alpaca-tls:
+    # HTTPS for the dashboard (tls/Caddyfile): https://<ALPACA_TLS_HOST>:5443
+    image: caddy:2-alpine
+    container_name: alpaca-tls
+    restart: always
+    ports:
+      - "5443:5443"
+    environment:
+      - ALPACA_TLS_HOST=${ALPACA_TLS_HOST:-localhost}
+    volumes:
+      - ./tls:/etc/caddy:ro
+      - alpaca-tls-data:/data
+    depends_on:
+      - alpaca-web
+
   audio-server:
     build:
       context: .
@@ -254,6 +269,8 @@ services:
       - audio-models:/cache/huggingface
       # Lexicon edits (or a git pull) apply on the next request, no rebuild.
       - ./audio:/app/audio:ro
+      # Custom voice profiles (recordings + speaker embeddings).
+      - audio-voices:/data/voices
     deploy:
       resources:
         limits:
@@ -266,5 +283,7 @@ services:
 
 volumes:
   audio-models:
+  audio-voices:
+  alpaca-tls-data:
 
 

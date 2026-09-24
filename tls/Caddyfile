@@ -1,0 +1,21 @@
+# HTTPS front door for the dashboard, so browser features that require a
+# secure context (the microphone in Audio Studio's Custom Voices) work from
+# other machines on the LAN. Caddy's local CA issues the certificate, so each
+# browser shows a one-time warning. http://<host>:5000 keeps working as before.
+#
+# Caddy sets X-Forwarded-For to the real client address and ignores any value
+# the client sends, so web/app.py's LAN-bypass auth sees the true caller.
+{
+	local_certs
+	skip_install_trust
+	auto_https disable_redirects
+	admin off
+	# Browsers send no SNI when you browse to a bare IP; use this name then.
+	default_sni {$ALPACA_TLS_HOST}
+}
+
+https://{$ALPACA_TLS_HOST}:5443, https://localhost:5443 {
+	tls internal
+	encode gzip
+	reverse_proxy alpaca-web:5000
+}
