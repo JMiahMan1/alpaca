@@ -25,6 +25,7 @@ Endpoints:
   GET  /api/voices/prompts -> read-aloud script for recording a custom voice
   GET  /api/voices    -> custom voice profiles
   POST /api/voices    -> {name, consent, recordings: [{prompt_id, audio_b64}]} -> profile
+  PATCH  /api/voices/<id> -> {name} rename (names are unique)
   DELETE /api/voices/<id>
   POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
   POST /api/unload    -> free all VRAM immediately
@@ -358,6 +359,19 @@ async def api_voices_create(request: Request):
         return JSONResponse({"error": f"custom voice creation failed: {e}"}, status_code=500)
     finally:
         _empty_cache()
+    return {"voice": meta}
+
+
+@app.patch("/api/voices/{pid}")
+async def api_voices_rename(pid: str, request: Request):
+    """{name} -> renamed profile. Names are unique (case-insensitive)."""
+    data = await request.json()
+    try:
+        meta = voice_clone.rename_profile(pid, str(data.get("name", "")))
+    except KeyError:
+        return JSONResponse({"error": f"unknown custom voice '{pid}'"}, status_code=404)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
     return {"voice": meta}
 
 

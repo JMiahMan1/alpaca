@@ -299,15 +299,34 @@ def delete_profile(pid: str) -> None:
     shutil.rmtree(d)
 
 
+def _check_name(name: str, exclude_id: str | None = None) -> str:
+    """Names are how people pick a voice, so they must be unique (case-insensitive)."""
+    name = re.sub(r"\s+", " ", (name or "").strip())[:60]
+    if not name:
+        raise ValueError("give the voice a name")
+    for p in list_profiles():
+        if p["id"] != exclude_id and p["name"].casefold() == name.casefold():
+            raise ValueError(f'a voice named "{p["name"]}" already exists; choose another name, or rename or delete that one')
+    return name
+
+
+def rename_profile(pid: str, name: str) -> dict:
+    meta = get_profile(pid)
+    meta["name"] = _check_name(name, exclude_id=pid)
+    path = os.path.join(_pdir(pid), "meta.json")
+    tmp = path + ".tmp"
+    json.dump(meta, open(tmp, "w", encoding="utf-8"), indent=1)
+    os.replace(tmp, path)
+    return meta
+
+
 def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
     """Build a profile from [(prompt_id, raw_audio_bytes), ...]. Raises ValueError on unusable input."""
     import numpy as np
     import soundfile as sf
     import torch
 
-    name = (name or "").strip()[:60]
-    if not name:
-        raise ValueError("give the voice a name")
+    name = _check_name(name)
     if not recordings:
         raise ValueError("at least one recording is required")
     takes, reports = [], []
