@@ -16,7 +16,8 @@ VRAM discipline (the card is shared with llama-server):
 
 Endpoints:
   GET  /health        -> status, loaded models, VRAM usage, voice list
-  POST /api/tts       -> {text, voice?, speed?, lang?}          -> wav b64
+  POST /api/tts       -> {text, voice?, speed?, sentence_pause_s?, paragraph_pause_s?} -> wav b64
+                         voice may blend several, e.g. "am_michael,am_fenrir"
   POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
   POST /api/unload    -> free all VRAM immediately
 """
@@ -26,6 +27,7 @@ import base64
 import io
 import logging
 import os
+import re
 import time
 import wave
 
@@ -267,6 +269,68 @@ async def health():
 # --------------------------------------------------------------------------- #
 
 
+DEFAULT_SENTENCE_PAUSE_S = float(os.getenv("TTS_SENTENCE_PAUSE_S", "0.32"))
+DEFAULT_PARAGRAPH_PAUSE_S = float(os.getenv("TTS_PARAGRAPH_PAUSE_S", "0.7"))
+
+# Tokens ending in "." that do not end a sentence.
+_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "st", "sr", "jr", "rev", "prof", "gen", "vol", "ch",
+    "no", "vs", "etc", "qtd", "ed", "eds", "trans", "p", "pp", "cf", "e.g", "i.e",
+    "a.m", "p.m", "u.s", "u.k", "mt", "ft", "approx", "dept", "jan", "feb", "mar",
+    "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+}
+_SENTENCE_END = re.compile(r"""([.!?…]+["'”’)\]]*)\s+(?=["'“‘(\[]?[A-Z0-9])""")
+_MAX_SENTENCE_CHARS = 380
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+
+
+def _sentences(paragraph: str) -> list[str]:
+    """Split a paragraph into sentences, respecting initials and abbreviations."""
+    paragraph = re.sub(r"\s+", " ", paragraph).strip()
+    out, start = [], 0
+    for m in _SENTENCE_END.finditer(paragraph):
+        head = paragraph[start:m.start()]
+        last = head.rsplit(" ", 1)[-1].lower().strip("(\"'“‘")
+        # Initials ("P. F. Bresee") and known abbreviations do not end sentences.
+        if m.group(1).startswith(".") and (len(last) == 1 or last in _ABBREVIATIONS):
+            continue
+        out.append(paragraph[start:m.end(1)].strip())
+        start = m.end()
+    out.append(paragraph[start:].strip())
+    # Very long sentences are split at clause boundaries to stay well inside
+    # Kokoro's context, where its prosody is most stable.
+    result = []
+    for s in filter(None, out):
+        while len(s) > _MAX_SENTENCE_CHARS:
+            cut = max(s.rfind(sep, 0, _MAX_SENTENCE_CHARS) for sep in ("; ", ": ", ", ", " — "))
+            if cut < _MAX_SENTENCE_CHARS // 3:
+                break
+            result.append(s[:cut + 1].strip())
+            s = s[cut + 1:].strip()
+        result.append(s)
+    return result
+
+
+def _trim_and_fade(audio, sr: int, threshold: float = 0.004, margin_s: float = 0.03, fade_s: float = 0.008):
+    """Trim edge silence to a consistent margin and apply short fades to avoid clicks."""
+    import numpy as np
+
+    loud = np.flatnonzero(np.abs(audio) > threshold)
+    if loud.size == 0:
+        return audio[:0]
+    margin = int(margin_s * sr)
+    audio = audio[max(loud[0] - margin, 0):min(loud[-1] + margin, len(audio))].copy()
+    n = min(int(fade_s * sr), len(audio) // 2)
+    if n > 0:
+        ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        audio[:n] *= ramp
+        audio[-n:] *= ramp[::-1]
+    return audio
+
+
 @app.post("/api/tts")
 async def api_tts(request: Request):
     data = await request.json()
@@ -275,12 +339,19 @@ async def api_tts(request: Request):
         return JSONResponse({"error": "text is required"}, status_code=400)
     if len(text) > MAX_TTS_CHARS:
         return JSONResponse({"error": f"text exceeds {MAX_TTS_CHARS} chars"}, status_code=400)
-    voice = str(data.get("voice", "af_heart"))
-    if voice not in KOKORO_VOICES:
-        return JSONResponse({"error": f"unknown voice '{voice}'"}, status_code=400)
+    # A comma-separated list blends voices (Kokoro averages the style vectors),
+    # e.g. "am_michael,am_fenrir" for a warmer, steadier narrator.
+    voice = str(data.get("voice", "af_heart")).replace(" ", "")
+    unknown = [v for v in voice.split(",") if v not in KOKORO_VOICES]
+    if not voice or unknown:
+        return JSONResponse({"error": f"unknown voice '{','.join(unknown) or voice}'"}, status_code=400)
     speed = float(data.get("speed", 1.0))
     if not 0.5 <= speed <= 2.0:
         return JSONResponse({"error": "speed must be within 0.5..2.0"}, status_code=400)
+    sentence_pause = float(data.get("sentence_pause_s", DEFAULT_SENTENCE_PAUSE_S))
+    paragraph_pause = float(data.get("paragraph_pause_s", DEFAULT_PARAGRAPH_PAUSE_S))
+    if not (0.0 <= sentence_pause <= 3.0 and 0.0 <= paragraph_pause <= 5.0):
+        return JSONResponse({"error": "pauses must be within 0..3s (sentence) and 0..5s (paragraph)"}, status_code=400)
 
     t0 = time.perf_counter()
     try:
@@ -292,19 +363,41 @@ async def api_tts(request: Request):
     try:
         import numpy as np
 
-        chunks: list = []
         sr = 24000
-        for result in pipe(text, voice=voice, speed=speed):
-            audio = getattr(result, "audio", None)
-            if audio is None:
-                continue
-            chunks.append(np.asarray(audio, dtype=np.float32))
-            rate = getattr(audio, "sample_rate", None)
-            if isinstance(rate, (int, float)) and int(rate) > 0:
-                sr = int(rate)
-        if not chunks:
+        pieces: list = []
+        n_chunks = 0
+
+        def _synth(sentence: str):
+            out = []
+            for result in pipe(sentence, voice=voice, speed=speed, split_pattern=None):
+                audio = getattr(result, "audio", None)
+                if audio is not None:
+                    out.append(np.asarray(audio, dtype=np.float32))
+            return out
+
+        # Synthesize sentence by sentence so Kokoro never splits mid-sentence at
+        # its token limit, then join with controlled pauses and short fades.
+        # Holding _lock keeps the idle unloader / music eviction from pulling
+        # the model out from under a long narration.
+        async with _lock:
+            for p_idx, paragraph in enumerate(_paragraphs(text)):
+                for s_idx, sentence in enumerate(_sentences(paragraph)):
+                    for audio in await asyncio.to_thread(_synth, sentence):
+                        audio = _trim_and_fade(audio, sr)
+                        if audio.size == 0:
+                            continue
+                        if pieces:
+                            gap = paragraph_pause if (s_idx == 0 and p_idx > 0) else sentence_pause
+                            pieces.append(np.zeros(int(gap * sr), dtype=np.float32))
+                        pieces.append(audio)
+                        n_chunks += 1
+            _state["last_used"]["tts"] = time.time()  # type: ignore[index]
+        if not pieces:
             return JSONResponse({"error": "TTS produced no audio"}, status_code=502)
-        merged = np.concatenate(chunks)
+        merged = np.concatenate(pieces)
+        # Lead-in/out padding so players don't clip the first/last syllable.
+        pad = np.zeros(int(0.15 * sr), dtype=np.float32)
+        merged = np.concatenate([pad, merged, pad])
         elapsed = time.perf_counter() - t0
         duration = len(merged) / float(sr)
         wav = await asyncio.to_thread(_wav_bytes, merged, sr)
@@ -323,7 +416,9 @@ async def api_tts(request: Request):
                 "elapsed_s": round(elapsed, 2),
                 "rtf": round(elapsed / max(duration, 1e-6), 4),
                 "chars": len(text),
-                "chunks": len(chunks),
+                "chunks": n_chunks,
+                "sentence_pause_s": sentence_pause,
+                "paragraph_pause_s": paragraph_pause,
             },
         }
     except Exception as e:
