@@ -252,6 +252,8 @@ services:
       - HUGGING_FACE_TOKEN=${HUGGING_FACE_TOKEN:-}
     volumes:
       - audio-models:/cache/huggingface
+      # Lexicon edits (or a git pull) apply on the next request, no rebuild.
+      - ./audio:/app/audio:ro
     deploy:
       resources:
         limits:

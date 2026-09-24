@@ -24,7 +24,8 @@ RUN pip install --no-cache-dir \
     accelerate \
     httpx
 
-COPY audio_server.py /app/audio_server.py
+COPY audio_server.py tts_text.py /app/
+COPY audio/ /app/audio/
 
 WORKDIR /app
 EXPOSE 8082
