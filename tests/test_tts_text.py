@@ -7,7 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import tts_text  # noqa: E402
-from tts_text import Lexicon, normalize, normalize_roman, normalize_scripture, paragraphs, sentences  # noqa: E402
+from tts_text import Lexicon, normalize, normalize_dates, normalize_roman, normalize_scripture, paragraphs, sentences  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -119,3 +119,22 @@ def test_long_sentence_splits_at_clause():
 
 def test_paragraphs():
     assert paragraphs("One.\n\n  Two.\n\n\n") == ["One.", "Two."]
+
+
+@pytest.mark.parametrize(
+    "src, want",
+    [
+        ("On May 24, 1738, Wesley", "On May 24th, 1738, Wesley"),
+        ("Sunday, October 6, 1895", "Sunday, October 6th, 1895"),
+        ("on September 1 and March 22", "on September 1st and March 22nd"),
+        ("by December 11.", "by December 11th."),
+        ("in May 1738", "in May 1738"),
+        ("May 3 people come?", "May 3 people come?"),
+        ("It ended May 3.", "It ended May 3rd."),
+        ("already October 6th", "already October 6th"),
+        ("October 2026", "October 2026"),
+        ("Sept. 22, 2026", "Sept. 22nd, 2026"),
+    ],
+)
+def test_dates(src, want):
+    assert normalize_dates(src) == want
