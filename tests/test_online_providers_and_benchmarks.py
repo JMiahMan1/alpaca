@@ -3,7 +3,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from online_providers import OnlineModelProvider
+from online_providers import (
+    AGENT_HARNESS_SPECS,
+    OnlineModelProvider,
+    _query_harness_cli,
+    build_agent_harness_cmd,
+)
 from web.shared_llm_benchmark import SharedLLMModelBenchmark
 
 
@@ -1271,3 +1276,493 @@ async def test_shared_llm_online_code_task_disables_reasoning(monkeypatch):
     assert result["effective_max_tokens"] == 700
     assert result["reasoning_enabled"] is False
     assert result["provider_thinking"] is True
+
+
+def test_build_provenance_and_learning_record_contract():
+    from online_providers import build_learning_record, build_provenance
+
+    prov = build_provenance(
+        model="openrouter:vendor/model",
+        source="alpaca",
+        harness="shared_llm_benchmark",
+        transport="api",
+        run_id="run-1",
+    )
+    assert prov["schema_version"] == 1
+    assert prov["run_id"] == "run-1"
+    assert prov["provider"] == "openrouter"
+    assert prov["model_revision"] == "vendor/model"
+    assert prov["learning_policy"] == "excluded_by_default"
+
+    shared = build_provenance(
+        model="openrouter:vendor/model",
+        source="alpaca",
+        harness="shared_llm_benchmark",
+        transport="api",
+        run_id="run-2",
+        learning_policy="shared_llm_success_only",
+    )
+    eligible = build_learning_record({"test_id": "t1", "success": True, "response": "ok", "provenance": shared})
+    assert eligible["training_eligible"] is True
+    assert eligible["exclusion_reason"] is None
+    assert eligible["source_record_id"] == "run-2:t1"
+
+    failed = build_learning_record({"test_id": "t2", "success": False, "response": "bad", "provenance": shared})
+    assert failed["training_eligible"] is False
+    assert failed["exclusion_reason"] == "failed_grader"
+
+    repaired = build_learning_record(
+        {"test_id": "t3", "success": True, "response": "ok", "repaired": True, "provenance": shared}
+    )
+    assert repaired["training_eligible"] is False
+    assert repaired["exclusion_reason"] == "repaired_output"
+
+    excluded = build_learning_record({"test_id": "t4", "success": True, "response": "ok", "provenance": prov})
+    assert excluded["training_eligible"] is False
+    assert excluded["exclusion_reason"] == "policy_excludes_source"
+
+
+@pytest.mark.asyncio
+async def test_shared_llm_run_records_provenance(tmp_path):
+    bench = SharedLLMModelBenchmark()
+    bench.RESULTS_DIR = tmp_path / "results"
+    bench.MODELS_DIR = bench.RESULTS_DIR / "models"
+    bench.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    bench.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    mock_query = AsyncMock(
+        return_value={
+            "success": True,
+            "latency": 0.1,
+            "response": "light_on",
+            "tokens_generated": 5,
+            "error": None,
+        }
+    )
+    with patch.object(bench, "query_model", side_effect=mock_query):
+        results = await bench.run_shared_llm_benchmarks(
+            models=["openrouter:vendor/model"],
+            use_proxy=True,
+            task_ids=["fast_path_light"],
+        )
+
+    assert results["run_id"].startswith("sharedllm-")
+    assert results["provenance"]["harness"] == "shared_llm_benchmark"
+    assert results["provenance"]["transport"] == "api"
+    assert results["provenance"]["run_id"] == results["run_id"]
+    assert results["provenance"]["finished_at"]
+
+    model_record = results["results"][0]
+    assert model_record["run_id"] == results["run_id"]
+    assert model_record["provenance"]["model"] == "openrouter:vendor/model"
+    task = model_record["tasks"][0]
+    assert task["source_record_id"] == f"{results['run_id']}:fast_path_light"
+    assert task["provenance"]["run_id"] == results["run_id"]
+    assert task["training_eligible"] is True
+    assert task["exclusion_reason"] is None
+
+    per_model = json.loads((bench.MODELS_DIR / "shared_openrouter_vendor_model.json").read_text())
+    assert per_model["run_id"] == results["run_id"]
+    assert per_model["provenance"]["run_id"] == results["run_id"]
+
+
+def test_cline_model_identifier_detection_and_parsing():
+    provider = OnlineModelProvider()
+    assert provider.is_online_model("cline_pass:cline-pass/qwen3.7-max") is True
+    assert provider.is_online_model("cline:cline-pass/qwen3.7-max") is True
+    assert provider.is_online_model("cline-pass:glm-5.3") is True
+
+    provider_name, model_name = provider.parse_model_identifier("cline_pass:cline-pass/qwen3.7-max")
+    assert provider_name == "cline_pass"
+    assert model_name == "cline-pass/qwen3.7-max"
+
+    provider_name, model_name = provider.parse_model_identifier("cline:cline-pass/qwen3.7-max")
+    assert provider_name == "cline"
+    assert model_name == "cline-pass/qwen3.7-max"
+
+    provider_name, model_name = provider.parse_model_identifier("cline-pass:glm-5.3")
+    assert provider_name == "cline_pass"
+    assert model_name == "glm-5.3"
+
+
+@pytest.mark.asyncio
+async def test_online_model_query_cline_pass_mock():
+    provider = OnlineModelProvider()
+    provider.cline_api_key = "test-key"
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": "66"}}],
+        "usage": {"completion_tokens": 3},
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        res = await provider.query_online_model("cline_pass:cline-pass/qwen3.7-max", prompt="What is 6*11?")
+        assert res["success"] is True
+        assert res["response"] == "66"
+        assert res["tokens_generated"] == 3
+
+
+@pytest.mark.asyncio
+async def test_online_model_query_cline_pass_no_key():
+    provider = OnlineModelProvider()
+    provider.cline_api_key = ""
+
+    res = await provider.query_online_model("cline_pass:cline-pass/qwen3.7-max", prompt="hi")
+    assert res["success"] is False
+    assert "CLINE_API_KEY" in res.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_cline_test_connection_mock():
+    provider = OnlineModelProvider()
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"data": [{"id": "cline-pass/glm-5.3"}, {"id": "cline-pass/kimi-k3"}]}
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+        res = await provider.test_connection("cline_pass", {"cline_api_key": "test-key"})
+        assert res["success"] is True
+        assert "2 models" in res.get("message", "")
+
+
+@pytest.mark.asyncio
+async def test_cline_test_connection_no_key():
+    provider = OnlineModelProvider()
+    provider.cline_api_key = ""
+
+    res = await provider.test_connection("cline_pass", {})
+    assert res["success"] is False
+    assert "not provided" in res.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_cline_fetch_live_models_mock(monkeypatch):
+    provider = OnlineModelProvider()
+    provider.cline_api_key = "test-key"
+    monkeypatch.setattr("online_providers._cline_cli_available", lambda: True)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "data": [
+            {"id": "cline-pass/glm-5.3", "context_length": 200000},
+            {"id": "cline-pass/kimi-k3"},
+        ]
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+        results = await provider.fetch_live_models(provider="cline_pass")
+        ids = [r["id"] for r in results]
+        assert "cline_pass:cline-pass/glm-5.3" in ids
+        assert "cline_pass:cline-pass/kimi-k3" in ids
+        assert all(r["provider"] == "cline_pass" for r in results)
+
+        harness_results = await provider.fetch_live_models(provider="cline")
+        harness_ids = [r["id"] for r in harness_results]
+        assert "cline:default" in harness_ids
+        assert "cline:cline-pass/glm-5.3" in harness_ids
+        assert all(r["provider"] == "cline" for r in harness_results)
+
+
+@pytest.mark.asyncio
+async def test_cline_harness_missing_binary(monkeypatch):
+    provider = OnlineModelProvider()
+    monkeypatch.delenv("CLINE_DOCKER_IMAGE", raising=False)
+    provider.cline_bin = ""
+
+    with patch("shutil.which", return_value=None):
+        res = await provider.query_online_model("cline:cline-pass/qwen3.7-max", prompt="hi")
+        assert res["success"] is False
+        assert "not found" in res.get("error", "").lower()
+        assert "CLINE_DOCKER_IMAGE" in res.get("error", "")
+
+
+def test_agent_harness_identifier_detection_and_parsing():
+    provider = OnlineModelProvider()
+    for harness in ("claude", "codex", "deepseek", "pi"):
+        assert provider.is_online_model(f"{harness}:default") is True
+    assert provider.is_online_model("claude-code:default") is True
+    assert provider.is_online_model("codex-cli:gpt-5-codex") is True
+    assert provider.is_online_model("dsh:deepseek-chat") is True
+    assert provider.is_online_model("pi-cli:default") is True
+    assert provider.is_online_model("qwen2.5-coder:7b") is False
+
+    assert provider.parse_model_identifier("claude:claude-sonnet-4-5") == ("claude", "claude-sonnet-4-5")
+    assert provider.parse_model_identifier("codex:gpt-5-codex") == ("codex", "gpt-5-codex")
+    assert provider.parse_model_identifier("deepseek:deepseek-chat") == ("deepseek", "deepseek-chat")
+    assert provider.parse_model_identifier("pi:default") == ("pi", "default")
+    assert provider.parse_model_identifier("claude-code:default") == ("claude", "default")
+    assert provider.parse_model_identifier("codex-cli:gpt-5") == ("codex", "gpt-5")
+    assert provider.parse_model_identifier("dsh:deepseek-reasoner") == ("deepseek", "deepseek-reasoner")
+    assert provider.parse_model_identifier("pi-cli:model-x") == ("pi", "model-x")
+
+
+def test_agent_harness_specs_expose_verified_defaults():
+    claude = AGENT_HARNESS_SPECS["claude"]
+    assert (claude["binary"], claude["docker_image_env"], claude["key_env"]) == (
+        "claude",
+        "CLAUDE_DOCKER_IMAGE",
+        "ANTHROPIC_API_KEY",
+    )
+    assert claude["build_args"]("default", "hi", False) == [
+        "--bare",
+        "-p",
+        "hi",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "dontAsk",
+    ]
+    assert claude["build_args"]("claude-sonnet-4-5", "hi", False)[-2:] == ["--model", "claude-sonnet-4-5"]
+
+    codex = AGENT_HARNESS_SPECS["codex"]
+    assert (codex["binary"], codex["docker_image_env"], codex["key_env"]) == (
+        "codex",
+        "CODEX_DOCKER_IMAGE",
+        "CODEX_API_KEY",
+    )
+    assert codex["build_args"]("default", "hi", False) == [
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "workspace-write",
+        "--",
+        "hi",
+    ]
+
+    deepseek = AGENT_HARNESS_SPECS["deepseek"]
+    assert (deepseek["binary"], deepseek["docker_image_env"], deepseek["key_env"]) == (
+        "dsh",
+        "DEEPSEEK_DOCKER_IMAGE",
+        "DEEPSEEK_API_KEY",
+    )
+    assert deepseek["extra_env"] == ("DEEPSEEK_BASE_URL",)
+    assert deepseek["build_args"]("default", "hi", False) == ["--profile", "headless", "--", "hi"]
+
+    pi = AGENT_HARNESS_SPECS["pi"]
+    assert (pi["binary"], pi["docker_image_env"]) == ("pi", "PI_DOCKER_IMAGE")
+    assert pi["build_args"]("pi-mini", "hi", False) == ["--mode", "json", "--print", "hi", "--model", "pi-mini"]
+
+
+def test_build_agent_harness_cmd_docker_prefix_and_env():
+    cmd = build_agent_harness_cmd(
+        "claude",
+        "claude-sonnet-4-5",
+        "Say hi",
+        container=True,
+        docker_image="alpaca-claude:latest",
+        data_dir="/tmp/claude-data",
+        env={"ANTHROPIC_API_KEY": "sk-ant-test"},
+    )
+    assert cmd[:6] == ["docker", "run", "--rm", "--network", "host", "-i"]
+    assert cmd[6:10] == ["-e", "ANTHROPIC_API_KEY=sk-ant-test", "-v", "/tmp/claude-data:/data"]
+    assert cmd[10:12] == ["-e", "HOME=/data"]
+    image_idx = cmd.index("alpaca-claude:latest")
+    assert cmd[image_idx + 1] == "claude"
+    assert cmd[image_idx + 2 :] == [
+        "--bare",
+        "-p",
+        "Say hi",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        "claude-sonnet-4-5",
+    ]
+
+    native = build_agent_harness_cmd("deepseek", "default", "hi", container=False, env={"DEEPSEEK_BIN": "/opt/dsh"})
+    assert native == ["/opt/dsh", "--profile", "headless", "--", "hi"]
+
+
+def test_agent_harness_claude_json_output_parse():
+    parsed = AGENT_HARNESS_SPECS["claude"]["parse"](
+        '{"type":"result","subtype":"success","is_error":false,"result":"FINAL",'
+        '"usage":{"output_tokens":12},"stop_reason":"end_turn"}',
+        "",
+    )
+    assert parsed["response"] == "FINAL"
+    assert parsed["tokens_generated"] == 12
+    assert parsed["finish_reason"] == "end_turn"
+    assert parsed["error"] is None
+
+    failed = AGENT_HARNESS_SPECS["claude"]["parse"](
+        '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"hit max turns"}',
+        "",
+    )
+    assert "max turns" in failed["error"]
+
+
+def test_agent_harness_codex_jsonl_output_parse():
+    stdout = "\n".join(
+        [
+            '{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"FIRST"}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"LAST"}}',
+            '{"type":"turn.completed","usage":{"output_tokens":9}}',
+        ]
+    )
+    parsed = AGENT_HARNESS_SPECS["codex"]["parse"](stdout, "")
+    assert parsed["response"] == "LAST"
+    assert parsed["tokens_generated"] == 9
+    assert parsed["error"] is None
+
+    failed = AGENT_HARNESS_SPECS["codex"]["parse"]('{"type":"turn.failed","error":{"message":"rate limited"}}', "")
+    assert "rate limited" in failed["error"]
+
+
+@pytest.mark.asyncio
+async def test_agent_harness_claude_docker_command_and_parse(monkeypatch):
+    monkeypatch.setenv("CLAUDE_DOCKER_IMAGE", "alpaca-claude:latest")
+    monkeypatch.setenv("CLAUDE_DATA_DIR", "/tmp/claude-data")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "HARNESS_OK",
+            "usage": {"output_tokens": 7},
+            "stop_reason": "end_turn",
+        }
+    ).encode()
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(stdout, b""))
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock(return_value=0)
+
+    with (
+        patch("shutil.which", side_effect=lambda binary: None if binary == "claude" else f"/usr/local/bin/{binary}"),
+        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc) as exec_mock,
+    ):
+        res = await _query_harness_cli("claude", "claude-sonnet-4-5", "Say hi")
+
+    assert res == {
+        "success": True,
+        "latency": res["latency"],
+        "response": "HARNESS_OK",
+        "thinking": None,
+        "finish_reason": "end_turn",
+        "tokens_generated": 7,
+        "error": None,
+    }
+    argv = list(exec_mock.await_args[0])
+    assert argv[:6] == ["docker", "run", "--rm", "--network", "host", "-i"]
+    assert "ANTHROPIC_API_KEY=sk-ant-test" in argv
+    assert "/tmp/claude-data:/data" in argv
+    assert "HOME=/data" in argv
+    image_idx = argv.index("alpaca-claude:latest")
+    assert argv[image_idx + 1] == "claude"
+    assert argv[image_idx + 2 :] == [
+        "--bare",
+        "-p",
+        "Say hi",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        "claude-sonnet-4-5",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_harness_codex_docker_command_and_parse(monkeypatch):
+    monkeypatch.setenv("CODEX_DOCKER_IMAGE", "alpaca-codex:latest")
+    monkeypatch.setenv("CODEX_API_KEY", "sk-codex")
+    monkeypatch.delenv("CODEX_BIN", raising=False)
+    monkeypatch.delenv("CODEX_DATA_DIR", raising=False)
+
+    stdout = (
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "first"}})
+        + "\n"
+        + json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "CODEX_OK"}})
+        + "\n"
+        + json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 11}})
+        + "\n"
+    ).encode()
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(stdout, b""))
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock(return_value=0)
+
+    with (
+        patch("shutil.which", side_effect=lambda binary: None if binary == "codex" else f"/usr/local/bin/{binary}"),
+        patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc) as exec_mock,
+    ):
+        res = await _query_harness_cli("codex", "gpt-5-codex", "Do it")
+
+    assert res["success"] is True
+    assert res["response"] == "CODEX_OK"
+    assert res["tokens_generated"] == 11
+    argv = list(exec_mock.await_args[0])
+    assert "CODEX_API_KEY=sk-codex" in argv
+    image_idx = argv.index("alpaca-codex:latest")
+    assert argv[image_idx + 1] == "codex"
+    assert argv[image_idx + 2 :] == [
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "workspace-write",
+        "--model",
+        "gpt-5-codex",
+        "--",
+        "Do it",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_harness_missing_binary_clear_error(monkeypatch):
+    provider = OnlineModelProvider()
+    monkeypatch.delenv("CLAUDE_DOCKER_IMAGE", raising=False)
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+
+    with patch("shutil.which", return_value=None):
+        with pytest.raises(RuntimeError, match="CLAUDE_DOCKER_IMAGE"):
+            await _query_harness_cli("claude", "default", "hi")
+        res = await provider.query_online_model("claude:default", prompt="hi")
+
+    assert res["success"] is False
+    assert "CLAUDE_BIN" in res["error"]
+    assert "CLAUDE_DOCKER_IMAGE" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_agent_harness_fetch_live_models_and_configured(monkeypatch):
+    monkeypatch.setenv("PI_DOCKER_IMAGE", "alpaca-pi:latest")
+    monkeypatch.setenv("PI_MODELS", "pi-mini, pi-pro")
+    provider = OnlineModelProvider()
+
+    assert provider.get_configured_providers()["pi"] is True
+    assert provider.get_masked_credentials()["pi"]["configured"] is True
+
+    results = await provider.fetch_live_models(provider="pi")
+    assert sorted(r["id"] for r in results) == ["pi:default", "pi:pi-mini", "pi:pi-pro"]
+    assert all(r["provider"] == "pi" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_agent_harness_test_connection_docker(monkeypatch):
+    provider = OnlineModelProvider()
+    monkeypatch.delenv("DEEPSEEK_BIN", raising=False)
+    monkeypatch.setenv("DEEPSEEK_DOCKER_IMAGE", "alpaca-dsh:latest")
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    with (
+        patch("shutil.which", side_effect=lambda binary: None if binary == "dsh" else f"/usr/local/bin/{binary}"),
+        patch("subprocess.run", return_value=mock_proc) as run_mock,
+    ):
+        res = await provider.test_connection("deepseek")
+
+    assert res["success"] is True
+    assert run_mock.call_args[0][0] == ["docker", "image", "inspect", "alpaca-dsh:latest"]
+    assert "alpaca-dsh:latest" in res["message"]

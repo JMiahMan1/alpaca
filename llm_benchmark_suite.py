@@ -28,7 +28,14 @@ import httpx
 import psutil
 
 from context_awareness import estimate_prompt_tokens, resolve_context_window, turn_budget
-from online_providers import online_model_provider
+from online_providers import (
+    LEARNING_POLICY_EXCLUDED,
+    build_provenance,
+    make_run_id,
+    make_source_record_id,
+    online_model_provider,
+    utc_timestamp,
+)
 
 # One-shot code execution for grading coding benchmarks (runs Python/Node in the
 # locked-down alpaca-sandbox container and returns ran/output/exit_code).
@@ -843,6 +850,10 @@ class LLMModelBenchmark:
                 entry[cat_key] = self._calculate_category_stats(merged)
             entry["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             existing["generated_at"] = existing.get("generated_at") or generated_at
+            if model_data.get("run_id"):
+                existing["run_id"] = model_data.get("run_id")
+            if model_data.get("provenance"):
+                existing["provenance"] = model_data.get("provenance")
             tmp = file_path.with_suffix(".json.tmp")
             with open(tmp, "w") as f:
                 json.dump(existing, f, indent=2, default=str)
@@ -861,6 +872,8 @@ class LLMModelBenchmark:
             "models_tested": 1,
             "per_model": True,
             "model": model,
+            "run_id": model_data.get("run_id"),
+            "provenance": model_data.get("provenance"),
             "results": [model_data],
         }
         with open(file_path, "w") as f:
@@ -876,6 +889,7 @@ class LLMModelBenchmark:
         use_proxy: bool,
         generated_at: str | None = None,
         record_run: bool = True,
+        run_id: str | None = None,
     ) -> Path | None:
         """Write a single test result to the per-model file immediately after it completes.
 
@@ -903,19 +917,25 @@ class LLMModelBenchmark:
                 "models_tested": 1,
                 "per_model": True,
                 "model": model,
+                "run_id": run_id or test_result.get("run_id"),
+                "provenance": test_result.get("provenance"),
                 "results": [{"model": model}],
             }
         entry = per_model["results"][0]
         entry.setdefault("model", model)
+        if run_id or test_result.get("run_id"):
+            entry["run_id"] = run_id or test_result.get("run_id")
+        if test_result.get("provenance"):
+            entry["provenance"] = test_result.get("provenance")
         cat_key = f"category_{category}"
         cat_block = entry.get(cat_key)
         tests = cat_block.get("tests", []) if isinstance(cat_block, dict) else []
         tid = test_result.get("test_id")
         incoming = dict(test_result)
         if record_run:
-            incoming["run_id"] = uuid.uuid4().hex
+            incoming["run_id"] = run_id or uuid.uuid4().hex
         else:
-            incoming.setdefault("run_id", uuid.uuid4().hex)
+            incoming.setdefault("run_id", run_id or uuid.uuid4().hex)
             incoming.setdefault("run_count", 1)
             incoming.setdefault("fail_count", 0 if incoming.get("success") else 1)
         replaced = False
@@ -2962,6 +2982,48 @@ class LLMModelBenchmark:
             return any(x in cleaned for x in ["@database", "@dao", "@entity", "@query", "@insert"]) and any(
                 x in cleaned for x in ["interface", "class", "fun"]
             )
+        # ---- LVGL (C) ----
+        elif test_id == "lvgl_button_screen":
+            return (
+                any(x in cleaned for x in ["lv_init"])
+                and any(x in cleaned for x in ["lv_screen_active", "lv_obj_create"])
+                and any(x in cleaned for x in ["lv_button_create", "lv_btn_create"])
+                and any(x in cleaned for x in ["lv_label_create", "lv_label_set_text"])
+                and any(x in cleaned for x in ["lv_obj_align", "lv_obj_set_pos", "lv_obj_center"])
+                and any(x in cleaned for x in ["lv_obj_add_event_cb", "lv_event", "cb"])
+                and any(x in cleaned for x in ["lv_timer_handler", "lv_tick_inc", "lv_display_set_flush_cb"])
+            )
+        elif test_id == "lvgl_dashboard_widgets":
+            return (
+                "lv_init" in cleaned
+                and any(x in cleaned for x in ["lv_bar_create", "lv_arc_create", "lv_label_create", "lv_chart_create"])
+                and any(x in cleaned for x in ["lv_slider_create", "lv_dropdown_create"])
+                and any(x in cleaned for x in ["lv_chart_set_point_count", "lv_chart_set_next_value"])
+                and any(x in cleaned for x in ["lv_timer_create", "lv_timer_handler"])
+                and any(x in cleaned for x in ["lv_tick_inc", "lv_display_set_flush_cb"])
+            )
+        # ---- ESPHome (YAML) ----
+        elif test_id == "esphome_climate_sensor":
+            return (
+                "esphome:" in cleaned
+                and any(x in cleaned for x in ["name:", "board:"])
+                and "sensor:" in cleaned
+                and any(x in cleaned for x in ["platform: dht", "platform: dallas", "dht", "dallas"])
+                and any(x in cleaned for x in ["temperature", "humidity"])
+                and "wifi:" in cleaned
+                and "ssid:" in cleaned
+                and "password:" in cleaned
+                and any(x in cleaned for x in ["api:", "mqtt:", "homeassistant", "on_value"])
+            )
+        elif test_id == "esphome_multi_device_automation":
+            return (
+                "esphome:" in cleaned
+                and any(x in cleaned for x in ["binary_sensor:", "switch:", "sensor:"])
+                and any(x in cleaned for x in ["on_press", "on_value", "on_click", "then:"])
+                and any(x in cleaned for x in ["filters:", "lambda:"])
+                and "wifi:" in cleaned
+                and any(x in cleaned for x in ["api:", "mqtt:"])
+            )
 
         # Unknown / custom test_ids from BENCHMARK_TESTS_JSON have no built-in
         # expectations. Use a minimal content-quality gate instead of an
@@ -4622,10 +4684,40 @@ class LLMModelBenchmark:
         resume: bool = False,
         groups: list[str] | None = None,
         tiers: list[str] | None = None,
+        run_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
     ) -> dict:
         """Run only functional (accuracy) tests on a model."""
         print(f"\n--- Running Functional Correctness Suite for: {model} ---")
-        results: dict[str, Any] = {"model": model, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        transport = "api" if online_model_provider.is_online_model(model) else ("proxy" if use_proxy else "direct")
+        base_provenance = provenance or {}
+        active_run_id = run_id or base_provenance.get("run_id") or make_run_id("functional")
+        model_provenance = build_provenance(
+            model=model,
+            source=base_provenance.get("source", "alpaca"),
+            harness=base_provenance.get("harness", "llm_benchmark_suite"),
+            harness_version=base_provenance.get("harness_version"),
+            transport=base_provenance.get("transport", transport),
+            run_id=active_run_id,
+            provider=base_provenance.get("provider"),
+            model_revision=base_provenance.get("model_revision"),
+            environment=base_provenance.get("environment"),
+            tool_policy=base_provenance.get("tool_policy"),
+            reasoning_mode=base_provenance.get("reasoning_mode"),
+            learning_policy=base_provenance.get("learning_policy", LEARNING_POLICY_EXCLUDED),
+            limits=base_provenance.get("limits")
+            or {"mode": mode, "groups": groups or [], "tiers": tiers or [], "test_ids": test_ids or []},
+            attempts=base_provenance.get("attempts", 1),
+            started_at=base_provenance.get("started_at"),
+            finished_at=base_provenance.get("finished_at"),
+            extra=base_provenance.get("extra"),
+        )
+        results: dict[str, Any] = {
+            "model": model,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "run_id": active_run_id,
+            "provenance": model_provenance,
+        }
         categories = {
             # Lighter / quicker categories first so early failures surface fast.
             "instruction": self._instruction_tests,
@@ -5007,6 +5099,12 @@ class LLMModelBenchmark:
                         "test_label": test["label"],
                         "test_hash": cur_hash,
                         "last_run": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "model": model,
+                        "run_id": active_run_id,
+                        "provenance": dict(model_provenance),
+                        "source_record_id": make_source_record_id(active_run_id, test["id"]),
+                        "training_eligible": False,
+                        "exclusion_reason": "general_benchmark_excluded_by_default",
                     }
                 )
                 category_results.append(test_result)
@@ -5015,7 +5113,9 @@ class LLMModelBenchmark:
                 # Persist this single test result immediately (resumability + progress
                 # is never lost even if the run is interrupted).
                 try:
-                    self.save_test_result_incremental(model, category, test_result, mode, use_proxy, generated_at)
+                    self.save_test_result_incremental(
+                        model, category, test_result, mode, use_proxy, generated_at, run_id=active_run_id
+                    )
                 except Exception as e:
                     print(f"[benchmark] Warning: incremental save failed for {category}/{test['id']}: {e}")
 
@@ -5065,6 +5165,8 @@ class LLMModelBenchmark:
                         print(f"Callback error: {e}")
 
             results[f"category_{category}"] = self._calculate_category_stats(category_results)
+        model_provenance["finished_at"] = utc_timestamp()
+        results["provenance"] = model_provenance
         return results
 
     async def benchmark_model_performance(
@@ -5765,12 +5867,33 @@ class LLMModelBenchmark:
             print(f"Selected Groups: {groups}")
         print("=" * 80)
 
+        run_id = make_run_id("general")
+        if models and all(online_model_provider.is_online_model(m) for m in models):
+            run_transport = "api"
+        elif any(online_model_provider.is_online_model(m) for m in models):
+            run_transport = "mixed"
+        else:
+            run_transport = "proxy" if use_proxy else "direct"
+        run_provenance = build_provenance(
+            model="*",
+            source="alpaca",
+            harness="llm_benchmark_suite",
+            transport=run_transport,
+            run_id=run_id,
+            reasoning_mode="profile",
+            learning_policy=LEARNING_POLICY_EXCLUDED,
+            limits={"mode": mode, "groups": groups or [], "tiers": tiers or [], "test_ids": test_ids or []},
+            attempts=1,
+            extra={"models": models},
+        )
         all_results: dict[str, Any] = {
             "benchmark_version": "3.0.0",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "benchmark_type": "proxy" if use_proxy else "direct",
             "benchmark_mode": mode,
             "models_tested": len(models),
+            "run_id": run_id,
+            "provenance": run_provenance,
             "results": [],
         }
 
@@ -5804,7 +5927,19 @@ class LLMModelBenchmark:
             if cancel_event and cancel_event.is_set():
                 return None
 
-            model_data: dict[str, Any] = {"model": model}
+            model_transport = "api" if online_model_provider.is_online_model(model) else run_transport
+            model_provenance = build_provenance(
+                model=model,
+                source="alpaca",
+                harness="llm_benchmark_suite",
+                transport=model_transport,
+                run_id=run_id,
+                reasoning_mode="profile",
+                learning_policy=LEARNING_POLICY_EXCLUDED,
+                limits={"mode": mode, "groups": groups or [], "tiers": tiers or [], "test_ids": test_ids or []},
+                started_at=run_provenance.get("started_at"),
+            )
+            model_data: dict[str, Any] = {"model": model, "run_id": run_id, "provenance": model_provenance}
 
             # Emit model_start event
             if progress_callback:
@@ -5848,6 +5983,8 @@ class LLMModelBenchmark:
                     resume=resume,
                     groups=groups,
                     tiers=tiers,
+                    run_id=run_id,
+                    provenance=model_provenance,
                 )
                 model_data.update(func_data)
 
@@ -5869,6 +6006,8 @@ class LLMModelBenchmark:
             model_data["overall_letter"] = overall["letter"]
             model_data["overall_stars"] = overall["stars"]
             model_data["group_scores"] = overall["groups"]
+            model_provenance["finished_at"] = utc_timestamp()
+            model_data["provenance"] = model_provenance
 
             all_results["results"].append(model_data)
             self.save_per_model_result(model_data, mode, use_proxy, all_results["generated_at"])

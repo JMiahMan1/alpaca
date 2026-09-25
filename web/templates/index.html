@@ -2968,6 +2968,7 @@
                     </p>
                     <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
                         <button id="btn-refresh-arcade" class="btn btn-secondary btn-sm btn-slate">↻ Refresh list</button>
+                        <button id="btn-publish-all-arcade" class="btn btn-secondary btn-sm btn-slate" title="Deliberately publish every eligible benchmark game result to the arcade (idempotent)">🗂 Publish all eligible</button>
                     </div>
                     <div id="arcade-current" style="font-size:0.72rem; color:var(--text-muted);"></div>
                     <div id="arcade-games-list" style="display:flex; flex-direction:column; gap:0.4rem;"></div>
@@ -3105,6 +3106,59 @@
                     <div id="test-result-orcarouter" style="font-size:0.72rem; display:none;"></div>
                 </div>
 
+                <!-- ClinePass Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>🧭</span> ClinePass
+                        </strong>
+                        <span id="badge-status-cline" class="badge badge-secondary" style="font-size:0.68rem;">Not Configured</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Cline's OpenAI-compatible subscription API (<code style="font-size:0.72rem;">cline-pass/...</code> models) as a chat provider, separate from the Cline agent harness below.
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <input type="password" id="input-cline-key" placeholder="Cline API Key" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <button id="btn-test-cline" class="btn btn-secondary btn-sm btn-slate">Test</button>
+                    </div>
+                    <div id="test-result-cline" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- Cline Harness Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>🤖</span> Cline Agent Harness
+                        </strong>
+                        <span id="badge-status-cline-harness" class="badge badge-secondary" style="font-size:0.68rem;">Not Installed</span>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Runs benchmarks through the Cline CLI agent loop (<code style="font-size:0.72rem;">cline:...</code>) instead of a raw chat API. Uses local <code style="font-size:0.72rem;">cline</code>, <code style="font-size:0.72rem;">CLINE_BIN</code>, or an ephemeral <code style="font-size:0.72rem;">CLINE_DOCKER_IMAGE</code> container.
+                    </p>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <button id="btn-test-cline-harness" class="btn btn-secondary btn-sm btn-slate">Test Harness</button>
+                    </div>
+                    <div id="test-result-cline-harness" style="font-size:0.72rem; display:none;"></div>
+                </div>
+
+                <!-- Agent Harnesses Section -->
+                <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>🧰</span> Agent Harnesses
+                        </strong>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
+                        Run benchmarks through native agent CLIs (<code style="font-size:0.72rem;">claude:</code>, <code style="font-size:0.72rem;">codex:</code>, <code style="font-size:0.72rem;">deepseek:</code>, <code style="font-size:0.72rem;">pi:</code>) or ephemeral Docker images via <code style="font-size:0.72rem;">CLAUDE_DOCKER_IMAGE</code>, <code style="font-size:0.72rem;">CODEX_DOCKER_IMAGE</code>, <code style="font-size:0.72rem;">DEEPSEEK_DOCKER_IMAGE</code>, and <code style="font-size:0.72rem;">PI_DOCKER_IMAGE</code>.
+                    </p>
+                    <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <span id="badge-status-claude" class="badge badge-secondary" style="font-size:0.68rem;">Claude Code: Not installed</span>
+                        <span id="badge-status-codex" class="badge badge-secondary" style="font-size:0.68rem;">Codex: Not installed</span>
+                        <span id="badge-status-deepseek" class="badge badge-secondary" style="font-size:0.68rem;">DeepSeek: Not installed</span>
+                        <span id="badge-status-pi" class="badge badge-secondary" style="font-size:0.68rem;">Pi: Not installed</span>
+                    </div>
+                </div>
+
                 <!-- Actions -->
                 <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:0.5rem;">
                     <button id="btn-cancel-api-keys" class="btn btn-slate">Cancel</button>
@@ -3140,6 +3194,12 @@
                             <option value="groq">⚡ Groq</option>
                             <option value="orcarouter">🐋 OrcaRouter</option>
                             <option value="gemini">✨ Gemini</option>
+                            <option value="cline_pass">🧭 ClinePass</option>
+                            <option value="cline">🤖 Cline Harness</option>
+                            <option value="claude">🅰️ Claude Code</option>
+                            <option value="codex">🧑‍💻 Codex</option>
+                            <option value="deepseek">🐋 DeepSeek</option>
+                            <option value="pi">🥧 Pi</option>
                         </select>
                     </div>
 

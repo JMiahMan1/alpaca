@@ -45,6 +45,7 @@ const advance = async () => {
   await timer.fn();
 };
 const score = n => ({success: true, score: n, initials: 'ABC', new_unlocks: ['win']});
+const localStorage = { getItem: () => null, setItem: () => {} };
 let fetch;
 """
 
@@ -244,15 +245,18 @@ def test_index_and_player_board_refresh(player):
         + """
 const top = {textContent: ''};
 let replaced = false;
-const card = {dataset: {gameSlug: 'game'}, querySelector: () => top};
+const card = {dataset: {gameSlug: 'game'}, querySelector: () => top, classList: null};
 document.querySelector = () => player ? {replaceWith: () => { replaced = true; }} : null;
 document.querySelectorAll = () => [card];
 const DOMParser = class { parseFromString() { return {querySelector: () => ({})}; } };
 fetch = async (url, options) => {
   assert.equal(options.cache, 'no-store');
-  assert.equal(url, player ? '/player/ABC' : '/api/games/game');
-  return {ok: true, text: async () => '<main></main>',
-    json: async () => ({success: true, game: {scores: [{initials: 'XYZ', score: 42}]}})};
+  if (player) {
+    assert.equal(url, '/player/ABC');
+    return {ok: true, text: async () => '<main></main>', json: async () => ({})};
+  }
+  assert.equal(url, '/api/games');
+  return {ok: true, json: async () => ({success: true, games: [{slug: 'game', top_score: {initials: 'XYZ', score: 42}}]})};
 };
 (function () {
 """
@@ -292,22 +296,57 @@ assert.equal($('btn-controls').attrs['aria-pressed'], String(visible));
 
 
 def test_sound_toggle_labels_show_state():
-    sound = JS[JS.index("  let soundOn = true;") : JS.index("  function mapXkey(key) {")]
+    sound = JS[JS.index("  const SOUND_KEY =") : JS.index("  function mapXkey(key) {")]
     run_node(
-        sound
+        """
+let stored = '1';
+const localStorage = {
+  getItem: key => { assert.equal(key, 'arcade_sound'); return stored; },
+  setItem: (key, value) => { assert.equal(key, 'arcade_sound'); stored = value; },
+};
+"""
+        + sound
         + """
 const posted = [];
 const fr = $('live-frame');
 fr.style.display = 'block';
 fr.contentWindow = { postMessage: (msg, origin) => posted.push([msg, origin]) };
 const btn = $('btn-sound-live');
-btn.textContent = '🔊 Sound';
+assert.equal(btn.textContent, '🔊 Sound');
 btn.events['click']();
 assert.equal(btn.textContent, '🔇 Muted');
+assert.equal(stored, '0');
 assert.deepEqual(posted[0][0], { source: 'arcade-audio', on: false });
 btn.events['click']();
 assert.equal(btn.textContent, '🔊 Sound');
+assert.equal(stored, '1');
 assert.deepEqual(posted[1][0], { source: 'arcade-audio', on: true });
+"""
+    )
+
+
+@pytest.mark.parametrize("saved", ["1", "0"])
+def test_sound_preference_is_reapplied_on_load(saved):
+    """The persisted sound preference (arcade_sound) re-applies on page load:
+    the button label and the postLiveAudio channel both honor it."""
+    sound = JS[JS.index("  const SOUND_KEY =") : JS.index("  function mapXkey(key) {")]
+    run_node(
+        f"let stored = {json.dumps(saved)};\n"
+        + """
+const localStorage = {
+  getItem: key => { assert.equal(key, 'arcade_sound'); return stored; },
+  setItem: (key, value) => { assert.equal(key, 'arcade_sound'); stored = value; },
+};
+"""
+        + sound
+        + """
+const posted = [];
+const fr = $('live-frame');
+fr.style.display = 'block';
+fr.contentWindow = { postMessage: (msg, origin) => posted.push([msg, origin]) };
+const btn = $('btn-sound-live');
+assert.equal(btn.textContent, stored === '1' ? '🔊 Sound' : '🔇 Muted');
+assert.equal(btn.title, stored === '1' ? 'Mute game sound' : 'Unmute game sound');
 """
     )
 
@@ -365,7 +404,7 @@ assert.equal(list.children[0].children[1].textContent, 100);
 
 def test_templates_wire_refresh_and_preserve_mobile_controls():
     templates = ROOT / "arcade/templates"
-    for name in ("index", "player", "play"):
+    for name in ("index", "player", "players", "play"):
         assert '<script src="/static/arcade.js"></script>' in (templates / f"{name}.html").read_text()
     play = (templates / "play.html").read_text()
     assert 'id="btn-stop-live"' in play
@@ -373,6 +412,19 @@ def test_templates_wire_refresh_and_preserve_mobile_controls():
     assert ".screen.show-controls #play-overlay-bar { display: flex;" in play
     assert "@media (pointer: fine) { .screen:not(.show-controls) #play-keys { display: none; } }" in play
     assert 'id="play-keys" role="group"' in play
+    # Every arcade page carries the Players + My player card navigation.
+    for name in ("index", "player", "players", "play"):
+        html = (templates / f"{name}.html").read_text()
+        assert 'href="/players"' in html
+        assert "data-my-card" in html
+
+
+def test_player_directory_template_wires_standings_and_unverified_copy():
+    players = (ROOT / "arcade/templates/players.html").read_text()
+    assert 'id="players-search"' in players
+    assert 'data-player-initials' in players
+    assert "unverified" in players
+    assert 'href="/player/{{ p.initials }}"' in players
 
 
 def test_dpad_hold_release_and_cancel_unchanged():
@@ -393,5 +445,63 @@ for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) button.
 button.events.keydown({key: 'Enter'});
 button.events.keyup({key: 'Enter'});
 assert.deepEqual(sent, [true, false, false, false, true, false]);
+"""
+    )
+
+
+def test_my_player_card_link_uses_saved_callsign():
+    """The shared "My player card" header link follows the saved callsign
+    (localStorage) and stays on /players until one is remembered."""
+    my_card = JS[JS.index('  const CALLSIGN_KEY = "arcade_callsign";') : JS.index("  function watchBoard(")]
+    run_node(
+        my_card
+        + """
+function run() {
+  const link = { textContent: '', attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
+  document.querySelectorAll = selector => {
+    assert.equal(selector, '[data-my-card]');
+    return [link];
+  };
+  let stored = null;
+  localStorage.getItem = () => stored;
+  localStorage.setItem = (k, v) => { stored = v; };
+  paintMyCardLinks();
+  assert.equal(link.textContent, 'My player card');
+  assert.equal(link.attrs.href, undefined);
+  assert.equal(rememberCallsign('  j-Q!x '), 'JQX');
+  assert.equal(stored, 'JQX');
+  paintMyCardLinks();
+  assert.equal(link.textContent, 'My player card · JQX');
+  assert.equal(link.attrs.href, '/player/JQX');
+  rememberCallsign('');
+  assert.equal(link.textContent, 'My player card · JQX');
+}
+run();
+"""
+    )
+
+
+def test_players_directory_search_filters_rows():
+    """The /players search box hides non-matching standings rows live."""
+    run_node(
+        "const slug = null;\n"
+        + BOARD
+        + """
+function run() {
+  const search = $('players-search');
+  const rowA = { style: {}, dataset: { playerInitials: 'ACE' }, classList: null };
+  const rowB = { style: {}, dataset: { playerInitials: 'BEE' }, classList: null };
+  document.querySelector = selector => selector === '#players-search' ? search : null;
+  document.querySelectorAll = selector => selector === '[data-player-initials]' ? [rowA, rowB] : [];
+  search.value = 'be';
+  search.events.input();
+  assert.equal(rowA.style.display, 'none');
+  assert.equal(rowB.style.display, '');
+  search.value = '';
+  search.events.input();
+  assert.equal(rowA.style.display, '');
+  assert.equal(rowB.style.display, '');
+}
+run();
 """
     )

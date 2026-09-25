@@ -40,6 +40,7 @@ import docker
 
 from llm_benchmark_suite import LLMModelBenchmark
 from multistep_benchmark import MultiStepBenchmark
+from online_providers import build_learning_record
 from sandbox_exec import (
     ensure_audio_encoder,
     serve_app,
@@ -2634,6 +2635,8 @@ def save_online_providers_credentials_api():
             keys["ORCAROUTER_API_KEY"] = data["orcarouter_api_key"].strip()
         if "gemini_api_key" in data:
             keys["GEMINI_API_KEY"] = data["gemini_api_key"].strip()
+        if "cline_api_key" in data:
+            keys["CLINE_API_KEY"] = data["cline_api_key"].strip()
 
         result = online_model_provider.save_credentials(keys)
         return jsonify(result)
@@ -4246,6 +4249,70 @@ def export_benchmarks():
         fmt = (request.args.get("format") or "json").lower()
         model_filter = request.args.get("model")
 
+        if fmt == "learning":
+            harness_filter = (request.args.get("harness") or "").strip()
+            source_filter = (request.args.get("source") or "").strip()
+            eligible_only = (request.args.get("eligible_only") or "").lower() in {"1", "true", "yes"}
+            records = []
+            reasons: dict[str, int] = {}
+
+            def _add_record(record: dict, mname: str | None, category: str | None, fallback_provenance=None):
+                if model_filter and mname != model_filter:
+                    return
+                enriched = dict(record)
+                enriched.setdefault("model", mname)
+                enriched.setdefault("test_category", category)
+                if fallback_provenance and not enriched.get("provenance"):
+                    enriched["provenance"] = fallback_provenance
+                learning = build_learning_record(enriched)
+                prov = learning.get("provenance") or {}
+                if source_filter and prov.get("source") != source_filter:
+                    return
+                if harness_filter and prov.get("harness") != harness_filter:
+                    return
+                if eligible_only and not learning["training_eligible"]:
+                    return
+                reason = learning.get("exclusion_reason") or "eligible"
+                reasons[reason] = reasons.get(reason, 0) + 1
+                records.append(learning)
+
+            general_sources = [benchmark.RESULTS_DIR / "all_benchmarks_latest.json"]
+            general_sources.extend(sorted(benchmark.MODELS_DIR.glob("general_*.json")))
+            for src in general_sources:
+                try:
+                    doc = json.loads(src.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                for m in doc.get("results", []):
+                    mname = m.get("model")
+                    for key, cat in m.items():
+                        if not key.startswith("category_") or not isinstance(cat, dict):
+                            continue
+                        category = key.replace("category_", "")
+                        for t in cat.get("tests", []):
+                            _add_record(t, mname, category, m.get("provenance"))
+            shared_sources = [shared_llm_benchmark.RESULTS_DIR / "all_shared_benchmarks_latest.json"]
+            shared_sources.extend(sorted(shared_llm_benchmark.MODELS_DIR.glob("shared_*.json")))
+            for src in shared_sources:
+                try:
+                    doc = json.loads(src.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                for m in doc.get("results", []):
+                    mname = m.get("model")
+                    for task in m.get("tasks", []):
+                        _add_record(task, mname, task.get("test_category"), m.get("provenance"))
+            return jsonify(
+                {
+                    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "format": "learning",
+                    "record_count": len(records),
+                    "eligible_count": sum(1 for r in records if r["training_eligible"]),
+                    "exclusion_reasons": reasons,
+                    "records": records,
+                }
+            )
+
         # Aggregate every per-model general file + the latest merged snapshot.
         rows = []
         sources = []
@@ -4271,6 +4338,7 @@ def export_benchmarks():
                     if not key.startswith("category_") or not isinstance(cat, dict):
                         continue
                     for t in cat.get("tests", []):
+                        provenance = t.get("provenance") or {}
                         rows.append(
                             {
                                 "model": mname,
@@ -4285,6 +4353,13 @@ def export_benchmarks():
                                 "ttft_ms": cat.get("avg_ttft_ms"),
                                 "tokens_generated": cat.get("avg_tokens_generated"),
                                 "last_run": t.get("last_run"),
+                                "source": provenance.get("source"),
+                                "harness": provenance.get("harness"),
+                                "provider": provenance.get("provider"),
+                                "transport": provenance.get("transport"),
+                                "source_record_id": t.get("source_record_id"),
+                                "training_eligible": t.get("training_eligible"),
+                                "exclusion_reason": t.get("exclusion_reason"),
                             }
                         )
 
@@ -4306,6 +4381,13 @@ def export_benchmarks():
                 "ttft_ms",
                 "tokens_generated",
                 "last_run",
+                "source",
+                "harness",
+                "provider",
+                "transport",
+                "source_record_id",
+                "training_eligible",
+                "exclusion_reason",
             ]
             w = csv.DictWriter(buf, fieldnames=cols)
             w.writeheader()
@@ -4657,8 +4739,10 @@ def arcade_published():
 def arcade_publish():
     """Manually publish a benchmark game to the arcade (port 5001).
 
-    Body: {model, test_id, benchmark_score?, max_score?, prompt?, run_date?, title?}.
-    Player scores/ratings are never touched on republish.
+    Body: {model, test_id, benchmark_score?, max_score?, prompt?, run_date?,
+    title?, category?, label?, type?, run_id?, test_hash?, validation?,
+    higher_is_better?, metric?}. Player scores/ratings are never touched on
+    republish.
     """
     try:
         from web.arcade_publish import publish_game
@@ -4672,10 +4756,34 @@ def arcade_publish():
             prompt=body.get("prompt") or "",
             run_date=body.get("run_date") or "",
             title=(body.get("title") or "").strip() or None,
+            category=body.get("category") or "",
+            label=body.get("label") or "",
+            type=body.get("type"),
+            run_id=body.get("run_id") or "",
+            test_hash=body.get("test_hash") or "",
+            validation=body.get("validation"),
+            higher_is_better=bool(body.get("higher_is_better", True)),
+            metric=body.get("metric"),
         )
         return jsonify({"success": True, **result})
     except (ValueError, FileNotFoundError) as e:
         return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/arcade/publish-all", methods=["POST"])
+def arcade_publish_all():
+    """Deliberately publish every eligible benchmark game result (idempotent).
+
+    Keeps the manual/reviewed publish model; this is an explicit bulk
+    reconciliation action, never triggered by benchmark completion.
+    """
+    try:
+        from web.arcade_publish import publish_all_eligible
+
+        result = publish_all_eligible()
+        return jsonify({"success": True, **result})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

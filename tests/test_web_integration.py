@@ -2297,3 +2297,120 @@ def test_ui_inner_status_accepts_beacon(client):
     assert json.loads(res.data.decode("utf-8")) == {"ok": True}
     res = client.post("/api/sandbox/ui_inner_status", json={})
     assert res.status_code == 200
+
+
+def test_learning_export_reports_eligibility_and_filters(client, tmp_path):
+    from online_providers import build_provenance
+    from web.app import benchmark, shared_llm_benchmark
+
+    gen_models = tmp_path / "g_models"
+    gen_results = tmp_path / "g_results"
+    shared_models = tmp_path / "s_models"
+    shared_results = tmp_path / "s_results"
+    for d in (gen_models, gen_results, shared_models, shared_results):
+        d.mkdir(parents=True, exist_ok=True)
+
+    gen_prov = build_provenance(
+        model="qwen_local",
+        source="alpaca",
+        harness="llm_benchmark_suite",
+        transport="proxy",
+        run_id="run-g",
+    )
+    shared_prov = build_provenance(
+        model="openrouter:vendor/model",
+        source="alpaca",
+        harness="shared_llm_benchmark",
+        transport="api",
+        run_id="run-s",
+        learning_policy="shared_llm_success_only",
+    )
+
+    (gen_models / "general_qwen_local.json").write_text(
+        json.dumps(
+            {
+                "model": "qwen_local",
+                "run_id": "run-g",
+                "provenance": gen_prov,
+                "results": [
+                    {
+                        "model": "qwen_local",
+                        "run_id": "run-g",
+                        "provenance": gen_prov,
+                        "category_coding": {
+                            "tests": [
+                                {
+                                    "test_id": "code_1",
+                                    "test_category": "coding",
+                                    "model": "qwen_local",
+                                    "success": True,
+                                    "response": "print(1)",
+                                    "run_id": "run-g",
+                                    "provenance": gen_prov,
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    (shared_models / "shared_openrouter_vendor_model.json").write_text(
+        json.dumps(
+            {
+                "model": "openrouter:vendor/model",
+                "run_id": "run-s",
+                "provenance": shared_prov,
+                "results": [
+                    {
+                        "model": "openrouter:vendor/model",
+                        "run_id": "run-s",
+                        "provenance": shared_prov,
+                        "tasks": [
+                            {
+                                "test_id": "fast_path_light",
+                                "test_category": "fast_path",
+                                "model": "openrouter:vendor/model",
+                                "success": True,
+                                "response": "light_on",
+                                "run_id": "run-s",
+                                "provenance": shared_prov,
+                                "training_eligible": True,
+                                "exclusion_reason": None,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+
+    with (
+        patch.object(benchmark, "MODELS_DIR", gen_models),
+        patch.object(benchmark, "RESULTS_DIR", gen_results),
+        patch.object(shared_llm_benchmark, "MODELS_DIR", shared_models),
+        patch.object(shared_llm_benchmark, "RESULTS_DIR", shared_results),
+    ):
+        res = client.get("/api/benchmarks/export?format=learning")
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["record_count"] == 2
+        assert data["eligible_count"] == 1
+        assert data["exclusion_reasons"]["eligible"] == 1
+        assert data["exclusion_reasons"]["policy_excludes_source"] == 1
+
+        res = client.get("/api/benchmarks/export?format=learning&eligible_only=1")
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["record_count"] == 1
+        assert data["records"][0]["test_id"] == "fast_path_light"
+        assert data["records"][0]["training_eligible"] is True
+
+        res = client.get("/api/benchmarks/export?format=learning&harness=shared_llm_benchmark")
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["record_count"] == 1
+        assert data["records"][0]["test_id"] == "fast_path_light"
+
+        res = client.get("/api/benchmarks/export?format=learning&model=qwen_local")
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["record_count"] == 1
+        assert data["records"][0]["test_id"] == "code_1"

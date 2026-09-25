@@ -1,6 +1,54 @@
 {
   "coding": [
     {
+      "id": "lvgl_button_screen",
+      "category": "coding",
+      "label": "LVGL: button and label screen (C)",
+      "prompt": "Write one complete, self-contained LVGL v9 C program in a single fenced `c` block. It must initialize LVGL, show a 320x240 screen with a centered button labeled TOGGLE and a label beneath it, register a display flush callback with lv_display_set_flush_cb, add a click event on the button that toggles the label text between ON and OFF, and run an explicit main loop calling lv_tick_inc and lv_timer_handler. Use only standard LVGL API, no stubs or TODOs. OUTPUT REQUIREMENT: Respond with ONLY the complete program in one fenced `c` block, no prose outside it.",
+      "num_predict": 5500,
+      "reasoning_budget": 2048,
+      "reasoning_estimate": 3072,
+      "type": "code",
+      "lang": "c",
+      "tier": "standard"
+    },
+    {
+      "id": "lvgl_dashboard_widgets",
+      "category": "coding",
+      "label": "LVGL: multi-widget dashboard (C)",
+      "prompt": "Write one complete LVGL v9 C program in a single fenced `c` block rendering a 480x320 dashboard that contains: a label title, a bar and an arc showing the same progress value, a linear slider, a dropdown, and a chart. Use lv_timer_create with a callback that updates the bar, arc, and chart, and run an explicit main loop calling lv_tick_inc and lv_timer_handler. Register a display flush callback with lv_display_set_flush_cb. Use only standard LVGL API, no stubs or TODOs. OUTPUT REQUIREMENT: Respond with ONLY the complete program in one fenced `c` block, no prose outside it.",
+      "num_predict": 7000,
+      "reasoning_budget": 2048,
+      "reasoning_estimate": 4096,
+      "type": "code",
+      "lang": "c",
+      "tier": "standard"
+    },
+    {
+      "id": "esphome_climate_sensor",
+      "category": "coding",
+      "label": "ESPHome: DHT22 climate sensor (YAML)",
+      "prompt": "Write one complete ESPHome YAML configuration in a single fenced `yaml` block for a DHT22 temperature and humidity sensor on GPIO4. Include: a top-level esphome block with a name (living_room_climate) and a board, a wifi block with placeholder ssid/password, enabled api, a sensor for temperature with a unit_of_measurement and an on_value automation publishing it, and a humidity sensor. It must be valid ESPHome configuration. OUTPUT REQUIREMENT: Respond with ONLY the complete YAML in one fenced `yaml` block, no prose outside it.",
+      "num_predict": 5000,
+      "reasoning_budget": 2048,
+      "reasoning_estimate": 3072,
+      "type": "code",
+      "lang": "yaml",
+      "tier": "standard"
+    },
+    {
+      "id": "esphome_multi_device_automation",
+      "category": "coding",
+      "label": "ESPHome: multi-component automation (YAML)",
+      "prompt": "Write one complete ESPHome YAML configuration in a single fenced `yaml` block for a node with three components: a binary_sensor (a button on GPIO0), a switch (a relay on GPIO12), and a sensor (a DHT22 on GPIO4). Add automations so the button toggles the switch on_press, and add a sensor lambda/filter that rounds temperature to one decimal. Include wifi with placeholder credentials and both api and mqtt sections. It must be valid ESPHome configuration. OUTPUT REQUIREMENT: Respond with ONLY the complete YAML in one fenced `yaml` block, no prose outside it.",
+      "num_predict": 6000,
+      "reasoning_budget": 2048,
+      "reasoning_estimate": 4096,
+      "type": "code",
+      "lang": "yaml",
+      "tier": "standard"
+    },
+    {
       "id": "debug_fix",
       "label": "Python: debug logic error",
       "prompt": "Find and fix the bug in this function:\n\n```\ndef sum_list(items):\n    total = 0\n    for i in range(1, len(items)):\n        total += items[i]\n    return total\n```\nThe function should sum all list items, not skip the first one. OUTPUT REQUIREMENT: Respond with ONLY the raw, runnable source code in a single fenced code block, with the first line starting at column 0 (no leading indentation). Do not include any thinking, explanation, summary, or prose before or after the code, and keep comments inside the code minimal.",

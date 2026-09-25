@@ -251,10 +251,15 @@ async def test_frontier_group_only_filter_and_totals(tmp_path):
         groups=["frontier_diagnostics"],
     )
 
-    assert set(result) == {"model", "timestamp", "category_frontier_diagnostics"}
-    assert [test["test_id"] for test in result["category_frontier_diagnostics"]["tests"]] == [
-        "frontier_math_worker_rates"
-    ]
+    assert set(result) == {"model", "timestamp", "run_id", "provenance", "category_frontier_diagnostics"}
+    assert result["provenance"]["source"] == "alpaca"
+    assert result["provenance"]["harness"] == "llm_benchmark_suite"
+    assert result["provenance"]["transport"] == "proxy"
+    assert result["provenance"]["run_id"] == result["run_id"]
+    test_record = result["category_frontier_diagnostics"]["tests"][0]
+    assert test_record["test_id"] == "frontier_math_worker_rates"
+    assert test_record["source_record_id"] == f"{result['run_id']}:frontier_math_worker_rates"
+    assert test_record["provenance"]["run_id"] == result["run_id"]
 
 
 def test_frontier_dedicated_functional_verifiers():
@@ -1713,3 +1718,36 @@ def test_get_fallback_models_requires_env_when_nothing_discovered():
         suite._get_fallback_models()
     with patch.dict(os.environ, {"BENCHMARK_MODELS": "m1:latest, m2:8b"}):
         assert suite._get_fallback_models() == ["m1:latest", "m2:8b"]
+
+
+def test_lvgl_esphome_tests_exist_and_are_code_graded():
+    suite = LLMModelBenchmark()
+    ids = {t["id"]: t for t in suite.tests_config.get("coding", [])}
+    for tid in ("lvgl_button_screen", "lvgl_dashboard_widgets", "esphome_climate_sensor", "esphome_multi_device_automation"):
+        assert tid in ids
+        assert ids[tid]["type"] == "code"
+        assert ids[tid]["category"] == "coding"
+    assert ids["lvgl_button_screen"]["lang"] == "c"
+    assert ids["esphome_climate_sensor"]["lang"] == "yaml"
+    assert "lvgl_dashboard_widgets" in ids
+
+
+def test_lvgl_esphome_functional_verifiers():
+    suite = LLMModelBenchmark()
+    good_lvgl = (
+        "```c\nvoid lv_example(void) {\n lv_init();\n lv_obj_t *screen = lv_screen_active();\n"
+        " lv_obj_t *btn = lv_button_create(screen);\n lv_label_create(screen);\n"
+        " lv_label_set_text(label, \"ON\");\n lv_obj_center(btn);\n lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);\n"
+        " lv_display_set_flush_cb(disp, my_flush);\n while(1) { lv_tick_inc(5); lv_timer_handler(); } }\n```"
+    )
+    assert suite._verify_functional_response("lvgl_button_screen", good_lvgl) is True
+    assert suite._verify_functional_response("lvgl_button_screen", "def foo():\n    pass") is False
+
+    good_esphome = (
+        "```yaml\nesphome:\n  name: living_room_climate\n  board: esp32dev\n"
+        "wifi:\n  ssid: placeholder\n  password: placeholder\napi:\nsensor:\n"
+        "  - platform: dht\n    model: DHT22\n    temperature:\n      name: Temperature\n      on_value:\n        then:\n"
+        "          - logger.log: \"updated\"\n    humidity:\n      name: Humidity\n```"
+    )
+    assert suite._verify_functional_response("esphome_climate_sensor", good_esphome) is True
+    assert suite._verify_functional_response("esphome_climate_sensor", "hello world") is False
