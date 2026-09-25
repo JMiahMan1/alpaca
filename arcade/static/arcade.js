@@ -4,6 +4,24 @@
   const $ = (id) => document.getElementById(id);
   const CALLSIGN_KEY = "arcade_callsign";
 
+  // Callsign helpers shared by every page: the header "My player card" link
+  // and the play-page initials field both read/write the same localStorage
+  // entry, so your three letters follow you across machines.
+  function rememberCallsign(v) {
+    const clean = String(v || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase();
+    if (clean) localStorage.setItem(CALLSIGN_KEY, clean);
+    paintMyCardLinks();
+    return clean;
+  }
+  function paintMyCardLinks() {
+    const callsign = (localStorage.getItem(CALLSIGN_KEY) || "").toUpperCase();
+    document.querySelectorAll("[data-my-card]").forEach((link) => {
+      if (callsign) link.setAttribute("href", "/player/" + callsign);
+      link.textContent = callsign ? "My player card · " + callsign : "My player card";
+    });
+  }
+  paintMyCardLinks();
+
   function watchBoard(refresh) {
     let pending = false;
     const update = async () => {
@@ -32,17 +50,76 @@
         if (updated) player.replaceWith(updated);
         return;
       }
-      await Promise.all(Array.from(document.querySelectorAll("[data-game-slug]"), async (card) => {
-        try {
-          const res = await fetch(`/api/games/${encodeURIComponent(card.dataset.gameSlug)}`, { cache: "no-store" });
-          const data = await res.json();
-          if (!data.success) return;
-          const top = (data.game.scores || [])[0];
-          card.querySelector(".game-top").textContent = top ? `${top.initials} — ${top.score}` : "No scores yet";
-        } catch (_) {
-        }
-      }));
+      // One batch call to /api/games refreshes every card's top score (no N+1).
+      try {
+        const res = await fetch("/api/games", { cache: "no-store" });
+        const data = await res.json();
+        if (!data.success) return;
+        const bySlug = new Map((data.games || []).map((g) => [g.slug, g]));
+        document.querySelectorAll("[data-game-slug]").forEach((card) => {
+          const g = bySlug.get(card.dataset.gameSlug);
+          if (!g) return;
+          const el = card.querySelector(".game-top");
+          if (!el) return;
+          el.textContent = g.top_score
+            ? `${g.top_score.initials} — ${g.top_score.score}`
+            : "No scores yet";
+        });
+      } catch (_) {
+      }
     });
+
+    // Category chips + search: filter the server-grouped cards in place.
+    const searchBox = document.querySelector("#arcade-search");
+    const chips = Array.from(document.querySelectorAll(".category-chip"));
+    function applyIndexFilter() {
+      const q = (searchBox && searchBox.value ? searchBox.value : "").toLowerCase();
+      let active = "";
+      chips.forEach((c) => { if (c.classList && c.classList.contains("is-active")) active = c.dataset.category || ""; });
+      document.querySelectorAll("[data-game-slug]").forEach((card) => {
+        if (!card.classList) return;
+        const matchCategory = !active || (card.dataset.category || "") === active;
+        const hay = (card.dataset.search || "");
+        const matchQuery = !q || hay.toLowerCase().indexOf(q) !== -1;
+        card.style.display = matchCategory && matchQuery ? "" : "none";
+      });
+      // Hide now-empty category sections.
+      document.querySelectorAll(".game-category").forEach((section) => {
+        if (!section || !section.classList) return;
+        const cards = Array.from(section.querySelectorAll("[data-game-slug]") || []);
+        const anyVisible = cards.some((c) => c.style && c.style.display !== "none");
+        section.style.display = anyVisible || !active ? "" : "none";
+      });
+    }
+    if (searchBox && typeof searchBox.addEventListener === "function") {
+      searchBox.addEventListener("input", applyIndexFilter);
+    }
+    chips.forEach((chip) => {
+      if (!chip || typeof chip.addEventListener !== "function") return;
+      chip.addEventListener("click", () => {
+        chips.forEach((c) => {
+          if (c.classList) c.classList.remove("is-active");
+          if (c.setAttribute) c.setAttribute("aria-pressed", "false");
+        });
+        if (chip.classList) chip.classList.add("is-active");
+        if (chip.setAttribute) chip.setAttribute("aria-pressed", "true");
+        applyIndexFilter();
+      });
+    });
+
+    // Player directory search: filter standings rows live by callsign.
+    const playersSearch = document.querySelector("#players-search");
+    const playerRows = Array.from(document.querySelectorAll("[data-player-initials]"));
+    function applyPlayersFilter() {
+      const q = (playersSearch && playersSearch.value ? playersSearch.value : "").toLowerCase();
+      playerRows.forEach((row) => {
+        if (!row || !row.style) return;
+        row.style.display = !q || (row.dataset.playerInitials || "").toLowerCase().indexOf(q) !== -1 ? "" : "none";
+      });
+    }
+    if (playersSearch && typeof playersSearch.addEventListener === "function") {
+      playersSearch.addEventListener("input", applyPlayersFilter);
+    }
     return;
   }
 
@@ -50,11 +127,6 @@
   const savedCallsign = (localStorage.getItem(CALLSIGN_KEY) || "").toUpperCase();
   if (savedCallsign && $("score-initials") && !$("score-initials").value) {
     $("score-initials").value = savedCallsign;
-  }
-  function rememberCallsign(v) {
-    const clean = String(v || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase();
-    if (clean) localStorage.setItem(CALLSIGN_KEY, clean);
-    return clean;
   }
 
   // Fullscreen play: the game owns the screen, arcade-level keys pinned
@@ -142,7 +214,9 @@
   // toggle arrives. Post the launcher's 'arcade-audio' channel (same
   // postMessage family as arcade-key): unmute on iframe load, toggle on
   // the Sound button. Mute is not autoplay-gated, so this needs no gesture.
-  let soundOn = true;
+  // The player's sound preference is persisted and reapplied per session.
+  const SOUND_KEY = "arcade_sound";
+  let soundOn = localStorage.getItem(SOUND_KEY) !== "0";
   function postLiveAudio(on) {
     const fr = $("live-frame");
     if (!fr || fr.style.display === "none") return;
@@ -153,10 +227,16 @@
     }
   }
   const soundBtn = $("btn-sound-live");
-  if (soundBtn) soundBtn.addEventListener("click", () => {
-    soundOn = !soundOn;
+  function paintSound() {
+    if (!soundBtn) return;
     soundBtn.textContent = soundOn ? "🔊 Sound" : "🔇 Muted";
     soundBtn.title = soundOn ? "Mute game sound" : "Unmute game sound";
+  }
+  paintSound();
+  if (soundBtn) soundBtn.addEventListener("click", () => {
+    soundOn = !soundOn;
+    localStorage.setItem(SOUND_KEY, soundOn ? "1" : "0");
+    paintSound();
     postLiveAudio(soundOn);
   });
   // ⌨ Type into the game: focus a hidden proxy input so the device
@@ -444,16 +524,13 @@
       if (hero) hero.style.display = "none";
       frame.src = data.launcher_url;
       frame.style.display = "block";
-      // The launcher autoplays muted and unmutes itself; re-assert unmuted
-      // on iframe load in case the message raced the launcher script or
-      // the frame reloaded. Also resets the Sound toggle to on.
+      // The launcher autoplays muted and unmutes itself; re-assert the
+      // player's saved sound preference on iframe load in case the message
+      // raced the launcher script or the frame reloaded.
       frame.addEventListener("load", () => {
-        soundOn = true;
-        if (soundBtn) {
-          soundBtn.textContent = "🔊 Sound";
-          soundBtn.title = "Mute game sound";
-        }
-        postLiveAudio(true);
+        soundOn = localStorage.getItem(SOUND_KEY) !== "0";
+        paintSound();
+        postLiveAudio(soundOn);
       }, { once: true });
       status.textContent = "🟢 Live! Click inside to focus, then play with keyboard/mouse.";
       btn.textContent = "↻ Restart sandbox";
@@ -731,8 +808,10 @@
       const msg = $("rate-msg");
       if (data.success) {
         paintRating(data.rating.average, data.rating.count);
-        msg.textContent = "Thanks for rating!";
+        const who = data.player_url ? ` <a href="${data.player_url}">📊 my stats</a>` : "";
+        msg.innerHTML = "Thanks for rating!" + who;
         document.querySelectorAll(".rate-buttons button").forEach((b) => b.classList.toggle("rated", b === btn));
+        celebrate(data.new_unlocks);
       } else {
         msg.textContent = data.error || "Rating failed.";
       }

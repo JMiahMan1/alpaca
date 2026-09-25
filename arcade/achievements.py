@@ -36,7 +36,9 @@ def check_champion(s):
 
 
 def check_dynasty(s):
-    return _count(s["crown_games"] >= 3, s["crown_games"], 3)
+    # "Hold #1 on 3 machines at once" — counted live from today's top-5
+    # boards (current crowns), never a never-decreasing lifetime tally.
+    return _count(s["crowns"] >= 3, s["crowns"], 3)
 
 
 def check_globetrotter(s):

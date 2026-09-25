@@ -137,11 +137,565 @@ def _make_request_id(model_identifier: str) -> str:
     return f"online-{uuid.uuid4().hex}"
 
 
+PROVENANCE_SCHEMA_VERSION = 1
+LEARNING_POLICY_EXCLUDED = "excluded_by_default"
+LEARNING_POLICY_SHARED = "shared_llm_success_only"
+
+
+def utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def make_run_id(prefix: str = "run") -> str:
+    return f"{prefix}-{uuid.uuid4().hex}"
+
+
+def make_source_record_id(run_id: str, record_id: str) -> str:
+    return f"{run_id}:{record_id}"
+
+
+def canonical_hash(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _split_provider(model_identifier: str) -> tuple[str | None, str]:
+    if ":" in model_identifier:
+        prefix, _, native = model_identifier.partition(":")
+        return prefix or None, native or model_identifier
+    return None, model_identifier
+
+
+def build_provenance(
+    *,
+    model: str,
+    source: str,
+    harness: str,
+    transport: str,
+    run_id: str | None = None,
+    harness_version: str | None = None,
+    provider: str | None = None,
+    model_revision: str | None = None,
+    prompt_hash: str | None = None,
+    test_hash: str | None = None,
+    environment: str | None = None,
+    tool_policy: str | None = None,
+    reasoning_mode: str | None = None,
+    learning_policy: str = LEARNING_POLICY_EXCLUDED,
+    limits: dict[str, Any] | None = None,
+    attempts: int = 1,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    parsed_provider, native_model = _split_provider(model)
+    provenance: dict[str, Any] = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "source": source,
+        "harness": harness,
+        "harness_version": harness_version,
+        "provider": provider if provider is not None else parsed_provider,
+        "model": model,
+        "model_revision": model_revision or native_model,
+        "transport": transport,
+        "prompt_hash": prompt_hash,
+        "test_hash": test_hash,
+        "environment": environment,
+        "tool_policy": tool_policy,
+        "reasoning_mode": reasoning_mode,
+        "learning_policy": learning_policy,
+        "limits": dict(limits or {}),
+        "attempts": attempts,
+        "run_id": run_id or make_run_id("run"),
+        "started_at": started_at or utc_timestamp(),
+        "finished_at": finished_at,
+    }
+    if extra:
+        provenance.update(extra)
+    return provenance
+
+
+def build_learning_record(
+    result: dict[str, Any],
+    provenance: dict[str, Any] | None = None,
+    eligible: bool | None = None,
+    exclusion_reason: str | None = None,
+) -> dict[str, Any]:
+    prov = dict(provenance or result.get("provenance") or {})
+    response = result.get("response")
+    success = bool(result.get("success"))
+    repaired = bool(result.get("repaired"))
+    policy = prov.get("learning_policy") or LEARNING_POLICY_EXCLUDED
+    if eligible is None:
+        eligible = bool(success and response and not repaired and policy == LEARNING_POLICY_SHARED)
+        if eligible:
+            exclusion_reason = None
+        elif exclusion_reason is None:
+            if not success:
+                exclusion_reason = "failed_grader"
+            elif not response:
+                exclusion_reason = "empty_response"
+            elif repaired:
+                exclusion_reason = "repaired_output"
+            else:
+                exclusion_reason = "policy_excludes_source"
+    record_id = result.get("test_id") or result.get("id") or "record"
+    run_id = str(prov.get("run_id") or result.get("run_id") or "unknown-run")
+    return {
+        "source_record_id": result.get("source_record_id") or make_source_record_id(run_id, str(record_id)),
+        "provenance": prov,
+        "model": result.get("model") or prov.get("model"),
+        "test_id": result.get("test_id") or result.get("id"),
+        "category": result.get("test_category") or result.get("category"),
+        "prompt": result.get("prompt"),
+        "response": response,
+        "labels": {
+            "test_label": result.get("test_label"),
+            "test_hash": result.get("test_hash"),
+            "type": result.get("type"),
+            "expected": result.get("expected"),
+        },
+        "grader": {
+            "success": success,
+            "score": result.get("score"),
+            "functional_pass": result.get("functional_pass"),
+            "code_ran": result.get("code_ran"),
+            "lint_passed": result.get("lint_passed"),
+            "error": result.get("error"),
+            "code_error": result.get("code_error"),
+            "validation": result.get("validation"),
+            "run_count": result.get("run_count"),
+            "fail_count": result.get("fail_count"),
+            "last_run": result.get("last_run"),
+        },
+        "training_eligible": bool(eligible),
+        "exclusion_reason": exclusion_reason,
+    }
+
+
 def _opencode_cli_available() -> bool:
     """True when the local `opencode` binary is on PATH (required for opencode: models)."""
     import shutil
 
     return shutil.which("opencode") is not None
+
+
+def _cline_cli_available() -> bool:
+    """True when the local `cline` binary is on PATH (required for cline: harness models)."""
+    import shutil
+
+    return shutil.which(os.getenv("CLINE_BIN") or "cline") is not None
+
+
+def _parse_claude_harness_output(stdout: str, stderr: str) -> dict[str, Any]:
+    """Parse `claude --output-format json` (one result object) into result fields."""
+    text = (stdout or "").strip()
+    data: Any = None
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except Exception:
+            continue
+        break
+    if data is None and text:
+        try:
+            data = json.loads(text)
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        return {
+            "response": text or None,
+            "thinking": None,
+            "finish_reason": "stop" if text else None,
+            "tokens_generated": max(1, len(text) // 4) if text else 0,
+            "error": None,
+        }
+    raw_result = data.get("result")
+    content = str(raw_result) if raw_result not in (None, "") else ""
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    tokens = 0
+    with suppress(TypeError, ValueError):
+        tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+    subtype = str(data.get("subtype") or "")
+    errors = data.get("errors")
+    is_error = bool(data.get("is_error")) or subtype.startswith("error")
+    error = None
+    if is_error:
+        if isinstance(errors, list) and errors:
+            error = "; ".join(str(item) for item in errors)
+        else:
+            error = content or subtype or "claude harness reported an error"
+    return {
+        "response": content or None,
+        "thinking": None,
+        "finish_reason": data.get("stop_reason"),
+        "tokens_generated": tokens,
+        "error": error,
+    }
+
+
+def _parse_codex_harness_output(stdout: str, stderr: str) -> dict[str, Any]:
+    """Parse `codex exec --json` JSONL: last agent_message text plus turn usage/errors."""
+    content = ""
+    tokens = 0
+    finish: str | None = None
+    error: str | None = None
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            evt = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(evt, dict):
+            continue
+        etype = evt.get("type")
+        if etype == "item.completed":
+            item = evt.get("item") if isinstance(evt.get("item"), dict) else {}
+            if item.get("type") == "agent_message" and item.get("text"):
+                content = str(item["text"])
+        elif etype == "turn.completed":
+            usage = evt.get("usage") if isinstance(evt.get("usage"), dict) else {}
+            with suppress(TypeError, ValueError):
+                tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or tokens)
+            reason = evt.get("finish_reason") or evt.get("stop_reason")
+            if reason:
+                finish = str(reason)
+        elif etype in ("error", "turn.failed") and not error:
+            err = evt.get("error") or evt.get("message") or etype
+            if isinstance(err, dict):
+                err = err.get("message") or err.get("detail") or str(err)
+            error = str(err)
+    if not content:
+        fallback = (stdout or "").strip()
+        if fallback and not fallback.startswith("{"):
+            content = fallback
+    return {
+        "response": content or None,
+        "thinking": None,
+        "finish_reason": finish or ("stop" if content else None),
+        "tokens_generated": tokens,
+        "error": error,
+    }
+
+
+def _parse_deepseek_harness_output(stdout: str, stderr: str) -> dict[str, Any]:
+    """Parse `dsh --profile headless` plain-text stdout into result fields."""
+    content = (stdout or "").strip()
+    return {
+        "response": content or None,
+        "thinking": None,
+        "finish_reason": "stop" if content else None,
+        "tokens_generated": max(1, len(content) // 4) if content else 0,
+        "error": None,
+    }
+
+
+def _parse_pi_harness_output(stdout: str, stderr: str) -> dict[str, Any]:
+    """Parse `pi --mode json` JSONL defensively; fall back to raw stdout."""
+    chunks: list[str] = []
+    final_text = ""
+    tokens = 0
+    finish: str | None = None
+    error: str | None = None
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            evt = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(evt, dict):
+            continue
+        for key in ("text", "content", "message", "result"):
+            if key not in evt:
+                continue
+            value = evt.get(key)
+            if isinstance(value, dict):
+                value = value.get("content") or value.get("text")
+            if isinstance(value, list):
+                value = "".join(str(p.get("text", "") if isinstance(p, dict) else p) for p in value)
+            if isinstance(value, str) and value.strip():
+                if key in ("message", "result"):
+                    final_text = value
+                else:
+                    chunks.append(value)
+                break
+        usage = evt.get("usage") if isinstance(evt.get("usage"), dict) else {}
+        with suppress(TypeError, ValueError):
+            tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or tokens)
+        reason = evt.get("finish_reason") or evt.get("stop_reason")
+        if reason:
+            finish = str(reason)
+        if evt.get("error") and not error:
+            err = evt.get("error")
+            if isinstance(err, dict):
+                err = err.get("message") or str(err)
+            error = str(err)
+    content = (final_text or "".join(chunks)).strip()
+    if not content:
+        fallback = (stdout or "").strip()
+        if fallback and not fallback.startswith("{"):
+            content = fallback
+    if not tokens and content:
+        tokens = max(1, len(content) // 4)
+    return {
+        "response": content or None,
+        "thinking": None,
+        "finish_reason": finish or ("stop" if content else None),
+        "tokens_generated": tokens,
+        "error": error,
+    }
+
+
+def _claude_harness_args(model_name: str, prompt: str, container: bool) -> list[str]:
+    args = ["--bare", "-p", prompt, "--output-format", "json", "--permission-mode", "dontAsk"]
+    model = (model_name or "").strip()
+    if model and model != "default":
+        args += ["--model", model]
+    return args
+
+
+def _codex_harness_args(model_name: str, prompt: str, container: bool) -> list[str]:
+    args = ["exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write"]
+    model = (model_name or "").strip()
+    if model and model != "default":
+        args += ["--model", model]
+    args += ["--", prompt]
+    return args
+
+
+def _deepseek_harness_args(model_name: str, prompt: str, container: bool) -> list[str]:
+    return ["--profile", "headless", "--", prompt]
+
+
+def _pi_harness_args(model_name: str, prompt: str, container: bool) -> list[str]:
+    args = ["--mode", "json", "--print", prompt]
+    model = (model_name or "").strip()
+    if model and model != "default":
+        args += ["--model", model]
+    return args
+
+
+# Agent-harness providers. Each shell out to a native agent CLI - run locally or
+# in an ephemeral Docker container - and return the same result dict as the HTTP
+# providers. `data_mount_env` points the CLI's state directory at /data inside
+# the container; `models_env` is an optional comma-separated model list used by
+# `fetch_live_models` when the CLI exposes no catalog of its own.
+AGENT_HARNESS_SPECS: dict[str, dict[str, Any]] = {
+    "claude": {
+        "label": "Claude Code",
+        "binary": "claude",
+        "bin_env": "CLAUDE_BIN",
+        "docker_image_env": "CLAUDE_DOCKER_IMAGE",
+        "container_binary": "claude",
+        "data_dir_env": "CLAUDE_DATA_DIR",
+        "data_mount_env": "HOME",
+        "key_env": "ANTHROPIC_API_KEY",
+        "extra_env": (),
+        "models_env": "CLAUDE_MODELS",
+        "build_args": _claude_harness_args,
+        "parse": _parse_claude_harness_output,
+    },
+    "codex": {
+        "label": "Codex CLI",
+        "binary": "codex",
+        "bin_env": "CODEX_BIN",
+        "docker_image_env": "CODEX_DOCKER_IMAGE",
+        "container_binary": "codex",
+        "data_dir_env": "CODEX_DATA_DIR",
+        "data_mount_env": "CODEX_HOME",
+        "key_env": "CODEX_API_KEY",
+        "extra_env": (),
+        "models_env": "CODEX_MODELS",
+        "build_args": _codex_harness_args,
+        "parse": _parse_codex_harness_output,
+    },
+    "deepseek": {
+        "label": "DeepSeek CLI",
+        "binary": "dsh",
+        "bin_env": "DEEPSEEK_BIN",
+        "docker_image_env": "DEEPSEEK_DOCKER_IMAGE",
+        "container_binary": "dsh",
+        "data_dir_env": "DEEPSEEK_DATA_DIR",
+        "data_mount_env": "HOME",
+        "key_env": "DEEPSEEK_API_KEY",
+        "extra_env": ("DEEPSEEK_BASE_URL",),
+        "models_env": "DEEPSEEK_MODELS",
+        "build_args": _deepseek_harness_args,
+        "parse": _parse_deepseek_harness_output,
+    },
+    "pi": {
+        "label": "Pi CLI",
+        "binary": "pi",
+        "bin_env": "PI_BIN",
+        "docker_image_env": "PI_DOCKER_IMAGE",
+        "container_binary": "pi",
+        "data_dir_env": "PI_DATA_DIR",
+        "data_mount_env": "XDG_DATA_HOME",
+        "key_env": None,
+        "extra_env": (),
+        "models_env": "PI_MODELS",
+        "build_args": _pi_harness_args,
+        "parse": _parse_pi_harness_output,
+    },
+}
+
+_HARNESS_ALIASES = {
+    "claude-code": "claude",
+    "codex-cli": "codex",
+    "deepseek-cli": "deepseek",
+    "dsh": "deepseek",
+    "pi-cli": "pi",
+}
+
+
+def _harness_env_vars(spec: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(key for key in (spec.get("key_env"), *spec.get("extra_env", ())) if key)
+
+
+def _harness_cli_available(name: str) -> bool:
+    """True when the harness's native CLI binary is on PATH (required for `name:` models)."""
+    import shutil
+
+    spec = AGENT_HARNESS_SPECS[name]
+    return shutil.which(os.getenv(spec["bin_env"]) or spec["binary"]) is not None
+
+
+def _harness_configured(name: str) -> bool:
+    """True when the harness CLI is installed or its Docker image env var is set."""
+    spec = AGENT_HARNESS_SPECS[name]
+    return _harness_cli_available(name) or bool((os.getenv(spec["docker_image_env"]) or "").strip())
+
+
+def build_agent_harness_cmd(
+    name: str,
+    model_name: str,
+    prompt: str,
+    *,
+    container: bool,
+    docker_image: str = "",
+    data_dir: str = "",
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Build the argv for a native or Dockerized agent-harness run."""
+    spec = AGENT_HARNESS_SPECS[name]
+    args = spec["build_args"]((model_name or "").strip(), prompt, container)
+    source = env if env is not None else os.environ
+    if not container:
+        return [source.get(spec["bin_env"]) or spec["binary"], *args]
+    cmd = ["docker", "run", "--rm", "--network", "host", "-i"]
+    for key in _harness_env_vars(spec):
+        value = source.get(key)
+        if value:
+            cmd += ["-e", f"{key}={value}"]
+    if data_dir:
+        cmd += ["-v", f"{data_dir}:/data"]
+        mount_env = spec.get("data_mount_env")
+        if mount_env:
+            cmd += ["-e", f"{mount_env}=/data"]
+    cmd += [docker_image, spec["container_binary"], *args]
+    return cmd
+
+
+async def _query_harness_cli(
+    name: str,
+    model_name: str,
+    prompt: str,
+    max_tokens: int = 4000,
+    temperature: float = 0.2,
+    request_timeout: float = 600.0,
+    start_t: float | None = None,
+) -> dict[str, Any]:
+    """Run an agent harness natively, or in an ephemeral Docker container.
+
+    Native mode runs when the harness binary is on PATH; otherwise the image
+    named by the harness's Docker env var (e.g. ``CLAUDE_DOCKER_IMAGE``) runs as
+    ``docker run --rm --network host -i``. Either way the returned dict matches
+    every other online provider, so Alpaca persistence is unchanged.
+    """
+    import asyncio
+    import shutil
+
+    spec = AGENT_HARNESS_SPECS[name]
+    label = spec["label"]
+    native_bin = os.getenv(spec["bin_env"]) or spec["binary"]
+    docker_image = (os.getenv(spec["docker_image_env"]) or "").strip()
+    data_dir = (os.getenv(spec["data_dir_env"]) or "").strip()
+
+    def failure(message: str) -> dict[str, Any]:
+        return {
+            "success": False,
+            "latency": time.time() - (start_t or time.time()),
+            "response": None,
+            "thinking": None,
+            "finish_reason": None,
+            "tokens_generated": 0,
+            "error": message,
+        }
+
+    if shutil.which(native_bin):
+        container = False
+    elif docker_image:
+        if not shutil.which("docker"):
+            return failure(f"{spec['docker_image_env']} is set but docker is not available on PATH.")
+        container = True
+    else:
+        raise RuntimeError(
+            f"{label} CLI not found on PATH. Install the {spec['binary']} CLI, set {spec['bin_env']}, "
+            f"or set {spec['docker_image_env']} to run the harness in a container."
+        )
+
+    cmd = build_agent_harness_cmd(
+        name, model_name, prompt, container=container, docker_image=docker_image, data_dir=data_dir
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=request_timeout)
+        except TimeoutError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+            return failure(f"{label} harness timed out after {request_timeout:.0f}s (model={model_name}).")
+    except Exception as exc:
+        return failure(f"Failed to launch {label} harness: {exc}")
+
+    stdout = (stdout_b or b"").decode("utf-8", errors="replace")
+    stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+    latency = time.time() - (start_t or time.time())
+    parsed = spec["parse"](stdout, stderr) or {}
+    content = str(parsed.get("response") or "").strip()
+    error = parsed.get("error")
+    tokens = 0
+    with suppress(TypeError, ValueError):
+        tokens = int(parsed.get("tokens_generated") or 0)
+    if proc.returncode not in (0, None) and not content and not error:
+        err_tail = (stderr or stdout).strip()[-400:]
+        error = f"{label} harness failed (exit {proc.returncode}): {err_tail or 'no output'}"
+    if not error and not content:
+        detail = (stderr or "").strip()[-400:]
+        error = f"{label} harness returned empty text (model={model_name}). {detail}".strip()
+    if not error and tokens <= 0:
+        tokens = max(1, len(content) // 4)
+    return {
+        "success": not error and bool(content),
+        "latency": latency,
+        "response": content or None,
+        "thinking": parsed.get("thinking") or None,
+        "finish_reason": parsed.get("finish_reason"),
+        "tokens_generated": tokens,
+        "error": error,
+    }
 
 
 def _opencode_zen_project_id() -> str:
@@ -220,6 +774,8 @@ class OnlineModelProvider:
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.orcarouter_api_key = os.getenv("ORCAROUTER_API_KEY")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.cline_api_key = os.getenv("CLINE_API_KEY")
+        self.cline_bin = os.getenv("CLINE_BIN")
 
     @staticmethod
     def generate_alpaca_token() -> str:
@@ -299,6 +855,9 @@ class OnlineModelProvider:
             "groq": bool(self.groq_api_key),
             "orcarouter": bool(self.orcarouter_api_key),
             "gemini": bool(self.gemini_api_key),
+            "cline_pass": bool(self.cline_api_key),
+            "cline": _cline_cli_available(),
+            **{name: _harness_configured(name) for name in AGENT_HARNESS_SPECS},
         }
 
     def get_masked_credentials(self) -> dict[str, Any]:
@@ -361,6 +920,31 @@ class OnlineModelProvider:
                 "configured": bool(self.gemini_api_key),
                 "masked_key": mask(self.gemini_api_key),
                 "has_key": bool(self.gemini_api_key),
+            },
+            "cline_pass": {
+                "configured": bool(self.cline_api_key),
+                "masked_key": mask(self.cline_api_key),
+                "has_key": bool(self.cline_api_key),
+            },
+            "cline": {
+                "configured": _cline_cli_available(),
+                "masked_key": "",
+                "has_key": False,
+                "auth_required": False,
+                "note": "Uses the local cline CLI as an agent harness (separate from the ClinePass API service).",
+            },
+            **{
+                name: {
+                    "configured": _harness_configured(name),
+                    "masked_key": "",
+                    "has_key": False,
+                    "auth_required": False,
+                    "note": (
+                        f"Runs the {spec['binary']} agent CLI as a harness; "
+                        f"set {spec['docker_image_env']} to run it in Docker."
+                    ),
+                }
+                for name, spec in AGENT_HARNESS_SPECS.items()
             },
         }
 
@@ -527,10 +1111,108 @@ class OnlineModelProvider:
                         "error": self._format_http_error("Gemini", resp.status_code, resp.text[:200]),
                     }
 
+            elif provider == "cline_pass":
+                api_key = custom.get("cline_api_key") or self.cline_api_key
+                if not api_key:
+                    return {"success": False, "error": "Cline API Key not provided."}
+
+                headers = {"Authorization": f"Bearer {api_key}"}
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get("https://api.cline.bot/api/v1/models", headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        count = len(data.get("data", []) or data.get("models", []))
+                        return {"success": True, "message": f"Connected to ClinePass! {count} models available."}
+                    return {
+                        "success": False,
+                        "error": self._format_http_error("ClinePass", resp.status_code, resp.text[:200]),
+                    }
+
+            elif provider == "cline":
+                if not _cline_cli_available():
+                    return {"success": False, "error": "cline CLI not found on PATH. Install it or set CLINE_BIN."}
+                import subprocess
+
+                try:
+                    cline_bin = os.getenv("CLINE_BIN") or "cline"
+                    proc = subprocess.run(
+                        [cline_bin, "--version"], capture_output=True, text=True, timeout=10, check=False
+                    )
+                    if proc.returncode == 0:
+                        version = (proc.stdout or proc.stderr or "").strip().splitlines()
+                        return {
+                            "success": True,
+                            "message": f"Connected to cline CLI{' ' + version[0] if version else ''}!",
+                        }
+                    return {
+                        "success": False,
+                        "error": (proc.stderr or proc.stdout or "cline CLI failed.").strip()[:300],
+                    }
+                except Exception as e:
+                    return {"success": False, "error": f"cline CLI error: {e}"}
+
+            elif provider in AGENT_HARNESS_SPECS:
+                return await self._test_harness_connection(provider)
+
             return {"success": False, "error": f"Unknown provider '{provider}'"}
 
         except Exception as e:
             return {"success": False, "error": f"Connection test error: {e}"}
+
+    async def _test_harness_connection(self, provider: str) -> dict[str, Any]:
+        """Verify an agent-harness provider via its CLI `--version` or its Docker image."""
+        import shutil
+        import subprocess
+
+        spec = AGENT_HARNESS_SPECS[provider]
+        label = spec["label"]
+        native_bin = os.getenv(spec["bin_env"]) or spec["binary"]
+        if _harness_cli_available(provider):
+            try:
+                proc = subprocess.run(
+                    [native_bin, "--version"], capture_output=True, text=True, timeout=10, check=False
+                )
+                if proc.returncode == 0:
+                    version = (proc.stdout or proc.stderr or "").strip().splitlines()
+                    return {
+                        "success": True,
+                        "message": f"Connected to {label} CLI{' ' + version[0] if version else ''}!",
+                    }
+                return {
+                    "success": False,
+                    "error": (proc.stderr or proc.stdout or f"{native_bin} --version failed.").strip()[:300],
+                }
+            except Exception as e:
+                return {"success": False, "error": f"{label} CLI error: {e}"}
+        docker_image = (os.getenv(spec["docker_image_env"]) or "").strip()
+        if docker_image:
+            if not shutil.which("docker"):
+                return {
+                    "success": False,
+                    "error": f"{spec['docker_image_env']} is set but docker is not available on PATH.",
+                }
+            try:
+                proc = subprocess.run(
+                    ["docker", "image", "inspect", docker_image],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    return {"success": True, "message": f"Connected to {label} Docker image '{docker_image}'!"}
+                return {
+                    "success": False,
+                    "error": (proc.stderr or proc.stdout or f"docker image inspect {docker_image} failed.").strip()[
+                        :300
+                    ],
+                }
+            except Exception as e:
+                return {"success": False, "error": f"Docker inspect error: {e}"}
+        return {
+            "success": False,
+            "error": (f"{label} CLI not found on PATH and {spec['docker_image_env']} is not set."),
+        }
 
     async def fetch_live_models(
         self, provider: str = "all", query: str = "", free_only: bool = False
@@ -538,7 +1220,19 @@ class OnlineModelProvider:
         """Dynamically fetch and search available models from remote provider APIs in real-time."""
         results: list[dict[str, Any]] = []
         providers_to_query = (
-            ["openrouter", "huggingface", "cloudflare", "opencode_zen", "opencode", "groq", "orcarouter", "gemini"]
+            [
+                "openrouter",
+                "huggingface",
+                "cloudflare",
+                "opencode_zen",
+                "opencode",
+                "groq",
+                "orcarouter",
+                "gemini",
+                "cline_pass",
+                "cline",
+                *AGENT_HARNESS_SPECS,
+            ]
             if provider == "all"
             else [provider]
         )
@@ -916,6 +1610,171 @@ class OnlineModelProvider:
             except Exception as e:
                 logger.warning(f"Error discovering Gemini models: {e}")
 
+        if "cline_pass" in providers_to_query:
+            if not self.cline_api_key:
+                if provider == "cline_pass":
+                    raise ValueError("Cline API Key not configured. Set CLINE_API_KEY in Settings.")
+            else:
+                try:
+                    headers = {"Authorization": f"Bearer {self.cline_api_key}"}
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.get("https://api.cline.bot/api/v1/models", headers=headers)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            raw_models = data.get("data") or data.get("models") or []
+                            if isinstance(data, dict) and raw_models and isinstance(raw_models[0], str):
+                                raw_models = [{"id": m} for m in raw_models]
+                            self._cached_live_models["cline_pass"] = raw_models
+                            for m in raw_models:
+                                if not isinstance(m, dict):
+                                    continue
+                                m_id = m.get("id") or m.get("name") or ""
+                                if not m_id:
+                                    continue
+                                label = m.get("label") or m.get("name") or m_id
+                                is_subscription = m_id.startswith("cline-pass/")
+                                if free_only and not (m_id.endswith(":free") or "free" in m_id.lower()):
+                                    continue
+                                if query_lower and query_lower not in m_id.lower() and query_lower not in label.lower():
+                                    continue
+                                results.append(
+                                    {
+                                        "id": f"cline_pass:{m_id}",
+                                        "name": m_id,
+                                        "label": label,
+                                        "provider": "cline_pass",
+                                        "free": False,
+                                        "free_tier": "ClinePass subscription" if is_subscription else "Cline API",
+                                        "pricing_label": "ClinePass subscription"
+                                        if is_subscription
+                                        else "Cline API usage pricing",
+                                        "context_length": m.get("context_window") or m.get("context_length") or 131072,
+                                        "reasoning": bool(
+                                            m.get("reasoning")
+                                            or m.get("supports_reasoning")
+                                            or "reasoning" in (m.get("capabilities") or [])
+                                        ),
+                                        "description": f"Cline API model {m_id}."
+                                        if not is_subscription
+                                        else f"ClinePass subscription model {m_id}.",
+                                    }
+                                )
+                except Exception as e:
+                    logger.warning(f"Error discovering ClinePass models: {e}")
+
+        if "cline" in providers_to_query:
+            if not _cline_cli_available():
+                if provider == "cline":
+                    raise ValueError("cline CLI not found on PATH. Install it or set CLINE_BIN.")
+            else:
+                raw_models = self._cached_live_models.get("cline_pass")
+                if raw_models is None and self.cline_api_key:
+                    try:
+                        headers = {"Authorization": f"Bearer {self.cline_api_key}"}
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            resp = await client.get("https://api.cline.bot/api/v1/models", headers=headers)
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                raw_models = data.get("data") or data.get("models") or []
+                                if isinstance(raw_models, list) and raw_models and isinstance(raw_models[0], str):
+                                    raw_models = [{"id": m} for m in raw_models]
+                                self._cached_live_models["cline_pass"] = raw_models
+                    except Exception as e:
+                        logger.warning(f"Error discovering Cline harness models: {e}")
+
+                if not query_lower or query_lower in "cline:default":
+                    results.append(
+                        {
+                            "id": "cline:default",
+                            "name": "default",
+                            "label": "Cline harness (configured default)",
+                            "provider": "cline",
+                            "free": False,
+                            "free_tier": "Local CLI",
+                            "pricing_label": "Uses the CLI's configured provider",
+                            "context_length": 0,
+                            "reasoning": False,
+                            "description": "Runs the prompt through the local cline CLI agent harness.",
+                        }
+                    )
+
+                for m in raw_models or []:
+                    if not isinstance(m, dict):
+                        continue
+                    m_id = m.get("id") or m.get("name") or ""
+                    if not m_id:
+                        continue
+                    label = m.get("label") or m.get("name") or m_id
+                    slug = m_id if m_id.startswith("cline-pass/") else f"cline-pass/{m_id}"
+                    display = f"Cline harness — {label}"
+                    if query_lower and query_lower not in slug.lower() and query_lower not in display.lower():
+                        continue
+                    results.append(
+                        {
+                            "id": f"cline:{slug}",
+                            "name": slug,
+                            "label": display,
+                            "provider": "cline",
+                            "free": False,
+                            "free_tier": "Local CLI",
+                            "pricing_label": "Cline harness via local CLI",
+                            "context_length": m.get("context_window") or m.get("context_length") or 131072,
+                            "reasoning": bool(
+                                m.get("reasoning")
+                                or m.get("supports_reasoning")
+                                or "reasoning" in (m.get("capabilities") or [])
+                            ),
+                            "description": f"Runs {slug} through the cline CLI agent harness.",
+                        }
+                    )
+
+        for harness_name in [name for name in providers_to_query if name in AGENT_HARNESS_SPECS]:
+            spec = AGENT_HARNESS_SPECS[harness_name]
+            if not _harness_configured(harness_name):
+                if provider == harness_name:
+                    raise ValueError(
+                        f"{spec['label']} not available. Install the {spec['binary']} CLI "
+                        f"or set {spec['docker_image_env']}."
+                    )
+                continue
+            default_bits = f"{harness_name}:default"
+            if not query_lower or query_lower in default_bits:
+                results.append(
+                    {
+                        "id": default_bits,
+                        "name": "default",
+                        "label": f"{spec['label']} (configured default)",
+                        "provider": harness_name,
+                        "free": False,
+                        "free_tier": "Local CLI",
+                        "pricing_label": f"Uses the {spec['binary']} agent CLI",
+                        "context_length": 0,
+                        "reasoning": False,
+                        "description": f"Runs the prompt through the local {spec['binary']} agent harness.",
+                    }
+                )
+            for m_id in (os.getenv(spec["models_env"]) or "").split(","):
+                m_id = m_id.strip()
+                if not m_id:
+                    continue
+                model_id = f"{harness_name}:{m_id}"
+                if query_lower and query_lower not in model_id.lower():
+                    continue
+                results.append(
+                    {
+                        "id": model_id,
+                        "name": m_id,
+                        "label": f"{spec['label']} — {m_id}",
+                        "provider": harness_name,
+                        "free": False,
+                        "free_tier": "Local CLI",
+                        "pricing_label": f"{spec['binary']} agent harness",
+                        "context_length": 0,
+                        "reasoning": False,
+                        "description": f"Runs {m_id} through the {spec['binary']} agent harness.",
+                    }
+                )
+
         return results
 
     def get_selected_models(self) -> list[dict[str, Any]]:
@@ -969,6 +1828,11 @@ class OnlineModelProvider:
             "groq:",
             "orcarouter:",
             "gemini:",
+            "cline_pass:",
+            "cline:",
+            "cline-pass:",
+            *(f"{name}:" for name in AGENT_HARNESS_SPECS),
+            *(f"{alias}:" for alias in _HARNESS_ALIASES),
         )
         return any(model_identifier.startswith(p) for p in prefixes)
 
@@ -985,6 +1849,12 @@ class OnlineModelProvider:
             "groq",
             "orcarouter",
             "gemini",
+            "cline_pass",
+            "cline",
+            "cline-pass",
+            "clinepass",
+            *AGENT_HARNESS_SPECS,
+            *_HARNESS_ALIASES,
         }
         if ":" in model_identifier:
             provider, raw_model = model_identifier.split(":", 1)
@@ -992,6 +1862,10 @@ class OnlineModelProvider:
             if provider_clean in valid_providers:
                 if provider_clean == "hf":
                     provider_clean = "huggingface"
+                if provider_clean in ("cline-pass", "clinepass"):
+                    provider_clean = "cline_pass"
+                if provider_clean in _HARNESS_ALIASES:
+                    provider_clean = _HARNESS_ALIASES[provider_clean]
                 return provider_clean, raw_model
         return "local", model_identifier
 
@@ -1182,6 +2056,8 @@ class OnlineModelProvider:
         None when the provider exposes no reasoning metadata for it.
         """
         provider, model_name = self.parse_model_identifier(model_identifier)
+        if provider in AGENT_HARNESS_SPECS:
+            return False
         if provider == "openrouter":
             data = self._cached_live_models.get("openrouter")
             if data is None:
@@ -1211,6 +2087,21 @@ class OnlineModelProvider:
                 if isinstance(m, dict) and m.get("id") == model_name:
                     return "reasoning" in (m.get("supported_features") or [])
             return None
+        if provider in ("cline_pass", "cline"):
+            data = self._cached_live_models.get("cline_pass")
+            if data is None:
+                return None
+            for m in data:
+                if not isinstance(m, dict):
+                    continue
+                m_id = m.get("id") or m.get("name") or ""
+                if m_id == model_name or m_id == f"cline-pass/{model_name}" or f"cline-pass/{m_id}" == model_name:
+                    return bool(
+                        m.get("reasoning")
+                        or m.get("supports_reasoning")
+                        or "reasoning" in (m.get("capabilities") or [])
+                    )
+            return None
         return None
 
     async def _resolve_thinking_model(self, model_identifier: str) -> bool:
@@ -1220,6 +2111,10 @@ class OnlineModelProvider:
         ``_cached_live_models``) when the model is neither in the selected list nor
         already cached, so ad-hoc queries get provider metadata too.
         """
+        provider, _ = self.parse_model_identifier(model_identifier)
+        if provider in AGENT_HARNESS_SPECS:
+            return False
+
         # 1. Persisted selected-models metadata (authoritative for listed models).
         try:
             for m in self.get_selected_models():
@@ -1235,7 +2130,7 @@ class OnlineModelProvider:
 
         # 3. Live fetch if the provider cache is cold, then retry.
         provider, _ = self.parse_model_identifier(model_identifier)
-        if provider in ("openrouter", "gemini", "groq"):
+        if provider in ("openrouter", "gemini", "groq", "cline_pass"):
             try:
                 await self.fetch_live_models(provider=provider)
                 cached = self._get_provider_model_metadata(model_identifier)
@@ -1324,6 +2219,8 @@ class OnlineModelProvider:
             headroom = max(estimate_headroom, budget_floor, requested_max_tokens // 2)
             effective_max_tokens = min(requested_max_tokens + headroom, 65536)
         timeout = 180.0 if thinking else 120.0
+        if provider in AGENT_HARNESS_SPECS or provider in {"cline", "opencode"}:
+            timeout = max(timeout, 600.0)
 
         working_prompt = prompt
         if thinking:
@@ -2046,6 +2943,79 @@ class OnlineModelProvider:
                         "error": self._format_http_error("OrcaRouter", resp.status_code, err_msg),
                     }
 
+            elif provider == "cline_pass":
+                api_key = custom.get("cline_api_key") or self.cline_api_key
+                if not api_key:
+                    return {
+                        "success": False,
+                        "latency": 0.0,
+                        "response": None,
+                        "tokens_generated": 0,
+                        "error": "Cline API Key not configured. Set CLINE_API_KEY in Settings.",
+                    }
+
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "stream": False,
+                }
+                async with httpx.AsyncClient(timeout=request_timeout) as client:
+                    resp = await client.post(
+                        "https://api.cline.bot/api/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    latency = time.time() - start_t
+                    if resp.status_code == 200:
+                        data, decode_err = self._decode_json_response(resp, "Cline API")
+                        if data is None or decode_err:
+                            return decode_err or {
+                                "success": False,
+                                "latency": latency,
+                                "response": None,
+                                "tokens_generated": 0,
+                                "error": "Cline API returned an empty response body.",
+                            }
+                        tokens = data.get("usage", {}).get("completion_tokens", 0)
+                        content, thinking, finish, cerr = self._extract_online_content(data, "Cline API")
+                        if cerr:
+                            return {
+                                "success": False,
+                                "latency": latency,
+                                "response": None,
+                                "thinking": thinking,
+                                "tokens_generated": 0,
+                                "finish_reason": finish,
+                                "error": cerr,
+                            }
+                        return {
+                            "success": True,
+                            "latency": latency,
+                            "response": content,
+                            "thinking": thinking,
+                            "finish_reason": finish,
+                            "tokens_generated": tokens,
+                            "error": None,
+                        }
+                    try:
+                        err_data = resp.json()
+                        err_msg = err_data.get("error", {}).get("message") or err_data.get("message") or resp.text[:300]
+                    except Exception:
+                        err_msg = resp.text[:300]
+                    return {
+                        "success": False,
+                        "latency": latency,
+                        "response": None,
+                        "tokens_generated": 0,
+                        "error": self._format_http_error("Cline API", resp.status_code, err_msg),
+                    }
+
             elif provider == "gemini":
                 api_key = custom.get("gemini_api_key") or self.gemini_api_key
                 if not api_key:
@@ -2134,8 +3104,29 @@ class OnlineModelProvider:
                                 fail["retry_after"] = float(m.group(1))
                     return fail
 
+            elif provider == "cline":
+                return await self._query_cline_cli(
+                    model_name,
+                    prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    request_timeout=request_timeout,
+                    start_t=start_t,
+                )
+
             elif provider == "opencode":
                 return await self._query_opencode_cli(
+                    model_name,
+                    prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    request_timeout=request_timeout,
+                    start_t=start_t,
+                )
+
+            elif provider in AGENT_HARNESS_SPECS:
+                return await _query_harness_cli(
+                    provider,
                     model_name,
                     prompt,
                     max_tokens=max_tokens,
@@ -2184,14 +3175,37 @@ class OnlineModelProvider:
         import asyncio
         import shutil
 
-        if not shutil.which("opencode"):
-            return {
-                "success": False,
-                "latency": (time.time() - start_t) if start_t else 0.0,
-                "response": None,
-                "tokens_generated": 0,
-                "error": "opencode CLI not found on PATH. Install OpenCode to use opencode: models.",
-            }
+        docker_image = os.getenv("OPENCODE_DOCKER_IMAGE", "").strip()
+        native_bin = "opencode"
+        if docker_image:
+            if not shutil.which("docker"):
+                return {
+                    "success": False,
+                    "latency": (time.time() - start_t) if start_t else 0.0,
+                    "response": None,
+                    "tokens_generated": 0,
+                    "error": "OPENCODE_DOCKER_IMAGE is set but docker is not available on PATH.",
+                }
+            cmd_prefix = ["docker", "run", "--rm", "--network", "host", "-i"]
+            if self.opencode_zen_api_key:
+                cmd_prefix += ["-e", f"OPENCODE_ZEN_API_KEY={self.opencode_zen_api_key}"]
+            if self.opencode_zen_base_url:
+                cmd_prefix += ["-e", f"OPENCODE_ZEN_BASE_URL={self.opencode_zen_base_url}"]
+            data_dir = os.getenv("OPENCODE_DATA_DIR", "").strip()
+            if data_dir:
+                cmd_prefix += ["-v", f"{data_dir}:/data"]
+                cmd_prefix += ["-e", "XDG_DATA_HOME=/data"]
+            cmd_prefix += [docker_image, native_bin]
+        else:
+            if not shutil.which(native_bin):
+                return {
+                    "success": False,
+                    "latency": (time.time() - start_t) if start_t else 0.0,
+                    "response": None,
+                    "tokens_generated": 0,
+                    "error": "opencode CLI not found on PATH. Install OpenCode or set OPENCODE_DOCKER_IMAGE.",
+                }
+            cmd_prefix = [native_bin]
 
         # CLI -m needs the provider-qualified id (opencode/mimo-...). Zen discovery
         # and the 403 fallback pass bare ids (mimo-...); those fail with a cryptic
@@ -2201,7 +3215,7 @@ class OnlineModelProvider:
             cli_model = f"opencode/{cli_model}"
 
         cmd = [
-            "opencode",
+            *cmd_prefix,
             "run",
             "-m",
             cli_model,
@@ -2313,6 +3327,183 @@ class OnlineModelProvider:
                     f"opencode run returned empty text (model={cli_model}). "
                     f"{detail}"
                 ).strip(),
+            }
+
+        if tokens_out <= 0:
+            tokens_out = max(1, len(content) // 4)
+
+        return {
+            "success": True,
+            "latency": latency,
+            "response": content,
+            "thinking": "\n".join(thinking_parts) or None,
+            "finish_reason": finish or "stop",
+            "tokens_generated": tokens_out,
+            "error": None,
+        }
+
+    async def _query_cline_cli(
+        self,
+        model_name: str,
+        prompt: str,
+        max_tokens: int = 4000,
+        temperature: float = 0.2,
+        request_timeout: float = 600.0,
+        start_t: float | None = None,
+    ) -> dict[str, Any]:
+        """Run a Cline CLI harness query, natively or in a disposable Docker container.
+
+        The container path is enabled with ``CLINE_DOCKER_IMAGE``. It uses
+        ``docker run --rm`` so the harness container disappears after the run,
+        while Alpaca persists the returned transcript/result in the normal
+        per-model result files. ``CLINE_DATA_DIR`` (host path) is mounted to
+        /data inside the container so setup/state can be reused between runs.
+        """
+        import asyncio
+        import shutil
+
+        docker_image = os.getenv("CLINE_DOCKER_IMAGE", "").strip()
+        data_dir = os.getenv("CLINE_DATA_DIR", "").strip()
+        container_bin = os.getenv("CLINE_CONTAINER_BIN", "cline")
+        native_bin = self.cline_bin or os.getenv("CLINE_BIN") or "cline"
+
+        if docker_image:
+            cmd_prefix = ["docker", "run", "--rm", "--network", "host", "-i"]
+            if data_dir:
+                cmd_prefix += ["-v", f"{data_dir}:/data"]
+            if self.cline_api_key:
+                cmd_prefix += ["-e", f"CLINE_API_KEY={self.cline_api_key}"]
+            cmd_prefix += [docker_image, container_bin]
+        else:
+            if not shutil.which(native_bin):
+                return {
+                    "success": False,
+                    "latency": (time.time() - start_t) if start_t else 0.0,
+                    "response": None,
+                    "tokens_generated": 0,
+                    "error": (
+                        "cline CLI not found on PATH. Install the Cline CLI, set CLINE_BIN, "
+                        "or set CLINE_DOCKER_IMAGE to run the harness in a container."
+                    ),
+                }
+            cmd_prefix = [native_bin]
+
+        args = ["--json", "--yolo"]
+        if data_dir:
+            args += ["--data-dir", "/data" if docker_image else data_dir]
+        cli_model = (model_name or "").strip()
+        if cli_model and cli_model != "default":
+            if "/" in cli_model:
+                provider_part, model_part = cli_model.split("/", 1)
+            else:
+                provider_part, model_part = "", cli_model
+            if provider_part:
+                args += ["-P", provider_part]
+            if model_part:
+                args += ["-m", model_part]
+        args += ["--", prompt]
+        cmd = cmd_prefix + args
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=request_timeout)
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+                return {
+                    "success": False,
+                    "latency": time.time() - (start_t or time.time()),
+                    "response": None,
+                    "tokens_generated": 0,
+                    "error": f"cline harness timed out after {request_timeout:.0f}s (model={model_name}).",
+                }
+        except Exception as exc:
+            return {
+                "success": False,
+                "latency": time.time() - (start_t or time.time()),
+                "response": None,
+                "tokens_generated": 0,
+                "error": f"Failed to launch cline harness: {exc}",
+            }
+
+        stdout = (stdout_b or b"").decode("utf-8", errors="replace")
+        stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+        latency = time.time() - (start_t or time.time())
+
+        if proc.returncode not in (0, None) and not stdout.strip():
+            err_tail = (stderr or stdout).strip()[-400:]
+            return {
+                "success": False,
+                "latency": latency,
+                "response": None,
+                "tokens_generated": 0,
+                "error": f"cline harness failed (exit {proc.returncode}): {err_tail or 'no output'}",
+            }
+
+        texts: list[str] = []
+        thinking_parts: list[str] = []
+        tokens_out = 0
+        finish: str | None = None
+        cli_error: str | None = None
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                evt = json.loads(line)
+            except Exception:
+                continue
+            etype = evt.get("type")
+            if etype == "agent_event":
+                inner = evt.get("event") or {}
+                text = inner.get("text") if isinstance(inner, dict) else None
+                if text:
+                    texts.append(str(text))
+            elif etype == "run_result":
+                result = evt.get("result") or evt.get("text") or ""
+                if result and not texts:
+                    texts.append(str(result))
+                usage = evt.get("usage") or {}
+                if isinstance(usage, dict):
+                    with suppress(TypeError, ValueError):
+                        tokens_out = int(
+                            usage.get("output_tokens")
+                            or usage.get("completion_tokens")
+                            or usage.get("total_tokens")
+                            or tokens_out
+                        )
+                reason = evt.get("finishReason") or evt.get("finish_reason")
+                if reason:
+                    finish = str(reason)
+                if evt.get("error") and not cli_error:
+                    cli_error = str(evt.get("error"))
+            elif etype in ("run_aborted", "error", "run_error") and not cli_error:
+                err = evt.get("error") or evt.get("message") or evt.get("reason") or etype
+                if isinstance(err, dict):
+                    err = err.get("message") or err.get("data") or str(err)
+                cli_error = str(err)
+
+        content = "".join(texts).strip()
+        if not content:
+            fallback = stdout.strip()
+            if fallback and not fallback.startswith("{"):
+                content = fallback
+        if not content:
+            detail = " ".join(x for x in (cli_error or "", (stderr or "").strip()[-400:]) if x)
+            return {
+                "success": False,
+                "latency": latency,
+                "response": None,
+                "thinking": "\n".join(thinking_parts) or None,
+                "tokens_generated": tokens_out,
+                "finish_reason": finish,
+                "error": f"cline harness returned empty text (model={model_name}). {detail}".strip(),
             }
 
         if tokens_out <= 0:

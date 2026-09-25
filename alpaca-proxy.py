@@ -6855,6 +6855,12 @@ _ONLINE_MODEL_PREFIXES = (
     "groq:",
     "orcarouter:",
     "gemini:",
+    "cline_pass:",
+    "cline:",
+    "claude:",
+    "codex:",
+    "deepseek:",
+    "pi:",
     "openai:",
     "custom:",
 )

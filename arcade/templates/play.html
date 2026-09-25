@@ -13,6 +13,8 @@
 <body>
 <header class="arcade-header slim">
   <a href="/">&larr; Arcade</a>
+  <a href="/players">🏆 Players</a>
+  <a href="/players" data-my-card>My player card</a>
   <h1>{{ card.title }}</h1>
 </header>
 <main class="play-layout">
@@ -38,6 +40,9 @@
             <ul class="meta-list">
               <li><strong>Model:</strong> {{ card.model }}</li>
               <li><strong>Test:</strong> {{ card.test_label or card.test_id }}</li>
+              <li><strong>Category:</strong> {{ card.category or '—' }}</li>
+              <li><strong>Kind:</strong> {{ card.kind or '—' }}{% if card.metric %} · scored as <em>{{ card.metric }}</em> ({{ 'higher is better' if card.higher_is_better else 'lower is better' }}){% endif %}</li>
+              <li><strong>Run:</strong> {{ card.run_id[:8] if card.run_id else '—' }}</li>
               <li><strong>Benchmark score:</strong> {{ card.benchmark_score if card.benchmark_score is not none else '—' }}{% if card.max_score is not none %} / {{ card.max_score }}{% endif %}</li>
               <li><strong>Benchmark date:</strong> {{ card.benchmark_date[:10] if card.benchmark_date else '?' }}</li>
               <li><strong>Published:</strong> {{ card.published_at[:10] if card.published_at else '?' }}</li>
@@ -109,6 +114,9 @@
       <ul class="meta-list">
         <li><strong>Model:</strong> {{ card.model }}</li>
         <li><strong>Test:</strong> {{ card.test_label or card.test_id }}</li>
+        <li><strong>Category:</strong> {{ card.category or '—' }}</li>
+        <li><strong>Kind:</strong> {{ card.kind or '—' }}{% if card.metric %} · {{ card.metric }} ({{ 'higher is better' if card.higher_is_better else 'lower is better' }}){% endif %}</li>
+        <li><strong>Run:</strong> {{ card.run_id[:8] if card.run_id else '—' }}</li>
         <li><strong>Benchmark date:</strong> {{ card.benchmark_date[:10] if card.benchmark_date else '?' }}</li>
         <li><strong>Published:</strong> {{ card.published_at[:10] if card.published_at else '?' }}</li>
         <li><strong>Plays:</strong> {{ card.plays }}</li>

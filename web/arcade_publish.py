@@ -20,6 +20,10 @@ ARCADE_DIR = Path(os.getenv("ARCADE_DIR", "data/arcade"))
 GAMES_DIR = ARCADE_DIR / "games"
 AUTO_PUBLISH_SCORE = float(os.getenv("ARCADE_AUTO_PUBLISH_SCORE", "80"))
 
+# Benchmark categories whose tests produce playable games. Used by the
+# deliberate bulk reconcile to decide which results are eligible.
+GAME_CATEGORIES = frozenset({"gamedev", "gamedev_alt", "retrogames", "youtuber"})
+
 
 def slugify(model: str, test_id: str) -> str:
     """Stable URL slug for a model+test game, e.g. ``qwen3-35b_space-invaders``."""
@@ -33,17 +37,21 @@ def slugify(model: str, test_id: str) -> str:
 
 
 def find_artifact_file(model: str, test_id: str) -> Path | None:
-    """Locate the saved game HTML under data/artifacts for a model+test."""
+    """Locate the saved game HTML under data/artifacts for a model+test.
+
+    Only ever matches THIS model's own file (newest first) — it never falls
+    back to another model's artifact, which would publish someone else's game.
+    """
     artifacts = Path("data/artifacts")
     if not artifacts.is_dir():
         return None
     sanitized = re.sub(r"[/:.]", "_", model or "")
-    candidates = sorted(artifacts.glob(f"{sanitized}__{test_id}.html"))
-    if candidates:
-        return candidates[0]
-    # Fallback: any artifact ending with __<test_id>.html (newest first).
-    fallback = sorted(artifacts.glob(f"*__{test_id}.html"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return fallback[0] if fallback else None
+    candidates = sorted(
+        artifacts.glob(f"{sanitized}__{test_id}.html"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
 
 
 def is_published(slug: str) -> bool:
@@ -53,12 +61,17 @@ def is_published(slug: str) -> bool:
     return (game_dir / "game.html").exists() or (game_dir / "game.py").exists()
 
 
-def _iter_result_records(test_id: str):
-    """Yield (response, screenshot, score) records for a test from all suites.
+def _iter_result_records(test_id: str | None = None):
+    """Yield (record) dicts from all suites.
 
     Scans general per-model files (data/llm_benchmarks/models/general_*.json)
     plus multistep per-model files, keeping the same record shape the
-    /api/tests/responses endpoint serves.
+    /api/tests/responses endpoint serves. Pass ``test_id`` to match a single
+    test, or ``None`` to walk every test (used by the bulk reconcile).
+
+    Each record carries the benchmark provenance metadata (category, label,
+    type/kind, run_id, test_hash, validation, score scale) so publishing can
+    preserve it in the arcade's meta.json.
     """
     for pattern in ("data/llm_benchmarks/models/general_*.json", "data/multistep_benchmarks/models/multistep_*.json"):
         for fp in sorted(Path(".").glob(pattern)):
@@ -68,9 +81,13 @@ def _iter_result_records(test_id: str):
                 continue
             if not isinstance(data, dict):
                 continue
+            doc_run_id = data.get("run_id")
+            doc_model = data.get("model")
             for run in data.get("results") or []:
                 if not isinstance(run, dict):
                     continue
+                run_id = run.get("run_id") or doc_run_id
+                run_model = run.get("model") or doc_model
                 task_lists = []
                 for value in run.values():
                     if isinstance(value, dict) and isinstance(value.get("tests"), list):
@@ -81,7 +98,8 @@ def _iter_result_records(test_id: str):
                     for t in tasks:
                         if not isinstance(t, dict):
                             continue
-                        if (t.get("test_id") or t.get("id")) != test_id:
+                        tid = t.get("test_id") or t.get("id")
+                        if test_id is not None and tid != test_id:
                             continue
                         resp = t.get("response") or ""
                         if not str(resp).strip():
@@ -91,13 +109,25 @@ def _iter_result_records(test_id: str):
                         except (TypeError, ValueError):
                             score = 0.0
                         yield {
+                            "model": t.get("model") or run_model or doc_model or fp.stem,
+                            "test_id": tid,
+                            "category": t.get("test_category") or t.get("category") or "",
+                            "label": t.get("test_label") or t.get("label") or "",
+                            "type": t.get("type") or t.get("task_type"),
+                            "kind": t.get("kind"),
+                            "run_id": t.get("run_id") or run_id or "",
+                            "test_hash": t.get("test_hash"),
+                            "validation": t.get("validation"),
+                            "max_score": t.get("max_score"),
+                            "higher_is_better": t.get("higher_is_better"),
+                            "metric": t.get("metric"),
                             "response": str(resp),
                             "screenshot": t.get("screenshot"),
                             "score": score,
-                            "model": data.get("model") or fp.stem,
                             "prompt": t.get("prompt") or t.get("prompt_steps") or "",
                             "run_date": t.get("run_date")
                             or t.get("benchmark_date")
+                            or t.get("last_run")
                             or t.get("timestamp")
                             or t.get("date")
                             or "",
@@ -105,13 +135,24 @@ def _iter_result_records(test_id: str):
                         }
 
 
+def _record_date_key(rec: dict) -> tuple:
+    """Sortable key preferring a real run date, falling back to file mtime."""
+    date = str(rec.get("run_date") or "")
+    mtime = 0.0
+    source_file = rec.get("source_file")
+    if source_file:
+        with contextlib.suppress(OSError):
+            mtime = Path(source_file).stat().st_mtime
+    return (bool(date), date, mtime)
+
+
 def find_model_response(model: str, test_id: str) -> dict | None:
-    """Longest stored response for a model+test across result files (or None)."""
+    """Newest stored response for a model+test across result files (or None)."""
     best = None
     for rec in _iter_result_records(test_id):
         if rec["model"] != model:
             continue
-        if best is None or len(rec["response"]) > len(best["response"]):
+        if best is None or _record_date_key(rec) > _record_date_key(best):
             best = rec
     return best
 
@@ -168,23 +209,28 @@ window.addEventListener('error',function(e){{var d=document.getElementById('arca
 """
 
 
-def _catalog_prompt(test_id: str) -> str:
-    """The static test prompt from benchmark_tests.json (fallback when the
-    stored run record carries no prompt of its own)."""
+def _catalog_test(test_id: str) -> dict:
+    """The static test definition from benchmark_tests.json (or {})."""
     try:
         catalog = json.loads((Path(__file__).resolve().parent.parent / "benchmark_tests.json").read_text())
     except (OSError, ValueError):
-        return ""
+        return {}
     if not isinstance(catalog, dict):
-        return ""
+        return {}
     for tests in catalog.values():
         if not isinstance(tests, list):
             continue
         for t in tests:
             if isinstance(t, dict) and (t.get("id") == test_id):
-                p = t.get("prompt") or ""
-                return p if isinstance(p, str) else ""
-    return ""
+                return t
+    return {}
+
+
+def _catalog_prompt(test_id: str) -> str:
+    """The static test prompt from benchmark_tests.json (fallback when the
+    stored run record carries no prompt of its own)."""
+    p = _catalog_test(test_id).get("prompt") or ""
+    return p if isinstance(p, str) else ""
 
 
 def _file_date(path: str | Path | None) -> str:
@@ -207,6 +253,14 @@ def publish_game(
     run_date: str = "",
     source_file: str | Path | None = None,
     title: str | None = None,
+    category: str = "",
+    label: str = "",
+    type: str | None = None,
+    run_id: str = "",
+    test_hash: str = "",
+    validation: dict | None = None,
+    higher_is_better: bool = True,
+    metric: str | None = None,
     auto: bool = False,
 ) -> dict:
     """Copy a game into the arcade. Returns ``{"slug": ..., "url": ..., "republished": ...}``.
@@ -269,6 +323,13 @@ def publish_game(
     game_dir = GAMES_DIR / slug
     game_dir.mkdir(parents=True, exist_ok=True)
     republished = (game_dir / "meta.json").exists()
+    # Preserve the play counter (and it alone) across republish — it lives in
+    # meta.json, which this overwrites, while player data lives in the
+    # scores.json / ratings.json files that are left untouched below.
+    previous_plays = 0
+    if republished:
+        with contextlib.suppress(OSError, ValueError):
+            previous_plays = int((json.loads((game_dir / "meta.json").read_text()) or {}).get("plays", 0) or 0)
     if code_text is None:
         assert src is not None
         shutil.copyfile(src, game_dir / "game.html")
@@ -288,10 +349,16 @@ def publish_game(
                 (game_dir / "screenshot.png").write_bytes(base64.b64decode(data))
         # else: keep any previously saved screenshot on republish.
 
-    for name in ("scores.json", "ratings.json"):
-        path = game_dir / name
-        if not path.exists():
-            path.write_text(json.dumps([] if name == "scores.json" else {}))
+    # Align scores.json with the arcade service's dict schema; leave an
+    # existing file (player data) untouched on republish.
+    scores_path = game_dir / "scores.json"
+    if not scores_path.exists():
+        scores_path.write_text(
+            json.dumps({"scores": [], "bests": {"submits": 0, "first_by": None, "players": {}}, "captures": []})
+        )
+    ratings_path = game_dir / "ratings.json"
+    if not ratings_path.exists():
+        ratings_path.write_text(json.dumps({}))
 
     # Stored run records are minimal (often no prompt/date), so backfill from
     # the record, the source file's mtime, then the static test catalog.
@@ -305,21 +372,42 @@ def publish_game(
         src_for_date = rec.get("source_file")
     resolved_date = run_date or rec_date or _file_date(src_for_date)
 
+    catalog = _catalog_test(test_id)
+    resolved_category = category or (rec or {}).get("category") or catalog.get("category") or ""
+    resolved_label = label or (rec or {}).get("label") or catalog.get("label") or ""
+    resolved_type = type or (rec or {}).get("type") or catalog.get("type")
+    resolved_run_id = run_id or (rec or {}).get("run_id") or ""
+    resolved_test_hash = test_hash or (rec or {}).get("test_hash") or ""
+    resolved_validation = validation if validation is not None else (rec or {}).get("validation")
+    rec_higher_is_better = (rec or {}).get("higher_is_better")
+    resolved_higher_is_better = bool(higher_is_better) if rec_higher_is_better is None else bool(rec_higher_is_better)
+    resolved_metric = metric or (rec or {}).get("metric") or "score"
+
     meta = {
         "slug": slug,
         "title": title or test_id.replace("_", " ").replace("-", " ").title(),
         "model": model,
         "test_id": test_id,
+        "test_label": resolved_label,
+        "category": resolved_category,
+        "label": resolved_label,
+        "type": resolved_type,
         "kind": kind,
         "lang": resp_lang,
         "has_screenshot": (game_dir / "screenshot.png").exists(),
         "benchmark_score": benchmark_score,
         "max_score": max_score,
+        "higher_is_better": resolved_higher_is_better,
+        "metric": resolved_metric,
+        "run_id": resolved_run_id,
+        "test_hash": resolved_test_hash,
+        "validation": resolved_validation,
         "prompt": resolved_prompt,
         "run_date": resolved_date,
         "benchmark_date": resolved_date,
         "published_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "auto_published": bool(auto),
+        "plays": previous_plays,
     }
     (game_dir / "meta.json").write_text(json.dumps(meta, indent=2))
     # The arcade container runs as a non-root user while publishes often
@@ -365,6 +453,24 @@ def get_auto_publish_score() -> float:
         return 80.0
 
 
+def _count_player_scores(game_dir: Path) -> int:
+    """Count player score entries, handling both the arcade's dict schema
+    (``{"scores": [...]}``) and the legacy list schema."""
+    scores_path = game_dir / "scores.json"
+    if not scores_path.exists():
+        return 0
+    try:
+        raw = json.loads(scores_path.read_text())
+    except (OSError, ValueError):
+        return 0
+    if isinstance(raw, dict):
+        entries = raw.get("scores") or []
+        return len(entries) if isinstance(entries, list) else 0
+    if isinstance(raw, list):
+        return len(raw)
+    return 0
+
+
 def published_games() -> list:
     """Metadata for every published game, newest first (drives the dashboard Arcade section)."""
     games: list[dict[str, Any]] = []
@@ -378,20 +484,20 @@ def published_games() -> list:
             meta = json.loads(meta_path.read_text())
         except (OSError, ValueError):
             continue
-        try:
-            plays = (
-                sum(1 for _ in json.loads((game_dir / "scores.json").read_text()))
-                if (game_dir / "scores.json").exists()
-                else 0
-            )
-        except (OSError, ValueError):
-            plays = 0
+        plays = _count_player_scores(game_dir)
         games.append(
             {
                 "slug": game_dir.name,
                 "title": meta.get("title") or game_dir.name,
                 "model": meta.get("model") or "",
                 "test_id": meta.get("test_id") or "",
+                "category": meta.get("category") or "",
+                "label": meta.get("label") or meta.get("test_label") or "",
+                "kind": meta.get("kind") or "",
+                "max_score": meta.get("max_score"),
+                "higher_is_better": meta.get("higher_is_better") is not False,
+                "metric": meta.get("metric") or "score",
+                "run_id": meta.get("run_id") or "",
                 "benchmark_score": meta.get("benchmark_score"),
                 "run_date": meta.get("benchmark_date") or meta.get("run_date") or "",
                 "published_at": meta.get("published_at") or "",
@@ -401,3 +507,78 @@ def published_games() -> list:
         )
     games.sort(key=lambda g: g["published_at"] or "", reverse=True)
     return games
+
+
+def iter_eligible_game_results():
+    """Yield every benchmark result that describes a playable game.
+
+    A result is eligible when its test type is ``ui`` or its category is a
+    known game category. Used by the deliberate bulk reconcile; never runs
+    automatically.
+    """
+    for rec in _iter_result_records(None):
+        category = (rec.get("category") or "").lower()
+        rtype = str(rec.get("type") or "").lower()
+        if rtype == "ui" or category in GAME_CATEGORIES:
+            yield rec
+
+
+def publish_all_eligible() -> dict:
+    """Deliberately publish every eligible benchmark game result (idempotent).
+
+    Re-running is safe: already-published games are republished in place
+    (player scores/ratings/play counts are preserved), and games with no
+    usable source are skipped rather than failing the whole sweep.
+    """
+    published: list[str] = []
+    republished: list[str] = []
+    skipped: list[dict] = []
+    failed: dict[str, str] = {}
+    seen: set[str] = set()
+    for rec in iter_eligible_game_results():
+        model = rec.get("model") or ""
+        test_id = rec.get("test_id") or ""
+        if not model or not test_id:
+            continue
+        slug = slugify(model, test_id)
+        if slug in seen:
+            continue
+        seen.add(slug)
+        try:
+            result = publish_game(
+                model=model,
+                test_id=test_id,
+                benchmark_score=rec.get("score"),
+                max_score=rec.get("max_score"),
+                prompt=rec.get("prompt") or "",
+                run_date=rec.get("run_date") or "",
+                category=rec.get("category") or "",
+                label=rec.get("label") or "",
+                type=rec.get("type"),
+                run_id=rec.get("run_id") or "",
+                test_hash=rec.get("test_hash") or "",
+                validation=rec.get("validation"),
+                higher_is_better=(
+                    bool(rec.get("higher_is_better")) if rec.get("higher_is_better") is not None else True
+                ),
+                metric=rec.get("metric") or "score",
+            )
+            (republished if result["republished"] else published).append(result["slug"])
+        except FileNotFoundError:
+            skipped.append({"model": model, "test_id": test_id, "reason": "no saved game source"})
+        except (TypeError, ValueError):
+            skipped.append({"model": model, "test_id": test_id, "reason": "invalid result"})
+        except Exception as e:  # pragma: no cover - defensive bulk sweep
+            failed[slug] = str(e)
+    return {
+        "published": published,
+        "republished": republished,
+        "skipped": skipped,
+        "failed": failed,
+        "counts": {
+            "published": len(published),
+            "republished": len(republished),
+            "skipped": len(skipped),
+            "failed": len(failed),
+        },
+    }

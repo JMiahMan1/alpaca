@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🏆 Player Directory — Alpaca Arcade</title>
+<link rel="stylesheet" href="/static/arcade.css">
+</head>
+<body>
+<header class="arcade-header slim">
+  <a href="/">&larr; Arcade</a>
+  <a href="/players">🏆 Players</a>
+  <a href="/players" data-my-card>My player card</a>
+  <h1>Player Directory</h1>
+</header>
+<main class="player-wrap">
+  <section class="directory-intro">
+    <h2 class="page-heading">🏆 Arcade Standings</h2>
+    <p class="muted intro-copy">
+      Welcome to the arcade's global player directory! Every callsign that has
+      posted a score or rated a machine is listed below, ranked by
+      achievements, #1 finishes, machines played and scores submitted.
+      Callsigns are arcade-local nicknames — <em>unverified</em> — so if more
+      than one person picks the same three letters they share a card. Pick
+      yours, keep it, and climb the board.
+    </p>
+  </section>
+
+  <div class="arcade-filters">
+    <input id="players-search" type="search" placeholder="Search callsigns…" aria-label="Search players">
+  </div>
+
+  <section class="segment">
+    <table class="record-table players-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Callsign</th>
+          <th>🏆 Achievements</th>
+          <th>👑 #1 finishes</th>
+          <th>🎮 Machines played</th>
+          <th>🕹️ Scores submitted</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for p in players %}
+        <tr data-player-initials="{{ p.initials }}">
+          <td>{{ loop.index }}</td>
+          <td><a href="/player/{{ p.initials }}">{{ p.initials }}</a></td>
+          <td>{{ p.unlocked_count }} / {{ p.achievements|length }}</td>
+          <td>{{ p.crowns }}</td>
+          <td>{{ p.games_scored }}</td>
+          <td>{{ p.submits }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="muted">No players yet — be the first to post a score! 🕹️</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</main>
+<footer class="arcade-footer"><span class="coin">●</span> Alpaca Arcade · games stay published until explicitly removed <span class="coin">●</span></footer>
+<script src="/static/arcade.js"></script>
+</body>
+</html>

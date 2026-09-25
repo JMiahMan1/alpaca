@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Online model prefix tester
     function isOnlineModelName(model) {
-        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini):/i.test(String(model || '').trim());
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini|cline_pass|cline|claude|codex|deepseek|pi):/i.test(String(model || '').trim());
     }
 
     // Socket initialization
@@ -6512,7 +6512,7 @@ const saved = _loadHumanRatings(t.id) || {};
 
     // Model comparison filter (graphs & stats)
     function isOnlineModelName(model) {
-        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini):/i.test(model || '');
+        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini|cline_pass|cline|claude|codex|deepseek|pi):/i.test(model || '');
     }
 
     function getFilteredResults(results, type) {
@@ -10901,6 +10901,18 @@ const saved = _loadHumanRatings(t.id) || {};
     const testResultGemini = document.getElementById('test-result-gemini');
     const badgeStatusGemini = document.getElementById('badge-status-gemini');
 
+    const inputClineKey = document.getElementById('input-cline-key');
+    const btnTestCline = document.getElementById('btn-test-cline');
+    const testResultCline = document.getElementById('test-result-cline');
+    const badgeStatusCline = document.getElementById('badge-status-cline');
+    const btnTestClineHarness = document.getElementById('btn-test-cline-harness');
+    const testResultClineHarness = document.getElementById('test-result-cline-harness');
+    const badgeStatusClineHarness = document.getElementById('badge-status-cline-harness');
+    const badgeStatusClaudeHarness = document.getElementById('badge-status-claude');
+    const badgeStatusCodexHarness = document.getElementById('badge-status-codex');
+    const badgeStatusDeepseekHarness = document.getElementById('badge-status-deepseek');
+    const badgeStatusPiHarness = document.getElementById('badge-status-pi');
+
     const inputLlmBudget = document.getElementById('input-llm-budget');
     const inputLlmFormat = document.getElementById('input-llm-format');
     const btnSaveLlmServer = document.getElementById('btn-save-llm-server');
@@ -11013,6 +11025,36 @@ const saved = _loadHumanRatings(t.id) || {};
                     badgeStatusGemini.textContent = providers.gemini.configured ? 'Configured' : 'Not Configured';
                 }
             }
+
+            if (providers.cline_pass) {
+                if (inputClineKey && providers.cline_pass.masked_key) {
+                    inputClineKey.placeholder = providers.cline_pass.masked_key;
+                }
+                if (badgeStatusCline) {
+                    badgeStatusCline.className = providers.cline_pass.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusCline.textContent = providers.cline_pass.configured ? 'Configured' : 'Not Configured';
+                }
+            }
+
+            if (providers.cline) {
+                if (badgeStatusClineHarness) {
+                    badgeStatusClineHarness.className = providers.cline.configured ? 'badge badge-success' : 'badge badge-secondary';
+                    badgeStatusClineHarness.textContent = providers.cline.configured ? 'Available' : 'Not Installed';
+                }
+            }
+
+            const harnessBadges = [
+                [badgeStatusClaudeHarness, 'claude', 'Claude Code'],
+                [badgeStatusCodexHarness, 'codex', 'Codex'],
+                [badgeStatusDeepseekHarness, 'deepseek', 'DeepSeek'],
+                [badgeStatusPiHarness, 'pi', 'Pi'],
+            ];
+            for (const [badge, providerKey, label] of harnessBadges) {
+                if (!badge) continue;
+                const ready = Boolean(providers[providerKey] && providers[providerKey].configured);
+                badge.className = ready ? 'badge badge-success' : 'badge badge-secondary';
+                badge.textContent = `${label}: ${ready ? 'Ready' : 'Not installed'}`;
+            }
         } catch (err) {
             console.error('Error loading provider credentials:', err);
         }
@@ -11104,6 +11146,31 @@ const saved = _loadHumanRatings(t.id) || {};
     if (btnRefreshArcade) {
         btnRefreshArcade.addEventListener('click', async () => {
             await loadArcadeGames();
+        });
+    }
+
+    const btnPublishAllArcade = document.getElementById('btn-publish-all-arcade');
+    if (btnPublishAllArcade) {
+        btnPublishAllArcade.addEventListener('click', async () => {
+            if (!confirm('Publish every eligible benchmark game result to the Arcade?\n\nThis is idempotent — existing games and their player scores are preserved.')) return;
+            btnPublishAllArcade.disabled = true;
+            btnPublishAllArcade.textContent = '⏳ Publishing…';
+            try {
+                const r = await fetch('/api/arcade/publish-all', { method: 'POST' });
+                const d = await r.json();
+                if (d.success) {
+                    const c = d.counts || {};
+                    showToast(`Arcade reconcile: ${c.published || 0} published, ${c.republished || 0} republished, ${c.skipped || 0} skipped, ${c.failed || 0} failed`, 'success');
+                    await loadArcadeGames();
+                } else {
+                    showToast(`Publish-all failed: ${d.error || 'unknown'}`, 'error');
+                }
+            } catch (err) {
+                showToast(`Publish-all failed: ${err.message}`, 'error');
+            } finally {
+                btnPublishAllArcade.disabled = false;
+                btnPublishAllArcade.textContent = '🗂 Publish all eligible';
+            }
         });
     }
 
@@ -11399,6 +11466,19 @@ const saved = _loadHumanRatings(t.id) || {};
         });
     }
 
+    if (btnTestCline) {
+        btnTestCline.addEventListener('click', () => {
+            const key = inputClineKey?.value.trim();
+            runProviderTest('cline_pass', key ? { cline_api_key: key } : {}, testResultCline, badgeStatusCline);
+        });
+    }
+
+    if (btnTestClineHarness) {
+        btnTestClineHarness.addEventListener('click', () => {
+            runProviderTest('cline', {}, testResultClineHarness, badgeStatusClineHarness);
+        });
+    }
+
     if (btnSaveApiKeys) {
         btnSaveApiKeys.addEventListener('click', async () => {
             const payload = {};
@@ -11412,6 +11492,7 @@ const saved = _loadHumanRatings(t.id) || {};
             if (inputGroqKey?.value.trim()) payload.groq_api_key = inputGroqKey.value.trim();
             if (inputOrcarouterKey?.value.trim()) payload.orcarouter_api_key = inputOrcarouterKey.value.trim();
             if (inputGeminiKey?.value.trim()) payload.gemini_api_key = inputGeminiKey.value.trim();
+            if (inputClineKey?.value.trim()) payload.cline_api_key = inputClineKey.value.trim();
 
             try {
                 btnSaveApiKeys.disabled = true;

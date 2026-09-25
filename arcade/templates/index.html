@@ -14,23 +14,48 @@
     <p>Top-rated games built by benchmarked local models — free to play.</p>
   </div>
   <div class="tagline">★ insert coin · no quarters required ★</div>
+  <nav class="arcade-nav">
+    <a href="/players">🏆 Players</a>
+    <a href="/players" data-my-card>My player card</a>
+  </nav>
   {% if error %}<div class="arcade-error">{{ error }}</div>{% endif %}
 </header>
-<main class="game-grid">
-  {% for g in games %}
-  <a class="game-card" href="/play/{{ g.slug }}" data-game-slug="{{ g.slug }}">
-    <div class="game-title">{{ g.title }}</div>
-    <div class="game-stars" title="Benchmark score {{ g.benchmark_score }}">★ {{ g.benchmark_score if g.benchmark_score is not none else '—' }}</div>
-    <div class="game-rating">
-      {% if g.rating.count %}★ {{ g.rating.average }} <span class="muted">({{ g.rating.count }})</span>{% else %}<span class="muted">not rated yet</span>{% endif %}
+<main>
+  {% if games %}
+  <div class="arcade-filters">
+    <input id="arcade-search" type="search" placeholder="Search games (title, model, category)…" aria-label="Search games">
+    <div id="arcade-categories" class="category-chips">
+      <button type="button" class="category-chip is-active" data-category="" aria-pressed="true">All</button>
+      {% for category, group in games|groupby('category') %}
+      <button type="button" class="category-chip" data-category="{{ category }}" aria-pressed="false">{{ category or 'Uncategorized' }}</button>
+      {% endfor %}
     </div>
-    <div class="game-meta">🤖 {{ g.model }} · 📅 {{ g.benchmark_date[:10] if g.benchmark_date else '?' }} · ▶ {{ g.plays }}</div>
-    <div class="game-top">{% if g.top_score %}{{ g.top_score.initials }} — {{ g.top_score.score }}{% else %}No scores yet{% endif %}</div>
-    <span class="play-now">▶ PLAY</span>
-  </a>
-  {% else %}
-  <div class="empty-cabinet">🕹️ No games published yet. Check back soon!</div>
+  </div>
+  {% for category, group in games|groupby('category') %}
+  <section class="game-category" data-category="{{ category }}">
+    <h2 class="game-category-title">{{ category or 'Uncategorized' }}</h2>
+    <div class="game-grid">
+      {% for g in group %}
+      <a class="game-card" href="/play/{{ g.slug }}" data-game-slug="{{ g.slug }}" data-category="{{ g.category }}" data-search="{{ (g.title ~ ' ' ~ g.model ~ ' ' ~ (g.category or '') ~ ' ' ~ (g.label or ''))|lower }}">
+        <div class="game-title">{{ g.title }}</div>
+        {% if g.category %}<div class="game-tag">{{ g.category }}</div>{% endif %}
+        <div class="game-stars" title="Benchmark score {{ g.benchmark_score }}">★ {{ g.benchmark_score if g.benchmark_score is not none else '—' }}</div>
+        <div class="game-rating">
+          {% if g.rating.count %}★ {{ g.rating.average }} <span class="muted">({{ g.rating.count }})</span>{% else %}<span class="muted">not rated yet</span>{% endif %}
+        </div>
+        <div class="game-meta">🤖 {{ g.model }} · {{ g.label or '—' }} · 📅 {{ g.benchmark_date[:10] if g.benchmark_date else '?' }} · ▶ {{ g.plays }}</div>
+        <div class="game-top">{% if g.top_score %}{{ g.top_score.initials }} — {{ g.top_score.score }}{% else %}No scores yet{% endif %}</div>
+        <span class="play-now">▶ PLAY</span>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
   {% endfor %}
+  {% else %}
+  <div class="game-grid">
+    <div class="empty-cabinet">🕹️ No games published yet. Check back soon!</div>
+  </div>
+  {% endif %}
 </main>
 <footer class="arcade-footer"><span class="coin">●</span> Alpaca Arcade · games stay published until explicitly removed <span class="coin">●</span></footer>
 <script src="/static/arcade.js"></script>

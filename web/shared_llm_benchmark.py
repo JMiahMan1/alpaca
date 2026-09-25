@@ -33,6 +33,14 @@ from llm_benchmark_suite import (
     _model_sampling_options,
     _model_temperature,
 )
+from online_providers import (
+    LEARNING_POLICY_SHARED,
+    build_provenance,
+    make_run_id,
+    make_source_record_id,
+    online_model_provider,
+    utc_timestamp,
+)
 from web.thermal import ThermalAbortError, ThermalWatchdog
 
 # Per-chunk stream timeouts: read applies to the gap BETWEEN stream lines, not
@@ -119,19 +127,6 @@ async def _read_generate_stream(resp: httpx.Response, watchdog: Any = None) -> d
         "prompt_eval_duration": int(final.get("prompt_eval_duration") or 0),
         "thermal_abort": watchdog is not None and bool(getattr(watchdog, "aborted", False)),
     }
-
-
-online_model_provider: Any = None
-try:
-    from online_providers import online_model_provider
-except Exception:
-    try:
-        import sys
-
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from online_providers import online_model_provider
-    except Exception:
-        online_model_provider = None
 
 
 _THINKING_PATTERNS = [
@@ -337,6 +332,8 @@ class SharedLLMModelBenchmark:
             "models_tested": 1,
             "per_model": True,
             "model": model,
+            "run_id": model_record.get("run_id"),
+            "provenance": model_record.get("provenance"),
             "results": [model_record],
         }
         file_path = self.MODELS_DIR / f"shared_{self._sanitize_model_filename(model)}.json"
@@ -1438,11 +1435,31 @@ class SharedLLMModelBenchmark:
 
         task_ids: optional list of task IDs to run. If None or empty, all tasks run.
         """
+        run_id = make_run_id("sharedllm")
+        if models and all(online_model_provider.is_online_model(m) for m in models):
+            run_transport = "api"
+        elif any(online_model_provider.is_online_model(m) for m in models):
+            run_transport = "mixed"
+        else:
+            run_transport = "proxy" if use_proxy else "direct"
+        run_provenance = build_provenance(
+            model="*",
+            source="alpaca",
+            harness="shared_llm_benchmark",
+            transport=run_transport,
+            run_id=run_id,
+            reasoning_mode="profile",
+            learning_policy=LEARNING_POLICY_SHARED,
+            limits={"task_ids": task_ids or []},
+            extra={"models": models},
+        )
         all_results: dict[str, Any] = {
             "benchmark_version": "SharedLLM-v2",
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "benchmark_type": "proxy" if use_proxy else "direct",
             "models_tested": len(models),
+            "run_id": run_id,
+            "provenance": run_provenance,
             "results": [],
         }
 
@@ -1487,9 +1504,23 @@ class SharedLLMModelBenchmark:
                 except Exception as e:
                     print(f"Callback error: {e}")
 
+            model_transport = "api" if online_model_provider.is_online_model(model) else run_transport
+            model_provenance = build_provenance(
+                model=model,
+                source="alpaca",
+                harness="shared_llm_benchmark",
+                transport=model_transport,
+                run_id=run_id,
+                reasoning_mode="profile",
+                learning_policy=LEARNING_POLICY_SHARED,
+                limits={"task_ids": task_ids or []},
+                started_at=run_provenance.get("started_at"),
+            )
             model_record: dict[str, Any] = {
                 "model": model,
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "run_id": run_id,
+                "provenance": model_provenance,
                 "tasks": [],
             }
 
@@ -1563,6 +1594,12 @@ class SharedLLMModelBenchmark:
                             "error": res.get("error"),
                             "validation": {},
                             "temps": res.get("temps"),
+                            "model": model,
+                            "run_id": run_id,
+                            "provenance": dict(model_provenance),
+                            "source_record_id": make_source_record_id(run_id, task["id"]),
+                            "training_eligible": False,
+                            "exclusion_reason": "thermal_abort",
                         }
                     )
                     break
@@ -1794,6 +1831,16 @@ class SharedLLMModelBenchmark:
                         }
                         res["success"] = passed
 
+                response_present = bool(res.get("response"))
+                learning_eligible = bool(res["success"] and response_present and not res.get("error"))
+                if learning_eligible:
+                    learning_exclusion = None
+                elif not res["success"]:
+                    learning_exclusion = "failed_grader"
+                elif not response_present:
+                    learning_exclusion = "empty_response"
+                else:
+                    learning_exclusion = "execution_error"
                 test_result = {
                     "test_id": task["id"],
                     "test_category": task["category"],
@@ -1806,6 +1853,12 @@ class SharedLLMModelBenchmark:
                     "error": res["error"],
                     "validation": validation_results,
                     "temps": res.get("temps"),
+                    "model": model,
+                    "run_id": run_id,
+                    "provenance": dict(model_provenance),
+                    "source_record_id": make_source_record_id(run_id, task["id"]),
+                    "training_eligible": learning_eligible,
+                    "exclusion_reason": learning_exclusion,
                 }
                 for key in (
                     "think",
@@ -1865,6 +1918,8 @@ class SharedLLMModelBenchmark:
                     except Exception as e:
                         print(f"Callback error: {e}")
 
+            model_provenance["finished_at"] = utc_timestamp()
+            model_record["provenance"] = model_provenance
             results_list = all_results["results"]
             if isinstance(results_list, list):
                 results_list.append(model_record)
@@ -1889,6 +1944,8 @@ class SharedLLMModelBenchmark:
         elif all_results.get("status") != "thermal_abort":
             all_results["status"] = "completed"
 
+        run_provenance["finished_at"] = utc_timestamp()
+        all_results["provenance"] = run_provenance
         if all_results["results"]:
             save_file = (
                 self.RESULTS_DIR

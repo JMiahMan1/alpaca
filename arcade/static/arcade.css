@@ -64,6 +64,16 @@ body {
 .arcade-header a:hover { text-shadow: 0 0 12px var(--gold); }
 .arcade-error { color: var(--red); margin-top: 0.5rem; }
 .tagline { color: var(--cyan); letter-spacing: 0.28em; font-size: 0.72rem; text-transform: uppercase; margin-top: 0.9rem; animation: pulseGlow 2.4s ease-in-out infinite; }
+/* ---------- Header navigation (Players / My player card) ---------- */
+.arcade-nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.7rem; margin-top: 1rem; }
+.arcade-nav a {
+  color: var(--cyan); text-decoration: none; font-weight: 700; letter-spacing: 0.06em;
+  background: var(--panel); border: 2px solid var(--border); border-radius: 999px; padding: 0.42rem 1rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.arcade-nav a:hover { border-color: var(--cyan); box-shadow: 0 0 12px rgba(34, 211, 238, 0.5); }
+.arcade-nav a[data-my-card] { color: var(--gold); }
+.arcade-nav a[data-my-card]:hover { border-color: var(--gold); box-shadow: 0 0 12px rgba(255, 210, 63, 0.5); }
 @keyframes pulseGlow { 0%, 100% { opacity: 0.65; } 50% { opacity: 1; text-shadow: 0 0 14px var(--cyan); } }
 
 /* ---------- Game grid / cards ---------- */
@@ -93,6 +103,32 @@ body {
   box-shadow: 0 0 12px rgba(255, 210, 62, 0.7);
 }
 .empty-cabinet { grid-column: 1 / -1; text-align: center; padding: 3rem 1rem; border: 2px dashed var(--border); border-radius: 14px; color: var(--muted); }
+
+/* ---------- Category grouping & filters ---------- */
+.arcade-filters { max-width: 1220px; margin: 0 auto; padding: 0 1.5rem; display: flex; flex-direction: column; gap: 0.8rem; }
+.arcade-filters input#arcade-search {
+  background: #120826; color: var(--text); border: 2px solid var(--border); border-radius: 12px;
+  padding: 0.6rem 0.9rem; font-size: 0.95rem; width: 100%;
+}
+.arcade-filters input#arcade-search:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 10px rgba(34, 211, 238, 0.5); }
+.category-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.category-chip {
+  background: var(--panel); color: var(--muted); border: 2px solid var(--border); border-radius: 999px;
+  padding: 0.35rem 0.85rem; font-size: 0.8rem; font-weight: 700; cursor: pointer; letter-spacing: 0.04em;
+}
+.category-chip:hover { border-color: var(--cyan); color: var(--text); }
+.category-chip.is-active { background: linear-gradient(90deg, var(--pink), var(--cyan)); color: #0a0418; border-color: transparent; }
+.game-category { max-width: 1220px; margin: 0 auto 1rem; padding: 0 1.5rem; }
+.game-category-title {
+  margin: 1.4rem 0 0.7rem; font-size: 1rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--cyan);
+  text-shadow: 0 0 10px rgba(34, 211, 238, 0.6);
+}
+.game-category .game-grid { margin: 0; padding: 0; }
+.game-tag {
+  display: inline-block; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--lime); background: rgba(163, 230, 53, 0.12); border: 1px solid rgba(163, 230, 53, 0.4);
+  padding: 0.1rem 0.5rem; border-radius: 6px; margin-bottom: 0.3rem;
+}
 
 /* ---------- Play layout / cabinet ---------- */
 .play-layout { display: grid; grid-template-columns: 1fr 350px; gap: 1.2rem; padding: 1.2rem 1.5rem 3rem; max-width: 1420px; margin: 0 auto; align-items: start; }
@@ -328,6 +364,16 @@ body > * { position: relative; z-index: 1; }
 .record-table td a { color: var(--neon-cyan, #22d3ee); }
 .record-table tr:hover td { background: rgba(34, 211, 238, 0.06); }
 .record-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* ---------- Player directory / global standings ---------- */
+.directory-intro { max-width: 720px; }
+.page-heading { color: #ffd23f; text-shadow: 0 0 14px rgba(255, 210, 63, 0.7); letter-spacing: 0.1em; margin: 0 0 0.5rem; }
+.intro-copy { font-size: 0.9rem; line-height: 1.5; margin: 0; }
+.intro-copy em { color: var(--gold); font-style: normal; }
+.segment { background: rgba(10, 8, 30, 0.75); border: 1px solid var(--border); border-radius: 14px; padding: 0.9rem; }
+.players-table td:first-child,
+.players-table th:first-child { width: 2.4em; text-align: right; color: var(--muted); }
+.players-table td:nth-child(3) { font-variant-numeric: tabular-nums; }
 
 /* ---------- Scoreboard player links ---------- */
 .score-list a { color: var(--neon-cyan, #22d3ee); text-decoration: none; }

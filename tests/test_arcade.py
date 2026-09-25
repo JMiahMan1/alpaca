@@ -68,8 +68,12 @@ def test_publish_copies_game_and_meta(games_dir, source_html):
     # Both date keys are written (arcade cards/templates read benchmark_date).
     assert meta["benchmark_date"] == "2026-09-11"
     assert meta["run_date"] == "2026-09-11"
-    # Player files are initialised.
-    assert json.loads((game_dir / "scores.json").read_text()) == []
+    # Player files are initialised (scores.json aligned with the arcade dict schema).
+    assert json.loads((game_dir / "scores.json").read_text()) == {
+        "scores": [],
+        "bests": {"submits": 0, "first_by": None, "players": {}},
+        "captures": [],
+    }
     assert json.loads((game_dir / "ratings.json").read_text()) == {}
 
 
@@ -491,6 +495,119 @@ def test_achievements_evaluate_all_locked_and_all_unlocked():
     assert ach.unlocked_ids(hero) == {a["id"] for a in ach.ACHIEVEMENTS}
 
 
+# --- global player directory + achievement durability ---
+
+
+def test_players_directory_enumeration_search_and_standings(arcade_client, games_dir, source_html):
+    slugs = [_publish(games_dir, source_html, test_id=f"dir_{n}")["slug"] for n in ("1", "2", "3")]
+    for slug in slugs:
+        assert arcade_client.post(f"/api/games/{slug}/scores", json={"initials": "ACE", "score": 500}).status_code == 200
+    assert arcade_client.post(f"/api/games/{slugs[0]}/scores", json={"initials": "BEE", "score": 999999}).status_code == 200
+    assert arcade_client.post(f"/api/games/{slugs[1]}/rate", json={"stars": 5, "initials": "CAB"}).status_code == 200
+
+    data = arcade_client.get("/api/players").get_json()
+    assert data["success"] is True
+    assert data["count"] == 3
+    initials = [p["initials"] for p in data["players"]]
+    assert set(initials) == {"ACE", "BEE", "CAB"}
+    # ACE holds #1 on two machines + scored on three → most achievements/crowns;
+    # BEE has a giant raw score but ranks below without the breadth.
+    assert initials[0] == "ACE"
+    ace = data["players"][0]
+    assert ace["crowns"] == 2
+    assert ace["games_scored"] == 3
+    assert ace["submits"] == 3
+    assert ace["unlocked_count"] > 0
+    assert ace["total_games"] == 4  # the arcade_client fixture also publishes demo-model_demo-breakout
+    bee = next(p for p in data["players"] if p["initials"] == "BEE")
+    assert bee["best_score"] > ace["best_score"]  # raw score is ignored by ranking
+
+    filtered = arcade_client.get("/api/players?q=be").get_json()
+    assert [p["initials"] for p in filtered["players"]] == ["BEE"]
+
+    res = arcade_client.get("/players")
+    assert res.status_code == 200
+    assert b"Player Directory" in res.data
+    assert b"/player/ACE" in res.data
+    assert b"unverified" in res.data
+
+
+def test_players_directory_reads_legacy_bests_json(arcade_client):
+    import arcade.app as arcade_app
+
+    d = arcade_app.GAMES_DIR / "demo-model_demo-breakout"
+    state = json.loads((d / "scores.json").read_text())
+    state.pop("bests", None)
+    (d / "scores.json").write_text(json.dumps(state))
+    (d / "bests.json").write_text(
+        json.dumps({"submits": 5, "first_by": None, "players": {"OLD": {"best": 12, "count": 5, "pbs": 2}}})
+    )
+    data = arcade_client.get("/api/players").get_json()
+    legs = [p for p in data["players"] if p["initials"] == "OLD"]
+    assert len(legs) == 1
+    assert legs[0]["submits"] == 5
+    assert legs[0]["games_scored"] == 1
+
+
+def test_night_owl_and_high_roller_survive_board_turnover(arcade_client, monkeypatch):
+    import arcade.app as arcade_app
+
+    url = "/api/games/demo-model_demo-breakout/scores"
+    monkeypatch.setattr(arcade_app.time, "strftime", lambda fmt: "2026-09-12T02:00:00")
+    assert arcade_client.post(url, json={"initials": "AAA", "score": 150000}).status_code == 200
+    monkeypatch.setattr(arcade_app.time, "strftime", lambda fmt: "2026-09-12T12:00:00")
+    # Six more players push AAA right off the top-5 board.
+    for i in range(6):
+        assert arcade_client.post(url, json={"initials": f"B{i}", "score": 200000 + i}).status_code == 200
+
+    state = json.loads((arcade_app.GAMES_DIR / "demo-model_demo-breakout" / "bests.json").read_text())
+    assert state["players"]["AAA"]["max_ever"] >= 150000
+    assert state["players"]["AAA"]["night_owl_at"].startswith("2026-09-12T02")
+
+    p = _player(arcade_client, "AAA")
+    assert p["night_owl"] is True
+    assert p["high_roller"] is True
+    assert p["boards"] == 0  # off the board, but the durable achievements stay
+
+
+def test_zero_score_first_submit_is_not_personal_best(arcade_client):
+    url = "/api/games/demo-model_demo-breakout/scores"
+    r1 = arcade_client.post(url, json={"initials": "ZED", "score": 0}).get_json()
+    assert r1["personal_best"] is False
+    r2 = arcade_client.post(url, json={"initials": "ZED", "score": 5}).get_json()
+    assert r2["personal_best"] is True
+
+
+def test_dynasty_tracks_current_crowns_not_lifetime(arcade_client, games_dir, source_html):
+    slugs = [_publish(games_dir, source_html, test_id=f"crown_{n}")["slug"] for n in ("1", "2", "3")]
+    for slug in slugs:
+        assert arcade_client.post(f"/api/games/{slug}/scores", json={"initials": "DYN", "score": 100}).status_code == 200
+    p = _player(arcade_client, "DYN")
+    assert p["crowns"] == 3
+    assert "dynasty" in {a["id"] for a in p["achievements"] if a["unlocked"]}
+    # Dethroned on one machine: dynasty reverts (current-crown logic).
+    assert arcade_client.post(f"/api/games/{slugs[0]}/scores", json={"initials": "NEW", "score": 999}).status_code == 200
+    p = _player(arcade_client, "DYN")
+    assert p["crowns"] == 2
+    assert "dynasty" not in {a["id"] for a in p["achievements"] if a["unlocked"]}
+
+
+def test_rating_celebrates_new_unlocks(arcade_client, games_dir, source_html):
+    slugs = [_publish(games_dir, source_html, test_id=f"rate_{n}")["slug"] for n in ("1", "2", "3")]
+    r1 = arcade_client.post(f"/api/games/{slugs[0]}/rate", json={"stars": 5, "initials": "RAT"}).get_json()
+    assert r1["success"] is True
+    assert r1["player_url"] == "/player/RAT"
+    assert [u["id"] for u in r1["new_unlocks"]] == ["standing-ovation"]
+    r2 = arcade_client.post(f"/api/games/{slugs[1]}/rate", json={"stars": 4, "initials": "RAT"}).get_json()
+    assert r2["new_unlocks"] == []
+    r3 = arcade_client.post(f"/api/games/{slugs[2]}/rate", json={"stars": 4, "initials": "RAT"}).get_json()
+    assert [u["id"] for u in r3["new_unlocks"]] == ["critic"]
+    # Anonymous ratings unlock nothing.
+    anon = arcade_client.post(f"/api/games/{slugs[0]}/rate", json={"stars": 5}).get_json()
+    assert anon["new_unlocks"] == []
+    assert anon["player_url"] is None
+
+
 # --- response-fallback publishing (pygame / desktop apps) ---
 
 PYGAME_RESP = """Here is your game:
@@ -523,17 +640,20 @@ def _write_general_result(root, model, test_id, response, screenshot=None, score
     )
 
 
-def test_find_model_response_prefers_longest(tmp_path, monkeypatch):
+def test_find_model_response_prefers_newest(tmp_path, monkeypatch):
+    """The chosen record is the newest run (by run date / file mtime), not
+    the longest response — a prose-heavy stale answer must not win."""
     monkeypatch.chdir(tmp_path)
     _write_general_result(
         tmp_path,
         "m",
         "t1",
-        "x" * 10 + "much longer response here",
-        extra=[{"test_id": "t1", "response": "short", "score": 1}],
+        "x" * 60 + "much longer but stale",
+        extra=[{"test_id": "t1", "response": "short and new", "score": 1, "last_run": "2026-09-20T10:00:00"}],
     )
     rec = ap.find_model_response("m", "t1")
-    assert rec is not None and len(rec["response"]) > 20
+    assert rec is not None
+    assert rec["response"] == "short and new"
     assert ap.find_model_response("other-model", "t1") is None
     assert ap.find_model_response("m", "nope") is None
 
@@ -1677,3 +1797,182 @@ def test_arcade_manual_scores_remain_repeatable_and_migrate_ledger(arcade_client
     assert state["bests"]["submits"] == 5
     assert state["bests"]["players"]["ABC"]["count"] == 5
     assert state["captures"] == []
+
+
+# --- metadata preservation, exact-model selection, schema, bulk reconcile ---
+
+
+def test_find_artifact_file_exact_model_only(tmp_path, monkeypatch):
+    """Artifact selection never falls back to another model's file."""
+    monkeypatch.chdir(tmp_path)
+    art = tmp_path / "data" / "artifacts"
+    art.mkdir(parents=True)
+    other = art / "other-model__game.html"
+    other.write_text("<html>other</html>")
+    assert ap.find_artifact_file("my-model", "game") is None
+    assert ap.find_artifact_file("my/model:v1", "game") is None
+    mine = art / "my_model_v1__game.html"
+    mine.write_text("<html>mine</html>")
+    assert ap.find_artifact_file("my/model:v1", "game").name == "my_model_v1__game.html"
+
+
+def test_publish_preserves_provenance_metadata(games_dir, monkeypatch):
+    monkeypatch.setattr(
+        ap,
+        "find_model_response",
+        lambda model, test_id: {
+            "response": "```python\nprint('hi')\n```",
+            "screenshot": None,
+            "score": 66.0,
+            "max_score": 100.0,
+            "model": model,
+            "prompt": "p",
+            "run_date": "2026-09-10",
+            "source_file": None,
+            "category": "gamedev",
+            "label": "Game: Snake",
+            "type": "ui",
+            "run_id": "run-abc",
+            "test_hash": "hash123",
+            "validation": {"breakdown": {"features": "ok"}},
+            "higher_is_better": False,
+            "metric": "time_seconds",
+        },
+    )
+    res = ap.publish_game(model="demo-model", test_id="demo_snake")
+    meta = json.loads((games_dir / res["slug"] / "meta.json").read_text())
+    assert meta["model"] == "demo-model"
+    assert meta["test_id"] == "demo_snake"
+    assert meta["category"] == "gamedev"
+    assert meta["label"] == "Game: Snake"
+    assert meta["type"] == "ui"
+    assert meta["kind"] == "code"
+    assert meta["run_id"] == "run-abc"
+    assert meta["test_hash"] == "hash123"
+    assert meta["validation"] == {"breakdown": {"features": "ok"}}
+    assert meta["higher_is_better"] is False
+    assert meta["metric"] == "time_seconds"
+    assert meta["max_score"] == 100.0
+    assert meta["benchmark_score"] == 66.0
+
+
+def test_published_games_handles_legacy_list_and_dict_scores(games_dir, source_html):
+    res = _publish(games_dir, source_html)
+    game_dir = games_dir / res["slug"]
+    # Legacy list schema.
+    (game_dir / "scores.json").write_text(json.dumps([{"initials": "A", "score": 1}, {"initials": "B", "score": 2}]))
+    assert ap.published_games()[0]["plays"] == 2
+    # Arcade dict schema.
+    (game_dir / "scores.json").write_text(json.dumps({"scores": [{"initials": "A", "score": 1}]}))
+    assert ap.published_games()[0]["plays"] == 1
+
+
+def test_republish_preserves_play_count(games_dir, source_html, tmp_path):
+    res = _publish(games_dir, source_html)
+    game_dir = games_dir / res["slug"]
+    meta = json.loads((game_dir / "meta.json").read_text())
+    meta["plays"] = 7
+    (game_dir / "meta.json").write_text(json.dumps(meta))
+    src2 = tmp_path / "v2.html"
+    src2.write_text("<html>v2</html>")
+    res2 = _publish(games_dir, src2, benchmark_score=95)
+    assert res2["republished"] is True
+    assert json.loads((game_dir / "meta.json").read_text())["plays"] == 7
+
+
+def _write_game_result(root, model, test_id, response, **extra):
+    models_dir = root / "data" / "llm_benchmarks" / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "test_id": test_id,
+        "test_category": "gamedev",
+        "test_label": "Game",
+        "response": response,
+        "score": extra.pop("score", 0),
+        **extra,
+    }
+    models_dir.joinpath(f"general_{model}.json").write_text(
+        json.dumps({"model": model, "results": [{"gamedev": {"tests": [rec]}}]})
+    )
+
+
+def test_publish_all_eligible_is_idempotent(games_dir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_game_result(tmp_path, "g1", "game_a", PYGAME_RESP, score=80)
+    _write_game_result(tmp_path, "g2", "game_b", HTML_RESP, score=90)
+    # A non-game result must never be picked up by the bulk sweep.
+    _write_general_result(tmp_path, "g3", "not_a_game", "just prose, no game here", score=50)
+
+    first = ap.publish_all_eligible()
+    assert first["counts"]["published"] == 2
+    assert first["counts"]["republished"] == 0
+    assert set(ap.published_slugs()) == {"g1_game-a", "g2_game-b"}
+
+    # Idempotent second sweep: republish in place, keep player data, no dupes.
+    (games_dir / "g1_game-a" / "scores.json").write_text(json.dumps({"scores": [{"initials": "X", "score": 5}]}))
+    second = ap.publish_all_eligible()
+    assert second["counts"]["published"] == 0
+    assert second["counts"]["republished"] == 2
+    assert second["skipped"] == []
+    assert second["counts"]["failed"] == 0
+    saved = json.loads((games_dir / "g1_game-a" / "scores.json").read_text())
+    assert saved["scores"][0]["initials"] == "X"
+    assert set(ap.published_slugs()) == {"g1_game-a", "g2_game-b"}
+
+
+def test_web_publish_all_endpoint(web_client, games_dir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_game_result(tmp_path, "g1", "game_a", PYGAME_RESP, score=80)
+    res = web_client.post("/api/arcade/publish-all")
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["counts"]["published"] == 1
+    assert "g1_game-a" in ap.published_slugs()
+
+
+# --- category grouping / filtering + lower-is-better scoreboards ---
+
+
+def test_arcade_games_group_by_category_and_filter(arcade_client, games_dir, source_html):
+    _publish(games_dir, source_html, test_id="demo_racer", category="gamedev", label="Racer", benchmark_score=85)
+    _publish(
+        games_dir, source_html, test_id="demo_puzzler", category="gamedev_alt", label="Puzzler", benchmark_score=70
+    )
+    games = arcade_client.get("/api/games").get_json()["games"]
+    cats = [g["category"] for g in games]
+    assert cats == sorted(cats, key=str.lower)
+    gamedev = [g for g in games if g["category"] == "gamedev"]
+    assert [g["test_id"] for g in gamedev] == ["demo_racer"]
+    assert gamedev[0]["label"] == "Racer"
+    assert gamedev[0]["kind"] == "playable"
+    assert gamedev[0]["higher_is_better"] is True
+    assert gamedev[0]["metric"] == "score"
+
+    filtered = arcade_client.get("/api/games?category=gamedev").get_json()["games"]
+    assert len(filtered) == 1 and filtered[0]["test_id"] == "demo_racer"
+
+    # The grouped index renders category sections.
+    res = arcade_client.get("/")
+    assert b"game-category" in res.data
+    assert b"arcade-search" in res.data
+    assert b"category-chip" in res.data
+
+
+def test_arcade_lower_is_better_ranking_and_personal_best(arcade_client, games_dir, source_html):
+    slug = _publish(games_dir, source_html, test_id="demo_time", higher_is_better=False)["slug"]
+    url = f"/api/games/{slug}/scores"
+    r1 = arcade_client.post(url, json={"initials": "AAA", "score": 100}).get_json()
+    assert r1["success"] is True and r1["personal_best"] is False and r1["pioneer"] is True
+    r2 = arcade_client.post(url, json={"initials": "BBB", "score": 80}).get_json()
+    assert r2["rank"] == 1  # lowest-first board: 80 beats 100
+    r3 = arcade_client.post(url, json={"initials": "AAA", "score": 40}).get_json()
+    assert r3["personal_best"] is True
+    assert r3["rank"] == 1
+
+    game = arcade_client.get(f"/api/games/{slug}").get_json()["game"]
+    assert game["higher_is_better"] is False
+    # Raw scores are kept; the board just ranks lowest-first.
+    assert [s["score"] for s in game["scores"]] == [40, 80, 100]
+    assert game["scores"][0]["initials"] == "AAA"
+    assert game["top_score"]["score"] == 40
