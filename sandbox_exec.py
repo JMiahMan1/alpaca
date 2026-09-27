@@ -363,6 +363,25 @@ def _cpp_build_sh(src: str, out: str, log: str) -> str:
     return f"g++ -std=c++17 -O2 -o {out} {src} {_CPP_GUI_LIBS} >{log} 2>&1"
 
 
+def _c_build_sh(src: str, out: str, log: str) -> str:
+    """Shell snippet: compile a single-file X11 C program offline."""
+    return f"gcc -std=gnu11 -O2 -o {out} {src} -lX11 -lm >{log} 2>&1"
+
+
+def _lvgl_build_sh(src: str, out: str, log: str) -> str:
+    """Shell snippet: compile a single-file LVGL UI against the baked liblvgl.
+
+    The model supplies only ``void lvgl_ui_create(void)``; the generic SDL main
+    at /usr/local/share/lvgl_main.c owns lv_init, the SDL display/input devices,
+    and the timer loop so the grader can screenshot the rendered UI under Xvfb.
+    """
+    return (
+        "gcc -std=gnu11 -O2 -DLV_CONF_INCLUDE_SIMPLE -I/usr/local/include/lvgl "
+        f"-o {out} {src} /usr/local/share/lvgl_main.c "
+        f"-L/usr/local/lib -llvgl -lSDL2 -lm -lpthread >{log} 2>&1"
+    )
+
+
 def _lint_html_js(container, code: str) -> tuple[bool, str]:
     """Syntax-check a web page and reject truncated/broken output.
 
@@ -848,7 +867,12 @@ if __name__ == "__main__":
 
 
 def run_code_once(
-    code: str, lang: str = "python", timeout: int = 30, ui: bool = False, test_id: str | None = None
+    code: str,
+    lang: str = "python",
+    timeout: int = 30,
+    ui: bool = False,
+    test_id: str | None = None,
+    framework: str | None = None,
 ) -> dict[str, Any]:
     """Execute ``code`` once and capture the result.
 
@@ -897,6 +921,9 @@ def run_code_once(
     elif lang == "cpp":
         ext, bin_ = "cpp", "g++"
         cmd = ["bash", "-c", "g++ -std=c++17 -O2 -o /tmp/a.out /tmp/code.cpp -lX11 -lasound && /tmp/a.out"]
+    elif lang == "c":
+        ext, bin_ = "c", "gcc"
+        cmd = ["bash", "-c", "gcc -std=gnu11 -O2 -o /tmp/a.out /tmp/code.c -lm && /tmp/a.out"]
     elif lang == "go":
         ext, bin_ = "go", "go"
         cmd = ["bash", "-c", "cd /tmp && GO111MODULE=off go build -o /tmp/a.out code.go && /tmp/a.out"]
@@ -1019,6 +1046,20 @@ def run_code_once(
                     _rust_bin(),
                 )
                 launch = _rust_bin()
+            elif lang == "c":
+                if framework == "lvgl":
+                    build = (
+                        _lvgl_build_sh("/tmp/code.c", "/tmp/a.out", "/tmp/lvgl_build.log"),
+                        "/tmp/lvgl_build.log",
+                        "/tmp/a.out",
+                    )
+                else:
+                    build = (
+                        _c_build_sh("/tmp/code.c", "/tmp/a.out", "/tmp/c_build.log"),
+                        "/tmp/c_build.log",
+                        "/tmp/a.out",
+                    )
+                launch = "/tmp/a.out"
             return _run_ui(container, cleaned_code, ext, bin_, timeout, result, launch=launch, build=build)
 
         if lang in ("html", "htm", "web"):
@@ -1452,6 +1493,7 @@ def grade_code(
     timeout: int = 30,
     ui: bool = False,
     test_id: str | None = None,
+    framework: str | None = None,
 ) -> dict:
     """Run ``code`` and translate the outcome into a 0-100 score.
 
@@ -1462,11 +1504,11 @@ def grade_code(
     (score 100); a blank/black frame — an app that crashed before drawing —
     fails the run.
     """
-    if ui and lang in ("rust", "go", "cpp"):
-        # Cold offline builds (cargo/go modules) need minutes, not seconds.
+    if ui and lang in ("rust", "go", "cpp", "c"):
+        # Cold offline builds (cargo/go modules) and the LVGL link need minutes.
         timeout = max(timeout, 300)
     fixture_args = {"test_id": test_id} if test_id in CLI_FIXTURE_TEST_IDS else {}
-    run = run_code_once(code, lang, timeout, ui=ui, **fixture_args)
+    run = run_code_once(code, lang, timeout, ui=ui, framework=framework, **fixture_args)
     ran = run.get("ran")
     out = run.get("output", "")
     lint_passed = run.get("lint_passed")
