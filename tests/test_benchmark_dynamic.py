@@ -1725,20 +1725,23 @@ def test_lvgl_esphome_tests_exist_and_are_code_graded():
     ids = {t["id"]: t for t in suite.tests_config.get("coding", [])}
     for tid in ("lvgl_button_screen", "lvgl_dashboard_widgets", "esphome_climate_sensor", "esphome_multi_device_automation"):
         assert tid in ids
-        assert ids[tid]["type"] == "code"
         assert ids[tid]["category"] == "coding"
-    assert ids["lvgl_button_screen"]["lang"] == "c"
-    assert ids["esphome_climate_sensor"]["lang"] == "yaml"
-    assert "lvgl_dashboard_widgets" in ids
+    for tid in ("lvgl_button_screen", "lvgl_dashboard_widgets"):
+        assert ids[tid]["type"] == "ui"
+        assert ids[tid]["framework"] == "lvgl"
+        assert ids[tid]["lang"] == "c"
+    for tid in ("esphome_climate_sensor", "esphome_multi_device_automation"):
+        assert ids[tid]["type"] == "code"
+        assert ids[tid]["lang"] == "yaml"
 
 
 def test_lvgl_esphome_functional_verifiers():
     suite = LLMModelBenchmark()
     good_lvgl = (
-        "```c\nvoid lv_example(void) {\n lv_init();\n lv_obj_t *screen = lv_screen_active();\n"
-        " lv_obj_t *btn = lv_button_create(screen);\n lv_label_create(screen);\n"
+        "```c\nvoid lvgl_ui_create(void) {\n lv_init();\n lv_obj_t *screen = lv_screen_active();\n"
+        " lv_obj_t *btn = lv_button_create(screen);\n lv_obj_t *label = lv_label_create(screen);\n"
         " lv_label_set_text(label, \"ON\");\n lv_obj_center(btn);\n lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);\n"
-        " lv_display_set_flush_cb(disp, my_flush);\n while(1) { lv_tick_inc(5); lv_timer_handler(); } }\n```"
+        " lv_display_set_flush_cb(disp, my_flush);\n lv_timer_handler(); }\n```"
     )
     assert suite._verify_functional_response("lvgl_button_screen", good_lvgl) is True
     assert suite._verify_functional_response("lvgl_button_screen", "def foo():\n    pass") is False

@@ -2985,7 +2985,8 @@ class LLMModelBenchmark:
         # ---- LVGL (C) ----
         elif test_id == "lvgl_button_screen":
             return (
-                any(x in cleaned for x in ["lv_init"])
+                "lvgl_ui_create" in cleaned
+                and any(x in cleaned for x in ["lv_init"])
                 and any(x in cleaned for x in ["lv_screen_active", "lv_obj_create"])
                 and any(x in cleaned for x in ["lv_button_create", "lv_btn_create"])
                 and any(x in cleaned for x in ["lv_label_create", "lv_label_set_text"])
@@ -2995,7 +2996,8 @@ class LLMModelBenchmark:
             )
         elif test_id == "lvgl_dashboard_widgets":
             return (
-                "lv_init" in cleaned
+                "lvgl_ui_create" in cleaned
+                and "lv_init" in cleaned
                 and any(x in cleaned for x in ["lv_bar_create", "lv_arc_create", "lv_label_create", "lv_chart_create"])
                 and any(x in cleaned for x in ["lv_slider_create", "lv_dropdown_create"])
                 and any(x in cleaned for x in ["lv_chart_set_point_count", "lv_chart_set_next_value"])
@@ -3485,7 +3487,7 @@ class LLMModelBenchmark:
             # Preserve the UI nature of the original test (e.g. youtuber HTML
             # apps with type "ui"): grading a repaired UI as non-UI would run
             # it without screenshot scoring.
-            is_ui = (test.get("type") == "ui") or any(
+            is_ui = (test.get("type") == "ui") or test.get("framework") == "lvgl" or any(
                 k in repaired_resp.lower()
                 for k in (
                     "import pygame", "import tkinter", "from tkinter",
@@ -3500,6 +3502,7 @@ class LLMModelBenchmark:
             try:
                 gr = grade_code(
                     repaired_resp, lang, None, ui=is_ui,
+                    framework=test.get("framework"),
                     **({"test_id": test["id"]} if test.get("id") in CLI_FIXTURE_TEST_IDS else {}),
                 )
                 original_result["repaired_code_ran"] = gr.get("ran")
@@ -4956,7 +4959,7 @@ class LLMModelBenchmark:
                 if test.get("review_only"):
                     test_result.update(lint_passed=True, code_ran=None, code_score=None)
                 elif ttype in ("code", "ui") and resp_text:
-                    is_ui = (ttype == "ui") or any(
+                    is_ui = (ttype == "ui") or test.get("framework") == "lvgl" or any(
                         k in resp_text.lower()
                         for k in (
                             "import pygame",
@@ -4977,6 +4980,7 @@ class LLMModelBenchmark:
                         try:
                             gr = grade_code(
                                 resp_text, lang, expected_out, ui=is_ui,
+                                framework=test.get("framework"),
                                 **({"test_id": test["id"]} if test.get("id") in CLI_FIXTURE_TEST_IDS else {}),
                             )
                             test_result["code_ran"] = gr["ran"]
@@ -5501,6 +5505,7 @@ class LLMModelBenchmark:
         "python",
         "node",
         "cpp",
+        "c",
         "java",
         "sql",
         "bash",
