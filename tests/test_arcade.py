@@ -199,6 +199,30 @@ def test_arcade_index_and_play(arcade_client):
     assert b"open the initials form" not in res.data
 
 
+def test_api_games_json(arcade_client):
+    body = arcade_client.get("/api/games").get_json()
+    assert body["success"] is True
+    assert len(body["games"]) == 1
+    game = body["games"][0]
+    assert game["slug"] == "demo-model_demo-breakout"
+    assert game["title"]
+    assert game["plays"] == 0
+    assert game["rating"] == {"count": 0, "average": 0.0}
+
+    # A posted star vote is reflected on the next read.
+    assert arcade_client.post("/api/games/demo-model_demo-breakout/rate", json={"stars": 5, "initials": "API"}).status_code == 200
+    assert arcade_client.get("/api/games").get_json()["games"][0]["rating"] == {"count": 1, "average": 5.0}
+
+    # Unknown category filters everything out.
+    assert arcade_client.get("/api/games?category=nope").get_json()["games"] == []
+
+    # Single-game detail carries the scoreboard and prompt.
+    detail = arcade_client.get("/api/games/demo-model_demo-breakout").get_json()
+    assert detail["success"] is True
+    assert detail["game"]["scores"] == []
+    assert detail["game"]["prompt"] == "build breakout"
+
+
 def test_arcade_play_missing(arcade_client):
     res = arcade_client.get("/play/nope-not-here")
     assert res.status_code == 404
