@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir flask flask-cors flask-socketio flask-sockets sim
 
 # Copy required files into container
 COPY llm_benchmark_suite.py /app/
+COPY manuscript_rubric.py /app/
 COPY multistep_benchmark.py /app/
 COPY context_awareness.py /app/
 COPY sandbox_exec.py /app/

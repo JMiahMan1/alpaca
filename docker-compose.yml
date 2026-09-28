@@ -111,6 +111,11 @@ services:
       - ./data:/app/data
       - ./web:/app/web:ro
       - ./llm_benchmark_suite.py:/app/llm_benchmark_suite.py:ro
+      # llm_benchmark_suite imports this at module scope, so the image has to
+      # carry it (Dockerfile.web COPYs it too) or the dashboard dies on boot
+      # with ModuleNotFoundError. Mounted as well as copied, like its siblings,
+      # so editing the rubric needs a restart rather than a rebuild.
+      - ./manuscript_rubric.py:/app/manuscript_rubric.py:ro
       - "${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock"
       - ./benchmark_tests.json:/app/benchmark_tests.json:ro
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
