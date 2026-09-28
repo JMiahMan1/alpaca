@@ -5279,41 +5279,92 @@ def download_logs():
         return f"Failed to retrieve logs: {e!s}", 500
 
 
+def _restart_container_via_docker(name: str, delay_s: float = 0.0) -> tuple[bool, str]:
+    """Restart a container through the Docker socket.
+
+    The dashboard container has the socket mounted and the `docker` Python SDK
+    installed (Dockerfile.web), but NOT the `docker` CLI - so a
+    ``subprocess.run(["docker", ...])`` fallback raised FileNotFoundError here
+    and was swallowed, which is why "Save & Restart Backend" reported success
+    and then timed out in the browser.
+    """
+    if delay_s:
+        time.sleep(delay_s)
+    try:
+        client = docker.from_env()
+        container = client.containers.get(name)
+        container.restart(timeout=30)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 @app.route("/api/proxy/restart", methods=["POST"])
 def restart_proxy_services():
-    """Trigger background restart of llama-server and alpaca-proxy docker containers"""
+    """Restart llama-server (and, in the background, alpaca-proxy).
+
+    Backs "Save & Restart Backend" in the Model Profiles editor: the editor
+    writes models.ini / the profile overlay, and llama-server only reads those
+    at process start, so the button is meaningless without a restart.
+
+    llama-server is restarted synchronously through the proxy's own
+    ``/admin/restart`` so it inherits the proxy's restart lock, its 15s
+    cooldown, and its stop-then-verify-then-start sequence - a raw
+    ``docker restart`` can race a still-running process for the GPU.
+
+    alpaca-proxy is restarted afterwards from a background thread via the
+    Docker socket: it cannot restart itself, and the HTTP response has to be
+    flushed before the process serving it goes away.
+    """
     import httpx
 
-    # 1. Try to find the active proxy and call /admin/restart
+    steps: list[dict] = []
+
     proxy_url = _find_proxy_url()
-
-    if proxy_url:
+    if not proxy_url:
+        steps.append({"step": "llama-server", "ok": False, "detail": "no alpaca-proxy endpoint is reachable"})
+    else:
         try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.post(f"{proxy_url}/admin/restart", params={"restart_proxy": "true"})
-                if resp.status_code == 200:
-                    return jsonify(
-                        {
-                            "status": "success",
-                            "message": "Backend restart sequence initiated via proxy API.",
-                        }
-                    )
+            with httpx.Client(timeout=90.0) as client:
+                resp = client.post(f"{proxy_url}/admin/restart")
+            if resp.status_code == 200:
+                steps.append({"step": "llama-server", "ok": True, "detail": resp.json().get("message", "restarted")})
+            else:
+                # Do not fall through to success: a non-200 here means the
+                # button did nothing, and the caller has to be told.
+                detail = resp.text.strip()[:300] or f"HTTP {resp.status_code}"
+                steps.append({"step": "llama-server", "ok": False, "detail": f"proxy returned {detail}"})
         except Exception as e:
-            print(f"Proxy restart request failed: {e}")
+            steps.append({"step": "llama-server", "ok": False, "detail": f"proxy request failed: {e}"})
 
-    # 2. Fallback to local subprocess execution (e.g. host development mode)
-    def run_restart_subprocess():
-        time.sleep(0.5)
-        try:
-            import subprocess
+    # If the proxy could not restart llama-server, do not also bounce the proxy:
+    # that would take the dashboard's only route to the model runtime offline.
+    llama_ok = steps and steps[0]["ok"]
+    if llama_ok:
 
-            subprocess.run(["docker", "restart", "llama-server"], capture_output=True, text=True)
-            subprocess.run(["docker", "restart", "alpaca-proxy"], capture_output=True, text=True)
-        except Exception as e:
-            print(f"Subprocess restart failed: {e}")
+        def restart_proxy_later():
+            ok, detail = _restart_container_via_docker("alpaca-proxy", delay_s=1.0)
+            if not ok:
+                print(f"[proxy/restart] alpaca-proxy restart failed: {detail}")
 
-    threading.Thread(target=run_restart_subprocess, daemon=True).start()
-    return jsonify({"status": "success", "message": "Backend restart sequence initiated via fallback."})
+        threading.Thread(target=restart_proxy_later, daemon=True).start()
+        steps.append({"step": "alpaca-proxy", "ok": True, "detail": "restart scheduled in the background"})
+    else:
+        steps.append({"step": "alpaca-proxy", "ok": False, "detail": "skipped - llama-server restart did not succeed"})
+
+    failed = [s for s in steps if not s["ok"]]
+    if failed:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Restart did not complete: " + "; ".join(f"{s['step']}: {s['detail']}" for s in failed),
+                    "steps": steps,
+                }
+            ),
+            502,
+        )
+    return jsonify({"status": "success", "message": "Backend restart sequence initiated.", "steps": steps})
 
 
 @app.route("/api/requests")
@@ -5711,7 +5762,11 @@ def apply_telemetry_recommendations():
     profile_stem = sanitized_model
 
     def clean_str(s):
-        return s.replace("/", "").replace("_", "").replace("-", "").lower()
+        # ':' matters as much as '/', '_' and '-': the public model name is
+        # family:quant and the router file is family--quant.gguf, so a name
+        # that kept its colon could never match the stem the proxy reads and
+        # the apply silently landed in a profile file nothing consumes.
+        return s.replace("/", "").replace(":", "").replace("_", "").replace("-", "").replace(".", "").lower()
 
     clean_target = clean_str(model)
 
@@ -5777,13 +5832,26 @@ def analyze_all_models():
     telemetry_dir = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
     strategy = request.args.get("strategy", "performance")
 
+    # Every response below carries the same envelope. The error paths used to
+    # return `{"error", "models": []}` where the success path returned
+    # `results`, so a client reading `.results` got `undefined` on failure.
+    def envelope(**overrides):
+        payload = {
+            "strategy": strategy,
+            "models_analyzed": 0,
+            "models_skipped": [],
+            "results": [],
+        }
+        payload.update(overrides)
+        return jsonify(payload)
+
     if not telemetry_dir.exists():
-        return jsonify({"error": "Telemetry directory not found", "models": []}), 404
+        return envelope(error="Telemetry directory not found"), 404
 
     try:
         from analyzer import analyze_telemetry
     except ImportError as e:
-        return jsonify({"error": f"Analyzer module unavailable: {e}", "models": []}), 500
+        return envelope(error=f"Analyzer module unavailable: {e}"), 500
 
     perf_first = strategy != "safe"
     results = []
@@ -5858,14 +5926,7 @@ def analyze_all_models():
     # Sort by priority (highest first), then by VRAM headroom descending for same priority
     results.sort(key=lambda r: (-r["priority_score"], -r["vram_summary"]["headroom_mb"]))
 
-    return jsonify(
-        {
-            "strategy": strategy,
-            "models_analyzed": len(results),
-            "models_skipped": skipped,
-            "results": results,
-        }
-    )
+    return envelope(models_analyzed=len(results), models_skipped=skipped, results=results)
 
 
 def _get_currently_loaded_model():

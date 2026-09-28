@@ -4730,7 +4730,7 @@ const saved = _loadHumanRatings(t.id) || {};
     function detectLang(code) {
         const low = (code || '').toLowerCase();
         const py = (low.match(/def\s|import\s|print\(|self\./g) || []).length;
-        const js = (low.match(/console\.log|function\s|=>>|require\(|document\./g) || []).length;
+        const js = (low.match(/console\.log|function\s|=>|require\(|document\./g) || []).length;
         if (py === 0 && js === 0) return 'python';
         return py >= js ? 'python' : 'node';
     }
@@ -6510,10 +6510,8 @@ const saved = _loadHumanRatings(t.id) || {};
         sharedMetricCount.textContent = `${results.length} Models`;
     }
 
-    // Model comparison filter (graphs & stats)
-    function isOnlineModelName(model) {
-        return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini|cline_pass|cline|claude|codex|deepseek|pi):/i.test(model || '');
-    }
+    // Model comparison filter (graphs & stats) uses the isOnlineModelName()
+    // defined near the top of this closure.
 
     function getFilteredResults(results, type) {
         if (!results || !filterInitialized[type]) return results;
@@ -8722,12 +8720,24 @@ const saved = _loadHumanRatings(t.id) || {};
         }
 
         fetch('/api/proxy/restart', { method: 'POST' })
-            .then(res => res.json())
-            .then(data => {
-                if (s1) s1.textContent = '✅';
+            .then(res => res.json().then(data => ({ ok: res.ok, data })))
+            .then(({ ok, data }) => {
+                if (s1) s1.textContent = ok ? '✅' : '❌';
+                if (!ok) {
+                    // The server tells us exactly which step failed and why.
+                    // Polling for an offline->online transition that is never
+                    // going to happen just burns 90s and then blames the user.
+                    if (overlay) overlay.classList.remove('open');
+                    showToast(data.message || data.error || 'Restart failed.', 'error');
+                    startMonitorPolling();
+                    return;
+                }
                 startRestartPolling();
             })
             .catch(err => {
+                // No response at all: the dashboard itself was likely
+                // restarted underneath us, so give it a moment and re-check
+                // rather than reporting a hard failure.
                 console.error("Restart error:", err);
                 if (s1) s1.textContent = '✅';
                 startRestartPolling();
@@ -9579,8 +9589,9 @@ const saved = _loadHumanRatings(t.id) || {};
                         <div style="color:var(--color-primary);font-weight:600;font-size:0.68rem;margin-bottom:0.3rem;">💡 Suggested Settings:</div>
                         <div style="font-family:monospace;font-size:0.67rem;color:var(--text-secondary);margin-bottom:0.4rem;">${Object.entries(r.recommendations).map(([k,v]) => `${k} = ${v}`).join(' &nbsp;|&nbsp; ')}</div>
                         <div style="font-size:0.67rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.4;">${r.explanation}</div>
-                        <button class="btn btn-primary" style="padding:0.25rem 0.6rem;font-size:0.65rem;margin:0;"
-                            onclick="applyAnalysisRec('${r.model_alias}', ${JSON.stringify(r.recommendations).replace(/"/g, '&quot;')})">
+                        <button class="btn btn-primary js-apply-analysis" style="padding:0.25rem 0.6rem;font-size:0.65rem;margin:0;"
+                            data-model="${r.model_alias}"
+                            data-recs="${JSON.stringify(r.recommendations).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}">
                             Apply to Profile
                         </button>
                     </div>` : `<div style="color:var(--color-success);font-size:0.68rem;">✅ No optimizations needed. Settings are well-configured.</div>`}
@@ -9596,23 +9607,23 @@ const saved = _loadHumanRatings(t.id) || {};
         }
     }
 
-    async function applyAnalysisRec(modelAlias, recommendations) {
+    // Delegated so it survives the results list being re-rendered, and so no
+    // recommendation value has to survive a round trip through an HTML
+    // attribute into an inline handler. `applyAnalysisRec` itself is module
+    // scope now (see below) - inside this closure it was unreachable from the
+    // old inline onclick and threw ReferenceError on every click.
+    resultsEl.addEventListener('click', ev => {
+        const btn = ev.target.closest('.js-apply-analysis');
+        if (!btn || !resultsEl.contains(btn)) return;
+        let recommendations = {};
         try {
-            const res = await fetch('/api/telemetry/recommendations/apply', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: modelAlias, recommendations })
-            });
-            const data = await res.json();
-            if (data.status === 'success') {
-                showToast(`✅ Applied settings for ${modelAlias}. Reload model to activate.`, 'success');
-            } else {
-                showToast(`❌ Failed to apply: ${data.error || 'Unknown error'}`, 'error');
-            }
+            recommendations = JSON.parse(btn.dataset.recs || '{}');
         } catch (err) {
-            showToast(`❌ Apply failed: ${err.message}`, 'error');
+            showToast(`❌ Could not read the recommendations: ${err.message}`, 'error');
+            return;
         }
-    }
+        applyAnalysisRec(btn.dataset.model, recommendations);
+    });
 
     const btnAnalyzeAll = document.getElementById('btn-analyze-all');
     if (btnAnalyzeAll) {
@@ -11905,6 +11916,28 @@ const saved = _loadHumanRatings(t.id) || {};
         });
     });
 });
+
+// ═══════════════════════ RESOURCE ANALYSIS ═══════════════════════
+// Module scope, not inside the DOMContentLoaded closure: the Resource Analysis
+// card's "Apply to Profile" button has to reach it, and an inline `onclick`
+// cannot see closure variables.
+async function applyAnalysisRec(modelAlias, recommendations) {
+    try {
+        const res = await fetch('/api/telemetry/recommendations/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: modelAlias, recommendations })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(`✅ Applied settings for ${modelAlias}. Reload model to activate.`, 'success');
+        } else {
+            showToast(`❌ Failed to apply: ${data.error || 'Unknown error'}`, 'error');
+        }
+    } catch (err) {
+        showToast(`❌ Apply failed: ${err.message}`, 'error');
+    }
+}
 
 // ═══════════════════════════ AUDIO STUDIO ═══════════════════════════
 // TTS (Kokoro-82M) + Music (MusicGen-small) via the audio-server service.

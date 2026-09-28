@@ -619,18 +619,30 @@ def test_profile_save_rejected_key_still_reaches_benchmark_suite(client, tmp_pat
     assert llm_benchmark_suite._model_thinking("thinker") is False
 
 
-@patch("httpx.Client.post")
-def test_api_proxy_restart_route(mock_post, client):
-    """Test that restarting proxy triggers proxy endpoints or fallback subprocess"""
+def test_api_proxy_restart_route(client):
+    """Restarting goes through the proxy's own /admin/restart endpoint.
+
+    This used to POST to `/admin/restart?restart_proxy=true` (which the proxy
+    does not have) and fall back to a `docker` CLI subprocess that Dockerfile.web
+    does not install, so the whole button was a no-op that reported success. The
+    behaviour is pinned in tests/test_ui_bugfix_regressions.py; this keeps the
+    happy path covered alongside the other routes.
+    """
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"status": "success"}
-    mock_post.return_value = mock_resp
+    mock_resp.json.return_value = {"status": "success", "message": "llama-server restarted and healthy."}
 
-    res = client.post("/api/proxy/restart")
+    with (
+        patch("web.app._find_proxy_url", return_value="http://proxy:11434"),
+        patch("httpx.Client.post", return_value=mock_resp),
+        patch("web.app._restart_container_via_docker", return_value=(True, "")),
+    ):
+        res = client.post("/api/proxy/restart")
+
     assert res.status_code == 200
     data = json.loads(res.data.decode("utf-8"))
-    assert "success" in data["status"]
+    assert data["status"] == "success"
+    assert {s["step"] for s in data["steps"]} == {"llama-server", "alpaca-proxy"}
 
 
 def test_api_profiles_delete_route(client, tmp_path, monkeypatch):

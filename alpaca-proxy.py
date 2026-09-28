@@ -5759,6 +5759,61 @@ async def admin_vram_clear():
         raise HTTPException(status_code=500, detail=f"Failed to clear VRAM: {e!s}") from e
 
 
+@app.post("/admin/restart")
+async def admin_restart(restart_proxy: bool = False):
+    """Restart the llama-server container so it picks up new models.ini / preset settings.
+
+    This exists because the Model Profiles editor saves straight into
+    ``models.ini``, and llama-server reads that file only at process start - so
+    "Save & Restart Backend" had nothing to call. Previously the dashboard
+    POSTed to this path and got a 404, then fell back to a local
+    ``docker restart`` subprocess, which the web image does not even have
+    (Dockerfile.web installs curl only). The whole button was therefore a no-op
+    that reported success and then timed out in the browser.
+
+    The restart goes through ``restart_llama_server()`` rather than a raw
+    ``docker restart`` so it inherits the shared lock, the 15s cooldown that
+    stops a burst of requests from thrashing the container, and the
+    stop-then-verify-then-start sequence that makes sure the old process has
+    really released the GPU before a new one claims it.
+
+    ``restart_proxy=true`` is accepted for compatibility with the dashboard's
+    original request, but a process cannot restart its own container: the
+    response is the docker restart id for the caller to act on, not a
+    confirmation. Restarting alpaca-proxy is a container-level operation and
+    belongs to whoever owns the compose project.
+    """
+    if restart_proxy:
+        return {
+            "status": "unsupported",
+            "message": (
+                "alpaca-proxy cannot restart its own container. Restart it from whoever owns the "
+                "compose project (`docker compose restart alpaca-proxy`); this endpoint only "
+                "restarts llama-server."
+            ),
+            "llama_server": "skipped",
+        }
+
+    try:
+        restarted = await restart_llama_server()
+    except Exception as e:
+        logger.error(f"llama-server restart failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"llama-server restart failed: {e!s}") from e
+
+    if not restarted:
+        raise HTTPException(status_code=502, detail="llama-server container did not come back up")
+
+    healthy = await wait_for_llama_server_or_restart(timeout=60.0)
+    if not healthy:
+        raise HTTPException(status_code=502, detail="llama-server did not become healthy after restart")
+
+    return {
+        "status": "success",
+        "message": "llama-server restarted and healthy.",
+        "llama_server": "restarted",
+    }
+
+
 @app.post("/admin/models/copy")
 async def admin_model_copy(request: Request):
     """Copy a model to a new name/tag. Body: {\"source\": \"name:tag\", \"target\": \"newname:newtag\"}"""
