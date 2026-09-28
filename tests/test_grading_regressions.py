@@ -184,13 +184,18 @@ def test_audited_false_deductions_minimized(benchmark, test_id, snippet):
 
 @pytest.fixture(scope="module")
 def audited_results():
-    path = Path(
-        os.environ.get(
-            "GRADING_AUDIT_SNAPSHOT", "/var/folders/h4/7cqby_zj7sjfm9v0pp2vwv9h0000gn/T/opencode/union-results.json"
-        )
-    )
+    # This snapshot is an external artifact, not repo data, so there is no
+    # default path that can resolve. It used to default to a hard-coded
+    # /var/folders/... temp path from a previous machine, which meant these six
+    # tests skipped on every checkout including the author's own. Point
+    # GRADING_AUDIT_SNAPSHOT at an export from
+    # `GET /api/benchmarks/export?format=json` to run them.
+    raw = os.environ.get("GRADING_AUDIT_SNAPSHOT")
+    if not raw:
+        pytest.skip("set GRADING_AUDIT_SNAPSHOT to a `format=json` export to run the grading audit")
+    path = Path(raw)
     if not path.is_file():
-        pytest.skip("Optional grading audit snapshot is not available")
+        pytest.skip(f"GRADING_AUDIT_SNAPSHOT points at a missing file: {path}")
     data = json.loads(path.read_text())
     return {
         test["test_id"]: test

@@ -1,13 +1,22 @@
 """Live Integration Tests for Running Alpaca Docker Services.
 
 Tests the live running Alpaca Proxy (port 11434) and Alpaca Web Dashboard (port 5000).
+
+Both hosts are overridable so the suite can be pointed at a stack that is not
+on this machine - the deploy host, or a GitHub Actions runner - without editing
+the file. `ALPACA_PROXY_URL` / `ALPACA_BASE_URL` are the names the live
+workflow (.github/workflows/live.yml) passes in.
 """
+
+import os
 
 import httpx
 import pytest
 
-PROXY_BASE_URL = "http://localhost:11434"
-WEB_BASE_URL = "http://localhost:5000"
+PROXY_BASE_URL = os.environ.get("ALPACA_PROXY_URL", "http://localhost:11434").rstrip("/")
+WEB_BASE_URL = os.environ.get("ALPACA_BASE_URL", "http://localhost:5000").rstrip("/")
+
+pytestmark = pytest.mark.live
 
 
 @pytest.mark.asyncio
@@ -39,8 +48,19 @@ async def test_live_proxy_authentication_flow():
       - The proxy correctly reports auth_required=True after setting a key.
       - A request with a *wrong* key is still accepted from a local client (trust bypass).
       - A request with the *correct* key returns 200.
+
+    This test mutates live proxy state, so it refuses to run when a key is
+    already configured. `/admin/security/status` only reports a *masked* key, so
+    an existing key cannot be read back and restored -- clobbering it would lock
+    the operator out of their own proxy if the run is interrupted.
     """
     async with httpx.AsyncClient(timeout=10.0) as client:
+        # 0. Never clobber an existing key.
+        resp_status = await client.get(f"{PROXY_BASE_URL}/admin/security/status")
+        assert resp_status.status_code == 200
+        if resp_status.json().get("auth_required"):
+            pytest.skip("proxy already has an API key configured; refusing to overwrite live auth state")
+
         # 1. Generate token via web backend
         resp = await client.post(f"{WEB_BASE_URL}/api/online/providers/alpaca/generate")
         assert resp.status_code == 200
@@ -91,7 +111,6 @@ async def test_live_proxy_authentication_flow():
             resp_restored = await client.get(f"{PROXY_BASE_URL}/api/tags")
             assert resp_restored.status_code == 200
 
-
 @pytest.mark.asyncio
 async def test_live_web_online_discovery_and_selection():
     """Verify live web endpoints for provider listing, live model search, and selection persistence."""
@@ -114,7 +133,13 @@ async def test_live_web_online_discovery_and_selection():
         assert len(search_data.get("models", [])) > 0
 
         try:
-            # 3. Save selected model
+            # 3. Remember the operator's current selection so it can be put back
+            #    verbatim. This list drives which online models the benchmark UI
+            #    offers, so wiping it to "[]" would lose real configuration.
+            resp_prev = await client.get(f"{WEB_BASE_URL}/api/online/models/selected")
+            previous_selection = resp_prev.json().get("models", []) if resp_prev.status_code == 200 else []
+
+            # 4. Save selected model
             test_selection = [
                 {
                     "id": "openrouter:google/gemini-2.0-flash-exp:free",
@@ -129,7 +154,7 @@ async def test_live_web_online_discovery_and_selection():
             )
             assert resp_save.status_code == 200
 
-            # 4. Fetch selected models
+            # 5. Fetch selected models
             resp_get = await client.get(f"{WEB_BASE_URL}/api/online/models/selected")
             assert resp_get.status_code == 200
             get_data = resp_get.json()
@@ -137,8 +162,8 @@ async def test_live_web_online_discovery_and_selection():
             selected_ids = [m["id"] for m in get_data.get("models", [])]
             assert "openrouter:google/gemini-2.0-flash-exp:free" in selected_ids
         finally:
-            # Clean up test selection
+            # Restore the selection that was there before this test ran.
             await client.post(
                 f"{WEB_BASE_URL}/api/online/models/selected",
-                json={"models": []},
+                json={"models": previous_selection},
             )

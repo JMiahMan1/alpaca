@@ -1,4 +1,11 @@
+import os
+
+import pytest
 from playwright.sync_api import sync_playwright
+
+pytestmark = pytest.mark.live
+
+DASHBOARD_URL = os.environ.get("ALPACA_BASE_URL", "http://localhost:5000").rstrip("/")
 
 
 def test_dashboard_full_interactive_sweep():
@@ -8,7 +15,10 @@ def test_dashboard_full_interactive_sweep():
     failed_requests = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        try:
+            browser = p.chromium.launch(headless=True)
+        except Exception as e:
+            pytest.skip(f"Chromium not available: {e}")
         page = browser.new_page()
 
         # Listen for console errors and exceptions
@@ -27,7 +37,7 @@ def test_dashboard_full_interactive_sweep():
         )
 
         # 1. Load dashboard
-        page.goto("http://localhost:5000", timeout=15000)
+        page.goto(DASHBOARD_URL, timeout=15000)
         page.wait_for_load_state("domcontentloaded")
 
         # Check sidebar models loaded (both local and online)
