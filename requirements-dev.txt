@@ -2,3 +2,33 @@ ruff
 pytest
 pytest-asyncio
 types-PyYAML
+
+# Runtime packages the test suite imports. `requirements-dev.txt` previously
+# listed no runtime deps at all, so CI could only run the two test files that
+# need nothing beyond the stdlib (147 of 1179 tests).
+#
+# Mirrors the pip install lists in Dockerfile.proxy and Dockerfile.web.
+fastapi
+uvicorn
+httpx
+starlette
+flask
+flask-cors
+flask-socketio
+python-socketio
+simple-websocket
+werkzeug
+jinja2
+docker
+requests
+psutil
+pillow
+PyMuPDF
+qrcode
+numpy
+pyyaml
+# Frontend slice tests execute arcade/static/arcade.js and
+# web/static/js/dashboard.js in `node -e`; they skip when node is absent, so
+# this is only needed to actually exercise them.
+# Playwright itself is optional and NOT listed here: test_smoke_playwright and
+# test_dashboard_e2e are `live` and skip without it.

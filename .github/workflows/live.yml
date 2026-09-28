@@ -1,0 +1,67 @@
+name: Live
+
+# The live suite needs the real stack: alpaca-proxy on :11434, the dashboard on
+# :5000, and (for the Playwright tests) a Chromium install. None of that fits
+# the normal PR path, so it is opt-in. Run it from the Actions tab, or locally
+# with `pytest -m live` once the stack is up.
+#
+# These tests talk to a live GPU box, so they run against the deploy host
+# rather than a throwaway runner: point ALPACA_BASE_URL at an already-running
+# stack and leave the services untouched (no `docker compose up` here, which
+# would kill a benchmark someone is running).
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Dashboard base URL (http://host:port)"
+        required: true
+        default: "http://192.168.2.43:5000"
+      proxy_url:
+        description: "alpaca-proxy base URL"
+        required: true
+        default: "http://192.168.2.43:11434"
+      install_chromium:
+        description: "Install Playwright Chromium (needed by the browser tests)"
+        type: boolean
+        default: true
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install playwright requests
+      - name: Report reachability of the target stack
+        run: |
+          python - <<'PY'
+          import os, sys, urllib.request
+          ok = True
+          for name, key in (("dashboard", "ALPACA_BASE_URL"), ("proxy", "ALPACA_PROXY_URL")):
+              url = os.environ[key]
+              try:
+                  with urllib.request.urlopen(url + "/health", timeout=10) as r:
+                      print(f"{name} {url}/health -> {r.status}")
+              except Exception as e:
+                  ok = False
+                  print(f"{name} {url}/health -> UNREACHABLE ({e})")
+          sys.exit(0 if ok else 1)
+          PY
+        env:
+          ALPACA_BASE_URL: ${{ inputs.base_url }}
+          ALPACA_PROXY_URL: ${{ inputs.proxy_url }}
+      - name: Install Playwright Chromium
+        if: ${{ inputs.install_chromium }}
+        run: python -m playwright install --with-deps chromium
+      - name: Run live tests
+        run: pytest -m live -rs
+        env:
+          ALPACA_BASE_URL: ${{ inputs.base_url }}
+          ALPACA_PROXY_URL: ${{ inputs.proxy_url }}
