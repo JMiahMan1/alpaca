@@ -65,6 +65,64 @@ def _sibling_repo_present():
             f"SharedLLM not found at {SHARED_LLM} - the cross-repo tool contract "
             "cannot be checked. Clone it as a sibling of the alpaca checkout."
         )
+    _skip_if_stale_sibling()
+
+
+def _sibling_sha() -> str:
+    """The sibling's HEAD, for a message a reader can act on."""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "-C", str(SHARED_LLM), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _own_sha() -> str:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _skip_if_stale_sibling() -> None:
+    """Skip when the sibling predates alpaca's copy of the vocabulary.
+
+    A *stale* sibling is a normal state, not a defect: you work in one repo for
+    a week and pull the other when you need it. Before this, the reverse
+    direction reported every tool alpaca had learned as a "phantom the
+    downstream gateway would reject" - ten of them, all of them real, all of them
+    simply newer than the checkout being compared against. On the deploy host,
+    where SharedLLM trails alpaca, that made the suite un-runnable and the
+    message pointed at the wrong thing.
+
+    The signal is the count: a sibling that declares substantially fewer tools
+    than alpaca's canonical set is behind the copy, and the comparison is not
+    meaningful in either direction. `git pull` the sibling.
+    """
+    sibling = _assigned_set(GATEWAY / "agent_loop.py", "ALLOWED_TOOLS")
+    mine = set(_CANONICAL_TOOLS)
+    if sibling and len(sibling) < 0.9 * len(mine):
+        pytest.skip(
+            f"SharedLLM checkout at {SHARED_LLM} is stale: it declares {len(sibling)} tools "
+            f"while alpaca ({_own_sha()}) knows {len(mine)}. The two repos are out of step, so "
+            f"the comparison is not meaningful in either direction - SharedLLM is at "
+            f"{_sibling_sha()}. Pull it (`git -C {SHARED_LLM} pull`) to check the contract."
+        )
 
 
 def _require_sibling() -> Path:

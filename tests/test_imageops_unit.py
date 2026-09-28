@@ -342,6 +342,23 @@ def test_older_pillow_without_a_size_argument_still_renders(monkeypatch):
             raise TypeError("load_default() got an unexpected keyword argument 'size'")
         return real()
 
+    # Both fallbacks have to be forced. The test only ever reached the
+    # load_default path by accident - on a machine with no DejaVu at all - so on
+    # the deploy host, where the font is present behind Debian's
+    # fonts-dejavu-core symlink, truetype succeeded, load_default was never
+    # called, and the test failed for a reason that had nothing to do with
+    # Pillow's version.
+    # Only the DejaVu path is refused, and everything else is delegated: Pillow's
+    # own load_default() loads its bundled face through truetype(), so a blanket
+    # stub breaks the fallback it is supposed to be exercising.
+    real_truetype = ImageFont.truetype
+
+    def no_dejavu(path, *args, **kwargs):
+        if "DejaVu" in str(path):
+            raise OSError(f"no such font: {path}")
+        return real_truetype(path, *args, **kwargs)
+
+    monkeypatch.setattr(ImageFont, "truetype", no_dejavu)
     monkeypatch.setattr(ImageFont, "load_default", fake)
     out = imageops.draw_text(img, "OLD", (0, 50), font_size=40)
     assert out.size == (200, 50)
