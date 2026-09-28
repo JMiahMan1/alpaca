@@ -313,7 +313,15 @@ def test_health_reports_both_engines_and_the_voice_list(client):
 
 
 def test_api_status_is_the_same_document_as_health(client):
-    assert client.get("/api/status").json() == client.get("/health").json()
+    """The two paths are stacked on one handler, so they must be the same
+    document. ``uptime_s`` is recomputed per call, so it is compared
+    separately - asserting whole-document equality made this test fail about
+    one run in ten, on nothing but the clock."""
+    health = client.get("/health").json()
+    status = client.get("/api/status").json()
+    assert set(health) == set(status)
+    assert {k: v for k, v in health.items() if k != "uptime_s"} == {k: v for k, v in status.items() if k != "uptime_s"}
+    assert 0 <= status["uptime_s"] <= health["uptime_s"] + 1.0
 
 
 def test_health_reports_a_loaded_model_and_the_real_uptime(client):

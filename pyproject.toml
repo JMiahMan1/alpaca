@@ -18,6 +18,11 @@ ignore = ["E501"]
 # behaviour the tests in test_tts_text.py assert.
 "tts_text.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/test_tts_text.py" = ["RUF001", "RUF002", "RUF003"]
+# Same argument for the manuscript rubric: its job is to fold smart quotes,
+# en/em dashes and a non-breaking space to their ASCII equivalents, so those
+# exact characters have to appear literally in the code and the tests.
+"manuscript_rubric.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_manuscript_rubric.py" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.format]
 quote-style = "double"

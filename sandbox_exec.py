@@ -106,14 +106,76 @@ except Exception:  # pragma: no cover - fall back to "unknown content"
     _PILImage = None  # type: ignore[assignment]
 
 
+#: Luminance-weighted distance from the frame's background at which a pixel
+#: counts as ink. 12/255 is wide enough to survive JPEG ringing and PNG
+#: colour-profile rounding but narrow enough that paper texture does not
+#: count as a drawn mark.
+_INK_DELTA = 12.0
+
+#: Fraction of the frame that must differ from its background colour before a
+#: frame counts as rendered.
+#:
+#: Variance and colour-count alone cannot tell a designed page from a page with
+#: one line of text on it: anti-aliasing produces hundreds of distinct greys, so
+#: a single line clears both. Measured on the real benchmark screenshots in
+#: ``docs/screenshots`` (1024x768, background = the frame's modal colour):
+#:
+#:   game_falling_sand.png   0.00% ink   (uniform black - already blank)
+#:   one line of text        0.33% ink   <- passed the old check
+#:   game_pong.png           1.80% ink   <- a sparse but genuinely rendered game
+#:   retro_space_invaders.png 7.92% ink
+#:   dashboard_home.png     15.53% ink
+#:
+#: 1% sits between the sparse real frame and the one-line page, with ~1.8x
+#: headroom below the sparsest real screenshot. The cheap alternative of
+#: checking *where* the ink is does not work: ``game_pong`` puts ink in only
+#: 2 of 9 grid cells, the same as a one-line page.
+_MIN_INK_COVERAGE = 0.01
+
+
+def _frame_ink_coverage(png_bytes: bytes) -> float | None:
+    """Fraction of a downscaled frame that differs from its background colour.
+
+    Returns None when the frame cannot be read, so callers can tell "no ink"
+    apart from "could not measure". ``getdata`` is deprecated in Pillow 14 and
+    both spellings are tried so this keeps working across the upgrade.
+    """
+    if not png_bytes or _PILImage is None:
+        return None
+    try:
+        with io.BytesIO(png_bytes) as buf:
+            img = _PILImage.open(buf).convert("RGB")
+            img = img.resize((max(1, img.width // 4), max(1, img.height // 4)))
+        try:
+            pixels = list(img.get_flattened_data())
+        except AttributeError:  # Pillow < 14
+            pixels = list(img.getdata())
+        if not pixels:
+            return None
+        counts: dict[tuple[int, int, int], int] = {}
+        for px in pixels:
+            counts[px] = counts.get(px, 0) + 1
+        background = max(counts, key=lambda k: counts[k])
+        br, bg, bb = background
+        ink = 0
+        for px, count in counts.items():
+            delta = 0.2126 * abs(px[0] - br) + 0.7152 * abs(px[1] - bg) + 0.0722 * abs(px[2] - bb)
+            if delta > _INK_DELTA:
+                ink += count
+        return ink / len(pixels)
+    except Exception:  # pragma: no cover - malformed PNG is not a rendered UI
+        return None
+
+
 def _screenshot_has_content(png_bytes: bytes) -> bool:
     """Return True when a captured PNG shows a rendered, non-blank frame.
 
     A UI program that crashes instantly (or never opens a window) still leaves a
     screenshot behind: the virtual X display shows a blank/black 1024x768 frame,
     so ``scrot`` captures a uniform image. Real content (sprites, text, colored
-    geometry) produces measurable pixel variance and more than a couple of
-    distinct colors. We downscale the image for speed and measure both signals.
+    geometry) produces measurable pixel variance, more than a couple of distinct
+    colors, and enough ink to be worth looking at. We downscale the image for
+    speed and measure all three signals.
 
     Returns True when content is detected, False for a blank/black frame, and
     True (indeterminate) when PIL is unavailable so we never reject a real UI.
@@ -126,14 +188,22 @@ def _screenshot_has_content(png_bytes: bytes) -> bool:
         with io.BytesIO(png_bytes) as buf:
             img = _PILImage.open(buf).convert("RGB")
             img = img.resize((max(1, img.width // 4), max(1, img.height // 4)))
-        pixels = list(img.getdata())
+        try:
+            pixels = list(img.get_flattened_data())
+        except AttributeError:  # Pillow < 14
+            pixels = list(img.getdata())
         if not pixels:
             return False
         luma = [0.2126 * r + 0.7152 * g + 0.0722 * b for r, g, b in pixels]
         mean = sum(luma) / len(luma)
         stddev = (sum((x - mean) ** 2 for x in luma) / len(luma)) ** 0.5
         unique = len({px for px in pixels})
-        return stddev >= 2.0 or unique >= 5
+        if not (stddev >= 2.0 or unique >= 5):
+            return False
+        coverage = _frame_ink_coverage(png_bytes)
+        # Variance and colour count may have said "something is here" while the
+        # frame is still too sparse to be a rendered UI - see _MIN_INK_COVERAGE.
+        return coverage is None or coverage >= _MIN_INK_COVERAGE
     except Exception:  # pragma: no cover - malformed PNG is not a rendered UI
         return False
 
