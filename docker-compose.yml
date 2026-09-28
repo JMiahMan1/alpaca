@@ -73,7 +73,7 @@ services:
       - /usr/share/ollama/.ollama/models:/models
       - ./.alpaca-router:/router-models
       - ./.slots-cache:/slots-cache
-      - /var/run/docker.sock:/var/run/docker.sock
+      - "${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock"
       - ./alpaca-proxy.py:/app/alpaca-proxy.py:ro
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
       - ./alpaca_puller.py:/app/alpaca_puller.py:ro
@@ -111,7 +111,7 @@ services:
       - ./data:/app/data
       - ./web:/app/web:ro
       - ./llm_benchmark_suite.py:/app/llm_benchmark_suite.py:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      - "${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock"
       - ./benchmark_tests.json:/app/benchmark_tests.json:ro
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
       - ./alpaca_puller.py:/app/alpaca_puller.py:ro
@@ -168,7 +168,7 @@ services:
     command: python /app/telemetry_monitor.py
     mem_limit: 256m
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - "${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock:ro"
       - ./.alpaca-router:/router-models
       - ./data:/app/data
       - ./telemetry_monitor.py:/app/telemetry_monitor.py:ro

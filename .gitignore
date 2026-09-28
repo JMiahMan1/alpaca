@@ -17,3 +17,7 @@ venv/
 node_modules/
 .tmp/
 .tmp/
+
+# editor / tooling noise
+.DS_Store
+uv.lock
