@@ -99,29 +99,49 @@ def _own_sha() -> str:
         return "unknown"
 
 
+#: The most recent additions to alpaca's vocabulary, in the order they landed.
+#:
+#: A sibling checkout that is missing any of these predates alpaca's copy, and
+#: the comparison is not meaningful in either direction: the forward direction
+#: passes vacuously (a smaller set is trivially covered) and the reverse reports
+#: every one of them as a phantom. Named rather than counted, because the two
+#: repos are nowhere near the same size - the gateway declares 172 tools and
+#: alpaca grades against 69, so a count says nothing about which is newer.
+#:
+#: Update this when the vocabulary next grows. That is the right moment: it is
+#: the same commit that has to touch the sibling's `ALLOWED_TOOLS` anyway.
+VOCABULARY_MARKERS = (
+    # Phase 8c - Raven's audio and identity surface.
+    "podcastrenderrequest",
+    "speakeridentifyrequest",
+    "listvoicesrequest",
+    # Bug #26 - these two were being fuzzy-matched into other tools by the
+    # gateway because they were advertised but never whitelisted.
+    "networkdevicescanrequest",
+    "storagetexttoaudiorequest",
+)
+
+
 def _skip_if_stale_sibling() -> None:
-    """Skip when the sibling predates alpaca's copy of the vocabulary.
+    """Skip when the sibling checkout predates alpaca's copy of the vocabulary.
 
-    A *stale* sibling is a normal state, not a defect: you work in one repo for
-    a week and pull the other when you need it. Before this, the reverse
-    direction reported every tool alpaca had learned as a "phantom the
-    downstream gateway would reject" - ten of them, all of them real, all of them
-    simply newer than the checkout being compared against. On the deploy host,
-    where SharedLLM trails alpaca, that made the suite un-runnable and the
-    message pointed at the wrong thing.
-
-    The signal is the count: a sibling that declares substantially fewer tools
-    than alpaca's canonical set is behind the copy, and the comparison is not
-    meaningful in either direction. `git pull` the sibling.
+    A *stale* sibling is a normal state, not a defect: you work in one repo for a
+    week and pull the other when you need it. Before this, the reverse direction
+    reported every tool alpaca had learned as a "phantom the downstream gateway
+    would reject" - on the deploy host, where SharedLLM trails alpaca, four
+    tests failed and the message pointed at the wrong thing entirely.
     """
     sibling = _assigned_set(GATEWAY / "agent_loop.py", "ALLOWED_TOOLS")
-    mine = set(_CANONICAL_TOOLS)
-    if sibling and len(sibling) < 0.9 * len(mine):
+    if not sibling:
+        return
+    missing = [t for t in VOCABULARY_MARKERS if t not in sibling]
+    if missing:
         pytest.skip(
-            f"SharedLLM checkout at {SHARED_LLM} is stale: it declares {len(sibling)} tools "
-            f"while alpaca ({_own_sha()}) knows {len(mine)}. The two repos are out of step, so "
-            f"the comparison is not meaningful in either direction - SharedLLM is at "
-            f"{_sibling_sha()}. Pull it (`git -C {SHARED_LLM} pull`) to check the contract."
+            f"SharedLLM checkout at {SHARED_LLM} is stale (at {_sibling_sha()}): it does not "
+            f"declare {missing}, which alpaca ({_own_sha()}) already grades. The two repos are "
+            f"out of step, so this contract cannot be checked in either direction - the forward "
+            f"direction would pass vacuously and the reverse would call real tools phantoms. "
+            f"Pull it: git -C {SHARED_LLM} pull"
         )
 
 
