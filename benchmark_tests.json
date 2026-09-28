@@ -158,6 +158,14 @@
       "num_predict": 800,
       "type": "functional",
       "reasoning_estimate": 1024
+    },
+    {
+      "id": "creative_svg_theme_pack",
+      "label": "Creative: SVG theme motif tile + icon sprite sheet",
+      "prompt": "Produce two SVG assets for a Jarvis health-theme pack. Output ONLY the two fenced blocks below, with no prose before or after.\n\nBLOCK 1 - seamless motif tile. This is handed to CSS as url(\"data:image/svg+xml,...\") and repeated as a background-image, so it must tile with no visible seam: give the root <svg> a square viewBox (0 0 N N) AND matching width=\"N\" height=\"N\" attributes with the same N. It is line art only - the root or its <g> must set fill=\"none\", stroke-width between 1 and 1.5, and every stroke-opacity between 0.06 and 0.22 so the pattern reads as a whisper behind the interface. Never bake in a hex colour: use the literal placeholder {{accent}} on some shapes and {{accentAlt}} on others, because the theme substitutes them per theme. Draw no text and set no font-family - the motif is decoration behind body copy, and the host has no bundled fonts. Draw at least six shapes (paths, circles, ellipses, rects) spread around the tile.\n\nBLOCK 2 - icon sprite sheet. One root <svg> with NO viewBox of its own, containing exactly six <symbol> elements for a home dashboard: pulse, shield, bolt, droplet, moon, spark. Each <symbol> must carry its own viewBox and an id in the form <name>-icon (kebab-case, e.g. pulse-icon, shield-icon). Line art with the same {{accent}} / {{accentAlt}} placeholders, fill=\"none\", stroke-width 1 to 1.5, and no text.\n\nExample tile root:\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">\n  <g fill=\"none\" stroke-width=\"1.4\">\n    <circle cx=\"60\" cy=\"60\" r=\"30\" stroke=\"{{accent}}\" stroke-opacity=\"0.12\"/>\n  </g>\n</svg>",
+      "num_predict": 4000,
+      "type": "functional",
+      "reasoning_estimate": 2048
     }
   ],
   "home_automation": [
