@@ -6,8 +6,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import tts_text  # noqa: E402
-from tts_text import Lexicon, normalize, normalize_dates, normalize_roman, normalize_scripture, paragraphs, sentences  # noqa: E402
+import tts_text
+from tts_text import (
+    Lexicon,
+    normalize,
+    normalize_dates,
+    normalize_roman,
+    normalize_scripture,
+    paragraphs,
+    sentences,
+)
 
 
 @pytest.mark.parametrize(

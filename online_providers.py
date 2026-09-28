@@ -315,7 +315,8 @@ def _parse_claude_harness_output(stdout: str, stderr: str) -> dict[str, Any]:
         }
     raw_result = data.get("result")
     content = str(raw_result) if raw_result not in (None, "") else ""
-    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    raw_usage = data.get("usage")
+    usage: dict = raw_usage if isinstance(raw_usage, dict) else {}
     tokens = 0
     with suppress(TypeError, ValueError):
         tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
@@ -355,11 +356,13 @@ def _parse_codex_harness_output(stdout: str, stderr: str) -> dict[str, Any]:
             continue
         etype = evt.get("type")
         if etype == "item.completed":
-            item = evt.get("item") if isinstance(evt.get("item"), dict) else {}
+            raw_item = evt.get("item")
+            item: dict = raw_item if isinstance(raw_item, dict) else {}
             if item.get("type") == "agent_message" and item.get("text"):
                 content = str(item["text"])
         elif etype == "turn.completed":
-            usage = evt.get("usage") if isinstance(evt.get("usage"), dict) else {}
+            raw_usage = evt.get("usage")
+            usage: dict = raw_usage if isinstance(raw_usage, dict) else {}
             with suppress(TypeError, ValueError):
                 tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or tokens)
             reason = evt.get("finish_reason") or evt.get("stop_reason")
@@ -426,7 +429,8 @@ def _parse_pi_harness_output(stdout: str, stderr: str) -> dict[str, Any]:
                 else:
                     chunks.append(value)
                 break
-        usage = evt.get("usage") if isinstance(evt.get("usage"), dict) else {}
+        raw_usage = evt.get("usage")
+        usage: dict = raw_usage if isinstance(raw_usage, dict) else {}
         with suppress(TypeError, ValueError):
             tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or tokens)
         reason = evt.get("finish_reason") or evt.get("stop_reason")

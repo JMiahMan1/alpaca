@@ -130,7 +130,7 @@ _TENS_ORD = {20: "Twent", 30: "Thirt"}
 def _roman_to_int(s: str) -> int:
     vals = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
     total = 0
-    for a, b in zip(s, s[1:] + " "):
+    for a, b in zip(s, s[1:] + " ", strict=False):
         v = vals[a]
         total += -v if b != " " and vals[b] > v else v
     return total
@@ -191,7 +191,8 @@ def _ordinal_suffix(n: int) -> str:
 
 
 def normalize_dates(text: str) -> str:
-    day = lambda m: f"{m.group(1)}{m.group(2)}{_ordinal_suffix(int(m.group(2)))}"
+    def day(m: re.Match) -> str:
+        return f"{m.group(1)}{m.group(2)}{_ordinal_suffix(int(m.group(2)))}"
     return _MAY_DAY.sub(day, _DATE_DAY.sub(day, text))
 _TITLES = [
     (re.compile(r"\bRev\.\s+(?=[A-Z])"), "Reverend "),
@@ -294,7 +295,8 @@ class Lexicon:
             return
         with self._lock:
             try:
-                data = json.load(open(self.path, encoding="utf-8"))
+                with open(self.path, encoding="utf-8") as fh:
+                    data = json.load(fh)
             except Exception as e:  # keep the last good lexicon
                 logger.error(f"[tts_text] lexicon {self.path} not loaded: {e}")
                 self._mtime = mtime

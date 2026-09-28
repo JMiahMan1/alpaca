@@ -9,6 +9,16 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 # Line length is owned by the formatter.
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# RUF001/RUF002 flag "ambiguous" unicode. In a TTS text-normalisation module
+# these characters ARE the input domain, not mistakes: the scripture regex
+# matches an en-dash range separator (`John 3:16-4:2` typed as `3:16–4:2`),
+# the sentence splitter terminates on curly quotes, and the lexicon emits the
+# IPA stress mark U+02C8 for misaki. ASCII-folding them would break the very
+# behaviour the tests in test_tts_text.py assert.
+"tts_text.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_tts_text.py" = ["RUF001", "RUF002", "RUF003"]
+
 [tool.ruff.format]
 quote-style = "double"
 
@@ -16,4 +26,15 @@ quote-style = "double"
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-q"
+# `live` needs the running stack (proxy :11434, web :5000) or Playwright browsers.
+# Deselect by default so a bare `pytest` is green on a clean machine; run them
+# explicitly with `pytest -m live` (see .github/workflows/live.yml).
+addopts = "-q -m 'not live'"
+markers = [
+    "live: needs the running alpaca stack (proxy 11434 / web 5000) or Playwright browsers",
+    "needs_docker: needs a reachable Docker daemon (sandbox execution)",
+    "needs_node: needs the `node` binary (frontend slice tests)",
+    "needs_gpu: needs a CUDA GPU (model load, real inference)",
+    "needs_sibling_repo: needs ../SharedLLM checked out (cross-repo contract tests)",
+    "slow: takes more than a few seconds",
+]

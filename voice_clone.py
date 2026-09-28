@@ -279,7 +279,8 @@ def list_profiles() -> list[dict]:
         meta = os.path.join(VOICES_DIR, pid, "meta.json")
         if not pid.startswith("_") and os.path.isfile(meta):
             try:
-                out.append(json.load(open(meta, encoding="utf-8")))
+                with open(meta, encoding="utf-8") as fh:
+                    out.append(json.load(fh))
             except Exception as e:
                 logger.warning(f"[voice_clone] unreadable profile {pid}: {e}")
     return sorted(out, key=lambda m: m.get("created", 0), reverse=True)
@@ -315,14 +316,14 @@ def rename_profile(pid: str, name: str) -> dict:
     meta["name"] = _check_name(name, exclude_id=pid)
     path = os.path.join(_pdir(pid), "meta.json")
     tmp = path + ".tmp"
-    json.dump(meta, open(tmp, "w", encoding="utf-8"), indent=1)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=1)
     os.replace(tmp, path)
     return meta
 
 
 def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
     """Build a profile from [(prompt_id, raw_audio_bytes), ...]. Raises ValueError on unusable input."""
-    import numpy as np
     import soundfile as sf
     import torch
 
@@ -359,7 +360,8 @@ def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
         "warnings": sorted({w for r in reports for w in r["warnings"]}),
         "engine": "openvoice-v2",
     }
-    json.dump(meta, open(os.path.join(d, "meta.json"), "w", encoding="utf-8"), indent=1)
+    with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=1)
     logger.info(f"[voice_clone] created profile {pid} from {len(takes)} takes, {total:.0f}s speech")
     return meta
 
