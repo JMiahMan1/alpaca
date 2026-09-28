@@ -202,6 +202,15 @@ _CANONICAL_TOOLS = {
     "imageeditrequest",
     "ocrrequest",
     "redisinspectrequest",
+    # Raven's audio/identity surface (alpaca-side Podcast Studio + speaker ID).
+    "podcastrenderrequest",
+    "speakeridentifyrequest",
+    "listvoicesrequest",
+    # Downstream tools that were advertised in _RAVEN_TOOL_TABLE but absent
+    # from ALLOWED_TOOLS, so the gateway's fuzzy matcher was routing them by
+    # accident rather than by name.
+    "networkdevicescanrequest",
+    "storagetexttoaudiorequest",
 }
 
 # Tier-2 regex aliases mirroring the app (agent_loop.py lines ~3690-3735).
@@ -243,6 +252,14 @@ _TOOL_REGEX_ALIASES = [
     (re.compile(r".*sd.*gen.*"), "imagegenerationrequest"),
     (re.compile(r".*raven.*mission.*"), "ravenmissionrequest"),
     (re.compile(r".*redis.*inspect.*"), "redisinspectrequest"),
+    (re.compile(r".*podcast.*render.*"), "podcastrenderrequest"),
+    (re.compile(r".*podcast.*"), "podcastrenderrequest"),
+    (re.compile(r".*speaker.*ident.*"), "speakeridentifyrequest"),
+    (re.compile(r".*identify.*speaker.*"), "speakeridentifyrequest"),
+    (re.compile(r".*list.*voices.*"), "listvoicesrequest"),
+    (re.compile(r".*voices?.*list.*"), "listvoicesrequest"),
+    (re.compile(r".*network.*scan.*"), "networkdevicescanrequest"),
+    (re.compile(r".*text.*to.*audio.*"), "storagetexttoaudiorequest"),
     (re.compile(r".*control.*plane.*"), "controlplanerequest"),
     (re.compile(r".*restart.*service.*"), "restart_service"),
     (re.compile(r".*identity.*"), "identityrequest"),
