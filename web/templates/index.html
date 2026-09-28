@@ -2349,15 +2349,6 @@
                                     <span style="font-family:monospace; color:white; font-weight:600;">/v1/embeddings</span>
                                 </div>
 
-                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Telemetry & Admin (Port 11434 / 5000)</div>
-                                <div class="doc-menu-item" data-target="doc-api-requests" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
-                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
-                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/requests</span>
-                                </div>
-                                <div class="doc-menu-item" data-target="doc-api-requests-clear" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
-                                    <span class="badge badge-danger" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-danger); border-color:var(--color-danger);">POST</span>
-                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/requests/clear</span>
-                                </div>
                                 <div class="doc-menu-item" data-target="doc-admin-system" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
                                     <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
                                     <span style="font-family:monospace; color:white; font-weight:600;">/admin/system</span>
@@ -2379,7 +2370,17 @@
                                     <span style="font-family:monospace; color:white; font-weight:600;">/api/logs</span>
                                 </div>
 
-                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Dashboard Backend (Port 5000)</div>
+                                <div style="font-size: 0.65rem; color: var(--text-muted); 
+                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Request Monitor (Port 5000)</div>
+                                <div class="doc-menu-item" data-target="doc-api-requests" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/requests</span>
+                                </div>
+                                <div class="doc-menu-item" data-target="doc-api-requests-clear" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span class="badge badge-danger" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-danger); border-color:var(--color-danger);">POST</span>
+                                    <span style="font-family:monospace; color:white; font-weight:600;">/api/requests/clear</span>
+                                </div>
+text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Dashboard Backend (Port 5000)</div>
                                 <div class="doc-menu-item" data-target="doc-api-profiles" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
                                     <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
                                     <span style="font-family:monospace; color:white; font-weight:600;">/api/profiles</span>
@@ -2562,7 +2563,7 @@
                                     <span class="badge badge-success">GET /api/requests</span>
                                 </div>
                                 <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
-                                    Exposed on Dashboard Port 5000 (proxies to Port 11434 `/admin/requests`). Returns detailed states of all currently active requests and the 10 most recently completed requests. Credentials are automatically redacted.
+                                    <strong>Dashboard only (port 5000).</strong> There is no `/api/requests` on the proxy &mdash; the proxy's equivalent is <code>GET /admin/requests</code> on port 11434. This route merges that proxy buffer with the in-process online-provider tracker into one time-ordered list. Returns detailed states of all currently active requests and the 10 most recently completed requests. Credentials are automatically redacted.
                                 </p>
                                 <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
                                 <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl http://localhost:5000/api/requests</pre>
@@ -2575,7 +2576,7 @@
                                     <span class="badge badge-danger" style="background:var(--color-danger); border-color:var(--color-danger);">POST /api/requests/clear</span>
                                 </div>
                                 <p style="font-size:0.8rem; color:var(--text-muted); line-height:1.5; margin-bottom: 1rem;">
-                                    Exposed on Dashboard Port 5000 (proxies to Port 11434 `/admin/requests/clear`). Clears the finished completed requests history logs. Active running requests are unaffected.
+                                    <strong>Dashboard only (port 5000).</strong> There is no `/api/requests/clear` on the proxy &mdash; the proxy's equivalent is <code>POST /admin/requests/clear</code> on port 11434. Clears the finished completed requests history logs on both the proxy and the online-provider tracker. Active running requests are unaffected.
                                 </p>
                                 <h4 style="font-size:0.8rem; color:white; margin-bottom:0.5rem;">Curl Command</h4>
                                 <pre class="code-display-block" style="background:#02040a; max-height:100px;">curl -X POST http://localhost:5000/api/requests/clear</pre>
