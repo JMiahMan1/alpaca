@@ -69,6 +69,14 @@ DEFAULT_EDGE_FADE_S = 1.2
 DEFAULT_DUCK_ATTACK_S = 0.18
 DEFAULT_DUCK_RELEASE_S = 0.45
 
+#: How much *further* the bed drops while somebody is speaking, in dB, on top
+#: of its resting level. This is deliberately small and separate from
+#: `DEFAULT_DUCK_DB`: the bed's resting level already places it that far under
+#: the speech, and spending the same number twice put it at twice the
+#: requested depth (an inaudible bed under dialogue). The sidechain only has to
+#: stop a syllable from landing on a chord change.
+DEFAULT_BED_SIDECHAIN_DB = 6.0
+
 #: Absolute ceiling on a generated bed's peak. Well under 1.0 so the sum with
 #: speech cannot clip before the final encode.
 BED_PEAK_CEILING = 0.7
@@ -267,7 +275,10 @@ def duck_envelope(
     # Instantaneous power in short windows, then a one-pole smoother. The
     # smoother's coefficients ARE the attack and release, which keeps the
     # whole thing one vectorised pass with no Python loop over samples.
-    win = max(1, int(0.01 * sr))
+    # The window must never be wider than the buffer, or the reshape below has
+    # no samples to fill. A clip shorter than one 10 ms window is not a real
+    # episode, but it is a reachable request body and must not be a 500.
+    win = max(1, min(int(0.01 * sr), speech.size))
     n_win = max(1, speech.size // win)
     trimmed = speech[: n_win * win].reshape(n_win, win)
     level = np.sqrt(np.mean(trimmed.astype(np.float64) ** 2, axis=1)).astype(np.float32)
@@ -306,8 +317,11 @@ def resample_linear(x: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
     far below the bed. It is not a general resampler and the docstring says
     so, because the obvious next caller will reach for it anyway.
     """
-    if src_sr == dst_sr or x.size == 0:
-        return x.astype(np.float32)
+    if src_sr <= 0 or dst_sr <= 0 or src_sr == dst_sr or x.size == 0:
+        # A WAV header can declare a framerate of 0. Passing that through to
+        # the ratio below is a ZeroDivisionError on a request that arrived over
+        # HTTP, so an unreadable rate returns the audio untouched instead.
+        return np.asarray(x, dtype=np.float32)
     n_out = max(1, round(x.size * dst_sr / src_sr))
     src_idx = np.linspace(0.0, x.size - 1, n_out, dtype=np.float64)
     return np.interp(src_idx, np.arange(x.size, dtype=np.float64), x).astype(np.float32)
@@ -700,6 +714,14 @@ def parse_script(
         line = raw.strip()
         if not line:
             continue
+        bare = _BARE_TAG_RE.match(line)
+        if bare and not _looks_like_header(line):
+            # "[host_b]" with nothing after it. `match_speaker_tag` needs
+            # trailing text, so without this the label falls into the
+            # continuation branch below and the PREVIOUS host reads "host b"
+            # aloud while this speaker's actual line is lost.
+            turns.append(Turn(speaker=(bare.group("bracketed") or bare.group("colon")).strip(), text="", line_no=i))
+            continue
         tag = match_speaker_tag(line)
         if tag and _resolve(tag[0]) is not None:
             turns.append(Turn(speaker=tag[0], text=tag[1], line_no=i))
@@ -709,7 +731,7 @@ def parse_script(
             # previous host read the other host's label aloud. A tag that
             # does not look like a label at all is prose with a colon in it.
             turns.append(Turn(speaker=tag[0], text=tag[1], line_no=i))
-        elif turns and not _looks_like_header(line):
+        elif turns and not turns[-1].is_heading and not _looks_like_header(line):
             turns[-1].text = (turns[-1].text + " " + line).strip()
         else:
             turns.append(Turn(speaker="", text=line, line_no=i, is_heading=_looks_like_header(line)))
@@ -723,7 +745,8 @@ def parse_script(
             if resolved is None:
                 # Keep the name for display, but the voice falls back to the
                 # nearest previous host rather than being guessed.
-                t.host_index = _last_host(turns, idx) or _resolve(default_host)
+                nearest = _last_host(turns, idx)
+                t.host_index = _resolve(default_host) if nearest is None else nearest
             else:
                 t.host_index = resolved
         if t.host_index is None:
@@ -743,6 +766,14 @@ def spoken_turns(turns: Sequence[Turn]) -> list[Turn]:
     """Drop headings, leaving only the turns that should be synthesised."""
     return [t for t in turns if not t.is_heading and t.text.strip()]
 
+
+#: A line that is nothing but a speaker label, e.g. "[host_b]" or "Rowan:".
+#: `match_speaker_tag` requires trailing text, so these need their own pattern.
+#: A bracket pair or a trailing colon is REQUIRED - without one this matches
+#: every short line in the script and turns the whole episode into labels.
+_BARE_TAG_RE = re.compile(
+    r"^\s*(?:[\[(]\s*(?P<bracketed>[^\[\]()\n]{1,40}?)\s*[\])]|(?P<colon>[^\[\]()\n:]{1,40}?)\s*[:\u2013-])\s*$"
+)
 
 _HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S|^\s*(?:intro|outro|host|script|episode)\s*$", re.I)
 
@@ -771,6 +802,7 @@ def split_for_tts(text: str, max_chars: int = 3800) -> list[str]:
     ``max_chars`` defaults below the server's own cap, leaving room for the
     few characters of a speaker tag.
     """
+    max_chars = max(1, int(max_chars))
     if not text:
         return []
     if len(text) <= max_chars:
@@ -984,7 +1016,12 @@ def mix_podcast(
         b = resample_linear(np.asarray(bed, dtype=np.float32), sr, sr)
         b = loop_to_length(b, n, crossfade_s=max(0.25, edge_fade_s), sr=sr)
         b = normalize_peak(b, BED_PEAK_CEILING) * db_to_lin(-abs(duck_db))
-        env = duck_envelope(speech, sr, duck_db=duck_db, attack_s=duck_attack_s, release_s=duck_release_s)
+        # The resting level above already spends `duck_db`. The envelope is a
+        # multiplier that runs 1.0 in a gap down to db_to_lin(-sidechain_db)
+        # under speech, so giving it `duck_db` too would square the number.
+        env = duck_envelope(
+            speech, sr, duck_db=min(abs(duck_db), DEFAULT_BED_SIDECHAIN_DB), attack_s=duck_attack_s, release_s=duck_release_s
+        )
         mixed = speech + b * env
 
     if n:
@@ -992,7 +1029,10 @@ def mix_podcast(
     mixed = soft_clip(np.asarray(mixed, dtype=np.float32) * max(0.0, master_gain))
 
     return MixResult(
-        wav=encode_wav(mixed, sr),
+        # clip=False: the limiter already ran above, on the summed mix. Running
+        # it again would be a second pass over the same samples and cost a
+        # further ~1.7 dB on a peak that is already near full scale.
+        wav=encode_wav(mixed, sr, clip=False),
         duration_s=round(n / sr, 2) if n else 0.0,
         speech_duration_s=round(speech.size / sr, 2),
         bed_duration_s=round(float(bed.size) / sr, 2) if bed is not None and bed.size else 0.0,

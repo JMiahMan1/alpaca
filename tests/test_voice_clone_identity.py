@@ -335,9 +335,18 @@ def test_spread_grows_as_vectors_move_apart():
 
 
 def test_threshold_scales_with_the_worst_speakers_own_variation():
+    """A tight cohort can afford a strict floor; an inconsistent one cannot.
+
+    The floor is a SIMILARITY, so more measured self-variation means the floor
+    moves DOWN (more room), not up. An earlier version returned a distance and
+    was compared directly against the similarity `identify` reports, which made
+    it `cos >= 1.5 * (1 - cos)` - satisfied by every positive cosine, so the
+    floor was always the 0.05 clamp and any two unrelated voices matched.
+    """
     tight = vc.identity_threshold([0.02, 0.03])
     loose = vc.identity_threshold([0.30, 0.40])
-    assert loose > tight
+    assert tight > loose
+    assert tight == pytest.approx(1.0 - vc.SPREAD_MARGIN * 0.03, abs=1e-6)
 
 
 def test_threshold_uses_the_worst_profile_not_the_average():
@@ -347,12 +356,25 @@ def test_threshold_uses_the_worst_profile_not_the_average():
 
 
 def test_threshold_is_clamped_at_the_floor():
-    assert vc.identity_threshold([0.0, 0.0]) == pytest.approx(vc.MIN_IDENTITY_THRESHOLD)
-    assert vc.identity_threshold([0.001]) >= vc.MIN_IDENTITY_THRESHOLD
+    """A spread of 0 means "these recordings are identical", which would ask for a
+    floor of exactly 1.0 - unmatchable in practice. The clamp keeps it usable."""
+    assert vc.identity_threshold([0.0, 0.0]) == pytest.approx(vc.MAX_IDENTITY_THRESHOLD)
+    assert vc.identity_threshold([0.001]) <= vc.MAX_IDENTITY_THRESHOLD
 
 
 def test_threshold_is_clamped_at_the_ceiling():
-    assert vc.identity_threshold([1.0]) == pytest.approx(vc.MAX_IDENTITY_THRESHOLD)
+    """A wildly inconsistent enrolment asks for a negative floor; the clamp keeps
+    it inside the range a cosine can actually take."""
+    assert vc.identity_threshold([5.0]) == pytest.approx(vc.MIN_IDENTITY_THRESHOLD)
+
+
+def test_the_derived_floor_is_not_swallowed_by_a_clamp():
+    """A realistic cohort spread must produce the DERIVED number. This failed
+    while the ceiling was 0.95, which quietly loosened every real cohort to a
+    constant regardless of how well its own re-records matched."""
+    derived = vc.identity_threshold([0.013, 0.023])
+    assert derived == pytest.approx(1.0 - vc.SPREAD_MARGIN * 0.023, abs=1e-6)
+    assert derived > 0.95
 
 
 def test_threshold_ignores_profiles_that_predate_the_spread_record():
@@ -408,10 +430,59 @@ def test_the_spread_of_one_take_falls_back_to_its_windows(voices_dir, conv_and_t
 
 
 def test_the_recorded_spread_matches_a_recomputation(voices_dir, conv_and_torch, no_deps):
-    """The number in meta.json must be derived, not typed in by hand."""
+    """The number in meta.json must be derived, not typed in by hand.
+
+    It is a hold-one-out distance - each take's best window against the centroid
+    of the others - because that is the same comparison `identify` performs on a
+    new clip. It used to be the distance between take CENTROIDS, which is a
+    shorter hop: averaging shrinks deviation, so a floor derived from it is
+    derived from a population the scores are never drawn from.
+    """
     meta, _ = _enrol("Ada", _takes(VOICE_A_HZ, (1, 2, 3)))
+    # `takes.pt` holds take CENTROIDS, but the hold-one-out is measured over each
+    # take's WINDOWS against the other takes' centroid, and the windows are not
+    # retained. So the number is checked against the two properties that
+    # distinguish it from the old take-centroid distance: it is no larger (each
+    # term averages over more vectors) and it is no smaller than one take's own
+    # internal variation. `_self_spread` itself is pinned arithmetically below.
     per_take = np.load(voices_dir / meta["id"] / "takes.pt.npy", allow_pickle=False)
-    assert vc._pairwise_spread(list(per_take)) == pytest.approx(meta["intraspeaker_spread"], abs=1e-4)
+    centroid_measure = vc._pairwise_spread(list(per_take))
+    # Comparing a single WINDOW against a centroid is a longer hop than
+    # comparing two centroids, so the hold-one-out is the more pessimistic of
+    # the two - which is the point: the floor has to clear the distance a real
+    # incoming clip will actually show.
+    assert meta["intraspeaker_spread"] >= centroid_measure - 1e-6
+    assert 0.0 <= meta["intraspeaker_spread"] < 1.0
+
+
+def test_self_spread_is_the_worst_hold_one_out_distance(conv_and_torch, voices_dir):
+    """`_self_spread` takes the MAXIMUM over holds-out, not the mean.
+
+    The mean would let three consistent takes hide one bad recording, and the
+    floor derived from it would then reject that speaker's own re-records."""
+    def v(*xs):
+        return _T(np.asarray(xs, dtype="float32"))
+
+    # Take 0 is an exact copy of take 1, so holding either out scores 1.0.
+    # Take 2 is a different direction entirely.
+    a, b, c = v([1.0, 0.0]), v([1.0, 0.0]), v([0.0, 1.0])
+    worst = vc._self_spread([[a, b], [a, b], [c]])
+    hold_out_c = 1.0 - vc._cosine(c, np.array([1.0, 0.0], dtype="float32"))
+    assert worst == pytest.approx(hold_out_c, abs=1e-5)
+
+
+def test_self_spread_of_identical_takes_is_zero(conv_and_torch, voices_dir):
+    a = _T(np.array([1.0, 0.0], dtype="float32"))
+    assert vc._self_spread([[a, a], [a, a], [a, a]]) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_self_spread_falls_back_to_windows_for_a_single_take(conv_and_torch, voices_dir):
+    """One take cannot be held out, so the yardstick is its own window variation
+    rather than 0.0 - reporting 0.0 would claim a certainty there is no
+    evidence for."""
+    a = _T(np.array([1.0, 0.0], dtype="float32"))
+    b = _T(np.array([0.0, 1.0], dtype="float32"))
+    assert vc._self_spread([[a, b]]) == pytest.approx(1.0, abs=1e-6)
 
 
 def test_two_identical_takes_record_a_near_zero_spread(voices_dir, conv_and_torch, no_deps):
@@ -647,3 +718,288 @@ def test_calibrate_and_identify_agree_on_a_verdict_at_the_suggested_threshold(en
     thr = r["suggested_threshold"]
     assert vc.identify(enrolled["ada_clip"], threshold=thr)["matched"] == enrolled["ada"]["id"]
     assert vc.identify(enrolled["bob_clip"], threshold=thr)["matched"] != enrolled["ada"]["id"]
+
+
+# --------------------------------------------------------------------------
+# Regressions from the review pass
+#
+# Each of these failed before a fix, and each pinned the *reason* the fix
+# exists. The two that mattered most were a unit mismatch (a distance compared
+# against a similarity, so every stranger was named) and a window gate that was
+# missing entirely, so a silent window could out-score a voiced one.
+# --------------------------------------------------------------------------
+
+
+def test_the_derived_floor_is_a_similarity_comparable_with_the_reported_score(enrolled):
+    """`identity_threshold` returned a DISTANCE while `identify` compared it to a
+    COSINE, so the test applied was `cos >= 1.5 * (1 - cos)` - satisfied by any
+    positive cosine. The two must be the same kind of quantity, and the route
+    only accepts a `threshold` in [0, 1], so a distance was not even a legal
+    argument."""
+    thr = vc.identity_threshold([enrolled["ada"]["intraspeaker_spread"], enrolled["bob"]["intraspeaker_spread"]])
+    assert 0.0 <= thr <= 1.0
+    ada = vc.identify(enrolled["ada_clip"])
+    assert ada["threshold"] == pytest.approx(thr, abs=1e-4)  # the payload rounds to 4 dp
+    # The verdict the floor produces must be reachable with it as an argument.
+    assert vc.identify(enrolled["ada_clip"], threshold=thr)["matched"] == enrolled["ada"]["id"]
+
+
+def test_a_well_separated_stranger_is_not_named(enrolled):
+    """A stranger at 300 Hz scored 0.23 and was called Ada, because the floor
+    collapsed to its 0.05 lower bound and 0.23 > 0.05."""
+    result = vc.identify(enrolled["stranger_clip"])
+    assert result["matched"] is None
+    assert result["matched_name"] is None
+    assert result["closest"]["id"] == enrolled["ada"]["id"]  # the ranking is still returned
+    assert result["score"] < result["threshold"]
+    assert result["reason"]
+
+
+@pytest.mark.parametrize("f0", [55.0, 260.0, 300.0, 420.0])
+def test_strangers_across_the_spectrum_are_all_rejected(enrolled, f0):
+    stranger = _raw(_speech(4.0, f0, seed=int(f0)))
+    assert vc.identify(stranger)["matched"] is None
+
+
+def test_a_more_variable_cohort_demands_a_higher_similarity(enrolled, monkeypatch):
+    """Monotonicity points the other way from a distance: a speaker who varies
+    more between their own takes needs the incoming clip to look *more* like
+    them, not less."""
+    steady = vc.identity_threshold([0.01])
+    varied = vc.identity_threshold([0.20])
+    assert varied < steady
+    assert vc.identity_threshold([0.0]) >= vc.identity_threshold([0.5])
+
+
+def test_the_floor_is_never_swallowed_by_a_clamp(enrolled):
+    """A cohort whose own takes are 0.01 apart should not end up with a floor
+    looser than 1 - 1.5*0.01, which is what a 0.05 lower bound used to do."""
+    thr = vc.identity_threshold([0.01])
+    assert thr >= 1.0 - 1.5 * 0.01 - 1e-9
+
+
+def test_a_silent_window_cannot_out_score_a_voiced_one(enrolled):
+    """Cosine is level-invariant, so a -45 dBFS hum scored 0.9994 against a
+    centroid where real speech scored 0.58 - and `identify` reported that window
+    as its evidence."""
+    voiced = _speech(6.0, VOICE_A_HZ, jitter=0.01, formant=1.1, seed=21)
+    hum = np.full(int(6.0 * vc.SR), 0.006, dtype="float32")  # ~ -44 dBFS
+    clip = _raw(np.concatenate([voiced, hum]))
+    result = vc.identify(clip)
+    assert result["candidates"][0]["best_window"] == 0, result["candidates"][0]
+
+
+def test_the_window_gate_keeps_the_loudest_window_even_if_it_is_the_only_one():
+    """A clip that is quiet throughout is still a clip; the gate must not empty
+    the list and turn a real recording into "not enough speech"."""
+    quiet = [np.full(1000, 0.01, dtype="float32"), np.full(1000, 0.02, dtype="float32")]
+    kept = vc._gate_windows(quiet)
+    assert len(kept) == 2
+    alone = vc._gate_windows([np.full(1000, 0.01, dtype="float32")])
+    assert len(alone) == 1
+
+
+def test_the_window_gate_drops_windows_far_below_the_loudest_one():
+    kept = vc._gate_windows([np.full(1000, 0.5, dtype="float32"), np.full(1000, 0.0005, dtype="float32")])
+    assert len(kept) == 1
+
+
+def test_the_gate_uses_the_declared_depth():
+    assert vc.WINDOW_GATE_DB == 20.0
+
+
+def test_a_malformed_meta_json_does_not_break_identification_for_everyone(enrolled, voices_dir):
+    """`[]` in one meta.json raised AttributeError out of `list_profiles`, so a
+    single bad file made the route 500 for the whole install."""
+    # Resolved once: after the first write the file no longer parses as a dict.
+    bobs_meta = _meta_of(voices_dir, "Bob")
+    assert len(bobs_meta) == 1
+    for junk in ("[]", "null", '"just a string"', "123", "{ not json"):
+        bobs_meta[0].write_text(junk, encoding="utf-8")
+        result = vc.identify(enrolled["ada_clip"])
+        assert result["ok"] is True, (junk, result)
+        assert result["matched"] == enrolled["ada"]["id"], junk
+        # The profile is not merely down-ranked, it is gone: a caller rendering
+        # "closest is X" must not be offered a voice whose metadata is unreadable.
+        assert [c["name"] for c in result["candidates"]] == ["Ada"], junk
+
+
+def test_an_empty_meta_object_still_renders_but_with_fallbacks(enrolled, voices_dir):
+    """`{}` is a different case from the payloads above: it parses, and the
+    enrolment data beside it is intact, so the voice is still real. What is gone
+    is the display name and the recorded spread, and both must degrade rather
+    than crash - the name falls back to the profile id (which is the directory
+    name) and the spread to None, which `identity_threshold` already tolerates."""
+    _meta_of(voices_dir, "Bob")[0].write_text("{}", encoding="utf-8")
+    result = vc.identify(enrolled["ada_clip"])
+    assert result["ok"] is True
+    names = [c["name"] for c in result["candidates"]]
+    assert "Ada" in names
+    bobs = next(c for c in result["candidates"] if c["name"] != "Ada")
+    assert bobs["name"].startswith("bob-")
+    assert bobs["intraspeaker_spread"] is None
+    assert 0.0 <= result["threshold"] <= 1.0
+
+
+def _meta_of(voices_dir, name: str) -> list[Path]:
+    return [p for p in voices_dir.glob("*/meta.json") if json.loads(p.read_text(encoding="utf-8"))["name"] == name]
+
+
+def test_a_spread_recorded_as_a_string_does_not_break_the_threshold(enrolled, voices_dir):
+    """`TypeError: can't multiply sequence by non-int` reached `identity_threshold`
+    from outside every try, via a meta.json whose spread was a string."""
+    for meta in voices_dir.glob("*/meta.json"):
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        data["intraspeaker_spread"] = "quite small"
+        meta.write_text(json.dumps(data), encoding="utf-8")
+    result = vc.identify(enrolled["ada_clip"])
+    assert result["ok"] is True
+    assert result["matched"] == enrolled["ada"]["id"]
+
+
+def test_a_broken_clip_does_not_destroy_a_calibration_batch(enrolled):
+    """One truncated upload out of twenty used to 422 the whole request, losing
+    nineteen valid measurements."""
+    r = vc.calibrate([
+        (enrolled["ada"]["id"], enrolled["ada_clip"]),
+        (enrolled["bob"]["id"], b"not audio at all"),
+        (enrolled["bob"]["id"], enrolled["bob_clip"]),
+    ])
+    assert r["usable_clips"] == 2
+    assert len(r["rows"]) == 3
+    errors = [row["error"] for row in r["rows"] if row.get("error")]
+    assert len(errors) == 1
+    assert r["rows"][1]["own_score"] is None
+
+
+def test_an_inverted_calibration_says_the_populations_overlap(enrolled):
+    """Two clips with their labels swapped is an operator error the panel allows.
+    Reporting a confident midpoint for it is worse than reporting the problem."""
+    r = vc.calibrate([
+        (enrolled["bob"]["id"], enrolled["ada_clip"]),
+        (enrolled["ada"]["id"], enrolled["bob_clip"]),
+    ])
+    assert r["populations_overlap"] is True
+    margins = [row["margin"] for row in r["rows"] if row.get("margin") is not None]
+    assert any(m < 0 for m in margins)
+
+
+def test_a_healthy_calibration_does_not_claim_to_overlap(enrolled):
+    r = vc.calibrate([(enrolled["ada"]["id"], enrolled["ada_clip"]), (enrolled["bob"]["id"], enrolled["bob_clip"])])
+    assert r["populations_overlap"] is False
+    assert r["usable_clips"] == 2
+
+
+def test_no_enrolled_voices_does_not_load_the_reference_encoder(enrolled, monkeypatch):
+    """A 404 must not cost a ~50 MB checkpoint load (and a Hugging Face fetch on
+    a cold cache)."""
+    monkeypatch.setattr(vc, "list_profiles", lambda: [])
+    calls = []
+    monkeypatch.setattr(vc, "_converter", lambda: calls.append(1) or _FakeConv())
+    result = vc.identify(enrolled["ada_clip"])
+    assert result["ok"] is False
+    assert calls == []
+
+
+def test_a_zero_or_nan_centroid_is_not_left_in_the_ranking(enrolled, voices_dir):
+    """`se.pt` is loadable either way, so a broken one became a permanent
+    candidate that an agent rendering "closest is X" could surface."""
+    for meta in voices_dir.glob("*/meta.json"):
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        if data["name"] == "Bob":
+            (meta.parent / "se.pt.npy").write_bytes(np.zeros(12, dtype="float32").tobytes())
+    result = vc.identify(enrolled["ada_clip"])
+    assert [c["name"] for c in result["candidates"]] == ["Ada"]
+
+
+def test_a_nan_centroid_does_not_leave_a_negative_one_score(enrolled, voices_dir):
+    """Every comparison against NaN is False, so the argmax returned its
+    uninitialised -1.0 sentinel - below the 0.0 a dimension mismatch returns, and
+    indistinguishable from "not evaluated"."""
+    for meta in voices_dir.glob("*/meta.json"):
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        if data["name"] == "Bob":
+            (meta.parent / "se.pt.npy").write_bytes(np.full(12, np.nan, dtype="float32").tobytes())
+    result = vc.identify(enrolled["ada_clip"])
+    assert all(c["score"] >= 0.0 for c in result["candidates"])
+    assert all(c["best_window"] >= 0 for c in result["candidates"])
+
+
+def test_a_mis_shaped_centroid_is_skipped_rather_than_ranked(enrolled, voices_dir):
+    for meta in voices_dir.glob("*/meta.json"):
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        if data["name"] == "Bob":
+            (meta.parent / "se.pt.npy").write_bytes(np.ones(7, dtype="float32").tobytes())
+    result = vc.identify(enrolled["ada_clip"])
+    assert [c["name"] for c in result["candidates"]] == ["Ada"]
+
+
+def test_a_failed_enrolment_leaves_no_undeletable_directory(voices_dir, conv_and_torch, no_deps, monkeypatch):
+    """`delete_profile` refuses anything without a `meta.json`, so a half-written
+    enrolment used to become an orphan the operator could neither see nor
+    remove."""
+    real_open = open
+
+    def _explode(path, *args, **kwargs):
+        if str(path).endswith("meta.json"):
+            raise OSError("disk full")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _explode)
+    with pytest.raises(OSError):
+        _enrol("Halfmade", _takes(VOICE_A_HZ, (1, 2, 3)))
+    monkeypatch.undo()
+
+    leftovers = [p for p in voices_dir.iterdir() if p.is_dir()]
+    assert leftovers == [], [p.name for p in leftovers]
+    assert vc.list_profiles() == []
+
+
+def test_the_discarded_directory_helper_removes_a_profile_whose_meta_is_unreadable(voices_dir, conv_and_torch, no_deps):
+    ada, _ = _enrol("Ada", _takes(VOICE_A_HZ, (1, 2, 3)))
+    assert vc.list_profiles()
+    vc.discard_profile_dir(ada["id"])
+    assert vc.list_profiles() == []
+    # and it is a no-op for something that is not there
+    vc.discard_profile_dir("ada-000000")
+
+
+def test_delete_profile_still_refuses_a_half_written_directory(voices_dir, conv_and_torch, no_deps):
+    """The strictness is deliberate - a stray directory must not be destroyed
+    through the API by accident - so it is pinned alongside the new helper."""
+    ada, _ = _enrol("Ada", _takes(VOICE_A_HZ, (1, 2, 3)))
+    (voices_dir / ada["id"] / "meta.json").unlink()
+    with pytest.raises(KeyError):
+        vc.delete_profile(ada["id"])
+    vc.discard_profile_dir(ada["id"])
+    assert vc.list_profiles() == []
+
+
+def _windows_of(base_f0: float, index: int, seed: int) -> list:
+    """One take's window vectors, as `create_profile` computes them."""
+    take = _speech(4.0, base_f0, jitter=0.03 * (index - 1), formant=(0.8, 1.0, 1.25)[index], seed=seed)
+    return vc._embed_windows(vc._gate_windows(vc._windows(take)))
+
+
+def test_the_hold_one_out_spread_is_the_more_pessimistic_measure(conv_and_torch):
+    """`identify` scores a single WINDOW against a centroid. Measuring the
+    spread between take CENTROIDS measured a different population - averaging
+    shrinks the deviation, and `max` over windows shrinks it again - so the
+    recorded spread was looser than the thing the threshold is compared to."""
+    per_take = [_windows_of(VOICE_A_HZ, i, seed) for i, seed in enumerate((1, 2, 3))]
+    hold_one_out = vc._self_spread(per_take)
+    centroids = [_T(np.mean([np.asarray(w) for w in tw], axis=0)) for tw in per_take]
+    between_centroids = vc._pairwise_spread(centroids)
+    assert hold_one_out >= between_centroids
+
+
+def test_the_hold_one_out_spread_is_zero_for_identical_takes(conv_and_torch):
+    same = _windows_of(VOICE_A_HZ, 1, seed=5)
+    assert vc._self_spread([list(same), [np.asarray(w) for w in same]]) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_spread_of_one_take_falls_back_to_its_own_windows(conv_and_torch):
+    """Reporting 0.0 for a single take would claim a certainty the data does
+    not support, so it falls back to the variation between that take's windows."""
+    one = [_windows_of(VOICE_A_HZ, 0, seed=1)]
+    assert vc._self_spread(one) >= 0.0

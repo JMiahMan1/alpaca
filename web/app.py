@@ -2178,6 +2178,11 @@ def podcast_draft():
     )
 
 
+class _BadNumber(ValueError):
+    """A render knob arrived as something that is not a number. Carries the
+    field name so the 400 can name it instead of saying "invalid input"."""
+
+
 @app.route("/api/podcast/render", methods=["POST"])
 def podcast_render():
     """Synthesise, mix and return a finished episode.
@@ -2198,6 +2203,29 @@ def podcast_render():
     script = str(data.get("script") or "")
     if not segments_in and not script.strip():
         return jsonify({"error": "either a script or a pre-rendered segments list is required"}), 400
+
+    # Every numeric knob is coerced through this. The body comes from a browser
+    # panel, a hand-written curl, or a Raven tool, and a bare float() on a
+    # string raises ValueError, which with no app-level error handler becomes an
+    # HTML 500 - so a typo in `bed_bpm` used to be an opaque failure instead of
+    # a 400 naming the field.
+    def _num(key: str, default: Any) -> Any:
+        raw = data.get(key)
+        if raw is None or raw == "":
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            raise _BadNumber(key, raw) from None
+
+    def _seed(key: str = "bed_seed") -> int:
+        raw = data.get(key)
+        if raw is None or raw == "":
+            return 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            raise _BadNumber(key, raw) from None
 
     pair_id = str(data.get("pair_id") or "duo_warm")
     voice_profiles = data.get("voice_profiles") or {}
@@ -2251,6 +2279,20 @@ def podcast_render():
 
     if len(segments) > 200:
         return jsonify({"error": f"{len(segments)} turns is more than this mixer will do in one request (200)"}), 400
+
+    # Resolve every knob now, before a single TTS request goes out. Validating
+    # after synthesis would burn a 30-minute render and then throw it away.
+    try:
+        bed_key = str(data.get("bed_key") or "")
+        duck_db_v = _num("duck_db", mixer.DEFAULT_DUCK_DB)
+        edge_fade_v = _num("edge_fade_s", mixer.DEFAULT_EDGE_FADE_S)
+        master_v = _num("master_gain", 1.0)
+        seed_v = _seed()
+        bed_bpm_v, bed_density_v, bed_brightness_v = (
+            _num(_k, 0.0) for _k in ("bed_bpm", "bed_density", "bed_brightness")
+        )
+    except _BadNumber as e:
+        return jsonify({"error": f"{e.args[0]} must be a number (got {e.args[1]!r})"}), 400
 
     # --- speech ----------------------------------------------------------
     synthesized: list[dict[str, Any]] = []
@@ -2350,25 +2392,25 @@ def podcast_render():
         cfg = mixer.bed_preset(bed_preset_id)
         bed = mixer.synthesize_bed(
             duration_s=max(10.0, speech_seconds + 4.0),
-            key=str(data.get("bed_key") or cfg["key"]),
-            bpm=float(data.get("bed_bpm") or cfg["bpm"]),
-            density=float(data.get("bed_density") if data.get("bed_density") is not None else cfg["density"]),
-            brightness=float(
-                data.get("bed_brightness") if data.get("bed_brightness") is not None else cfg["brightness"]
-            ),
+            key=bed_key or str(cfg["key"]),
+            bpm=bed_bpm_v if data.get("bed_bpm") is not None else float(cfg["bpm"]),
+            density=bed_density_v if data.get("bed_density") is not None else float(cfg["density"]),
+            brightness=bed_brightness_v if data.get("bed_brightness") is not None else float(cfg["brightness"]),
             mood=str(cfg.get("mood", "warm")),
-            seed=int(data.get("bed_seed") or 0),
+            seed=seed_v,
         )
 
     result = mixer.mix_podcast(
         synthesized,
         hosts,
         bed=bed,
-        duck_db=float(data.get("duck_db") if data.get("duck_db") is not None else mixer.DEFAULT_DUCK_DB),
-        edge_fade_s=float(data.get("edge_fade_s") if data.get("edge_fade_s") is not None else mixer.DEFAULT_EDGE_FADE_S),
+        duck_db=duck_db_v,
+        edge_fade_s=edge_fade_v,
         bed_preset_id=bed_preset_id,
-        master_gain=float(data.get("master_gain") or 1.0),
-        seed=int(data.get("bed_seed") or 0),
+        # `is not None`, not `or`: 0 is a legitimate gain and used to come
+        # through as 1.0, so asking for silence gave a full-level render.
+        master_gain=master_v,
+        seed=seed_v,
     )
     warnings.extend(result.warnings)
 
