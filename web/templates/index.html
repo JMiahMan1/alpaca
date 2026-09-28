@@ -48,6 +48,7 @@
             <button id="tab-btn-requests" class="nav-tab">🔍 Request Monitor</button>
             <button id="tab-btn-sd" class="nav-tab">🎨 Image Studio</button>
             <button id="tab-btn-audio" class="nav-tab">🎵 Audio Studio</button>
+            <button id="tab-btn-podcast" class="nav-tab">🎙️ Podcast Studio</button>
             <button id="tab-btn-docs" class="nav-tab">📖 API Docs</button>
         </div>
 
@@ -2183,6 +2184,77 @@
                             <div style="margin-top:0.5rem; display:flex; gap:0.6rem; flex-wrap:wrap;">
                                 <a id="audio-download" download="alpaca-audio.wav" class="btn btn-secondary btn-sm">⬇️ Download WAV</a>
                                 <button id="btn-audio-unload" class="btn btn-secondary btn-sm">🧹 Unload models / free VRAM</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PODCAST STUDIO VIEW -->
+                <div id="view-podcast" class="tab-view d-none">
+                    <div class="card" style="margin-bottom: 1.25rem; border-left: 4px solid #f472b6; background: linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(51, 30, 60, 0.7) 100%);">
+                        <div class="flex-space" style="align-items:center; flex-wrap:wrap; gap:1rem;">
+                            <div>
+                                <h3 style="color: white; font-size: 1.2rem; margin-bottom:0.25rem; display:flex; align-items:center; gap:0.5rem;">
+                                    <span>🎙️ Podcast Studio</span>
+                                    <span style="font-size:0.7rem; padding:0.15rem 0.5rem; border-radius:12px; background:rgba(244, 114, 182, 0.2); color:#f472b6; border:1px solid rgba(244, 114, 182, 0.3);">2 hosts + mixed bed</span>
+                                </h3>
+                                <p style="font-size: 0.78rem; color: #94a3b8; margin:0;">Two curated Kokoro voices take alternating tagged turns; a synthesized bed is looped to length, ducked under the speech and faded at both ends. All local.</p>
+                            </div>
+                            <div id="podcast-status-chip" style="font-size:0.72rem; padding:0.35rem 0.7rem; border-radius:10px; background:#090d16; border:1px solid rgba(255,255,255,0.08); color:#94a3b8;">
+                                checking podcast services…
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap:1rem;" class="podcast-studio-grid">
+                        <!-- Hosts pane -->
+                        <div class="card" style="border-left:4px solid #a78bfa;">
+                            <h3 style="font-size:0.95rem; margin-bottom:0.6rem; display:flex; align-items:center; gap:0.4rem;">🎭 Hosts &amp; Bed <span style="font-weight:400; font-size:0.7rem; color:#94a3b8;">Kokoro pairs · 24 kHz</span></h3>
+                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+                                <label style="font-size:0.75rem; color:#94a3b8;">Host pair</label>
+                                <select id="podcast-pair" style="flex:1; min-width:150px; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.4rem;"></select>
+                            </div>
+                            <div id="podcast-hosts" style="margin-top:0.6rem; display:flex; flex-direction:column; gap:0.45rem;"></div>
+                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.65rem; align-items:center;">
+                                <label style="font-size:0.75rem; color:#94a3b8;">Bed</label>
+                                <select id="podcast-bed" style="flex:1; min-width:150px; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.4rem;"></select>
+                            </div>
+                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.45rem; align-items:center;">
+                                <label style="font-size:0.75rem; color:#94a3b8;" title="How far the bed drops while someone is speaking. Higher = further out of the way.">Duck <span id="podcast-duck-val">20 dB</span></label>
+                                <input type="range" id="podcast-duck" min="6" max="30" step="1" value="20" style="width:110px;">
+                            </div>
+                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.45rem; align-items:center;">
+                                <label style="font-size:0.75rem; color:#94a3b8;" title="Leave empty for the synthesized bed. A prompt here uses MusicGen for a short theme sting instead — MusicGen only ever renders 30 s at a time.">Theme sting (optional)</label>
+                                <input type="text" id="podcast-sting" placeholder="e.g. warm lo-fi intro motif, vinyl crackle" style="flex:1; min-width:150px; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.4rem; font-size:0.8rem;">
+                            </div>
+                            <div id="podcast-hosts-meta" style="font-size:0.72rem; color:#94a3b8; margin-top:0.5rem;"></div>
+                        </div>
+
+                        <!-- Script pane -->
+                        <div class="card" style="border-left:4px solid #34d399;">
+                            <h3 style="font-size:0.95rem; margin-bottom:0.6rem; display:flex; align-items:center; gap:0.4rem;">📝 Script <span style="font-weight:400; font-size:0.7rem; color:#94a3b8;">tag each line with a host</span></h3>
+                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+                                <input type="text" id="podcast-topic" placeholder="Topic for the draft…" style="flex:1; min-width:150px; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.4rem; font-size:0.8rem;">
+                                <button id="btn-podcast-draft" class="btn btn-secondary btn-sm">✨ Draft with the model</button>
+                            </div>
+                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.45rem; align-items:center;">
+                                <label style="font-size:0.75rem; color:#94a3b8;">Target words</label>
+                                <input type="number" id="podcast-words" min="50" max="4000" step="50" value="600" style="width:80px; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.35rem; font-size:0.8rem;">
+                            </div>
+                            <textarea id="podcast-script" rows="12" placeholder="HOST A: Welcome back.&#10;HOST B: Glad to be here." style="width:100%; box-sizing:border-box; margin-top:0.55rem; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.6rem; font-size:0.85rem; font-family:monospace; resize:vertical;"></textarea>
+                            <div id="podcast-script-meta" style="font-size:0.72rem; color:#94a3b8; margin-top:0.45rem;"></div>
+                            <button id="btn-podcast-render" class="btn btn-green" style="margin-top:0.7rem;">🎙️ Render episode</button>
+                        </div>
+                    </div>
+
+                    <div class="card" style="margin-top:1rem;">
+                        <div id="podcast-output-empty" style="font-size:0.8rem; color:#64748b;">The finished episode appears here.</div>
+                        <div id="podcast-player-box" style="display:none;">
+                            <audio id="podcast-player" controls style="width:100%;"></audio>
+                            <div id="podcast-render-meta" style="font-size:0.72rem; color:#94a3b8; margin-top:0.5rem;"></div>
+                            <div id="podcast-warnings" style="font-size:0.72rem; color:#fbbf24; margin-top:0.4rem;"></div>
+                            <div style="margin-top:0.5rem; display:flex; gap:0.6rem; flex-wrap:wrap;">
+                                <a id="podcast-download" download="alpaca-podcast.wav" class="btn btn-secondary btn-sm">⬇️ Download WAV</a>
                             </div>
                         </div>
                     </div>

@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabBtnDocs = document.getElementById('tab-btn-docs');
     const tabBtnSd = document.getElementById('tab-btn-sd');
     const tabBtnAudio = document.getElementById('tab-btn-audio');
+    const tabBtnPodcast = document.getElementById('tab-btn-podcast');
     const viewMonitor = document.getElementById('view-monitor');
     const viewGeneral = document.getElementById('view-general');
     const viewShared = document.getElementById('view-shared');
@@ -36,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewDocs = document.getElementById('view-docs');
     const viewImageStudio = document.getElementById('view-image-studio');
     const viewAudio = document.getElementById('view-audio');
+    const viewPodcast = document.getElementById('view-podcast');
 
 
     // Controls Elements
@@ -199,6 +201,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tabBtnDocs.classList.remove('active');
         tabBtnSd.classList.remove('active');
         tabBtnAudio.classList.remove('active');
+        tabBtnPodcast.classList.remove('active');
 
         // Hide views
         viewMonitor.classList.add('d-none');
@@ -210,6 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
         viewDocs.classList.add('d-none');
         viewImageStudio.classList.add('d-none');
         viewAudio.classList.add('d-none');
+        viewPodcast.classList.add('d-none');
         
         // Stop both polls to start clean
         stopMonitorPolling();
@@ -254,6 +258,10 @@ document.addEventListener('DOMContentLoaded', () => {
             tabBtnAudio.classList.add('active');
             viewAudio.classList.remove('d-none');
             initAudioStudio();
+        } else if (tabName === 'podcast') {
+            tabBtnPodcast.classList.add('active');
+            viewPodcast.classList.remove('d-none');
+            loadPodcastStatus();
         }
         document.dispatchEvent(new CustomEvent('tabChanged', { detail: tabName }));
     }
@@ -267,6 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tabBtnDocs.addEventListener('click', () => switchTab('docs'));
     tabBtnSd.addEventListener('click', () => switchTab('sd'));
     tabBtnAudio.addEventListener('click', () => switchTab('audio'));
+    tabBtnPodcast.addEventListener('click', () => switchTab('podcast'));
 
     // Image Studio (Stable Diffusion)
 
@@ -12378,4 +12387,271 @@ function vcStartRename(item, v) {
     save.addEventListener('click', submit);
     cancel.addEventListener('click', done);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); else if (e.key === 'Escape') done(); });
+}
+
+// ═══════════════════════════ PODCAST STUDIO ═══════════════════════════
+// Two curated Kokoro voices take alternating tagged turns; a synthesized bed
+// is looped to length, ducked under the speech and faded at both ends.
+//
+// Module-global (like the Audio Studio block above) because switchTab() lives
+// inside the DOMContentLoaded closure and cannot see closure-scoped names.
+
+let _podcastStatus = null;
+let _podcastVoices = null;
+let _podcastTimer = null;
+let _podcastWired = false;
+
+function podcastEl(id) { return document.getElementById(id); }
+
+function setPodcastChip(text, tone) {
+    const chip = podcastEl('podcast-status-chip');
+    if (!chip) return;
+    chip.textContent = text;
+    const colors = {
+        ok:   ['#34d399', 'rgba(52,211,153,0.3)'],
+        warn: ['#fbbf24', 'rgba(251,191,36,0.3)'],
+        bad:  ['#f87171', 'rgba(248,113,113,0.3)'],
+    };
+    const [fg, border] = colors[tone] || ['#94a3b8', 'rgba(255,255,255,0.08)'];
+    chip.style.color = fg;
+    chip.style.borderColor = border;
+}
+
+// Kokoro names carry their gender in the prefix; that is how the panel can
+// refuse a cross-gender clone before the user waits several minutes for it.
+function podcastVoiceGender(voice) {
+    const prefix = String(voice || '').split('_')[0];
+    return { af: 'f', am: 'm', bf: 'f', bm: 'm' }[prefix] || '';
+}
+
+async function loadPodcastStatus() {
+    if (!_podcastWired) wirePodcastStudio();
+    await refreshPodcastStatus();
+    if (_podcastTimer) clearInterval(_podcastTimer);
+    _podcastTimer = setInterval(() => {
+        if (document.hidden) return;
+        const view = podcastEl('view-podcast');
+        if (!view || view.classList.contains('d-none')) {
+            clearInterval(_podcastTimer);
+            _podcastTimer = null;
+            return;
+        }
+        refreshPodcastStatus();
+    }, 20000);
+}
+
+async function refreshPodcastStatus() {
+    let status;
+    try {
+        const res = await fetch('/api/podcast/status');
+        status = await res.json();
+    } catch {
+        setPodcastChip('podcast service unreachable', 'bad');
+        return;
+    }
+    _podcastStatus = status;
+
+    fillPodcastSelect('podcast-pair', (status.host_pairs || []).map(p => ({ value: p.id, label: p.label })));
+    fillPodcastSelect('podcast-bed', (status.bed_presets || []).map(b => ({ value: b.id, label: b.label })));
+
+    // The roster (which slot, which curated voice, which gender) lives on
+    // /api/podcast/voices, not on /status.
+    try {
+        const vres = await fetch('/api/podcast/voices');
+        if (vres.ok) _podcastVoices = await vres.json();
+    } catch { /* the panel still works with the curated defaults */ }
+    renderPodcastHosts();
+
+    const audioOk = !!(status.audio && status.audio.online);
+    const proxyOk = !!(status.proxy && status.proxy.online);
+    const duck = Number(podcastEl('podcast-duck').value);
+    if (audioOk && proxyOk) {
+        setPodcastChip(`audio ✓ · proxy ✓ · ${status.target_sample_rate} Hz · bed ducked ${duck} dB`, 'ok');
+    } else if (audioOk) {
+        setPodcastChip('audio ✓ · no proxy — write the script yourself', 'warn');
+    } else {
+        setPodcastChip('audio-server offline', 'bad');
+    }
+
+    const meta = podcastEl('podcast-hosts-meta');
+    if (meta) {
+        meta.textContent = audioOk
+            ? `The bed is synthesized at ${status.target_sample_rate} Hz to match Kokoro, so the mix never resamples.`
+              + (status.max_tts_chars ? ` TTS cap ${status.max_tts_chars} chars per call, so long turns are split.` : '')
+            : 'The audio-server is not reachable, so neither narration nor the bed can be rendered.';
+    }
+    const render = podcastEl('btn-podcast-render');
+    if (render) render.disabled = !audioOk;
+}
+
+function fillPodcastSelect(id, options) {
+    const sel = podcastEl(id);
+    if (!sel) return;
+    const previous = sel.value;
+    sel.innerHTML = '';
+    for (const opt of options) {
+        const el = document.createElement('option');
+        el.value = opt.value;
+        el.textContent = opt.label;
+        sel.appendChild(el);
+    }
+    if (previous && options.some(o => o.value === previous)) sel.value = previous;
+}
+
+function podcastRosterFor(pairId) {
+    return ((_podcastVoices && _podcastVoices.roster) || []).filter(r => r.pair_id === pairId);
+}
+
+function renderPodcastHosts() {
+    const box = podcastEl('podcast-hosts');
+    if (!box) return;
+    const pairId = podcastEl('podcast-pair').value;
+    const roster = podcastRosterFor(pairId);
+    const kokoro = ((_podcastStatus && _podcastStatus.audio && _podcastStatus.audio.voices) || []);
+    const saved = ((_podcastVoices && _podcastVoices.saved_profiles) || []);
+    box.innerHTML = '';
+    podcastEl('podcast-duck-val').textContent = `${Number(podcastEl('podcast-duck').value)} dB`;
+
+    if (!roster.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:0.75rem; color:#64748b;';
+        empty.textContent = _podcastVoices
+            ? 'No roster for this host pair.'
+            : 'Saved voices could not be loaded; the curated Kokoro voices will be used.';
+        box.appendChild(empty);
+    }
+
+    for (const host of roster) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; background:#090d16;'
+            + ' border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:0.5rem;';
+
+        const label = document.createElement('div');
+        label.style.cssText = 'font-size:0.78rem; color:#e2e8f0; min-width:84px;';
+        label.textContent = `${host.name} (${host.role})`;
+
+        const voice = document.createElement('select');
+        voice.className = 'js-podcast-voice';
+        voice.style.cssText = 'background:#0f172a; border:1px solid rgba(255,255,255,0.12); border-radius:6px;'
+            + ' color:#e2e8f0; padding:0.3rem; font-size:0.78rem; flex:1; min-width:110px;';
+        voice.dataset.slot = host.slot;
+        const choices = [...new Set([host.voice, ...kokoro])].filter(Boolean);
+        for (const v of choices) {
+            const o = document.createElement('option');
+            o.value = v; o.textContent = v;
+            voice.appendChild(o);
+        }
+        voice.value = choices.includes(host.voice) ? host.voice : choices[0];
+
+        const clone = document.createElement('select');
+        clone.className = 'js-podcast-clone';
+        clone.style.cssText = 'background:#0f172a; border:1px solid rgba(255,255,255,0.12); border-radius:6px;'
+            + ' color:#e2e8f0; padding:0.3rem; font-size:0.75rem; flex:1; min-width:130px;';
+        clone.dataset.slot = host.slot;
+        const none = document.createElement('option');
+        none.value = ''; none.textContent = 'No clone (Kokoro)';
+        clone.appendChild(none);
+        for (const profile of saved) {
+            const o = document.createElement('option');
+            o.value = profile.id;
+            const src = podcastVoiceGender(host.voice);
+            const sameGender = !src || !profile.gender || profile.gender === src;
+            o.textContent = sameGender
+                ? profile.name
+                : `${profile.name} — cross-gender clone, timbre may be poor`;
+            o.dataset.warning = sameGender ? '' : '1';
+            clone.appendChild(o);
+        }
+
+        row.append(label, voice, clone);
+        box.appendChild(row);
+    }
+}
+
+function collectPodcastRequest() {
+    const pairId = podcastEl('podcast-pair').value;
+    const voiceProfiles = {};
+    for (const sel of document.querySelectorAll('#podcast-hosts select.js-podcast-clone')) {
+        if (sel.value) voiceProfiles[`host_clone_${pairId}_${sel.dataset.slot}`] = sel.value;
+    }
+    const sting = podcastEl('podcast-sting').value.trim();
+    const body = {
+        script: podcastEl('podcast-script').value,
+        pair_id: pairId,
+        bed_preset: podcastEl('podcast-bed').value,
+        duck_db: Number(podcastEl('podcast-duck').value),
+        voice_profiles: voiceProfiles,
+        return_data_uri: true,
+    };
+    if (sting) body.sting_prompt = sting;
+    return body;
+}
+
+async function draftPodcast() {
+    const topic = podcastEl('podcast-topic').value.trim();
+    if (!topic) { setPodcastChip('a topic is needed before drafting', 'warn'); return; }
+    const btn = podcastEl('btn-podcast-draft');
+    btn.disabled = true;
+    btn.textContent = 'drafting…';
+    try {
+        const res = await fetch('/api/podcast/draft', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topic, target_words: Number(podcastEl('podcast-words').value) || 600 }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'drafting failed');
+        podcastEl('podcast-script').value = data.script || '';
+        const bits = [`${data.turns || 0} turns`];
+        if (data.word_count) bits.push(`${data.word_count} words`);
+        if (data.unattributed) bits.push(`${data.unattributed} untagged line(s) continued under the previous host`);
+        podcastEl('podcast-script-meta').textContent = bits.join(' · ');
+        setPodcastChip('draft ready — review it, then render', 'ok');
+    } catch (e) {
+        setPodcastChip(String(e.message || e), 'bad');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '✨ Draft with the model';
+    }
+}
+
+async function renderPodcast() {
+    const script = podcastEl('podcast-script').value.trim();
+    if (!script) { setPodcastChip('the script is empty — draft or paste one first', 'warn'); return; }
+    const btn = podcastEl('btn-podcast-render');
+    btn.disabled = true;
+    btn.textContent = 'rendering… (one TTS call per turn)';
+    setPodcastChip('rendering narration…', 'warn');
+    try {
+        const res = await fetch('/api/podcast/render', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(collectPodcastRequest()),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'render failed');
+        const src = data.data_uri || `data:audio/wav;base64,${data.wav_b64}`;
+        podcastEl('podcast-player').src = src;
+        podcastEl('podcast-download').href = src;
+        podcastEl('podcast-output-empty').style.display = 'none';
+        podcastEl('podcast-player-box').style.display = '';
+        podcastEl('podcast-render-meta').textContent =
+            `${data.duration_s || '?'}s total · ${data.speech_duration_s || '?'}s speech · ${data.turn_count || '?'} turns`
+            + ` · bed ${data.bed_preset || '?'} at −${data.bed_duck_db || '?'} dB`;
+        podcastEl('podcast-warnings').textContent = (data.warnings || []).join(' · ');
+        setPodcastChip('episode ready', 'ok');
+    } catch (e) {
+        setPodcastChip(String(e.message || e), 'bad');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🎙️ Render episode';
+    }
+}
+
+function wirePodcastStudio() {
+    _podcastWired = true;
+    podcastEl('podcast-pair').addEventListener('change', renderPodcastHosts);
+    podcastEl('podcast-duck').addEventListener('input', renderPodcastHosts);
+    podcastEl('btn-podcast-draft').addEventListener('click', draftPodcast);
+    podcastEl('btn-podcast-render').addEventListener('click', renderPodcast);
 }
