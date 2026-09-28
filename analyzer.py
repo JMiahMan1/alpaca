@@ -17,10 +17,44 @@ import time
 from pathlib import Path
 from typing import Any
 
-# Constants
+# Constants.
+#
+# TELEMETRY_DIR and ROUTER_MODELS_DIR were plain module-level constants read once
+# at import, so the documented environment variables were only honoured if set
+# *before* the module loaded. The web layer reads TELEMETRY_DIR per request, so
+# the two could silently disagree about which directory the telemetry lives in:
+# the route would glob one directory and the analyzer would read another, and
+# every model would come back as `insufficient_data` with no error anywhere.
+# Call `_dir()` instead so both agree. The module attributes are kept for
+# importers that still read them (and as the documented defaults).
 TELEMETRY_DIR = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
 ROUTER_MODELS_DIR = Path(os.getenv("ROUTER_MODELS_DIR", "/router-models"))
 BENCHMARK_DIR = Path("data/llm_benchmarks")
+
+_ENV_DEFAULTS = {
+    "TELEMETRY_DIR": "data/telemetry",
+    "ROUTER_MODELS_DIR": "/router-models",
+}
+
+
+# What each constant resolved to at import time. A module attribute that no
+# longer matches was patched by a caller, and an explicit patch outranks the
+# environment.
+_IMPORT_TIME = {name: str(value) for name, value in (("TELEMETRY_DIR", TELEMETRY_DIR), ("ROUTER_MODELS_DIR", ROUTER_MODELS_DIR))}
+
+
+def _dir(name: str) -> Path:
+    """Resolve a configurable data directory at call time, not import time.
+
+    Precedence: an explicit patch of the module attribute, then the environment
+    variable, then the import-time default.
+    """
+    current = getattr(sys.modules[__name__], name, None)
+    if current is not None and str(current) != _IMPORT_TIME.get(name):
+        return Path(current)
+    if os.environ.get(name):
+        return Path(os.environ[name])
+    return Path(current if current is not None else ".")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -33,7 +67,7 @@ def load_telemetry(model_alias: str, limit: int = 500, max_age_seconds: int = 36
     Filters to the most recent *max_age_seconds* window so that stale data
     from prior sessions does not skew creep-detection slopes.
     """
-    log_file = TELEMETRY_DIR / f"{model_alias}.jsonl"
+    log_file = _dir("TELEMETRY_DIR") / f"{model_alias}.jsonl"
     if not log_file.exists():
         logger.warning(f"Telemetry log file not found: {log_file}")
         return []
@@ -61,7 +95,7 @@ def read_current_config(model_alias: str) -> dict[str, str]:
     config_dict = {}
 
     # Try models.ini first
-    ini_path = ROUTER_MODELS_DIR / "models.ini"
+    ini_path = _dir("ROUTER_MODELS_DIR") / "models.ini"
     # Fallback to current directory models.ini for local testing
     if not ini_path.exists():
         ini_path = Path("data/models.ini")
@@ -108,7 +142,7 @@ def read_current_config(model_alias: str) -> dict[str, str]:
             logger.warning(f"Failed to read models.ini: {e}")
 
     # If empty, try reading alias.profile.json
-    profile_path = ROUTER_MODELS_DIR / f"{model_alias}.profile.json"
+    profile_path = _dir("ROUTER_MODELS_DIR") / f"{model_alias}.profile.json"
     if not profile_path.exists():
         profile_path = Path(f"{model_alias}.profile.json")
 
@@ -433,70 +467,74 @@ def analyze_telemetry(
                 f"Reduce GPU offloaded layers (n-gpu-layers: {curr_ngl} -> {suggested_ngl}) to prevent CUDA OOM."
             )
 
-        # 4. VRAM Underutilization: GPU Layer Offload Opportunity
-        # If VRAM is underutilized and the model is running with less than full GPU offload,
-        # recommend increasing n-gpu-layers to shift weights onto GPU for faster inference.
-        # This is the highest-impact optimization when VRAM < 55% and layers < 99.
-        if max_vram < 55.0 and vram_headroom_mb > 1500 and 0 <= curr_ngl < 99:
-            # Estimate how many more layers we can fit with 80% of the headroom
-            # Use a simple heuristic: each extra layer ≈ headroom / (99 - curr_ngl) MiB
-            extra_layers_estimate = int((vram_headroom_mb * 0.80) / max(1, vram_headroom_mb / max(1, 99 - curr_ngl)))
-            suggested_ngl = min(curr_ngl + max(10, extra_layers_estimate), 99)
-            recommendations["n-gpu-layers"] = str(suggested_ngl)
+    # Rules 4-6 are *upside* opportunities, not distress responses: they fire on
+    # idle VRAM, which is the opposite of the condition that puts a model into
+    # warning/critical above. They used to sit inside that branch, so a healthy
+    # model at 20% VRAM with a third of its layers on the CPU - the single
+    # largest speed win available - was told to change nothing.
+    # 4. VRAM Underutilization: GPU Layer Offload Opportunity
+    # If VRAM is underutilized and the model is running with less than full GPU offload,
+    # recommend increasing n-gpu-layers to shift weights onto GPU for faster inference.
+    # This is the highest-impact optimization when VRAM < 55% and layers < 99.
+    if max_vram < 55.0 and vram_headroom_mb > 1500 and 0 <= curr_ngl < 99:
+        # Estimate how many more layers we can fit with 80% of the headroom
+        # Use a simple heuristic: each extra layer ≈ headroom / (99 - curr_ngl) MiB
+        extra_layers_estimate = int((vram_headroom_mb * 0.80) / max(1, vram_headroom_mb / max(1, 99 - curr_ngl)))
+        suggested_ngl = min(curr_ngl + max(10, extra_layers_estimate), 99)
+        recommendations["n-gpu-layers"] = str(suggested_ngl)
+        actions.append(
+            f"Increase GPU layer offload (n-gpu-layers: {curr_ngl} → {suggested_ngl}): "
+            f"VRAM is only {round(max_vram, 1)}% utilized with {vram_headroom_mb}MB free. "
+            f"Offloading more layers to GPU should significantly improve inference speed (TPS)."
+        )
+
+    # 5. VRAM Underutilization / Quality Optimization (Plenty of VRAM headroom)
+    # If VRAM usage is low and KV cache is quantized, suggest upgrading progressively to f16/q8_0 to improve quality
+    if max_vram < 75.0 and vram_headroom_mb > 2000:
+        # Walk the candidate list in preference order and take the first that
+        # has not already failed for this model. safe_first aims for full
+        # f16 quality because >2000MB of headroom is a strong signal that
+        # nothing is at risk; performance_first stops at q8_0, since f16 KV
+        # cache is the single largest memory consumer and the performance
+        # strategy exists to trade quality for headroom.
+        candidates = (
+            [("f16", "f16"), ("q8_0", "q8_0"), ("q5_0", "q5_0"), ("q4_0", "q4_0")]
+            if not performance_first
+            else [("q8_0", "q8_0"), ("q5_0", "q5_0"), ("q4_0", "q4_0")]
+        )
+
+        target_cache_k, target_cache_v = curr_cache_k, curr_cache_v
+        # Only move *up* the ladder. Walking the candidate list blindly meant
+        # a model already on f16 was told to move to q8_0 and the message
+        # called it an "upgrade ... to improve coherence".
+        rank = {"q4_0": 0, "q4_1": 0, "q5_0": 1, "q5_1": 1, "q8_0": 2, "f16": 3, "f32": 3}
+        current_rank = rank.get(curr_cache_k, 3)
+        if rank.get(curr_cache_v, 3) < current_rank:
+            current_rank = rank.get(curr_cache_v, 3)
+        for ck, cv in candidates:
+            if not is_blacklisted(ck, cv) and rank.get(ck, 3) > current_rank:
+                target_cache_k, target_cache_v = ck, cv
+                break
+
+        if target_cache_k != curr_cache_k or target_cache_v != curr_cache_v:
+            recommendations["cache-type-k"] = target_cache_k
+            recommendations["cache-type-v"] = target_cache_v
             actions.append(
-                f"Increase GPU layer offload (n-gpu-layers: {curr_ngl} → {suggested_ngl}): "
-                f"VRAM is only {round(max_vram, 1)}% utilized with {vram_headroom_mb}MB free. "
-                f"Offloading more layers to GPU should significantly improve inference speed (TPS)."
+                f"Upgrade KV Cache quantization ({curr_cache_k} → {target_cache_k}) to improve text generation coherence and quality, utilizing the available {vram_headroom_mb}MB VRAM headroom."
             )
 
-        # 5. VRAM Underutilization / Quality Optimization (Plenty of VRAM headroom)
-        # If VRAM usage is low and KV cache is quantized, suggest upgrading progressively to f16/q8_0 to improve quality
-        if max_vram < 75.0 and vram_headroom_mb > 2000:
-            # Map progressive upgrade steps: q4_0 -> q5_0 -> q8_0 -> f16
-            upgrade_map = {
-                "q4_0": "q5_0",
-                "q4_1": "q5_0",
-                "q5_0": "q8_0",
-                "q5_1": "q8_0",
-                "q8_0": "f16",
-            }
-            target_cache_k = upgrade_map.get(curr_cache_k, "f16")
-            target_cache_v = upgrade_map.get(curr_cache_v, "f16")
-
-            if not performance_first:
-                target_cache_k = "f16"
-                target_cache_v = "f16"
-
-            # Resolve highest priority non-blacklisted candidate
-            candidates = [("f16", "f16"), ("q8_0", "q8_0"), ("q5_0", "q5_0"), ("q4_0", "q4_0")]
-            if performance_first:
-                candidates = [("q8_0", "q8_0"), ("q5_0", "q5_0"), ("q4_0", "q4_0")]
-
-            target_cache_k, target_cache_v = curr_cache_k, curr_cache_v
-            for ck, cv in candidates:
-                if not is_blacklisted(ck, cv):
-                    target_cache_k, target_cache_v = ck, cv
-                    break
-
-            if target_cache_k != curr_cache_k or target_cache_v != curr_cache_v:
-                recommendations["cache-type-k"] = target_cache_k
-                recommendations["cache-type-v"] = target_cache_v
-                actions.append(
-                    f"Upgrade KV Cache quantization ({curr_cache_k} → {target_cache_k}) to improve text generation coherence and quality, utilizing the available {vram_headroom_mb}MB VRAM headroom."
-                )
-
-        # 6. Context Window Expansion Opportunity
-        # If VRAM headroom is large and current ctx-size is modest, suggest expanding for longer conversations.
-        if max_vram < 60.0 and vram_headroom_mb > 3000 and curr_ctx <= 16384:
-            # Suggest doubling context, capped at 32768
-            suggested_ctx = min(curr_ctx * 2, 32768)
-            if suggested_ctx > curr_ctx and "ctx-size" not in recommendations:
-                recommendations["ctx-size"] = str(suggested_ctx)
-                actions.append(
-                    f"Expand context window (ctx-size: {curr_ctx} → {suggested_ctx}): "
-                    f"VRAM headroom ({vram_headroom_mb}MB free) is sufficient to support a larger context, "
-                    f"enabling longer document processing and multi-turn conversations."
-                )
+    # 6. Context Window Expansion Opportunity
+    # If VRAM headroom is large and current ctx-size is modest, suggest expanding for longer conversations.
+    if max_vram < 60.0 and vram_headroom_mb > 3000 and curr_ctx <= 16384:
+        # Suggest doubling context, capped at 32768
+        suggested_ctx = min(curr_ctx * 2, 32768)
+        if suggested_ctx > curr_ctx and "ctx-size" not in recommendations:
+            recommendations["ctx-size"] = str(suggested_ctx)
+            actions.append(
+                f"Expand context window (ctx-size: {curr_ctx} → {suggested_ctx}): "
+                f"VRAM headroom ({vram_headroom_mb}MB free) is sufficient to support a larger context, "
+                f"enabling longer document processing and multi-turn conversations."
+            )
 
     # Try loading baseline benchmarks for comparison
     benchmark = load_latest_benchmark(model_alias)
@@ -571,10 +609,10 @@ def main():
 
         # We can write settings to the model section in models.ini or profile.json
         # Here we write to .profile.json which overrides the defaults or updates them.
-        profile_path = ROUTER_MODELS_DIR / f"{model_alias}.profile.json"
+        profile_path = _dir("ROUTER_MODELS_DIR") / f"{model_alias}.profile.json"
 
         # If we are in local development testing, write to current dir
-        if not ROUTER_MODELS_DIR.exists():
+        if not _dir("ROUTER_MODELS_DIR").exists():
             profile_path = Path(f"{model_alias}.profile.json")
 
         try:
