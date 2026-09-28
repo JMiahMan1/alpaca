@@ -509,7 +509,17 @@ async def test_chat_endpoint_maps_request_and_returns_ollama_shape():
     assert body["message"]["content"] == "hello"
     assert mock_http.calls[0]["url"].endswith("/v1/chat/completions")
     assert mock_http.calls[0]["json"]["model"] == "router-backend"
-    assert mock_http.calls[0]["json"]["n_predict"] == 12
+    # n_predict carries the thinking pad when one applies: the proxy adds the
+    # reasoning budget (the request's, else LLAMA_REASONING_BUDGET) so a bounded
+    # request still has room to answer after thinking. The budget comes from the
+    # environment, so this test was previously asserting a number that depended
+    # on the deployment - it read 12 on a machine with the budget off and 2060
+    # on the deploy host, which sets 2048, and failed there for a reason that
+    # had nothing to do with the request mapping it is meant to cover.
+    raw = os.getenv("LLAMA_REASONING_BUDGET", "").strip()
+    pad = int(raw) if raw.isdigit() and int(raw) > 0 else 0
+    expected = 12 + pad if 0 < 12 < pad else 12
+    assert mock_http.calls[0]["json"]["n_predict"] == expected
     assert mock_http.calls[0]["json"]["response_format"] == {"type": "json_object"}
     alpaca_proxy.apply_keep_alive_policy.assert_awaited_once_with("tinyllama", "5m")
 
