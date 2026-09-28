@@ -40,15 +40,20 @@ logger = logging.getLogger("telemetry_monitor")
 # Using asyncio.Event instead of a plain bool so that signal delivery is picked
 # up promptly even while the event loop is blocked inside asyncio.gather().
 _stop_event: asyncio.Event | None = None
+# The loop that owns _stop_event. Signal handlers run outside the loop thread, so
+# they cannot call get_running_loop() and must not call get_event_loop() either:
+# since 3.12 asyncio.run() does not install a thread-local "current" loop, so
+# get_event_loop() there raises RuntimeError and the graceful shutdown is lost.
+_stop_loop: asyncio.AbstractEventLoop | None = None
 
 
 def handle_signals(signum, frame):
     logger.info(f"Signal {signum} received. Shutting down daemon gracefully...")
-    if _stop_event is not None:
-        # call_soon_threadsafe is required because signal handlers run outside
-        # the asyncio event loop thread.
-        loop = asyncio.get_event_loop()
-        loop.call_soon_threadsafe(_stop_event.set)
+    if _stop_event is None or _stop_loop is None:
+        return
+    # call_soon_threadsafe is required because signal handlers run outside
+    # the asyncio event loop thread.
+    _stop_loop.call_soon_threadsafe(_stop_event.set)
 
 
 # Register shutdown signals
@@ -277,8 +282,9 @@ def write_telemetry_log(model_alias: str, data: dict):
 
 
 async def main():
-    global _stop_event
+    global _stop_event, _stop_loop
     _stop_event = asyncio.Event()
+    _stop_loop = asyncio.get_running_loop()
 
     logger.info("Initializing Telemetry Monitor Daemon...")
     logger.info(f"Poll Interval: {POLL_INTERVAL} seconds")

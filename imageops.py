@@ -86,7 +86,15 @@ def draw_text(
     try:
         font = ImageFont.truetype(font_path or "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", size)
     except OSError:
-        font = ImageFont.load_default()
+        # No usable font file. Pillow still ships one as a TrueType face, and
+        # load_default() has taken a `size` argument since 10.1 -- without it
+        # the requested size is silently dropped and every composed image gets
+        # a fixed ~11px line, which is what the web container (no fonts-*
+        # package) would otherwise always render.
+        try:
+            font = ImageFont.load_default(size=size)
+        except TypeError:  # Pillow < 10.1
+            font = ImageFont.load_default()
     bbox = draw.textbbox((0, 0), text, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     x = (out.width - tw) / 2 - bbox[0]
