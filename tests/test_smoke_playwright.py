@@ -1,21 +1,29 @@
+import os
 import re
 
 import pytest
 from playwright.sync_api import sync_playwright
 
+pytestmark = pytest.mark.live
+
+DASHBOARD_URL = os.environ.get("ALPACA_BASE_URL", "http://localhost:5000").rstrip("/")
+
 
 def get_dashboard_page(p):
-    """Helper to launch browser and navigate to dashboard with fallback"""
-    browser = p.chromium.launch(headless=True)
+    """Helper to launch browser and navigate to dashboard"""
+    try:
+        browser = p.chromium.launch(headless=True)
+    except Exception as e:
+        # Browsers are not installed on every machine (`playwright install
+        # chromium`). Skipping here is the difference between a green run and a
+        # hard error that looks like a product bug.
+        pytest.skip(f"Chromium not available: {e}")
     page = browser.new_page()
     try:
-        page.goto("http://localhost:5000", timeout=10000)
-    except Exception:
-        try:
-            page.goto("http://127.0.0.1:5000", timeout=10000)
-        except Exception as e:
-            browser.close()
-            pytest.skip(f"Could not connect to live dashboard server at port 5000: {e}")
+        page.goto(DASHBOARD_URL, timeout=10000)
+    except Exception as e:
+        browser.close()
+        pytest.skip(f"Could not reach the live dashboard at {DASHBOARD_URL}: {e}")
     return browser, page
 
 
