@@ -376,6 +376,182 @@ def _extract_answer_numbers(response: str) -> set[str] | None:
             continue
         return set(numbers) if declared else {numbers[-1]}
     return None
+
+
+# ---------------------------------------------------------------------------
+# Grader for creative_svg_theme_pack
+#
+# This test is graded against a real consumer, not a keyword wish-list. The
+# SharedLLM UI tiles a theme's motif by handing it to CSS as
+# url("data:image/svg+xml,<encodeURIComponent(tile)>") and letting it repeat as
+# a background (services/ui/src/themes/siteTheme.ts motifPattern(), consumed by
+# body { background-image } in index.css). Three properties of that consumer are
+# not stylistic preferences, so they are checked structurally:
+#
+#   * The tile must be square with width == height == the viewBox extent. CSS
+#     repeats a background at its intrinsic size on a square lattice; a tile
+#     whose width and height differ (or whose viewBox is not the same box) seams
+#     at every edge instead of being invisible.
+#   * Colours must arrive as the {{accent}} / {{accentAlt}} placeholders the
+#     motif generator substitutes per theme. A baked hex value is a tile that
+#     looks wrong on every theme except the one it was written for.
+#   * The motif is decoration behind text, so it carries no glyphs: no <text>,
+#     no font-family. The repository ships zero font files, so any <text> would
+#     silently fall back to whatever the render host happens to have.
+#
+# The second deliverable is a <symbol> sprite sheet, following the convention
+# already in the repo (services/ui/public/icons.svg): a root <svg> with no
+# viewBox, one <symbol> per icon, each with its own viewBox and a kebab-case
+# "<name>-icon" id. That file is currently dead - nothing references it - which
+# is precisely why a generated sheet has to be self-describing.
+# ---------------------------------------------------------------------------
+
+_SVG_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_SVG_ATTR_RE = re.compile(r"""([a-zA-Z-]+)\s*=\s*["']([^"']*)["']""")
+_SVG_HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b")
+# A <symbol> id that follows the repo's own sprite-sheet convention.
+_SVG_SYMBOL_ID_RE = re.compile(r"""id\s*=\s*["']([a-z0-9]+(?:-[a-z0-9]+)*-icon)["']""")
+
+# stroke-width: the shipped motifs use 1, 1.4 and 1.5.
+_SVG_STROKE_WIDTH_RANGE = (0.8, 2.0)
+# stroke-opacity: the shipped motifs span 0.06 (hud lattice) to 0.22 (bloom
+# pollen centre). Anything darker stops reading as a background texture.
+_SVG_STROKE_OPACITY_RANGE = (0.04, 0.30)
+_SVG_SPRITE_MIN_SYMBOLS = 6
+
+
+def _svg_roots(response: str) -> list[str]:
+    """Every top-level-ish <svg ...> ... </svg> or <svg .../> block in the answer."""
+    out: list[str] = []
+    for match in re.finditer(r"<svg\b", response, re.IGNORECASE):
+        start = match.start()
+        # Self-closing root: <svg ... />
+        head_end = response.find(">", start)
+        if head_end == -1:
+            continue
+        if response[head_end - 1] == "/":
+            out.append(response[start : head_end + 1])
+            continue
+        close = response.lower().find("</svg>", head_end)
+        if close == -1:
+            continue
+        out.append(response[start : close + len("</svg>")])
+    return out
+
+
+def _svg_root_attrs(block: str) -> dict[str, str]:
+    head = block[: block.find(">") + 1]
+    return {m.group(1).lower(): m.group(2) for m in _SVG_ATTR_RE.finditer(head)}
+
+
+def _svg_is_seamless_tile(block: str) -> bool:
+    """width == height == the viewBox extent, so the tile repeats without a seam."""
+    attrs = _svg_root_attrs(block)
+    width = _SVG_NUM_RE.search(attrs.get("width", ""))
+    height = _SVG_NUM_RE.search(attrs.get("height", ""))
+    viewbox = _SVG_NUM_RE.findall(attrs.get("viewbox", ""))
+    if not (width and height and len(viewbox) >= 4):
+        return False
+    try:
+        w, h = float(width.group(0)), float(height.group(0))
+        vx, vy, vw, vh = (float(v) for v in viewbox[:4])
+    except ValueError:
+        return False
+    return w == h and vw == vh and abs(w - vw) < 1e-6 and vx == 0 and vy == 0 and w > 0
+
+
+def _svg_wireframe_is_valid(block: str) -> bool:
+    """Line art: fill="none" somewhere in the root/group and a hairline stroke-width.
+
+    stroke-width and stroke-opacity are checked per-attribute across the whole
+    block, because a motif may set them on a group or on each shape.
+    """
+    if 'fill="none"' not in block and "fill='none'" not in block:
+        return False
+    widths = []
+    opacities = []
+    for name, value in _SVG_ATTR_RE.findall(block):
+        name = name.lower()
+        number = _SVG_NUM_RE.search(value)
+        if name == "stroke-width" and number:
+            widths.append(float(number.group(0)))
+        elif name == "stroke-opacity" and number:
+            opacities.append(float(number.group(0)))
+    lo_w, hi_w = _SVG_STROKE_WIDTH_RANGE
+    lo_o, hi_o = _SVG_STROKE_OPACITY_RANGE
+    if not widths or not all(lo_w <= v <= hi_w for v in widths):
+        return False
+    return bool(opacities) and all(lo_o <= v <= hi_o for v in opacities)
+
+
+def _svg_uses_theme_placeholders(block: str) -> bool:
+    """Colours come from {{accent}} / {{accentAlt}}, never a baked hex literal."""
+    if not re.search(r"\{\{\s*accent\s*\}\}", block, re.IGNORECASE):
+        return False
+    if not re.search(r"\{\{\s*accentAlt\s*\}\}", block, re.IGNORECASE):
+        return False
+    # A hard-coded hex would defeat the point of a theme tile. Allow the
+    # #RRGGBBAA alpha form only if it is not on a stroke/fill attribute - i.e.
+    # reject any hex that appears as an attribute value at all.
+    for _name, value in _SVG_ATTR_RE.findall(block):
+        if _SVG_HEX_RE.search(value):
+            return False
+    return not _SVG_HEX_RE.search(block)
+
+
+def _svg_has_glyphs(block: str) -> bool:
+    """<text>/<tspan>/<textPath> or a font-family: both are banned in a motif."""
+    if re.search(r"<\s*(text|tspan|textPath)\b", block, re.IGNORECASE):
+        return True
+    return bool(re.search(r"font-family", block, re.IGNORECASE))
+
+
+def _svg_sprite_symbols(block: str) -> list[str]:
+    """Ids of <symbol> elements that follow the repo's "<name>-icon" convention."""
+    symbols = re.findall(r"<\s*symbol\b[^>]*", block, re.IGNORECASE)
+    out = []
+    for sym in symbols:
+        ident = _SVG_SYMBOL_ID_RE.search(sym)
+        viewbox = re.search(r"""viewBox\s*=\s*["']([^"']+)["']""", sym)
+        if ident and viewbox:
+            out.append(ident.group(1))
+    return out
+
+
+def _grade_svg_theme_pack(response: str) -> bool:
+    """Grade creative_svg_theme_pack against the real SharedLLM tile consumer.
+
+    Returns True only when the answer contains BOTH deliverables in a form the
+    consumer would actually accept: one seamless placeholder-coloured motif tile
+    and one <symbol> sprite sheet. A keyword check would pass a rectangular,
+    hex-baked, glyph-bearing tile that seams and fights the theme - the exact
+    failure mode the test exists to catch.
+    """
+    if not response or "<svg" not in response.lower():
+        return False
+    blocks = _svg_roots(response)
+    if not blocks:
+        return False
+
+    tile = None
+    sprite = None
+    for block in blocks:
+        symbols = _svg_sprite_symbols(block)
+        if len(symbols) >= _SVG_SPRITE_MIN_SYMBOLS and sprite is None:
+            sprite = block
+            continue
+        if tile is None and _svg_is_seamless_tile(block) and _svg_uses_theme_placeholders(block):
+            tile = block
+
+    if tile is None or not _svg_wireframe_is_valid(tile) or _svg_has_glyphs(tile):
+        return False
+    if sprite is None or _svg_has_glyphs(sprite):
+        return False
+    # The tile must actually be drawn with more than the <svg> wrapper.
+    body = re.sub(r"^<svg\b[^>]*>|</svg>$", "", tile, flags=re.IGNORECASE)
+    return bool(re.search(r"<\s*(path|circle|ellipse|rect|line|polyline|polygon|g)\b", body, re.IGNORECASE))
+
+
 # Per-chunk stream timeouts: read applies to the gap BETWEEN stream lines, not
 # total request time. Large prompts (15k+ tokens) plus slow generation on big
 # MoE models can run for many minutes; a hard non-streaming deadline kills
@@ -2699,6 +2875,11 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["coffee", "cup", "bean", "brew"])
                 and any(x in cleaned for x in ["bean", "brew", "text", "font"])
             )
+        elif test_id == "creative_svg_theme_pack":
+            # Structural, not keyword: see _grade_svg_theme_pack. It reads the
+            # raw response because it parses attributes, and `cleaned` is
+            # lowercased, which would fold the {{accentAlt}} casing away.
+            return _grade_svg_theme_pack(response)
         elif test_id == "office_text_edit":
             return (
                 any(x in cleaned for x in ["rewrite", "revise", "edit", "proofread"])
@@ -5332,6 +5513,9 @@ class LLMModelBenchmark:
         "logic_river": "v2",
         "logic_modus": "v2",
         "logic_weigh": "v2",
+        # Graded structurally against the SharedLLM motif-tile consumer, not by
+        # keyword, so a seam-forming or hex-baked tile fails.
+        "creative_svg_theme_pack": "v1",
     }
     OBJECTIVE_GRADER_VERSION: ClassVar[str] = "v2"
 
