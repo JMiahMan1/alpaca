@@ -196,8 +196,12 @@ _CANONICAL_TOOLS = {
     "audiobookregeneraterequest",
     "ghrequest",
     "ravenrecallrequest",
+    "ravenmissionrequest",
     "workspaceportexposerequest",
     "imagegenerationrequest",
+    "imageeditrequest",
+    "ocrrequest",
+    "redisinspectrequest",
 }
 
 # Tier-2 regex aliases mirroring the app (agent_loop.py lines ~3690-3735).
@@ -234,7 +238,11 @@ _TOOL_REGEX_ALIASES = [
     (re.compile(r".*context.*search.*"), "contextsearchrequest"),
     (re.compile(r".*rag.*"), "contextsearchrequest"),
     (re.compile(r".*image.*gen.*"), "imagegenerationrequest"),
+    (re.compile(r".*image.*edit.*"), "imageeditrequest"),
+    (re.compile(r".*ocr.*"), "ocrrequest"),
     (re.compile(r".*sd.*gen.*"), "imagegenerationrequest"),
+    (re.compile(r".*raven.*mission.*"), "ravenmissionrequest"),
+    (re.compile(r".*redis.*inspect.*"), "redisinspectrequest"),
     (re.compile(r".*control.*plane.*"), "controlplanerequest"),
     (re.compile(r".*restart.*service.*"), "restart_service"),
     (re.compile(r".*identity.*"), "identityrequest"),
