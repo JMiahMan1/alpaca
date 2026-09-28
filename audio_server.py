@@ -27,6 +27,8 @@ Endpoints:
   POST /api/voices    -> {name, consent, recordings: [{prompt_id, audio_b64}]} -> profile
   PATCH  /api/voices/<id> -> {name} rename (names are unique)
   DELETE /api/voices/<id>
+  POST  /api/voices/identify   -> {audio_b64, threshold?} -> who is speaking
+  POST  /api/voices/calibrate  -> {clips: [{voice_id, audio_b64}]} -> own vs impostor scores
   POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
   POST /api/unload    -> free all VRAM immediately
 """
@@ -382,6 +384,95 @@ async def api_voices_delete(pid: str):
     except KeyError:
         return JSONResponse({"error": f"unknown custom voice '{pid}'"}, status_code=404)
     return {"deleted": pid}
+
+
+# Identification lives beside the enrolment routes, not in the dashboard, because
+# the comparison needs the reference encoder - which only exists in this
+# container - and because Raven reaches it through the same tool surface.
+#
+# POST, not GET: the clip is audio. No route above claims POST /api/voices/{id},
+# so these two paths are unambiguous.
+
+
+def _clip_from(data: dict, key: str = "audio_b64") -> bytes:
+    """Decode one base64 clip, with the same limits the enrolment path applies."""
+    raw = data.get(key)
+    if not isinstance(raw, str) or not raw:
+        raise ValueError(f"{key} must be a base64-encoded audio clip")
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except Exception as e:
+        raise ValueError(f"{key} is not valid base64: {e}") from e
+    if not blob:
+        raise ValueError(f"{key} decoded to zero bytes")
+    if len(blob) > voice_clone.MAX_UPLOAD_BYTES:
+        raise ValueError(f"{key} is {len(blob) // 1048576} MB; the limit is {voice_clone.MAX_UPLOAD_BYTES // 1048576} MB")
+    return blob
+
+
+@app.post("/api/voices/identify")
+async def api_voices_identify(request: Request):
+    """{audio_b64, threshold?} -> every enrolled voice ranked, plus a verdict.
+
+    `threshold` is optional: without it the floor is derived from the enrolled
+    cohort's own intra-speaker spread, so an install that has never calibrated
+    still returns an honest answer.
+    """
+    data = await request.json()
+    try:
+        clip = _clip_from(data)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    threshold = data.get("threshold")
+    if threshold is not None:
+        try:
+            threshold = float(threshold)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "threshold must be a number between 0 and 1"}, status_code=400)
+        if not 0.0 <= threshold <= 1.0:
+            return JSONResponse({"error": f"threshold must be between 0 and 1, got {threshold}"},
+                                status_code=400)
+    try:
+        async with _lock:
+            result = await asyncio.to_thread(voice_clone.identify, clip, threshold)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    except Exception as e:
+        logger.exception("voice identification failed")
+        return JSONResponse({"error": f"voice identification failed: {e}"}, status_code=500)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404 if "no enrolled voices" in str(result.get("error")) else 422)
+    return result
+
+
+@app.post("/api/voices/calibrate")
+async def api_voices_calibrate(request: Request):
+    """{clips: [{voice_id, audio_b64}]} -> own vs impostor scores, and a suggested threshold."""
+    data = await request.json()
+    raw_clips = data.get("clips")
+    if not isinstance(raw_clips, list) or not raw_clips:
+        return JSONResponse({"error": "clips must be a non-empty [{voice_id, audio_b64}] list"}, status_code=400)
+    if len(raw_clips) > 20:
+        return JSONResponse({"error": f"calibrate at most 20 clips at a time, got {len(raw_clips)}"}, status_code=400)
+    clips = []
+    for i, c in enumerate(raw_clips):
+        if not isinstance(c, dict):
+            return JSONResponse({"error": f"clip {i + 1} must be an object {{voice_id, audio_b64}}"}, status_code=400)
+        try:
+            clips.append((str(c.get("voice_id", "")), _clip_from(c)))
+        except ValueError as e:
+            return JSONResponse({"error": f"clip {i + 1}: {e}"}, status_code=400)
+    try:
+        async with _lock:
+            result = await asyncio.to_thread(voice_clone.calibrate, clips)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    except Exception as e:
+        logger.exception("voice calibration failed")
+        return JSONResponse({"error": f"voice calibration failed: {e}"}, status_code=500)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404)
+    return result
 
 
 @app.post("/api/tts")
