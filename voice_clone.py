@@ -157,8 +157,13 @@ def _spec(conv, audio_22k):
                              hps.data.win_length, center=False).to(conv.device)
 
 
-def _embed(windows_22k: list):
-    """Average OpenVoice reference-encoder embeddings over audio windows."""
+def _embed_windows(windows_22k: list):
+    """One OpenVoice reference-encoder embedding per usable window.
+
+    Kept separate from `_embed` so a profile can retain the individual window
+    embeddings: the spread *between* a speaker's own windows is the only honest
+    yardstick for how similar two recordings have to be to be the same person.
+    """
     import torch
 
     conv = _converter()
@@ -167,10 +172,68 @@ def _embed(windows_22k: list):
         for w in windows_22k:
             if len(w) < SR:  # < 1 s carries too little timbre
                 continue
-            gs.append(conv.model.ref_enc(_spec(conv, w).transpose(1, 2)).unsqueeze(-1))
+            gs.append(conv.model.ref_enc(_spec(conv, w).transpose(1, 2)).unsqueeze(-1).cpu())
     if not gs:
         raise ValueError("not enough speech to build a voice embedding")
-    return torch.stack(gs).mean(0).cpu()
+    return gs
+
+
+def _embed(windows_22k: list):
+    """Average OpenVoice reference-encoder embeddings over audio windows."""
+    import torch
+
+    return torch.stack(_embed_windows(windows_22k)).mean(0).cpu()
+
+
+def _cosine(a, b) -> float:
+    """Cosine similarity of two embeddings, as a plain float (no torch needed)."""
+    import numpy as np
+
+    x = np.asarray(_as_f32(a), dtype="float64").ravel()
+    y = np.asarray(_as_f32(b), dtype="float64").ravel()
+    if x.size != y.size or x.size == 0:
+        return 0.0
+    d = float(np.linalg.norm(x) * np.linalg.norm(y))
+    return 0.0 if d <= 1e-12 else float(np.dot(x, y) / d)
+
+
+def _as_f32(t):
+    """numpy view of a tensor, or the input unchanged if it is already one."""
+    if hasattr(t, "detach"):
+        return t.detach().cpu().numpy()
+    return t
+
+
+def _pairwise_spread(vectors: list) -> float:
+    """Mean (1 - cosine) over every pair. 0.0 for fewer than two vectors."""
+    if len(vectors) < 2:
+        return 0.0
+    tot = n = 0.0
+    for i in range(len(vectors)):
+        for j in range(i + 1, len(vectors)):
+            tot += 1.0 - _cosine(vectors[i], vectors[j])
+            n += 1
+    return tot / n if n else 0.0
+
+
+# The identification threshold is derived from the enrolled cohort rather than
+# picked, because "0.82" means nothing on its own. Every profile records how far
+# its own takes are from each other; a match has to beat the *worst* speaker's
+# own variation by a margin, or the same person re-recorded on a different day
+# would read as a stranger. The clamp keeps a single wildly-inconsistent
+# enrolment from making the threshold unusable, and a floor keeps a suspiciously
+# tight cohort from making it trivially low.
+SPREAD_MARGIN = 1.5
+MIN_IDENTITY_THRESHOLD = 0.05
+MAX_IDENTITY_THRESHOLD = 0.95
+
+
+def identity_threshold(spreads: list[float]) -> float:
+    """Cohort-derived cosine floor above which two recordings are the same voice."""
+    real = [s for s in spreads if s is not None]
+    if not real:
+        return 0.75
+    return max(MIN_IDENTITY_THRESHOLD, min(MAX_IDENTITY_THRESHOLD, SPREAD_MARGIN * max(real)))
 
 
 def convert(audio, sr: int, src_se, tgt_se, tau: float = DEFAULT_TAU):
@@ -342,7 +405,18 @@ def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
     total = sum(len(t) for t in takes) / SR
     if total < MIN_TOTAL_SPEECH_S * 0.8:
         raise ValueError(f"only {total:.0f}s of speech in total; about {MIN_TOTAL_SPEECH_S:.0f}s is needed")
-    se = _embed([w for t in takes for w in _windows(t)])
+
+    # Embed every window once, then derive both the profile centroid and a
+    # per-take embedding from it. The per-take embeddings are kept because the
+    # gap between a speaker's own takes is what makes an identification score
+    # interpretable ("0.62, and this person's own takes differ by 0.11").
+    take_ses, all_windows = [], []
+    for t in takes:
+        ws = _embed_windows(_windows(t))
+        take_ses.append(torch.stack(ws).mean(0).cpu())
+        all_windows.extend(ws)
+    se = torch.stack(all_windows).mean(0).cpu()
+    spread = _pairwise_spread(take_ses) if len(take_ses) > 1 else _pairwise_spread(all_windows)
 
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "voice"
     pid = f"{slug}-{secrets.token_hex(3)}"
@@ -351,6 +425,7 @@ def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
     for i, t in enumerate(takes, 1):
         sf.write(os.path.join(d, "recordings", f"{i:02d}.wav"), t, SR, subtype="PCM_16")
     torch.save(se, os.path.join(d, "se.pt"))
+    torch.save(torch.stack(take_ses), os.path.join(d, "takes.pt"))
     meta = {
         "id": pid,
         "name": name,
@@ -359,6 +434,8 @@ def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
         "recordings": reports,
         "warnings": sorted({w for r in reports for w in r["warnings"]}),
         "engine": "openvoice-v2",
+        "intraspeaker_spread": round(float(spread), 4),
+        "take_count": len(takes),
     }
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=1)
@@ -370,6 +447,150 @@ def target_se(pid: str):
     import torch
 
     return torch.load(os.path.join(_pdir(pid), "se.pt"), map_location="cpu", weights_only=True)
+
+
+# --------------------------------------------------------------------------- #
+# Identification                                                                #
+# --------------------------------------------------------------------------- #
+
+
+def _centroids() -> list[tuple[dict, object]]:
+    """Every enrolled profile with a loadable centroid, newest first.
+
+    A profile whose files are unreadable is skipped rather than fatal: one
+    corrupted enrolment must not make every speaker unidentifiable.
+    """
+    out = []
+    for p in list_profiles():
+        try:
+            out.append((p, target_se(p["id"])))
+        except Exception as e:
+            logger.warning(f"[voice_clone] skipping profile {p.get('id')}: {e}")
+    return out
+
+
+def _best_window(windows: list, centroid) -> tuple[float, int]:
+    """Best-matching single window, and its index.
+
+    The *best* window rather than the mean: a clip of half a minute contains
+    breaths, a cough and a door, and one clean window is real evidence while the
+    average of a clean window and a door is not.
+    """
+    best, idx = -1.0, -1
+    for i, w in enumerate(windows):
+        s = _cosine(w, centroid)
+        if s > best:
+            best, idx = s, i
+    return best, idx
+
+
+def _score_against(windows: list, cohort: list[tuple[dict, object]]) -> list[dict]:
+    ranked = []
+    for p, c in cohort:
+        score, window = _best_window(windows, c)
+        ranked.append({
+            "id": p["id"],
+            "name": p.get("name") or p["id"],
+            "score": round(float(score), 4),
+            "best_window": window,
+            "intraspeaker_spread": p.get("intraspeaker_spread"),
+        })
+    ranked.sort(key=lambda r: -r["score"])
+    return ranked
+
+
+def identify(raw: bytes, threshold: float | None = None) -> dict:
+    """Who is speaking? Returns every profile ranked, plus a calibrated verdict.
+
+    This reuses the tone-colour embedding the cloner already writes, so it costs
+    no extra model and no extra VRAM on a card that llama-server and sd-server
+    also need. The `openvoice` package ships no verifier subpackage, so a
+    dedicated WavLM speaker-verification model is not available here; this
+    function is the seam where one would drop in - it takes audio and returns a
+    ranking, and knows nothing about how the scores are produced.
+    """
+    speech = analyze(decode_to_22k(raw))["speech"]
+    windows = _embed_windows(_windows(speech))
+    cohort = _centroids()
+    if not cohort:
+        return {"ok": False, "error": "no enrolled voices to compare against", "candidates": []}
+    ranked = _score_against(windows, cohort)
+    if not windows:
+        return {"ok": False, "error": "not enough speech in the clip to identify", "candidates": ranked}
+
+    spread_key = "intraspeaker_spread"
+    thr = threshold if threshold is not None else identity_threshold(
+        [p.get(spread_key) for p, _ in cohort]
+    )
+    top = ranked[0]
+    runner_up = ranked[1]["score"] if len(ranked) > 1 else None
+    return {
+        "ok": True,
+        "engine": "openvoice-v2-reference-encoder",
+        "matched": top["id"] if top["score"] >= thr else None,
+        "matched_name": top["name"] if top["score"] >= thr else None,
+        "score": top["score"],
+        "threshold": round(float(thr), 4),
+        "margin": round(float(top["score"] - runner_up), 4) if runner_up is not None else None,
+        "runner_up": ranked[1]["id"] if len(ranked) > 1 else None,
+        "windows_scored": len(windows),
+        "candidates": ranked,
+    }
+
+
+def calibrate(clips: list[tuple[str, bytes]]) -> dict:
+    """Score labelled clips against their own profile and against the impostors.
+
+    The only way to choose a threshold honestly. For each clip it reports the
+    score against the profile it is *supposed* to be and the best score against
+    any other profile, then suggests a boundary between the two populations.
+    Callers can override the suggested value; `identify` keeps deriving its own
+    threshold from the enrolled cohort so an uncalibrated install still works.
+    """
+    cohort = _centroids()
+    if not cohort:
+        return {"ok": False, "error": "no enrolled voices to compare against", "rows": []}
+
+    rows = []
+    for label, raw in clips:
+        speech = analyze(decode_to_22k(raw))["speech"]
+        windows = _embed_windows(_windows(speech))
+        ranked = _score_against(windows, cohort)
+        own = next((r for r in ranked if r["id"] == label), None)
+        other = next((r for r in ranked if r["id"] != label), None)
+        rows.append({
+            "label": label,
+            "own_score": own["score"] if own else None,
+            "impostor_id": other["id"] if other else None,
+            "impostor_score": other["score"] if other else None,
+            "margin": round(own["score"] - other["score"], 4) if own and other else None,
+            "windows_scored": len(windows),
+        })
+
+    known = [r["own_score"] for r in rows if r["own_score"] is not None]
+    impostor = [r["impostor_score"] for r in rows if r["impostor_score"] is not None]
+    suggested = None
+    if known and impostor:
+        suggested = round((min(known) + max(impostor)) / 2.0, 4)
+    weakest = min((r for r in rows if r["margin"] is not None), key=lambda r: r["margin"], default=None)
+    return {
+        "ok": True,
+        "rows": rows,
+        "clips": len(rows),
+        "suggested_threshold": suggested,
+        "lowest_own_score": round(min(known), 4) if known else None,
+        "highest_impostor_score": round(max(impostor), 4) if impostor else None,
+        "cohort_threshold": round(identity_threshold([p.get("intraspeaker_spread") for p, _ in cohort]), 4),
+        "weakest_clip": weakest["label"] if weakest else None,
+    }
+
+
+def profile_spread(pid: str):
+    """A profile's own take-to-take spread, or None if it predates this record."""
+    try:
+        return get_profile(pid).get("intraspeaker_spread")
+    except KeyError:
+        return None
 
 
 def source_se(voice: str, synth):
