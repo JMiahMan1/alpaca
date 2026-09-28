@@ -4,39 +4,54 @@
 Alpaca is an LLM model management, benchmarking, and telemetry dashboard for local GPU deployments. It provides:
 - **Model pull/download** from Ollama Registry and Hugging Face GGUF repos
 - **Router-based model management** with automatic hot-swap between models
-- **Functional & performance benchmarking** across SharedLLM task categories
+- **Functional & performance benchmarking** across 292 general tests, 49 SharedLLM tasks and one
+  multi-turn agentic workflow
 - **Real-time telemetry** (VRAM, RAM, context usage) with self-healing triggers
-- **Web dashboard** with SocketIO for live status updates
+- **Image generation** (stable-diffusion.cpp) with deterministic text composition
+- **Audio**: Kokoro TTS, OpenVoice V2 voice cloning, speaker identification, and a procedural
+  podcast mixer
+- **Web dashboard** with SocketIO for live status updates, an arcade, and a sandbox
 
 ## Architecture & Services (Docker Compose)
-The project runs 4 Docker services defined in `docker-compose.yml`:
+The project runs 7 Docker services defined in `docker-compose.yml`:
 
 | Service | Image | Role | Network | Port |
 |---------|-------|------|---------|------|
 | `llama-server` | `Dockerfile.llama-server` (llama.cpp CUDA) | Direct GPU inference server | Compose network | 8080 |
 | `sd-server` | `Dockerfile.sd-server` (stable-diffusion.cpp CUDA) | Direct GPU image generation server | Compose network | 8081 |
+| `audio-server` | `Dockerfile.audio` (pytorch CUDA) | TTS, music, voice cloning, speaker ID | Compose network | 8082 |
 | `alpaca-proxy` | `Dockerfile.proxy` (FastAPI/Uvicorn) | Model router, proxy, slot management | **host** | 11434 |
-| `alpaca-web` | `Dockerfile.web` (Flask/SocketIO) | Web dashboard, benchmark runner | Compose network | 5000 |
+| `alpaca-web` | `Dockerfile.web` (Flask/SocketIO) | Web dashboard, benchmark runner, podcast mixing | Compose network | 5000 |
 | `alpaca-telemetry` | `Dockerfile.proxy` (async daemon) | Polls metrics, writes telemetry logs | Compose network | — |
 | `alpaca-indexer` | `Dockerfile.proxy` (one-shot) | Model reindexing at startup | Compose network | — |
+
+**Which files need a rebuild, not a restart:** `web/`, `llm_benchmark_suite.py`, `online_providers.py`,
+`analyzer.py`, `sandbox_exec.py`, `benchmark_tests.json`, `manuscript_rubric.py`, `alpaca-puller.py`
+and `data/` are bind-mounted, so a change needs only `./scripts/restart-when-idle.sh`.
+`alpaca-proxy.py`, `audio_server.py`, `tts_text.py` and `voice_clone.py` are COPYed into their
+images and need `sudo docker compose up -d --build <service>`.
 
 ### Key Environment Variables
 - `MODELS_DIR` — Path to Ollama models directory (`/models` in containers, `/usr/share/ollama/.ollama/models` on host)
 - `ROUTER_MODELS_DIR` — Router symlink directory (`.alpaca-router` / `.alpaca-router`)
 - `LLAMA_SERVER_URL` — URL to llama-server (usually `http://llama-server:8080` or `http://localhost:8080`)
+- `AUDIO_SERVER_URL` — URL to audio-server (`http://audio-server:8082` or `http://localhost:8082`)
 - `LLAMA_DOCKER_CONTAINER` — Docker container name for llama-server (used by telemetry to query child process)
 - `TELEMETRY_DIR` — Output directory for `.jsonl` telemetry logs
 - `SLOTS_CACHE_DIR` — KV cache checkpoint directory
 - `PROXY_URL` — URL to alpaca-proxy (must be `http://host.docker.internal:11434` for `alpaca-telemetry` since proxy uses `network_mode: host`)
 - `OLLAMA_REGISTRY` — Ollama registry URL (default: `https://registry.ollama.ai/v2`)
 - `HUGGING_FACE_TOKEN` — Required for gated/private GGUF repos on Hugging Face
+- `DOCKER_SOCK` — Docker socket path (`${DOCKER_SOCK:-/var/run/docker.sock}`), set this on colima
 
 ### Cross-Service Communication
 - **llama-server** exposes REST API at `/props`, `/slots`, `/completion`, `/embeddings`, etc.
-- **alpaca-proxy** sits in front of llama-server, provides `/api/tags`, `/api/chat`, `/admin/runtime`, `/admin/slots`, slot caching, model expiry
-- **alpaca-web** communicates with both proxy (model list, benchmark orchestration) and llama-server (telemetry history)
+- **alpaca-proxy** sits in front of llama-server, provides `/api/tags`, `/api/chat`, `/admin/runtime`, `/admin/slots`, slot caching, model expiry. `POST /admin/restart` restarts llama-server (it cannot restart its own container, and answers that explicitly if asked).
+- **audio-server** provides `/api/tts`, `/api/music`, `/api/voices*`, `POST /api/voices/identify` and `/calibrate`. It is the only service with torch, which is why speaker identification lives here and not in the dashboard.
+- **alpaca-web** communicates with both proxy (model list, benchmark orchestration) and llama-server (telemetry history), and bridges `/api/audio/*` → audio-server plus the podcast mixer on top of it
 - **alpaca-telemetry** polls proxy runtime + llama-server props/slots, writes per-model `.jsonl` files
 - **Network topology**: `alpaca-proxy` is on `host` network; all other services use compose network. Telemetry needs `extra_hosts` + `PROXY_URL=http://host.docker.internal:11434` to reach proxy.
+
 
 ## Key Files & Responsibilities
 
@@ -45,22 +60,35 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 |------|------|
 | `alpaca-puller.py` | CLI tool for pulling/downloading models from Ollama registry or Hugging Face |
 | `alpaca-proxy.py` | FastAPI proxy/router managing llama-server lifecycle, model switching, slot allocation, KV cache checkpoints |
-| `alpaca_puller.py` | (Secondary) Puller module — check if different from `alpaca-puller.py` |
 | `llm_benchmark_suite.py` | `LLMModelBenchmark` class — functional + performance benchmarks for llama.cpp models |
-| `online_providers.py` | `OnlineModelProvider` adapter — queries OpenRouter, Hugging Face, Cloudflare Workers AI, OpenCode Zen |
-| `web/shared_llm_benchmark.py` | `SharedLLMModelBenchmark` class — benchmark runner for SharedLLM task categories (FastPath, Librarian tools, Raven code AST, DAG planning, needle retrieval) |
+| `online_providers.py` | `OnlineModelProvider` adapter — queries OpenRouter, Hugging Face, Cloudflare Workers AI, OpenCode Zen, and the Claude/Codex/DeepSeek/Pi/Cline CLIs |
+| `audio_server.py` | TTS (Kokoro) + music (MusicGen) + OpenVoice cloning + speaker identification, on :8082 |
+| `voice_clone.py` | OpenVoice V2 tone-colour cloning, enrolment quality analysis, and cosine-based speaker ID |
+| `tts_text.py` | Pure text normalisation for the TTS front end (scripture, dates, roman numerals, lexicon) |
+| `multistep_benchmark.py` | The only genuinely multi-turn harness: 4 fixed turns + one healing pass |
+| `context_awareness.py` | Resolves the live `n_ctx` and clamps `num_predict`; raises rather than guessing |
+| `sandbox_exec.py` | The Docker sandbox: lint, execute, screenshot, serve, noVNC, CLI fixtures |
+| `settings_scan.py` | Resource-guided llama.cpp settings search with thermal guards |
+| `manuscript_rubric.py` | The John 1 illuminated-manuscript rubric (the scripture travels with the rules) |
+| `imageops.py` | Deterministic band-fill + text draw — the only non-diffusion way to put real type on an image |
+| `analyzer.py` | Telemetry-driven llama.cpp tuning recommendations |
 | `telemetry_monitor.py` | Async daemon polling llama-server metrics, writes `data/telemetry/{model}.jsonl` |
-| `analyzer.py` | Benchmark result analyzer |
-| `benchmark-configs.py` | Benchmark test configurations |
-| `web/app.py` | Flask web server + SocketIO — dashboard API, benchmark runner, model pull orchestration |
+| `benchmark-configs.py` | ctx × cache × flash-attn sweep, then a prefill-only batch sweep, then a quality check |
+| `benchmark_tests.json` | **292 tests in 46 categories** — the general suite's data |
+| `web/app.py` | Flask web server + SocketIO — dashboard API, benchmark runner, model pull orchestration, podcast routes |
+| `web/podcast_mixer.py` | The podcast mixer: script parsing, bed synthesis, ducking, WAV encode — numpy only |
 
 ### Web Layer (`web/`)
 | File | Role |
 |------|------|
 | `web/app.py` | Flask backend: all REST API routes, SocketIO events, benchmark execution, model pull orchestration |
+| `web/podcast_mixer.py` | Podcast mixing (see **Podcast Studio** below) |
 | `web/shared_llm_benchmark.py` | SharedLLM benchmark logic (reused by web app) |
-| `web/templates/index.html` | Single-page HTML dashboard |
-| `web/static/js/dashboard.js` | Frontend logic: model grid, benchmark runner, search modal, SocketIO listeners |
+| `web/arcade_publish.py` | Publishes benchmark games into the standalone arcade service |
+| `web/model_tracker.py` | Discovery/seen state and benchmark history per model |
+| `web/thermal.py` | Thermal watchdog: throttle hysteresis, abort, pre-test cool-down |
+| `web/templates/index.html` | Single-page HTML dashboard (10 hash-routed tabs) |
+| `web/static/js/dashboard.js` | Frontend logic: model grid, benchmark runner, search modal, Podcast Studio, SocketIO listeners |
 | `web/static/css/style.css` | Styles |
 
 ### Configuration & Build
@@ -69,13 +97,15 @@ The project runs 4 Docker services defined in `docker-compose.yml`:
 | `docker-compose.yml` | Service definitions, volumes, network config |
 | `Dockerfile.proxy` | Proxy/web builder image (python:3.11-slim + docker-cli + FastAPI deps) |
 | `Dockerfile.web` | Web builder image (Flask + SocketIO + dashboard deps) |
+| `Dockerfile.audio` | Audio server image (pytorch CUDA + espeak-ng + ffmpeg + OpenVoice) |
 | `Dockerfile.llama-server` | llama.cpp server image (CUDA) |
 | `llama-server-entrypoint.sh` | Entrypoint script for llama-server container |
 | `llama-server-flags.py` | llama-server CLI flags configuration |
-| `mypy.ini` | mypy config — `disallow_untyped_defs = False` for `web.*` package |
-| `pyproject.toml` | Ruff config: `line-length = 120`, lints `E,F,W,I,UP,B,SIM,RUF`; pytest config: `testpaths = ["tests"]`, `pythonpath = ["."]`, `asyncio_default_fixture_loop_scope = function` |
-| `requirements-dev.txt` | Dev deps: `ruff`, `pytest`, `pytest-asyncio` |
+| `mypy.ini` | mypy config — `disallow_untyped_defs = False` for `web.*` package, `python_version = 3.12` |
+| `pyproject.toml` | Ruff config: `line-length = 120`, lints `E,F,W,I,UP,B,SIM,RUF`; pytest config: `testpaths = ["tests"]`, `pythonpath = ["."]`, `asyncio_default_fixture_loop_scope = function`, `addopts = "-q -m 'not live'"`, plus the `markers` and `per-file-ignores` tables |
+| `requirements-dev.txt` | Dev deps: `ruff`, `pytest`, `pytest-asyncio`, `types-PyYAML` **plus every runtime import the suite needs** (CI installs only this) |
 | `.env` | Secret/token storage (gitignored) — e.g. `HUGGING_FACE_TOKEN` |
+| `.env.example` | The required vars a fresh clone cannot start without (`LLAMA_REASONING_BUDGET`, `LLAMA_REASONING_FORMAT`) |
 
 ## Critical Patterns & Gotchas
 
@@ -218,6 +248,71 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
   renders in the gallery instead of wiping it, and offers **🎨 Refine** to send a result
   straight back into the Photo Editor.
 
+### Podcast Studio (`#view-podcast` tab, `web/podcast_mixer.py` + 4 `/api/podcast/*` routes)
+**Thesis: stop asking a song generator to do a bed's job.** A podcast bed is a narrow job
+(sustained harmony, gentle pulse, nothing competing with speech) = textbook procedural synthesis.
+MusicGen is a *song* generator: a 30 s training window, 32 kHz output, CC-BY-NC, sharing the 8 GB
+card with llama-server and sd-server. Ten minutes of bed is the one thing it does worst.
+
+1. **Bed = PROCEDURAL SYNTHESIS** at **24000 Hz to match Kokoro**, so nothing resamples. Five
+   presets; three detuned partials per chord tone (±4 cents = shimmer, not wobble), an optional
+   pitch-swept pulse, a one-pole lowpass, a 0.07 Hz tremolo, deterministic in `seed`.
+2. **Theme sting = MusicGen at native ≤30 s** (where a generative model earns its keep). Only the
+   ~10 s tail needs a 32k→24k linear resample.
+3. **The encode must not peak-normalise.** `audio_server._wav_bytes` does, which would re-boost
+   the quiet bed over the speech — which is why the mixer has its own encoder.
+
+- Routes: `GET /api/podcast/status`, `GET /api/podcast/voices`, `POST /api/podcast/draft`
+  (the proxy writes the script), `POST /api/podcast/render` (the mixer).
+- **The mixer lives in `web/`, not `audio_server.py`**, because `web/` is bind-mounted read-only
+  (an idle-safe restart is enough) whereas `audio_server.py` is COPYed into a 2 GB pytorch image.
+  `Dockerfile.web` has no ffmpeg and does not need one: decode/loop/crossfade/duck/resample/sum
+  are all numpy-vectorizable, and `wave` is stdlib.
+- `mix_podcast` warns on a **cross-gender clone** — OpenVoice transfers timbre badly across
+  gender, so the roster carries `source_gender` and the panel labels such an option rather than
+  silently offering it.
+- **The MusicGen 1500-token clamp is silent.** `max_new_tokens = min(duration_s*50, 1500)`, so a
+  180 s request returns 200 with 30 s of audio. The only tell is
+  `meta.duration_s < meta.requested_duration_s`; the render route warns when it sees that.
+
+### Speaker identification (`voice_clone.py` → `POST /api/voices/identify`, `/calibrate`)
+- Built on the artifact the system **already has**: cosine similarity of OpenVoice's 256-d
+  reference encoder against each profile's centroid. Zero new models, zero new VRAM.
+- **The threshold is derived, not chosen.** `identity_threshold(spreads) =
+  clamp(1.5 * max(spread), 0.05, 0.95)` — `max` over the **worst** profile, not the average, so a
+  consistent majority cannot talk the floor down and then reject their own re-records.
+- `create_profile` stores `takes.pt` alongside `se.pt` and records `intraspeaker_spread` (pairwise
+  over takes, or **within the take's windows** when there is only one). Reporting 0.0 there would
+  claim a certainty we do not have.
+- `identify` scores the **best single window**, not the mean (half a minute contains breaths and
+  doors), and returns the ranking **even when nothing matches** — an agent needs to say
+  "closest is X". 404 means "no voices enrolled", 422 means "not enough speech".
+- **The `openvoice` package ships no `verifier/` subpackage**, so there is no WavLM verifier
+  available. `identify` is the seam where one would drop in: it takes audio and returns a
+  ranking, and knows nothing about how the scores are made.
+
+### Raven / SharedLLM can drive all of it
+`../SharedLLM` registers `sharedllm_podcast_render`, `sharedllm_speaker_identify` and
+`sharedllm_list_voices` (`tool_registry.py`), routed to `EXECUTION_SVC`
+(`/execute/podcast_render|identify|list_voices`) by `services/execution/handlers/podcast.py`,
+which calls the dashboard at `ALPACA_WEB_URL` (rendering — the mixer lives there) and the audio
+server at `ALPACA_AUDIO_URL` (identification — OpenVoice's reference encoder only exists in the
+container that has torch). `tests/test_sharedllm_contract.py` pins alpaca's copy of the tool
+vocabulary against SharedLLM's in **both** directions, so a tool added on either side without the
+other fails the build.
+
+### Creative benchmark tests (all in `benchmark_tests.json`, all scored)
+| Test | Category | Type | What the grader actually checks |
+|---|---|---|---|
+| `creative_svg_theme_pack` | creative | functional | A **seamless tile** (square viewBox with `width == height`, `fill="none"`, stroke widths 1–1.5, opacities 0.06–0.22, colours as `{{accent}}` placeholders, no glyphs) **and** a 6-`<symbol>` sprite sheet. `scripts/install_theme_pack.py` turns a passing answer into a Jarvis theme pack. |
+| `creative_illuminated_manuscript_john1` | creative | ui | All 18 KJV verses present, a page-named container with **its own** border, a real inline `<svg>`, and a working page flip. See `manuscript_rubric.py`. |
+| `composite_sprite_bgm_game` | gamedev_alt | composite | The 4-stage tool path: LLM authors → sd-server renders the sprite → audio-server renders the loop → `grade_code(ui=True)`. **The assembled HTML is written to `data/artifacts/`,** which is what makes it playable in the arcade. |
+- **Why SVG and not diffusion:** every SD flyer preset's negative prompt bans "garbled text,
+  distorted letters, bad typography", and the repo ships **zero font files**, so any `<text>` in a
+  generated asset falls back to whatever the render host happens to have. Deterministic SVG is
+  machine-checkable.
+- **Diffusion is never asked to draw text.** The same reasoning applies to the manuscript.
+
 ### Error Types & Fixes
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -231,30 +326,86 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
 | CLI games crash with EOFError in sandbox | `input()` gets no stdin | `run_code_once` redirects `/tmp/stdin.txt` for non-SQL langs |
 | `outdated_only` runs ALL tests | Empty `test_ids` list is falsy at `if test_ids:` | Return `{"status":"No outdated benchmarks"}` early instead of falling through |
 | `_outdated_test_ids` misses models | Sanitized filename vs public model name | Compare both `model` and `re.sub(r"[/:.]","_",model)` forms |
+| Every "Apply to Profile" click is a no-op | The sanitiser stripped `-` and `_` but not `:`, so a public name never matched the router GGUF stem | Strip `:` and `.` too (web/app.py `apply_telemetry_recommendations`) |
+| A near-blank page scores as a rendered UI | `_screenshot_has_content` only tested pixel variance, and anti-aliasing alone produces hundreds of greys | Ink-coverage floor, calibrated against the real screenshots in `docs/screenshots/` |
+| A test can never pass | `num_predict: 0` survives `turn_budget`'s `max(0, …)` and reaches llama-server verbatim | `num_predict >= 1`, pinned per test by `test_benchmark_tests_schema.py` |
+| A podcast bed is 30 s long | MusicGen's positional table is 1500 frames = 30.0 s; `min(duration_s*50, 1500)` clamps silently | Synthesize the bed procedurally; use MusicGen only for a short sting |
+| The podcast bed drowns the speech | `_wav_bytes` peak-normalises before encoding | `podcast_mixer.encode_wav` never normalises |
+| Voice ID rejects a speaker's own re-record | A hand-picked threshold | `identity_threshold()` derived from the worst profile's intra-speaker spread |
+| Sphinx: ruff reformatted 28 unrelated lines | `ruff check --fix .` on a whole source tree | Scope `--fix` to new files; check `git diff` immediately after |
 
 ## Testing
-- **Comprehensive Test Suite**: 228 automated tests in `tests/`:
-  - `test_sandbox_and_security.py` (Non-root execution, path traversal guards, port isolation)
-  - `test_proxy_unit.py` (Slot allocation, request queueing, thinking overrides, keep-alive)
-  - `test_puller_unit.py` (Ollama & Hugging Face GGUF imports, stop markers, resume)
-  - `test_web_integration.py` (Dashboard REST APIs, authentication bypass, attachments)
-  - `test_online_providers_and_benchmarks.py` (OpenRouter, HF, Cloudflare, OpenCode Zen, scoring)
-  - `test_benchmark_dynamic.py` (Group filters, category test execution, incremental merging, persistent-scoreboard grading, gamedev_alt UI verify)
-  - `test_live_services.py` (Live proxy/web/sandbox smoke tests)
-  - `test-alpaca.py` (CLI verifier for a model visible to Ollama + Alpaca: `python3 tests/test-alpaca.py qwen3:8b`)
-- Run tests: `pytest` from repo root (uses `pytest-asyncio`; `testpaths = ["tests"]` + `pythonpath = ["."]` in `pyproject.toml`)
-- All tests pass locally and in CI.
+**4,143 tests, all green on a clean machine** (`EXIT=0`, zero FAILED/ERROR). `pytest` from the repo
+root: `testpaths = ["tests"]`, `pythonpath = ["."]`, `asyncio_default_fixture_loop_scope = function`,
+and **`addopts = "-q -m 'not live'"`** — the `live` marker is deselected by default, so a bare
+`pytest` is hermetic and a missing service is never a failure.
+
+### `tests/conftest.py` — what it guarantees
+- `pytest_report_header` prints the **live target** (`ALPACA_BASE_URL` / `ALPACA_PROXY_URL`,
+  default `localhost:5000` / `localhost:11434`) and a `missing_facilities()` line
+  (node / numpy / docker / playwright / sibling SharedLLM checkout), so a skip is never mistaken
+  for coverage.
+- An autouse `no_network` fixture replaces `socket.socket` with a subclass whose `connect` /
+  `connect_ex` raise `RuntimeError` naming the test. **Anything not marked `live` physically
+  cannot open a socket.** That is why a mock that is accidentally not applied shows up as a
+  loud error rather than a 30-second connect timeout.
+- Markers registered in `pyproject.toml`: `live`, `needs_docker`, `needs_node`, `needs_gpu`,
+  `needs_sibling_repo`, `slow`.
+
+### Test-file map
+| File | Covers |
+|---|---|
+| `test_proxy_unit.py` | Slot allocation, queueing, VRAM budgeting, MTP/OOM ladders, keep-alive, SD native params |
+| `test_web_integration.py` | Dashboard REST surface, profiles, pull, arcade, sandbox proxy, vision |
+| `test_web_audio_routes.py` | All 7 `/api/audio/*` bridge routes (upstream path/verb/timeout per route) |
+| `test_web_sd_routes.py` | All 7 `/api/sd/*` routes + `/api/companions` + QR burn-in |
+| `test_web_sandbox_routes.py` | `serve` / `serve_ui` / `stop_serve` / `ui/{status,exec,restart,screenshot}` |
+| `test_web_misc_routes.py` | Routing matrix, request mutations, telemetry recommendations, model lifecycle, ratings, pulls |
+| `test_arcade.py` | Arcade service, publish pipeline, scores, achievements |
+| `test_audio_server_unit.py` | The 606-line TTS/music service: validation order, model eviction, clone path |
+| `test_voice_clone.py` + `test_voice_clone_identity.py` | Voice-clone analysis; **speaker identification and calibration** |
+| `test_audio_server_speaker_id.py` | `POST /api/voices/identify` and `/calibrate` |
+| `test_podcast_mixer.py` + `test_podcast_routes.py` + `test_podcast_frontend.py` | Podcast Studio end to end |
+| `test_telemetry_monitor_unit.py` / `test_analyzer_unit.py` / `test_imageops_unit.py` | The daemons and the deterministic image editor |
+| `test_dashboard_frontend.py` / `test_podcast_frontend.py` | `dashboard.js` via the **node-slice** technique |
+| `test_benchmark_tests_schema.py` | All 292 tests + `_compute_test_hash` semantics + the answer-key balance |
+| `test_manuscript_rubric.py` / `test_screenshot_ink_coverage.py` | The illuminated-manuscript rubric; the blank-page gate |
+| `test_composite_sprite_game.py` | The `composite` tool-test path end to end, through the real publisher |
+| `test_svg_theme_pack_grader.py` / `test_install_theme_pack.py` | The SVG theme-pack grader and its installer |
+| `test_sharedllm_contract.py` | alpaca's `_CANONICAL_TOOLS` vs SharedLLM's `ALLOWED_TOOLS` (both directions) |
+| `test_scripts_entrypoints.py` | Every `scripts/` entry point imports; `rebalance_choice_keys` / `gen_reasoning_estimates` are idempotent |
+| `test_cli_verifier_unit.py` | `tests/test-alpaca.py` (its hyphen filename means pytest never collects it) |
+| `test_ui_bugfix_regressions.py` | The four dashboard bugs, so they stay fixed |
+| `test_live_services.py`, `test_dashboard_e2e.py`, `test_smoke_playwright.py` | `live`-marked only; need a running stack |
+
+### Running them
+```bash
+pytest                     # the hermetic suite (live deselected)
+pytest -m live             # needs a running stack; see .github/workflows/live.yml
+pytest -k podcast -q       # one area
+```
+CI (`.github/workflows/test.yml`) runs `pip install -r requirements-dev.txt` + mypy, `ruff check .`,
+`pytest -m "not live"`, and **mypy as a real gate** on the three files below. It used to run 2 of
+21 files (12.5% of the suite).
+
+**Long runs:** a full `pytest` takes ~100 s, which exceeds a 120 s tool timeout, so background it
+(`nohup bash -c '… & disown'`) and poll the log. Note that with `-q` the summary line is **not
+always emitted** — assert on the exit code plus a zero `grep -cE "^FAILED|^ERROR"` count, never on
+the absence of a "passed" line.
 
 ## Linting & Type Checking
 ```bash
-# Ruff linting
+# Ruff linting (scope --fix to NEW files: a whole-file --fix also repairs unrelated debt)
 ruff check .
-ruff format .
 
-# mypy (selective strict mode)
+# mypy (selective strict mode) — these three are the CI gate
 mypy web/app.py llm_benchmark_suite.py   # strict (disallow_untyped_defs = True)
 mypy web/shared_llm_benchmark.py         # lenient (web.* exempt)
 ```
+`mypy.ini` pins `python_version = 3.12` — modern numpy ships `type X = ...` stubs, and on 3.10
+mypy aborts before checking anything. Ruff's `RUF001/002/003` are per-file-ignored for
+`tts_text.py` and `manuscript_rubric.py`: the en-dash scripture ranges, IPA stress marks and curly
+quotes are those modules' **input domain**, and ASCII-folding them breaks the tests.
 
 ## Common Workflows
 
