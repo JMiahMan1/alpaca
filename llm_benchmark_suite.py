@@ -28,6 +28,10 @@ import httpx
 import psutil
 
 from context_awareness import estimate_prompt_tokens, resolve_context_window, turn_budget
+
+# The illuminated-manuscript rubric lives in its own module so the scripture and
+# the rules that read it can change together; the suite only dispatches to it.
+from manuscript_rubric import grade_illuminated_manuscript, manuscript_rubric
 from online_providers import (
     LEARNING_POLICY_EXCLUDED,
     build_provenance,
@@ -2880,6 +2884,13 @@ class LLMModelBenchmark:
             # raw response because it parses attributes, and `cleaned` is
             # lowercased, which would fold the {{accentAlt}} casing away.
             return _grade_svg_theme_pack(response)
+        elif test_id == "creative_illuminated_manuscript_john1":
+            # A ui test with content requirements. Structural, like the theme
+            # pack: prose about a page flip is not a page flip, a comment naming
+            # a transform is not a transform, and a body with the text in it is
+            # not a manuscript. The per-criterion breakdown rides along in
+            # test_result["manuscript_rubric"] so a near miss reads as one.
+            return grade_illuminated_manuscript(extract_clean_code(response, "web"))[0]
         elif test_id == "office_text_edit":
             return (
                 any(x in cleaned for x in ["rewrite", "revise", "edit", "proofread"])
@@ -4537,9 +4548,25 @@ class LLMModelBenchmark:
 
         game_ran = None
         screenshot = None
+        artifact_path = None
+        artifact_error = None
         if html and image_res.get("artifact_b64") and music_res.get("artifact_b64"):
             final_html = html.replace("__SPRITE__", f"data:image/png;base64,{image_res['artifact_b64']}")
             final_html = final_html.replace("__BGM__", f"data:audio/wav;base64,{music_res['artifact_b64']}")
+            # Persist the assembled game so it is a real deliverable rather than a
+            # screenshot. arcade_publish.find_artifact_file globs exactly this
+            # "<sanitized model>__<test id>.html" name, so a composite result
+            # becomes playable in the arcade with no publisher change at all.
+            # The write is best-effort: a disk error is not the model's fault, so
+            # it is recorded in meta instead of failing a criterion.
+            try:
+                sv = self._sanitize_model_filename(model)
+                self.ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+                out = self.ARTIFACTS_DIR / f"{sv}__{test.get('id') or 'composite_game'}.html"
+                out.write_text(final_html, encoding="utf-8")
+                artifact_path = out.name
+            except Exception as e:  # pragma: no cover - filesystem dependent
+                artifact_error = f"could not save composite game artifact: {e}"
             fenced = f"```html\n{final_html}\n```"
             try:
                 gr = grade_code(fenced, "web", None, timeout=60, ui=True)
@@ -4548,6 +4575,8 @@ class LLMModelBenchmark:
                 ran_ok = game_ran is True
             except Exception as e:  # pragma: no cover - runtime dependent
                 ran_ok = False
+                # Keep the reason: without it a sandbox-level crash looks
+                # identical to a blank page in the saved result.
                 gr = {"output": "", "error": f"headless run failed: {e}"}
             criteria.append({"name": "game_runs_headless", "pass": bool(ran_ok)})
         else:
@@ -4559,6 +4588,11 @@ class LLMModelBenchmark:
         error_parts = []
         if llm_error:
             error_parts.append(llm_error)
+        if artifact_error:
+            error_parts.append(artifact_error)
+        grader_error = (gr.get("error") or "") if html and image_res.get("artifact_b64") and music_res.get("artifact_b64") else ""
+        if grader_error:
+            error_parts.append(grader_error[:200])
         if failed:
             error_parts.append(f"failed: {', '.join(failed)}")
         return {
@@ -4571,6 +4605,8 @@ class LLMModelBenchmark:
                 "image_meta": image_res.get("meta"),
                 "music_meta": music_res.get("meta"),
                 "game_output": (gr.get("output") or "")[:400],
+                "artifact_path": artifact_path,
+                "artifact_error": artifact_error,
             },
             "criteria": criteria,
             "screenshot": screenshot,
@@ -5125,6 +5161,18 @@ class LLMModelBenchmark:
                     if test_result["success"] and not actual_correct:
                         test_result["success"] = False
                         test_result["error"] = "Failed correctness verification check"
+                    if test.get("id") == "creative_illuminated_manuscript_john1":
+                        # Name the specific missing property (and the missing
+                        # verse numbers) so a failed 16k-token run is
+                        # diagnosable without re-reading the model output.
+                        ok, reason = grade_illuminated_manuscript(
+                            extract_clean_code(test_result.get("response", "") or "", "web")
+                        )
+                        test_result["manuscript_rubric"] = manuscript_rubric(
+                            extract_clean_code(test_result.get("response", "") or "", "web")
+                        )
+                        if not ok and reason:
+                            test_result["error"] = reason
 
                 # Code-quality + AI-watermark scoring (always, when there is a response)
                 resp_text = test_result.get("response", "") or ""
@@ -5516,6 +5564,9 @@ class LLMModelBenchmark:
         # Graded structurally against the SharedLLM motif-tile consumer, not by
         # keyword, so a seam-forming or hex-baked tile fails.
         "creative_svg_theme_pack": "v1",
+        # A ui test, but gated on content: all 18 verses, real drawn SVG, a
+        # framed leaf and a working page flip. See manuscript_rubric.py.
+        "creative_illuminated_manuscript_john1": "v1",
     }
     OBJECTIVE_GRADER_VERSION: ClassVar[str] = "v2"
 
