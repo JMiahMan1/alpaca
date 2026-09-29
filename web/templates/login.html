@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alpaca - Sign In</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- No icon font. This page loaded Font Awesome from cdnjs and used none of
+         it: zero fa-* classes here, in the dashboard, or in dashboard.js. It cost
+         ~400 KB of CSS plus webfonts and held up the first paint on a
+         cross-origin request whose result was never rendered. -->
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         .login-page-wrapper {
