@@ -332,7 +332,7 @@ def test_the_topic_reaches_the_model(client):
 def test_draft_parses_the_script_into_turns_and_separates_headings(client):
     with _patched(_chat_http(SCRIPT)), patch("web.app._find_proxy_url", return_value=PROXY_URL):
         body = client.post("/api/podcast/draft", json={"topic": "caching"}).get_json()
-    assert body["script"] == SCRIPT
+    assert body["script"] == SCRIPT.strip(), "extraction strips the trailing newline"
     assert body["headings"] == ["# Episode 1"]
     assert body["turn_count"] == 4  # the heading is not a spoken turn
     assert [t["host_index"] for t in body["turns"]] == [0, 1, 0, 1]
@@ -802,3 +802,61 @@ def test_podcast_status_names_the_loaded_drafting_model(client):
     with patch("web.app._find_proxy_url", return_value=PROXY_URL):
         body = client.get("/api/podcast/status").get_json()
     assert body["draft_model"] == LOADED_MODEL
+
+
+# --------------------------------------------------------------------------
+# a model's reasoning must not become the script
+# --------------------------------------------------------------------------
+#
+# Observed on ornith-1-5-9b-q4-k-m: the response opened with the model's own
+# working, and `Rules:` parsed as a speaker called Rules, so the first host
+# would have read the instruction list aloud.
+
+PREAMBLE_REPLY = """The user wants me to write a two-host podcast script.
+
+Rules:
+- Output ONLY the script, no preamble, no explanation.
+- Every spoken line begins with "[host_a] " or "[host_b] ".
+
+[host_a] Running a model on your own desk is a different proposition.
+[host_b] It sounds like cloud inference.
+Let me count the words.
+"""
+
+
+def test_a_drafted_script_has_the_models_working_stripped_out(client):
+    http = _chat_http(PREAMBLE_REPLY)
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        body = client.post("/api/podcast/draft", json={"topic": "caching"}).get_json()
+    assert body["script"].startswith("[host_a] Running a model")
+    assert "Rules:" not in body["script"]
+    assert "Output ONLY the script" not in body["script"]
+    assert body["dropped_preamble_chars"] > 0
+
+
+def test_the_rules_block_never_becomes_a_turn_to_speak(client):
+    http = _chat_http(PREAMBLE_REPLY)
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        body = client.post("/api/podcast/draft", json={"topic": "caching"}).get_json()
+    assert {t["speaker"] for t in body["turns"]} == {"host_a", "host_b"}
+    assert not any("Output ONLY" in t["text"] for t in body["turns"])
+
+
+def test_the_response_names_the_model_that_wrote_the_script(client):
+    http = _chat_http(SCRIPT)
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        body = client.post("/api/podcast/draft", json={"topic": "caching"}).get_json()
+    assert body["draft_model"] == LOADED_MODEL
+
+
+def test_a_response_with_no_speaker_tags_is_refused_not_narrated(client):
+    """Rendering a refusal as a monologue is worse than saying the draft failed."""
+    http = _chat_http("I'm not able to write that script.")
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        resp = client.post("/api/podcast/draft", json={"topic": "caching"})
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert "no [host_a]/[host_b] lines" in body["error"]
+    assert "not able to write" in body["response_excerpt"]
+    assert body["draft_model"] == LOADED_MODEL
+    assert "turns" not in body

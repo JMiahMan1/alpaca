@@ -2235,9 +2235,23 @@ def podcast_draft():
 
     from web import podcast_mixer as mixer
 
+    raw = content
+    content = mixer.extract_podcast_script(raw)
     hosts = mixer.host_roster(str(data.get("pair_id") or ""))
     turns = mixer.parse_script(content, hosts)
     spoken = mixer.spoken_turns(turns)
+    if not any(t.speaker for t in spoken):
+        # No tagged line at all, so the model did not write a two-host script.
+        # `parse_script` deliberately keeps untagged text as an unattributed
+        # turn so that a hand-written script never loses a word - but that same
+        # rule would narrate a refusal aloud, which is worse than saying the
+        # draft failed. The excerpt makes it obvious which of the two happened.
+        return jsonify({
+            "error": "the model returned no [host_a]/[host_b] lines, so there is no script to render. "
+            "Try again, or write the script into the box by hand.",
+            "response_excerpt": raw[:400],
+            "draft_model": model,
+        }), 502
     return jsonify(
         {
             "script": content,
@@ -2247,6 +2261,8 @@ def podcast_draft():
             "word_count": len(content.split()),
             "hosts": [h.to_dict() for h in hosts],
             "unattributed": sum(1 for t in spoken if not t.speaker),
+            "draft_model": model,
+            "dropped_preamble_chars": len(raw) - len(content),
         }
     )
 

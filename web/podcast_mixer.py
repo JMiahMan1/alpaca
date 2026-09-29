@@ -652,6 +652,52 @@ def _looks_like_speaker_label(tag: str) -> bool:
     return len(t.split()) >= 2
 
 
+def extract_podcast_script(text: str) -> str:
+    """Drop the reasoning a model wraps around the script it was asked for.
+
+    A script is defined by its speaker tags, and a model asked for one very
+    often answers with its own working first:
+
+    ```
+    The user wants me to write a two-host podcast script about "..."
+
+    Rules:
+    - Output ONLY the script, no preamble, no explanation, ...
+
+    [host_a] Running a model on your own desk is a different proposition.
+    ```
+
+    Reading that aloud is not merely wrong, it is actively harmful: ``Rules:``
+    parses as a speaker called Rules, so the entire rules block becomes a turn
+    the first host would speak, and the model keeps appending
+    "Let me count the words" as dialogue.
+
+    ``think: False`` is sent on the request and does not prevent this - the
+    model reasons in its content anyway - so the preamble is removed here
+    rather than trusted not to be there.
+
+    Everything before the first recognised tag is dropped. Untagged lines AFTER
+    that first tag are kept, because a real script may open with a line of
+    narration before anyone speaks, and `parse_script` already models that as
+    an unattributed turn.
+
+    Returns the text unchanged when it contains no tag at all: that is not a
+    script, but it may be a refusal or an error, and the caller needs to see it
+    to be able to say so.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    first = None
+    for i, line in enumerate(lines):
+        if match_speaker_tag(line) is not None:
+            first = i
+            break
+    if first is None:
+        return text
+    return "\n".join(lines[first:]).strip()
+
+
 def parse_script(
     script: str,
     hosts: Sequence[Any] | None = None,
