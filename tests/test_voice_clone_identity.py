@@ -1092,3 +1092,52 @@ def test_a_host_without_librosa_still_enrols_but_says_the_pitch_is_unknown(
     assert any("pitch could not be measured" in w for w in meta["warnings"])
     # The clone itself is unaffected: the profile is created and usable.
     assert (voices_dir / meta["id"] / "se.pt.npy").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# clone_similarity: the number a listener can check                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_the_speaker_s_own_voice_scores_almost_perfectly_against_their_profile(
+    enrolled, voices_dir, conv_and_torch, no_deps
+):
+    """The sharpest possible assertion, and the one that catches a wrong-shaped
+    comparison.
+
+    Measured on the live stack, feeding `clone_similarity` the *raw audio
+    windows* instead of their embeddings made every cosine a shape mismatch,
+    which `_cosine` answers with 0.0 - so the clone was reported as sounding
+    nothing like its own speaker when it in fact scores 0.89. The speaker's own
+    enrolment cannot be anywhere near 0.0, so this fails loudly on that class of
+    mistake rather than reporting a plausible-looking wrong number.
+    """
+    clip = _speech(4.0, VOICE_A_HZ, jitter=0.01, formant=1.1, seed=4)
+    score = vc.clone_similarity(clip, vc.SR, enrolled["ada"]["id"])
+    assert score is not None, "the speaker's own voice must be comparable to their profile"
+    assert score > 0.9, f"a speaker's own recording must match their profile closely, got {score}"
+
+
+def test_a_clone_is_scored_against_the_profile_not_against_itself(
+    enrolled, voices_dir, conv_and_torch, no_deps
+):
+    clip = _speech(4.0, VOICE_A_HZ, jitter=0.01, formant=1.1, seed=4)
+    ada = vc.clone_similarity(clip, vc.SR, enrolled["ada"]["id"])
+    against_bob = vc.clone_similarity(clip, vc.SR, enrolled["bob"]["id"])
+    assert ada > against_bob, "the number must depend on WHICH profile it is compared to"
+
+
+def test_similarity_is_none_rather_than_zero_when_the_profile_cannot_be_loaded(
+    enrolled, conv_and_torch, no_deps
+):
+    """0.0 is a real score (a dimension mismatch, a zero vector). Reporting an
+    unmeasurable comparison as 0.0 would claim the clone sounds nothing like the
+    speaker, which is the opposite of what happened."""
+    clip = _speech(4.0, VOICE_A_HZ, jitter=0.01, formant=1.1, seed=4)
+    assert vc.clone_similarity(clip, vc.SR, "does-not-exist") is None
+
+
+def test_similarity_of_silence_is_none_not_a_confident_zero(
+    enrolled, conv_and_torch, no_deps
+):
+    assert vc.clone_similarity(np.zeros(vc.SR * 3, dtype=np.float32), vc.SR, enrolled["ada"]["id"]) is None

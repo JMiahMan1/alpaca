@@ -139,11 +139,15 @@ def unload() -> bool:
 
 def _resample(audio, sr_from: int, sr_to: int):
     import numpy as np
+
+    # The imports are below this check on purpose. torchaudio is a heavy import
+    # and a same-rate resample is a no-op that must not pay for it - callers on
+    # a host without torchaudio (the test machine) hit this constantly.
+    if sr_from == sr_to:
+        return np.asarray(audio, dtype=np.float32)
     import torch
     import torchaudio.functional as AF
 
-    if sr_from == sr_to:
-        return np.asarray(audio, dtype=np.float32)
     t = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))
     return AF.resample(t, sr_from, sr_to).numpy()
 
@@ -354,13 +358,17 @@ def clone_similarity(audio, sr: int, pid: str) -> float | None:
     """
     try:
         speech = analyze(_resample(audio, sr, SR))["speech"]
-        windows = _gate_windows(_windows(speech))
+        windows = _embed_windows(_gate_windows(_windows(speech)))
         centroid = target_se(pid)
     except Exception as exc:
         logger.warning(f"[voice_clone] similarity unavailable: {exc}")
         return None
     if not windows:
         return None
+    # `_best_window` scores EMBEDDINGS, not audio. Handing it the raw windows
+    # made every cosine a shape mismatch, and _cosine answers a mismatch with
+    # 0.0 - so the clone was reported as sounding nothing like its own speaker
+    # when it scores 0.89. Same order as `identify`.
     score, _ = _best_window(windows, centroid)
     return None if score is None else round(float(score), 4)
 
