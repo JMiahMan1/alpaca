@@ -1003,3 +1003,92 @@ def test_the_spread_of_one_take_falls_back_to_its_own_windows(conv_and_torch):
     not support, so it falls back to the variation between that take's windows."""
     one = [_windows_of(VOICE_A_HZ, 0, seed=1)]
     assert vc._self_spread(one) >= 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Pitch is recorded at enrolment                                                   #
+# --------------------------------------------------------------------------- #
+#
+# The converter moves timbre and leaves pitch alone, so the pitch the clone has
+# to land on is a property of the SPEAKER and has to be captured while they are
+# here. See tests/test_voice_clone_pitch.py for the correction itself.
+
+
+class _FakeLibrosa:
+    """Answers `yin` with a fixed F0 so the enrolment's pitch is assertable."""
+
+    def __init__(self, f0: float):
+        self.f0 = f0
+
+    def yin(self, y, fmin, fmax, sr, frame_length):
+        return np.full(max(1, len(y) // 2048), self.f0, dtype=np.float64)
+
+    @property
+    def feature(self):
+        return types.SimpleNamespace(
+            rms=lambda y, frame_length: np.full((1, max(1, len(y) // 2048)), 0.5)
+        )
+
+
+def test_create_profile_records_the_speakers_pitch(voices_dir, conv_and_torch, no_deps, monkeypatch):
+    monkeypatch.setitem(sys.modules, "librosa", _FakeLibrosa(101.7))
+    meta, _ = _enrol("Ada", _takes(VOICE_A_HZ, (1, 2, 3)))
+    assert meta["median_f0_hz"] == pytest.approx(101.7)
+    assert (voices_dir / meta["id"] / "meta.json").is_file()
+
+
+def test_a_profile_whose_pitch_cannot_be_measured_records_null_not_a_guess(
+    voices_dir, conv_and_torch, no_deps, monkeypatch
+):
+    """An unmeasurable pitch is null, so `correct_pitch` reports 're-enrol'
+    instead of leaving the clone audibly sharp and saying nothing."""
+    monkeypatch.setitem(sys.modules, "librosa", _FakeLibrosa(0.0))
+    meta, _ = _enrol("Ada", _takes(VOICE_A_HZ, (1, 2, 3)))
+    assert meta["median_f0_hz"] is None
+
+
+def test_a_profile_enrolled_before_pitch_existed_still_works(
+    voices_dir, conv_and_torch, no_deps
+):
+    """A profile with no `median_f0_hz` must not acquire a KeyError, and
+    `correct_pitch` must say why it did nothing rather than leaving the clone
+    audibly sharp in silence."""
+    meta, _ = _enrol("Ada", _takes(VOICE_A_HZ, (1, 2, 3)))
+    path = voices_dir / meta["id"] / "meta.json"
+    stored = json.loads(path.read_text())
+    stored["median_f0_hz"] = None
+    path.write_text(json.dumps(stored))
+    assert vc.get_profile(meta["id"])["median_f0_hz"] is None
+
+    _, report = vc.correct_pitch(np.zeros(vc.SR, dtype=np.float32), vc.SR, None)
+    assert report["corrected"] is False
+    assert "re-enrol" in report["reason"]
+
+
+def test_a_host_without_librosa_still_enrols_but_says_the_pitch_is_unknown(
+    voices_dir, conv_and_torch, no_deps, monkeypatch
+):
+    """The pitch estimator needs librosa, which only the audio image has.
+
+    Refusing to enrol somebody over an *improvement* to an otherwise working
+    clone would be worse than enroling them - but it must not be silent either,
+    or the clone comes out a semitone and a half sharp and nothing says why.
+    So the absence is recorded as a warning on the profile.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_librosa(name, *args, **kwargs):
+        if name == "librosa":
+            raise ModuleNotFoundError("No module named 'librosa'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setitem(sys.modules, "librosa", None)
+    monkeypatch.setattr(builtins, "__import__", no_librosa)
+
+    meta, _ = _enrol("Ada", _takes(VOICE_A_HZ, (1, 2, 3)))
+    assert meta["median_f0_hz"] is None
+    assert any("pitch could not be measured" in w for w in meta["warnings"])
+    # The clone itself is unaffected: the profile is created and usable.
+    assert (voices_dir / meta["id"] / "se.pt.npy").is_file()

@@ -450,15 +450,84 @@ def test_tts_re_timbres_every_chunk_through_openvoice_and_records_it(client):
         patch.object(audio.voice_clone, "source_se", Mock(return_value=src_se)) as src,
         patch.object(audio.voice_clone, "target_se", Mock(return_value=tgt_se)),
         patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)) as conv,
+        patch.object(audio.voice_clone, "correct_pitch", Mock(side_effect=lambda a, s, t: (a, {"corrected": False}))) as cp,
+        patch.object(audio.voice_clone, "clone_similarity", Mock(return_value=None)),
     ):
         resp = client.post("/api/tts", json={"text": "One. Two.", "clone": "v", "sentence_pause_s": 0.0})
     assert resp.status_code == 200
-    assert resp.json()["meta"]["clone"] == {"id": "v", "name": "Voicey", "tau": audio.voice_clone.DEFAULT_TAU}
+    meta = resp.json()["meta"]["clone"]
+    assert (meta["id"], meta["name"], meta["tau"]) == ("v", "Voicey", audio.voice_clone.DEFAULT_TAU)
     # The source embedding is derived from the *source* Kokoro voice, by
     # synthesising the read-aloud script once (then caching it per voice).
     assert src.call_args.args[0] == "af_heart"
     assert callable(src.call_args.args[1])  # the _synth_source callback
     assert conv.call_count == 2  # one convert per sentence
+    # Pitch is corrected once, on the merged render, not per sentence: it is the
+    # same shift for all of them and one vocoder pass is cheaper and steadier.
+    assert cp.call_count == 1
+
+
+def test_the_clone_report_says_what_was_measured(client):
+    """A listener who thinks the clone is wrong needs to see WHICH side of the
+    comparison is at fault, so the numbers are reported rather than asserted."""
+    profile = {"id": "v", "name": "V", "median_f0_hz": 101.7, "intraspeaker_spread": 0.09}
+    pitch = {"target_f0_hz": 101.7, "measured_f0_hz": 112.2,
+             "applied_semitones": -1.7, "corrected": True}
+    fixed = np.zeros(2400, dtype=np.float32)
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=_pipe(seconds=0.3))),
+        patch.object(audio.voice_clone, "get_profile", return_value=profile),
+        patch.object(audio.voice_clone, "source_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)),
+        patch.object(audio.voice_clone, "correct_pitch", Mock(return_value=(fixed, pitch))),
+        patch.object(audio.voice_clone, "clone_similarity", Mock(return_value=0.85)),
+    ):
+        resp = client.post("/api/tts", json={"text": "One. Two.", "clone": "v", "sentence_pause_s": 0.0})
+    meta = resp.json()["meta"]["clone"]
+    assert meta["pitch"] == pitch
+    assert meta["similarity"] == 0.85
+    assert meta["intraspeaker_spread"] == 0.09
+    assert meta["as_close_as_their_own_re_recordings"] is True
+    # 0.85 is below the speaker's own 0.09-based bar only if the numbers say so;
+    # here the clone is *closer* than the speaker's re-records, which is the
+    # point of reporting the spread next to the score.
+    assert "not the speaker's" in meta["note"]
+
+
+def test_a_clone_report_never_claims_a_verdict_it_cannot_support(client):
+    """No measurement means no verdict - `as_close_as...` is None, not True."""
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=_pipe(seconds=0.3))),
+        patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "V"}),
+        patch.object(audio.voice_clone, "source_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)),
+        patch.object(audio.voice_clone, "correct_pitch", Mock(side_effect=lambda a, s, t: (a, {"corrected": False, "reason": "no target"}))),
+        patch.object(audio.voice_clone, "clone_similarity", Mock(return_value=None)),
+    ):
+        resp = client.post("/api/tts", json={"text": "One.", "clone": "v", "sentence_pause_s": 0.0})
+    meta = resp.json()["meta"]["clone"]
+    assert meta["similarity"] is None
+    assert meta["intraspeaker_spread"] is None
+    assert meta["as_close_as_their_own_re_recordings"] is None
+
+
+def test_an_unmeasurable_clone_does_not_fail_the_render(client):
+    """A failed pitch correction or similarity check must cost the report, not
+    the audio the user asked for."""
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=_pipe(seconds=0.3))),
+        patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "V", "median_f0_hz": 100.0}),
+        patch.object(audio.voice_clone, "source_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)),
+        patch.object(audio.voice_clone, "correct_pitch", Mock(side_effect=RuntimeError("vocoder died"))),
+        patch.object(audio.voice_clone, "clone_similarity", Mock(side_effect=RuntimeError("encoder died"))),
+    ):
+        resp = client.post("/api/tts", json={"text": "One.", "clone": "v", "sentence_pause_s": 0.0})
+    assert resp.status_code == 200
+    assert resp.json()["audio_b64"]
 
 
 def test_tts_source_embedding_is_synthesised_at_speed_one(client):
