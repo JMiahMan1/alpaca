@@ -1,0 +1,42 @@
+# Audiobook A/B image: the audio server's stack + Piper, for scripts/render_epub_ab.py.
+#
+# This is a SEPARATE image on purpose. The audio service never imports Piper, so
+# adding it to Dockerfile.audio would put ~120 MB of ONNX runtime and a voice
+# model in the production image for a comparison tool's benefit. Layering keeps
+# the production image exactly as it was, and makes the extra dependency a
+# single removable line.
+#
+# Piper is not a network listener: the only thing it needs from the host is the
+# espeak-ng data it bundles itself (piper/espeak-ng-data), so nothing about the
+# running TTS service is affected by this file existing.
+#
+#   docker build -f Dockerfile.audio-ab -t alpaca-audio-ab .
+#   mkdir -p /tmp/abwork /tmp/about /tmp/abvoices
+#   docker run --rm --no-healthcheck --gpus all \
+#     -v "$PWD:/work:ro" -v /tmp/abwork:/work-in -v /tmp/about:/out -v /tmp/abvoices:/voices \
+#     -v alpaca_audio-models:/cache/huggingface \
+#     -e PYTHONPATH=/app:/work \
+#     alpaca-audio-ab python3 /work/scripts/render_epub_ab.py /work-in/book.epub --out /out
+#
+# The three /tmp mounts matter: /work-in holds the epub, /out collects the WAVs,
+# and /voices holds the Piper model (114 MB for en_US-lessac-high). Without the
+# last one the download lands inside the throwaway container and is deleted when
+# it exits, so every run re-downloads it.
+#
+# --no-healthcheck because the base image's HEALTHCHECK curls :8082/health, which
+# a comparison run never serves; without it docker marks the container unhealthy
+# for the whole render and it reads as a failure that did not happen.
+#
+# The base is the compose-built image. If that name changes this build fails
+# loudly rather than silently rebuilding a different stack.
+FROM alpaca-audio-server:latest
+
+# 1.3.0 is the maintained fork (OHF-Voice/piper1-gpl) of the archived
+# rhasspy/piper; it changed the API (PiperVoice.synthesize returns AudioChunk
+# objects and download_voice takes the full voice name), so it is pinned.
+RUN pip install --no-cache-dir piper-tts==1.3.0
+
+# `tts_text.py` has to be importable from /app for PYTHONPATH=/app:/work to be
+# the only path setup; the COPY from the base image already put it there, and
+# this asserts it rather than assuming the base image did.
+RUN test -f /app/tts_text.py || (echo "base image is missing /app/tts_text.py" && exit 1)
