@@ -12478,8 +12478,21 @@ async function refreshPodcastStatus() {
     const audioOk = !!(status.audio && status.audio.online);
     const proxyOk = !!(status.proxy && status.proxy.online);
     const duck = Number(podcastEl('podcast-duck').value);
-    if (audioOk && proxyOk) {
-        setPodcastChip(`audio ✓ · proxy ✓ · ${status.target_sample_rate} Hz · bed ducked ${duck} dB`, 'ok');
+    // Which model will write the script. The backend refuses a draft when
+    // nothing is loaded rather than quietly picking one, so say it here first:
+    // a 409 on click is correct behaviour, but it should not be a surprise.
+    const draftModel = status.draft_model || null;
+    const draftBtn = podcastEl('btn-podcast-draft');
+    if (draftBtn) {
+        draftBtn.disabled = !draftModel;
+        draftBtn.title = draftModel
+            ? `Write the script with ${draftModel}`
+            : 'No model is loaded. Load one from the sidebar first.';
+    }
+    if (audioOk && proxyOk && draftModel) {
+        setPodcastChip(`audio ✓ · proxy ✓ · drafts with ${draftModel} · ${status.target_sample_rate} Hz · bed ducked ${duck} dB`, 'ok');
+    } else if (audioOk && proxyOk) {
+        setPodcastChip('no model loaded — load one from the sidebar to draft a script', 'warn');
     } else if (audioOk) {
         setPodcastChip('audio ✓ · no proxy — write the script yourself', 'warn');
     } else {

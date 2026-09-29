@@ -24,6 +24,16 @@ from web.app import AUDIO_SERVER_URL, PROXY_URL, app
 
 SR = pm.TARGET_SR
 
+#: The draft route asks the proxy for whichever model is loaded, and refuses
+#: outright when none is. Most tests here are not about that resolution, so the
+#: default is a loaded model and the tests that ARE about it override it.
+LOADED_MODEL = "ornith-1-5-9b-q4-k-m"
+
+
+@pytest.fixture(autouse=True)
+def _a_model_is_loaded(monkeypatch):
+    monkeypatch.setattr("web.app._get_currently_loaded_model", lambda: LOADED_MODEL)
+
 
 # --------------------------------------------------------------------------
 # the httpx mock helpers, carried forward from the audio/SD/sandbox route tests
@@ -712,3 +722,83 @@ def test_a_very_long_turn_is_split_into_several_tts_requests(client):
     assert http.post.call_count > 1
     assert all(len(c.kwargs["json"]["text"]) < 4000 for c in http.post.call_args_list)
     assert body["turn_count"] == http.post.call_count
+
+
+# --------------------------------------------------------------------------
+# which model writes the script
+# --------------------------------------------------------------------------
+#
+# The route used to send the literal string "default" when the caller named no
+# model. The proxy resolves whatever name it is given against the model store,
+# `default:latest` is not a model, and the panel showed an opaque 404:
+#
+#   [AUTO-LOAD] Idle intercept - /api/chat received for 'default'.
+#   WARNING - Lock-free status check failed: 404: Model default:latest not found
+
+
+def test_a_draft_with_no_named_model_asks_for_the_loaded_one(client):
+    http = _chat_http(SCRIPT)
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        resp = client.post("/api/podcast/draft", json={"topic": "caching"})
+    assert resp.status_code == 200
+    assert http.post.call_args.kwargs["json"]["model"] == LOADED_MODEL
+
+
+def test_a_draft_never_asks_the_proxy_for_a_model_called_default(client):
+    """The regression itself: `default` is a placeholder, not a model."""
+    http = _chat_http(SCRIPT)
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        client.post("/api/podcast/draft", json={"topic": "caching"})
+    assert http.post.call_args.kwargs["json"]["model"] != "default"
+
+
+def test_a_named_model_wins_over_the_loaded_one(client):
+    http = _chat_http(SCRIPT)
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        client.post("/api/podcast/draft", json={"topic": "caching", "model": "muse-glimmer-30b"})
+    assert http.post.call_args.kwargs["json"]["model"] == "muse-glimmer-30b"
+
+
+def test_a_draft_with_nothing_loaded_is_refused_with_advice_not_a_wrong_model(client):
+    """No model loaded is a real state, and the honest answer is to say so.
+
+    Quietly picking a different model would load gigabytes onto a card shared
+    with llama-server and sd-server, for a script the user did not ask to be
+    written by a voice they did not choose.
+    """
+    http = _chat_http(SCRIPT)
+    with (
+        _patched(http),
+        patch("web.app._find_proxy_url", return_value=PROXY_URL),
+        patch("web.app._get_currently_loaded_model", return_value=None),
+    ):
+        resp = client.post("/api/podcast/draft", json={"topic": "caching"})
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert "no model is loaded" in body["error"]
+    assert "Load one" in body["error"]
+    assert http.post.call_count == 0, "nothing may be sent to the proxy"
+
+
+def test_the_model_name_is_routing_not_prompt(client):
+    """It used to be injected into the user message as well, which told the
+    model it was being asked to 'write the script for' a model. Meaningless."""
+    http = _chat_http(SCRIPT)
+    with _patched(http), patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        client.post("/api/podcast/draft", json={"topic": "caching", "model": "muse-glimmer-30b"})
+    user = http.post.call_args.kwargs["json"]["messages"][1]["content"]
+    assert user == "Topic: caching"
+    assert "muse-glimmer" not in user
+
+
+def test_podcast_status_reports_which_model_would_draft(client):
+    """The panel can only honour the refusal above if it can see the state."""
+    with patch("web.app._find_proxy_url", return_value=None):
+        body = client.get("/api/podcast/status").get_json()
+    assert body["draft_model"] is None, "no proxy means no model to draft with"
+
+
+def test_podcast_status_names_the_loaded_drafting_model(client):
+    with patch("web.app._find_proxy_url", return_value=PROXY_URL):
+        body = client.get("/api/podcast/status").get_json()
+    assert body["draft_model"] == LOADED_MODEL
