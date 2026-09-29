@@ -212,6 +212,159 @@ def _embed(windows_22k: list):
     return torch.stack(_embed_windows(windows_22k)).mean(0).cpu()
 
 
+# --------------------------------------------------------------------------- #
+# Pitch fidelity                                                                 #
+# --------------------------------------------------------------------------- #
+#
+# OpenVoice's tone-colour converter moves TIMBRE and leaves PITCH alone. Measured
+# on this stack, a clone of a 101.7 Hz voice built on Kokoro's `am_michael`
+# (112.2 Hz) comes out at 111.4 Hz - 1.6 semitones sharp - and no value of `tau`
+# changes that: the converter's job is not pitch. 1.6 semitones is far enough
+# that a listener says "that is not me" even though the timbre is a good match
+# (cosine to the person's own centroid rises 0.47 -> 0.85). So pitch is corrected
+# separately, and reported, because a clone that is audibly the wrong pitch is
+# not a usable clone no matter how good the timbre match is.
+
+#: Bounds for the F0 estimator. 60-350 Hz covers every adult voice this is
+#: likely to be asked to clone, from a low male (~95 Hz) to a high female.
+F0_FMIN_HZ = 60.0
+F0_FMAX_HZ = 350.0
+
+#: Never shift further than a major third. Past that the source voice was chosen
+#: so badly that a phase vocoder does more damage than the mismatch it fixes.
+MAX_PITCH_SHIFT_SEMITONES = 4.0
+
+#: Below this the shift is not worth running a vocoder over the audio.
+MIN_PITCH_SHIFT_SEMITONES = 0.25
+
+#: Cap on how much audio the estimator reads. An episode-length render is
+#: minutes; yin is linear in length and the median over the first stretch of a
+#: voice is as good as over all of it.
+F0_ANALYSIS_MAX_S = 30.0
+
+
+def median_f0(audio, sr: int) -> float | None:
+    """Median fundamental frequency over voiced frames, or None if nothing is voiced.
+
+    librosa.yin rather than autocorrelation. Autocorrelation readily locks onto
+    the second harmonic and read the *same* speaker at 139.5 Hz, then 111.6 Hz,
+    then 101.7 Hz as the method was refined - 40 Hz of error, which is three
+    semitones, and every one of those readings would have shifted the clone the
+    wrong way. The number is stored at enrolment and drives the correction
+    below, so it has to be right rather than plausible.
+    """
+    import librosa
+    import numpy as np
+
+    if audio is None:
+        return None
+    y = np.ascontiguousarray(np.asarray(audio, dtype=np.float32)).astype(np.float64)
+    if y.size < int(0.1 * sr):
+        return None
+    frames = librosa.yin(y, fmin=F0_FMIN_HZ, fmax=F0_FMAX_HZ, sr=sr, frame_length=2048)
+    rms = librosa.feature.rms(y=y, frame_length=2048)[0]
+    n = min(len(frames), len(rms))
+    if n == 0:
+        return None
+    voiced = (frames[:n] > 0) & (rms[:n] > 0.02) & (frames[:n] < F0_FMAX_HZ)
+    if not voiced.any():
+        return None
+    return float(np.median(frames[:n][voiced]))
+
+
+def _vocoder_shift(audio, sr: int, semitones: float):
+    """Shift pitch, preserving duration. librosa's phase vocoder, not a resample."""
+    import librosa
+    import numpy as np
+
+    shifted = librosa.effects.pitch_shift(
+        np.asarray(audio, dtype=np.float32), sr=sr, n_steps=float(semitones)
+    )
+    return np.asarray(shifted, dtype=np.float32)
+
+
+def correct_pitch(audio, sr: int, target_f0: float | None) -> tuple[object, dict]:
+    """Move `audio`'s median pitch onto `target_f0`. Returns (audio, report).
+
+    Deliberately a closed loop on the audio's OWN measured pitch rather than a
+    prediction from the source voice's pitch: the converter drifts a little as
+    well as leaving pitch alone, so correcting the error that actually happened
+    is both simpler and more accurate than predicting it.
+
+    A profile enrolled before pitch was recorded has no target, and the report
+    says so rather than quietly leaving the clone sharp.
+
+    Total by design: it never raises. Pitch correction is an improvement to a
+    clone that already works, and this is called after the audio has been made -
+    a raised error here would turn a finished render into a 500 and throw away
+    something the user waited minutes for. Every failure path returns the
+    original audio and a report saying what happened.
+    """
+    import numpy as np
+
+    report: dict = {
+        "target_f0_hz": round(float(target_f0), 1) if target_f0 else None,
+        "corrected": False,
+        "applied_semitones": 0.0,
+    }
+    if not target_f0:
+        report["reason"] = "this profile was enrolled before pitch was recorded; re-enrol to enable it"
+        return audio, report
+
+    try:
+        window = min(len(audio), int(F0_ANALYSIS_MAX_S * sr))
+        measured = median_f0(audio[:window], sr)
+    except Exception as exc:
+        report["reason"] = f"pitch could not be measured ({exc})"
+        logger.warning(f"[voice_clone] {report['reason']}")
+        return audio, report
+    if not measured:
+        report["reason"] = "no voiced audio to measure"
+        return audio, report
+    report["measured_f0_hz"] = round(measured, 1)
+
+    steps = 12.0 * float(np.log2(float(target_f0) / measured))
+    report["offset_semitones"] = round(steps, 2)
+    if abs(steps) < MIN_PITCH_SHIFT_SEMITONES:
+        report["reason"] = "already within a quarter tone of the enrolled pitch"
+        return audio, report
+    clamped = max(-MAX_PITCH_SHIFT_SEMITONES, min(MAX_PITCH_SHIFT_SEMITONES, steps))
+    if clamped != steps:
+        report["clamped_from_semitones"] = round(steps, 2)
+
+    try:
+        shifted = _vocoder_shift(audio, sr, clamped)
+    except Exception as exc:
+        logger.warning(f"[voice_clone] pitch correction failed: {exc}")
+        report["reason"] = f"pitch correction failed: {exc}"
+        return audio, report
+
+    report["corrected"] = True
+    report["applied_semitones"] = round(clamped, 2)
+    return shifted, report
+
+
+def clone_similarity(audio, sr: int, pid: str) -> float | None:
+    """How close this audio sounds to the enrolled voice, 0..1, in the converter's
+    own timbre space. None when the profile cannot be compared.
+
+    The profile's `intraspeaker_spread` is the yardstick that makes the number
+    mean something: a match at or above it is as close as the speaker's own
+    re-recordings of themselves.
+    """
+    try:
+        speech = analyze(_resample(audio, sr, SR))["speech"]
+        windows = _gate_windows(_windows(speech))
+        centroid = target_se(pid)
+    except Exception as exc:
+        logger.warning(f"[voice_clone] similarity unavailable: {exc}")
+        return None
+    if not windows:
+        return None
+    score, _ = _best_window(windows, centroid)
+    return None if score is None else round(float(score), 4)
+
+
 def _cosine(a, b) -> float:
     """Cosine similarity of two embeddings, as a plain float (no torch needed)."""
     import numpy as np
@@ -500,6 +653,7 @@ def rename_profile(pid: str, name: str) -> dict:
 
 def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
     """Build a profile from [(prompt_id, raw_audio_bytes), ...]. Raises ValueError on unusable input."""
+    import numpy as np
     import soundfile as sf
     import torch
 
@@ -532,6 +686,19 @@ def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
         all_windows.extend(ws)
     se = torch.stack(all_windows).mean(0).cpu()
     spread = _self_spread(per_take_windows)
+    # Measured from the concatenated speech, not from a take: the pitch a clone
+    # has to land on is the speaker's, not a given recording's.
+    #
+    # A failure here is reported in `warnings` rather than raised. Pitch
+    # correction is an improvement to an otherwise working clone, so refusing
+    # to enrol somebody over it would be worse than enroling them and saying
+    # the pitch is unknown - and the warning is what stops it being silent.
+    person_f0, pitch_note = None, None
+    try:
+        person_f0 = median_f0(np.concatenate(takes), SR)
+    except Exception as exc:
+        pitch_note = f"pitch could not be measured ({exc}); this clone will not be pitch-corrected"
+        logger.warning(f"[voice_clone] {pitch_note}")
 
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "voice"
     pid = f"{slug}-{secrets.token_hex(3)}"
@@ -541,10 +708,11 @@ def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
         "created": int(time.time()),
         "speech_s": round(total, 1),
         "recordings": reports,
-        "warnings": sorted({w for r in reports for w in r["warnings"]}),
+        "warnings": sorted({w for r in reports for w in r["warnings"]} | ({pitch_note} if pitch_note else set())),
         "engine": "openvoice-v2",
         "intraspeaker_spread": round(float(spread), 4),
         "take_count": len(takes),
+        "median_f0_hz": round(person_f0, 1) if person_f0 else None,
     }
     # meta.json is written last and is the only thing that makes a profile
     # visible, so a failure part-way leaves a directory that list_profiles and

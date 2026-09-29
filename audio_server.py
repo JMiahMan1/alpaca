@@ -568,6 +568,51 @@ async def api_tts(request: Request):
         if not pieces:
             return JSONResponse({"error": "TTS produced no audio"}, status_code=502)
         merged = np.concatenate(pieces)
+        # Pitch is not the converter's job: it moves timbre and leaves F0 alone,
+        # so a clone lands on the *source voice's* pitch. Correct the merged
+        # result once rather than each sentence - it is the same shift for all
+        # of them, and one vocoder pass over the whole utterance is cheaper and
+        # more consistent than one per chunk. See voice_clone.correct_pitch.
+        clone_meta_out = None
+        if clone_meta:
+            target_f0 = clone_meta.get("median_f0_hz")
+            try:
+                merged, pitch_report = await asyncio.to_thread(
+                    voice_clone.correct_pitch, merged, sr, target_f0
+                )
+            except Exception as exc:
+                # `correct_pitch` is total by contract, but the audio is already
+                # made and a caller must never lose it to a measurement failure.
+                logger.warning(f"[audio] pitch correction raised: {exc}")
+                pitch_report = {"corrected": False, "reason": f"pitch correction failed: {exc}"}
+            try:
+                similarity = await asyncio.to_thread(
+                    voice_clone.clone_similarity, merged, sr, clone_id
+                )
+            except Exception as exc:
+                logger.warning(f"[audio] clone similarity raised: {exc}")
+                similarity = None
+            spread = clone_meta.get("intraspeaker_spread")
+            clone_meta_out = {
+                "id": clone_id,
+                "name": clone_meta["name"],
+                "tau": clone_tau,
+                "pitch": pitch_report,
+                # Measured, not asserted: how close the result sounds to the
+                # enrolled voice, next to how close the speaker's own
+                # re-recordings sound to each other. A listener who thinks the
+                # clone is wrong can read which half of that pair is at fault.
+                "similarity": similarity,
+                "intraspeaker_spread": spread,
+                "as_close_as_their_own_re_recordings": (
+                    None if similarity is None or spread is None else similarity >= spread
+                ),
+                "note": (
+                    "OpenVoice transfers tone colour onto a Kokoro voice. It "
+                    "reproduces timbre and (after pitch correction) pitch, not "
+                    "the speaker's accent, rhythm or phrasing."
+                ),
+            }
         # Lead-in/out padding so players don't clip the first/last syllable.
         pad = np.zeros(int(0.15 * sr), dtype=np.float32)
         merged = np.concatenate([pad, merged, pad])
@@ -593,7 +638,7 @@ async def api_tts(request: Request):
                 "sentence_pause_s": sentence_pause,
                 "paragraph_pause_s": paragraph_pause,
                 "normalized": normalized,
-                "clone": {"id": clone_id, "name": clone_meta["name"], "tau": clone_tau} if clone_meta else None,
+                "clone": clone_meta_out,
             },
         }
     except Exception as e:
