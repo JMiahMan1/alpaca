@@ -219,10 +219,20 @@ services:
       - ./.alpaca-router:/router-models
       - ./sd-entrypoint.sh:/scripts/sd-entrypoint.sh
     entrypoint: ["/bin/bash", "/scripts/sd-entrypoint.sh"]
+    # Real cap, and the reason it is not `deploy.resources.limits` alone:
+    # `docker compose` outside Swarm silently ignores `deploy:` resource limits,
+    # so a limit written only there leaves the container with NO limit at all
+    # (`docker inspect` shows no MemTotal). The top-level key is the one that
+    # works. Measured working set is ~12.6 GiB with Qwen-Image-2.1 loaded, and
+    # this box has 30 GiB shared with llama-server, sd-server and the dashboard;
+    # without a cap a transient here can starve every other service and the
+    # kernel will OOM-kill whichever process has the largest anonymous RSS.
+    # 16 GiB leaves room for a larger SD model while bounding the blast radius.
+    mem_limit: 16g
     deploy:
       resources:
         limits:
-          memory: 31G
+          memory: 16G
         reservations:
           devices:
             - driver: nvidia

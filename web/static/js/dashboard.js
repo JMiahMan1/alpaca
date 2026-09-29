@@ -146,7 +146,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentRecommendations = null;
 
     // State variables
-    let activeTab = 'monitor'; // 'monitor', 'general', 'shared'
+    // activeTab is declared at module scope below the DOMContentLoaded closure
+    // (see the note there) because the Audio Studio's status poller lives outside
+    // this closure and has to read it.
     let benchmarkMode = 'proxy'; // 'proxy' or 'direct'
     let availableModels = [];
     let currentResults = []; // Currently loaded run results
@@ -8024,7 +8026,7 @@ const saved = _loadHumanRatings(t.id) || {};
             syncRunnerState(await res.json());
         } catch (e) { /* offline — the socket badge already shows it */ }
     }
-    setInterval(pollRunStatus, 15000);
+    setInterval(() => { if (!document.hidden) pollRunStatus(); }, 15000);
 
     socket.on('benchmark_start', (data) => {
         const term = data.type === 'shared_llm' ? 'shared' : 'general';
@@ -11938,6 +11940,18 @@ const saved = _loadHumanRatings(t.id) || {};
         });
     });
 });
+
+// ═══════════════════════════ SHARED TAB STATE ══════════════════════════════
+// Which dashboard tab is showing. This has to live at module scope, not inside
+// the DOMContentLoaded closure above: the Audio Studio's status poller is
+// defined below the closure and reads activeTab to stop itself when the user
+// navigates away. While activeTab was a closure-local `let`, that read threw
+// `ReferenceError: activeTab is not defined` on every 15s tick — the interval
+// is set up outside the callback, so the throw neither stopped the timer nor
+// surfaced anywhere except the console, and the Audio Studio status silently
+// stopped refreshing. Same class of bug as the `applyAnalysisRec` inline-onclick
+// defect: a name used across the closure boundary.
+let activeTab = 'monitor'; // 'monitor', 'general', 'shared', 'tests', 'audio', 'podcast', ...
 
 // ═══════════════════════ RESOURCE ANALYSIS ═══════════════════════
 // Module scope, not inside the DOMContentLoaded closure: the Resource Analysis

@@ -441,6 +441,35 @@ active_run_lock = threading.Lock()
 cancel_event = None
 benchmark_thread = None
 
+# Per-run scratch that is only meaningful while the run is still going. Both grow
+# one entry per model / per test, and every result record carries the model's
+# whole response -- which for a UI test includes a base64 PNG screenshot. A full
+# general-suite corpus is tens of megabytes. It is not small by accident: the
+# dashboard reads it from GET /api/status *while a run is live* to animate the
+# charts, so during a run it is genuinely wanted. Retaining it afterwards is not:
+# both GET /api/status and the SocketIO "sync_status" emitted on every connect
+# serialise this whole dict, so a retained corpus is re-sent on every poll
+# indefinitely for data that is already written to `saved_as` and served by
+# /api/results.
+_RUN_SCRATCH_KEYS = ("results", "test_results")
+
+
+def _finish_active_run(status: str, saved_as: str | None = None) -> None:
+    """Move ``active_run`` to a terminal state and release the run's scratch data.
+
+    Call this with ``active_run_lock`` already held. The result corpus is dropped
+    rather than left in place -- see ``_RUN_SCRATCH_KEYS``. The Results tab loads
+    from /api/results, so nothing downstream needs it once the run is over.
+    """
+    active_run["status"] = status
+    active_run["current_model"] = None
+    active_run["current_test"] = None
+    active_run["current_category"] = None
+    if saved_as is not None:
+        active_run["saved_as"] = saved_as
+    for key in _RUN_SCRATCH_KEYS:
+        active_run[key] = []
+
 
 # Callback for progress reporting from inside the benchmark threads
 def get_progress_callback(run_type):
@@ -606,12 +635,8 @@ def get_progress_callback(run_type):
                 socketio.emit("model_complete", {"model": data["model"], "results": data["results"]})
 
             elif event == "benchmark_complete":
-                active_run["status"] = data.get("status", "completed")
-                active_run["current_model"] = None
-                active_run["current_test"] = None
-                active_run["current_category"] = None
                 saved_path = data.get("saved_as") or ""
-                active_run["saved_as"] = saved_path
+                _finish_active_run(data.get("status", "completed"), saved_path)
                 try:
                     for res_item in data.get("results", []):
                         if isinstance(res_item, dict) and res_item.get("model"):
@@ -631,10 +656,7 @@ def get_progress_callback(run_type):
                 socketio.emit("benchmark_complete", data)
 
             elif event == "benchmark_cancelled":
-                active_run["status"] = "cancelled"
-                active_run["current_model"] = None
-                active_run["current_test"] = None
-                active_run["current_category"] = None
+                _finish_active_run("cancelled")
                 socketio.emit("benchmark_cancelled", {"message": "Benchmark cancelled by user"})
 
     return callback
@@ -663,19 +685,13 @@ def run_general_in_thread(
             print(f"Error in benchmark execution: {e}")
             socketio.emit("benchmark_error", {"error": str(e)})
             with active_run_lock:
-                active_run["status"] = "failed"
-                active_run["current_model"] = None
-                active_run["current_test"] = None
-                active_run["current_category"] = None
+                _finish_active_run("failed")
         finally:
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
                     print("[benchmark] Thread exiting with status still 'running' - forcing to 'completed'")
-                    active_run["status"] = "completed"
-                    active_run["current_model"] = None
-                    active_run["current_test"] = None
-                    active_run["current_category"] = None
+                    _finish_active_run("completed")
                     socketio.emit(
                         "benchmark_complete",
                         {"status": "completed", "saved_as": active_run.get("saved_as")},
@@ -704,19 +720,13 @@ def run_shared_llm_in_thread(models, use_proxy, run_cancel_event, callback, task
             print(f"Error in SharedLLM execution: {e}")
             socketio.emit("benchmark_error", {"error": str(e)})
             with active_run_lock:
-                active_run["status"] = "failed"
-                active_run["current_model"] = None
-                active_run["current_test"] = None
-                active_run["current_category"] = None
+                _finish_active_run("failed")
         finally:
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
                     print("[benchmark] SharedLLM thread exiting with status still 'running' - forcing to 'completed'")
-                    active_run["status"] = "completed"
-                    active_run["current_model"] = None
-                    active_run["current_test"] = None
-                    active_run["current_category"] = None
+                    _finish_active_run("completed")
                     socketio.emit(
                         "benchmark_complete",
                         {"status": "completed", "saved_as": active_run.get("saved_as")},
@@ -745,19 +755,13 @@ def run_multistep_in_thread(models, use_proxy, run_cancel_event, callback, workf
             print(f"Error in MultiStep execution: {e}")
             socketio.emit("benchmark_error", {"error": str(e)})
             with active_run_lock:
-                active_run["status"] = "failed"
-                active_run["current_model"] = None
-                active_run["current_test"] = None
-                active_run["current_category"] = None
+                _finish_active_run("failed")
         finally:
             # Guarantee we never stay stuck in "running" state
             with active_run_lock:
                 if active_run["status"] == "running":
                     print("[benchmark] MultiStep thread exiting with status still 'running' - forcing to 'completed'")
-                    active_run["status"] = "completed"
-                    active_run["current_model"] = None
-                    active_run["current_test"] = None
-                    active_run["current_category"] = None
+                    _finish_active_run("completed")
                     socketio.emit(
                         "benchmark_complete",
                         {"status": "completed", "saved_as": active_run.get("saved_as")},

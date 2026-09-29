@@ -1288,3 +1288,148 @@ def test_the_load_harness_catches_an_injected_reference_error(tmp_path):
     report = json.loads(proc.stdout)
     assert proc.returncode != 0, "the harness passed a file with a known ReferenceError"
     assert any("resultsEl is not defined" in p for p in report["problems"]), report["problems"]
+
+# --------------------------------------------------------------------------
+# activeTab — the DOMContentLoaded closure boundary
+#
+# The Audio Studio and Podcast Studio blocks sit at module scope, *below* the
+# DOMContentLoaded closure, so they cannot see anything declared inside it. A
+# `let` inside the closure is invisible to them, and reading it throws at
+# runtime. Same defect class as the `resultsEl` one above and the
+# `applyAnalysisRec` inline-onclick one: a name used across the closure edge.
+#
+# The slice below is just initAudioStudio, not the whole Audio Studio block.
+# initAudioStudio is the function that holds the defective read; the rest of the
+# block (wireAudioStudio -> wireVoiceClone) walks document/window/location and
+# would throw for reasons that have nothing to do with this bug. Its two
+# collaborators are stubbed instead.
+# --------------------------------------------------------------------------
+
+# The slice starts at the Audio Studio banner so it carries the module-scope
+# `let _audioStatusTimer` that initAudioStudio reads -- a slice that silently
+# omits a declaration the code under test uses is a broken slice, not a strict
+# one.
+SLICE_AUDIO_INIT = _slice(
+    "// ═══════════════════════════ AUDIO STUDIO ═══════════════════════════",
+    "function wireAudioStudio() {",
+)
+
+# Minimal stand-ins for initAudioStudio's two collaborators. Neither is under
+# test; both are module-global in the shipped file, so declaring them here
+# reproduces the real call graph without dragging in the DOM wiring.
+_AUDIO_PRELUDE = """
+let _refreshed = 0;
+let _wired = 0;
+function wireAudioStudio() { _wired++; }
+function refreshAudioStatus() { _refreshed++; }
+const timers = [];
+globalThis.document = {
+  hidden: false,
+  getElementById: () => ({ dataset: {} }),
+};
+globalThis.setInterval = (fn) => { timers.push(fn); return timers.length; };
+globalThis.clearInterval = () => {};
+"""
+
+
+def test_active_tab_is_declared_at_module_scope_not_inside_the_closure():
+    # Column 0 is module scope. An indented `let` is closure-local and invisible
+    # to the Audio/Podcast blocks that live below the closure.
+    assert "\nlet activeTab" in JS, "activeTab is not declared at module scope (column 0)"
+    assert "\n    let activeTab" not in JS, "activeTab is still declared inside the DOMContentLoaded closure"
+    assert JS.index("\nlet activeTab") < JS.index("function initAudioStudio() {"), (
+        "activeTab must be declared before the module-global audio block reads it"
+    )
+
+
+def test_the_audio_init_slice_declares_no_tab_state_of_its_own():
+    """Keep the reproduction honest.
+
+    If this fails, the behavioural tests below are carrying their own copy of the
+    declaration and would pass whether or not the real file is broken.
+    """
+    assert "let activeTab" not in SLICE_AUDIO_INIT, (
+        "the initAudioStudio slice now contains a declaration; the test is circular"
+    )
+    assert "activeTab" in SLICE_AUDIO_INIT, "initAudioStudio no longer reads activeTab -- retarget this test"
+
+
+def test_the_audio_status_poller_gets_active_tab_from_module_scope():
+    """Run initAudioStudio with no DOMContentLoaded closure in scope.
+
+    This mirrors the shipped file: `let activeTab` sits at module scope just
+    above the Audio Studio banner, so the module-global code can read it. The
+    original failure was a ReferenceError thrown from *inside* the interval
+    callback on every 15s tick, where nothing catches it, the timer is never
+    cleared, and the Audio Studio status silently stops refreshing.
+    """
+    out = run_js(
+        _AUDIO_PRELUDE
+        + "let activeTab = 'monitor';   // module scope, exactly as the shipped file declares it\n"
+        + SLICE_AUDIO_INIT
+        + """
+initAudioStudio();
+assert.equal(timers.length, 1, 'the audio status poller did not register an interval');
+assert.equal(_wired, 1, 'wireAudioStudio was not called once');
+assert.equal(_refreshed, 1, 'refreshAudioStatus was not called once on entry');
+timers[0]();   // the line that used to throw ReferenceError: activeTab is not defined
+log.push('audio poller tick completed with no ReferenceError');
+"""
+    )
+    assert "audio poller tick completed" in out
+
+
+def test_the_audio_poller_stops_itself_once_the_user_leaves_the_tab():
+    """The guard is a real feature, not just a read that happens to not throw.
+
+    Leaving the Audio tab must clear the timer rather than keep polling a panel
+    the user is not looking at -- the same reason the two 2s pollers carry
+    `if (!document.hidden)`.
+    """
+    out = run_js(
+        _AUDIO_PRELUDE
+        + "let activeTab = 'monitor';\n"
+        + SLICE_AUDIO_INIT
+        + """
+let cleared = 0;
+globalThis.clearInterval = () => { cleared++; };
+initAudioStudio();
+timers[0]();
+assert.equal(cleared, 1, 'the poller did not stop itself on a non-audio tab');
+assert.equal(_refreshed, 1, 'it refreshed the panel after leaving the tab');
+log.push('poller self-stopped on tab change');
+"""
+    )
+    assert "poller self-stopped" in out
+
+
+def test_reintroducing_the_closure_local_declaration_breaks_the_poller():
+    """The check that gives the two tests above teeth.
+
+    A plain node -e script has no module boundary, so merely *declaring*
+    activeTab makes it visible to everything -- that does not reproduce the
+    defect. The shipped bug is a *scoping* bug, so the reproduction has to build
+    a real closure: declare activeTab inside one, then run the module-global
+    audio code outside it. If this test ever stops throwing, the behavioural
+    tests above have stopped testing anything.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for dashboard frontend behavior tests")
+    script = (
+        _AUDIO_PRELUDE
+        + """
+// The shipped structure: a DOMContentLoaded closure declares activeTab, and the
+// Audio Studio block lives outside it at module scope.
+(function () { let activeTab = 'monitor'; void activeTab; })();
+"""
+        + SLICE_AUDIO_INIT
+        + """
+try { initAudioStudio(); timers[0](); } catch (e) { process.stdout.write(String(e)); process.exit(0); }
+process.stdout.write('NO_ERROR');
+"""
+    )
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert "activeTab is not defined" in proc.stdout, (
+        f"the harness did not reproduce the defect; stdout={proc.stdout!r} stderr={proc.stderr[:400]!r}"
+    )
