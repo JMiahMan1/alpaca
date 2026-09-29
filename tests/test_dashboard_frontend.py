@@ -1174,3 +1174,117 @@ def app_module_serves_fonts(webapp) -> bool:
     import mimetypes as m
 
     return m.guess_type("Inter.woff2")[0] == "font/woff2"
+
+
+# ─── Load-time smoke: does the page wire up at all? ───────────────────────────
+#
+# Everything above exercises individual functions. Nothing exercised the
+# *assembly*: evaluating the file and running its DOMContentLoaded handler. That
+# gap is not theoretical. `node --check` is a syntax check, and a ReferenceError
+# is a runtime failure, so the file passed CI while being entirely
+# non-functional: a `const` declared inside a nested function, referenced by a
+# statement of the enclosing closure, threw during DOMContentLoaded, and the
+# exception aborted the rest of the handler. The page rendered with no models
+# ("Loading models..." forever), "Server Monitor Offline" and no working tabs,
+# while the server and the proxy answered 200 in milliseconds.
+
+HARNESS = ROOT / "tests" / "fixtures" / "dom_load_harness.js"
+INDEX_HTML = ROOT / "web" / "templates" / "index.html"
+
+
+@pytest.fixture(scope="module")
+def load_report() -> dict:
+    """Run the real file through the harness once; the tests below read it."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for the dashboard load-time smoke test")
+    proc = subprocess.run(
+        [node, str(HARNESS), str(JS_PATH)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError:  # pragma: no cover - a crash in the harness
+        pytest.fail(f"harness produced no JSON report\n{proc.stdout}\n{proc.stderr}")
+    report["returncode"] = proc.returncode
+    report["stderr"] = proc.stderr
+    return report
+
+
+def test_the_dashboard_loads_without_throwing(load_report):
+    """The regression test for the dead dashboard.
+
+    A single unbound name anywhere in the DOMContentLoaded handler kills every
+    statement after it, so this asserts the whole handler ran, not one function.
+    """
+    assert load_report["problems"] == [], (
+        "dashboard.js threw while wiring the page up. The DOMContentLoaded "
+        "handler aborts on the first exception, so a single failure here means "
+        "no models, no proxy status and no working controls - with a perfectly "
+        "healthy server behind it:\n" + "\n".join(load_report["problems"])
+    )
+    assert load_report["returncode"] == 0, load_report["stderr"]
+
+
+def test_the_load_harness_really_does_run_the_handler(load_report):
+    """Guards the guard: a harness that silently did nothing would pass the
+    test above no matter how broken the file got."""
+    assert len(load_report["looked_up_ids"]) > 100, (
+        "the harness reported almost no getElementById lookups, so it is not "
+        "reaching the real wiring"
+    )
+    for required in ("model-switcher-select", "resource-analysis-results", "btn-analyze-all"):
+        assert required in load_report["looked_up_ids"]
+
+
+def test_every_element_the_dashboard_looks_up_exists_in_the_template(load_report):
+    """The other half of the same bug class.
+
+    The harness stubs every id, so a *missing* element is invisible to it. An
+    unguarded `document.getElementById(x).addEventListener(...)` on an id that
+    is not in the template is a null dereference at load time - the exact
+    failure above, waiting for the next rename.
+    """
+    template = INDEX_HTML.read_text()
+    declared = set(re.findall(r'\bid="([^"]+)"', template))
+    missing = sorted(i for i in load_report["looked_up_ids"] if i not in declared)
+    assert not missing, (
+        "dashboard.js looks these up by id but index.html does not declare "
+        "them. If the lookup is not null-guarded this is a null dereference "
+        "that aborts the whole DOMContentLoaded handler:\n  "
+        + "\n  ".join(missing)
+    )
+
+
+def test_the_load_harness_catches_an_injected_reference_error(tmp_path):
+    """Prove the harness has teeth: reintroduce the exact bug that shipped and
+    require it to be reported, with the file and line."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for the dashboard load-time smoke test")
+
+    source = JS
+    hoisted = """    const resultsEl = document.getElementById('resource-analysis-results');
+
+    async function analyzeAllModels() {"""
+    regressive = """    async function analyzeAllModels() {
+        const resultsEl = document.getElementById('resource-analysis-results');"""
+    assert hoisted in source, (
+        "the hoisting that makes resultsEl visible to the closure-scope "
+        "listener is gone; update this test to match the current shape"
+    )
+    mutated = tmp_path / "dashboard.broken.js"
+    mutated.write_text(source.replace(hoisted, regressive, 1))
+    assert mutated.read_text() != source
+
+    proc = subprocess.run(
+        [node, str(HARNESS), str(mutated)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    report = json.loads(proc.stdout)
+    assert proc.returncode != 0, "the harness passed a file with a known ReferenceError"
+    assert any("resultsEl is not defined" in p for p in report["problems"]), report["problems"]
