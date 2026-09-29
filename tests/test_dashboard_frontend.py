@@ -1151,3 +1151,26 @@ def test_the_vendor_check_passes_on_this_checkout():
     from web import app as webapp
 
     webapp._verify_vendor_assets()
+
+
+def test_the_vendored_fonts_are_served_with_a_font_content_type():
+    """python:3.11-slim's mimetypes database does not know woff2, so Flask
+    served the vendored fonts as application/octet-stream - tolerated by a
+    browser that reads the `format('woff2')` hint, and wrong for anything that
+    trusts the Content-Type. The mapping is registered in the app rather than
+    left to the base image, because the same checkout answers differently on a
+    newer Python than it does in its own container."""
+    import mimetypes
+
+    from web import app as webapp
+
+    assert mimetypes.guess_type("x.woff2")[0] == "font/woff2"
+    assert mimetypes.guess_type("x.woff")[0] == "font/woff"
+    assert app_module_serves_fonts(webapp)
+
+
+def app_module_serves_fonts(webapp) -> bool:
+    """The registration has to survive the import that already ran."""
+    import mimetypes as m
+
+    return m.guess_type("Inter.woff2")[0] == "font/woff2"

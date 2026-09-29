@@ -8,6 +8,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -216,6 +217,21 @@ REQUIRED_VENDOR_FILES = (
     "fonts/JetBrainsMono-latin.woff2",
     "fonts/JetBrainsMono-latin-ext.woff2",
 )
+
+
+# python:3.11-slim ships a mimetypes database that does not know woff2, so
+# Flask served the vendored fonts as application/octet-stream - correct enough
+# for a browser that honours the `format('woff2')` hint in the @font-face rule,
+# and wrong for anything that trusts the Content-Type. Registered here rather
+# than left to the base image, because the same checkout serves the right type
+# on a newer Python and the wrong one in the container.
+for _ext, _type in (
+    (".woff2", "font/woff2"),
+    (".woff", "font/woff"),
+    (".ttf", "font/ttf"),
+    (".otf", "font/otf"),
+):
+    mimetypes.add_type(_type, _ext)
 
 
 def _verify_vendor_assets() -> None:
