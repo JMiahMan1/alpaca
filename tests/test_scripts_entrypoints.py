@@ -308,6 +308,14 @@ IMPORTABLE_MODULES = [
     "audio_server.py",
 ]
 
+# scripts/ entry points. These import nothing heavy at module scope -- the
+# engines are imported inside the render functions -- so they import on a plain
+# machine, which is the same property that lets them be linted and tested away
+# from the GPU.
+SCRIPT_MODULES = [
+    "scripts/render_epub_ab.py",
+]
+
 
 @pytest.mark.parametrize("filename", IMPORTABLE_MODULES)
 def test_entry_point_module_imports(filename):
@@ -317,6 +325,23 @@ def test_entry_point_module_imports(filename):
     path = REPO / filename
     assert path.exists(), f"{filename} is referenced but missing"
     name = "alpaca_entry_" + path.stem.replace("-", "_")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(name, None)
+
+
+@pytest.mark.parametrize("relpath", SCRIPT_MODULES)
+def test_script_module_imports(relpath):
+    import importlib.util
+    import sys
+
+    path = REPO / relpath
+    assert path.exists(), f"{relpath} is referenced but missing"
+    name = "alpaca_script_" + path.stem
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
