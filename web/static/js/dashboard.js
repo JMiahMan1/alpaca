@@ -9531,9 +9531,15 @@ const saved = _loadHumanRatings(t.id) || {};
     }
 
     // RESOURCE ANALYSIS
+    // Declared out here, not inside analyzeAllModels: the delegated listener
+    // below is a statement of THIS closure, so a name declared in the nested
+    // function is not in its scope. Declaring it inside threw
+    // "resultsEl is not defined" at DOMContentLoaded, which aborted the rest
+    // of the handler - no model list, no proxy monitor, no tabs.
+    const resultsEl = document.getElementById('resource-analysis-results');
+
     async function analyzeAllModels() {
         const btn = document.getElementById('btn-analyze-all');
-        const resultsEl = document.getElementById('resource-analysis-results');
         const strategy = document.getElementById('analysis-strategy-select')?.value || 'performance';
 
         if (!btn || !resultsEl) return;
@@ -9621,18 +9627,25 @@ const saved = _loadHumanRatings(t.id) || {};
     // attribute into an inline handler. `applyAnalysisRec` itself is module
     // scope now (see below) - inside this closure it was unreachable from the
     // old inline onclick and threw ReferenceError on every click.
-    resultsEl.addEventListener('click', ev => {
-        const btn = ev.target.closest('.js-apply-analysis');
-        if (!btn || !resultsEl.contains(btn)) return;
-        let recommendations = {};
-        try {
-            recommendations = JSON.parse(btn.dataset.recs || '{}');
-        } catch (err) {
-            showToast(`❌ Could not read the recommendations: ${err.message}`, 'error');
-            return;
-        }
-        applyAnalysisRec(btn.dataset.model, recommendations);
-    });
+    //
+    // Guarded: an unguarded addEventListener on a getElementById result is a
+    // null dereference at load time, and an exception here aborts the whole
+    // DOMContentLoaded handler - the tab then renders with no models, no proxy
+    // status and no working controls, while the server looks perfectly healthy.
+    if (resultsEl) {
+        resultsEl.addEventListener('click', ev => {
+            const btn = ev.target.closest('.js-apply-analysis');
+            if (!btn || !resultsEl.contains(btn)) return;
+            let recommendations = {};
+            try {
+                recommendations = JSON.parse(btn.dataset.recs || '{}');
+            } catch (err) {
+                showToast(`❌ Could not read the recommendations: ${err.message}`, 'error');
+                return;
+            }
+            applyAnalysisRec(btn.dataset.model, recommendations);
+        });
+    }
 
     const btnAnalyzeAll = document.getElementById('btn-analyze-all');
     if (btnAnalyzeAll) {
