@@ -2082,6 +2082,10 @@ def podcast_status():
 
     proxy = _find_proxy_url()
     out["proxy"] = {"online": proxy is not None, "url": proxy}
+    # Which model would write the script. The panel needs this because a draft
+    # with nothing loaded is refused rather than quietly run on some other
+    # model, so the user has to be able to see that state before they click.
+    out["draft_model"] = _get_currently_loaded_model() if proxy else None
     return jsonify(out)
 
 
@@ -2153,6 +2157,10 @@ def podcast_draft():
     is a text task, the proxy is the only thing that can hot-swap a model for
     it, and it is the same path every benchmark uses, so drafting exercises
     the routing the user has already configured.
+
+    The model is whichever one is loaded, unless the caller names one. See the
+    comment at the resolution for why the literal string "default" is not an
+    option.
     """
     import httpx
 
@@ -2171,20 +2179,36 @@ def podcast_draft():
     if not proxy:
         return jsonify({"error": "alpaca-proxy is not reachable, so no model can be asked for a script"}), 503
 
+    if not model:
+        # Not "default". The proxy resolves whatever name it is given against the
+        # model store, and `default:latest` is not a model, so the request 404s
+        # and the panel reports an opaque failure. Ask for the one that is
+        # actually loaded, and when nothing is loaded say exactly that - quietly
+        # picking some other model would pull gigabytes onto the card that the
+        # user never asked to load.
+        model = _get_currently_loaded_model() or ""
+        if not model:
+            return jsonify({
+                "error": "no model is loaded, so there is nothing to draft with. "
+                "Load one from the sidebar, or send a 'model' with this request.",
+            }), 409
+
     system = PODCAST_DRAFT_SYSTEM.format(target_words=target_words)
     if notes:
         system += f"\nThe hosts must work in these notes:\n{notes}\n"
 
     user = f"Topic: {topic}"
-    if model:
-        user = f"Write the script for this model: {model}\n\n{user}"
+    # The model name is NOT mentioned in the prompt. It used to be, back when
+    # the model field carried a routing hint rather than a real model name, and
+    # with a real name in it the line only tells the model it is being asked to
+    # "write the script for" some model - which means nothing to it.
 
     try:
         with httpx.Client(timeout=600.0) as client:
             resp = client.post(
                 f"{proxy}/api/chat",
                 json={
-                    "model": model or "default",
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},

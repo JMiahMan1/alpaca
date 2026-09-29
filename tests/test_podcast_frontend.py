@@ -459,3 +459,81 @@ def test_the_duck_slider_bounds_match_the_mixers_duck_range():
     panel = HTML[HTML.index('id="view-podcast"') : HTML.index('id="view-requests"')]
     assert 'id="podcast-duck" min="6" max="30"' in panel
     assert 'value="20"' in panel
+
+
+# --------------------------------------------------------------------------
+# which model writes the script
+# --------------------------------------------------------------------------
+#
+# The route used to send the literal string "default" to the proxy, which
+# resolved it as a model name and 404'd. It now asks for the loaded model and
+# refuses when none is loaded, so the panel has to show that state rather than
+# offer a button that cannot work.
+
+_STATUS_BODY = """
+const _status = __STATUS__;
+const _btn = _els['btn-podcast-draft'];
+globalThis.fetch = async (url) => {
+    if (String(url).indexOf('/api/podcast/status') !== -1) {
+        return { ok: true, status: 200, json: async () => _status };
+    }
+    if (String(url).indexOf('/api/podcast/voices') !== -1) {
+        return { ok: true, status: 200, json: async () => ({ saved_profiles: [], roster: [] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+};
+// refreshPodcastStatus is async, so its continuations run in microtasks -
+// AFTER run_js's trailing write. Write the result from inside the async body
+// instead of pushing to `log`, or every assertion would read an empty string.
+(async () => {
+    await refreshPodcastStatus();
+    process.stdout.write(JSON.stringify({
+        chip: _els['podcast-status-chip'].textContent,
+        draft_disabled: _btn.disabled,
+        draft_title: _btn.title,
+    }));
+})();
+"""
+
+
+def _run_status(status: dict) -> dict:
+    """Drive refreshPodcastStatus() against a scripted /api/podcast/status."""
+    body = _STATUS_BODY.replace("__STATUS__", json.dumps(status))
+    return json.loads(run_js(podcast_js(body)))
+
+
+def _ok_status(**over) -> dict:
+    base = {"audio": {"online": True}, "proxy": {"online": True},
+            "target_sample_rate": 24000, "host_pairs": [], "bed_presets": []}
+    base.update(over)
+    return base
+
+
+def test_the_panel_says_which_model_will_draft():
+    out = _run_status(_ok_status(draft_model="ornith-1-5-9b-q4-k-m"))
+    assert "drafts with ornith-1-5-9b-q4-k-m" in out["chip"]
+
+
+def test_the_panel_warns_when_no_model_is_loaded():
+    out = _run_status(_ok_status(draft_model=None))
+    assert "no model loaded" in out["chip"]
+
+
+def test_the_draft_button_is_disabled_when_there_is_no_model_to_draft_with():
+    """A 409 on click is correct; a button that offers it anyway is a lie."""
+    out = _run_status(_ok_status(draft_model=None))
+    assert out["draft_disabled"] is True
+    assert "Load one from the sidebar" in out["draft_title"]
+
+
+def test_the_draft_button_is_enabled_when_a_model_is_loaded():
+    out = _run_status(_ok_status(draft_model="x:y"))
+    assert out["draft_disabled"] is False
+    assert "Write the script with x:y" in out["draft_title"]
+
+
+def test_the_status_handler_never_disables_draft_while_claiming_success():
+    out = _run_status(_ok_status(draft_model=None))
+    assert "audio ✓ · proxy ✓ ·" not in out["chip"], (
+        "the ok chip must not claim everything works while drafting is impossible"
+    )
