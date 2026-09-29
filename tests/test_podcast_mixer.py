@@ -1063,3 +1063,80 @@ def test_the_data_uri_is_a_wav_a_browser_can_play_directly():
     uri = pm.mix_to_data_uri(wav)
     assert uri.startswith("data:audio/wav;base64,")
     assert base64.b64decode(uri.split(",", 1)[1]) == wav
+
+
+# --------------------------------------------------------------------------
+# The preamble a model wraps around a script
+# --------------------------------------------------------------------------
+#
+# `think: False` is sent on the draft request and does not stop a model
+# reasoning in its content. Observed on ornith-1-5-9b-q4-k-m, asked for a
+# 180-word script, answering with:
+
+#     The user wants me to write a two-host podcast script about "..."
+#     Rules:
+#     - Output ONLY the script, no preamble, no explanation, no markdown fences.
+#     - Every spoken line begins with "[host_a] " or "[host_b] ".
+#     ...
+#     [host_a] Running a model on your own desk is a different proposition.
+
+# `Rules:` parses as a speaker called Rules, so the whole block became a turn
+# the first host would read aloud, and "Let me count the words." was appended
+# as dialogue.
+
+PREAMBLE_RESPONSE = """The user wants me to write a two-host podcast script about "caching".
+
+Rules:
+- Output ONLY the script, no preamble, no explanation, no markdown fences.
+- Every spoken line begins with "[host_a] " or "[host_b] ".
+
+[host_a] Running a model on your own desk is a different proposition.
+[host_b] It sounds like just a bigger version of cloud inference.
+Let me count the words. That is about twenty.
+"""
+
+CLEAN_SCRIPT = """[host_a] Running a model on your own desk is a different proposition.
+[host_b] It sounds like just a bigger version of cloud inference.
+Let me count the words. That is about twenty."""
+
+
+def test_the_preamble_before_the_first_tag_is_dropped():
+    assert pm.extract_podcast_script(PREAMBLE_RESPONSE) == CLEAN_SCRIPT
+
+
+def test_the_rules_block_never_becomes_a_speaker():
+    roster = pm.host_roster("duo_warm")
+    turns = pm.parse_script(pm.extract_podcast_script(PREAMBLE_RESPONSE), roster)
+    speakers = {t.speaker for t in pm.spoken_turns(turns)}
+    assert "Rules" not in speakers
+    assert not any("Output ONLY the script" in t.text for t in pm.spoken_turns(turns))
+
+
+def test_a_reopening_narration_line_after_the_first_tag_is_kept():
+    """A script may open with narration before anyone speaks, and parse_script
+    already models that as an unattributed turn. Only the PREAMBLE goes."""
+    text = "Thinking about the question first.\n\n[host_a] Welcome.\nWelcome to the show."
+    out = pm.extract_podcast_script(text)
+    assert out.startswith("[host_a] Welcome.")
+    assert "Welcome to the show." in out
+    assert "Thinking about the question" not in out
+
+
+def test_a_colon_tag_also_marks_the_start_of_a_real_script():
+    text = "Let me think about this.\nhost_a: Welcome to the show."
+    assert pm.extract_podcast_script(text) == "host_a: Welcome to the show."
+
+def test_an_untagged_response_is_returned_unchanged():
+    """It is not a script, but it may be a refusal, and the caller has to be
+    able to see it in order to say so."""
+    text = "I cannot write that script."
+    assert pm.extract_podcast_script(text) == text
+
+
+def test_a_clean_script_passes_through_untouched():
+    assert pm.extract_podcast_script(CLEAN_SCRIPT) == CLEAN_SCRIPT
+
+
+def test_extraction_is_a_no_op_on_empty_input():
+    assert pm.extract_podcast_script("") == ""
+    assert pm.extract_podcast_script("   \n\n ") == "   \n\n "
