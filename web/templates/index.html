@@ -9,7 +9,11 @@
     <!-- Stylesheet -->
     <link rel="stylesheet" href="/static/css/style.css">
     <!-- Chart.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Vendored, not a CDN. This was the last line before </head> and therefore
+         render-blocking: the browser refused to paint until jsdelivr answered, which
+         held first-contentful-paint at 3.5s (760ms without it). Pinned to 4.5.1 -
+         the bare /npm/chart.js URL resolved to whatever was newest that day. -->
+    <script src="/static/vendor/chart.umd.min.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -3321,7 +3325,9 @@ text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spa
     </div>
 
     <!-- Socket.IO library (CDN) -->
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <!-- Vendored for the same reason as chart.js. Must stay 4.7.5 to match the
+         flask-socketio server the page talks to. -->
+    <script src="/static/vendor/socket.io.min.js"></script>
     <!-- Frontend logic script -->
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
     <script>

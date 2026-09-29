@@ -199,6 +199,39 @@ def is_flask_request_authenticated(req) -> bool:
     return x_key == expected
 
 
+#: Third-party code the dashboard used to pull from a CDN at render time. It is
+#: vendored under web/static/vendor/ so that first paint does not depend on
+#: someone else's uptime - measured at 3516 ms with the CDN and 760 ms without.
+#:
+#: These are checked at startup and the process refuses to come up without them.
+#: A 404 for chart.js would not be an obvious failure: the page would render,
+#: the nav would work, and only the charts would be silently absent, which is
+#: worse than not starting. Naming the missing file is the whole point.
+VENDOR_DIR = Path(__file__).resolve().parent / "static" / "vendor"
+REQUIRED_VENDOR_FILES = (
+    "chart.umd.min.js",  # Chart.js 4.5.1 - pinned; the bare npm URL tracked latest
+    "socket.io.min.js",  # socket.io 4.7.5 - must match the flask-socketio server
+    "fonts/Inter-latin.woff2",
+    "fonts/Inter-latin-ext.woff2",
+    "fonts/JetBrainsMono-latin.woff2",
+    "fonts/JetBrainsMono-latin-ext.woff2",
+)
+
+
+def _verify_vendor_assets() -> None:
+    missing = [name for name in REQUIRED_VENDOR_FILES if not (VENDOR_DIR / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            f"alpaca-web cannot start: {len(missing)} vendored front-end asset(s) missing from "
+            f"{VENDOR_DIR}: {', '.join(missing)}. They are tracked in git under "
+            f"web/static/vendor/; a partial checkout or a bad deploy is the usual cause. "
+            f"Restoring them is the fix - there is no CDN fallback by design."
+        )
+
+
+_verify_vendor_assets()
+
+
 @app.before_request
 def enforce_auth_middleware():
     """Redirect unauthenticated public browser requests to /login and return 401 for API calls."""

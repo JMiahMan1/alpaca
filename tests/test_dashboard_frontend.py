@@ -14,6 +14,7 @@ shipped source rather than a copy that can drift.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -1010,3 +1011,143 @@ def test_no_module_scope_function_is_called_from_an_inline_onclick():
         f"inline onclick handlers call {inline}; an inline handler cannot see "
         "DOMContentLoaded closure scope - use a delegated listener instead"
     )
+
+
+# --------------------------------------------------------------------------
+# Nothing on the critical path may live on someone else's server
+# --------------------------------------------------------------------------
+
+#: Hosts a page must never wait on. A third-party asset in the critical path
+#: makes first paint a function of someone else's uptime and network, and this
+#: dashboard measured 3516 ms to first paint with them and 760 ms without.
+EXTERNAL_ASSET_HOSTS = (
+    "cdn.jsdelivr.net",
+    "unpkg.com",
+    "cdnjs.cloudflare.com",
+    "cdn.socket.io",
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+)
+
+TEMPLATES = sorted((ROOT / "web" / "templates").glob("*.html"))
+
+
+def _asset_lines(path: Path) -> list[tuple[int, str]]:
+    """Lines that pull in a subresource: script src, link href, css @import.
+
+    Every reference counts, including one inside a `<noscript>`. There is no
+    exemption for "but that only applies without JavaScript": a blocking
+    third-party request is a blocking third-party request, and an exemption here
+    would be a place to hide the next one.
+    """
+    out = []
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if re.search(r"<(script|link)\b[^>]*\b(src|href)\s*=\s*[\"']https?://", line, re.I) or (
+            "@import" in line and "url(" in line and "http" in line
+        ):
+            out.append((i, line.strip()))
+    return out
+
+
+def test_the_vendor_files_the_dashboard_needs_are_actually_shipped():
+    """A reference to /static/vendor/... that has no file behind it is a 404 on
+    the critical path, which is the same stall this is here to remove."""
+    vendor = ROOT / "web" / "static" / "vendor"
+    assert (vendor / "chart.umd.min.js").is_file(), "chart.js must be vendored"
+    assert (vendor / "socket.io.min.js").is_file(), "socket.io must be vendored"
+    for family in ("Inter", "JetBrainsMono"):
+        for subset in ("latin", "latin-ext"):
+            f = vendor / "fonts" / f"{family}-{subset}.woff2"
+            assert f.is_file(), f"missing {f.name}"
+            assert f.stat().st_size > 1024, f"{f.name} is suspiciously small"
+
+
+def test_chart_js_is_pinned_to_a_version():
+    """It used to be the bare /npm/chart.js, which resolves to whatever is newest
+    that day - so a Chart.js major could break every chart on the dashboard
+    silently, with nothing in the diff to show for it."""
+    index = (ROOT / "web" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "/static/vendor/chart.umd.min.js" in index
+    assert "cdn.jsdelivr.net/npm/chart.js" not in index
+
+
+def test_socket_io_matches_the_version_the_server_serves():
+    """The vendored client has to be the version flask-socketio speaks."""
+    index = (ROOT / "web" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "/static/vendor/socket.io.min.js" in index
+    assert "cdn.socket.io" not in index
+
+
+def test_the_stylesheet_declares_its_fonts_locally():
+    """A Google Fonts @import is a four-hop serial waterfall - stylesheet, parse,
+    import, font file - all third-party, all before the first pixel."""
+    css = (ROOT / "web" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    assert "@import" not in css.split("\n\n")[0] or "fonts.googleapis" not in css
+    assert "fonts.googleapis.com" not in css
+    for family in ("Inter", "JetBrains Mono"):
+        assert f"font-family: '{family}';" in css, f"{family} has no local @font-face"
+    # ...and the paths must resolve from /static/css/ to /static/vendor/
+    assert "../vendor/fonts/" in css
+    assert "font-display: swap" in css, "a blocking local font just moves the stall"
+
+
+def test_font_paths_in_the_stylesheet_resolve_to_shipped_files():
+    vendor = ROOT / "web" / "static" / "vendor"
+    css = (ROOT / "web" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    referenced = re.findall(r"url\('\.\./(vendor/[^']+)'\)", css)
+    assert referenced, "no local font urls found - the @font-face block is gone?"
+    for rel in referenced:
+        assert (vendor / rel.split("vendor/", 1)[1]).is_file(), f"{rel} has no file"
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_no_template_pulls_a_render_blocking_subresource_from_a_cdn(template):
+    """Async loading is allowed (login.html's Font Awesome uses the media=print
+    trick); a plain blocking reference to a third-party host is not."""
+    for lineno, line in _asset_lines(template):
+        for host in EXTERNAL_ASSET_HOSTS:
+            if host not in line:
+                continue
+            assert 'media="print"' in line, (
+                f"{template.name}:{lineno} blocks the first paint on {host}. "
+                f"Vendor it, or load it async with media=\"print\" onload=\"this.media=\\'all\\'\"."
+            )
+
+
+def test_the_app_refuses_to_start_without_its_vendored_assets(monkeypatch, tmp_path):
+    """A 404 for chart.js is not an obvious failure: the page renders, the nav
+    works, and only the charts are silently absent. Refusing to boot and naming
+    the file is the difference between a broken build and a broken deployment,
+    and it is why there is no CDN to fall back to."""
+    from web import app as webapp
+
+    monkeypatch.setattr(webapp, "VENDOR_DIR", tmp_path)
+    with pytest.raises(RuntimeError) as exc:
+        webapp._verify_vendor_assets()
+    message = str(exc.value)
+    for name in webapp.REQUIRED_VENDOR_FILES:
+        assert name in message, f"{name} is not named in the failure"
+    assert "web/static/vendor" in message
+
+
+def test_a_partial_vendor_directory_still_fails_and_names_only_what_is_missing(monkeypatch, tmp_path):
+    from web import app as webapp
+
+    (tmp_path / "fonts").mkdir()
+    for name in webapp.REQUIRED_VENDOR_FILES:
+        if name != "socket.io.min.js":
+            (tmp_path / name).write_bytes(b"x" * 32)
+    monkeypatch.setattr(webapp, "VENDOR_DIR", tmp_path)
+    with pytest.raises(RuntimeError) as exc:
+        webapp._verify_vendor_assets()
+    message = str(exc.value)
+    assert "socket.io.min.js" in message
+    assert "chart.umd.min.js" not in message, "a present file must not be reported missing"
+
+
+def test_the_vendor_check_passes_on_this_checkout():
+    """Guards the guard: if the list drifts from what is shipped, this fails
+    rather than the check silently becoming a no-op."""
+    from web import app as webapp
+
+    webapp._verify_vendor_assets()
