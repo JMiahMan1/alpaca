@@ -121,6 +121,11 @@ services:
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
       - ./alpaca_puller.py:/app/alpaca_puller.py:ro
       - ./online_providers.py:/app/online_providers.py:ro
+      - ./imageops.py:/app/imageops.py:ro
+      # imageanim is imported by web/app.py (POST /api/image/animate), so it is
+      # mounted as well as copied -- same as llm_benchmark_suite.py -- and a change
+      # needs only a restart rather than a rebuild.
+      - ./imageanim.py:/app/imageanim.py:ro
       - ./.alpaca-router:/router-models
       - ./analyzer.py:/app/analyzer.py:ro
       - ./sandbox_exec.py:/app/sandbox_exec.py:ro

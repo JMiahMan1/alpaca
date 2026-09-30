@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -2981,6 +2982,327 @@ def text_compose_api():
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ═══════════════════════════════ IMAGE ANIMATION ═══════════════════════════════
+# Seeding does not animate. A still image model has no temporal state, so the
+# same prompt at two seeds gives two unrelated pictures - not two frames of one
+# moving thing. Motion therefore has to come from the program, not from the
+# sampler. imageanim takes one or more stills and renders the movement between
+# them; nothing in this section touches a diffusion model, so there is no VRAM
+# cost and no queue behind sd-server.
+#
+# Like imageops.py, this is Pillow + numpy with no ffmpeg on purpose: web/ is
+# bind-mounted read-only, so it ships with a restart rather than a rebuild of the
+# image. The alternative second route - frame N is an image *edit* of frame N-1,
+# so the model authors the motion - is what produces the pre-rendered frames the
+# `sprite` kind consumes.
+
+_ANIM_KINDS = ("ken_burns", "parallax", "crossfade", "sprite")
+_ANIM_MAX_DIM = 2048
+_ANIM_MAX_FRAMES = 240
+# ~450 MB of RGB buffers at peak. llama-server, sd-server and the dashboard
+# already share this box, and an uncapped frames x size request reaches 3 GB -
+# so the budget is checked before any frame is rendered, not after.
+_ANIM_MAX_TOTAL_PIXELS = 150_000_000
+
+
+def _anim_num(source: Mapping[str, Any], key: str, default: float) -> float:
+    """Coerce one animation knob, naming the field when it is not a number.
+
+    A bare float() on a string raises ValueError, and with no app-level error
+    handler that becomes an HTML 500 - so a typo in `frames` used to be an opaque
+    failure rather than a 400 naming the field.
+    """
+    raw = source.get(key)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise _BadNumber(key, raw) from None
+
+
+def _anim_int(source: Mapping[str, Any], key: str, default: int) -> int:
+    value = _anim_num(source, key, default)
+    if value != int(value):
+        raise _BadNumber(key, value)
+    return int(value)
+
+
+def _anim_size(source: Mapping[str, Any]) -> tuple[int, int]:
+    """Parse "WxH", "W" (square) or [w, h]."""
+    raw = source.get("size")
+    if raw is None or raw == "":
+        width = _anim_int(source, "width", 768)
+        height = _anim_int(source, "height", 768)
+    elif isinstance(raw, (list, tuple)) and len(raw) == 2:
+        width, height = int(raw[0]), int(raw[1])
+    else:
+        text = str(raw).lower().replace(" ", "")
+        parts = text.split("x")
+        # Name the field, not the raw ValueError: float() on "abc" says
+        # "could not convert string to float", which does not tell the person
+        # driving the panel which box to fix.
+        try:
+            if len(parts) == 1:
+                width = height = int(float(parts[0]))
+            elif len(parts) == 2:
+                width, height = int(float(parts[0])), int(float(parts[1]))
+            else:
+                raise _BadNumber("size", raw)
+        except (TypeError, ValueError) as e:
+            raise _BadNumber("size", raw) from e
+    return width, height
+
+
+@app.route("/api/image/animate", methods=["GET"])
+def image_animate_status():
+    """What this endpoint will accept, so the panel offers only what it can do."""
+    return jsonify(
+        {
+            "kinds": [
+                {
+                    "id": "ken_burns",
+                    "label": "Slow push (Ken Burns)",
+                    "note": "One still. Code moves the camera. The default, and the safest.",
+                    "needs_images": 1,
+                },
+                {
+                    "id": "parallax",
+                    "label": "Parallax drift",
+                    "note": "One still. Two depth planes from a cheap blur estimate.",
+                    "needs_images": 1,
+                },
+                {
+                    "id": "crossfade",
+                    "label": "Crossfade",
+                    "note": "Two or more stills, dissolved into each other.",
+                    "needs_images": 2,
+                },
+                {
+                    "id": "sprite",
+                    "label": "Sprite sheet",
+                    "note": "One sheet cut into a flipbook - the input for an image-edit chain.",
+                    "needs_images": 1,
+                },
+            ],
+            "formats": ["webp", "gif"],
+            "default_format": "webp",
+            "note_format": (
+                "WebP is the default: same frames measured 2.6 KB against 19.8 KB for GIF, "
+                "and it stays sharp where GIF is limited to 256 colours."
+            ),
+            "defaults": {
+                "size": [768, 768],
+                "frames": 48,
+                "duration_ms": 80,
+                "zoom_from": 1.0,
+                "zoom_to": 1.18,
+                "pan_x": 0.0,
+                "pan_y": 0.0,
+                "parallax": 0.035,
+                "quality": 90,
+            },
+            "limits": {
+                "max_dimension": _ANIM_MAX_DIM,
+                "max_frames": _ANIM_MAX_FRAMES,
+                "max_total_pixels": _ANIM_MAX_TOTAL_PIXELS,
+            },
+        }
+    )
+
+
+@app.route("/api/image/animate", methods=["POST"])
+def image_animate_render():
+    """Render an animation from one or more stills.
+
+    Sources, in any combination: ``image`` (one uploaded file), ``images``
+    (several), ``artifact`` (a filename already in data/artifacts), or
+    ``artifact_b64`` (a data URI or bare base64, which is how the Image Studio
+    gallery hands over an image it is already holding in memory).
+
+    Everything is validated before the first frame is rendered, so a rejected
+    request costs nothing.
+    """
+    import time as _time
+    from io import BytesIO
+
+    from PIL import Image as _PILImage
+    from PIL import UnidentifiedImageError as _UnidentifiedImageError
+
+    import imageanim
+
+    source: Mapping[str, Any] = request.form if request.form else (request.get_json(silent=True) or {})
+
+    try:
+        kind = str(source.get("kind") or "ken_burns").strip().lower()
+        if kind not in _ANIM_KINDS:
+            return jsonify({"error": f"kind must be one of {', '.join(_ANIM_KINDS)}"}), 400
+        fmt = str(source.get("format") or "webp").strip().lower()
+        if fmt not in imageanim.ANIMATION_FORMATS:
+            return jsonify({"error": f"format must be one of {', '.join(imageanim.ANIMATION_FORMATS)}"}), 400
+
+        width, height = _anim_size(source)
+        frames = _anim_int(source, "frames", 48)
+        duration_ms = _anim_int(source, "duration_ms", imageanim.DEFAULT_DURATION_MS)
+        sprite_cols = _anim_int(source, "sprite_cols", 0)
+        sprite_rows = _anim_int(source, "sprite_rows", 0)
+
+        if width < 16 or height < 16:
+            return jsonify({"error": "size must be at least 16x16"}), 400
+        if width > _ANIM_MAX_DIM or height > _ANIM_MAX_DIM:
+            return jsonify(
+                {"error": f"size must not exceed {_ANIM_MAX_DIM}x{_ANIM_MAX_DIM} per axis (asked {width}x{height})"}
+            ), 400
+        if frames < 2:
+            return jsonify({"error": "frames must be at least 2, or there is nothing to animate"}), 400
+        if frames > _ANIM_MAX_FRAMES:
+            return jsonify({"error": f"frames must not exceed {_ANIM_MAX_FRAMES} (asked {frames})"}), 400
+
+        total_pixels = width * height * frames
+        if total_pixels > _ANIM_MAX_TOTAL_PIXELS:
+            return jsonify(
+                {
+                    "error": (
+                        f"{frames} frames at {width}x{height} is {total_pixels / 1e6:.0f} megapixels, "
+                        f"over the {_ANIM_MAX_TOTAL_PIXELS / 1e6:.0f} megapixel budget. "
+                        "Fewer frames, or a smaller size."
+                    )
+                }
+            ), 400
+        if kind == "sprite" and (sprite_cols < 1 or sprite_rows < 1):
+            return jsonify({"error": "the sprite kind needs sprite_cols and sprite_rows"}), 400
+
+        # --- collect the source images -------------------------------------
+        images: list[_PILImage.Image] = []
+        for key in ("image", "images"):
+            for file_obj in request.files.getlist(key):
+                if file_obj and file_obj.filename:
+                    images.append(_PILImage.open(BytesIO(file_obj.read())))
+        images.extend(_anim_named_artifacts(source))
+
+        if not images:
+            return (
+                jsonify(
+                    {
+                        "error": "no source image",
+                        "hint": "send a file in `image`, a name in `artifact`, or base64 in `artifact_b64`",
+                    }
+                ),
+                400,
+            )
+        if kind == "crossfade" and len(images) < 2:
+            return jsonify({"error": f"crossfade needs 2 or more stills, got {len(images)}"}), 400
+        if kind == "sprite" and len(images) > 1:
+            return jsonify({"error": f"the sprite kind takes exactly 1 sheet, got {len(images)}"}), 400
+
+        spec = imageanim.AnimationSpec(
+            kind=kind,
+            size=(width, height),
+            frames=frames,
+            duration_ms=duration_ms,
+            loop=_anim_int(source, "loop", 0),
+            zoom_from=_anim_num(source, "zoom_from", 1.0),
+            zoom_to=_anim_num(source, "zoom_to", 1.18),
+            pan_x=_anim_num(source, "pan_x", 0.0),
+            pan_y=_anim_num(source, "pan_y", 0.0),
+            parallax=_anim_num(source, "parallax", 0.035),
+            sprite_cols=sprite_cols,
+            sprite_rows=sprite_rows,
+            format=fmt,
+            lossless=bool(source.get("lossless")),
+            quality=_anim_int(source, "quality", 90),
+        )
+
+        started = _time.time()
+        out = imageanim.build_animation(images, spec)
+        blob = imageanim.encode_animation(out, spec)
+        elapsed = _time.time() - started
+
+        stamp = _time.strftime("%Y%m%d-%H%M%S")
+        name = f"anim-{stamp}-{kind}-{width}x{height}.{fmt}"
+        path = Path(benchmark.ARTIFACTS_DIR) / name
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+            download_url = f"/api/artifacts/{name}"
+        except OSError as e:
+            # A disk problem must not discard the render the user just asked for.
+            return jsonify({"error": f"rendered, but could not save it: {e}", "data_uri": imageanim.animation_to_data_uri(out, spec)}), 500
+
+        return jsonify(
+            {
+                "ok": True,
+                "kind": kind,
+                "format": fmt,
+                "filename": name,
+                "download_url": download_url,
+                "size": [width, height],
+                "frames": len(out),
+                "duration_ms": spec.duration_ms,
+                "total_ms": len(out) * spec.duration_ms,
+                "bytes": len(blob),
+                "seconds": round(elapsed, 2),
+                "data_uri": imageanim.animation_to_data_uri(out, spec),
+            }
+        )
+    except _BadNumber as e:
+        return jsonify({"error": f"{e.args[0]} must be a number (got {e.args[1]!r})"}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except _UnidentifiedImageError:
+        return jsonify({"error": "that file is not an image Pillow can read"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _anim_named_artifacts(source: Mapping[str, Any]) -> list[Any]:
+    """Open every ``artifact`` / ``artifacts`` / ``artifact_b64`` source.
+
+    Returns opened PIL images rather than paths or buffers, so the caller has
+    one uniform type to deal with. imageanim.load_frames accepts Image | str |
+    Path and nothing else -- handing it a BytesIO fails deep inside PIL rather
+    than here, with a message about os.PathLike.
+    """
+    import binascii
+    from base64 import b64decode
+    from io import BytesIO
+
+    from PIL import Image as _PILImage
+
+    out: list[Any] = []
+    names = [n for n in (source.get("artifact"), *(source.get("artifacts") or [])) if n]
+    for name in names:
+        out.append(_PILImage.open(_anim_artifact_path(str(name))))
+    blob = source.get("artifact_b64")
+    if blob:
+        raw = str(blob)
+        if raw.startswith("data:"):
+            _, _, raw = raw.partition(",")
+        try:
+            decoded = b64decode(raw, validate=False)
+        except (binascii.Error, ValueError) as e:
+            raise ValueError(f"artifact_b64 is not valid base64: {e}") from None
+        if not decoded:
+            raise ValueError("artifact_b64 decoded to zero bytes")
+        out.append(_PILImage.open(BytesIO(decoded)))
+    return out
+
+
+def _anim_artifact_path(name: str) -> Path:
+    """Resolve a name to a file inside data/artifacts, or refuse.
+
+    os.path.basename alone is not enough: the caller passes this into PIL.open,
+    and a symlink inside the directory would still read outside it.
+    """
+    base = Path(benchmark.ARTIFACTS_DIR).resolve()
+    candidate = (base / os.path.basename(name)).resolve()
+    if candidate.parent != base:
+        raise ValueError(f"artifact {name!r} is outside the artifacts directory")
+    if not candidate.is_file():
+        raise ValueError(f"no artifact named {name!r}")
+    return candidate
 
 
 def _router_id_to_public(model_id: str) -> str:
