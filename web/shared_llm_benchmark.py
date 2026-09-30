@@ -210,6 +210,11 @@ _CANONICAL_TOOLS = {
     # from ALLOWED_TOOLS, so the gateway's fuzzy matcher was routing them by
     # accident rather than by name.
     "networkdevicescanrequest",
+    # Added downstream in caceff9e ("face-preserve generation, a capability
+    # probe"): the gateway advertises a capability probe alongside the image
+    # tools, so a model answering "what can you do?" names this and the grader
+    # has to recognise it.
+    "aicapabilitiesrequest",
     "storagetexttoaudiorequest",
 }
 
@@ -250,6 +255,8 @@ _TOOL_REGEX_ALIASES = [
     (re.compile(r".*image.*edit.*"), "imageeditrequest"),
     (re.compile(r".*ocr.*"), "ocrrequest"),
     (re.compile(r".*sd.*gen.*"), "imagegenerationrequest"),
+    (re.compile(r".*ai.*capabilit.*"), "aicapabilitiesrequest"),
+    (re.compile(r".*capabilit.*ai.*"), "aicapabilitiesrequest"),
     (re.compile(r".*raven.*mission.*"), "ravenmissionrequest"),
     (re.compile(r".*redis.*inspect.*"), "redisinspectrequest"),
     (re.compile(r".*podcast.*render.*"), "podcastrenderrequest"),
