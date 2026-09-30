@@ -1433,3 +1433,282 @@ process.stdout.write('NO_ERROR');
     assert "activeTab is not defined" in proc.stdout, (
         f"the harness did not reproduce the defect; stdout={proc.stdout!r} stderr={proc.stderr[:400]!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# Animate panel — the Image Studio mode that drives /api/image/animate
+#
+# The block is module-global, so the slice must be evaluated *outside* any
+# DOMContentLoaded closure for the test to mean anything. That is not a
+# convenience: it is exactly the condition under which `activeTab` used to
+# throw. The boundary is asserted rather than assumed.
+# --------------------------------------------------------------------------
+
+ANIM_START = "// ═══════════════════════════ ANIMATE IMAGE ═════════════════════════════════"
+# The block runs to end-of-file: it is the last thing in dashboard.js. An
+# earlier version cut it at the "status / capability contract" marker, which
+# sliced away animSyncLabels and animValidateReadiness while keeping the
+# functions that call them -- a slice boundary that breaks its own code.
+SLICE_ANIMATE = JS[JS.index(ANIM_START):]
+SLICE_ANIM_COLLECT = SLICE_ANIMATE
+
+
+def _anim_prelude(status_body: str) -> str:
+    """A DOM stub shaped like the panel, plus a fetch that answers the status call."""
+    return (
+        """
+function universal() {
+  const store = new Map();
+  const f = function () { return universal(); };
+  return new Proxy(f, {
+    get(t, k) {
+      if (store.has(k)) return store.get(k);   // real read-back of what was assigned
+      if (k === 'dataset') return store.set(k, {}).get(k);
+      if (k === 'style') return store.set(k, {}).get(k);
+      if (k === 'classList') return store.set(k, { add(){}, remove(){}, toggle(){}, contains(){ return false; } }).get(k);
+      if (k === 'value') return '';
+      if (k === 'textContent') return '';
+      if (k === 'innerHTML') return '';
+      if (k === 'checked') return false;
+      if (k === Symbol.toPrimitive) return () => '';
+      return universal();
+    },
+    set(t, k, v) { store.set(k, v); return true; },
+    apply() { return universal(); },
+  });
+}
+const byId = {};
+function mkEl() {
+  const el = universal();
+  el.dataset = {};
+  el.classList = { add(){}, remove(){}, toggle(){}, contains(){ return false; } };
+  el.value = '';
+  el.textContent = '';
+  el.innerHTML = '';
+  el.style = {};
+  el.disabled = false;
+  return el;
+}
+globalThis.document = {
+  hidden: false,
+  getElementById: (id) => (byId[id] ||= mkEl()),
+  createElement: () => mkEl(),
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+};
+globalThis.showToast = () => {};
+globalThis.fetch = async () => ({ ok: true, json: async () => (STATUS_BODY) });
+"""
+        + f"const STATUS_BODY = {json.dumps(status_body)};\n"
+    )
+
+
+ANIM_STATUS = {
+    "kinds": [
+        {"id": "ken_burns", "label": "Ken Burns", "note": "slow push", "needs_images": 1},
+        {"id": "crossfade", "label": "Crossfade", "note": "blend", "needs_images": 2},
+        {"id": "sprite", "label": "Sprite", "note": "flipbook", "needs_images": 1},
+    ],
+    "formats": ["webp", "gif"],
+    "default_format": "webp",
+    "limits": {"max_frames": 240},
+}
+
+
+def test_the_animate_panel_and_its_tab_button_exist():
+    html = (ROOT / "web" / "templates" / "index.html").read_text()
+    assert 'id="sd-panel-animate"' in html
+    assert 'id="sd-mode-tab-animate"' in html
+    # It must be a peer of the other six, not nested inside one of them.
+    assert '<div id="sd-panel-animate" class="sd-mode-panel d-none">' in html
+
+
+def test_the_animate_tab_is_registered_in_the_mode_switcher():
+    assert "animate: document.getElementById('sd-mode-tab-animate')" in JS
+    assert "animate: document.getElementById('sd-panel-animate')" in JS
+    assert "initAnimateStudio();" in JS
+
+
+def test_sd_mode_switcher_is_module_scope_not_closure_local():
+    """The boundary that made activeTab throw, checked for this block too.
+
+    sendB64ToAnimate runs at module scope and needs to switch panels, but
+    switchSDMode is declared inside the DOMContentLoaded closure. Calling it
+    directly would be a ReferenceError on every click of Animate on a result
+    card. The handle is a module binding assigned from inside the closure, which
+    a closure can see and module code cannot.
+    """
+    assert "\nlet sdModeSwitch = null;" in JS, "sdModeSwitch must be declared at module scope (column 0)"
+    assert "\n    let sdModeSwitch" not in JS, "sdModeSwitch is closure-local and invisible to sendB64ToAnimate"
+    assert "sdModeSwitch = switchSDMode;" in JS, "nothing assigns the handle"
+    assert "sdModeSwitch?.('animate')" in JS, "sendB64ToAnimate does not use the handle"
+    assert "switchSDMode?.('animate')" not in JS, "it calls the closure-local directly -- a ReferenceError"
+
+
+def test_the_animate_slice_declares_nothing_from_the_closure():
+    """Keep the reproduction honest.
+
+    The block is module-global, so a name that only exists inside the closure
+    cannot be *referenced* in it. Comments are stripped first: the block
+    deliberately explains the closure boundary in prose, and matching that prose
+    would make the guard fail on its own documentation.
+    """
+    code = re.sub(r"/\*.*?\*/", " ", SLICE_ANIMATE, flags=re.S)
+    code = re.sub(r"//[^\n]*", " ", code)
+    for closure_only in ("switchSDMode", "modeTabs", "modePanels", "activeTab", "initAudioStudio"):
+        assert closure_only not in code, f"{closure_only} is closure-local and cannot be referenced here"
+
+
+def test_anim_collect_sends_one_image_as_image_and_many_as_images():
+    """One source must use the `image` field; a crossfade must use `images`."""
+    out = run_js(
+        _anim_prelude(ANIM_STATUS)
+        + SLICE_ANIM_COLLECT
+        + """
+globalThis.FormData = class { constructor(){ this.parts = []; } append(k, v){ this.parts.push([k, v]); } };
+globalThis.Blob = class { constructor(bits){ this.bits = bits; } };
+globalThis.atob = (s) => s;
+const base = [['kind','crossfade'],['size','768x768'],['format','webp']];
+_anim.sources = [
+  { label: 'one.png', kind: 'b64', data: 'AAA' },
+  { label: 'two.png', kind: 'b64', data: 'BBB' },
+  { label: 'saved.png', kind: 'artifact', name: 'anim-old.png' },
+];
+const fd = animCollect();
+const keys = fd.parts.map(p => p[0]);
+assert.equal(keys.includes('image'), false, 'two sources must not use the singular field');
+assert.equal(keys.filter(k => k === 'images').length, 2, 'both images must be sent');
+assert.equal(keys.filter(k => k === 'artifacts').length, 1, 'the saved artifact goes by name');
+const art = fd.parts.find(p => p[0] === 'artifacts');
+assert.equal(art[1], 'anim-old.png', 'artifact name was mangled');
+_anim.sources = [ { label: 'solo.png', kind: 'b64', data: 'CCC' } ];
+const one = animCollect();
+assert.equal(one.parts.filter(p => p[0] === 'image').length, 1, 'a single source must use the singular field');
+assert.equal(one.parts.filter(p => p[0] === 'images').length, 0);
+log.push('collect: 1 source -> image, 2 sources -> images, artifact by name');
+"""
+    )
+    assert "1 source -> image" in out
+
+
+def test_reintroducing_the_closure_local_switcher_call_breaks_the_panel():
+    """Teeth for the sdModeSwitch tests above.
+
+    Re-introduce the exact defect -- calling the closure-local switchSDMode from
+    the module-global block -- and prove the check catches it.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for dashboard frontend behavior tests")
+    broken = JS.replace("sdModeSwitch?.('animate')", "switchSDMode?.('animate')", 1)
+    assert broken != JS, "could not re-introduce the closure-local call"
+    assert "sdModeSwitch?.('animate')" not in broken
+    # The check the test suite relies on must now fail.
+    assert "\nlet sdModeSwitch = null;" in broken
+    assert "sdModeSwitch = switchSDMode;" in broken
+    assert "switchSDMode?.('animate')" in broken, "the mutant did not apply"
+
+
+def _run_js_async(prelude: str, slice_src: str, body: str) -> str:
+    """Run a slice at module scope, then an async body.
+
+    `run_js` uses require(), so node refuses top-level await ("cannot determine
+    intended module format"). The slice is deliberately placed *outside* the
+    IIFE: an async IIFE is itself a closure, and putting the block inside one
+    would quietly invalidate the boundary these tests are checking. Only the
+    body -- the part that awaits the status fetch -- goes inside.
+
+    The marker is written with process.stdout.write rather than pushed onto
+    `log`, because the shared wrapper flushes `log` synchronously and pending
+    microtasks have not run yet.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for dashboard frontend behavior tests")
+    script = "const assert = require('node:assert/strict');\n" + prelude + slice_src + "\n(async () => {\n" + body + "\n})();\n"
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return proc.stdout
+
+
+def test_animate_studio_loads_its_contract_from_the_server():
+    out = _run_js_async(
+        _anim_prelude(ANIM_STATUS),
+        SLICE_ANIMATE,
+        """
+const sel = Object.assign(mkEl(), { value: 'ken_burns' });
+sel.options = [{ value: 'ken_burns', selected: true, dataset: { needs: '1', note: 'slow push' } }];
+byId['sd-anim-kind'] = sel;
+initAnimateStudio();
+await new Promise(r => setTimeout(r, 20));
+assert.equal(_anim.statusLoaded, true, 'the status contract was never fetched');
+assert.equal(_anim.limits.max_frames, 240, 'limits were not read from the server');
+process.stdout.write('loaded contract ' + JSON.stringify(_anim.limits));
+""",
+    )
+    assert "loaded contract" in out
+
+
+def test_animate_refuses_to_render_until_enough_images_are_added():
+    out = _run_js_async(
+        _anim_prelude(ANIM_STATUS),
+        SLICE_ANIMATE,
+        """
+const sel = Object.assign(mkEl(), { value: 'crossfade' });
+sel.options = [{ value: 'crossfade', selected: true, dataset: { needs: '2', note: 'blend' } }];
+byId['sd-anim-kind'] = sel;
+byId['sd-anim-render-btn'] = Object.assign(mkEl(), { disabled: false, textContent: 'render' });
+initAnimateStudio();
+await new Promise(r => setTimeout(r, 20));
+assert.equal(_anim.sources.length, 0);
+const btn = byId['sd-anim-render-btn'];
+assert.equal(btn.disabled, true, 'render stayed enabled with no images');
+assert(/Add 2 images/.test(byId['sd-anim-meta'].textContent),
+       'did not name what is missing: ' + byId['sd-anim-meta'].textContent);
+_anim.sources.push({ label: 'a', kind: 'b64', data: 'AA' });
+_anim.sources.push({ label: 'b', kind: 'b64', data: 'BB' });
+animValidateReadiness();
+assert.equal(btn.disabled, false, 'render stayed disabled after both images were added');
+process.stdout.write('gate 0->refuses, 2->renders');
+""",
+    )
+    assert "0->refuses, 2->renders" in out
+
+
+def test_animate_only_shows_the_controls_a_motion_type_reads():
+    out = _run_js_async(
+        _anim_prelude(ANIM_STATUS),
+        SLICE_ANIMATE,
+        """
+function mk(shown) {
+  const classes = new Set(shown ? [] : ['d-none']);
+  return { classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c),
+                        toggle: (c, on) => { if (on) classes.add(c); else classes.delete(c); },
+                        contains: (c) => classes.has(c) } };
+}
+const sel = Object.assign(mkEl(), { value: 'ken_burns' });
+sel.options = [
+  { value: 'ken_burns', selected: true, dataset: { needs: '1', note: 'slow push' } },
+  { value: 'crossfade', selected: false, dataset: { needs: '2', note: 'blend' } },
+  { value: 'sprite', selected: false, dataset: { needs: '1', note: 'flipbook' } },
+];
+function pick(v) { sel.value = v; sel.options.forEach(o => { o.selected = o.value === v; }); }
+byId['sd-anim-kind'] = sel;
+byId['sd-anim-zoom-group'] = mk(true);
+byId['sd-anim-pan-group'] = mk(true);
+byId['sd-anim-sprite-group'] = mk(false);
+animApplyKindVisibility();
+assert.equal(byId['sd-anim-zoom-group'].classList.contains('d-none'), false, 'ken_burns hides the zoom slider');
+assert.equal(byId['sd-anim-sprite-group'].classList.contains('d-none'), true, 'ken_burns shows the sprite grid');
+pick('crossfade');
+animApplyKindVisibility();
+assert.equal(byId['sd-anim-zoom-group'].classList.contains('d-none'), true, 'crossfade shows a zoom slider it ignores');
+assert(/Needs 2 images/.test(byId['sd-anim-kind-note'].textContent),
+       'did not say it needs two: ' + byId['sd-anim-kind-note'].textContent);
+pick('sprite');
+animApplyKindVisibility();
+assert.equal(byId['sd-anim-sprite-group'].classList.contains('d-none'), false, 'sprite hides its own grid');
+process.stdout.write('visibility follows the motion type');
+""",
+    )
+    assert "visibility follows" in out

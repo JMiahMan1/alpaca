@@ -1,3 +1,11 @@
+// Set by the Image Studio wiring below, so the module-global Animate block can
+// switch modes. switchSDMode is declared inside the DOMContentLoaded closure,
+// and module-global code cannot see a closure-local -- the same boundary that
+// made `activeTab` throw (see SHARED TAB STATE below). Declared at module scope
+// on purpose: a closure CAN see an outer binding, so this one line is all it
+// takes for both halves to agree.
+let sdModeSwitch = null;
+
 document.addEventListener('DOMContentLoaded', () => {
     // Escape HTML helper for safe innerHTML interpolation
     function escapeHtml(s) {
@@ -256,6 +264,7 @@ document.addEventListener('DOMContentLoaded', () => {
             loadSdModels();
             loadSdCapabilities();
             loadSdPresets();
+            initAnimateStudio();
         } else if (tabName === 'audio') {
             tabBtnAudio.classList.add('active');
             viewAudio.classList.remove('d-none');
@@ -695,6 +704,24 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             btnBox.appendChild(editBtn);
 
+            // One generation is enough for an animation: the motion is applied
+            // programmatically to the still the model just produced. Seeding the
+            // same prompt again would give a second unrelated picture, not the
+            // next frame.
+            const animBtn = document.createElement('a');
+            animBtn.textContent = '🎞️ Animate';
+            animBtn.href = '#';
+            animBtn.title = 'Turn this image into an animation';
+            animBtn.style.fontSize = '0.75rem';
+            animBtn.style.color = '#a78bfa';
+            animBtn.style.textDecoration = 'none';
+            animBtn.style.cursor = 'pointer';
+            animBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                sendB64ToAnimate(item.b64_json);
+            });
+            btnBox.appendChild(animBtn);
+
             card.appendChild(btnBox);
 
             if (meta.seed !== undefined && meta.seed !== null) {
@@ -745,6 +772,7 @@ document.addEventListener('DOMContentLoaded', () => {
         flyer: document.getElementById('sd-mode-tab-flyer'),
         photo: document.getElementById('sd-mode-tab-photo'),
         canvas: document.getElementById('sd-mode-tab-canvas'),
+        animate: document.getElementById('sd-mode-tab-animate'),
         ocr: document.getElementById('sd-mode-tab-ocr'),
         promptgen: document.getElementById('sd-mode-tab-promptgen')
     };
@@ -754,6 +782,7 @@ document.addEventListener('DOMContentLoaded', () => {
         flyer: document.getElementById('sd-panel-flyer'),
         photo: document.getElementById('sd-panel-photo'),
         canvas: document.getElementById('sd-panel-canvas'),
+        animate: document.getElementById('sd-panel-animate'),
         ocr: document.getElementById('sd-panel-ocr'),
         promptgen: document.getElementById('sd-panel-promptgen')
     };
@@ -782,9 +811,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (modeTabs.gen) modeTabs.gen.addEventListener('click', () => switchSDMode('gen'));
+    // Hand the switcher to the module-global Animate block (see the declaration
+    // above). Without this, a click on an Image Studio result card would try to
+    // call a function it cannot see.
+    sdModeSwitch = switchSDMode;
     if (modeTabs.flyer) modeTabs.flyer.addEventListener('click', () => switchSDMode('flyer'));
     if (modeTabs.photo) modeTabs.photo.addEventListener('click', () => switchSDMode('photo'));
     if (modeTabs.canvas) modeTabs.canvas.addEventListener('click', () => switchSDMode('canvas'));
+    if (modeTabs.animate) modeTabs.animate.addEventListener('click', () => { switchSDMode('animate'); initAnimateStudio(); });
     if (modeTabs.ocr) modeTabs.ocr.addEventListener('click', () => switchSDMode('ocr'));
     if (modeTabs.promptgen) modeTabs.promptgen.addEventListener('click', () => switchSDMode('promptgen'));
 
@@ -12694,4 +12728,368 @@ function wirePodcastStudio() {
     podcastEl('podcast-duck').addEventListener('input', renderPodcastHosts);
     podcastEl('btn-podcast-draft').addEventListener('click', draftPodcast);
     podcastEl('btn-podcast-render').addEventListener('click', renderPodcast);
+}
+
+// ═══════════════════════════ ANIMATE IMAGE ═════════════════════════════════
+// Programmatic motion from AI stills. The thesis is in the panel: seeding a
+// still model twice gives two unrelated pictures, not two frames, so the motion
+// here is done by moving a real camera over the image the model produced. One
+// generation, and the result is reproducible from the settings.
+//
+// Module-global for the same reason the Audio and Podcast blocks are: the Image
+// Studio tab calls initAnimateStudio() from inside the DOMContentLoaded closure,
+// and a closure cannot reach a name that only exists inside itself.
+const _anim = {
+    wired: false,
+    statusLoaded: false,
+    sources: [],          // { label, kind: 'b64'|'artifact', data?, name? }
+    limits: null,
+    defaults: null,
+    busy: false,
+};
+
+function animEl(id) { return document.getElementById(id); }
+
+function initAnimateStudio() {
+    const btn = animEl('sd-anim-render-btn');
+    if (!btn) return;
+    if (!_anim.wired) {
+        _anim.wired = true;
+        btn.dataset.wired = '1';
+
+        animEl('sd-anim-upload-trigger-btn')?.addEventListener('click', () => animEl('sd-anim-file')?.click());
+        animEl('sd-anim-file')?.addEventListener('change', (ev) => {
+            animAddFiles(ev.target.files);
+            ev.target.value = '';           // let the same file be picked again
+        });
+        animEl('sd-anim-use-artifact-btn')?.addEventListener('click', () => animToggleArtifactPicker());
+        animEl('sd-anim-artifact-select')?.addEventListener('change', (ev) => {
+            if (ev.target.value) animAddArtifact(ev.target.value);
+        });
+        animEl('sd-anim-clear-sources-btn')?.addEventListener('click', () => animReset());
+        animEl('sd-anim-kind')?.addEventListener('change', () => { animApplyKindVisibility(); animSyncLabels(); });
+        animEl('sd-anim-reuse-btn')?.addEventListener('click', () => {
+            showToast('These are the settings that produced the animation above.', 'info');
+        });
+
+        ['sd-anim-zoom', 'sd-anim-zoom-to', 'sd-anim-pan-x', 'sd-anim-pan-y',
+         'sd-anim-cols', 'sd-anim-rows', 'sd-anim-duration', 'sd-anim-frames']
+            .forEach(id => animEl(id)?.addEventListener('input', animSyncLabels));
+
+        btn.addEventListener('click', () => animRender());
+    }
+    if (!_anim.statusLoaded) animLoadStatus();
+}
+
+// ── status / capability contract ───────────────────────────────────────────
+// The server is the source of truth for which motion types exist, how many
+// source images each needs, and the ceilings. Asking it means adding a kind
+// server-side cannot leave this panel offering something that will be refused.
+async function animLoadStatus() {
+    try {
+        const res = await fetch('/api/image/animate');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+        _anim.statusLoaded = true;
+        _anim.limits = data.limits || null;
+        _anim.defaults = data.defaults || null;
+
+        const sel = animEl('sd-anim-kind');
+        if (sel) {
+            sel.innerHTML = '';
+            (data.kinds || []).forEach(k => {
+                const opt = document.createElement('option');
+                opt.value = k.id;
+                opt.textContent = k.label;
+                opt.dataset.needs = String(k.needs_images);
+                opt.dataset.note = k.note || '';
+                sel.appendChild(opt);
+            });
+            const dflt = data.default_format;
+            if (dflt) { const f = animEl('sd-anim-format'); if (f) f.value = dflt; }
+        }
+        animApplyKindVisibility();
+        animSyncLabels();
+    } catch (err) {
+        animSetMeta(`Could not load animation options: ${err.message}`, true);
+    }
+}
+
+function animCurrentKind() {
+    return Array.from(animEl('sd-anim-kind')?.options || [])
+        .find(o => o.selected) || null;
+}
+
+// Only show the controls a motion type actually reads. Showing a zoom slider
+// for a crossfade suggests it does something, and it does not.
+function animApplyKindVisibility() {
+    const kind = animCurrentKind();
+    const id = kind?.value || '';
+    const isSprite = id === 'sprite';
+    animEl('sd-anim-zoom-group')?.classList.toggle('d-none', id === 'crossfade');
+    animEl('sd-anim-pan-group')?.classList.toggle('d-none', id === 'crossfade');
+    animEl('sd-anim-sprite-group')?.classList.toggle('d-none', !isSprite);
+    const note = animEl('sd-anim-kind-note');
+    if (note) {
+        const needs = Number(kind?.dataset.needs || 1);
+        note.textContent = (kind?.dataset.note || '') +
+            (needs > 1 ? `  Needs ${needs} images.` : '');
+    }
+    const label = animEl('sd-anim-source-label');
+    if (label) {
+        const needs = Number(kind?.dataset.needs || 1);
+        label.textContent = needs > 1
+            ? `Source images — ${needs} required for this motion type`
+            : 'Source image — generate one above first, or pick a file';
+    }
+    animValidateReadiness();
+}
+
+function animSyncLabels() {
+    const num = (id, digits = 2) => {
+        const el = animEl(id);
+        return el ? Number(el.value).toFixed(digits).replace(/0+$/, '').replace(/\.$/, '') : '0';
+    };
+    const set = (id, text) => { const el = animEl(id); if (el) el.textContent = text; };
+    set('sd-anim-zoom-val', num('sd-anim-zoom'));
+    set('sd-anim-zoom-to-val', num('sd-anim-zoom-to'));
+    set('sd-anim-pan-val', num('sd-anim-pan-x', 3));
+    set('sd-anim-pan-y-val', num('sd-anim-pan-y', 3));
+    set('sd-anim-dur-val', animEl('sd-anim-duration')?.value ?? '');
+    set('sd-anim-frames-val', animEl('sd-anim-frames')?.value ?? '');
+    set('sd-anim-cols-val', animEl('sd-anim-cols')?.value ?? '');
+    set('sd-anim-rows-val', animEl('sd-anim-rows')?.value ?? '');
+    animValidateReadiness();
+}
+
+// Refuse before the request rather than letting the server answer 400: the
+// button greying out is the honest signal, and it names what is missing.
+function animValidateReadiness() {
+    const btn = animEl('sd-anim-render-btn');
+    if (!btn) return true;
+    const kind = animCurrentKind();
+    const need = Number(kind?.dataset.needs || 1);
+    const have = _anim.sources.length;
+    let ok = have >= need;
+    btn.disabled = !ok || _anim.busy;
+    btn.style.opacity = ok ? '' : '0.5';
+    if (!ok) {
+        animSetMeta(`Add ${need} image${need > 1 ? 's' : ''} to render this motion type (${have} selected).`, true);
+    }
+    return ok;
+}
+
+function animAddFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    let pending = files.length;
+    files.forEach(file => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const b64 = String(reader.result).split(',')[1] || '';
+            _anim.sources.push({ label: file.name, kind: 'b64', data: b64 });
+            if (--pending === 0) { animRenderSources(); animValidateReadiness(); }
+        };
+        reader.onerror = () => {
+            showToast(`Could not read ${file.name}.`, 'error');
+            if (--pending === 0) { animRenderSources(); animValidateReadiness(); }
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+function animAddArtifact(name) {
+    if (!_anim.sources.some(s => s.name === name)) {
+        _anim.sources.push({ label: name, kind: 'artifact', name });
+    }
+    animRenderSources();
+    animValidateReadiness();
+}
+
+// Hand an image straight from an Image Studio result card to this panel, the
+// same way the Photo Editor and Canvas buttons do.
+function sendB64ToAnimate(b64) {
+    if (!b64) { showToast('That image has no data to animate.', 'error'); return; }
+    _anim.sources.push({ label: 'From Image Studio', kind: 'b64', data: b64 });
+    animRenderSources();
+    animValidateReadiness();
+    // switchSDMode is closure-local; sdModeSwitch is the module-scope handle on it.
+    sdModeSwitch?.('animate');
+    animEl('sd-panel-animate')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    initAnimateStudio();
+    showToast('Image loaded into the Animate panel.', 'success');
+}
+
+function animRenderSources() {
+    const box = animEl('sd-anim-sources');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!_anim.sources.length) {
+        box.innerHTML = `<div id="sd-anim-empty-hint" style="color:#64748b; font-size:0.78rem; line-height:1.5;">
+            No source images yet.<br>
+            <span style="font-size:0.72rem;">Generate an image in Text-to-Image and click "🎞️ Animate" on its card, or load files below.</span>
+        </div>`;
+        return;
+    }
+    _anim.sources.forEach((src, idx) => {
+        const thumb = document.createElement('div');
+        thumb.style.cssText = 'position:relative;width:74px;height:74px;border-radius:6px;overflow:hidden;border:1px solid rgba(255,255,255,0.12);';
+        if (src.kind === 'b64' && src.data) {
+            const img = document.createElement('img');
+            img.src = `data:image/png;base64,${src.data}`;
+            img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+            thumb.appendChild(img);
+        } else {
+            thumb.style.cssText += 'display:flex;align-items:center;justify-content:center;background:#0b1220;color:#64748b;font-size:1.1rem;';
+            thumb.textContent = '📄';
+        }
+        const n = document.createElement('span');
+        n.textContent = String(idx + 1);
+        n.style.cssText = 'position:absolute;left:2px;top:2px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.62rem;padding:0 4px;border-radius:3px;';
+        thumb.appendChild(n);
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.textContent = '✕';
+        x.title = `Remove ${src.label}`;
+        x.style.cssText = 'position:absolute;right:2px;top:2px;background:rgba(220,38,38,0.85);color:#fff;border:0;border-radius:3px;font-size:0.62rem;cursor:pointer;padding:0 4px;';
+        x.addEventListener('click', () => {
+            _anim.sources.splice(idx, 1);
+            animRenderSources();
+            animValidateReadiness();
+        });
+        thumb.appendChild(x);
+        box.appendChild(thumb);
+    });
+}
+
+async function animToggleArtifactPicker() {
+    const picker = animEl('sd-anim-artifact-picker');
+    const select = animEl('sd-anim-artifact-select');
+    if (!picker || !select) return;
+    if (!picker.classList.contains('d-none')) {
+        picker.classList.add('d-none');
+        return;
+    }
+    if (!select.options.length) {
+        try {
+            const res = await fetch('/api/artifacts');
+            const data = await res.json();
+            const names = (data.artifacts || []).filter(n => /\.(png|jpg|jpeg|webp|gif|bmp)$/i.test(n));
+            names.sort((a, b) => a.localeCompare(b));
+            names.reverse();                       // newest first
+            names.forEach(n => {
+                const o = document.createElement('option');
+                o.value = n; o.textContent = n;
+                select.appendChild(o);
+            });
+            if (!names.length) select.innerHTML = '<option value="">No saved images yet</option>';
+        } catch (err) {
+            animSetMeta(`Could not list saved images: ${err.message}`, true);
+            return;
+        }
+    }
+    picker.classList.remove('d-none');
+}
+
+function animSetMeta(text, isWarn = false) {
+    const el = animEl('sd-anim-meta');
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = isWarn ? '#fbbf24' : '#64748b';
+}
+
+function animReset() {
+    _anim.sources = [];
+    animRenderSources();
+    animValidateReadiness();
+    animEl('sd-anim-artifact-picker')?.classList.add('d-none');
+    animEl('sd-anim-result-img')?.classList.add('d-none');
+    animEl('sd-anim-result-empty')?.classList.remove('d-none');
+    animEl('sd-anim-actions')?.classList.add('d-none');
+    animSetMeta('');
+}
+
+function animCollect() {
+    const fd = new FormData();
+    const kind = animCurrentKind();
+    fd.append('kind', kind?.value || 'ken_burns');
+    fd.append('size', animEl('sd-anim-size')?.value || '768x768');
+    fd.append('format', animEl('sd-anim-format')?.value || 'webp');
+    fd.append('duration_ms', animEl('sd-anim-duration')?.value || '80');
+    fd.append('frames', animEl('sd-anim-frames')?.value || '24');
+    fd.append('zoom_from', animEl('sd-anim-zoom')?.value || '1.0');
+    fd.append('zoom_to', animEl('sd-anim-zoom-to')?.value || '1.18');
+    fd.append('pan_x', animEl('sd-anim-pan-x')?.value || '0');
+    fd.append('pan_y', animEl('sd-anim-pan-y')?.value || '0');
+    fd.append('sprite_cols', animEl('sd-anim-cols')?.value || '1');
+    fd.append('sprite_rows', animEl('sd-anim-rows')?.value || '1');
+
+    // One source becomes `image`, several become repeated `images` parts, and a
+    // saved artifact goes by name so the bytes never cross the wire twice.
+    // Filtering first and indexing the filtered list into the unfiltered one is
+    // how you label an artifact's name onto an uploaded image's bytes.
+    const b64Sources = _anim.sources.filter(s => s.kind === 'b64');
+    b64Sources.forEach((src, i) => {
+        fd.append(b64Sources.length === 1 ? 'image' : 'images', b64ToBlob(src.data, src.label || `frame${i}.png`));
+    });
+    _anim.sources.filter(s => s.kind === 'artifact').forEach(s => fd.append('artifacts', s.name));
+    return fd;
+}
+
+// A bare base64 string in a FormData part is not a file; Werkzeug only builds a
+// file part from a real File/Blob, so the bytes have to be wrapped before they
+// are sent or the route sees a form string and rejects it.
+function b64ToBlob(b64, name) {
+    if (typeof Blob === 'undefined') return b64;
+    try {
+        const bin = atob(b64);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        return new File([buf], name, { type: 'image/png' });
+    } catch (err) {
+        return b64;
+    }
+}
+
+async function animRender() {
+    if (_anim.busy || !animValidateReadiness()) return;
+    const btn = animEl('sd-anim-render-btn');
+    const label = btn?.textContent;
+    _anim.busy = true;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Rendering…'; }
+    animSetMeta('Rendering frames…');
+    animEl('sd-anim-warnings').textContent = '';
+    try {
+        const res = await fetch('/api/image/animate', { method: 'POST', body: animCollect() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+        const img = animEl('sd-anim-result-img');
+        if (img) {
+            img.src = data.data_uri || data.download_url;
+            img.classList.remove('d-none');
+        }
+        animEl('sd-anim-result-empty')?.classList.add('d-none');
+
+        const dl = animEl('sd-anim-download');
+        if (dl) {
+            dl.href = data.download_url || data.data_uri || '#';
+            dl.setAttribute('download', data.filename || 'animation.webp');
+        }
+        animEl('sd-anim-actions')?.classList.remove('d-none');
+
+        const secs = Number(data.seconds || 0).toFixed(1);
+        animSetMeta(`${data.frames} frames · ${(data.duration_ms || 0)}ms each · ${secs}s total · ${data.size} · ${Math.round((data.bytes || 0) / 1024)} KB · rendered in ${Number(data.seconds || 0).toFixed(1)}s`, false);
+        const warn = animEl('sd-anim-warnings');
+        if (warn) warn.textContent = (data.warnings || []).join(' · ');
+        showToast(`Animation rendered: ${data.filename}`, 'success');
+    } catch (err) {
+        animSetMeta(`Render failed: ${err.message}`, true);
+        showToast(`Animation failed: ${err.message}`, 'error');
+    } finally {
+        _anim.busy = false;
+        if (btn) { btn.textContent = label || '🎞️ Render Animation'; }
+        animValidateReadiness();
+    }
 }

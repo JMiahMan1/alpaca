@@ -1386,6 +1386,7 @@
                                 <button id="sd-mode-tab-flyer" class="sd-mode-tab">📢 Flyer & Poster Creator</button>
                                 <button id="sd-mode-tab-photo" class="sd-mode-tab">📷 Realistic Photo Editor</button>
                                 <button id="sd-mode-tab-canvas" class="sd-mode-tab">✏️ Canvas Text Studio</button>
+                                <button id="sd-mode-tab-animate" class="sd-mode-tab">🎞️ Animate Image</button>
                                 <button id="sd-mode-tab-ocr" class="sd-mode-tab">🔍 OCR & Document Extractor</button>
                                 <button id="sd-mode-tab-promptgen" class="sd-mode-tab">🎨 Image-to-Prompt Assistant</button>
                             </div>
@@ -1900,7 +1901,135 @@
                                 </div>
                             </div>
                         </div>
-                        <!-- MODE 5: OCR Document & Image Scanner -->
+                        <!-- MODE 5: Animate Image (programmatic motion from AI stills) -->
+                        <div id="sd-panel-animate" class="sd-mode-panel d-none">
+                            <div class="card" style="background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                                <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.6rem; margin-bottom:1rem;">
+                                    <span style="color:white; font-weight:600; font-size:0.95rem; display:flex; align-items:center; gap:0.5rem;">🎞️ Animate Image</span>
+                                    <span style="font-size:0.75rem; color:#94a3b8;">Turn one or more AI stills into a real animation</span>
+                                </div>
+
+                                <div style="background:rgba(56,189,248,0.07); border:1px solid rgba(56,189,248,0.25); border-radius:8px; padding:0.7rem 0.85rem; margin-bottom:1rem; font-size:0.78rem; color:#bae6fd; line-height:1.5;">
+                                    <strong>Seeding an image twice does not animate it.</strong> A still model has no memory of the previous frame, so a second seed gives you a second unrelated picture, not the next frame. Motion here is <em>programmatic</em> — the code moves a real camera over the image, crossfades two stills, or plays a sprite sheet back in order. That is why one generation is enough, and why the result is reproducible.
+                                </div>
+
+                                <div style="display:grid; grid-template-columns: 1fr 340px; gap:1.25rem;">
+                                    <!-- Left: source images + preview -->
+                                    <div style="display:flex; flex-direction:column; gap:0.85rem;">
+                                        <div>
+                                            <div style="font-size:0.78rem; color:#94a3b8; margin-bottom:0.4rem;" id="sd-anim-source-label">
+                                                Source image(s) — generate one above first, or pick a file
+                                            </div>
+                                            <div id="sd-anim-sources" style="display:flex; flex-wrap:wrap; gap:0.5rem; min-height:74px; align-items:center;">
+                                                <div id="sd-anim-empty-hint" style="color:#64748b; font-size:0.78rem; line-height:1.5;">
+                                                    No source images yet.<br>
+                                                    <span style="font-size:0.72rem;">Generate an image in Text-to-Image and click "🎞️ Animate" on its card, or load files below.</span>
+                                                </div>
+                                            </div>
+                                            <input type="file" id="sd-anim-file" accept="image/*" multiple style="display:none;">
+                                            <div style="margin-top:0.55rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+                                                <button type="button" class="btn btn-secondary btn-sm" id="sd-anim-upload-trigger-btn">📁 Add Image File(s)</button>
+                                                <button type="button" class="btn btn-secondary btn-sm" id="sd-anim-use-artifact-btn">📚 Use a Saved Artifact</button>
+                                                <button type="button" class="btn btn-secondary btn-sm" id="sd-anim-clear-sources-btn" style="color:#f87171;">🗑️ Clear</button>
+                                            </div>
+                                            <div id="sd-anim-artifact-picker" class="d-none" style="margin-top:0.55rem;">
+                                                <select id="sd-anim-artifact-select" class="form-select" style="background:#0b1220; color:#e2e8f0; border:1px solid rgba(255,255,255,0.1); font-size:0.8rem;"></select>
+                                            </div>
+                                        </div>
+
+                                        <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; background:#090d16; border:2px dashed rgba(255,255,255,0.1); border-radius:10px; padding:1rem; min-height:300px;">
+                                            <div id="sd-anim-result-empty" style="text-align:center; color:#94a3b8; font-size:0.85rem;">
+                                                🎞️ No animation yet.<br>
+                                                <span style="font-size:0.75rem; color:#64748b;">Pick a motion type on the right, then press Render.</span>
+                                            </div>
+                                            <img id="sd-anim-result-img" class="d-none" style="max-width:100%; max-height:460px; border-radius:8px; box-shadow:0 12px 30px rgba(0,0,0,0.6);">
+                                        </div>
+                                    </div>
+
+                                    <!-- Right: motion controls -->
+                                    <div style="display:flex; flex-direction:column; gap:0.7rem;">
+                                        <div>
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">Motion type</label>
+                                            <select id="sd-anim-kind" class="form-select" style="background:#0b1220; color:#e2e8f0; border:1px solid rgba(255,255,255,0.1);"></select>
+                                            <div id="sd-anim-kind-note" style="font-size:0.72rem; color:#64748b; margin-top:0.3rem; line-height:1.45;"></div>
+                                        </div>
+
+                                        <div id="sd-anim-zoom-group">
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
+                                                Zoom: <span id="sd-anim-zoom-val">1.00</span> → <span id="sd-anim-zoom-to-val">1.18</span>×
+                                            </label>
+                                            <div style="display:flex; gap:0.5rem; align-items:center;">
+                                                <input type="range" id="sd-anim-zoom" min="1.00" max="1.60" step="0.01" value="1.00" style="flex:1;">
+                                                <input type="range" id="sd-anim-zoom-to" min="1.00" max="1.60" step="0.01" value="1.18" style="flex:1;">
+                                            </div>
+                                        </div>
+
+                                        <div id="sd-anim-pan-group">
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
+                                                Pan: <span id="sd-anim-pan-val">0.00</span>, <span id="sd-anim-pan-y-val">0.00</span>
+                                            </label>
+                                            <div style="display:flex; gap:0.5rem; align-items:center;">
+                                                <input type="range" id="sd-anim-pan-x" min="-0.20" max="0.20" step="0.005" value="0" style="flex:1;">
+                                                <input type="range" id="sd-anim-pan-y" min="-0.20" max="0.20" step="0.005" value="0" style="flex:1;">
+                                            </div>
+                                        </div>
+
+                                        <div id="sd-anim-sprite-group" class="d-none">
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
+                                                Sprite grid: <span id="sd-anim-cols-val">4</span> × <span id="sd-anim-rows-val">4</span>
+                                            </label>
+                                            <div style="display:flex; gap:0.5rem; align-items:center;">
+                                                <input type="range" id="sd-anim-cols" min="1" max="12" step="1" value="4" style="flex:1;">
+                                                <input type="range" id="sd-anim-rows" min="1" max="12" step="1" value="4" style="flex:1;">
+                                            </div>
+                                        </div>
+
+                                        <div style="display:flex; gap:0.6rem; align-items:center;">
+                                            <div style="flex:1;">
+                                                <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
+                                                    Frame time: <span id="sd-anim-dur-val">80</span> ms
+                                                </label>
+                                                <input type="range" id="sd-anim-duration" min="20" max="400" step="10" value="80" style="width:100%;">
+                                            </div>
+                                            <div style="flex:1;">
+                                                <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
+                                                    Frames: <span id="sd-anim-frames-val">24</span>
+                                                </label>
+                                                <input type="range" id="sd-anim-frames" min="4" max="120" step="1" value="24" style="width:100%;">
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">Output size</label>
+                                            <input type="text" id="sd-anim-size" value="768x768" placeholder="768x768"
+                                                   style="width:100%; background:#0b1220; color:#e2e8f0; border:1px solid rgba(255,255,255,0.1); border-radius:6px; padding:0.4rem 0.5rem; font-size:0.8rem;">
+                                        </div>
+
+                                        <div>
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">Format</label>
+                                            <select id="sd-anim-format" class="form-select" style="background:#0b1220; color:#e2e8f0; border:1px solid rgba(255,255,255,0.1);">
+                                                <option value="webp">WebP — smaller and sharper (recommended)</option>
+                                                <option value="gif">GIF — universal, 256 colours</option>
+                                            </select>
+                                            <div id="sd-anim-format-note" style="font-size:0.72rem; color:#64748b; margin-top:0.3rem; line-height:1.45;">
+                                                WebP keeps full colour and is roughly 5× smaller. GIF is capped at 256 colours, which is what makes animated GIFs flicker.
+                                            </div>
+                                        </div>
+
+                                        <button type="button" class="btn btn-primary btn-purple" id="sd-anim-render-btn" style="margin-top:0.2rem;">
+                                            🎞️ Render Animation
+                                        </button>
+                                        <div id="sd-anim-meta" style="font-size:0.74rem; color:#64748b; line-height:1.5;"></div>
+                                        <div id="sd-anim-warnings" style="font-size:0.74rem; color:#fbbf24; line-height:1.5;"></div>
+                                        <div id="sd-anim-actions" class="d-none" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                                            <a id="sd-anim-download" class="btn btn-secondary btn-sm" download>⬇️ Download</a>
+                                            <button type="button" class="btn btn-secondary btn-sm" id="sd-anim-reuse-btn">♻️ Replay Settings</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- MODE 6: OCR Document & Image Scanner -->
                         <div id="sd-panel-ocr" class="sd-mode-panel d-none">
                             <div class="card" style="background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
                                 <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.6rem; margin-bottom:1rem;">
