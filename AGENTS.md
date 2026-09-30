@@ -131,6 +131,9 @@ images and need `sudo docker compose up -d --build <service>`.
 - Writes `data/telemetry/{sanitized_model_name}.jsonl`
 - Telemetry file lookup: checks exact match, then searches all files for model name substring
 - **Gotcha**: When `backend_model` is `None` (model loading/not loaded), skip `/slots` call entirely instead of calling without params
+- **Appends are unbuffered and self-repairing.** Each record is one `os.write` of one complete line to an `O_APPEND` fd opened `buffering=0`, and if the file's last byte is not `\n` the new record is prefixed with one. Text-mode `open(..., "a")` buffers in user space, so a kill mid-flush truncates a record mid-key and the next `O_APPEND` seeks to EOF *inside* it — two records on one line. This was not hypothetical: one torn line at `system_idle.jsonl:172` (of 365,326) was failing `/api/telemetry/history` for that model with a 500. The reader skips bad lines rather than failing the file (`skipped_lines`), and the writer prevents new damage.
+- **Two independent bounds, so neither can delete the file being appended to.** Age is `prune_old_telemetry()` (mtime older than `TELEMETRY_RETENTION_DAYS`, swept every `TELEMETRY_PRUNE_INTERVAL_S`, once shortly after startup); size is `_rotate_if_oversized()` (`m.jsonl` → `.1` → `.2`, keeping `TELEMETRY_MAX_GENERATIONS`, past `TELEMETRY_MAX_BYTES`). Defaults cap one hot model at ≈ 16 MiB × 4 = 64 MiB; the directory had reached **1.2 GB across 33 files and 42 days** unbounded.
+- Rotation failure is contained and logged — housekeeping must never cost a data point.
 
 ### Benchmark Suite
 - `llm_benchmark_suite.py` (`LLMModelBenchmark`) — benchmarks llama.cpp models directly via `/completion`
