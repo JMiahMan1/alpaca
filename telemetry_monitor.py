@@ -28,6 +28,16 @@ TELEMETRY_DIR = Path(os.getenv("TELEMETRY_DIR", "data/telemetry"))
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://llama-server:8080")
 DOCKER_CONTAINER = os.getenv("LLAMA_DOCKER_CONTAINER", "llama-server")
 
+# Retention. Without this the directory grew without bound: 33 files totalling
+# 1.2 GB over 42 days, because a per-model file is only ever appended to and
+# nothing ever rolled it or aged it out.
+TELEMETRY_MAX_BYTES = int(os.getenv("TELEMETRY_MAX_BYTES", str(16 * 1024 * 1024)))
+TELEMETRY_MAX_GENERATIONS = int(os.getenv("TELEMETRY_MAX_GENERATIONS", "3"))
+TELEMETRY_RETENTION_DAYS = float(os.getenv("TELEMETRY_RETENTION_DAYS", "14"))
+# How often to age files out. Hourly is far more often than a daily retention
+# window needs, and costs one stat per file.
+PRUNE_INTERVAL_S = float(os.getenv("TELEMETRY_PRUNE_INTERVAL_S", "3600"))
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +55,9 @@ _stop_event: asyncio.Event | None = None
 # since 3.12 asyncio.run() does not install a thread-local "current" loop, so
 # get_event_loop() there raises RuntimeError and the graceful shutdown is lost.
 _stop_loop: asyncio.AbstractEventLoop | None = None
+# Counts polls since the last retention sweep. A module global rather than a
+# local of main() so the counter survives the loop being re-entered.
+_sweeps = 0
 
 
 def handle_signals(signum, frame):
@@ -269,22 +282,116 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
     }
 
 
-def write_telemetry_log(model_alias: str, data: dict):
-    """Write telemetry data point into model's JSONL file."""
-    TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = TELEMETRY_DIR / f"{model_alias}.jsonl"
+def _rotate_if_oversized(log_file: Path) -> None:
+    """Roll ``log_file`` -> ``.1`` -> ``.2`` ... once it passes the size cap.
 
+    Shifted rather than clobbered so a file already being read keeps existing
+    for the length of the shift; the oldest generation is dropped. Nothing here
+    raises: telemetry is an observation log and must never be the thing that
+    takes the daemon down.
+    """
     try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(data) + "\n")
+        if not log_file.exists() or log_file.stat().st_size < TELEMETRY_MAX_BYTES:
+            return
+        oldest = log_file.with_suffix(f"{log_file.suffix}.{TELEMETRY_MAX_GENERATIONS}")
+        if oldest.exists():
+            oldest.unlink()
+        for gen in range(TELEMETRY_MAX_GENERATIONS - 1, 0, -1):
+            src = log_file.with_suffix(f"{log_file.suffix}.{gen}")
+            if src.exists():
+                src.replace(log_file.with_suffix(f"{log_file.suffix}.{gen + 1}"))
+        log_file.replace(log_file.with_suffix(f"{log_file.suffix}.1"))
+    except OSError as e:
+        logger.warning(f"Could not rotate {log_file.name}: {e}")
+
+
+def prune_old_telemetry(max_age_days: float | None = None) -> int:
+    """Delete telemetry files untouched for longer than the retention window.
+
+    Two independent bounds keep the directory finite. Age is this function: a
+    model you have not run in two weeks should not still be costing disk, and
+    its history is no longer read by anything (the analyzer only looks at the
+    last hour). Size is ``_rotate_if_oversized``: an actively-written file is
+    always kept here and instead rolled into a bounded number of generations, so
+    there is no path where a hot file is deleted out from under the daemon.
+    """
+    days = TELEMETRY_RETENTION_DAYS if max_age_days is None else max_age_days
+    cutoff = time.time() - (days * 86400)
+    removed = 0
+    try:
+        entries = list(TELEMETRY_DIR.glob("*.jsonl*"))
+    except OSError:
+        return 0
+    for path in entries:
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError as e:
+            logger.warning(f"Could not prune {path.name}: {e}")
+    if removed:
+        logger.info(f"Pruned {removed} telemetry file(s) older than {days:g} days")
+    return removed
+
+
+def write_telemetry_log(model_alias: str, data: dict):
+    """Append one telemetry record, in a single write.
+
+    Two things this deliberately does not do the obvious way.
+
+    ``open(..., "ab", buffering=0)`` rather than ``open(..., "a")``: the buffered
+    text writer accumulates the record in user space and emits it on close, so a
+    process killed in between leaves whatever the flush had managed to push --
+    which is how ``system_idle.jsonl`` ended up with a record cut off mid-key
+    ("...n_ctx") at line 172 of 365,326. One unbuffered write of one complete
+    line to an O_APPEND descriptor is the smallest unit the OS will reorder or
+    interleave, so a record is either wholly there or wholly absent.
+
+    It also repairs a tail left by an earlier version: if the file does not end
+    in a newline the next record would otherwise concatenate onto the damaged
+    one, turning one bad record into two. The newline costs nothing and keeps
+    the damage to the line that caused it. Readers already skip unparseable
+    lines rather than failing the whole request.
+    """
+    try:
+        TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = TELEMETRY_DIR / f"{model_alias}.jsonl"
+        # Rotation is housekeeping; the measurement is the product. A rotation
+        # that fails (read-only dir, a racing prune, ENOSPC mid-shift) must not
+        # cost us the point we just took, so it is contained here and the write
+        # goes ahead regardless.
+        try:
+            _rotate_if_oversized(log_file)
+        except OSError as e:
+            logger.warning(f"Rotation skipped for {log_file.name}: {e}")
+        line = json.dumps(data) + "\n"
+        # A previous record may have been cut off without its newline. Decided
+        # from the size, not from f.tell(): on an O_APPEND descriptor Linux
+        # leaves the offset at 0 until the first write, so tell() says "empty"
+        # for a file with 365,000 lines in it.
+        try:
+            has_content = log_file.stat().st_size > 0
+        except OSError:
+            has_content = False
+        if has_content:
+            with open(log_file, "rb") as probe:
+                probe.seek(-1, os.SEEK_END)
+                if probe.read(1) != b"\n":
+                    line = "\n" + line
+        with open(log_file, "ab", buffering=0) as f:
+            f.write(line.encode("utf-8"))
     except Exception as e:
         logger.error(f"Failed to write telemetry for {model_alias}: {e}")
 
 
 async def main():
-    global _stop_event, _stop_loop
+    global _stop_event, _stop_loop, _sweeps
     _stop_event = asyncio.Event()
     _stop_loop = asyncio.get_running_loop()
+    # One sweep shortly after startup reclaims whatever accumulated while the
+    # daemon was down, rather than waiting a full interval.
+    _sweeps = int(PRUNE_INTERVAL_S // POLL_INTERVAL) if POLL_INTERVAL > 0 else 0
 
     logger.info("Initializing Telemetry Monitor Daemon...")
     logger.info(f"Poll Interval: {POLL_INTERVAL} seconds")
@@ -348,6 +455,14 @@ async def main():
             logger.debug(
                 f"Recorded telemetry point for {model_alias} (Sys RAM: {sys_metrics['ram_used_pct']}%, VRAM: {gpu_metrics[0]['vram_used_pct'] if gpu_metrics else 0.0}%)"
             )
+
+            # Retention sweep, hourly rather than every poll: it stats the whole
+            # directory and the point is to reclaim disk, not to be exact about
+            # it. Deleting is idempotent, so a restart mid-sweep is harmless.
+            _sweeps += 1
+            if _sweeps * POLL_INTERVAL >= PRUNE_INTERVAL_S:
+                _sweeps = 0
+                prune_old_telemetry()
 
             # Sleep the remainder of the interval, but wake early on stop
             elapsed = time.time() - loop_start
