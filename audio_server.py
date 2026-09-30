@@ -20,15 +20,17 @@ Endpoints:
   POST /api/tts       -> {text, voice?, speed?, sentence_pause_s?, paragraph_pause_s?, normalize?} -> wav b64
                          voice may blend several, e.g. "am_michael,am_fenrir"
                          normalize (default true) runs tts_text + audio/tts_lexicon.json
-                         clone=<voice id>, clone_tau? re-timbres Kokoro into a custom voice
+                         clone=<voice id>, clone_tau?, clone_seed? re-timbres Kokoro into a custom voice
+                           clone_seed pins the converter's latent draw so every sentence
+                           of one narration is the same voice; null opts out
   POST /api/tts/normalize -> {text} -> {text, sentences}  preview of what will be spoken
   GET  /api/voices/prompts -> read-aloud script for recording a custom voice
   GET  /api/voices    -> custom voice profiles
   POST /api/voices    -> {name, consent, recordings: [{prompt_id, audio_b64}]} -> profile
-  PATCH  /api/voices/<id> -> {name} rename (names are unique)
+  PATCH  /api/voices/<id> -> {name?, base_voice?} edit a profile
   DELETE /api/voices/<id>
-  POST  /api/voices/identify   -> {audio_b64, threshold?} -> who is speaking
-  POST  /api/voices/calibrate  -> {clips: [{voice_id, audio_b64}]} -> own vs impostor scores
+  POST /api/voices/identify   -> {audio_b64, threshold?} -> who is speaking
+  POST /api/voices/calibrate  -> {clips: [{voice_id, audio_b64}]} -> own vs impostor scores
   POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
   POST /api/unload    -> free all VRAM immediately
 """
@@ -87,6 +89,11 @@ KOKORO_VOICES = [
     "bm_george",
     "bm_lewis",
 ]
+
+#: Used when nothing else decides the base voice: no clone, or a clone whose
+#: pitch could not be measured. Kept as an explicit constant so the fallback is
+#: visible in the response meta rather than arriving as a surprise.
+DEFAULT_BASE_VOICE = "af_heart"
 
 MUSIC_PRESETS = [
     "lo-fi hip hop beat with warm vinyl crackle, mellow keys, relaxed drums",
@@ -365,16 +372,23 @@ async def api_voices_create(request: Request):
 
 
 @app.patch("/api/voices/{pid}")
-async def api_voices_rename(pid: str, request: Request):
-    """{name} -> renamed profile. Names are unique (case-insensitive)."""
+async def api_voices_update(pid: str, request: Request):
+    """{name?, base_voice?} -> updated profile. Names are unique (case-insensitive).
+
+    `base_voice` pins the Kokoro voice a clone renders from, which is the way
+    to override the automatic pairing permanently rather than per request. Send
+    null to clear the pin and go back to automatic.
+    """
     data = await request.json()
+    if "base_voice" not in data and "name" not in data:
+        return JSONResponse({"error": "nothing to change; send name or base_voice"}, status_code=400)
+    changes = {k: data[k] for k in ("name", "base_voice") if k in data}
     try:
-        meta = voice_clone.rename_profile(pid, str(data.get("name", "")))
+        return {"voice": voice_clone.update_profile(pid, changes)}
     except KeyError:
         return JSONResponse({"error": f"unknown custom voice '{pid}'"}, status_code=404)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=409)
-    return {"voice": meta}
 
 
 @app.delete("/api/voices/{pid}")
@@ -485,10 +499,19 @@ async def api_tts(request: Request):
         return JSONResponse({"error": f"text exceeds {MAX_TTS_CHARS} chars"}, status_code=400)
     # A comma-separated list blends voices (Kokoro averages the style vectors),
     # e.g. "am_michael,am_fenrir" for a warmer, steadier narrator.
-    voice = str(data.get("voice", "af_heart")).replace(" ", "")
-    unknown = [v for v in voice.split(",") if v not in KOKORO_VOICES]
-    if not voice or unknown:
-        return JSONResponse({"error": f"unknown voice '{','.join(unknown) or voice}'"}, status_code=400)
+    #
+    # When a clone is in play and the caller named no voice, the base voice is
+    # the server's decision, not the caller's: see `_base_voice_for` below. So
+    # the absence of `voice` is recorded rather than defaulted away.
+    voice_given = "voice" in data
+    voice = str(data.get("voice") or "").replace(" ", "")
+    unknown = [v for v in voice.split(",") if v not in KOKORO_VOICES] if voice else []
+    if voice_given and not voice:
+        # An explicitly empty voice is a mistake worth reporting. The absence of
+        # the key is not, because that is how a clone asks the server to pair.
+        return JSONResponse({"error": "unknown voice ''"}, status_code=400)
+    if unknown:
+        return JSONResponse({"error": f"unknown voice '{','.join(unknown)}'"}, status_code=400)
     speed = float(data.get("speed", 1.0))
     if not 0.5 <= speed <= 2.0:
         return JSONResponse({"error": "speed must be within 0.5..2.0"}, status_code=400)
@@ -503,6 +526,10 @@ async def api_tts(request: Request):
     clone_id = str(data.get("clone") or "").strip()
     clone_meta = None
     clone_tau = float(data.get("clone_tau", voice_clone.DEFAULT_TAU))
+    # The converter draws its latent from a Gaussian, once per sentence. Pinning
+    # that draw is what makes a narration one voice; `null` opts back out. See
+    # voice_clone.CONVERT_SEED.
+    clone_seed = data.get("clone_seed", voice_clone.CONVERT_SEED)
     if clone_id:
         try:
             clone_meta = voice_clone.get_profile(clone_id)
@@ -510,6 +537,23 @@ async def api_tts(request: Request):
             return JSONResponse({"error": f"unknown custom voice '{clone_id}'"}, status_code=404)
         if not 0.1 <= clone_tau <= 1.0:
             return JSONResponse({"error": "clone_tau must be within 0.1..1.0"}, status_code=400)
+        if clone_seed is not None:
+            # `int(1.5)` is 1, which is a typo answered with a confident wrong
+            # answer. A seed the caller did not mean is worse than no seed.
+            try:
+                as_int = int(clone_seed)
+                exact = float(clone_seed) == as_int
+            except (TypeError, ValueError):
+                exact = False
+            if not exact:
+                return JSONResponse(
+                    {"error": "clone_seed must be an integer or null"}, status_code=400
+                )
+            clone_seed = as_int
+            if not 0 <= clone_seed < 2 ** 31:
+                return JSONResponse(
+                    {"error": "clone_seed must be within 0..2^31-1"}, status_code=400
+                )
 
     t0 = time.perf_counter()
     try:
@@ -524,6 +568,7 @@ async def api_tts(request: Request):
         sr = 24000
         pieces: list = []
         n_chunks = 0
+        pairing: dict | None = None
 
         def _synth(sentence: str):
             out = []
@@ -533,23 +578,35 @@ async def api_tts(request: Request):
                     out.append(np.asarray(audio, dtype=np.float32))
             return out
 
+        def _render(script: str, in_voice: str):
+            chunks = [np.asarray(r.audio, dtype=np.float32) for r in pipe(script, voice=in_voice, speed=1.0)
+                      if getattr(r, "audio", None) is not None]
+            return np.concatenate(chunks), sr
+
         # Synthesize sentence by sentence so Kokoro never splits mid-sentence at
         # its token limit, then join with controlled pauses and short fades.
         # Holding _lock keeps the idle unloader / music eviction from pulling
         # the model out from under a long narration.
         async with _lock:
             convert = None
+            if clone_meta and not voice:
+                # Nobody asked for a base voice, so the server picks the one that
+                # needs no pitch correction: a phase vocoder over a whole
+                # narration is the most audible thing in the pipeline, and asking
+                # every client to know which Kokoro voice sits near which speaker
+                # is a default nobody would get right. A caller that does name a
+                # voice keeps it, and a pin on the profile outranks the guess.
+                pairing = await asyncio.to_thread(
+                    voice_clone.pair_base_voice, clone_id, _render, None, KOKORO_VOICES
+                )
+                voice = pairing["base_voice"] or DEFAULT_BASE_VOICE
+            voice = voice or DEFAULT_BASE_VOICE
             if clone_meta:
-                def _synth_source(script: str):
-                    chunks = [np.asarray(r.audio, dtype=np.float32) for r in pipe(script, voice=voice, speed=1.0)
-                              if getattr(r, "audio", None) is not None]
-                    return np.concatenate(chunks), sr
-
-                src_se = await asyncio.to_thread(voice_clone.source_se, voice, _synth_source)
+                src_se = await asyncio.to_thread(voice_clone.source_se, voice, _render)
                 tgt_se = voice_clone.target_se(clone_id)
 
                 def convert(a):
-                    return voice_clone.convert(a, sr, src_se, tgt_se, clone_tau)
+                    return voice_clone.convert(a, sr, src_se, tgt_se, clone_tau, clone_seed)
 
             for p_idx, paragraph in enumerate(tts_text.paragraphs(text)):
                 for s_idx, sentence in enumerate(tts_text.sentences(paragraph)):
@@ -597,6 +654,20 @@ async def api_tts(request: Request):
                 "id": clone_id,
                 "name": clone_meta["name"],
                 "tau": clone_tau,
+                # Whether the converter's latent draw was pinned. Unseeded means
+                # a different timbre on every sentence, which is the sound of a
+                # narrator who cannot hold a voice.
+                "seed": clone_seed,
+                "seeded": clone_seed is not None,
+                # How the base voice was chosen, and what it cost in pitch.
+                # `pitch.applied_semitones` above is the ground truth; this is
+                # the explanation, so a listener who thinks the voice sounds
+                # wrong can see which part of the chain to blame.
+                "base_voice": voice,
+                "base_voice_source": (
+                    "requested" if voice_given else "paired"
+                ) if clone_meta else None,
+                "base_voice_pairing": pairing,
                 "pitch": pitch_report,
                 # Measured, not asserted: how close the result sounds to the
                 # enrolled voice, next to how close the speaker's own

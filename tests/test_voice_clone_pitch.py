@@ -146,13 +146,36 @@ def test_a_clone_that_is_almost_two_semitones_sharp_is_pulled_onto_the_enrolled_
 
 
 def test_an_already_correct_clone_is_left_alone(fake_librosa):
-    """Under a quarter tone the vocoder is not worth running."""
+    """Inside MIN_PITCH_SHIFT_SEMITONES the vocoder is not worth running."""
     fake_librosa.f0 = 120.0
     _, report = vc.correct_pitch(_tone(120, 3.0), 24000, 120.6)
     assert report["corrected"] is False
     assert report["applied_semitones"] == 0.0
-    assert "quarter tone" in report["reason"]
+    assert "left uncorrected" in report["reason"]
     assert fake_librosa.shifts == []
+
+
+def test_a_paired_base_voice_is_never_vocoded(fake_librosa):
+    """The whole point of the pairing band: a base voice chosen because it sits
+    within PAIRING_MAX_SEMITONES of the speaker must come out untouched, so the
+    narration keeps one voice instead of drifting a little on every slide."""
+    fake_librosa.f0 = 120.0
+    inside = 120.0 * 2 ** ((vc.PAIRING_MAX_SEMITONES * 0.8) / 12)
+    _, report = vc.correct_pitch(_tone(120.0, 3.0), 24000, inside)
+    assert abs(report["offset_semitones"]) == pytest.approx(
+        vc.PAIRING_MAX_SEMITONES * 0.8, abs=0.02)
+    assert report["corrected"] is False
+    assert fake_librosa.shifts == []
+
+
+def test_past_the_pairing_band_the_vocoder_still_runs(fake_librosa):
+    """The two thresholds are one policy, so a voice outside the band is a real
+    error and still gets corrected."""
+    fake_librosa.f0 = 120.0
+    just_past = 120.0 * 2 ** ((vc.PAIRING_MAX_SEMITONES + 0.3) / 12)
+    _, report = vc.correct_pitch(_tone(120.0, 3.0), 24000, just_past)
+    assert report["corrected"] is True
+    assert fake_librosa.shifts
 
 
 def test_a_sharp_clone_is_pulled_down_not_up(fake_librosa):

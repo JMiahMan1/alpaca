@@ -537,12 +537,273 @@ def test_tts_source_embedding_is_synthesised_at_speed_one(client):
     with (
         patch.object(audio, "_ensure_model", AsyncMock(return_value=pipe)),
         patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "V"}),
+        patch.object(audio.voice_clone, "pair_base_voice", _no_pairing("af_heart")),
         patch.object(audio.voice_clone, "source_se", Mock(return_value=object())) as src,
         patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
         patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)),
     ):
         client.post("/api/tts", json={"text": "hi", "clone": "v", "speed": 2.0})
     assert src.call_args.args[0] == "af_heart"
+
+
+# --------------------------------------------------------------------------- #
+# The converter's latent draw                                                   #
+# --------------------------------------------------------------------------- #
+#
+# OpenVoice samples its latent from a Gaussian, once per sentence. Left
+# unseeded, a narration is a different voice in every sentence, which is what
+# "the narration keeps changing" is. The route pins the draw by default and
+# says so in the report, because a caller who hears instability needs to know
+# whether the endpoint did it or they did. See voice_clone.CONVERT_SEED.
+
+
+def _seeded_convert_calls() -> list[int | None]:
+    """Every seed `convert` was handed, in order, or [] if never called."""
+    return [c.args[5] for c in _LAST_CONVERT.call_args_list]
+
+
+def _clone_tts(client, body: dict):
+    """POST /api/tts with a clone, everything below convert stubbed out."""
+    global _LAST_CONVERT
+    _LAST_CONVERT = Mock(side_effect=lambda a, *r: a)
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=_pipe(seconds=0.2))),
+        patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "Voicey"}),
+        patch.object(audio.voice_clone, "source_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "convert", _LAST_CONVERT),
+        patch.object(audio.voice_clone, "correct_pitch", Mock(side_effect=lambda a, s, t: (a, {"corrected": False}))),
+        patch.object(audio.voice_clone, "clone_similarity", Mock(return_value=None)),
+    ):
+        return client.post("/api/tts", json={"text": "One. Two.", "clone": "v", **body})
+
+
+def test_the_converter_draw_is_pinned_by_default(client):
+    resp = _clone_tts(client, {})
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]["clone"]
+    assert (meta["seed"], meta["seeded"]) == (audio.voice_clone.CONVERT_SEED, True)
+    # One seed for every sentence, not one per sentence.
+    assert _seeded_convert_calls() == [audio.voice_clone.CONVERT_SEED] * 2
+
+
+def test_a_caller_can_choose_the_draw(client):
+    resp = _clone_tts(client, {"clone_seed": 12345})
+    assert resp.status_code == 200
+    assert resp.json()["meta"]["clone"]["seed"] == 12345
+    assert _seeded_convert_calls() == [12345] * 2
+
+
+def test_null_opts_back_out_to_a_different_timbre_per_sentence(client):
+    """The escape hatch has to reach the converter, not just the report."""
+    resp = _clone_tts(client, {"clone_seed": None})
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]["clone"]
+    assert (meta["seed"], meta["seeded"]) == (None, False)
+    assert _seeded_convert_calls() == [None] * 2
+
+
+@pytest.mark.parametrize("bad", ["later", 1.5, -1, 2 ** 31])
+def test_tts_rejects_a_clone_seed_it_cannot_use(client, bad):
+    with patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "V"}):
+        resp = client.post("/api/tts", json={"text": "hi", "clone": "v", "clone_seed": bad})
+    assert resp.status_code == 400 and "clone_seed" in resp.json()["error"]
+
+
+def test_a_request_without_a_clone_says_nothing_about_seeds(client):
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=_pipe(seconds=0.2))),
+    ):
+        resp = client.post("/api/tts", json={"text": "hi", "clone_seed": "nonsense"})
+    assert resp.status_code == 200
+    assert resp.json()["meta"]["clone"] is None
+
+
+# --------------------------------------------------------------------------- #
+# The base voice a clone is rendered from                                         #
+# --------------------------------------------------------------------------- ##
+# A clone's pitch is the *base voice's* pitch: the converter moves timbre and
+# leaves F0 alone, so the server chooses a base voice that needs no pitch
+# correction rather than assuming every caller knows which Kokoro voice sits
+# near a given speaker. See voice_clone.pair_base_voice.
+
+
+def _no_pairing(voice: str):
+    """A pairing stand-in, so the route's own wiring is what is under test."""
+    return Mock(return_value={"base_voice": voice, "reason": "test", "pinned": False, "candidates": []})
+
+
+def _clone_stack(pipe, pair=None):
+    """The patch set every clone request needs, with the pairing mocked out.
+
+    Exits as a single context manager so a test reads as one `with`.
+    """
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(patch.object(audio, "_ensure_model", AsyncMock(return_value=pipe)))
+    stack.enter_context(patch.object(audio.voice_clone, "get_profile",
+                                     return_value={"id": "v", "name": "V", "median_f0_hz": 101.7}))
+    pairing = stack.enter_context(
+        patch.object(audio.voice_clone, "pair_base_voice", pair or _no_pairing("af_nicole"))
+    )
+    stack.enter_context(patch.object(audio.voice_clone, "source_se", Mock(return_value=object())))
+    stack.enter_context(patch.object(audio.voice_clone, "target_se", Mock(return_value=object())))
+    stack.enter_context(patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)))
+    stack.enter_context(patch.object(audio.voice_clone, "correct_pitch",
+                                     Mock(side_effect=lambda a, s, t: (a, {"corrected": False}))))
+    stack.enter_context(patch.object(audio.voice_clone, "clone_similarity", Mock(return_value=None)))
+    return stack, pairing
+
+
+def test_a_clone_with_no_requested_voice_is_paired_to_the_closest_one(client):
+    pipe = _pipe(seconds=0.3)
+    stack, pairing = _clone_stack(pipe)
+    with stack:
+        resp = client.post("/api/tts", json={"text": "One.", "clone": "v", "sentence_pause_s": 0.0})
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]["clone"]
+    assert meta["base_voice"] == "af_nicole"
+    assert meta["base_voice_source"] == "paired"
+    # The server's own registry is offered, so a client that disagrees about
+    # which voices exist still gets the search run over the list that does.
+    assert pairing.call_args.args[3] == audio.KOKORO_VOICES
+    assert {c["voice"] for c in pipe.calls} == {"af_nicole"}
+
+
+def test_a_requested_voice_is_never_overridden_by_the_pairing(client):
+    """The pairing is a default, not a policy: a caller that knows what it wants
+    keeps it. Asking is also the cheap path, since it skips the probe entirely."""
+    pipe = _pipe(seconds=0.3)
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=pipe)),
+        patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "V"}),
+        patch.object(audio.voice_clone, "pair_base_voice", _no_pairing("af_nicole")) as pair,
+        patch.object(audio.voice_clone, "source_se", Mock(return_value=object())) as src,
+        patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)),
+    ):
+        resp = client.post("/api/tts", json={"text": "One.", "clone": "v", "voice": "am_eric"})
+    assert resp.status_code == 200
+    assert src.call_args.args[0] == "am_eric"
+    assert pair.call_count == 0, "an explicit voice must not cost a registry probe"
+    meta = resp.json()["meta"]["clone"]
+    assert (meta["base_voice"], meta["base_voice_source"]) == ("am_eric", "requested")
+
+
+def test_an_explicitly_requested_blend_is_still_accepted_for_a_clone(client):
+    """A blend is one Kokoro render with averaged style vectors, so pairing a
+    blend would be meaningless - but a caller who asks for one gets one."""
+    pipe = _pipe(seconds=0.3)
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=pipe)),
+        patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "V"}),
+        patch.object(audio.voice_clone, "pair_base_voice", _no_pairing("af_nicole")) as pair,
+        patch.object(audio.voice_clone, "source_se", Mock(return_value=object())) as src,
+        patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)),
+    ):
+        resp = client.post("/api/tts", json={"text": "One.", "clone": "v", "voice": "af_sky, am_adam"})
+    assert resp.status_code == 200
+    assert src.call_args.args[0] == "af_sky,am_adam"
+    assert pair.call_count == 0
+
+
+def test_a_voice_the_pairing_could_not_name_falls_back_visibly(client):
+    """A profile with no measured pitch has no pairing. The render still happens,
+    and the report says the fallback was a fallback."""
+    pipe = _pipe(seconds=0.3)
+    fallback = {"base_voice": None, "reason": "profile has no enrolled pitch",
+                "pinned": False, "candidates": []}
+    stack, _ = _clone_stack(pipe, pair=Mock(return_value=fallback))
+    with stack:
+        resp = client.post("/api/tts", json={"text": "One.", "clone": "v", "sentence_pause_s": 0.0})
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]["clone"]
+    assert meta["base_voice"] == audio.DEFAULT_BASE_VOICE
+    assert meta["base_voice_source"] == "paired"
+    assert meta["base_voice_pairing"]["base_voice"] is None
+
+
+def test_the_pairing_measurement_needs_the_converter_sample_rate(client):
+    """Base voices are measured in the pipeline's own rate, so a candidate
+    registry is handed over rather than re-derived from the request."""
+    pipe = _pipe(seconds=0.3)
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=pipe)),
+        patch.object(audio.voice_clone, "get_profile", return_value={"id": "v", "name": "V"}),
+        patch.object(audio.voice_clone, "pair_base_voice", _no_pairing("af_nicole")) as pair,
+        patch.object(audio.voice_clone, "source_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "target_se", Mock(return_value=object())),
+        patch.object(audio.voice_clone, "convert", Mock(side_effect=lambda a, *r: a)),
+    ):
+        client.post("/api/tts", json={"text": "One.", "clone": "v"})
+    assert pair.call_args.args[0] == "v"
+    assert pair.call_args.args[3] == audio.KOKORO_VOICES
+
+
+def test_a_voice_requested_with_no_clone_is_untouched(client):
+    """Pairing is a clone-only concern; a plain TTS request keeps its old
+    behaviour, including a bare request falling back to the default voice."""
+    pipe = _pipe(seconds=0.3)
+    with (
+        patch.object(audio, "_ensure_model", AsyncMock(return_value=pipe)),
+        patch.object(audio.voice_clone, "pair_base_voice", _no_pairing("af_nicole")) as pair,
+    ):
+        bare = client.post("/api/tts", json={"text": "One.", "sentence_pause_s": 0.0})
+        named = client.post("/api/tts", json={"text": "One.", "voice": "bm_fable"})
+    assert bare.json()["meta"]["voice"] == audio.DEFAULT_BASE_VOICE
+    assert named.json()["meta"]["voice"] == "bm_fable"
+    assert pair.call_count == 0
+    assert bare.json()["meta"]["clone"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Patching a voice's base voice                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_patching_a_voice_pins_its_base_voice(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(audio.voice_clone, "VOICES_DIR", str(tmp_path))
+    d = tmp_path / "narrator-aaa111"
+    d.mkdir()
+    (d / "meta.json").write_text('{"id": "narrator-aaa111", "name": "Narrator"}')
+    body = client.patch("/api/voices/narrator-aaa111", json={"base_voice": "bm_george"}).json()
+    assert body["voice"]["pinned_base_voice"] == "bm_george"
+    # Sending null hands the choice back to the automatic pairing.
+    assert "pinned_base_voice" not in client.patch(
+        "/api/voices/narrator-aaa111", json={"base_voice": None}
+    ).json()["voice"]
+
+
+def test_a_patch_that_changes_nothing_is_a_400(client):
+    with patch.object(audio, "_ensure_model", AsyncMock()):
+        assert client.patch("/api/voices/narrator-aaa111", json={}).status_code == 400
+
+
+def test_an_unknown_voice_or_a_bad_pin_is_a_404_or_409(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(audio.voice_clone, "VOICES_DIR", str(tmp_path))
+    d = tmp_path / "narrator-aaa111"
+    d.mkdir()
+    (d / "meta.json").write_text('{"id": "narrator-aaa111", "name": "Narrator"}')
+    assert client.patch("/api/voices/nobody-aaa111", json={"base_voice": "bm_george"}).status_code == 404
+    assert client.patch("/api/voices/narrator-aaa111", json={"base_voice": "af_heart,am_adam"}).status_code == 409
+
+
+def test_a_rejected_pin_does_not_half_apply_a_rename(client, tmp_path, monkeypatch):
+    """Both fields can be sent at once. A bad pin must not leave the name
+    changed and the pin unapplied, which would read as a successful edit."""
+    monkeypatch.setattr(audio.voice_clone, "VOICES_DIR", str(tmp_path))
+    import json
+
+    for pid, name in (("narrator-aaa111", "Narrator"), ("casual-bbb222", "Casual")):
+        d = tmp_path / pid
+        d.mkdir()
+        (d / "meta.json").write_text(json.dumps({"id": pid, "name": name}))
+    resp = client.patch("/api/voices/narrator-aaa111",
+                        json={"name": "NARRATOR", "base_voice": "not_a_voice"})
+    assert resp.status_code == 409
+    assert audio.voice_clone.get_profile("narrator-aaa111")["name"] == "Narrator"
 
 
 # --------------------------------------------------------------------------- #
@@ -633,9 +894,9 @@ def test_listing_and_renaming_and_deleting_a_voice(client):
     with patch.object(audio.voice_clone, "list_profiles", return_value=[{"id": "v"}]):
         assert client.get("/api/voices").json() == {"voices": [{"id": "v"}]}
 
-    with patch.object(audio.voice_clone, "rename_profile", return_value={"id": "v", "name": "New"}) as rename:
+    with patch.object(audio.voice_clone, "update_profile", return_value={"id": "v", "name": "New"}) as update:
         assert client.patch("/api/voices/v", json={"name": "New"}).json()["voice"]["name"] == "New"
-    assert rename.call_args.args == ("v", "New")
+    assert update.call_args.args == ("v", {"name": "New"})
 
     with patch.object(audio.voice_clone, "delete_profile", Mock(return_value=True)) as delete:
         assert client.delete("/api/voices/v").json() == {"deleted": "v"}
@@ -643,9 +904,9 @@ def test_listing_and_renaming_and_deleting_a_voice(client):
 
 
 def test_renaming_to_a_taken_name_is_409_and_to_an_unknown_voice_is_404(client):
-    with patch.object(audio.voice_clone, "rename_profile", side_effect=ValueError("name already used")):
+    with patch.object(audio.voice_clone, "update_profile", side_effect=ValueError("name already used")):
         assert client.patch("/api/voices/v", json={"name": "Taken"}).status_code == 409
-    with patch.object(audio.voice_clone, "rename_profile", side_effect=KeyError("v")):
+    with patch.object(audio.voice_clone, "update_profile", side_effect=KeyError("v")):
         resp = client.patch("/api/voices/v", json={"name": "New"})
     assert resp.status_code == 404 and "unknown custom voice" in resp.json()["error"]
 
