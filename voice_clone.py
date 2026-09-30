@@ -42,6 +42,28 @@ logger = logging.getLogger("voice_clone")
 VOICES_DIR = os.getenv("VOICES_DIR", "/data/voices")
 CONVERTER_REPO = os.getenv("OPENVOICE_REPO_ID", "myshell-ai/OpenVoiceV2")
 DEFAULT_TAU = float(os.getenv("OPENVOICE_TAU", "0.3"))
+
+#: Seed for the converter's latent noise. See `convert`.
+#:
+#: OpenVoice's `PosteriorEncoder.forward` samples its latent as
+#: `m + torch.randn_like(m) * tau * exp(logs)`, i.e. a Gaussian draw scaled by
+#: tau. `voice_conversion` is called once per sentence, so with an unseeded
+#: generator every sentence of one narration is re-timbred from a *different*
+#: draw of the same distribution. That is audible, and it is the worst kind of
+#: audible: not a steady wrong voice, but a voice that keeps changing mid
+#: sentence, which listeners describe as popping, breaking up, or as an echo
+#: because consecutive sentences no longer share a timbre to be heard against.
+#:
+#: The noise is a training-time regularizer. At inference a fixed draw is just
+#: as valid as a fresh one, and it is the only draw that gives a narrator one
+#: voice for the whole of a piece. Seeding costs nothing and changes nothing
+#: about the timbre being transferred; it only stops it moving.
+#:
+#: Arbitrary but fixed. The value is not a secret and nothing depends on which
+#: one it is; a caller who wants a different, equally consistent voice passes
+#: `seed=` to `convert` instead.
+CONVERT_SEED = int(os.getenv("OPENVOICE_SEED", "874301"))
+
 SR = 22050  # OpenVoice V2 converter sample rate
 SE_WINDOW_S = 10.0
 MIN_TOTAL_SPEECH_S = 30.0
@@ -239,7 +261,18 @@ F0_FMAX_HZ = 350.0
 MAX_PITCH_SHIFT_SEMITONES = 4.0
 
 #: Below this the shift is not worth running a vocoder over the audio.
-MIN_PITCH_SHIFT_SEMITONES = 0.25
+#:
+#: This is the same number as PAIRING_MAX_SEMITONES, and deliberately so. Pairing
+#: picks a base voice within this band on purpose, and this threshold is what
+#: turns that promise into silence: a paired base voice lands here, the vocoder
+#: is skipped, and the render goes out exactly as Kokoro and the converter made
+#: it. Half a semitone is 3% of pitch, which nobody hears as a mistake; the
+#: phase vocoder needed to correct it is very much heard as one. The failure
+#: this avoids is a narration that drifts a fraction of a semitone per slide,
+#: each slide vocoded by a different amount, which is what "the voice keeps
+#: changing" sounds like. A caller who names a base voice further out than this
+#: still gets corrected: that is a real error, not a rounding difference.
+MIN_PITCH_SHIFT_SEMITONES = 0.5
 
 #: Cap on how much audio the estimator reads. An episode-length render is
 #: minutes; yin is linear in length and the median over the first stretch of a
@@ -329,8 +362,9 @@ def correct_pitch(audio, sr: int, target_f0: float | None) -> tuple[object, dict
 
     steps = 12.0 * float(np.log2(float(target_f0) / measured))
     report["offset_semitones"] = round(steps, 2)
-    if abs(steps) < MIN_PITCH_SHIFT_SEMITONES:
-        report["reason"] = "already within a quarter tone of the enrolled pitch"
+    if abs(steps) <= MIN_PITCH_SHIFT_SEMITONES:
+        report["reason"] = (f"within {MIN_PITCH_SHIFT_SEMITONES} semitones of the "
+                            "enrolled pitch; left uncorrected rather than vocoded")
         return audio, report
     clamped = max(-MAX_PITCH_SHIFT_SEMITONES, min(MAX_PITCH_SHIFT_SEMITONES, steps))
     if clamped != steps:
@@ -494,18 +528,47 @@ def identity_threshold(spreads: list[float | None]) -> float:
     return max(MIN_IDENTITY_THRESHOLD, min(MAX_IDENTITY_THRESHOLD, 1.0 - deficit))
 
 
-def convert(audio, sr: int, src_se, tgt_se, tau: float = DEFAULT_TAU):
-    """Re-timbre one utterance from src_se toward tgt_se; returns audio at `sr`."""
+def _seed_devices(torch, device) -> list:
+    """CUDA generator indices to fork alongside the CPU one, for `torch.device`."""
+    dev = torch.device(device)
+    if dev.type != "cuda":
+        return []
+    return [dev.index if dev.index is not None else torch.cuda.current_device()]
+
+
+def convert(audio, sr: int, src_se, tgt_se, tau: float = DEFAULT_TAU,
+            seed: int | None = CONVERT_SEED):
+    """Re-timbre one utterance from src_se toward tgt_se; returns audio at `sr`.
+
+    `seed` fixes the converter's latent noise so the same draw is reused on
+    every call (see `CONVERT_SEED` for why that matters). The generator is
+    forked and restored around the conversion, so seeding here cannot leak into
+    the caller, the Kokoro pipeline, or the next request sharing this process.
+
+    `seed=None` opts out, and then nothing is forked at all: there is no
+    seeding to protect the caller from, and the draw comes from the live
+    global generator, which is exactly OpenVoice's own behaviour. That is a
+    different timbre per sentence.
+    """
     import torch
 
     conv = _converter()
     x = _resample(audio, sr, SR)
-    with torch.no_grad():
+
+    def _conversion():
         spec = _spec(conv, x)
         lengths = torch.LongTensor([spec.size(-1)]).to(conv.device)
-        y = conv.model.voice_conversion(spec, lengths, sid_src=src_se.to(conv.device),
-                                        sid_tgt=tgt_se.to(conv.device), tau=tau)[0][0, 0]
-        y = y.data.cpu().float().numpy()
+        out = conv.model.voice_conversion(spec, lengths, sid_src=src_se.to(conv.device),
+                                          sid_tgt=tgt_se.to(conv.device), tau=tau)[0][0, 0]
+        return out.data.cpu().float().numpy()
+
+    with torch.no_grad():
+        if seed is None:
+            y = _conversion()
+        else:
+            with torch.random.fork_rng(devices=_seed_devices(torch, conv.device)):
+                torch.manual_seed(int(seed))
+                y = _conversion()
     y = conv.add_watermark(y, "alpaca") if len(y) >= 16000 else y
     return _resample(y, SR, sr)
 
@@ -649,14 +712,66 @@ def _check_name(name: str, exclude_id: str | None = None) -> str:
 
 
 def rename_profile(pid: str, name: str) -> dict:
+    return update_profile(pid, {"name": name})
+
+
+def set_pinned_base_voice(pid: str, voice: str | None) -> dict:
+    """Pin (or unpin) the Kokoro voice a clone is rendered from.
+
+    Pinning is the escape hatch from the automatic pairing. It is stored on
+    the profile rather than passed per request so that it holds for every
+    client of a voice, including clients that know nothing about pairing.
+
+    `None` clears the pin and hands the choice back to `pair_base_voice`.
+    """
+    return update_profile(pid, {"base_voice": voice})
+
+
+def update_profile(pid: str, changes: dict) -> dict:
+    """Apply a profile edit atomically, and say why a bad one is bad.
+
+    Every field is validated before any of them is written. A patch is one
+    edit, and half of one leaves a profile whose name and base voice disagree
+    about when they were set, which is what makes a rollback ambiguous.
+    `base_voice: None` clears the pin; omitting the key leaves it alone.
+    """
     meta = get_profile(pid)
-    meta["name"] = _check_name(name, exclude_id=pid)
+    unknown = set(changes) - {"name", "base_voice"}
+    if unknown:
+        raise ValueError(f"cannot change: {', '.join(sorted(unknown))}")
+
+    if "name" in changes:
+        name = _check_name(str(changes["name"]), exclude_id=pid)
+    if "base_voice" in changes:
+        want = changes["base_voice"]
+        pinned = None if want is None else _check_base_voice(want)
+
+    if "name" in changes:
+        meta["name"] = name
+    if "base_voice" in changes:
+        if pinned is None:
+            meta.pop("pinned_base_voice", None)
+        else:
+            meta["pinned_base_voice"] = pinned
+    _write_meta(pid, meta)
+    return meta
+
+
+def _write_meta(pid: str, meta: dict) -> None:
+    """meta.json is the profile's existence marker, so it is replaced atomically."""
     path = os.path.join(_pdir(pid), "meta.json")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=1)
     os.replace(tmp, path)
-    return meta
+
+
+def _check_base_voice(voice: str) -> str:
+    """A pin names one Kokoro voice. A blend has no pitch of its own, so it is refused."""
+    name = re.sub(r"[^a-z0-9_]", "", str(voice).strip().lower())
+    if name not in PAIRING_FEMALE + PAIRING_MALE:
+        raise ValueError(f"'{voice}' is not a Kokoro voice")
+    return name
 
 
 def create_profile(name: str, recordings: list[tuple[str, bytes]]) -> dict:
@@ -998,15 +1113,180 @@ def profile_spread(pid: str):
         return None
 
 
+# --------------------------------------------------------------------------- #
+# Base-voice pairing                                                            #
+# --------------------------------------------------------------------------- #
+
+#: Semitones of pitch correction a base voice may cost before it is rejected
+#: in favour of a less similar voice that needs none. A phase-vocoder pass over
+#: a whole narration is the most audible thing in the pipeline: it smears
+#: transients and adds flutter, and at a semitone or two the result reads as a
+#: bad microphone or a doubled voice rather than as pitch. Identity is not
+#: worth that, so a clean pairing outranks a closer-but-shifted one.
+#:
+#: This is also MIN_PITCH_SHIFT_SEMITONES. Pairing refuses to go past it, and
+#: `correct_pitch` refuses to act inside it, so a paired base voice is rendered
+#: and then left alone. The two thresholds are one policy: stay within half a
+#: semitone, and never pay a vocoder to get there.
+PAIRING_MAX_SEMITONES = MIN_PITCH_SHIFT_SEMITONES
+
+#: Every Kokoro voice, in the three registers Kokoro ships, as a fallback for
+#: callers that do not pass their own registry. Kept in two lists rather than
+#: one so a caller who knows the speaker's gender can search a single register;
+#: the default search spans all of them, because a wrong guess about gender is
+#: no reason to exclude the voice that happens to sit on the speaker's pitch.
+PAIRING_FEMALE = (
+    "af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky", "af_alloy",
+    "af_aoede", "af_kore", "af_jessica", "af_river", "af_nova",
+    "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+)
+PAIRING_MALE = (
+    "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+    "am_onyx", "am_puck", "am_santa",
+    "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+)
+
+
+def _semitones_between(a: float, b: float) -> float:
+    import math
+
+    return 12.0 * math.log2(float(a) / float(b))
+
+
+def base_voice_candidates(gender: str | None = None) -> list[str]:
+    """Base voices worth trying, nearest register first when a gender is known."""
+    if gender == "m":
+        return list(PAIRING_MALE)
+    if gender == "f":
+        return list(PAIRING_FEMALE)
+    return list(PAIRING_FEMALE) + list(PAIRING_MALE)
+
+
+def base_voice_f0(voice: str, synth) -> float | None:
+    """Median F0 of a Kokoro voice, cached next to its source embedding.
+
+    Rendered with the same read-aloud script the embedding is built from, so
+    the number describes the voice as the converter will actually meet it.
+    `synth(text, voice) -> (audio, sr)` renders Kokoro speech in `voice`.
+    """
+    import torch
+
+    key = re.sub(r"[^a-z0-9_,]+", "", voice.lower()).replace(",", "+")
+    path = os.path.join(VOICES_DIR, "_sources", f"{key}.f0")
+    if os.path.isfile(path):
+        try:
+            return float(torch.load(path, map_location="cpu", weights_only=True))
+        except Exception:
+            logger.warning(f"[voice_clone] unreadable cached f0 for {voice}; re-measuring")
+    audio, sr = synth(_SOURCE_SCRIPT, voice)
+    window = min(len(audio), int(F0_ANALYSIS_MAX_S * sr))
+    f0 = median_f0(audio[:window], sr)
+    if f0 is None:
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        torch.save(f0, path)
+    except Exception as exc:
+        logger.warning(f"[voice_clone] could not cache f0 for {voice}: {exc}")
+    return f0
+
+
+def pair_base_voice(pid: str, synth, gender: str | None = None,
+                    candidates: list[str] | None = None) -> dict:
+    """Pick the Kokoro voice that needs the least correction to sound like `pid`.
+
+    `correct_pitch` measures how far the render landed from the enrolled F0 and
+    vocoder-shifts the difference, so the base voice sets how much correction
+    the speaker's own narration has to survive. Ranking by that distance rather
+    than by post-hoc timbre similarity is deliberate: a base voice that starts
+    near the target is worth more than one that needs a whole narration pushed
+    two semitones to get there, because a phase vocoder run over several minutes
+    smears transients and adds flutter that no amount of speaker similarity
+    makes unnoticeable. Ties within `PAIRING_MAX_SEMITONES` go to the earlier
+    candidate so the choice is stable across calls.
+
+    `synth(text, voice) -> (audio, sr)` renders Kokoro speech in a given voice.
+    Every candidate has to be rendered once to be measured, so the result is
+    worth caching on the profile; the per-voice F0 is cached on disk.
+
+    The answer is advisory: a pairing is a recommendation, a pin is a decision,
+    and a pinned value is never overridden here. Returns a report suitable for
+    storing on the profile and for logging.
+    """
+    meta = get_profile(pid)
+
+    pinned = meta.get("pinned_base_voice")
+    if pinned:
+        return {
+            "base_voice": pinned,
+            "reason": "pinned on the profile",
+            "pinned": True,
+            "candidates": [],
+        }
+
+    target_f0 = meta.get("median_f0_hz")
+    pool = candidates or base_voice_candidates(gender)
+    if not target_f0:
+        return {
+            "base_voice": None,
+            "reason": "profile has no enrolled pitch; refusing to guess a base voice",
+            "pinned": False,
+            "candidates": [],
+        }
+
+    measured: list[dict] = []
+    for voice in pool:
+        try:
+            f0 = base_voice_f0(voice, synth)
+        except Exception as exc:
+            logger.warning(f"[voice_clone] f0 probe failed for {voice}: {exc}")
+            continue
+        if not f0:
+            continue
+        semitones = _semitones_between(f0, target_f0)
+        measured.append({
+            "base_voice": voice,
+            "base_f0_hz": round(float(f0), 1),
+            "semitones_from_target": round(semitones, 2),
+            "free": abs(semitones) <= PAIRING_MAX_SEMITONES,
+        })
+    if not measured:
+        return {
+            "base_voice": None,
+            "reason": "no base voice could be measured",
+            "pinned": False,
+            "candidates": [],
+        }
+
+    # Within a half-semitone of the target, a base voice is effectively free:
+    # `correct_pitch` will not touch the render. Beyond that, every semitone is
+    # vocoder time on the finished narration, so the closest voice wins even if
+    # the converter has more to do to its timbre.
+    measured.sort(key=lambda m: (not m["free"], abs(m["semitones_from_target"])))
+    best = measured[0]
+    return {
+        "base_voice": best["base_voice"],
+        "reason": (
+            f"{best['base_voice']} sits {best['semitones_from_target']:+.2f} semitones from the "
+            f"enrolled {target_f0:.1f} Hz"
+        ),
+        "pinned": False,
+        "base_f0_hz": best["base_f0_hz"],
+        "semitones_from_target": best["semitones_from_target"],
+        "target_f0_hz": round(float(target_f0), 1),
+        "candidates": measured,
+    }
+
+
 def source_se(voice: str, synth):
-    """SE for a Kokoro voice, cached. `synth(text) -> (audio, sr)` renders Kokoro speech."""
+    """SE for a Kokoro voice, cached. `synth(text, voice) -> (audio, sr)` renders Kokoro speech."""
     import torch
 
     key = re.sub(r"[^a-z0-9_,]+", "", voice.lower()).replace(",", "+")
     path = os.path.join(VOICES_DIR, "_sources", f"{key}.pt")
     if os.path.isfile(path):
         return torch.load(path, map_location="cpu", weights_only=True)
-    audio, sr = synth(_SOURCE_SCRIPT)
+    audio, sr = synth(_SOURCE_SCRIPT, voice)
     speech = analyze(_resample(audio, sr, SR))["speech"]
     se = _embed(_windows(speech))
     os.makedirs(os.path.dirname(path), exist_ok=True)

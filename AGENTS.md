@@ -275,6 +275,71 @@ card with llama-server and sd-server. Ten minutes of bed is the one thing it doe
   180 s request returns 200 with 30 s of audio. The only tell is
   `meta.duration_s < meta.requested_duration_s`; the render route warns when it sees that.
 
+### Base-voice pairing (`voice_clone.py` → `POST /api/tts`, `PATCH /api/voices/{pid}`)
+- **The base voice is a pitch decision, and every wrong one is audible.** `correct_pitch` runs a
+  phase vocoder over the *whole* render to slide it onto the profile's `median_f0_hz`. A base
+  voice 2.6 semitones off means the entire narration is sung through a vocoder, which is a worse
+  artefact than the timbre the vocoder was there to fix. So with a clone in play and no
+  `voice` in the request, the server picks the Kokoro voice that needs the least correction
+  (`pair_base_voice`), not a hardcoded default that happens to be wrong for most speakers.
+- **"Free" is a hard band, not a ranking preference.** `PAIRING_MAX_SEMITONES = 0.5` — the same
+  quarter-tone `correct_pitch` refuses to act on. Any voice inside it outranks a closer one
+  outside it, because inside means `correct_pitch` does not run at all. Ties break on
+  |semitones|, and the sort is total so registry order can never change the answer.
+- **Gender is not a filter.** `pair_base_voice` measures every voice in the 28-voice registry
+  and prefers the one on the speaker's pitch, af_* and am_* together. A wrong guess about gender
+  is no reason to exclude the voice that sits where the speaker actually is.
+- **The measurement is cached, and so is the answer's cost.** `base_voice_f0` renders a short
+  `_SOURCE_SCRIPT` and stores the float in `VOICES_DIR/_sources/{key}.f0` (the same key scheme as
+  `source_se`), so pairing is one cheap render per registry entry, once. An unreadable cache is
+  re-measured, an unwritable one is a warning, and neither is fatal.
+- **Three overrides, in this order:** an explicit `voice` in the request wins outright (blends
+  like `"af_heart,am_adam"` are still allowed and skip pairing); a profile's `pinned_base_voice`
+  outranks the guess; nothing else does. Omitting `voice` is *not* a request for the default
+  when a clone is in play, so an explicitly empty `voice` still 400s while the absent key does not.
+- **The response says which was used.** `meta.clone.base_voice` is the voice actually rendered,
+  `base_voice_source` is `"requested"` or `"paired"`, and `base_voice_pairing` is the full report
+  with every candidate's `semitones_from_target`. A pairing that cannot be decided returns
+  `base_voice: null` with a `reason` and the request falls back to `DEFAULT_BASE_VOICE`
+  (`af_heart`) — the fallback is visible, never a surprise.
+- **Pairing refuses to guess without a target.** No `median_f0_hz` on the profile means no
+  ranking is possible, so `pair_base_voice` returns `base_voice: None` rather than a default.
+- **`update_profile` validates every field before writing any of them.** Renaming a profile and
+  pinning a base voice are one atomic `meta.json` swap (tmp + `os.replace`); half of one leaves
+  a profile whose name and base voice disagree about when they were set, which makes a rollback
+  ambiguous. A blend is refused as a pin: it has no pitch of its own.
+- **Ranking by pitch deliberately disagrees with `identify`.** `/api/voices/identify` scores
+  post-hoc timbre similarity and has better scores for worse-sounding voices; the pairing is
+  chosen on the cost of fixing the voice instead.
+
+### The converter's latent draw (`voice_clone.convert` → `POST /api/tts` `clone_seed`)
+- **OpenVoice's `PosteriorEncoder.forward` samples its latent, not its mean:**
+  `z = m + torch.randn_like(m) * tau * exp(logs)`. `voice_conversion` is called **once per
+  sentence** (`/api/tts` loops sentences → `convert`), so with torch's global generator unseeded
+  every sentence of one narration is re-timbred from a **different draw of the same
+  distribution**. That is the sound of a narrator who cannot hold a voice.
+- **`convert` forks the generator and seeds it**, so all sentences share one draw. The fork is
+  what makes it safe: `/api/music` (MusicGen) draws from the same global generator in the same
+  process, so seeding without forking would make this endpoint's internals other people's output.
+  `seed=None` forks nothing and draws from the live generator — OpenVoice's own behaviour, kept as
+  the escape hatch.
+- **The report says whether it was pinned:** `meta.clone.seed` and `meta.clone.seeded`. A caller
+  who hears instability needs to know whether the endpoint did it or they did.
+- **A non-integral `clone_seed` is rejected, not truncated.** `int(1.5)` is 1: a typo answered
+  with a confident wrong answer is worse than no answer.
+- **How much this was worth, measured** (`seed_stability.py`, 4 renders of one 7-sentence
+  paragraph, log-mel timbre vectors): mean cosine between sentences of a render **0.953**, the
+  same sentence re-rendered **0.982**, across/within per-band sd ratio **0.43**. So the noise is
+  real and reproducible, but it is roughly **10% of the within-render timbre spread**, not all of
+  it. Fixing it makes narration deterministic and a little steadier. It is not a cure for "this
+  clone sounds bad", and should not be sold as one.
+- **Measured alongside, so the next person does not re-chase it** (librosa.yin, `pitch_diag.py`):
+  a clone of this profile lands within **0.1 semitone** of the enrolled `median_f0_hz`, and a
+  waveform autocorrelation over 20–500 ms finds **no reflection** (best lag r = 0.08–0.12, well
+  under the band's own p99, and no better than plain Kokoro with no clone at all). "It sounds
+  like there is an echo" is therefore not an echo in the narration: OpenVoice's decoder is a GAN
+  vocoder and is characteristically a little ringy, and anything else is the music bed.
+
 ### Speaker identification (`voice_clone.py` → `POST /api/voices/identify`, `/calibrate`)
 - Built on the artifact the system **already has**: cosine similarity of OpenVoice's 256-d
   reference encoder against each profile's centroid. Zero new models, zero new VRAM.
@@ -332,6 +397,9 @@ other fails the build.
 | A podcast bed is 30 s long | MusicGen's positional table is 1500 frames = 30.0 s; `min(duration_s*50, 1500)` clamps silently | Synthesize the bed procedurally; use MusicGen only for a short sting |
 | The podcast bed drowns the speech | `_wav_bytes` peak-normalises before encoding | `podcast_mixer.encode_wav` never normalises |
 | Voice ID rejects a speaker's own re-record | A hand-picked threshold | `identity_threshold()` derived from the worst profile's intra-speaker spread |
+| A cloned voice sounds buzzy, "singing" or like it has an echo | A base voice far from the profile's `median_f0_hz` forces `correct_pitch` to phase-vocoder the whole render | Omit `voice` so the server pairs one within `PAIRING_MAX_SEMITONES`, or pin it on the profile |
+| A narration changes voice from sentence to sentence | `voice_conversion` is called per sentence and samples its latent, so each sentence got a different draw | `convert` now seeds and forks the generator; `clone_seed: null` to opt out |
+| `clone_seed: 1.5` is accepted and behaves like `1` | `int()` truncates | Reject non-integral values; a seed the caller did not mean is worse than no seed |
 | Sphinx: ruff reformatted 28 unrelated lines | `ruff check --fix .` on a whole source tree | Scope `--fix` to new files; check `git diff` immediately after |
 
 ## Testing
@@ -364,6 +432,8 @@ and **`addopts = "-q -m 'not live'"`** — the `live` marker is deselected by de
 | `test_arcade.py` | Arcade service, publish pipeline, scores, achievements |
 | `test_audio_server_unit.py` | The 606-line TTS/music service: validation order, model eviction, clone path |
 | `test_voice_clone.py` + `test_voice_clone_identity.py` | Voice-clone analysis; **speaker identification and calibration** |
+| `test_voice_clone_pairing.py` | Base-voice pairing: the free band, the all-costly fallback, the F0 cache, pins |
+| `test_voice_clone_seed.py` | The pinned latent draw: repeat calls, a narration being one voice, the RNG not leaking, the `seed=None` opt-out |
 | `test_audio_server_speaker_id.py` | `POST /api/voices/identify` and `/calibrate` |
 | `test_podcast_mixer.py` + `test_podcast_routes.py` + `test_podcast_frontend.py` | Podcast Studio end to end |
 | `test_telemetry_monitor_unit.py` / `test_analyzer_unit.py` / `test_imageops_unit.py` | The daemons and the deterministic image editor |
