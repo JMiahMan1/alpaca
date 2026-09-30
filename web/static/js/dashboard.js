@@ -12769,7 +12769,7 @@ function initAnimateStudio() {
         animEl('sd-anim-clear-sources-btn')?.addEventListener('click', () => animReset());
         animEl('sd-anim-kind')?.addEventListener('change', () => { animApplyKindVisibility(); animSyncLabels(); });
         animEl('sd-anim-reuse-btn')?.addEventListener('click', () => {
-            showToast('These are the settings that produced the animation above.', 'info');
+            animSetMeta('These are the settings that produced the animation above. Edit a field, then re-render.');
         });
 
         ['sd-anim-zoom', 'sd-anim-zoom-to', 'sd-anim-pan-x', 'sd-anim-pan-y',
@@ -12892,7 +12892,7 @@ function animAddFiles(fileList) {
             if (--pending === 0) { animRenderSources(); animValidateReadiness(); }
         };
         reader.onerror = () => {
-            showToast(`Could not read ${file.name}.`, 'error');
+            animSetMeta(`Could not read ${file.name}.`, true);
             if (--pending === 0) { animRenderSources(); animValidateReadiness(); }
         };
         reader.readAsDataURL(file);
@@ -12910,7 +12910,7 @@ function animAddArtifact(name) {
 // Hand an image straight from an Image Studio result card to this panel, the
 // same way the Photo Editor and Canvas buttons do.
 function sendB64ToAnimate(b64) {
-    if (!b64) { showToast('That image has no data to animate.', 'error'); return; }
+    if (!b64) { animSetMeta('That image has no data to animate.', true); return; }
     _anim.sources.push({ label: 'From Image Studio', kind: 'b64', data: b64 });
     animRenderSources();
     animValidateReadiness();
@@ -12918,7 +12918,7 @@ function sendB64ToAnimate(b64) {
     sdModeSwitch?.('animate');
     animEl('sd-panel-animate')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     initAnimateStudio();
-    showToast('Image loaded into the Animate panel.', 'success');
+    animSetMeta('Image loaded. Pick a motion type and render.');
 }
 
 function animRenderSources() {
@@ -13083,10 +13083,9 @@ async function animRender() {
         animSetMeta(`${data.frames} frames · ${(data.duration_ms || 0)}ms each · ${secs}s total · ${data.size} · ${Math.round((data.bytes || 0) / 1024)} KB · rendered in ${Number(data.seconds || 0).toFixed(1)}s`, false);
         const warn = animEl('sd-anim-warnings');
         if (warn) warn.textContent = (data.warnings || []).join(' · ');
-        showToast(`Animation rendered: ${data.filename}`, 'success');
     } catch (err) {
         animSetMeta(`Render failed: ${err.message}`, true);
-        showToast(`Animation failed: ${err.message}`, 'error');
+        animEl('sd-anim-warnings').textContent = '';
     } finally {
         _anim.busy = false;
         if (btn) { btn.textContent = label || '🎞️ Render Animation'; }
