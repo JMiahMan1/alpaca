@@ -6205,14 +6205,33 @@ def get_telemetry_history():
         return jsonify({"model": model, "history": []})
 
     points = []
+    skipped = 0
     try:
-        with open(log_file, encoding="utf-8") as f:
+        with open(log_file, encoding="utf-8", errors="replace") as f:
             for line in f:
-                if line.strip():
+                if not line.strip():
+                    continue
+                try:
                     points.append(json.loads(line))
-        return jsonify({"model": model, "history": points[-limit:]})
-    except Exception as e:
+                except ValueError:
+                    # A process killed mid-append tears the record, so the next
+                    # write starts inside it and the two share a line. That is
+                    # expected in a log this old -- alpaca-web was OOM-killed 29
+                    # times -- and it is not a reason to throw away the file. One
+                    # torn line was killing 365,000 good ones. analyzer.py's
+                    # load_telemetry has always skipped bad lines per line; this
+                    # reader did not, so the two disagreed on the same format.
+                    # Counted and reported rather than silently dropped.
+                    skipped += 1
+                    continue
+    except OSError as e:
+        # A real I/O failure (permissions, unreadable mount) is still an error;
+        # bad *data* in a log is not.
         return jsonify({"error": f"Failed to read telemetry: {e!s}"}), 500
+    payload = {"model": model, "history": points[-limit:]}
+    if skipped:
+        payload["skipped_lines"] = skipped
+    return jsonify(payload)
 
 
 @app.route("/api/telemetry/recommendations")
