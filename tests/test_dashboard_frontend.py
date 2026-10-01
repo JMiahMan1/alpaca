@@ -2172,7 +2172,7 @@ assert.equal(get('reference_roles'), JSON.stringify(['scene', 'hair']),
              'roles were not positional with the photo first');
 assert.equal(get('model'), 'some-instruct-model');
 assert.equal(get('prompt'), 'make it blue');
-assert.equal(get('size'), '1024x1024', 'the size default is not the recipe default');
+assert.equal(get('size'), '768x768', 'the size default is not the recipe default');
 assert.equal(parts.filter(p => p[0].startsWith('image')).length, 2, 'both images were not sent');
 assert.deepEqual(get('image__scene'), sdRecipe.photo.file, 'image 1 was not the photo being edited');
 assert.deepEqual(get('image__hair'), { n: 1 }, 'image 2 was not the reference');

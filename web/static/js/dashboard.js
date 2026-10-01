@@ -2008,7 +2008,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (sdRecipeStatus) sdRecipeStatus.textContent = 'Add the photo to edit.';
                 return;
             }
-            const size = document.getElementById('sd-recipe-size').value.trim() || '1024x1024';
+            const size = document.getElementById('sd-recipe-size').value.trim() || '768x768';
             const instruction = document.getElementById('sd-recipe-prompt').value.trim();
             const seed = resolveSdSeed(document.getElementById('sd-recipe-seed').value);
             const entries = recipeEntries();

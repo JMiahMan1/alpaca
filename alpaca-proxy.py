@@ -3410,7 +3410,14 @@ _EDIT_RECIPES: dict[str, dict[str, Any]] = {
 }
 
 _EDIT_RECIPE_DEFAULTS = {
-    "size": "1024x1024",
+    # 768x768, not 1024x1024: the wan_vae encode of a 1024x1024 init image needs
+    # ~8315 MB of VRAM, which is more than the 8188 MiB the card physically has.
+    # Measured on 192.168.2.43 -- sd-server fails weight preparation with
+    # "model manager cannot make enough memory available" and the request returns
+    # generate_image returned no results, which says nothing about the cause.
+    # 768x768 is also the size of a typical source photo, so an edit does not
+    # spend VRAM upscaling a picture it is about to redraw anyway.
+    "size": "768x768",
     "n": "1",
     "strength": "0.85",
     "steps": "32",
