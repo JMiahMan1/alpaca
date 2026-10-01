@@ -14,6 +14,9 @@ services:
       ROUTER_MODELS_DIR: /router-models
 
   llama-server:
+    # model weights + KV cache, with headroom for a large
+    # quant and CPU offload.
+    mem_limit: 12g
     build:
       context: .
       dockerfile: Dockerfile.llama-server
@@ -54,13 +57,16 @@ services:
     deploy:
       resources:
         limits:
-          memory: 31G
+          memory: 12G
         reservations:
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
   alpaca-proxy:
+    # routing state plus the completed-request buffer, which is capped
+    # at 200 records and observed carrying ~1.9 MB of base64 image each.
+    mem_limit: 4g
     build:
       context: .
       dockerfile: Dockerfile.proxy
@@ -98,6 +104,11 @@ services:
         condition: service_started
 
   alpaca-web:
+    # dashboard and benchmark runner. Steepest observed steady state is
+    # ~261 MiB, and the result corpus can add hundreds of MB during a run, so
+    # this is deliberately generous -- it exists to stop an unbounded leak from
+    # starving the box, not to squeeze a legitimate benchmark.
+    mem_limit: 8g
     build:
       context: .
       dockerfile: Dockerfile.web
@@ -224,15 +235,24 @@ services:
       - ./.alpaca-router:/router-models
       - ./sd-entrypoint.sh:/scripts/sd-entrypoint.sh
     entrypoint: ["/bin/bash", "/scripts/sd-entrypoint.sh"]
-    # Real cap, and the reason it is not `deploy.resources.limits` alone:
-    # `docker compose` outside Swarm silently ignores `deploy:` resource limits,
-    # so a limit written only there leaves the container with NO limit at all
-    # (`docker inspect` shows no MemTotal). The top-level key is the one that
-    # works. Measured working set is ~12.6 GiB with Qwen-Image-2.1 loaded, and
-    # this box has 30 GiB shared with llama-server, sd-server and the dashboard;
-    # without a cap a transient here can starve every other service and the
-    # kernel will OOM-kill whichever process has the largest anonymous RSS.
+    # Memory cap. Measured working set is ~12.6 GiB with Qwen-Image-2.1 loaded,
+    # and this box has 30 GiB shared with llama-server, sd-server and the
+    # dashboard; without a cap a transient here can starve every other service and
+    # the kernel will OOM-kill whichever process has the largest anonymous RSS.
     # 16 GiB leaves room for a larger SD model while bounding the blast radius.
+    # (It was 31 GiB, which on a 30 GiB box is no cap at all.)
+    #
+    # Both keys are written, and deliberately kept identical. An earlier version
+    # of this comment claimed `docker compose` outside Swarm ignores `deploy:`
+    # limits and that only `mem_limit:` works. That was wrong: a container created
+    # before `mem_limit:` existed was inspected and found carrying exactly the
+    # 31G declared under `deploy.resources.limits.memory`, so `deploy:` is honoured
+    # here. Both are kept so the cap holds whichever key a given compose version
+    # or Swarm path reads. See the note in tests/test_container_packaging.py.
+    #
+    # Neither takes effect until the container is recreated -- `docker compose
+    # restart` reuses the existing config. Verify with
+    # `docker inspect -f '{{.HostConfig.Memory}}' sd-server`.
     mem_limit: 16g
     deploy:
       resources:
