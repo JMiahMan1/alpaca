@@ -2601,6 +2601,36 @@ def sd_presets_api():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/sd/edit-recipes", methods=["GET"])
+def sd_edit_recipes_api():
+    """What you can change in a photo, and what the current model supports.
+
+    The dashboard's photo editor renders its controls from this instead of
+    naming a model, which is what used to make the feature feel broken on
+    anything but one engine. `model` is optional so the panel can draw itself
+    before a model is chosen; the proxy then reports references as unavailable
+    rather than the UI refusing to offer them.
+    """
+    import httpx
+
+    model = (request.args.get("model") or "").strip()
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                f"{PROXY_URL}/v1/images/edit-recipes",
+                params={"model": model} if model else None,
+                headers=get_proxy_headers(),
+            )
+            payload = resp.json()
+            # Surface the upstream body verbatim; the proxy's recipe validation
+            # messages are what the user needs, and a proxy that is down should
+            # say so rather than return an empty catalogue that looks like
+            # "this build has no edits".
+            return jsonify(payload), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e), "recipes": []}), 500
+
+
 @app.route("/api/sd/load", methods=["POST"])
 def sd_load_api():
     """Load a Stable Diffusion model into the sd-server backend (no generation)."""

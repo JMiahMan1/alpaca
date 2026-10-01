@@ -3178,14 +3178,44 @@ _MAX_EDIT_IMAGES = 4
 _MAX_EDIT_FILE_BYTES = 32 * 1024 * 1024
 _MAX_EDIT_TOTAL_BYTES = 128 * 1024 * 1024
 _IMAGE_ROLE_PREFIX = "image__"
+# Canonical reference roles, and the words people actually type for them.
+#
+# ``base`` is the photo being edited. It is an alias of ``scene`` because that
+# is what the role meant before photo edits existed, and the Qwen instruction
+# models use ``scene`` to mean "the picture to work from". ``outfit`` and
+# ``hair`` are here because those are the changes people ask for by name;
+# sending an outfit photo as "person" and hoping the model infers the wardrobe
+# is exactly the kind of guess that makes a feature feel broken.
 _REFERENCE_ROLE_ALIASES = {
     "background": "scene",
+    "backdrop": "scene",
+    "place": "scene",
     "scene": "scene",
+    "base": "scene",
+    "photo": "scene",
+    "source": "scene",
     "person": "person",
     "people": "person",
     "face": "face",
     "faces": "face",
+    "identity": "face",
+    "outfit": "outfit",
+    "clothing": "outfit",
+    "wardrobe": "outfit",
+    "costume": "outfit",
+    "hair": "hair",
+    "hairstyle": "hair",
+    "haircut": "hair",
+    "style": "style",
+    "pose": "style",
+    "lighting": "style",
+    "object": "object",
+    "prop": "object",
 }
+
+# The roles a caller may attach as a *reference* (i.e. not the base photo).
+# "scene" is the base role, so it is deliberately absent from this set.
+_REFERENCE_ONLY_ROLES = frozenset({"face", "person", "outfit", "hair", "style", "object"})
 
 
 def _canonical_reference_role(role: Any) -> str | None:
@@ -3270,6 +3300,171 @@ def _is_qwen_image_21_model(model_name: str) -> bool:
     return "qwen" in normalized and "image-2.1" in normalized
 
 
+def _model_family(model_name: str) -> str:
+    """Best-effort model family for a public name or a router id."""
+    normalized = (model_name or "").lower().replace("_", "-")
+    if "qwen" in normalized and "image" in normalized:
+        return "qwen-image"
+    for family in ("stable-diffusion", "sdxl", "flux"):
+        if family in normalized:
+            return family
+    return ""
+
+
+# Families that consume several reference images in one request and let an
+# instruction say "use <image3> for the face". That is a property of the engine
+# the model runs on, not of the model file's name, so it is kept as data: a new
+# instruct model is supported by adding its family here, not by editing a
+# conditional somewhere in a request handler.
+_REFERENCE_IMAGE_FAMILIES = frozenset({"qwen-image"})
+
+
+def model_capabilities(model_name: str) -> dict[str, Any]:
+    """What this model can do, for the UI to ask before it offers an option."""
+    family = _model_family(model_name)
+    return {
+        "model": model_name,
+        "family": family or "unknown",
+        "reference_images": family in _REFERENCE_IMAGE_FAMILIES,
+        "max_reference_images": 4 if family in _REFERENCE_IMAGE_FAMILIES else 0,
+        "negative_prompt": family != "qwen-image",
+    }
+
+
+def _supports_reference_images(model_name: str) -> bool:
+    return bool(model_capabilities(model_name)["reference_images"])
+
+
+# A photo edit is always the same shape: a photo to edit, optionally some
+# reference images, and a description of the change. What varies per change is
+# only the instruction scaffolding and which reference is expected -- so that is
+# data, not a branch in a request handler. Adding a new kind of change is one
+# entry here, not new validation code.
+#
+# The Qwen identity composite is NOT one of these. It needs three images in a
+# fixed order and is gated to one model family, which is exactly the coupling
+# this layer exists to remove. It is frozen here for compatibility with stored
+# results and pinned by tests; new work uses edit.*.
+_LEGACY_IDENTITY_PRESETS = frozenset({"qwen_image_21.identity"})
+_EDIT_RECIPES: dict[str, dict[str, Any]] = {
+    "edit.face": {
+        "label": "Change the face",
+        "change": "face",
+        "expects": "face",
+        "instruction": (
+            "Edit <image1>. Replace the face with the person in the face reference: match their facial "
+            "structure, skin tone, eye colour and age as closely as the medium allows. Keep the original "
+            "hair, clothing, pose, lighting, background and camera angle exactly as they are. Blend the "
+            "jawline and neck into the original head naturally, and keep the result photorealistic."
+        ),
+        "needs_reference": False,
+    },
+    "edit.outfit": {
+        "label": "Change the outfit",
+        "change": "outfit",
+        "expects": "outfit",
+        "instruction": (
+            "Edit <image1>. Change only the clothing to match the outfit reference: same garment type, "
+            "colour, fabric and cut. Keep the person's face, hair, body shape, pose, hands, lighting and "
+            "background unchanged. Match the new garment to the existing light direction and fabric "
+            "response so it looks worn rather than pasted on."
+        ),
+        "needs_reference": False,
+    },
+    "edit.hair": {
+        "label": "Change the hair",
+        "change": "hair",
+        "expects": "hair",
+        "instruction": (
+            "Edit <image1>. Change only the hairstyle to match the hair reference: same length, colour "
+            "and texture. Keep the face, clothing, body, pose, lighting and background unchanged. Re-draw "
+            "the hairline, part and any occlusion over the forehead, ears and shoulders so it sits on the "
+            "head correctly, with the same flyaway detail as the rest of the image."
+        ),
+        "needs_reference": False,
+    },
+    "edit.background": {
+        "label": "Change the background / place",
+        "change": "scene",
+        "expects": "scene",
+        "instruction": (
+            "Edit <image1>. Replace the background with the scene shown in the reference: same place, "
+            "time of day and weather. Keep every person unchanged in face, hair, clothing, pose and scale. "
+            "Re-light the people, the ground and any contact shadows to match the new background's light "
+            "direction and colour temperature, and re-draw their edges so they are occluded by foreground "
+            "objects where the new scene has them."
+        ),
+        "needs_reference": False,
+    },
+    "edit.identity": {
+        "label": "Keep the face, change everything else",
+        "change": "style",
+        "expects": None,
+        "instruction": (
+            "Edit <image1>. Keep the person's face and identity exactly as they are. Change everything "
+            "else as described below: clothing, hair, setting and lighting. Preserve facial structure, "
+            "skin tone and expression, and do not alter the pose or body unless asked."
+        ),
+        "needs_reference": False,
+    },
+}
+
+_EDIT_RECIPE_DEFAULTS = {
+    "size": "1024x1024",
+    "n": "1",
+    "strength": "0.85",
+    "steps": "32",
+    "sampler": "euler",
+    "scheduler": "simple",
+    "cfg_scale": "1",
+    "negative_prompt": "",
+}
+
+# ceil-style ladder: how many references a model of this capability can take.
+_MAX_REFERENCE_IMAGES = 4
+
+
+def _edit_recipe_summary() -> list[dict[str, Any]]:
+    """The recipe catalogue for the UI, so it offers changes and not models."""
+    return [
+        {
+            "id": key,
+            "label": recipe["label"],
+            "change": recipe["change"],
+            "expects": recipe["expects"],
+            "needs_reference": recipe["needs_reference"],
+            # The instruction travels so the panel can show the user what is
+            # actually going to be asked for. A feature that silently rewrites
+            # your photo is worse than one that tells you what it is doing.
+            "instruction": recipe["instruction"],
+            "min_images": 1,
+            "max_images": 1 + _MAX_REFERENCE_IMAGES,
+        }
+        for key, recipe in _EDIT_RECIPES.items()
+    ]
+
+
+def _compose_edit_prompt(recipe: dict[str, Any], roles: list[str], user_prompt: str) -> str:
+    """Instruction plus a per-image caption built from the roles we were given.
+
+    The engine only sees ordered images, so the roles have to reach it as words.
+    Anything the caller attached beyond the base gets an explicit
+    "<imageN> is the X reference" sentence -- otherwise the model has three
+    images and no idea which is which, which is the actual source of most
+    "it ignored my reference" complaints.
+    """
+    parts = [str(recipe["instruction"]).strip()]
+    expected = recipe.get("expects")
+    for index, role in enumerate(roles[1:], start=2):
+        if role == expected:
+            parts.append(f"<image{index}> is the {recipe['label'].lower().replace('change the ', '')} reference to follow.")
+        else:
+            parts.append(f"<image{index}> is a {role} reference; use it only where it is relevant.")
+    if user_prompt:
+        parts.append(f"User instruction: {user_prompt}")
+    return " ".join(parts)
+
+
 def _edit_seed(value: Any) -> int:
     try:
         seed = int(value)
@@ -3280,16 +3475,94 @@ def _edit_seed(value: Any) -> int:
     return seed
 
 
+def _apply_edit_recipe(
+    data: dict[str, Any],
+    image_count: int,
+    requested_model: str,
+    preset_name: str,
+    recipe: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A photo edit: one photo to change, optionally some references, a change.
+
+    The validation is about *the request*, never about which model is loaded.
+    Every model can take a photo and a description. Only the ability to read
+    extra reference images varies, and when it does we say so plainly instead of
+    demanding a particular model by name.
+    """
+    if image_count < 1:
+        raise ValueError(f"{recipe['label']} needs the photo to edit")
+    # A caller may send no roles at all -- that is the common case, an edit
+    # described in words against one photo. Roles are then inferred below.
+    # Only validate the count when the caller actually took part in naming them.
+    raw_roles = data.get("reference_roles")
+    roles = _parse_reference_roles(raw_roles) if raw_roles else []
+    if raw_roles and len(roles) != image_count:
+        raise ValueError("reference_roles must contain one role for each image")
+
+    if not roles:
+        roles = ["scene", *([recipe["change"]] * (image_count - 1))]
+
+    # The base photo is positional, not role-named. "place", "background" and
+    # "scene" all canonicalise to scene, so a background *reference* looks
+    # identical to a second photo -- and rejecting it as two photos to edit is
+    # exactly the confusion that makes this feel broken. Image 1 is the photo
+    # being edited; anything after it is a reference, and a scene-shaped
+    # reference is only meaningful for the recipe that asks for one.
+    references = roles[1:]
+    # The base is the photo being edited whatever the caller called it. Anything
+    # else that canonicalises to "scene" is the role the *change* wants, so
+    # image 1 is always reported as the scene it is.
+    roles = ["scene", *references]
+    if any(role not in _REFERENCE_ONLY_ROLES and role != recipe["change"] for role in references):
+        raise ValueError(f"Unsupported reference for {recipe['label']}")
+
+    if references and not _supports_reference_images(requested_model):
+        raise ValueError(
+            f"{requested_model} reads one image at a time, so it cannot use "
+            f"{len(references)} reference image(s). Describe the change in words instead, or switch to a "
+            "model that accepts references (any Qwen Image model does)."
+        )
+
+    for key, value in _EDIT_RECIPE_DEFAULTS.items():
+        if key not in data or data.get(key) in (None, ""):
+            data[key] = str(value)
+    data["negative_prompt"] = ""
+    data["seed"] = str(_edit_seed(data.get("seed")))
+
+    user_prompt = str(data.get("prompt") or "").strip()
+    prompt = _compose_edit_prompt(recipe, roles, user_prompt)
+    data["prompt"] = prompt
+    data["reference_roles"] = json.dumps(roles)
+    return data, {
+        "preset": preset_name,
+        "preset_version": 2,
+        "recipe": recipe["label"],
+        "change": recipe["change"],
+        "reference_roles": roles,
+        "reference_count": len(references),
+        "reference_images_supported": _supports_reference_images(requested_model),
+        "effective_prompt": prompt,
+        "seed": int(data["seed"]),
+    }
+
+
 def _apply_edit_preset(
     data: dict[str, Any], image_count: int, requested_model: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     preset_name = str(data.get("preset") or "").strip()
     if not preset_name:
         return data, {}
+    recipe = _EDIT_RECIPES.get(preset_name)
+    if recipe is not None:
+        return _apply_edit_recipe(data, image_count, requested_model, preset_name, recipe)
     preset = SD_PRESETS.get(preset_name)
     if not isinstance(preset, dict):
         raise ValueError(f"Unknown image preset: {preset_name}")
     if preset_name == "qwen_image_21.identity":
+        # Frozen legacy recipe. It predates the edit.* family and is pinned by
+        # tests; it keeps its own scene/person/face ordering and its own
+        # multi-image requirement. New work should use an edit.* recipe, which
+        # is model-agnostic and one image minimum rather than three.
         if not _is_qwen_image_21_model(requested_model):
             raise ValueError("qwen_image_21.identity requires a Qwen Image 2.1 model")
         roles = _parse_reference_roles(data.get("reference_roles"))
@@ -4132,6 +4405,34 @@ async def get_image_capabilities() -> JSONResponse:
 async def get_image_presets() -> JSONResponse:
     """Returns curated presets for realistic photo editing and flyer text generation."""
     return JSONResponse(content=SD_PRESETS)
+
+
+@app.get("/v1/images/edit-recipes")
+async def get_image_edit_recipes(model: str = "") -> JSONResponse:
+    """What you can change in a photo, and what the chosen model is able to do.
+
+    The panel asks this instead of hardcoding a model name. It is deliberately
+    shaped around *changes* ("change the outfit") rather than around models,
+    because the old identity-composite feature asked for "scene first, people
+    second, face identity third" and was wired to one model -- which is what made
+    it both unintuitive and unusable with anything else.
+
+    `model` is optional: with no model the catalogue still comes back, so the UI
+    can render the controls before anything is loaded, and simply reports that
+    references are unavailable rather than refusing to draw.
+    """
+    model_name = (model or "").strip()
+    return JSONResponse(
+        content={
+            "recipes": _edit_recipe_summary(),
+            "model": model_name,
+            "capabilities": model_capabilities(model_name) if model_name else None,
+            "reference_families": sorted(_REFERENCE_IMAGE_FAMILIES),
+            # Frozen, kept for the legacy preset, not offered as a recipe.
+            "legacy_presets": sorted(_LEGACY_IDENTITY_PRESETS),
+            "max_reference_images": _MAX_REFERENCE_IMAGES,
+        }
+    )
 
 
 @app.post("/v1/images/edits")
