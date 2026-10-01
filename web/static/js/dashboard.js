@@ -1583,6 +1583,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         box.style.display = 'block';
         box.textContent = recipe.instruction;
+
+        // The reference slot is the one thing a first-time user cannot guess, and
+        // whether it is required depends on the change they just picked, not on
+        // the model. "Swap the face" is meaningless with one photo, so the label
+        // has to say which photo is wanted rather than leaving "optional" up
+        // next to an input the button will refuse without.
+        const label = document.getElementById('sd-recipe-reference-label');
+        if (label && !_recipeReferenceDisabled()) {
+            if (recipe.needs_reference) {
+                label.textContent = '2 · The face to copy FROM (required)';
+            } else if (recipe.expects === 'scene') {
+                label.textContent = '2 · A photo of the place you want (optional)';
+            } else {
+                label.textContent = '2 · Reference photo (optional)';
+            }
+        }
+    }
+
+    // True when the loaded model cannot read reference images at all, in which
+    // case updateIdentityWorkflowVisibility owns the label.
+    function _recipeReferenceDisabled() {
+        return !!(sdRecipe.capabilities && !sdRecipe.capabilities.reference_images);
     }
 
     function recipeEntries() {
