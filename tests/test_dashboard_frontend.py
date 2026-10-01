@@ -2412,3 +2412,67 @@ setTimeout(() => { process.stdout.write('SENT=' + SENT.length); }, 30);
     assert "SENT=0" in proc.stdout, (
         f"the harness did not notice the model gate returning; stdout={proc.stdout!r} stderr={proc.stderr[:300]!r}"
     )
+
+
+def test_the_reference_slot_says_which_photo_is_wanted():
+    """The one thing a first-time user cannot guess.
+
+    Whether the reference slot is required depends on the change they picked,
+    not on the model -- so the label has to change with the chip. Leaving
+    "optional" next to an input the button will refuse without is how a feature
+    reads as broken.
+
+    Driven through selectedRecipe/renderRecipePreview rather than a synthetic
+    click: the chip handler re-creates the chip list, and the harness's
+    children-tracking does not survive that re-render, so a click here would be
+    testing the stub rather than the label.
+    """
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+const label = byId['sd-recipe-reference-label'];
+function show(id) { sdRecipe.selected = id; renderRecipePreview(); }
+
+show('edit.face');
+assert.ok(label.textContent.indexOf('required') !== -1,
+           'the face swap did not mark the reference as required: ' + label.textContent);
+assert.ok(label.textContent.indexOf('copy FROM') !== -1,
+           'the label does not say it is the face being copied from: ' + label.textContent);
+assert.equal(label.textContent.indexOf('optional'), -1,
+             'a required reference is still labelled optional: ' + label.textContent);
+
+show('edit.outfit');
+assert.ok(label.textContent.indexOf('optional') !== -1,
+           'the outfit change should be optional again: ' + label.textContent);
+
+show('edit.background');
+assert.ok(label.textContent.indexOf('place') !== -1,
+           'a background change should ask for a photo of the place: ' + label.textContent);
+
+show('edit.hair');
+assert.ok(label.textContent.indexOf('optional') !== -1,
+           'the hair change should be optional: ' + label.textContent);
+process.stdout.write('label ok');
+""",
+    )
+    assert "label ok" in out
+
+
+def test_the_panel_header_no_longer_promises_that_a_reference_is_always_optional():
+    """The subtitle is the first thing read, and it used to be wrong.
+
+    It said a reference photo is optional and words work too -- true for four of
+    the five changes, and exactly the false promise that made a face swap feel
+    broken. Asserted against the template so the copy cannot drift back.
+    """
+    import re as _re
+
+    html = (Path(__file__).resolve().parent.parent / "web" / "templates" / "index.html").read_text()
+    panel = html[html.index('id="sd-recipe-workflow"') : html.index('id="sd-panel-ocr"')]
+    text = " ".join(_re.sub(r"<[^>]+>", " ", panel).split())
+    assert "A reference photo is optional" not in text, (
+        "the panel header still promises a reference is always optional, which is false for a face swap"
+    )
+    assert "face swap needs a second photo" in text, "the header should say the face swap is the exception"
