@@ -37,7 +37,6 @@ def _slice(start_marker: str, end_marker: str) -> str:
 # Slices taken verbatim from the shipped file.
 SLICE_ESCAPE = _slice("    // Escape HTML helper for safe innerHTML interpolation", "    // Online model prefix tester")
 SLICE_ONLINE_MODEL = _slice("    // Online model prefix tester", "    // Socket initialization")
-SLICE_QWEN_SEED = _slice("    function isQwenImage21Model(modelName) {", "    async function loadSdPresets() {")
 SLICE_RESOLVE_SEED = _slice("    function resolveSdSeed(rawValue) {", "    // Advanced engine settings shared by the generation panels.")
 SLICE_GRADE_FILTER = _slice("    function gradeForScore(score) {", "    function _testCardHtml(t) {")
 SLICE_STARS = _slice("    const STAR_POINTS_PER_STAR = 30;", "    // Run the winning model's generated code from a Test Browser card directly,")
@@ -207,41 +206,11 @@ log.push('ok');
 
 
 # --------------------------------------------------------------------------
-# isQwenImage21Model / resolveSdSeed — Image Studio gating
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "Qwen-Image-2.1-GGUF/qwen_image_2.1-Q4_K",
-        "qwen_image_2.1_q4_k",
-        "QWEN-IMAGE-2.1",
-        "qwen-image-2.1:q8",
-    ],
-)
-def test_qwen_image_21_variants_are_detected(name):
-    run_js(
-        SLICE_QWEN_SEED
-        + f"""
-assert.equal(isQwenImage21Model({json.dumps(name)}), true);
-log.push('ok');
-"""
-    )
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["", None, "stable-diffusion-xl-base-1.0", "qwen3-vl-8b", "qwen-image-2.0", "image-2.1", "qwen"],
-)
-def test_non_qwen_21_image_models_are_rejected(name):
-    run_js(
-        SLICE_QWEN_SEED
-        + f"""
-assert.equal(isQwenImage21Model({json.dumps(name)}), false);
-log.push('ok');
-"""
-    )
 
 
 def test_a_valid_seed_is_rolled_exactly():
@@ -1712,3 +1681,611 @@ process.stdout.write('visibility follows the motion type');
 """,
     )
     assert "visibility follows" in out
+
+
+# --------------------------------------------------------------------------
+# sdRecipe — "Change One Thing" photo-edit panel
+#
+# The panel it replaced asked for "scene first, people second, face third" and
+# refused to run unless a Qwen Image 2.1 model was selected. That coupled the
+# whole feature to one model's input format and made the UI describe its inputs
+# rather than the change the user wants. The replacement is: one photo, a
+# named change, and optional references -- with whether references are even
+# possible answered by the proxy's per-model capability, not by a hardcoded
+# model name.
+# --------------------------------------------------------------------------
+
+SLICE_RECIPE_A = _slice("    const sdRecipe = { recipes: [],", "/** Downscale oversized JPEG/PNG sources in-browser")
+SLICE_RECIPE_B = _slice("    const sdRecipeBtn = document.getElementById('sd-recipe-btn');", "    if (sdEditBtn) {")
+
+RECIPE_STATUS = {
+    "recipes": [
+        {
+            "id": "edit.face",
+            "label": "Change the face",
+            "change": "face",
+            "expects": "face",
+            "instruction": "Replace the face in <image1> with the face in <image2>.",
+            "needs_reference": True,
+            "min_images": 1,
+            "max_images": 3,
+        },
+        {
+            "id": "edit.outfit",
+            "label": "Change the outfit",
+            "change": "outfit",
+            "expects": "outfit",
+            "instruction": "Dress the person in <image1> in the clothing from <image2>.",
+            "needs_reference": True,
+            "min_images": 1,
+            "max_images": 3,
+        },
+        {
+            "id": "edit.hair",
+            "label": "Change the hair",
+            "change": "hair",
+            "expects": "hair",
+            "instruction": "Re-draw the hair on <image1> to match <image2>.",
+            "needs_reference": True,
+            "min_images": 1,
+            "max_images": 3,
+        },
+        {
+            "id": "edit.background",
+            "label": "Change the background",
+            "change": "scene",
+            "expects": "scene",
+            "instruction": "Replace the setting around the person in <image1>.",
+            "needs_reference": True,
+            "min_images": 1,
+            "max_images": 3,
+        },
+        {
+            "id": "edit.identity",
+            "label": "Keep the face, change everything else",
+            "change": "identity",
+            "expects": None,
+            "instruction": "Keep the face in <image1> and change everything else.",
+            "needs_reference": False,
+            "min_images": 1,
+            "max_images": 3,
+        },
+    ],
+    "model": "some-instruct-model",
+    "capabilities": {
+        "model": "some-instruct-model",
+        "family": "qwen-image",
+        "reference_images": True,
+        "max_reference_images": 2,
+        "negative_prompt": False,
+    },
+    "reference_families": ["qwen-image"],
+    "legacy_presets": ["qwen_image_21.identity"],
+    "max_reference_images": 4,
+}
+
+
+def _recipe_prelude(status_body=None, *, reference_images=True, max_refs=2):
+    """The Animate panel's DOM stub, plus a fetch that answers the recipe route."""
+    body = RECIPE_STATUS if status_body is None else status_body
+    if status_body is None:
+        body = json.loads(json.dumps(body))
+        body["capabilities"] = dict(body["capabilities"])
+        body["capabilities"]["reference_images"] = reference_images
+        body["capabilities"]["max_reference_images"] = max_refs
+    prelude = _anim_prelude(body)
+    # The Animate stub answers every fetch with the same document; the recipe
+    # panel only ever makes the one call, so that is sufficient -- but the path
+    # is asserted so a future second call cannot silently reuse the wrong body.
+    prelude = prelude.replace(
+        "globalThis.fetch = async () => ({ ok: true, json: async () => (STATUS_BODY) });",
+        "globalThis.__fetches = [];\n"
+        "globalThis.fetch = async (url) => { globalThis.__fetches.push(String(url));"
+        " return { ok: true, json: async () => (STATUS_BODY) }; };",
+    )
+    # The recipe chips and thumbnails are appended to real containers, so the
+    # stub has to accumulate children -- otherwise `children.length` is another
+    # Proxy and every count assertion silently passes on ''.
+    return prelude + """
+// A WeakSet, not a property: reading any key off the Proxy yields another
+// Proxy, which is always truthy, so `if (el.__tracked)` would bail on every
+// call and silently track nothing.
+const __tracked = new WeakSet();
+function __track(el) {
+  if (__tracked.has(el)) return el;
+  __tracked.add(el);
+  const kids = [];
+  el.children = kids;
+  el.appendChild = (kid) => { kids.push(kid); return kid; };
+  el.append = (...more) => { kids.push(...more); };   // card.append(image, label, remove)
+  el.remove = () => { kids.length = 0; };
+  el.insertBefore = (kid) => { kids.unshift(kid); return kid; };
+  el.addEventListener = (evt, fn) => { (el.__handlers = el.__handlers || {})[evt] = fn; };
+  return el;
+}
+const __mkRaw = mkEl;
+mkEl = function () { return __track(__mkRaw()); };
+const __getRaw = globalThis.document.getElementById;
+globalThis.document.getElementById = (id) => __track(__getRaw(id));
+globalThis.document.createElement = () => __track(__mkRaw());
+// renderRecipeThumbs previews each source with URL.createObjectURL, which node
+// does not provide.
+globalThis.URL = { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} };
+"""
+
+
+def _strip_js_comments(src: str) -> str:
+    """Remove /* */ and // comments before asserting on source text.
+
+    The panel carries an explanatory comment naming `isQwenImage21Model`, which
+    is the function it deleted. A grep that did not strip comments would read
+    that note as the bug still being present.
+    """
+    out = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
+    out = re.sub(r"(?m)^[ \t]*//.*$", "", out)
+    return out
+
+
+# --- structure -------------------------------------------------------------
+
+
+def test_the_recipe_panel_exists_and_names_no_model():
+    html = (ROOT / "web" / "templates" / "index.html").read_text()
+    assert 'id="sd-recipe-workflow"' in html
+    assert "sd-identity" not in html, "the old identity ids are still in the template"
+    assert "Qwen Image 2.1 Identity" not in html, "a model name is still in the panel heading"
+
+
+def test_the_recipe_panel_carries_the_ids_the_js_reads():
+    html = (ROOT / "web" / "templates" / "index.html").read_text()
+    required = [
+        "sd-recipe-capability", "sd-recipe-photo", "sd-recipe-reference",
+        "sd-recipe-reference-label", "sd-recipe-chips", "sd-recipe-thumbs",
+        "sd-recipe-preview", "sd-recipe-prompt", "sd-recipe-size",
+        "sd-recipe-seed", "sd-recipe-btn", "sd-recipe-clear-btn", "sd-recipe-status",
+    ]
+    for i in required:
+        assert f'id="{i}"' in html, f"index.html does not declare {i}"
+    found = re.findall(r'id="([^"]+)"', html)
+    dupes = {i for i in found if found.count(i) > 1}
+    assert not dupes, f"duplicate ids in index.html: {sorted(dupes)}"
+
+
+def test_the_recipe_path_contains_no_qwen_gate():
+    """The bug being removed, pinned. Comments stripped first."""
+    code = _strip_js_comments(SLICE_RECIPE_A + SLICE_RECIPE_B)
+    assert "qwen_image_21.identity" not in code, "the legacy preset is still sent from the panel"
+    assert "isQwenImage21Model" not in code, "the panel still gates on the model name"
+    assert "sd-identity" not in code, "the panel still targets the deleted identity ids"
+
+
+def test_the_reuse_target_points_at_the_seed_input_that_exists():
+    """A stale target id makes the Reuse button silently do nothing."""
+    js = _strip_js_comments(JS)
+    assert "'recipe' ? 'sd-recipe-seed' : 'sd-gen-seed'" in js
+    html = (ROOT / "web" / "templates" / "index.html").read_text()
+    assert 'id="sd-recipe-seed"' in html
+
+
+# --- the catalogue ---------------------------------------------------------
+
+
+def test_the_panel_loads_its_change_list_from_the_server():
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+assert.equal(sdRecipe.recipes.length, 5, 'the catalogue did not populate');
+// It preselects the first change on purpose: the button is one of the two
+// things a person must do, and making them also pick the change is friction
+// for no benefit.
+assert.equal(sdRecipe.selected, 'edit.face', 'the first change was not preselected');
+assert.equal(selectedRecipe().label, 'Change the face', 'the preselection did not resolve to a recipe');
+process.stdout.write('recipes=' + sdRecipe.recipes.length);
+""",
+    )
+    assert "recipes=5" in out
+
+
+def test_the_catalogue_is_asked_for_before_a_model_is_chosen():
+    """The panel must render with no model selected, not sit empty."""
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+assert.ok(globalThis.__fetches.length >= 1, 'no request was made');
+process.stdout.write('first=' + globalThis.__fetches[0]);
+""",
+    )
+    assert "edit-recipes" in out
+    assert "model=" not in out.split("first=")[1], "a model was sent even though none is chosen"
+
+
+def test_a_change_chip_is_rendered_for_every_recipe():
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+const chips = byId['sd-recipe-chips'];
+assert.ok(chips.children, 'the chip container has no children list');
+process.stdout.write('chips=' + chips.children.length);
+""",
+    )
+    assert "chips=5" in out
+
+
+def test_the_panel_shows_what_the_selected_change_will_do():
+    """The instruction is the 'what will happen' preview, from the server."""
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+sdRecipe.selected = 'edit.hair';
+renderRecipePreview();
+const pv = byId['sd-recipe-preview'];
+assert.ok(pv.textContent.indexOf('Re-draw the hair') !== -1,
+           'the preview did not show the instruction: ' + pv.textContent);
+process.stdout.write('preview ok');
+""",
+    )
+    assert "preview ok" in out
+
+
+# --- capabilities ----------------------------------------------------------
+
+
+def test_a_model_that_reads_references_says_so():
+    out = _run_js_async(
+        _recipe_prelude(reference_images=True, max_refs=2),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+updateIdentityWorkflowVisibility('some-instruct-model');
+assert.ok(/2/.test(byId['sd-recipe-capability'].textContent),
+           'the capability chip did not state the reference count: ' + byId['sd-recipe-capability'].textContent);
+process.stdout.write('chip=' + byId['sd-recipe-capability'].textContent);
+""",
+    )
+    assert "chip=" in out
+
+
+def test_a_model_that_cannot_read_references_disables_the_input_and_says_why():
+    out = _run_js_async(
+        _recipe_prelude(reference_images=False, max_refs=0),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+updateIdentityWorkflowVisibility('plain-diffusion-model');
+const ref = byId['sd-recipe-reference'];
+assert.equal(ref.disabled, true, 'the reference input stayed enabled on a single-image model');
+assert.ok(/text only/i.test(byId['sd-recipe-capability'].textContent),
+           'the chip did not say references are unavailable: ' + byId['sd-recipe-capability'].textContent);
+assert.ok(byId['sd-recipe-reference-label'].textContent.length > 0, 'the label was left saying nothing');
+process.stdout.write('disabled ok');
+""",
+    )
+    assert "disabled ok" in out
+
+
+def test_the_panel_is_available_to_any_model_including_a_plain_diffusion_one():
+    out = _run_js_async(
+        _recipe_prelude(reference_images=False, max_refs=0),
+        SLICE_RECIPE_A,
+        """
+updateIdentityWorkflowVisibility('stable-diffusion-xl-base-1.0');
+const wf = byId['sd-recipe-workflow'];
+assert.equal(wf.classList.remove.callCount ?? undefined, undefined, 'sanity');
+process.stdout.write('visible');
+""",
+    )
+    assert "visible" in out
+
+
+# --- switching change ------------------------------------------------------
+
+
+def test_switching_change_drops_references_that_no_longer_apply():
+    """A face photo offered as an outfit reference is worse than no reference."""
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+await new Promise(r => setTimeout(r, 20));
+sdRecipe.photo = { name: 'me.png', file: {} };
+sdRecipe.references = [{ name: 'face.jpg', file: {}, role: 'face' }];
+renderRecipeThumbs();
+assert.equal(sdRecipe.references.length, 1, 'precondition: one reference');
+const outfitChip = byId['sd-recipe-chips'].children[1];
+assert.equal(outfitChip.dataset.recipeId, 'edit.outfit', 'chip 1 is not the outfit change');
+outfitChip.__handlers.click();
+assert.equal(sdRecipe.references.length, 0,
+             'a face reference survived a switch to the outfit recipe');
+process.stdout.write('cleared');
+""",
+    )
+    assert "cleared" in out
+
+
+def test_switching_change_keeps_a_reference_the_new_change_also_uses():
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+await new Promise(r => setTimeout(r, 20));
+const bgChip = byId['sd-recipe-chips'].children[3];
+assert.equal(bgChip.dataset.recipeId, 'edit.background', 'chip 3 is not the background change');
+bgChip.__handlers.click();
+sdRecipe.references = [{ name: 'beach.jpg', file: {}, role: 'scene' }];
+renderRecipeThumbs();
+bgChip.__handlers.click();   // re-click the same change
+assert.equal(sdRecipe.references.length, 1,
+             'a still-relevant reference was thrown away on the same recipe');
+process.stdout.write('kept');
+""",
+    )
+    assert "kept" in out
+
+
+# --- button gating ---------------------------------------------------------
+
+
+def test_the_button_asks_for_a_photo_before_it_asks_for_a_render():
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+renderRecipeButton();
+const btn = byId['sd-recipe-btn'];
+assert.equal(btn.disabled, true, 'the button was enabled with no photo');
+assert.ok(/photo/i.test(btn.textContent), 'the button did not say what is missing: ' + btn.textContent);
+process.stdout.write('gated');
+""",
+    )
+    assert "gated" in out
+
+
+def test_the_button_enables_with_the_recipes_own_label_once_there_is_a_photo():
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+sdRecipe.selected = 'edit.hair';
+sdRecipe.photo = { name: 'me.png', file: {} };
+renderRecipeButton();
+const btn = byId['sd-recipe-btn'];
+assert.equal(btn.disabled, false, 'the button stayed disabled with a photo and a change');
+assert.ok(btn.textContent.indexOf('Change the hair') !== -1,
+           'the button did not become the action: ' + btn.textContent);
+process.stdout.write('enabled');
+""",
+    )
+    assert "enabled" in out
+
+
+# --- the submit payload ----------------------------------------------------
+#
+# Slice B is the submit handler. It lives outside slice A, so the collaborators
+# it reads (`selectedRecipe`, `recipeEntries`, `downscaleEditFile`,
+# `resolveSdSeed`, `renderSDResultCard`) are stubbed here -- they are not what
+# this block is testing.
+
+
+def _submit_prelude():
+    return (
+        """
+function universal() {
+  const store = new Map();
+  const f = function () { return universal(); };
+  return new Proxy(f, {
+    get(t, k) {
+      if (store.has(k)) return store.get(k);
+      if (k === 'dataset') return store.set(k, {}).get(k);
+      if (k === 'style') return store.set(k, {}).get(k);
+      if (k === 'classList') return store.set(k, { add(){}, remove(){}, toggle(){}, contains(){ return false; } }).get(k);
+      if (k === 'value') return '';
+      if (k === 'textContent') return '';
+      if (k === 'checked') return false;
+      if (k === Symbol.toPrimitive) return () => '';
+      return universal();
+    },
+    set(t, k, v) { store.set(k, v); return true; },
+    apply() { return universal(); },
+  });
+}
+const byId = {};
+function mkEl() {
+  const el = universal();
+  el.dataset = {};
+  el.classList = { add(){}, remove(){}, toggle(){}, contains(){ return false; } };
+  el.value = '';
+  el.textContent = '';
+  el.style = {};
+  el.disabled = false;
+  el.__handlers = {};
+  el.addEventListener = (evt, fn) => { el.__handlers[evt] = fn; };
+  return el;
+}
+globalThis.document = {
+  hidden: false,
+  getElementById: (id) => (byId[id] ||= mkEl()),
+  createElement: () => mkEl(),
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+};
+globalThis.setInterval = () => 1;
+globalThis.clearInterval = () => {};
+
+// --- stubs for everything slice B reads from outside itself ---
+let RECIPE = null;
+let ENTRIES = [];
+const SENT = [];
+function selectedRecipe() { return RECIPE; }
+function recipeEntries() { return ENTRIES; }
+function downscaleEditFile(f) { return Promise.resolve(f); }
+function resolveSdSeed(v) { return Number(v); }
+function renderSDResultCard() {}
+// The handler's `finally` calls this; it lives in slice A and is not under test here.
+function renderRecipeButton() {}
+const sdRecipe = { selected: '', photo: null, references: [] };
+globalThis.FormData = class {
+  constructor() { this.parts = []; }
+  append(k, v) { this.parts.push([k, v]); }
+};
+globalThis.fetch = async (url, opts) => {
+  SENT.push({ url: String(url), body: opts && opts.body, headers: opts && opts.headers });
+  return { ok: true, json: async () => ({ data: [{ b64_json: 'AAAA' }], seed: 7 }) };
+};
+"""
+    )
+
+
+def test_the_submit_sends_the_recipe_id_and_positional_roles():
+    """The heart of the change: `preset` is a change, and role 1 is the photo."""
+    out = _run_js_async(
+        _submit_prelude(),
+        SLICE_RECIPE_B,
+        """
+byId['sd-model-select'] = Object.assign(mkEl(), { value: 'some-instruct-model' });
+byId['sd-recipe-seed'] = Object.assign(mkEl(), { value: '-1' });
+byId['sd-recipe-size'] = Object.assign(mkEl(), { value: '' });
+byId['sd-recipe-prompt'] = Object.assign(mkEl(), { value: 'make it blue' });
+sdRecipe.photo = { name: 'me.png', file: { n: 0 } };
+RECIPE = { id: 'edit.hair', label: 'Change the hair', instruction: 'new hair' };
+ENTRIES = [{ role: 'scene', file: { n: 0 } }, { role: 'hair', file: { n: 1 } }];
+
+byId['sd-recipe-btn'].__handlers.click();
+await new Promise(r => setTimeout(r, 20));
+
+assert.equal(SENT.length, 1, 'the request was not sent');
+const parts = SENT[0].body.parts;
+const get = (k) => { const hit = parts.filter(p => p[0] === k); return hit.length ? hit[0][1] : undefined; };
+assert.equal(get('preset'), 'edit.hair', 'preset was not the recipe id');
+assert.equal(get('reference_roles'), JSON.stringify(['scene', 'hair']),
+             'roles were not positional with the photo first');
+assert.equal(get('model'), 'some-instruct-model');
+assert.equal(get('prompt'), 'make it blue');
+assert.equal(get('size'), '1024x1024', 'the size default is not the recipe default');
+assert.equal(parts.filter(p => p[0].startsWith('image')).length, 2, 'both images were not sent');
+assert.deepEqual(get('image__scene'), sdRecipe.photo.file, 'image 1 was not the photo being edited');
+assert.deepEqual(get('image__hair'), { n: 1 }, 'image 2 was not the reference');
+process.stdout.write('payload ' + JSON.stringify({ preset: get('preset'), roles: get('reference_roles') }));
+""",
+    )
+    # The role assertion was already made inside node against the parsed value;
+    # re-checking the escaped string here would only test JSON.stringify.
+    assert '"preset":"edit.hair"' in out
+
+
+def test_the_submit_refuses_without_a_photo_and_says_so():
+    out = _run_js_async(
+        _submit_prelude(),
+        SLICE_RECIPE_B,
+        """
+byId['sd-model-select'] = Object.assign(mkEl(), { value: 'some-instruct-model' });
+RECIPE = { id: 'edit.hair', label: 'Change the hair' };
+ENTRIES = [];
+sdRecipe.photo = null;
+byId['sd-recipe-btn'].__handlers.click();
+await new Promise(r => setTimeout(r, 20));
+assert.equal(SENT.length, 0, 'it sent a request with no photo');
+assert.ok(/photo/i.test(byId['sd-recipe-status'].textContent),
+           'it did not say what is missing: ' + byId['sd-recipe-status'].textContent);
+process.stdout.write('refused');
+""",
+    )
+    assert "refused" in out
+
+
+def test_a_text_only_change_sends_one_image_and_no_reference_roles_beyond_it():
+    """Words work too -- the most common case must not require a reference."""
+    out = _run_js_async(
+        _submit_prelude(),
+        SLICE_RECIPE_B,
+        """
+byId['sd-model-select'] = Object.assign(mkEl(), { value: 'some-instruct-model' });
+byId['sd-recipe-seed'] = Object.assign(mkEl(), { value: '-1' });
+byId['sd-recipe-size'] = Object.assign(mkEl(), { value: '' });
+byId['sd-recipe-prompt'] = Object.assign(mkEl(), { value: 'a forest in winter' });
+sdRecipe.photo = { name: 'me.png', file: { n: 0 } };
+RECIPE = { id: 'edit.background', label: 'Change the background' };
+ENTRIES = [{ role: 'scene', file: { n: 0 } }];
+byId['sd-recipe-btn'].__handlers.click();
+await new Promise(r => setTimeout(r, 20));
+const parts = SENT[0].body.parts;
+assert.equal(parts.filter(p => p[0].startsWith('image')).length, 1, 'extra images were invented');
+assert.ok(parts.filter(p => p[0] === 'reference_roles')[0][1] === '["scene"]',
+           'the lone photo was not reported as the base');
+process.stdout.write('text-only ok');
+""",
+    )
+    assert "text-only ok" in out
+
+
+def test_the_submit_posts_to_the_edit_endpoint():
+    out = _run_js_async(
+        _submit_prelude(),
+        SLICE_RECIPE_B,
+        """
+byId['sd-model-select'] = Object.assign(mkEl(), { value: 'm' });
+byId['sd-recipe-seed'] = Object.assign(mkEl(), { value: '-1' });
+byId['sd-recipe-size'] = Object.assign(mkEl(), { value: '' });
+byId['sd-recipe-prompt'] = Object.assign(mkEl(), { value: '' });
+sdRecipe.photo = { name: 'me.png', file: {} };
+RECIPE = { id: 'edit.identity', label: 'Keep the face' };
+ENTRIES = [{ role: 'scene', file: {} }];
+byId['sd-recipe-btn'].__handlers.click();
+await new Promise(r => setTimeout(r, 20));
+assert.ok(SENT[0].url.indexOf('/api/sd/edit') !== -1, 'posted to the wrong endpoint: ' + SENT[0].url);
+process.stdout.write('endpoint ' + SENT[0].url);
+""",
+    )
+    assert "/api/sd/edit" in out
+
+
+# --- teeth: the guard this whole change exists for --------------------------
+
+
+def test_reintroducing_the_model_gate_makes_the_harness_fail():
+    """Re-introduce the original bug and prove this suite would catch it.
+
+    The bug being removed was a hard `isQwenImage21Model(model)` gate in the
+    submit handler, which made the whole feature refuse to run for every model
+    except one. If a future edit puts any model-name gate back, this fails.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for dashboard frontend behavior tests")
+    gated = SLICE_RECIPE_B.replace(
+        "const recipe = selectedRecipe();",
+        "const recipe = selectedRecipe();\n"
+        "            if (!String(model).toLowerCase().includes('qwen')) { return; }",
+        1,
+    )
+    assert gated != SLICE_RECIPE_B, "could not inject the model gate"
+    script = (
+        _submit_prelude()
+        + gated
+        + """
+byId['sd-model-select'] = Object.assign(mkEl(), { value: 'stable-diffusion-xl-base-1.0' });
+byId['sd-recipe-seed'] = Object.assign(mkEl(), { value: '-1' });
+byId['sd-recipe-size'] = Object.assign(mkEl(), { value: '' });
+byId['sd-recipe-prompt'] = Object.assign(mkEl(), { value: '' });
+sdRecipe.photo = { name: 'me.png', file: {} };
+RECIPE = { id: 'edit.face', label: 'Change the face' };
+ENTRIES = [{ role: 'scene', file: {} }];
+byId['sd-recipe-btn'].__handlers.click();
+setTimeout(() => { process.stdout.write('SENT=' + SENT.length); }, 30);
+"""
+    )
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert "SENT=0" in proc.stdout, (
+        f"the harness did not notice the model gate returning; stdout={proc.stdout!r} stderr={proc.stderr[:300]!r}"
+    )

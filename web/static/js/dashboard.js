@@ -296,12 +296,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // options the running build does not have.
     let sdCapabilities = null;
     let sdPresets = {};
-    const sdIdentityRefs = { scene: null, person: null, face: [] };
+    // Photo-edit recipes: one photo, one change, optional reference photos.
+    // The list of changes comes from /api/sd/edit-recipes, never from here, so
+    // adding a change on the server needs no edit to this file.
+    const sdRecipe = { recipes: [], capabilities: null, selected: '', photo: null, references: [] };
 
-    function isQwenImage21Model(modelName) {
-        const normalized = String(modelName || '').toLowerCase().replace(/_/g, '-');
-        return normalized.includes('qwen') && normalized.includes('image-2.1');
-    }
+    // isQwenImage21Model() used to gate the whole identity feature: the panel
+    // refused to open for anything else, so the feature only worked with one
+    // model. Which models can read reference images is now the proxy's answer
+    // (model_capabilities) and is fetched per model, so a new instruct model
+    // needs no edit here. Removed rather than left as dead code.
 
     async function loadSdPresets() {
         try {
@@ -491,19 +495,35 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateIdentityWorkflowVisibility(modelName) {
-        const workflow = document.getElementById('sd-identity-workflow');
+        // Photo edits are not tied to one model. Any loaded model can edit a
+        // photo from text alone; whether it can also *read* reference photos is
+        // a capability the server reports, and the panel says so rather than
+        // hiding itself. Gating this panel on one model name is what made the
+        // feature feel broken.
+        const workflow = document.getElementById('sd-recipe-workflow');
         if (!workflow) return;
-        const active = isQwenImage21Model(modelName);
-        workflow.classList.toggle('d-none', !active);
-        if (active) {
-            const preset = sdPresets['qwen_image_21.identity'];
-            const defaults = preset && preset.defaults ? preset.defaults : {};
-            const note = document.getElementById('sd-identity-recipe-note');
-            if (note) {
-                note.textContent = `${defaults.steps || 32} steps · CFG ${defaults.cfg_scale || 1} · ${defaults.scheduler || 'simple'}`;
+        workflow.classList.toggle('d-none', !modelName);
+        if (!modelName) return;
+        const caps = sdRecipe.capabilities;
+        const chip = document.getElementById('sd-recipe-capability');
+        if (chip) {
+            if (!caps) {
+                chip.textContent = 'loading capabilities…';
+            } else if (caps.reference_images) {
+                chip.textContent = `reads ${caps.max_reference_images} reference photo${caps.max_reference_images === 1 ? '' : 's'}`;
+            } else {
+                chip.textContent = 'text only — no reference photos';
             }
-            const size = document.getElementById('sd-identity-size');
-            if (size && !size.value) size.value = defaults.size || '640x768';
+        }
+        const refInput = document.getElementById('sd-recipe-reference');
+        if (refInput) refInput.disabled = !caps || !caps.reference_images;
+        const refLabel = document.getElementById('sd-recipe-reference-label');
+        if (refLabel) {
+            refLabel.textContent = !caps
+                ? '2 · Reference photo (optional)'
+                : caps.reference_images
+                    ? '2 · Reference photo of what you want (optional)'
+                    : '2 · Reference photo — this model reads one image at a time, so describe it in words instead';
         }
     }
 
@@ -747,7 +767,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 reuse.style.cursor = 'pointer';
                 reuse.addEventListener('click', (ev) => {
                     ev.preventDefault();
-                    const seedInput = document.getElementById(meta.reuseTarget === 'identity' ? 'sd-identity-seed' : 'sd-gen-seed');
+                    const seedInput = document.getElementById(meta.reuseTarget === 'recipe' ? 'sd-recipe-seed' : 'sd-gen-seed');
                     if (seedInput) {
                         seedInput.value = meta.seed;
                         seedInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1510,85 +1530,201 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function identityReferenceEntries() {
+    function selectedRecipe() {
+        return sdRecipe.recipes.find(recipe => recipe.id === sdRecipe.selected) || null;
+    }
+
+    function renderRecipeChips() {
+        const box = document.getElementById('sd-recipe-chips');
+        if (!box) return;
+        box.innerHTML = '';
+        sdRecipe.recipes.forEach(recipe => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.dataset.recipeId = recipe.id;
+            const on = recipe.id === sdRecipe.selected;
+            chip.textContent = recipe.label;
+            chip.title = recipe.note || recipe.label;
+            chip.style.cssText = 'border:1px solid ' + (on ? '#a855f7' : 'rgba(148,163,184,0.35)')
+                + ';background:' + (on ? 'rgba(168,85,247,0.18)' : '#0f172a')
+                + ';color:' + (on ? '#f3e8ff' : '#cbd5e1')
+                + ';border-radius:16px;padding:0.3rem 0.7rem;font-size:0.75rem;cursor:pointer;';
+            chip.addEventListener('click', () => {
+                sdRecipe.selected = recipe.id;
+                // References are captioned by the change they serve, so switching
+                // change has to drop them: a face photo offered as an outfit
+                // reference is worse than no reference at all.
+                if (recipe.expects && recipe.expects !== sdRecipe.references[0]?.role) {
+                    sdRecipe.references = [];
+                    const input = document.getElementById('sd-recipe-reference');
+                    if (input) input.value = '';
+                }
+                renderRecipeChips();
+                renderRecipeThumbs();
+                renderRecipePreview();
+                renderRecipeButton();
+            });
+            box.appendChild(chip);
+        });
+    }
+
+    function renderRecipePreview() {
+        const box = document.getElementById('sd-recipe-preview');
+        if (!box) return;
+        const recipe = selectedRecipe();
+        if (!recipe || !recipe.instruction) {
+            box.style.display = 'none';
+            return;
+        }
+        box.style.display = 'block';
+        box.textContent = recipe.instruction;
+    }
+
+    function recipeEntries() {
+        const recipe = selectedRecipe();
         const entries = [];
-        if (sdIdentityRefs.scene) entries.push({ role: 'scene', file: sdIdentityRefs.scene });
-        if (sdIdentityRefs.person) entries.push({ role: 'person', file: sdIdentityRefs.person });
-        sdIdentityRefs.face.forEach(file => entries.push({ role: 'face', file }));
+        if (sdRecipe.photo) entries.push({ role: 'scene', file: sdRecipe.photo });
+        sdRecipe.references.forEach((file, index) => {
+            const role = index === 0 && recipe && recipe.expects ? recipe.expects : 'style';
+            entries.push({ role, file });
+        });
         return entries;
     }
 
-    function renderIdentityReferences() {
-        const list = document.getElementById('sd-identity-reference-list');
+    function renderRecipeThumbs() {
+        const list = document.getElementById('sd-recipe-thumbs');
         if (!list) return;
         list.innerHTML = '';
-        const entries = identityReferenceEntries();
+        const entries = recipeEntries();
         entries.forEach((entry, index) => {
             const card = document.createElement('div');
-            card.style.cssText = 'display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.45rem;border:1px solid rgba(192,132,252,0.25);border-radius:6px;background:#0f172a;';
+            card.style.cssText = 'display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.45rem;'
+                + 'border:1px solid rgba(192,132,252,0.25);border-radius:6px;background:#0f172a;';
             const image = document.createElement('img');
-            image.src = URL.createObjectURL(entry.file);
+            const url = URL.createObjectURL(entry.file);
+            image.src = url;
             image.alt = entry.file.name;
             image.style.cssText = 'width:42px;height:42px;object-fit:cover;border-radius:4px;';
-            image.onload = () => URL.revokeObjectURL(image.src);
+            image.onload = () => URL.revokeObjectURL(url);
             const label = document.createElement('span');
-            label.style.cssText = 'font-size:0.68rem;color:#cbd5e1;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-            label.textContent = `${index + 1}. ${entry.role}`;
+            const caption = index === 0 ? 'the photo to edit' : entry.role + ' reference';
+            label.style.cssText = 'font-size:0.68rem;color:#cbd5e1;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            label.textContent = caption;
             label.title = entry.file.name;
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.textContent = '×';
-            remove.title = `Remove ${entry.role} reference`;
+            remove.title = 'Remove ' + caption;
             remove.style.cssText = 'border:0;background:transparent;color:#94a3b8;cursor:pointer;font-size:1rem;';
             remove.addEventListener('click', () => {
-                if (entry.role === 'face') {
-                    const faceIndex = sdIdentityRefs.face.indexOf(entry.file);
-                    if (faceIndex >= 0) sdIdentityRefs.face.splice(faceIndex, 1);
+                if (index === 0) {
+                    sdRecipe.photo = null;
+                    const input = document.getElementById('sd-recipe-photo');
+                    if (input) input.value = '';
                 } else {
-                    sdIdentityRefs[entry.role] = null;
+                    sdRecipe.references.splice(index - 1, 1);
                 }
-                renderIdentityReferences();
+                renderRecipeThumbs();
+                renderRecipeButton();
             });
             card.append(image, label, remove);
             list.appendChild(card);
         });
+        renderRecipeButton();
     }
 
-    function clearIdentityReferences() {
-        sdIdentityRefs.scene = null;
-        sdIdentityRefs.person = null;
-        sdIdentityRefs.face = [];
-        ['sd-identity-scene', 'sd-identity-person', 'sd-identity-face'].forEach(id => {
+    function renderRecipeButton() {
+        const btn = document.getElementById('sd-recipe-btn');
+        if (!btn) return;
+        const recipe = selectedRecipe();
+        const photo = !!sdRecipe.photo;
+        if (!recipe) {
+            btn.disabled = true;
+            btn.textContent = 'Pick what to change';
+            return;
+        }
+        if (!photo) {
+            btn.disabled = true;
+            btn.textContent = `Add the photo to edit`;
+            return;
+        }
+        btn.disabled = false;
+        btn.textContent = recipe.label;
+    }
+
+    function clearRecipe() {
+        sdRecipe.photo = null;
+        sdRecipe.references = [];
+        ['sd-recipe-photo', 'sd-recipe-reference'].forEach(id => {
             const input = document.getElementById(id);
             if (input) input.value = '';
         });
-        renderIdentityReferences();
+        const prompt = document.getElementById('sd-recipe-prompt');
+        if (prompt) prompt.value = '';
+        renderRecipeThumbs();
     }
 
-    function bindIdentityReferenceInput(role, inputId) {
-        const input = document.getElementById(inputId);
-        if (!input) return;
-        input.addEventListener('change', () => {
-            const files = Array.from(input.files || []).filter(file => file.type.startsWith('image/'));
-            if (role === 'face') {
-                sdIdentityRefs.face = files.slice(0, 2);
-                if (files.length > 2) {
-                    const status = document.getElementById('sd-identity-status');
-                    if (status) status.textContent = 'Only the first two face references are used.';
-                }
-            } else if (files[0]) {
-                sdIdentityRefs[role] = files[0];
+    async function loadRecipeCatalogue(modelName) {
+        const model = String(modelName || '').trim();
+        try {
+            const url = model ? `/api/sd/edit-recipes?model=${encodeURIComponent(model)}` : '/api/sd/edit-recipes';
+            const res = await fetch(url);
+            const data = await res.json();
+            if (!res.ok) {
+                const status = document.getElementById('sd-recipe-status');
+                if (status) status.textContent = data.error || 'Could not load the list of edits.';
+                return;
             }
-            renderIdentityReferences();
+            sdRecipe.recipes = Array.isArray(data.recipes) ? data.recipes : [];
+            sdRecipe.capabilities = data.capabilities || null;
+            if (sdRecipe.selected && !sdRecipe.recipes.some(r => r.id === sdRecipe.selected)) {
+                sdRecipe.selected = sdRecipe.recipes.length ? sdRecipe.recipes[0].id : '';
+            }
+            if (!sdRecipe.selected && sdRecipe.recipes.length) sdRecipe.selected = sdRecipe.recipes[0].id;
+            renderRecipeChips();
+            renderRecipeThumbs();
+            renderRecipePreview();
+            updateIdentityWorkflowVisibility(document.getElementById('sd-model-select')?.value || '');
+        } catch (e) {
+            const status = document.getElementById('sd-recipe-status');
+            if (status) status.textContent = 'Could not load the list of edits: ' + e.message;
+        }
+    }
+
+    const recipePhotoInput = document.getElementById('sd-recipe-photo');
+    if (recipePhotoInput) {
+        recipePhotoInput.addEventListener('change', () => {
+            const file = Array.from(recipePhotoInput.files || []).find(f => f.type.startsWith('image/'));
+            sdRecipe.photo = file || null;
+            renderRecipeThumbs();
         });
     }
-
-    bindIdentityReferenceInput('scene', 'sd-identity-scene');
-    bindIdentityReferenceInput('person', 'sd-identity-person');
-    bindIdentityReferenceInput('face', 'sd-identity-face');
-    const clearIdentityBtn = document.getElementById('sd-identity-clear-btn');
-    if (clearIdentityBtn) clearIdentityBtn.addEventListener('click', clearIdentityReferences);
-    renderIdentityReferences();
+    const recipeRefInput = document.getElementById('sd-recipe-reference');
+    if (recipeRefInput) {
+        recipeRefInput.addEventListener('change', () => {
+            const caps = sdRecipe.capabilities;
+            const max = caps && caps.reference_images ? caps.max_reference_images : 0;
+            const files = Array.from(recipeRefInput.files || []).filter(f => f.type.startsWith('image/'));
+            sdRecipe.references = files.slice(0, max);
+            const status = document.getElementById('sd-recipe-status');
+            if (status && files.length > max) {
+                status.textContent = max
+                    ? `This model reads ${max} reference photo${max === 1 ? '' : 's'}; the rest were dropped.`
+                    : 'This model reads one image at a time — describe the change in words instead.';
+            }
+            renderRecipeThumbs();
+        });
+    }
+    const clearRecipeBtn = document.getElementById('sd-recipe-clear-btn');
+    if (clearRecipeBtn) clearRecipeBtn.addEventListener('click', clearRecipe);
+    const recipePromptInput = document.getElementById('sd-recipe-prompt');
+    if (recipePromptInput) {
+        recipePromptInput.addEventListener('input', () => {
+            const status = document.getElementById('sd-recipe-status');
+            if (status && status.dataset.role === 'refs') status.textContent = '';
+        });
+    }
+    loadRecipeCatalogue('');
 
     /** Downscale oversized JPEG/PNG sources in-browser so multi-image edits
      *  do not push multi-MB camera files through the proxy onto 8GB VRAM. */
@@ -1855,62 +1991,69 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    const sdIdentityBtn = document.getElementById('sd-identity-btn');
-    const sdIdentityStatus = document.getElementById('sd-identity-status');
-    if (sdIdentityBtn) {
-        sdIdentityBtn.addEventListener('click', async () => {
+    const sdRecipeBtn = document.getElementById('sd-recipe-btn');
+    const sdRecipeStatus = document.getElementById('sd-recipe-status');
+    if (sdRecipeBtn) {
+        sdRecipeBtn.addEventListener('click', async () => {
             const model = document.getElementById('sd-model-select').value;
-            const entries = identityReferenceEntries();
-            if (!model || !isQwenImage21Model(model)) {
-                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Select the Qwen Image 2.1 model first.';
+            const recipe = selectedRecipe();
+            // The gate is the photo and the chosen change, never a model name:
+            // whether references can be used is the proxy's business, and it says
+            // so in a sentence a person can act on.
+            if (!recipe) {
+                if (sdRecipeStatus) sdRecipeStatus.textContent = 'Pick what to change.';
                 return;
             }
-            if (!sdIdentityRefs.scene || !sdIdentityRefs.person || sdIdentityRefs.face.length === 0) {
-                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Add a scene, people image, and at least one face reference.';
+            if (!sdRecipe.photo) {
+                if (sdRecipeStatus) sdRecipeStatus.textContent = 'Add the photo to edit.';
                 return;
             }
-            const size = document.getElementById('sd-identity-size').value.trim() || '640x768';
-            const instruction = document.getElementById('sd-identity-prompt').value.trim();
-            const seed = resolveSdSeed(document.getElementById('sd-identity-seed').value);
+            const size = document.getElementById('sd-recipe-size').value.trim() || '1024x1024';
+            const instruction = document.getElementById('sd-recipe-prompt').value.trim();
+            const seed = resolveSdSeed(document.getElementById('sd-recipe-seed').value);
+            const entries = recipeEntries();
             const fd = new FormData();
             fd.append('model', model);
-            fd.append('preset', 'qwen_image_21.identity');
+            fd.append('preset', recipe.id);
+            // Roles are positional and one per image; the first is always the
+            // photo being edited. The proxy refuses a mismatch by count, so this
+            // must stay in lockstep with recipeEntries().
             fd.append('reference_roles', JSON.stringify(entries.map(entry => entry.role)));
             fd.append('prompt', instruction);
             fd.append('size', size);
             fd.append('n', '1');
             fd.append('seed', String(seed));
             fd.append('output_format', 'png');
-            sdIdentityBtn.disabled = true;
+            sdRecipeBtn.disabled = true;
             let progressTimer = null;
             const progressStart = Date.now();
             try {
-                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Preparing ordered references...';
+                if (sdRecipeStatus) sdRecipeStatus.textContent = 'Preparing your photo and references...';
                 const prepared = await Promise.all(entries.map(entry => downscaleEditFile(entry.file, 1024)));
                 prepared.forEach((file, index) => fd.append(`image__${entries[index].role}`, file));
-                if (sdIdentityStatus) sdIdentityStatus.textContent = 'Qwen is conditioning the scene and identity references...';
+                if (sdRecipeStatus) sdRecipeStatus.textContent = `${recipe.label} — rendering…`;
                 progressTimer = setInterval(() => {
                     const seconds = Math.round((Date.now() - progressStart) / 1000);
-                    if (sdIdentityStatus) sdIdentityStatus.textContent = `Rendering identity composite… ${seconds}s`;
+                    if (sdRecipeStatus) sdRecipeStatus.textContent = `${recipe.label} — rendering… ${seconds}s`;
                 }, 1000);
                 const res = await fetch('/api/sd/edit', { method: 'POST', body: fd });
                 const data = await res.json();
                 if (!res.ok || !data.data) {
-                    throw new Error(data.error || data.detail || 'Identity composite failed');
+                    throw new Error(data.error || data.detail || `${recipe.label} failed`);
                 }
                 const responseSeed = data.seed ?? seed;
-                data.data.forEach(item => renderSDResultCard(item, sdResults, 'identity_composite', {
+                data.data.forEach(item => renderSDResultCard(item, sdResults, 'recipe', {
                     prompt: data.effective_prompt || instruction,
                     seed: responseSeed,
                     outputFormat: data.output_format || 'png',
-                    reuseTarget: 'identity',
+                    reuseTarget: 'recipe',
                 }));
-                if (sdIdentityStatus) sdIdentityStatus.textContent = `Completed with seed ${responseSeed}.`;
+                if (sdRecipeStatus) sdRecipeStatus.textContent = `Completed with seed ${responseSeed}.`;
             } catch (e) {
-                if (sdIdentityStatus) sdIdentityStatus.textContent = `${e.message}. References kept; press Render Identity Composite to retry.`;
+                if (sdRecipeStatus) sdRecipeStatus.textContent = `${e.message}. Your photo and references are kept — press the button again to retry.`;
             } finally {
                 if (progressTimer) clearInterval(progressTimer);
-                sdIdentityBtn.disabled = false;
+                renderRecipeButton();
             }
         });
     }
