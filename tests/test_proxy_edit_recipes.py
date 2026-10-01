@@ -392,3 +392,41 @@ def test_no_preset_at_all_is_a_pass_through():
     data, meta = proxy._apply_edit_preset({"prompt": "x"}, 1, QWEN)
     assert meta == {}
     assert data == {"prompt": "x"}
+
+
+
+def _repo_file(*parts):
+    return pathlib.Path(__file__).resolve().parent.parent.joinpath(*parts)
+
+
+def test_the_recipe_default_size_fits_the_card():
+    """The default must be a size the VAE encode can actually allocate.
+
+    1024x1024 needs ~8315 MB to encode the init image, which is more than the
+    8188 MiB an RTX 4060 has. sd-server reports that as "generate_image returned
+    no results" and only its container log mentions memory, so the real cause is
+    invisible from the dashboard -- which is exactly why the default is pinned.
+    """
+    assert proxy._EDIT_RECIPE_DEFAULTS["size"] == "768x768", (
+        f"the recipe default size must fit 8 GB of VRAM; got {proxy._EDIT_RECIPE_DEFAULTS['size']!r}"
+    )
+
+
+def test_the_default_size_is_the_same_everywhere_it_is_written():
+    """The proxy, the panel's size field and the JS fallback must agree.
+
+    Three separate places spell this default, and the browser will happily POST
+    a size the proxy was never validated against. Changing one and forgetting the
+    other two is the bug, so all three are pinned together.
+    """
+    template = _repo_file("web", "templates", "index.html").read_text()
+    assert 'id="sd-recipe-size" value="768x768"' in template, (
+        "the panel's size default disagrees with the proxy's"
+    )
+
+    js = _repo_file("web", "static", "js", "dashboard.js").read_text()
+    line = next((s for s in js.splitlines() if "getElementById('sd-recipe-size')" in s), None)
+    assert line is not None, "the recipe submit handler no longer reads sd-recipe-size"
+    assert "'768x768'" in line, f"the JS fallback disagrees with the proxy default: {line.strip()}"
+
+    assert proxy._EDIT_RECIPE_DEFAULTS["size"] == "768x768"
