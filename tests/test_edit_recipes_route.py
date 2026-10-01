@@ -70,9 +70,39 @@ def test_the_proxy_route_serves_the_catalogue_and_the_model_capabilities(proxy):
     for vendor in ("qwen", "sdxl", "flux", "stable-diffusion", "2.1"):
         assert vendor not in blob, f"the recipe catalogue names {vendor!r}; the panel must offer changes"
 
+    # The text-to-image model is family "qwen-image" but is NOT an edit model,
+    # so it must not claim reference support. This is the field the panel reads
+    # before it lets anyone upload a second photo, and it was the wrong answer.
     assert body["model"] == "Qwen-Image-2.1-GGUF/qwen_image_2.1"
-    assert body["capabilities"]["reference_images"] is True
-    assert body["capabilities"]["max_reference_images"] == 4
+    assert body["capabilities"]["reference_images"] is False
+    assert body["capabilities"]["max_reference_images"] == 0
+
+
+def test_the_route_reports_reference_support_for_an_actual_edit_model(proxy):
+    """Same family, and this one really can read a second image."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(proxy.app)
+    resp = client.get("/v1/images/edit-recipes", params={"model": "qwen-image-edit-rapid-aio:q4_k"})
+    assert resp.status_code == 200
+    caps = resp.json()["capabilities"]
+    assert caps["reference_images"] is True
+    assert caps["max_reference_images"] == 4
+
+
+def test_every_recipe_is_still_offered_to_a_text_to_image_model(proxy):
+    """No references is no reason to hide a change -- the panel disables the
+    second slot and says why, which is what the last commit fixed."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(proxy.app)
+    resp = client.get("/v1/images/edit-recipes", params={"model": "Qwen-Image-2.1-GGUF/qwen_image_2.1"})
+    body = resp.json()
+    assert len(body["recipes"]) == 5
+    by_id = {r["id"]: r for r in body["recipes"]}
+    # Only the swap needs a second photo, and it says so up front.
+    assert by_id["edit.face"]["needs_reference"] is True
+    assert by_id["edit.outfit"]["needs_reference"] is False
 
 
 def test_the_proxy_route_works_with_no_model_chosen(proxy):
