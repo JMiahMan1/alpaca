@@ -516,7 +516,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         const refInput = document.getElementById('sd-recipe-reference');
-        if (refInput) refInput.disabled = !caps || !caps.reference_images;
+        // No capabilities means no model loaded, which is *unknown*, not "this
+        // model cannot read references". Disabling here made a face swap
+        // unreachable before a model was chosen -- the one change that always
+        // needs two photos could not be given its second photo. Only a model that
+        // has actually said it reads one image at a time gets the input closed.
+        if (refInput) refInput.disabled = !!(caps && !caps.reference_images);
         const refLabel = document.getElementById('sd-recipe-reference-label');
         if (refLabel) {
             refLabel.textContent = !caps
@@ -1601,10 +1606,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // True when the loaded model cannot read reference images at all, in which
-    // case updateIdentityWorkflowVisibility owns the label.
+    // True when the loaded model has said it cannot read reference images at
+    // all, in which case updateIdentityWorkflowVisibility owns the label.
+    // A null `capabilities` means no model is loaded -- unknown, not "no" -- so
+    // the label is left alone and the slot stays open.
     function _recipeReferenceDisabled() {
-        return !!(sdRecipe.capabilities && !sdRecipe.capabilities.reference_images);
+        const caps = sdRecipe.capabilities;
+        return !!(caps && !caps.reference_images);
     }
 
     function recipeEntries() {
