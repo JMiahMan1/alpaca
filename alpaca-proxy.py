@@ -3318,15 +3318,39 @@ def _model_family(model_name: str) -> str:
 # conditional somewhere in a request handler.
 _REFERENCE_IMAGE_FAMILIES = frozenset({"qwen-image"})
 
+# A family being reference-capable is NOT enough. Within the qwen-image family
+# there are two different models with the same family string: a text-to-image
+# model and an edit model, and only the latter was trained to read a second
+# image. Sending a reference to the text-to-image one loads a vision-language
+# encoder that then competes with the diffusion transformer for VRAM and the
+# request dies in weight preparation with "generate_image returned no results" --
+# an error that names neither images nor memory.
+#
+# So the reference capability is keyed on the edit marker in the model's own
+# name, not on the family alone. Verified on 192.168.2.43 at 640x768:
+#   qwen-image-edit-rapid-aio:q4_k  -> HTTP 200, 832k chars of PNG
+#   qwen-image-edit-2511:q3_k_s    -> HTTP 200, 477k chars of PNG
+#   Qwen-Image-2.1-GGUF/... (t2i)   -> 502, qwen2.5vl encoder vs transformer
+_REFERENCE_MODEL_MARKERS = ("image-edit", "image_edit", "-edit-")
+
+
+def _is_reference_model(model_name: str) -> bool:
+    """True only for models that can actually read a reference image."""
+    normalized = (model_name or "").lower()
+    if _model_family(model_name) not in _REFERENCE_IMAGE_FAMILIES:
+        return False
+    return any(marker in normalized for marker in _REFERENCE_MODEL_MARKERS)
+
 
 def model_capabilities(model_name: str) -> dict[str, Any]:
     """What this model can do, for the UI to ask before it offers an option."""
     family = _model_family(model_name)
+    can_reference = _is_reference_model(model_name)
     return {
         "model": model_name,
         "family": family or "unknown",
-        "reference_images": family in _REFERENCE_IMAGE_FAMILIES,
-        "max_reference_images": 4 if family in _REFERENCE_IMAGE_FAMILIES else 0,
+        "reference_images": can_reference,
+        "max_reference_images": 4 if can_reference else 0,
         "negative_prompt": family != "qwen-image",
     }
 
@@ -3423,14 +3447,16 @@ _EDIT_RECIPES: dict[str, dict[str, Any]] = {
 }
 
 _EDIT_RECIPE_DEFAULTS = {
-    # 768x768, not 1024x1024: the wan_vae encode of a 1024x1024 init image needs
-    # ~8315 MB of VRAM, which is more than the 8188 MiB the card physically has.
-    # Measured on 192.168.2.43 -- sd-server fails weight preparation with
-    # "model manager cannot make enough memory available" and the request returns
-    # generate_image returned no results, which says nothing about the cause.
-    # 768x768 is also the size of a typical source photo, so an edit does not
-    # spend VRAM upscaling a picture it is about to redraw anyway.
-    "size": "768x768",
+    # 640x768, measured on 192.168.2.43 with both reference models:
+    #   qwen-image-edit-rapid-aio:q4_k  640x768 -> 200, 708s, 832k chars
+    #   qwen-image-edit-rapid-aio:q4_k  768x768 -> 502 (transformer will not fit)
+    #   qwen-image-edit-2511:q3_k_s    640x768 -> 200, 820s, 477k chars
+    #   qwen-image-edit-2511:q3_k_s    768x768 -> 502
+    # 1024x1024 is worse still: the wan_vae encode of a 1024x1024 init image
+    # needs ~8315 MB, more than the 8188 MiB the card physically has.
+    # 640x768 is also the size the original Qwen identity preset shipped with,
+    # which is why that preset worked before this panel existed.
+    "size": "640x768",
     "n": "1",
     "strength": "0.85",
     "steps": "32",
@@ -3547,10 +3573,19 @@ def _apply_edit_recipe(
         )
 
     if references and not _supports_reference_images(requested_model):
+        if recipe.get("needs_reference"):
+            # This is the case that has to be exact. A face swap cannot be done
+            # in words at all, so "describe it instead" is not advice here --
+            # the only thing that helps is knowing which model to load.
+            raise ValueError(
+                f"A face swap needs an edit model -- {requested_model} is a text-to-image model and "
+                "cannot read the second photo. Load qwen-image-edit-rapid-aio or qwen-image-edit-2511 "
+                "in Image Studio and pick that one."
+            )
         raise ValueError(
             f"{requested_model} reads one image at a time, so it cannot use "
             f"{len(references)} reference image(s). Describe the change in words instead, or switch to a "
-            "model that accepts references (any Qwen Image model does)."
+            "model that accepts references (qwen-image-edit-rapid-aio or qwen-image-edit-2511)."
         )
 
     for key, value in _EDIT_RECIPE_DEFAULTS.items():

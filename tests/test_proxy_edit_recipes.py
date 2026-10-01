@@ -37,10 +37,16 @@ with tempfile.TemporaryDirectory() as tmpdir:
     SPEC.loader.exec_module(proxy)
 
 QWEN = "Qwen-Image-2.1-GGUF/qwen_image_2.1"
+# The reference-capable model. NOT the same as QWEN: both are family "qwen-image",
+# but only the edit model was trained to read a second image. Verified on
+# 192.168.2.43 -- the edit models return HTTP 200 for a two-image face swap and
+# the text-to-image model returns 502 because its vision encoder and the
+# diffusion transformer compete for VRAM.
+EDIT_MODEL = "qwen-image-edit-rapid-aio:q4_k"
 SDXL = "stable-diffusion-xl-base-1.0"
 
 
-def apply(preset, images=1, roles=None, model=QWEN, prompt="a photo"):
+def apply(preset, images=1, roles=None, model=EDIT_MODEL, prompt="a photo"):
     data = {"prompt": prompt, "preset": preset}
     if roles is not None:
         data["reference_roles"] = json.dumps(roles)
@@ -105,7 +111,10 @@ def test_identity_is_the_one_change_that_needs_no_reference_role():
 @pytest.mark.parametrize(
     ("name", "family", "refs", "neg"),
     [
-        ("Qwen-Image-2.1-GGUF/qwen_image_2.1", "qwen-image", True, False),
+        # Same family, different capability. The text-to-image model cannot read
+        # a second image; asserting otherwise is what made the panel send it and
+        # get a 502 back.
+        ("Qwen-Image-2.1-GGUF/qwen_image_2.1", "qwen-image", False, False),
         ("Qwen-Image-Edit-Rapid-AIO:q4_k", "qwen-image", True, False),
         # _model_family checks "stable-diffusion" before "sdxl", and it IS a substring
         # of this name -- so that is the honest answer, not sdxl.
@@ -147,7 +156,11 @@ def test_a_new_reference_family_is_one_line_of_data():
             before | {"some-new-instruct-family"},
         )
         mp.setattr(proxy, "_model_family", lambda name: "some-new-instruct-family")
-        _data, meta = apply("edit.face", images=2, roles=["photo", "face"], model="whatever")
+        # A family is necessary but no longer sufficient -- a model also has to
+        # look like a reference model. Registering a new family therefore means
+        # adding its family AND its marker, and both are data.
+        mp.setattr(proxy, "_REFERENCE_MODEL_MARKERS", ("image-edit", "new-family-model"))
+        _data, meta = apply("edit.face", images=2, roles=["photo", "face"], model="new-family-model")
         assert meta["reference_images_supported"] is True
 
 
@@ -294,12 +307,35 @@ def test_a_bare_reference_with_no_base_is_still_the_base():
 # --------------------------------------------------------------------------
 
 
-def test_references_on_a_single_image_model_are_refused_by_name_and_with_an_alternative():
+def test_a_face_swap_on_a_text_to_image_model_names_the_edit_models_to_load():
+    """A swap cannot be done in words, so the refusal must name a model.
+
+    Telling someone to "describe the change in words instead" when the change
+    inherently needs a second face sends them nowhere -- and worse, the
+    text-to-image model looks like a reasonable thing to be holding.
+    """
     message = refuses(
         "edit.face", SDXL, images=2, roles=["photo", "face"], model=SDXL, prompt="x"
     )
-    assert "reference image" in message.lower()
+    assert "edit model" in message.lower(), f"the refusal must say why: {message}"
+    assert "qwen-image-edit" in message.lower(), f"the refusal must name one: {message}"
+
+
+def test_a_reference_on_a_single_image_model_is_refused_with_the_words_alternative():
+    """A change that CAN be described in words must get that advice."""
+    message = refuses(
+        "edit.hair", SDXL, images=2, roles=["photo", "hair"], model=SDXL, prompt="x"
+    )
+    assert "reference image" in message.lower(), f"got {message}"
     assert "describe the change in words" in message.lower(), "the refusal must offer the alternative"
+
+
+def test_the_text_to_image_qwen_model_is_refused_for_a_face_swap_too():
+    """It is family "qwen-image" like the edit models, which is exactly the trap."""
+    message = refuses(
+        "edit.face", QWEN, images=2, roles=["photo", "face"], model=QWEN, prompt="x"
+    )
+    assert "edit model" in message.lower(), f"got {message}"
 
 
 def test_the_same_change_without_a_reference_is_fine_on_a_single_image_model():
@@ -310,7 +346,7 @@ def test_the_same_change_without_a_reference_is_fine_on_a_single_image_model():
 
 
 def test_two_references_on_one_model_are_still_refused():
-    refuses("edit.face", "cannot use 2 reference", images=3, roles=["photo", "face", "face"], model=SDXL)
+    refuses("edit.outfit", "cannot use 2 reference", images=3, roles=["photo", "outfit", "style"], model=SDXL)
 
 
 # --------------------------------------------------------------------------
@@ -425,13 +461,19 @@ def _repo_file(*parts):
 def test_the_recipe_default_size_fits_the_card():
     """The default must be a size the VAE encode can actually allocate.
 
-    1024x1024 needs ~8315 MB to encode the init image, which is more than the
-    8188 MiB an RTX 4060 has. sd-server reports that as "generate_image returned
-    no results" and only its container log mentions memory, so the real cause is
-    invisible from the dashboard -- which is exactly why the default is pinned.
+    Measured on 192.168.2.43 with both reference models, a two-image face swap:
+
+        qwen-image-edit-rapid-aio:q4_k  640x768 -> 200, 708s, 832k chars of PNG
+        qwen-image-edit-rapid-aio:q4_k  768x768 -> 502
+        qwen-image-edit-2511:q3_k_s    640x768 -> 200, 820s, 477k chars of PNG
+        qwen-image-edit-2511:q3_k_s    768x768 -> 502
+
+    768x768 is *my* guess, not a limit of the card: the legacy identity preset
+    shipped at 640x768 and worked all along, which is why this default is pinned
+    to the size that was actually measured working.
     """
-    assert proxy._EDIT_RECIPE_DEFAULTS["size"] == "768x768", (
-        f"the recipe default size must fit 8 GB of VRAM; got {proxy._EDIT_RECIPE_DEFAULTS['size']!r}"
+    assert proxy._EDIT_RECIPE_DEFAULTS["size"] == "640x768", (
+        f"the recipe default size must be the measured-working one; got {proxy._EDIT_RECIPE_DEFAULTS['size']!r}"
     )
 
 
@@ -442,14 +484,16 @@ def test_the_default_size_is_the_same_everywhere_it_is_written():
     a size the proxy was never validated against. Changing one and forgetting the
     other two is the bug, so all three are pinned together.
     """
+    # Derived, not repeated: hardcoding the value in three places is what let
+    # them drift apart in the first place.
+    size = proxy._EDIT_RECIPE_DEFAULTS["size"]
+
     template = _repo_file("web", "templates", "index.html").read_text()
-    assert 'id="sd-recipe-size" value="768x768"' in template, (
-        "the panel's size default disagrees with the proxy's"
+    assert f'id="sd-recipe-size" value="{size}"' in template, (
+        f"the panel's size default disagrees with the proxy's {size}"
     )
 
     js = _repo_file("web", "static", "js", "dashboard.js").read_text()
     line = next((s for s in js.splitlines() if "getElementById('sd-recipe-size')" in s), None)
     assert line is not None, "the recipe submit handler no longer reads sd-recipe-size"
-    assert "'768x768'" in line, f"the JS fallback disagrees with the proxy default: {line.strip()}"
-
-    assert proxy._EDIT_RECIPE_DEFAULTS["size"] == "768x768"
+    assert f"'{size}'" in line, f"the JS fallback disagrees with the proxy default {size}: {line.strip()}"

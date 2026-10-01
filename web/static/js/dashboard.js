@@ -2068,7 +2068,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     + ' needs two people: the photo you are editing, and a photo of the face you are copying from.';
                 return;
             }
-            const size = document.getElementById('sd-recipe-size').value.trim() || '768x768';
+            const size = document.getElementById('sd-recipe-size').value.trim() || '640x768';
             const instruction = document.getElementById('sd-recipe-prompt').value.trim();
             const seed = resolveSdSeed(document.getElementById('sd-recipe-seed').value);
             const entries = recipeEntries();
