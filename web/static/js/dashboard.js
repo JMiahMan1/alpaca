@@ -1747,13 +1747,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (recipeRefInput) {
         recipeRefInput.addEventListener('change', () => {
             const caps = sdRecipe.capabilities;
-            const max = caps && caps.reference_images ? caps.max_reference_images : 0;
+            // "Not known yet" is not "zero". A cap of 0 while the catalogue is
+            // still loading silently discarded every reference, which made the
+            // one change that always needs two photos impossible to submit.
+            // Only cap once the server has actually said what it can read; until
+            // then take what was given and let the proxy refuse honestly.
+            const limit = caps
+                ? (caps.reference_images ? caps.max_reference_images : 0)
+                : null;
             const files = Array.from(recipeRefInput.files || []).filter(f => f.type.startsWith('image/'));
-            sdRecipe.references = files.slice(0, max);
+            const kept = limit == null ? files : files.slice(0, limit);
+            sdRecipe.references = kept;
             const status = document.getElementById('sd-recipe-status');
-            if (status && files.length > max) {
-                status.textContent = max
-                    ? `This model reads ${max} reference photo${max === 1 ? '' : 's'}; the rest were dropped.`
+            if (status && kept.length < files.length) {
+                status.textContent = limit
+                    ? `This model reads ${limit} reference photo${limit === 1 ? '' : 's'}; the rest were dropped.`
                     : 'This model reads one image at a time — describe the change in words instead.';
             }
             renderRecipeThumbs();

@@ -2519,3 +2519,33 @@ process.stdout.write('slot ok');
 """,
     )
     assert "slot ok" in out
+
+
+def test_a_reference_uploaded_before_the_capabilities_arrive_is_not_silently_dropped():
+    """The same "unknown is not zero" rule as the disabled input, one line down.
+
+    The reference handler used to compute
+
+        const max = caps && caps.reference_images ? caps.max_reference_images : 0;
+
+    so while the catalogue was still loading the cap was 0 and
+    `files.slice(0, 0)` discarded every reference the user had just picked. The
+    upload appeared to work and then vanished, which is how the face swap stayed
+    un-submittable even after the input stopped being disabled.
+
+    This is pinned on the source rather than driven through the DOM: the harness
+    stub has no dispatchEvent, and the browser -- which is the instrument that
+    found this -- is the behavioural proof. What matters here is that the
+    zero-when-unknown expression cannot come back unnoticed.
+    """
+    # NOT the slice: the change handler sits past SLICE_RECIPE_A's boundary, so
+    # asserting on the slice would pass whatever the shipped code does.
+    src = _strip_js_comments(JS)
+    assert "const limit = caps && caps.reference_images ? caps.max_reference_images : 0" not in src, (
+        "the reference cap is 0 while capabilities are unknown, so every "
+        "reference is silently dropped before the server has answered"
+    )
+    # A null/unknown capabilities must leave the list uncapped, not empty.
+    assert "limit == null ? files" in src, (
+        "the reference cap must distinguish 'not known yet' from a real limit of 0"
+    )
