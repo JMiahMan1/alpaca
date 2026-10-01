@@ -1543,8 +1543,13 @@ document.addEventListener('DOMContentLoaded', () => {
             chip.type = 'button';
             chip.dataset.recipeId = recipe.id;
             const on = recipe.id === sdRecipe.selected;
-            chip.textContent = recipe.label;
-            chip.title = recipe.note || recipe.label;
+            // Mark the changes that cannot be done from one photo, so the chip
+            // says so before anyone clicks it and discovers it at render time.
+            const needsTwo = !!recipe.needs_reference;
+            chip.textContent = recipe.label + (needsTwo ? ' · needs 2 photos' : '');
+            chip.title = needsTwo
+                ? (recipe.note || recipe.label) + ' — needs a second photo: the face you are copying from.'
+                : (recipe.note || recipe.label);
             chip.style.cssText = 'border:1px solid ' + (on ? '#a855f7' : 'rgba(148,163,184,0.35)')
                 + ';background:' + (on ? 'rgba(168,85,247,0.18)' : '#0f172a')
                 + ';color:' + (on ? '#f3e8ff' : '#cbd5e1')
@@ -1646,6 +1651,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!photo) {
             btn.disabled = true;
             btn.textContent = `Add the photo to edit`;
+            return;
+        }
+        // A face swap is the one change that cannot be described in words: it
+        // needs the face you are copying FROM. The proxy refuses it for the same
+        // reason, but refusing after the upload wastes the user's time, so the
+        // button says so here first.
+        if (recipe.needs_reference && !sdRecipe.references.length) {
+            btn.disabled = true;
+            btn.textContent = 'Add the face to copy from';
             return;
         }
         btn.disabled = false;
@@ -2006,6 +2020,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (!sdRecipe.photo) {
                 if (sdRecipeStatus) sdRecipeStatus.textContent = 'Add the photo to edit.';
+                return;
+            }
+            // The button is already disabled in this state; this is here so the
+            // reason survives a keyboard activation or a stale disabled flag
+            // rather than the request going out and coming back refused.
+            if (recipe.needs_reference && !sdRecipe.references.length) {
+                if (sdRecipeStatus) sdRecipeStatus.textContent = recipe.label
+                    + ' needs two people: the photo you are editing, and a photo of the face you are copying from.';
                 return;
             }
             const size = document.getElementById('sd-recipe-size').value.trim() || '768x768';

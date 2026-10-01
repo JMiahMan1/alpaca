@@ -3348,19 +3348,29 @@ def _supports_reference_images(model_name: str) -> bool:
 _LEGACY_IDENTITY_PRESETS = frozenset({"qwen_image_21.identity"})
 _EDIT_RECIPES: dict[str, dict[str, Any]] = {
     "edit.face": {
-        "label": "Change the face",
+        # "Swap", not "change": a swap needs two people. This is the one recipe
+        # that is meaningless without a reference image -- with only <image1>
+        # there is nothing to swap *to*, and the model will invent a stranger's
+        # face and call it a result. Every other recipe here is a legitimate
+        # single-image operation described in words (new outfit, shorter hair,
+        # move them to a beach), so their references stay optional.
+        "label": "Swap the face",
+        "reference_noun": "face",
         "change": "face",
         "expects": "face",
         "instruction": (
-            "Edit <image1>. Replace the face with the person in the face reference: match their facial "
-            "structure, skin tone, eye colour and age as closely as the medium allows. Keep the original "
-            "hair, clothing, pose, lighting, background and camera angle exactly as they are. Blend the "
-            "jawline and neck into the original head naturally, and keep the result photorealistic."
+            "Edit <image1>. Swap the face for the person in the face reference <image2>: match their "
+            "facial structure, skin tone, eye colour and age as closely as the medium allows. "
+            "<image1> is the person being edited; <image2> is the face being copied from. Keep "
+            "<image1>'s hair, clothing, body, pose, lighting, background and camera angle exactly as they "
+            "are. Blend the jawline and neck into the original head naturally, and keep the result "
+            "photorealistic."
         ),
-        "needs_reference": False,
+        "needs_reference": True,
     },
     "edit.outfit": {
         "label": "Change the outfit",
+        "reference_noun": "outfit",
         "change": "outfit",
         "expects": "outfit",
         "instruction": (
@@ -3373,6 +3383,7 @@ _EDIT_RECIPES: dict[str, dict[str, Any]] = {
     },
     "edit.hair": {
         "label": "Change the hair",
+        "reference_noun": "hair",
         "change": "hair",
         "expects": "hair",
         "instruction": (
@@ -3385,6 +3396,7 @@ _EDIT_RECIPES: dict[str, dict[str, Any]] = {
     },
     "edit.background": {
         "label": "Change the background / place",
+        "reference_noun": "background / place",
         "change": "scene",
         "expects": "scene",
         "instruction": (
@@ -3398,6 +3410,7 @@ _EDIT_RECIPES: dict[str, dict[str, Any]] = {
     },
     "edit.identity": {
         "label": "Keep the face, change everything else",
+        "reference_noun": "identity",
         "change": "style",
         "expects": None,
         "instruction": (
@@ -3444,7 +3457,7 @@ def _edit_recipe_summary() -> list[dict[str, Any]]:
             # actually going to be asked for. A feature that silently rewrites
             # your photo is worse than one that tells you what it is doing.
             "instruction": recipe["instruction"],
-            "min_images": 1,
+            "min_images": 2 if recipe.get("needs_reference") else 1,
             "max_images": 1 + _MAX_REFERENCE_IMAGES,
         }
         for key, recipe in _EDIT_RECIPES.items()
@@ -3464,7 +3477,7 @@ def _compose_edit_prompt(recipe: dict[str, Any], roles: list[str], user_prompt: 
     expected = recipe.get("expects")
     for index, role in enumerate(roles[1:], start=2):
         if role == expected:
-            parts.append(f"<image{index}> is the {recipe['label'].lower().replace('change the ', '')} reference to follow.")
+            parts.append(f"<image{index}> is the {recipe['reference_noun']} reference to follow.")
         else:
             parts.append(f"<image{index}> is a {role} reference; use it only where it is relevant.")
     if user_prompt:
@@ -3522,6 +3535,16 @@ def _apply_edit_recipe(
     roles = ["scene", *references]
     if any(role not in _REFERENCE_ONLY_ROLES and role != recipe["change"] for role in references):
         raise ValueError(f"Unsupported reference for {recipe['label']}")
+
+    # A swap has two people in it. Checked here, before the model-support
+    # check, because "you did not give me a face to copy" is the actionable
+    # message -- telling someone their model cannot read references when they
+    # sent no references at all sends them off to debug the wrong thing.
+    if recipe.get("needs_reference") and not references:
+        raise ValueError(
+            "A face swap needs two people: the photo you are editing, and a photo of the face you are "
+            "copying FROM. Only the first was sent -- add one more image."
+        )
 
     if references and not _supports_reference_images(requested_model):
         raise ValueError(

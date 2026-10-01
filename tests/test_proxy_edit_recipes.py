@@ -156,16 +156,30 @@ def test_a_new_reference_family_is_one_line_of_data():
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "preset",
-    ["edit.face", "edit.outfit", "edit.hair", "edit.background", "edit.identity"],
-)
-def test_one_photo_and_no_reference_is_enough_for_every_change(preset):
-    """Text-only is the common case, and it must not require a second image."""
+@pytest.mark.parametrize("preset", ["edit.outfit", "edit.hair", "edit.background", "edit.identity"])
+def test_one_photo_and_no_reference_is_enough_for_a_single_image_change(preset):
+    """Text-only is the common case, and it must not require a second image.
+
+    A face swap is deliberately excluded: it needs two people. See
+    test_a_face_swap_needs_a_second_image for that one.
+    """
     data, meta = ok(preset, images=1)
     assert meta["reference_roles"] == ["scene"]
     assert meta["reference_count"] == 0
     assert len(data["prompt"]) > 100, "the recipe's own instruction should reach the engine"
+
+
+def test_a_face_swap_needs_a_second_image():
+    """A face swap is two people. One photo means there is nothing to swap TO.
+
+    Refusing beats the alternative: with only the target photo the model invents a
+    stranger's face and the caller has no way to tell that from a success.
+    """
+    refuses("edit.face", "needs two people", images=1, roles=None)
+    data, meta = ok("edit.face", images=2, roles=["scene", "face"])
+    assert meta["reference_roles"] == ["scene", "face"]
+    assert meta["reference_count"] == 1
+    assert len(data["prompt"]) > 100
 
 
 def test_a_photo_with_no_roles_still_applies():
@@ -344,7 +358,9 @@ def test_every_recipe_instruction_says_what_must_not_change():
 
 
 def test_negative_prompt_is_forced_empty_because_instruct_models_ignore_it():
-    data, _ = ok("edit.face", images=1)
+    # edit.outfit, not edit.face: this test is about negative_prompt, and a face
+    # swap needs two images, which is not what is under test here.
+    data, _ = ok("edit.outfit", images=1)
     assert data["negative_prompt"] == ""
 
 
@@ -374,8 +390,15 @@ def test_the_legacy_recipe_is_still_model_gated():
 
 
 def test_the_new_recipes_needs_only_one_image_where_the_legacy_needed_three():
-    """The concrete improvement, as an assertion rather than a claim."""
-    ok("edit.face", images=1)
+    """The concrete improvement, as an assertion rather than a claim.
+
+    Four of the five need one image where the legacy composite needed three. The
+    fifth -- the face swap -- needs two, because it is the only one that is
+    inherently two-person; a one-photo "swap" would be the model inventing a face.
+    """
+    for preset in ("edit.outfit", "edit.hair", "edit.background", "edit.identity"):
+        ok(preset, images=1)
+    ok("edit.face", images=2, roles=["scene", "face"])
     with pytest.raises(ValueError):
         proxy._apply_edit_preset(
             {"prompt": "x", "preset": "qwen_image_21.identity", "reference_roles": json.dumps(["scene"])},
