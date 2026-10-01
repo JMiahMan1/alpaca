@@ -2476,3 +2476,46 @@ def test_the_panel_header_no_longer_promises_that_a_reference_is_always_optional
         "the panel header still promises a reference is always optional, which is false for a face swap"
     )
     assert "face swap needs a second photo" in text, "the header should say the face swap is the exception"
+
+
+def test_a_face_swap_is_possible_before_a_model_is_chosen():
+    """The bug the browser run found and no assertion had.
+
+    "No model loaded" is *unknown*, not "this model cannot read references".
+    The panel disabled the reference slot in that state, so the one change that
+    always needs two photos could not be given its second photo until a model
+    had been loaded -- and the panel's own chip had already promised it.
+    Playwright's set_input_files ignores `disabled`, which is why it took a real
+    click-through to surface this rather than a unit test.
+    """
+    out = _run_js_async(
+        _recipe_prelude(),  # no ?model= is passed, so capabilities is null
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+const input = byId['sd-recipe-reference'];
+const label = byId['sd-recipe-reference-label'];
+// A model has been chosen but its capabilities have not arrived yet -- the
+// "loading capabilities…" state. That is *unknown*, not "no".
+// Note the empty model name would short-circuit at the top of this function,
+// so it is passed a real name here; the earlier no-model state is asserted below.
+sdRecipe.capabilities = null;
+updateIdentityWorkflowVisibility('some-qwen-model');
+assert.equal(sdRecipe.capabilities, null, 'precondition: capabilities are unknown');
+assert.equal(byId['sd-recipe-capability'].textContent, 'loading capabilities\u2026');
+assert.equal(input.disabled, false,
+             'the reference slot is closed while capabilities are merely unknown, so a face swap cannot be given its second photo');
+assert.equal(input.disabled, false,
+             'the reference slot is closed before a model is chosen, so a face swap cannot be given its second photo');
+
+// A model that says it reads one image at a time is a different case: close it.
+sdRecipe.capabilities = {model: 'x', family: 'stable-diffusion', reference_images: false,
+                         max_reference_images: 0, negative_prompt: true};
+updateIdentityWorkflowVisibility('some-sdxl-model');
+assert.equal(input.disabled, true, 'a single-image model should close the reference slot');
+assert.ok(label.textContent.indexOf('one image at a time') !== -1,
+           'the label should explain why: ' + label.textContent);
+process.stdout.write('slot ok');
+""",
+    )
+    assert "slot ok" in out
