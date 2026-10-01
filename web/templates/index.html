@@ -1702,50 +1702,56 @@
                                         <div id="sd-photo-thumb-strip" class="d-none" style="display:none;"></div>
                                      </div>
 
-                                     <div id="sd-identity-workflow" class="d-none" style="border:1px solid rgba(192,132,252,0.35); background:#090d16; border-radius:10px; padding:0.9rem; display:flex; flex-direction:column; gap:0.75rem;">
-                                         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap;">
-                                             <div>
-                                                 <div style="font-size:0.9rem; font-weight:700; color:#e9d5ff;">Qwen Image 2.1 Identity Composite</div>
-                                                 <div style="font-size:0.72rem; color:#94a3b8; margin-top:0.2rem;">Ordered native references: scene first, people second, face identity third. No pre-composited rectangles.</div>
-                                             </div>
-                                             <span id="sd-identity-recipe-note" style="font-size:0.7rem; color:#c084fc; border:1px solid rgba(192,132,252,0.3); border-radius:12px; padding:0.2rem 0.5rem;">32 steps · CFG 1 · Euler · Simple</span>
-                                         </div>
-                                         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.65rem;">
-                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
-                                                 Image 1 · Scene
-                                                 <input id="sd-identity-scene" type="file" accept="image/*" style="width:100%; font-size:0.7rem; color:#94a3b8;">
-                                             </label>
-                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
-                                                 Image 2 · People
-                                                 <input id="sd-identity-person" type="file" accept="image/*" style="width:100%; font-size:0.7rem; color:#94a3b8;">
-                                             </label>
-                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
-                                                 Image 3+ · Face identity
-                                                 <input id="sd-identity-face" type="file" accept="image/*" multiple style="width:100%; font-size:0.7rem; color:#94a3b8;">
-                                             </label>
-                                         </div>
-                                         <div id="sd-identity-reference-list" style="display:flex; gap:0.5rem; flex-wrap:wrap; min-height:1px;"></div>
-                                         <div style="font-size:0.7rem; color:#94a3b8; line-height:1.45;">The preset sends the three roles as native references and records the exact seed. Facial identity is improved, not pixel-guaranteed; avoid baking a face into a background before uploading.</div>
-                                         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.65rem; align-items:end;">
-                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
-                                                 Additional instruction
-                                                 <textarea id="sd-identity-prompt" rows="2" placeholder="Optional: describe placement, scale, or mood" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem; border-radius:6px; font-size:0.78rem; resize:vertical;"></textarea>
-                                             </label>
-                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
-                                                 Size
-                                                 <input id="sd-identity-size" value="640x768" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
-                                             </label>
-                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
-                                                 Seed
-                                                 <input id="sd-identity-seed" type="number" value="-1" min="-1" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
-                                             </label>
-                                         </div>
-                                         <div style="display:flex; align-items:center; gap:0.65rem; flex-wrap:wrap;">
-                                             <button id="sd-identity-btn" type="button" class="btn btn-primary" style="background:#7e22ce; border-color:#a855f7;">Render Identity Composite</button>
-                                             <button id="sd-identity-clear-btn" type="button" class="btn btn-secondary btn-slate">Clear References</button>
-                                             <div id="sd-identity-status" style="font-size:0.75rem; color:#94a3b8; min-height:1.1rem;"></div>
-                                         </div>
-                                     </div>
+                                     <div id="sd-recipe-workflow" class="d-none" style="border:1px solid rgba(192,132,252,0.35); background:#090d16; border-radius:10px; padding:0.9rem; display:flex; flex-direction:column; gap:0.75rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap;">
+                                            <div>
+                                                <div style="font-size:0.9rem; font-weight:700; color:#e9d5ff;">Change One Thing</div>
+                                                <div style="font-size:0.72rem; color:#94a3b8; margin-top:0.2rem;">Upload a photo, pick what to change. A reference photo is optional &mdash; words work too.</div>
+                                            </div>
+                                            <span id="sd-recipe-capability" style="font-size:0.7rem; color:#94a3b8; border:1px solid rgba(148,163,184,0.3); border-radius:12px; padding:0.2rem 0.5rem;">any model</span>
+                                        </div>
+
+                                        <div style="display:grid; grid-template-columns:minmax(220px, 1fr) minmax(220px, 1fr); gap:0.75rem;">
+                                            <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                <span>1 &middot; The photo to edit</span>
+                                                <input id="sd-recipe-photo" type="file" accept="image/*" style="width:100%; font-size:0.7rem; color:#94a3b8;">
+                                            </label>
+                                            <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                <span id="sd-recipe-reference-label">2 &middot; Reference photo (optional)</span>
+                                                <input id="sd-recipe-reference" type="file" accept="image/*" multiple style="width:100%; font-size:0.7rem; color:#94a3b8;">
+                                            </label>
+                                        </div>
+
+                                        <div>
+                                            <div style="font-size:0.72rem; color:#e2e8f0; font-weight:600; margin-bottom:0.35rem;">What do you want to change?</div>
+                                            <div id="sd-recipe-chips" style="display:flex; gap:0.4rem; flex-wrap:wrap;"></div>
+                                            <div style="font-size:0.68rem; color:#64748b; margin-top:0.35rem;">A reference is a picture of <em>what you want</em> &mdash; the face, outfit or hairstyle you're after. Without one, describe it below.</div>
+                                        </div>
+
+                                        <div id="sd-recipe-thumbs" style="display:flex; gap:0.5rem; flex-wrap:wrap;"></div>
+
+                                        <div id="sd-recipe-preview" style="font-size:0.7rem; color:#c084fc; background:rgba(192,132,252,0.07); border:1px solid rgba(192,132,252,0.18); border-radius:8px; padding:0.5rem 0.6rem; line-height:1.45; display:none;"></div>
+
+                                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:0.65rem; align-items:end;">
+                                            <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                Describe it (optional)
+                                                <textarea id="sd-recipe-prompt" rows="2" placeholder="e.g. the navy blazer from the photo" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem; border-radius:6px; font-size:0.78rem; resize:vertical;"></textarea>
+                                            </label>
+                                            <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                Size
+                                                <input id="sd-recipe-size" value="1024x1024" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                            </label>
+                                            <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
+                                                Seed
+                                                <input id="sd-recipe-seed" type="number" value="-1" min="-1" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
+                                            </label>
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:0.65rem; flex-wrap:wrap;">
+                                            <button id="sd-recipe-btn" type="button" class="btn btn-primary" style="background:#7e22ce; border-color:#a855f7;" disabled>Pick what to change</button>
+                                            <button id="sd-recipe-clear-btn" type="button" class="btn btn-secondary btn-slate">Clear</button>
+                                            <div id="sd-recipe-status" style="font-size:0.75rem; color:#94a3b8; min-height:1.1rem;"></div>
+                                        </div>
+                                    </div>
 
                                      <!-- Multi-image quick prompts (face swap / merge) -->
                                     <div>
