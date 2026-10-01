@@ -1699,15 +1699,20 @@ SLICE_RECIPE_A = _slice("    const sdRecipe = { recipes: [],", "/** Downscale ov
 SLICE_RECIPE_B = _slice("    const sdRecipeBtn = document.getElementById('sd-recipe-btn');", "    if (sdEditBtn) {")
 
 RECIPE_STATUS = {
+    # This fixture must mirror the proxy's real catalogue, because the panel
+    # renders whatever the server sends. needs_reference is True for the face
+    # swap alone -- it is the one change that cannot be described in words --
+    # and the proxy computes min_images from it, so the face swap is 2 and the
+    # other four are 1.
     "recipes": [
         {
             "id": "edit.face",
-            "label": "Change the face",
+            "label": "Swap the face",
             "change": "face",
             "expects": "face",
             "instruction": "Replace the face in <image1> with the face in <image2>.",
             "needs_reference": True,
-            "min_images": 1,
+            "min_images": 2,
             "max_images": 3,
         },
         {
@@ -1716,7 +1721,7 @@ RECIPE_STATUS = {
             "change": "outfit",
             "expects": "outfit",
             "instruction": "Dress the person in <image1> in the clothing from <image2>.",
-            "needs_reference": True,
+            "needs_reference": False,
             "min_images": 1,
             "max_images": 3,
         },
@@ -1726,7 +1731,7 @@ RECIPE_STATUS = {
             "change": "hair",
             "expects": "hair",
             "instruction": "Re-draw the hair on <image1> to match <image2>.",
-            "needs_reference": True,
+            "needs_reference": False,
             "min_images": 1,
             "max_images": 3,
         },
@@ -1736,7 +1741,7 @@ RECIPE_STATUS = {
             "change": "scene",
             "expects": "scene",
             "instruction": "Replace the setting around the person in <image1>.",
-            "needs_reference": True,
+            "needs_reference": False,
             "min_images": 1,
             "max_images": 3,
         },
@@ -1881,7 +1886,7 @@ assert.equal(sdRecipe.recipes.length, 5, 'the catalogue did not populate');
 // things a person must do, and making them also pick the change is friction
 // for no benefit.
 assert.equal(sdRecipe.selected, 'edit.face', 'the first change was not preselected');
-assert.equal(selectedRecipe().label, 'Change the face', 'the preselection did not resolve to a recipe');
+assert.equal(selectedRecipe().label, 'Swap the face', 'the preselection did not resolve to a recipe');
 process.stdout.write('recipes=' + sdRecipe.recipes.length);
 """,
     )
@@ -2068,6 +2073,124 @@ process.stdout.write('enabled');
 """,
     )
     assert "enabled" in out
+
+
+def test_the_face_swap_chip_advertises_that_it_needs_two_photos():
+    """A swap is the one change that cannot be described in words.
+
+    The chip has to say so before the user spends an upload, because the proxy
+    will refuse the request otherwise -- and refusing after the upload wastes it.
+    """
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+const chips = byId['sd-recipe-chips'].children;
+const face = chips.filter(c => c.textContent.indexOf('Swap the face') !== -1)[0];
+const hair = chips.filter(c => c.textContent.indexOf('Change the hair') !== -1)[0];
+assert.ok(face, 'no face-swap chip was rendered');
+assert.ok(face.textContent.indexOf('needs 2 photos') !== -1,
+           'the face-swap chip does not say it needs two photos: ' + face.textContent);
+assert.equal(hair.textContent.indexOf('needs 2 photos'), -1,
+             'a single-image change was marked as needing two photos: ' + hair.textContent);
+process.stdout.write('chips ok');
+""",
+    )
+    assert "chips ok" in out
+
+
+def test_the_face_swap_button_stays_disabled_until_there_is_a_face_to_copy_from():
+    """The photo alone is not a face swap; the button must say which photo is missing."""
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+sdRecipe.selected = 'edit.face';
+sdRecipe.photo = { name: 'me.png', file: {} };
+sdRecipe.references = [];
+renderRecipeButton();
+const btn = byId['sd-recipe-btn'];
+assert.equal(btn.disabled, true, 'a one-photo face swap was offered as renderable');
+assert.equal(btn.textContent, 'Add the face to copy from',
+             'the button did not name what is missing: ' + btn.textContent);
+
+// Add the face being copied from.
+sdRecipe.references = [{ name: 'them.png', file: {} }];
+renderRecipeButton();
+assert.equal(btn.disabled, false, 'still disabled with both people present');
+assert.ok(btn.textContent.indexOf('Swap the face') !== -1,
+           'the button did not become the action: ' + btn.textContent);
+process.stdout.write('gate ok');
+""",
+    )
+    assert "gate ok" in out
+
+
+def test_a_single_image_change_needs_only_the_photo():
+    """The counterpart: hair/outfit/background/identity are one-image operations.
+
+    If this broke because the gate were too broad, every other change would
+    become a two-photo chore -- so it is asserted explicitly rather than left
+    to the older test above.
+    """
+    out = _run_js_async(
+        _recipe_prelude(),
+        SLICE_RECIPE_A,
+        """
+await new Promise(r => setTimeout(r, 20));
+const results = [];
+for (const id of ['edit.outfit', 'edit.hair', 'edit.background', 'edit.identity']) {
+  sdRecipe.selected = id;
+  sdRecipe.photo = { name: 'me.png', file: {} };
+  sdRecipe.references = [];
+  renderRecipeButton();
+  const btn = byId['sd-recipe-btn'];
+  results.push(id + '=' + (btn.disabled ? 'DISABLED' : 'enabled'));
+}
+assert.equal(results.filter(r => r.indexOf('DISABLED') !== -1).length, 0,
+             'a single-image change was blocked: ' + results.join(', '));
+process.stdout.write('single ok');
+""",
+    )
+    assert "single ok" in out
+
+
+def test_reintroducing_the_face_swap_gate_makes_the_harness_fail():
+    """Teeth for the gate above.
+
+    Remove the needs_reference check from renderRecipeButton in a temp copy and
+    confirm the harness catches it. Without this, a gate that silently stopped
+    firing would still pass every other test in this file.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for dashboard frontend behavior tests")
+    needle = "if (recipe.needs_reference && !sdRecipe.references.length) {"
+    assert needle in SLICE_RECIPE_A, "the gate was moved; retarget this test at its new text"
+    broken = SLICE_RECIPE_A.replace(needle, "if (false) {", 1)
+    assert broken != SLICE_RECIPE_A, "could not neuter the gate"
+
+    script = (
+        _recipe_prelude()
+        + broken
+        + """
+async function go() {
+await new Promise(r => setTimeout(r, 20));
+sdRecipe.selected = 'edit.face';
+sdRecipe.photo = { name: 'me.png', file: {} };
+sdRecipe.references = [];
+renderRecipeButton();
+process.stdout.write(byId['sd-recipe-btn'].disabled ? 'STILL_GATED' : 'GATE_GONE');
+}
+go();
+"""
+    )
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert "GATE_GONE" in proc.stdout, (
+        f"the harness did not expose the missing gate; stdout={proc.stdout!r} stderr={proc.stderr[:300]!r}"
+    )
 
 
 # --- the submit payload ----------------------------------------------------
@@ -2279,7 +2402,7 @@ byId['sd-recipe-seed'] = Object.assign(mkEl(), { value: '-1' });
 byId['sd-recipe-size'] = Object.assign(mkEl(), { value: '' });
 byId['sd-recipe-prompt'] = Object.assign(mkEl(), { value: '' });
 sdRecipe.photo = { name: 'me.png', file: {} };
-RECIPE = { id: 'edit.face', label: 'Change the face' };
+RECIPE = { id: 'edit.face', label: 'Swap the face' };
 ENTRIES = [{ role: 'scene', file: {} }];
 byId['sd-recipe-btn'].__handlers.click();
 setTimeout(() => { process.stdout.write('SENT=' + SENT.length); }, 30);

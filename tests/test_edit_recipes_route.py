@@ -92,9 +92,19 @@ def test_the_proxy_route_reports_what_a_single_image_model_cannot_do(proxy):
     body = TestClient(proxy.app).get("/v1/images/edit-recipes", params={"model": "stable-diffusion-xl-base-1.0"}).json()
     assert body["capabilities"]["reference_images"] is False
     assert body["capabilities"]["max_reference_images"] == 0
-    # ...but the text-only recipes are still there. Refusing everything would be
-    # the unintuitive behaviour this feature exists to remove.
-    assert all(r["min_images"] == 1 for r in body["recipes"])
+    # ...but the recipes are still all there. Refusing everything would be the
+    # unintuitive behaviour this feature exists to remove.
+    assert len(body["recipes"]) == 5
+    # Four of them are genuinely single-image and stay available. The face swap
+    # is the exception and always was, in intent: it is meaningless without a
+    # second person, so the catalogue has to say so here or the panel will
+    # happily start a render the proxy is going to refuse.
+    by_id = {r["id"]: r for r in body["recipes"]}
+    single = ["edit.outfit", "edit.hair", "edit.background", "edit.identity"]
+    assert [r["min_images"] for r in (by_id[i] for i in single)] == [1, 1, 1, 1]
+    assert by_id["edit.face"]["min_images"] == 2
+    assert by_id["edit.face"]["needs_reference"] is True
+    assert all(by_id[i]["needs_reference"] is False for i in single)
 
 
 def test_the_legacy_preset_is_listed_separately_and_not_offered_as_a_recipe(proxy):
