@@ -130,14 +130,22 @@ def _device() -> str:
     return DEVICE
 
 
-def _wav_bytes(samples_f32, sample_rate: int) -> bytes:
-    """Encode a mono float32 numpy array (-1..1) as a 16-bit PCM WAV."""
+def _wav_bytes(samples_f32, sample_rate: int, peak_normalize: bool = True) -> bytes:
+    """Encode a mono float32 numpy array (-1..1) as a 16-bit PCM WAV.
+
+    Peak normalising scales every request by its own loudest sample, so two
+    narrations of the same voice come out at different levels. A caller joining
+    many requests into one programme passes `peak_normalize=False` and levels
+    them itself; the samples are then only clipped to range.
+    """
     import numpy as np
 
     arr = np.asarray(samples_f32, dtype=np.float32)
     peak = float(np.max(np.abs(arr))) if arr.size else 1.0
-    if peak > 0:
+    if peak_normalize and peak > 0:
         arr = arr / max(peak, 1e-6)
+    else:
+        arr = np.clip(arr, -1.0, 1.0)
     pcm16 = (arr * 32767.0).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -299,6 +307,8 @@ async def health():
 
 DEFAULT_SENTENCE_PAUSE_S = float(os.getenv("TTS_SENTENCE_PAUSE_S", "0.32"))
 DEFAULT_PARAGRAPH_PAUSE_S = float(os.getenv("TTS_PARAGRAPH_PAUSE_S", "0.7"))
+DEFAULT_GROUP_CHARS = int(os.getenv("TTS_GROUP_CHARS", "0"))
+MAX_GROUP_CHARS = 400
 
 def _trim_and_fade(audio, sr: int, threshold: float = 0.004, margin_s: float = 0.03, fade_s: float = 0.008):
     """Trim edge silence to a consistent margin and apply short fades to avoid clicks."""
@@ -519,6 +529,18 @@ async def api_tts(request: Request):
     paragraph_pause = float(data.get("paragraph_pause_s", DEFAULT_PARAGRAPH_PAUSE_S))
     if not (0.0 <= sentence_pause <= 3.0 and 0.0 <= paragraph_pause <= 5.0):
         return JSONResponse({"error": "pauses must be within 0..3s (sentence) and 0..5s (paragraph)"}, status_code=400)
+    # 0 synthesizes sentence by sentence. A positive value hands Kokoro runs of
+    # sentences up to that many characters so intonation flows between them;
+    # see tts_text.phrase_groups.
+    try:
+        group_chars = int(data.get("group_chars", DEFAULT_GROUP_CHARS))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "group_chars must be an integer"}, status_code=400)
+    if group_chars != 0 and not 80 <= group_chars <= MAX_GROUP_CHARS:
+        return JSONResponse(
+            {"error": f"group_chars must be 0 or within 80..{MAX_GROUP_CHARS}"}, status_code=400
+        )
+    peak_normalize = bool(data.get("peak_normalize", True))
     normalized = bool(data.get("normalize", True))
     if normalized:
         text = tts_text.normalize(text)
@@ -611,7 +633,12 @@ async def api_tts(request: Request):
                     return voice_clone.convert(a, sr, src_se, tgt_se, clone_tau, clone_seed)
 
             for p_idx, paragraph in enumerate(tts_text.paragraphs(text)):
-                for s_idx, sentence in enumerate(tts_text.sentences(paragraph)):
+                units = (
+                    tts_text.phrase_groups(paragraph, group_chars)
+                    if group_chars
+                    else tts_text.sentences(paragraph)
+                )
+                for s_idx, sentence in enumerate(units):
                     for audio in await asyncio.to_thread(_synth, sentence):
                         if convert is not None:
                             audio = await asyncio.to_thread(convert, audio)
@@ -694,7 +721,7 @@ async def api_tts(request: Request):
         merged = np.concatenate([pad, merged, pad])
         elapsed = time.perf_counter() - t0
         duration = len(merged) / float(sr)
-        wav = await asyncio.to_thread(_wav_bytes, merged, sr)
+        wav = await asyncio.to_thread(_wav_bytes, merged, sr, peak_normalize)
         b64 = base64.b64encode(wav).decode("ascii")
         _empty_cache()
         return {
@@ -713,6 +740,8 @@ async def api_tts(request: Request):
                 "chunks": n_chunks,
                 "sentence_pause_s": sentence_pause,
                 "paragraph_pause_s": paragraph_pause,
+                "group_chars": group_chars,
+                "peak_normalized": peak_normalize,
                 "normalized": normalized,
                 "clone": clone_meta_out,
             },

@@ -1050,3 +1050,27 @@ def test_the_tts_cap_is_checked_before_normalization_which_lengthens_text():
     raw = "1 Cor. 13:4-7. " * 250
     assert len(raw) < audio.MAX_TTS_CHARS
     assert len(tts_text.normalize(raw)) > audio.MAX_TTS_CHARS
+
+
+def test_tts_group_chars_synthesises_runs_of_sentences(client):
+    pipe = _pipe(seconds=0.2)
+    with patch.object(audio, "_ensure_model", AsyncMock(return_value=pipe)):
+        body = client.post("/api/tts", json={"text": "One. Two. Three.", "group_chars": 200}).json()
+    assert body["meta"]["chunks"] == 1 and body["meta"]["group_chars"] == 200
+
+
+@pytest.mark.parametrize("bad", [5, 401, "lots"])
+def test_tts_rejects_an_out_of_range_group_chars(client, bad):
+    resp = client.post("/api/tts", json={"text": "hello", "group_chars": bad})
+    assert resp.status_code == 400 and "group_chars" in resp.json()["error"]
+
+
+def test_wav_bytes_can_keep_the_level_it_was_given():
+    import numpy as np
+
+    quiet = np.full(SR // 10, 0.25, dtype=np.float32)
+    def peak(raw):
+        with wave.open(BytesIO(raw), "rb") as wf:
+            return int(np.max(np.abs(np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16))))
+    assert peak(audio._wav_bytes(quiet, SR)) == 32767
+    assert abs(peak(audio._wav_bytes(quiet, SR, peak_normalize=False)) - 8191) <= 1

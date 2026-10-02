@@ -257,6 +257,24 @@ def sentences(paragraph: str) -> list[str]:
     return result
 
 
+def phrase_groups(paragraph: str, max_chars: int) -> list[str]:
+    """Join consecutive sentences of a paragraph into runs of at most `max_chars`.
+
+    Kokoro shapes intonation across a whole input, so a sentence synthesized on
+    its own always starts fresh and ends on a full stop, and a narration built
+    from them sounds read off a list. Giving it two or three sentences at a time
+    lets the pitch carry from one into the next, and Kokoro places its own pause
+    at each full stop. A sentence longer than `max_chars` stays whole.
+    """
+    groups: list[str] = []
+    for s in sentences(paragraph):
+        if groups and len(groups[-1]) + 1 + len(s) <= max_chars:
+            groups[-1] = f"{groups[-1]} {s}"
+        else:
+            groups.append(s)
+    return groups
+
+
 # --------------------------------------------------------------------------- #
 # Lexicon                                                                      #
 # --------------------------------------------------------------------------- #

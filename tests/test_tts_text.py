@@ -146,3 +146,11 @@ def test_paragraphs():
 )
 def test_dates(src, want):
     assert normalize_dates(src) == want
+
+
+def test_phrase_groups_join_sentences_up_to_the_limit():
+    para = "One two. Three four. Five six seven eight nine ten eleven."
+    assert tts_text.phrase_groups(para, 20) == ["One two. Three four.", "Five six seven eight nine ten eleven."]
+    # A limit no sentence pair fits under leaves every sentence on its own.
+    assert tts_text.phrase_groups(para, 8) == sentences(para)
+    assert tts_text.phrase_groups(para, 400) == [para]
