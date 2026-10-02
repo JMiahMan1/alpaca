@@ -296,6 +296,16 @@ card with llama-server and sd-server. Ten minutes of bed is the one thing it doe
   records `clone_similarity` of its converted audio (cached with the F0; a cache without it is
   re-measured once), free voices rank by it, and pitch only orders voices that are not free or
   could not be compared. A voice outside the band never wins on similarity.
+- **Delivery counts, not just timbre.** The converter keeps the base voice's pace and intonation.
+  On the enrolled profile (3.93 words/s, 11.9 st range) `af_nicole` had the best timbre score
+  (0.933) but read at 3.36 words/s with 4.8 st, slow and flat. So probes also store the base
+  voice's `prosody` (words/s over speech only, pYIN 10-90% range in semitones), the speaker's is
+  measured from their takes (`speaker_prosody`, cached as `prosody.json` in the profile), and free
+  candidates rank on `delivery_mismatch`: timbre, pace and intonation, each in a just-noticeable
+  unit, summed.
+- **`checks: true` on `/api/tts` measures the result** (`narration_checks`): `echo_r` is the peak
+  speech autocorrelation at 20-500 ms lags, and `steadiness_min` / `largest_shift_at_s` is the
+  lowest timbre cosine between neighbouring 3 s windows, which is where a voice change shows.
 - **`clone_unit: "paragraph"` converts a paragraph in one pass.** The default (`"chunk"`)
   converts each synthesized piece separately, which lets timbre move at every seam. Paragraph
   mode joins the paragraph's Kokoro speech (with its sentence pauses) and converts it once.

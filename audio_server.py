@@ -547,6 +547,10 @@ async def api_tts(request: Request):
     clone_unit = str(data.get("clone_unit", "chunk"))
     if clone_unit not in ("chunk", "paragraph"):
         return JSONResponse({"error": "clone_unit must be 'chunk' or 'paragraph'"}, status_code=400)
+    # Measure the finished narration for echo and for shifts in the voice
+    # (voice_clone.narration_checks). Off by default: it runs the reference
+    # encoder over the whole render.
+    run_checks = bool(data.get("checks", False))
     normalized = bool(data.get("normalize", True))
     if normalized:
         text = tts_text.normalize(text)
@@ -733,6 +737,14 @@ async def api_tts(request: Request):
                     "the speaker's accent, rhythm or phrasing."
                 ),
             }
+        checks = None
+        if run_checks:
+            try:
+                async with _lock:
+                    checks = await asyncio.to_thread(voice_clone.narration_checks, merged, sr)
+            except Exception as exc:
+                logger.warning(f"[audio] narration checks raised: {exc}")
+                checks = {"note": f"checks failed: {exc}"}
         # Lead-in/out padding so players don't clip the first/last syllable.
         pad = np.zeros(int(0.15 * sr), dtype=np.float32)
         merged = np.concatenate([pad, merged, pad])
@@ -762,6 +774,7 @@ async def api_tts(request: Request):
                 "peak_normalized": peak_normalize,
                 "normalized": normalized,
                 "clone": clone_meta_out,
+                "checks": checks,
             },
         }
     except Exception as e:

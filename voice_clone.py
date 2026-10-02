@@ -1169,6 +1169,164 @@ def base_voice_candidates(gender: str | None = None) -> list[str]:
 PAIRING_PROBE_S = 15.0
 
 
+# --------------------------------------------------------------------------- #
+# Delivery: pace and intonation                                                #
+# --------------------------------------------------------------------------- #
+#
+# OpenVoice moves timbre and nothing else, so a clone keeps the base voice's
+# pace and the way its pitch rises and falls. Two base voices can land on the
+# same pitch and sound equally like the speaker in timbre and still be nothing
+# alike to listen to. Measured on a real profile (3.93 words/s, 11.9 semitones
+# of range): af_nicole reads at 3.36 words/s with 4.8 semitones of range, and
+# af_bella at 4.05 with 6.0, both flat and one slow; am_liam reads at 3.94
+# with 11.1. Pairing on pitch and timbre alone chose af_nicole.
+
+#: One unit of mismatch on each axis, roughly the smallest difference a
+#: listener notices. The pairing adds the three in these units.
+SIMILARITY_UNIT = 0.02
+PACE_UNIT = 0.05  # as a fraction of the speaker's words per second
+RANGE_UNIT_ST = 2.0
+
+
+def prosody(audio, sr: int, n_words: int) -> dict | None:
+    """Pace and intonation range of read-aloud speech, or None if too short.
+
+    `words_per_s` counts against speech only (`analyze` strips the pauses), so
+    a voice that pauses longer is not marked slow for it. `range_st` is the
+    10th-to-90th percentile spread of voiced pitch in semitones; pYIN rather
+    than yin because an octave error in a few frames would widen a range more
+    than it moves a median.
+    """
+    import librosa
+    import numpy as np
+
+    speech = analyze(_resample(audio, sr, SR))["speech"]
+    seconds = len(speech) / SR
+    if seconds < 3.0 or n_words <= 0:
+        return None
+    y = librosa.resample(speech.astype(np.float32), orig_sr=SR, target_sr=16000)
+    f0, voiced, _ = librosa.pyin(y, fmin=F0_FMIN_HZ, fmax=F0_FMAX_HZ, sr=16000,
+                                 frame_length=1024, hop_length=320)
+    f = f0[voiced & np.isfinite(f0)]
+    range_st = None
+    if f.size >= 20:
+        st = 12.0 * np.log2(f / np.median(f))
+        range_st = round(float(np.percentile(st, 90) - np.percentile(st, 10)), 2)
+    return {"words_per_s": round(n_words / seconds, 3), "range_st": range_st}
+
+
+def speaker_prosody(pid: str) -> dict | None:
+    """The enrolled speaker's pace and range, measured from their own takes, cached.
+
+    The takes are readings of PROMPTS, the same text every candidate reads when
+    it is probed, so the two are compared word for word.
+    """
+    import soundfile as sf
+
+    d = _pdir(pid)
+    path = os.path.join(d, "prosody.json")
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            logger.warning(f"[voice_clone] unreadable prosody for {pid}; re-measuring")
+    meta = get_profile(pid)
+    texts = {p["id"]: p["text"] for p in PROMPTS}
+    takes, n_words = [], 0
+    for i, rec in enumerate(meta.get("recordings", []), 1):
+        text = texts.get(rec.get("prompt_id"))
+        wav = os.path.join(d, "recordings", f"{i:02d}.wav")
+        if text is None or not os.path.isfile(wav):
+            return None
+        audio, sr = sf.read(wav, dtype="float32")
+        takes.append(_resample(audio, sr, SR))
+        n_words += len(text.split())
+    if not takes:
+        return None
+    import numpy as np
+
+    measured = prosody(np.concatenate(takes), SR, n_words)
+    if measured is not None:
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(measured, fh)
+        except Exception as exc:
+            logger.warning(f"[voice_clone] could not cache prosody for {pid}: {exc}")
+    return measured
+
+
+def delivery_mismatch(candidate: dict, speaker: dict | None) -> dict:
+    """How far a probed candidate is from the speaker, per axis and in total.
+
+    Each axis is in its own unit (see SIMILARITY_UNIT and friends) and an axis
+    that could not be measured on either side is left out of the total rather
+    than counted as a match.
+    """
+    import math
+
+    parts: dict[str, float] = {}
+    sim = candidate.get("similarity")
+    if sim is not None:
+        parts["timbre"] = round((1.0 - float(sim)) / SIMILARITY_UNIT, 2)
+    cp, sp = candidate.get("prosody") or {}, speaker or {}
+    if cp.get("words_per_s") and sp.get("words_per_s"):
+        parts["pace"] = round(abs(math.log(cp["words_per_s"] / sp["words_per_s"])) / PACE_UNIT, 2)
+    if cp.get("range_st") is not None and sp.get("range_st") is not None:
+        parts["intonation"] = round(abs(cp["range_st"] - sp["range_st"]) / RANGE_UNIT_ST, 2)
+    return {"total": round(sum(parts.values()), 2) if parts else None, **parts}
+
+
+# --------------------------------------------------------------------------- #
+# Narration checks                                                             #
+# --------------------------------------------------------------------------- #
+
+#: Window for the steadiness check. Short enough to place a shift within a
+#: sentence or two, long enough (>1 s) for the reference encoder to read timbre.
+STEADY_WINDOW_S = 3.0
+
+
+def narration_checks(audio, sr: int) -> dict:
+    """Measured echo and voice steadiness of a finished narration.
+
+    `echo_r` is the strongest normalised autocorrelation of the speech at lags
+    of 20-500 ms, where a reflection or doubled take would sit. Plain Kokoro
+    measures about 0.08-0.12 here; a real echo is several times that.
+
+    `steadiness_min` is the lowest cosine between the timbre of neighbouring
+    3-second windows, and `largest_shift_at_s` where in the speech it happened.
+    A narration that holds one voice stays in the high 0.9s; a seam where the
+    voice changes shows as a dip at one point.
+    """
+    import numpy as np
+
+    out: dict = {}
+    speech = analyze(_resample(audio, sr, SR))["speech"]
+    if len(speech) < 2 * SR:
+        return {"note": "too little speech to check"}
+    y = speech.astype(np.float64) - float(np.mean(speech))
+    n = 1 << int(np.ceil(np.log2(2 * len(y))))
+    spec = np.fft.rfft(y, n)
+    ac = np.fft.irfft(spec * np.conj(spec), n)[: len(y)]
+    ac /= ac[0] if ac[0] > 0 else 1.0
+    lo, hi = int(0.02 * SR), min(int(0.5 * SR), len(ac) - 1)
+    if hi > lo:
+        k = int(np.argmax(ac[lo:hi])) + lo
+        out["echo_r"] = round(float(ac[k]), 3)
+        out["echo_lag_ms"] = round(1000.0 * k / SR, 1)
+    try:
+        ws = _embed_windows(_windows(speech, STEADY_WINDOW_S))
+        sims = [_cosine(a, b) for a, b in zip(ws, ws[1:])]
+        if sims:
+            i = int(np.argmin(sims))
+            out["steadiness_min"] = round(float(sims[i]), 4)
+            out["steadiness_median"] = round(float(np.median(sims)), 4)
+            out["largest_shift_at_s"] = round((i + 1) * STEADY_WINDOW_S, 1)
+    except Exception as exc:
+        out["steadiness_note"] = f"steadiness unavailable: {exc}"
+    return out
+
+
 def _source_key(voice: str) -> str:
     """Cache-key form of a Kokoro voice name: `af_sky,am_adam` -> `af_sky+am_adam`."""
     return re.sub(r"[^a-z0-9_,]+", "", voice.lower()).replace(",", "+")
@@ -1211,13 +1369,15 @@ def converted_voice_f0(pid: str, voice: str, synth,
     if os.path.isfile(path):
         try:
             cached = torch.load(path, map_location="cpu", weights_only=True)
-            # A probe cached before similarity was measured is re-measured once,
-            # or the pairing would keep ranking that voice on pitch alone.
-            if "similarity" in cached:
+            # A probe cached before similarity and delivery were measured is
+            # re-measured once, or the pairing would keep ranking that voice on
+            # pitch alone.
+            if "similarity" in cached and "prosody" in cached:
                 return {
                     "base_f0_hz": cached.get("base_f0_hz"),
                     "converted_f0_hz": cached.get("converted_f0_hz"),
                     "similarity": cached.get("similarity"),
+                    "prosody": cached.get("prosody"),
                 }
         except Exception:
             logger.warning(f"[voice_clone] unreadable cached f0 for {voice} on {pid}; re-measuring")
@@ -1230,6 +1390,9 @@ def converted_voice_f0(pid: str, voice: str, synth,
         "base_f0_hz": median_f0(windowed, sr),
         "converted_f0_hz": median_f0(converted[:window], sr),
         "similarity": clone_similarity(converted[:window], sr, pid),
+        # Delivery is the base voice's own: the converter does not change it,
+        # so it is read from the whole unconverted render.
+        "prosody": prosody(audio, sr, len(_SOURCE_SCRIPT.split())),
     }
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
@@ -1313,6 +1476,7 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
             "semitones_from_target": round(semitones, 2),
             "free": abs(semitones) <= PAIRING_MAX_SEMITONES,
             "similarity": probe.get("similarity"),
+            "prosody": probe.get("prosody"),
         })
     if not measured:
         return {
@@ -1334,15 +1498,29 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
     # and am_liam none, and am_liam also sounded more like the speaker (0.930
     # against 0.910). So among free voices the one that sounds most like the
     # speaker wins, and pitch only settles voices that could not be compared.
+    #
+    # Similarity is not the whole of "sounds like the speaker" either: the
+    # converter keeps the base voice's pace and intonation, and the voice with
+    # the best timbre score read slowly and flat. So free voices rank on the
+    # sum of their timbre, pace and intonation mismatch (`delivery_mismatch`).
+    try:
+        speaker = speaker_prosody(pid)
+    except Exception as exc:
+        logger.warning(f"[voice_clone] speaker prosody unavailable for {pid}: {exc}")
+        speaker = None
+    for m in measured:
+        m["mismatch"] = delivery_mismatch(m, speaker) if m["free"] else None
+
     def rank(m):
-        sim = m.get("similarity") if m["free"] else None
-        return (not m["free"], sim is None, -(sim or 0.0), abs(m["semitones_from_target"]), m["base_voice"])
+        total = (m.get("mismatch") or {}).get("total")
+        return (not m["free"], total is None, total or 0.0, abs(m["semitones_from_target"]), m["base_voice"])
 
     measured.sort(key=rank)
     best = measured[0]
+    mm = best.get("mismatch") or {}
     sim_note = (
         f", similarity {best['similarity']:.3f}" if best.get("similarity") is not None else ""
-    )
+    ) + (f", delivery mismatch {mm['total']:.2f}" if mm.get("total") is not None else "")
     return {
         "base_voice": best["base_voice"],
         "reason": (
@@ -1354,6 +1532,7 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
         "converted_f0_hz": best["converted_f0_hz"],
         "semitones_from_target": best["semitones_from_target"],
         "target_f0_hz": round(float(target_f0), 1),
+        "speaker_prosody": speaker,
         "candidates": measured,
     }
 
