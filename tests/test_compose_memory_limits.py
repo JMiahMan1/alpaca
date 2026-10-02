@@ -26,7 +26,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = REPO_ROOT / "docker-compose.yml"
 
 # Anything at or above this on a 30 GiB host is indistinguishable from no cap.
-MEANINGFUL_CEILING_BYTES = 24 * 1024**3
+#: On this 30 GiB box a declared cap at or above it is not a cap. Deliberately
+#: below the 30 GiB total so the "31G" mistake is caught, and above sd-server's
+#: real requirement (see the sd-server test) so the ceiling is not the thing
+#: that forces a too-tight cap.
+MEANINGFUL_CEILING_BYTES = 28 * 1024**3
 
 # Services whose steady-state footprint is a large fraction of the box, so a
 # missing cap is a real hazard rather than a theoretical one.
@@ -93,15 +97,33 @@ def test_where_both_spellings_are_present_they_agree(services):
         )
 
 
+#: Measured on this host, Qwen-Image-2.1 loaded and idle: anon 4.6 GB with
+#: 13.5 GB of page cache on top of it, cgroup current 18.2 GB. The peak the
+#: cgroup actually reached during a 640x768 reference edit was 20.7 GB. A cap
+#: below that does not "save" memory, it kills the model mid-render.
+SD_SERVER_OBSERVED_PEAK_BYTES = int(20.7 * 1024**3)
+
+
 def test_sd_server_cap_leaves_room_for_the_rest_of_the_stack(services):
     """sd-server is the single biggest consumer; the cap is a blast radius, not a squeeze.
 
-    Measured steady state with Qwen-Image-2.1 loaded is ~12.6 GiB on a 30 GiB
-    box shared with llama-server and the dashboard.
+    The bound that matters is the *peak*, not the steady state. Measured on this
+    host: 4.6 GB anonymous with the model loaded and 13.5 GB of reclaimable page
+    cache over it, and a cgroup peak of 20.7 GB during a reference edit. So the
+    cap has to clear the peak with margin, while still leaving the rest of the
+    stack somewhere to live on a 30 GiB box.
+
+    The proxy makes sd-server and llama-server mutually exclusive by design
+    (`ensure_sd_unloaded` before an LLM loads, and the reverse for SD), so the two
+    caps are not additive and each may be generous.
     """
     cap = _as_bytes(_declared_caps(services["sd-server"])["mem_limit"])
-    assert cap >= 14 * 1024**3, "sd-server's cap would OOM-kill a normally-loaded Qwen-Image"
-    assert cap <= 20 * 1024**3, "sd-server's cap leaves too little headroom for a larger SD model"
+    assert cap > SD_SERVER_OBSERVED_PEAK_BYTES, (
+        f"sd-server's cap ({cap / 1024**3:.1f} GiB) is at or below the peak actually "
+        f"observed on this host ({SD_SERVER_OBSERVED_PEAK_BYTES / 1024**3:.1f} GiB), so it "
+        "would OOM-kill the model during a render rather than bound it"
+    )
+    assert cap <= 28 * 1024**3, "sd-server's cap leaves too little headroom for the rest of the stack"
 
 
 def test_the_compose_comment_does_not_assert_a_compose_behaviour_it_has_not_proven(compose):
