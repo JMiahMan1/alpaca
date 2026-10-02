@@ -459,9 +459,19 @@ active_request_details = {}
 completed_requests = []
 active_request_details_lock = threading.Lock()
 
-# Persistent request storage for resubmit (never rotates out)
+# Persistent request storage for resubmit (bounded, oldest evicted first)
+#
+# This store exists so a stuck or failed request can be replayed, and replaying
+# needs exactly three things: the prompt, the model, and the endpoint type. It
+# does NOT need the response, the timings, or the generated images - and an
+# image request's base64 payload is around a megabyte, so keeping a full copy of
+# every completed request for the life of the process is a memory leak with a
+# very large constant. Measured on the live stack: two completed image requests
+# had put 753 KB of base64 here. Store the replay fields and bound the store.
 resubmittable_requests = {}
 resubmittable_requests_lock = threading.Lock()
+_RESUBMIT_FIELDS = ("request_id", "type", "model", "prompt", "started_at")
+_RESUBMIT_MAX = 200
 
 # Disk-persisted request history so completed requests survive proxy restarts.
 # The in-memory buffer is the working copy; it is synced to disk on every
@@ -471,11 +481,54 @@ _COMPLETED_REQUESTS_PATH = os.path.join(os.getenv("DATA_DIR", "data"), "complete
 _COMPLETED_REQUESTS_MAX = 200
 
 
+def _replay_record(req: dict) -> dict:
+    """The part of a completed request that resubmit can actually use.
+
+    Keeping only these fields is the point: the response body and the image
+    blobs are megabytes and are never read back by the resubmit path.
+    """
+    return {k: req[k] for k in _RESUBMIT_FIELDS if k in req}
+
+
+def _remember_for_resubmit(request_id: str, req: dict) -> None:
+    """Record the replay fields for `request_id`, evicting the oldest when full.
+
+    A plain dict preserves insertion order, so the first key is the oldest entry.
+    """
+    with resubmittable_requests_lock:
+        # Re-insert so a re-sent request moves to the end rather than keeping
+        # its original position and being evicted while still being relevant.
+        resubmittable_requests.pop(request_id, None)
+        resubmittable_requests[request_id] = _replay_record(req)
+        while len(resubmittable_requests) > _RESUBMIT_MAX:
+            resubmittable_requests.pop(next(iter(resubmittable_requests)))
+
+
+def _for_persistence(req: dict) -> dict:
+    """A completed request as it should survive a proxy restart.
+
+    `images` holds base64 payloads at roughly a megabyte each, and this file is
+    rewritten in full on every completed request, so keeping them here turns
+    each completion into a multi-megabyte write and leaves a multi-megabyte
+    file behind. The Request Monitor draws its previews from the in-memory
+    buffer, which keeps them for the life of the process; what has to outlive a
+    restart is the audit trail - what was asked, on which model, for how long,
+    how many tokens, and whether it failed. The count is kept so the record
+    still says an image was produced.
+    """
+    images = req.get("images")
+    if not images:
+        return dict(req)
+    out = {k: v for k, v in req.items() if k != "images"}
+    out["image_count"] = len(images)
+    return out
+
+
 def _save_completed_requests() -> None:
     """Persist completed_requests to disk (best-effort, never raises)."""
     try:
         with active_request_details_lock:
-            snapshot = list(completed_requests)
+            snapshot = [_for_persistence(r) for r in completed_requests]
         os.makedirs(os.path.dirname(_COMPLETED_REQUESTS_PATH), exist_ok=True)
         with open(_COMPLETED_REQUESTS_PATH, "w") as f:
             json.dump(snapshot, f, indent=1, default=str)
@@ -695,8 +748,7 @@ def complete_active_request(
                 completed_requests.pop(0)
 
     if req is not None:
-        with resubmittable_requests_lock:
-            resubmittable_requests[request_id] = dict(req)
+        _remember_for_resubmit(request_id, req)
         # Persist to disk so the audit trail survives proxy restarts.
         _save_completed_requests()
     return req
