@@ -1211,10 +1211,14 @@ def converted_voice_f0(pid: str, voice: str, synth,
     if os.path.isfile(path):
         try:
             cached = torch.load(path, map_location="cpu", weights_only=True)
-            return {
-                "base_f0_hz": cached.get("base_f0_hz"),
-                "converted_f0_hz": cached.get("converted_f0_hz"),
-            }
+            # A probe cached before similarity was measured is re-measured once,
+            # or the pairing would keep ranking that voice on pitch alone.
+            if "similarity" in cached:
+                return {
+                    "base_f0_hz": cached.get("base_f0_hz"),
+                    "converted_f0_hz": cached.get("converted_f0_hz"),
+                    "similarity": cached.get("similarity"),
+                }
         except Exception:
             logger.warning(f"[voice_clone] unreadable cached f0 for {voice} on {pid}; re-measuring")
 
@@ -1225,6 +1229,7 @@ def converted_voice_f0(pid: str, voice: str, synth,
     measured = {
         "base_f0_hz": median_f0(windowed, sr),
         "converted_f0_hz": median_f0(converted[:window], sr),
+        "similarity": clone_similarity(converted[:window], sr, pid),
     }
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
@@ -1253,9 +1258,9 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
     `converted_voice_f0`). That makes the first pairing for a profile slow: it
     renders and converts every candidate at `tau`, the strength the narration will
     use, and the results are cached on disk from then on. The sort is total - free
-    first, then nearest, then registry order - so the answer cannot change with the
-    order a caller offers its registry in, and two candidates that are equally
-    free are settled by that order. An operator who knows the speaker better than a
+    first, then (among free voices) the one that sounds most like the speaker,
+    then nearest, then name - so the answer cannot change with the order a caller
+    offers its registry in. An operator who knows the speaker better than a
     measurement does should pin the voice on the profile and skip the search
     entirely.
 
@@ -1307,6 +1312,7 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
             ),
             "semitones_from_target": round(semitones, 2),
             "free": abs(semitones) <= PAIRING_MAX_SEMITONES,
+            "similarity": probe.get("similarity"),
         })
     if not measured:
         return {
@@ -1320,13 +1326,29 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
     # `correct_pitch` will not touch the render. Beyond that, every semitone is
     # vocoder time on the finished narration, so the closest voice wins even if
     # the converter has more to do to its timbre.
-    measured.sort(key=lambda m: (not m["free"], abs(m["semitones_from_target"])))
+    #
+    # Inside the free band the pitch numbers no longer separate the candidates:
+    # a 15 s probe and a real narration disagree by more than the gaps between
+    # them. Measured on a real profile, af_bella probed at -0.03 semitones and
+    # am_liam at +0.16, but on narration af_bella needed -0.9 semitones of vocoder
+    # and am_liam none, and am_liam also sounded more like the speaker (0.930
+    # against 0.910). So among free voices the one that sounds most like the
+    # speaker wins, and pitch only settles voices that could not be compared.
+    def rank(m):
+        sim = m.get("similarity") if m["free"] else None
+        return (not m["free"], sim is None, -(sim or 0.0), abs(m["semitones_from_target"]), m["base_voice"])
+
+    measured.sort(key=rank)
     best = measured[0]
+    sim_note = (
+        f", similarity {best['similarity']:.3f}" if best.get("similarity") is not None else ""
+    )
     return {
         "base_voice": best["base_voice"],
         "reason": (
             f"{best['base_voice']} converts to {best['converted_f0_hz']:.1f} Hz, "
             f"{best['semitones_from_target']:+.2f} semitones from the enrolled {target_f0:.1f} Hz"
+            f"{sim_note}"
         ),
         "pinned": False,
         "converted_f0_hz": best["converted_f0_hz"],

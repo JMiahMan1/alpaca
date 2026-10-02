@@ -167,6 +167,9 @@ def kit(tmp_path, monkeypatch):
     monkeypatch.setattr(vc, "source_se", src)
     monkeypatch.setattr(vc, "target_se", tgt)
     monkeypatch.setattr(vc, "convert", conv)
+    # Similarity needs the real reference encoder. Without it every probe is
+    # uncomparable, which is the case the pitch-only tests below describe.
+    monkeypatch.setattr(vc, "clone_similarity", lambda audio, sr, pid: None)
     return tmp_path
 
 
@@ -482,3 +485,44 @@ def test_the_measurement_is_bounded_like_every_other_one(kit):
     vc.pair_base_voice(pid, synth, candidates=["am_liam"])
     assert seen and max(seen) <= int(vc.F0_ANALYSIS_MAX_S * SR) + SR
     assert max(seen) <= int(vc.PAIRING_PROBE_S * SR) + SR
+
+
+# --------------------------------------------------------------------------- #
+# Inside the free band, sounding like the speaker beats a closer pitch probe
+# --------------------------------------------------------------------------- #
+
+
+def test_among_free_voices_the_one_that_sounds_most_like_the_speaker_wins(kit, monkeypatch):
+    """am_liam (0.28 st) and af_nicole (0.23 st) are both free. The pitch probe
+    is not precise enough to separate them, so similarity decides."""
+    scores = {104.9: 0.93, 101.7: 0.91}
+    monkeypatch.setattr(
+        vc, "clone_similarity", lambda audio, sr, pid: scores[round(vc.median_f0(audio, sr), 1)]
+    )
+    pid = _profile(kit, f0=103.2)
+    r = vc.pair_base_voice(pid, _voice_at("am_liam", 125.5), candidates=["af_nicole", "am_liam"])
+    assert r["base_voice"] == "am_liam"
+    assert "similarity 0.930" in r["reason"]
+
+
+def test_similarity_never_lets_a_voice_outside_the_free_band_win(kit, monkeypatch):
+    """am_echo lands 2 semitones out. However much it sounds like the speaker,
+    choosing it means vocoding the whole narration."""
+    monkeypatch.setattr(
+        vc, "clone_similarity",
+        lambda audio, sr, pid: 0.99 if vc.median_f0(audio, sr) > 110 else 0.80,
+    )
+    pid = _profile(kit, f0=103.2)
+    r = vc.pair_base_voice(pid, _voice_at("am_liam", 125.5), candidates=["am_echo", "af_nicole"])
+    assert r["base_voice"] == "af_nicole"
+
+
+def test_a_probe_cached_without_similarity_is_measured_again(kit, monkeypatch):
+    monkeypatch.setattr(vc, "clone_similarity", lambda audio, sr, pid: 0.9)
+    pid = _profile(kit, f0=103.2)
+    path = kit / "_sources" / f"{vc._source_key('am_liam')}~{pid}~{vc.DEFAULT_TAU:g}.converted.f0"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"base_f0_hz": 125.5, "converted_f0_hz": 104.9}))
+    probe = vc.converted_voice_f0(pid, "am_liam", _voice_at("am_liam", 125.5))
+    assert probe["similarity"] == 0.9
+    assert json.loads(path.read_text())["similarity"] == 0.9
