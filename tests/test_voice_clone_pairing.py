@@ -170,6 +170,10 @@ def kit(tmp_path, monkeypatch):
     # Similarity needs the real reference encoder. Without it every probe is
     # uncomparable, which is the case the pitch-only tests below describe.
     monkeypatch.setattr(vc, "clone_similarity", lambda audio, sr, pid: None)
+    # pYIN over a synthetic tone says nothing about delivery; tests that rank
+    # on delivery set these themselves.
+    monkeypatch.setattr(vc, "prosody", lambda audio, sr, n_words: None)
+    monkeypatch.setattr(vc, "speaker_prosody", lambda pid: None)
     return tmp_path
 
 
@@ -526,3 +530,63 @@ def test_a_probe_cached_without_similarity_is_measured_again(kit, monkeypatch):
     probe = vc.converted_voice_f0(pid, "am_liam", _voice_at("am_liam", 125.5))
     assert probe["similarity"] == 0.9
     assert json.loads(path.read_text())["similarity"] == 0.9
+    assert "prosody" in json.loads(path.read_text())
+
+
+def test_among_free_voices_delivery_outranks_a_slightly_better_timbre(kit, monkeypatch):
+    """The real case: af_nicole scored 0.933 on timbre and read slow and flat;
+    am_liam scored 0.930 and read at the speaker's own pace and range."""
+    by_f0 = {104.9: ("am_liam", 0.930), 101.7: ("af_nicole", 0.933)}
+    delivery = {"am_liam": {"words_per_s": 3.94, "range_st": 11.1},
+                "af_nicole": {"words_per_s": 3.36, "range_st": 4.8}}
+    monkeypatch.setattr(vc, "clone_similarity",
+                        lambda audio, sr, pid: by_f0[round(vc.median_f0(audio, sr), 1)][1])
+    base_f0 = {188.7: "af_heart", 106.9: "am_echo", 125.5: "am_liam", 151.2: "af_nicole"}
+    monkeypatch.setattr(vc, "prosody",
+                        lambda audio, sr, n: delivery[base_f0[round(vc.median_f0(audio, sr), 1)]])
+    monkeypatch.setattr(vc, "speaker_prosody", lambda pid: {"words_per_s": 3.93, "range_st": 11.9})
+    pid = _profile(kit, f0=103.2)
+    r = vc.pair_base_voice(pid, _voice_at("am_liam", 125.5), candidates=["af_nicole", "am_liam"])
+    assert r["base_voice"] == "am_liam"
+    nicole = next(c for c in r["candidates"] if c["base_voice"] == "af_nicole")
+    assert nicole["mismatch"]["pace"] > 3 and nicole["mismatch"]["intonation"] > 3
+
+
+def test_delivery_mismatch_leaves_out_what_was_not_measured():
+    m = vc.delivery_mismatch({"similarity": 0.96, "prosody": {"words_per_s": 4.0, "range_st": None}},
+                             {"words_per_s": 4.0, "range_st": 10.0})
+    assert m == {"total": 2.0, "timbre": 2.0, "pace": 0.0}
+    assert vc.delivery_mismatch({}, None) == {"total": None}
+
+
+# --------------------------------------------------------------------------- #
+# Narration checks                                                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_narration_checks_hear_an_echo_and_a_seam(monkeypatch):
+    rng = np.random.default_rng(0)
+    sr = vc.SR
+    # Speech-like: half-second bursts with short silences, so `analyze` has a
+    # noise floor to find speech against.
+    env = np.tile(np.r_[np.ones(int(0.5 * sr)), np.full(int(0.3 * sr), 1e-4)], 18)
+    dry = (rng.standard_normal(env.size) * 0.2 * env).astype(np.float32)
+    wet = dry.copy()
+    lag = int(0.12 * sr)
+    wet[lag:] += 0.6 * dry[:-lag]
+    # Timbre: one embedding per window, the third one different.
+    calls = {"n": 0}
+
+    def fake_embed(windows):
+        out = []
+        for i, w in enumerate(windows):
+            if len(w) < sr:
+                continue
+            out.append(np.array([1.0, 0.0]) if i != 2 else np.array([0.6, 0.8]))
+        return out
+
+    monkeypatch.setattr(vc, "_embed_windows", fake_embed)
+    clean, echoed = vc.narration_checks(dry, sr), vc.narration_checks(wet, sr)
+    assert clean["echo_r"] < 0.1 < 0.3 < echoed["echo_r"]
+    assert abs(echoed["echo_lag_ms"] - 120) < 2
+    assert clean["steadiness_min"] == 0.6 and clean["largest_shift_at_s"] == 6.0
