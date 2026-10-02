@@ -253,11 +253,20 @@ services:
     # Neither takes effect until the container is recreated -- `docker compose
     # restart` reuses the existing config. Verify with
     # `docker inspect -f '{{.HostConfig.Memory}}' sd-server`.
-    mem_limit: 16g
+    # 24g, and NOT the 16g this line first carried. A cgroup limit counts page
+    # cache as well as anonymous memory, and sd-server's page cache is the GGUF
+    # model file itself: measured idle anon 4.6 GB with 13.5 GB of reclaimable
+    # cache on top, and a cgroup *peak* of 20.7 GB during a 640x768 reference
+    # edit. A 16g limit therefore does not "waste" headroom, it kills the model
+    # mid-render. 24g is a real bound on a 30 GB box and still leaves ~6 GB for
+    # everything else. Verify with:
+    #   docker exec sd-server cat /sys/fs/cgroup/memory.stat | grep -E '^(anon|file) '
+    #   docker exec sd-server cat /sys/fs/cgroup/memory.peak
+    mem_limit: 24g
     deploy:
       resources:
         limits:
-          memory: 16G
+          memory: 24G
         reservations:
           devices:
             - driver: nvidia
