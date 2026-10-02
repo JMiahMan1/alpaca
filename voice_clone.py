@@ -1162,11 +1162,12 @@ def base_voice_candidates(gender: str | None = None) -> list[str]:
     return list(PAIRING_FEMALE) + list(PAIRING_MALE)
 
 
-#: Seconds of audio to render per candidate when pairing. A median F0 over a
-#: fifteen-second read-aloud is as stable as one over thirty, and pairing has to
-#: convert every candidate once, so the shorter window halves the one-time cost
-#: of the first pairing for a profile.
-PAIRING_PROBE_S = 15.0
+#: Seconds of audio to convert per candidate when pairing. Fifteen seconds was
+#: thought as stable as thirty, but against real narrations the fifteen-second
+#: probe was off by up to a semitone (af_bella -0.03 probed, +0.9 on
+#: narration), which is twice the free band. Thirty, the most `median_f0`
+#: analyses, costs one slower first pairing per profile and is cached.
+PAIRING_PROBE_S = 30.0
 
 
 # --------------------------------------------------------------------------- #
@@ -1186,25 +1187,39 @@ PAIRING_PROBE_S = 15.0
 SIMILARITY_UNIT = 0.02
 PACE_UNIT = 0.05  # as a fraction of the speaker's words per second
 RANGE_UNIT_ST = 2.0
+#: Pitch inside the free band still counts. The probe and a real narration
+#: disagree by up to a semitone (bm_lewis probed at +0.47 and needed -1.02 on
+#: narration), so a voice at the edge of the band is likelier to need the
+#: vocoder than one at its centre.
+PITCH_UNIT_ST = 0.25
+
+#: Bumped whenever `prosody` measures differently, so cached numbers from an
+#: older method are re-measured instead of compared with new ones.
+PROSODY_METHOD = 2
 
 
 def prosody(audio, sr: int, n_words: int) -> dict | None:
     """Pace and intonation range of read-aloud speech, or None if too short.
 
-    `words_per_s` counts against speech only (`analyze` strips the pauses), so
-    a voice that pauses longer is not marked slow for it. `range_st` is the
-    10th-to-90th percentile spread of voiced pitch in semitones; pYIN rather
-    than yin because an octave error in a few frames would widen a range more
-    than it moves a median.
+    `words_per_s` counts against speech only, so a voice that pauses longer is
+    not marked slow for it. Pauses are found at a fixed 35 dB below the clip's
+    peak rather than by `analyze`, whose threshold follows the noise floor: a
+    recorded take has one and Kokoro's digital silence does not, so the same
+    pace measured 3.25 words/s on the speaker and 4.32 on am_liam, where a fixed
+    threshold reads 3.93 and 3.94. `range_st` is the 10th-to-90th percentile
+    spread of voiced pitch in semitones; pYIN rather than yin because an octave
+    error in a few frames would widen a range more than it moves a median.
     """
     import librosa
     import numpy as np
 
-    speech = analyze(_resample(audio, sr, SR))["speech"]
-    seconds = len(speech) / SR
+    y = np.asarray(audio, dtype=np.float32)
+    if sr != 16000:
+        y = librosa.resample(y, orig_sr=sr, target_sr=16000)
+    intervals = librosa.effects.split(y, top_db=35, frame_length=1024, hop_length=256)
+    seconds = float(sum(e - b for b, e in intervals)) / 16000
     if seconds < 3.0 or n_words <= 0:
         return None
-    y = librosa.resample(speech.astype(np.float32), orig_sr=SR, target_sr=16000)
     f0, voiced, _ = librosa.pyin(y, fmin=F0_FMIN_HZ, fmax=F0_FMAX_HZ, sr=16000,
                                  frame_length=1024, hop_length=320)
     f = f0[voiced & np.isfinite(f0)]
@@ -1212,7 +1227,8 @@ def prosody(audio, sr: int, n_words: int) -> dict | None:
     if f.size >= 20:
         st = 12.0 * np.log2(f / np.median(f))
         range_st = round(float(np.percentile(st, 90) - np.percentile(st, 10)), 2)
-    return {"words_per_s": round(n_words / seconds, 3), "range_st": range_st}
+    return {"words_per_s": round(n_words / seconds, 3), "range_st": range_st,
+            "method": PROSODY_METHOD}
 
 
 def speaker_prosody(pid: str) -> dict | None:
@@ -1228,26 +1244,35 @@ def speaker_prosody(pid: str) -> dict | None:
     if os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fh:
-                return json.load(fh)
+                cached = json.load(fh)
+            if cached.get("method") == PROSODY_METHOD:
+                return cached
         except Exception:
             logger.warning(f"[voice_clone] unreadable prosody for {pid}; re-measuring")
     meta = get_profile(pid)
     texts = {p["id"]: p["text"] for p in PROMPTS}
-    takes, n_words = [], 0
+    per_take = []
     for i, rec in enumerate(meta.get("recordings", []), 1):
         text = texts.get(rec.get("prompt_id"))
         wav = os.path.join(d, "recordings", f"{i:02d}.wav")
         if text is None or not os.path.isfile(wav):
             return None
         audio, sr = sf.read(wav, dtype="float32")
-        takes.append(_resample(audio, sr, SR))
-        n_words += len(text.split())
-    if not takes:
+        p = prosody(audio, sr, len(text.split()))
+        if p is not None:
+            per_take.append(p)
+    if not per_take:
         return None
-    import numpy as np
-
-    measured = prosody(np.concatenate(takes), SR, n_words)
-    if measured is not None:
+    # Averaged per take, because each take is a different kind of reading (a
+    # passage, clipped sentences, an expressive paragraph) and a concatenation
+    # would let the longest one decide.
+    ranges = [p["range_st"] for p in per_take if p["range_st"] is not None]
+    measured = {
+        "words_per_s": round(sum(p["words_per_s"] for p in per_take) / len(per_take), 3),
+        "range_st": round(sum(ranges) / len(ranges), 2) if ranges else None,
+        "method": PROSODY_METHOD,
+    }
+    if measured:
         try:
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(measured, fh)
@@ -1274,6 +1299,8 @@ def delivery_mismatch(candidate: dict, speaker: dict | None) -> dict:
         parts["pace"] = round(abs(math.log(cp["words_per_s"] / sp["words_per_s"])) / PACE_UNIT, 2)
     if cp.get("range_st") is not None and sp.get("range_st") is not None:
         parts["intonation"] = round(abs(cp["range_st"] - sp["range_st"]) / RANGE_UNIT_ST, 2)
+    if candidate.get("semitones_from_target") is not None:
+        parts["pitch"] = round(abs(float(candidate["semitones_from_target"])) / PITCH_UNIT_ST, 2)
     return {"total": round(sum(parts.values()), 2) if parts else None, **parts}
 
 
@@ -1315,7 +1342,10 @@ def narration_checks(audio, sr: int) -> dict:
         out["echo_r"] = round(float(ac[k]), 3)
         out["echo_lag_ms"] = round(1000.0 * k / SR, 1)
     try:
-        ws = _embed_windows(_windows(speech, STEADY_WINDOW_S))
+        # Full windows only: a short last window reads timbre noisily and
+        # showed up as the "largest shift" at the end of every narration.
+        full = [w for w in _windows(speech, STEADY_WINDOW_S) if len(w) >= int(STEADY_WINDOW_S * SR)]
+        ws = _embed_windows(full)
         sims = [_cosine(a, b) for a, b in zip(ws, ws[1:])]
         if sims:
             i = int(np.argmin(sims))
@@ -1372,7 +1402,9 @@ def converted_voice_f0(pid: str, voice: str, synth,
             # A probe cached before similarity and delivery were measured is
             # re-measured once, or the pairing would keep ranking that voice on
             # pitch alone.
-            if "similarity" in cached and "prosody" in cached:
+            pros = cached.get("prosody", False)
+            current = pros is None or (isinstance(pros, dict) and pros.get("method") == PROSODY_METHOD)
+            if "similarity" in cached and current:
                 return {
                     "base_f0_hz": cached.get("base_f0_hz"),
                     "converted_f0_hz": cached.get("converted_f0_hz"),
