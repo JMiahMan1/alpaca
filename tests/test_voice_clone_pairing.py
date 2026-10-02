@@ -231,7 +231,9 @@ def test_the_report_says_what_the_converter_did_to_each_voice(kit):
     r = vc.pair_base_voice(pid, _voice_at("am_liam", 125.5), candidates=list(REGISTER))
     table = {c["base_voice"]: c for c in r["candidates"]}
     assert set(table) == set(REGISTER)
-    assert table["am_echo"]["base_f0_hz"] == 106.9
+    # The probe reads sentence by sentence with gaps between, which the tone
+    # stub's single FFT hears as a tenth of a hertz.
+    assert table["am_echo"]["base_f0_hz"] == pytest.approx(106.9, abs=0.2)
     assert table["am_echo"]["converted_f0_hz"] == 116.0
     assert table["am_echo"]["converter_offset_semitones"] == pytest.approx(1.42, abs=0.05)
     assert table["am_echo"]["semitones_from_target"] == pytest.approx(2.02, abs=0.05)
@@ -501,7 +503,8 @@ def test_among_free_voices_the_one_that_sounds_most_like_the_speaker_wins(kit, m
     is not precise enough to separate them, so similarity decides."""
     scores = {104.9: 0.93, 101.7: 0.91}
     monkeypatch.setattr(
-        vc, "clone_similarity", lambda audio, sr, pid: scores[round(vc.median_f0(audio, sr), 1)]
+        vc, "clone_similarity",
+        lambda audio, sr, pid: scores[min(scores, key=lambda k: abs(k - vc.median_f0(audio, sr)))],
     )
     pid = _profile(kit, f0=103.2)
     r = vc.pair_base_voice(pid, _voice_at("am_liam", 125.5), candidates=["af_nicole", "am_liam"])
@@ -539,11 +542,13 @@ def test_among_free_voices_delivery_outranks_a_slightly_better_timbre(kit, monke
     by_f0 = {104.9: ("am_liam", 0.930), 101.7: ("af_nicole", 0.933)}
     delivery = {"am_liam": {"words_per_s": 3.94, "range_st": 11.1},
                 "af_nicole": {"words_per_s": 3.36, "range_st": 4.8}}
-    monkeypatch.setattr(vc, "clone_similarity",
-                        lambda audio, sr, pid: by_f0[round(vc.median_f0(audio, sr), 1)][1])
+    def nearest(table, audio, sr):
+        f0 = vc.median_f0(audio, sr)
+        return table[min(table, key=lambda k: abs(k - f0))]
+
+    monkeypatch.setattr(vc, "clone_similarity", lambda audio, sr, pid: nearest(by_f0, audio, sr)[1])
     base_f0 = {188.7: "af_heart", 106.9: "am_echo", 125.5: "am_liam", 151.2: "af_nicole"}
-    monkeypatch.setattr(vc, "prosody",
-                        lambda audio, sr, n: delivery[base_f0[round(vc.median_f0(audio, sr), 1)]])
+    monkeypatch.setattr(vc, "prosody", lambda audio, sr, n: delivery[nearest(base_f0, audio, sr)])
     monkeypatch.setattr(vc, "speaker_prosody", lambda pid: {"words_per_s": 3.93, "range_st": 11.9})
     pid = _profile(kit, f0=103.2)
     r = vc.pair_base_voice(pid, _voice_at("am_liam", 125.5), candidates=["af_nicole", "am_liam"])
@@ -590,3 +595,17 @@ def test_narration_checks_hear_an_echo_and_a_seam(monkeypatch):
     assert clean["echo_r"] < 0.1 < 0.3 < echoed["echo_r"]
     assert abs(echoed["echo_lag_ms"] - 120) < 2
     assert clean["steadiness_min"] == 0.6 and clean["largest_shift_at_s"] == 6.0
+
+
+def test_the_probe_reads_the_script_a_sentence_at_a_time(kit):
+    """Kokoro reads one long input faster and flatter than the sentence-sized
+    inputs a narration is made of, so the probe has to be made the same way."""
+    seen = []
+
+    def synth(text, voice):
+        seen.append(text)
+        return _tone(REGISTER[voice], seconds=0.5), SR
+
+    vc._probe_render(synth, "am_liam")
+    assert len(seen) > 5 and all(len(t) < 200 for t in seen)
+    assert " ".join(seen) == " ".join(vc._SOURCE_SCRIPT.split())

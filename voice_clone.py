@@ -1357,6 +1357,34 @@ def narration_checks(audio, sr: int) -> dict:
     return out
 
 
+#: Bumped whenever the probe is rendered differently, so cached probes made the
+#: old way are re-measured.
+PROBE_METHOD = 2
+_PROBE_GAP_S = 0.3
+
+
+def _probe_render(synth, voice: str):
+    """The enrolment script read the way a narration is read: a sentence at a time.
+
+    Handed the whole script as one input, Kokoro reads faster and flatter than it
+    does a sentence at a time, which is how `/api/tts` feeds it: am_liam probed at
+    4.70 words/s on the whole script and 3.94 sentence by sentence, and every
+    voice's narration came out about half a semitone sharper than its probe. A
+    probe has to sound like the narration it is predicting.
+    """
+    import numpy as np
+
+    pieces, sr = [], None
+    for sentence in re.split(r"(?<=[.!?])\s+", _SOURCE_SCRIPT):
+        if not sentence.strip():
+            continue
+        audio, sr = synth(sentence, voice)
+        if pieces:
+            pieces.append(np.zeros(int(_PROBE_GAP_S * sr), dtype=np.float32))
+        pieces.append(np.asarray(audio, dtype=np.float32))
+    return np.concatenate(pieces), sr
+
+
 def _source_key(voice: str) -> str:
     """Cache-key form of a Kokoro voice name: `af_sky,am_adam` -> `af_sky+am_adam`."""
     return re.sub(r"[^a-z0-9_,]+", "", voice.lower()).replace(",", "+")
@@ -1404,7 +1432,7 @@ def converted_voice_f0(pid: str, voice: str, synth,
             # pitch alone.
             pros = cached.get("prosody", False)
             current = pros is None or (isinstance(pros, dict) and pros.get("method") == PROSODY_METHOD)
-            if "similarity" in cached and current:
+            if "similarity" in cached and current and cached.get("probe") == PROBE_METHOD:
                 return {
                     "base_f0_hz": cached.get("base_f0_hz"),
                     "converted_f0_hz": cached.get("converted_f0_hz"),
@@ -1414,7 +1442,7 @@ def converted_voice_f0(pid: str, voice: str, synth,
         except Exception:
             logger.warning(f"[voice_clone] unreadable cached f0 for {voice} on {pid}; re-measuring")
 
-    audio, sr = synth(_SOURCE_SCRIPT, voice)
+    audio, sr = _probe_render(synth, voice)
     window = min(len(audio), int(PAIRING_PROBE_S * sr), int(F0_ANALYSIS_MAX_S * sr))
     windowed = audio[:window]
     converted = convert(windowed, sr, source_se(voice, synth), target_se(pid), tau=tau)
@@ -1425,6 +1453,7 @@ def converted_voice_f0(pid: str, voice: str, synth,
         # Delivery is the base voice's own: the converter does not change it,
         # so it is read from the whole unconverted render.
         "prosody": prosody(audio, sr, len(_SOURCE_SCRIPT.split())),
+        "probe": PROBE_METHOD,
     }
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
