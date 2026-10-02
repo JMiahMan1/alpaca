@@ -3316,3 +3316,134 @@ async def test_edit_endpoint_applies_identity_preset_before_dispatch(monkeypatch
     assert "reference_roles" not in sent["data"]
     assert "seed" in sent["data"]
     assert "sd_cpp_extra_args" in sent["data"]["prompt"]
+
+
+# --- the two request-history stores -----------------------------------------
+#
+# Both of these hold completed requests, and both are read by a different
+# consumer than the one that writes them. That mismatch is where the cost was:
+# an image request carries about a megabyte of base64, so a store that keeps a
+# full copy per request, forever, is a memory leak with a very large constant.
+
+
+@pytest.fixture
+def history(tmp_path, monkeypatch):
+    """Isolate both history stores and point the persisted file at a tmp dir."""
+    monkeypatch.setattr(alpaca_proxy, "completed_requests", [])
+    monkeypatch.setattr(alpaca_proxy, "active_request_details", {})
+    monkeypatch.setattr(alpaca_proxy, "resubmittable_requests", {})
+    monkeypatch.setattr(alpaca_proxy, "_COMPLETED_REQUESTS_PATH", str(tmp_path / "completed_requests.json"))
+    return tmp_path / "completed_requests.json"
+
+
+def _image_request(request_id="rid-1", n=1, payload_kb=64):
+    """A completed image request: one megabyte-scale base64 blob per image."""
+    alpaca_proxy.register_active_request(
+        request_id, "qwen-image-edit-rapid-aio:q4_k", "image_generation",
+        {"prompt": "a lighthouse at dusk"},
+    )
+    alpaca_proxy.active_request_details[request_id]["images"] = [
+        {"type": "b64_json", "data": "iVBORw0KGgo" + "A" * (payload_kb * 1024)} for _ in range(n)
+    ]
+    return request_id
+
+
+def test_the_resubmit_store_keeps_only_what_replay_can_use(history):
+    """Replay reads `type`, `model` and `prompt` (web/app.py resubmit_stuck_request).
+    It never reads `images` or `response`, so keeping those turns every image
+    request into a megabyte of retained memory for nothing."""
+    alpaca_proxy.complete_active_request(_image_request())
+    record = alpaca_proxy.resubmittable_requests["rid-1"]
+    assert record["prompt"] == "a lighthouse at dusk"
+    assert record["type"] == "image_generation"
+    assert record["model"] == "qwen-image-edit-rapid-aio:q4_k"
+    assert "images" not in record
+    assert "response" not in record
+
+
+def test_an_image_request_costs_the_resubmit_store_nothing_of_its_payload(history):
+    _image_request(payload_kb=256)
+    alpaca_proxy.complete_active_request("rid-1")
+    stored = json.dumps(alpaca_proxy.resubmittable_requests["rid-1"])
+    assert len(stored) < 512, f"the replay record is {len(stored)} bytes for a 256 KB image"
+
+
+def test_the_resubmit_store_is_bounded_and_evicts_the_oldest(history):
+    """It used to say "never rotates out". With a megabyte per image that is
+    unbounded growth for the life of the process."""
+    cap = alpaca_proxy._RESUBMIT_MAX
+    assert cap == 200
+    for i in range(cap + 25):
+        alpaca_proxy.register_active_request(f"r{i}", "m", "chat", {"prompt": f"p{i}"})
+        alpaca_proxy.complete_active_request(f"r{i}")
+    store = alpaca_proxy.resubmittable_requests
+    assert len(store) == cap
+    assert "r0" not in store and "r24" not in store
+    assert f"r{cap + 24}" in store, "the newest request must survive"
+
+
+def test_resubmitting_a_request_refreshes_its_place_in_the_store(history):
+    """Otherwise the oldest entry can be evicted while it is the one being
+    retried, which is exactly when resubmit needs it. Filling the store to the
+    cap and then re-completing r0 must not push r0 out."""
+    cap = alpaca_proxy._RESUBMIT_MAX
+    for i in range(cap):
+        alpaca_proxy.register_active_request(f"r{i}", "m", "chat", {"prompt": f"p{i}"})
+        alpaca_proxy.complete_active_request(f"r{i}")
+    alpaca_proxy.register_active_request("r0", "m", "chat", {"prompt": "again"})
+    alpaca_proxy.complete_active_request("r0")
+    store = alpaca_proxy.resubmittable_requests
+    assert len(store) == cap
+    assert "r0" in store, "the request being retried was evicted"
+    assert list(store)[-1] == "r0", "a refreshed request belongs at the newest end"
+
+    # Now overflow: the NEXT-oldest goes, not the one just refreshed.
+    alpaca_proxy.register_active_request("r-new", "m", "chat", {"prompt": "later"})
+    alpaca_proxy.complete_active_request("r-new")
+    store = alpaca_proxy.resubmittable_requests
+    assert len(store) == cap
+    assert "r0" in store and "r-new" in store
+    assert "r1" not in store, "the next-oldest is the one evicted"
+
+
+def test_the_persisted_file_keeps_the_audit_trail_and_drops_the_image_blobs(history):
+    """The file is rewritten in full on every completion, so a base64 payload
+    here makes each completion a multi-megabyte write."""
+    alpaca_proxy.complete_active_request(_image_request())
+    raw = history.read_text()
+    assert "iVBORw0KGgo" not in raw, "image base64 reached the persisted file"
+    record = json.loads(raw)[0]
+    assert record["prompt"] == "a lighthouse at dusk"
+    assert record["image_count"] == 1, "the record must still say an image was produced"
+    assert "images" not in record
+
+
+def test_the_persisted_record_keeps_the_fields_used_to_debug_a_failure(history):
+    """Dropping the blobs is only safe if nothing a person debugs with goes
+    with them."""
+    alpaca_proxy.register_active_request("rid-2", "qwen3-30b", "chat", {"prompt": "why empty?"})
+    alpaca_proxy.complete_active_request("rid-2", final_response="", error="context overflow")
+    record = json.loads(history.read_text())[0]
+    for field in ("request_id", "type", "model", "prompt", "started_at",
+                  "completed_at", "duration_seconds", "error"):
+        assert field in record, f"{field} was dropped from the audit trail"
+    assert record["error"] == "context overflow"
+
+
+def test_a_request_with_no_images_is_persisted_exactly_as_it_is(history):
+    """The stripping must not touch anything else, or ordinary chat requests
+    would silently lose fields."""
+    alpaca_proxy.register_active_request("rid-3", "qwen3-30b", "chat", {"prompt": "hello"})
+    alpaca_proxy.complete_active_request("rid-3", final_response="hi there")
+    record = json.loads(history.read_text())[0]
+    assert record["response"] == "hi there"
+    assert "image_count" not in record, "a text request did not produce an image"
+
+
+def test_an_image_request_keeps_its_preview_in_the_live_buffer(history):
+    """The Request Monitor draws previews from memory. Only the *persisted*
+    copy is stripped, so the feature is untouched until the proxy restarts."""
+    alpaca_proxy.complete_active_request(_image_request(n=2))
+    live = alpaca_proxy.completed_requests[0]
+    assert len(live["images"]) == 2
+    assert live["images"][0]["data"].startswith("iVBORw0KGgo")
