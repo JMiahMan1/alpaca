@@ -378,7 +378,26 @@ active_requests: dict[str, int] = {}
 # are not yet in-flight, keyed by backend model id. Lets the unload path avoid
 # swapping out a model that an already-queued request depends on.
 queued_requests: dict[str, int] = {}
+# High-water mark and admission count per backend model id, for /admin/runtime.
+# These used to be emitted as literal 0, so the dashboard showed "0 peak" and
+# "0 requests" for a model no matter how much traffic it had served.
+peak_active_requests: dict[str, int] = {}
+total_requests_processed: dict[str, int] = {}
 active_requests_lock = asyncio.Condition()
+
+
+def _track_active(backend_model: str, delta: int) -> None:
+    """Single writer for the in-flight counter, so peak/total cannot drift.
+
+    The counter has ~15 increment/decrement sites across the completion paths;
+    updating the derived figures anywhere but here is how they drift. Safe to
+    call with `active_requests_lock` held: it never awaits.
+    """
+    current = max(0, active_requests.get(backend_model, 0) + delta)
+    active_requests[backend_model] = current
+    if delta > 0:
+        peak_active_requests[backend_model] = max(peak_active_requests.get(backend_model, 0), current)
+        total_requests_processed[backend_model] = total_requests_processed.get(backend_model, 0) + 1
 
 
 async def mark_request_queued(model_name: str | None) -> str | None:
@@ -418,7 +437,7 @@ async def activate_queued_request(queued_backend: str | None, backend_model: str
     async with active_requests_lock:
         if queued_backend:
             queued_requests[queued_backend] = max(0, queued_requests.get(queued_backend, 0) - 1)
-        active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
+        _track_active(backend_model, 1)
         active_requests_lock.notify_all()
 
 
@@ -2219,7 +2238,7 @@ async def embed(request: Request):
             await release_request_queued(queued_backend)
         if backend_model and admitted:
             async with active_requests_lock:
-                active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                _track_active(backend_model, -1)
                 active_requests_lock.notify_all()
 
 
@@ -2495,7 +2514,7 @@ async def openai_chat_completions(request: Request):
                         # guarantees the entry is always removed.
                         req_data = complete_active_request(request_id)
                         async with active_requests_lock:
-                            active_requests[_bm] = max(0, active_requests.get(_bm, 0) - 1)
+                            _track_active(_bm, -1)
                             active_requests_lock.notify_all()
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                         c_toks = req_data.get("completion_tokens", 0) if req_data else 0
@@ -2579,7 +2598,7 @@ async def openai_chat_completions(request: Request):
                     # chat-stream finally for the full rationale.
                     complete_active_request(request_id)
                     async with active_requests_lock:
-                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                        _track_active(backend_model, -1)
                         active_requests_lock.notify_all()
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
@@ -2758,7 +2777,7 @@ async def openai_completions(request: Request):
                         # chat-stream finally for the full rationale.
                         req_data = complete_active_request(request_id)
                         async with active_requests_lock:
-                            active_requests[_bm] = max(0, active_requests.get(_bm, 0) - 1)
+                            _track_active(_bm, -1)
                             active_requests_lock.notify_all()
                         p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                         c_toks = req_data.get("completion_tokens", 0) if req_data else 0
@@ -2826,7 +2845,7 @@ async def openai_completions(request: Request):
                     # chat-stream finally for the full rationale.
                     complete_active_request(request_id)
                     async with active_requests_lock:
-                        active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                        _track_active(backend_model, -1)
                         active_requests_lock.notify_all()
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
@@ -2960,7 +2979,7 @@ async def openai_embeddings(request: Request):
             await release_request_queued(queued_backend)
         if backend_model and admitted:
             async with active_requests_lock:
-                active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                _track_active(backend_model, -1)
                 active_requests_lock.notify_all()
 
 
@@ -5489,8 +5508,8 @@ async def admin_runtime():
                     "active_requests": active_by_backend.get(backend_model, 0),
                     "queued_requests": queued_by_backend.get(backend_model, 0),
                     "running_settings": running_settings,
-                    "peak_active_requests": 0,
-                    "total_requests_processed": 0,
+                    "peak_active_requests": peak_active_requests.get(backend_model, 0),
+                    "total_requests_processed": total_requests_processed.get(backend_model, 0),
                 }
             )
 
@@ -5534,8 +5553,8 @@ async def admin_runtime():
                             "active_requests": active_by_backend.get(eid, 0),
                             "queued_requests": queued_by_backend.get(eid, 0),
                             "running_settings": running_settings,
-                            "peak_active_requests": 0,
-                            "total_requests_processed": 0,
+                            "peak_active_requests": peak_active_requests.get(eid, 0),
+                            "total_requests_processed": total_requests_processed.get(eid, 0),
                         }
                     )
     except Exception:
@@ -6077,6 +6096,9 @@ async def admin_model_unload(request: Request):
                     await post_router_model_action("unload", backend_model)
                     public = public_model_name(model)
                     await record_model_unloaded(model)
+                    # Counters describe one loaded lifetime; a reload starts clean.
+                    peak_active_requests.pop(backend_model, None)
+                    total_requests_processed.pop(backend_model, None)
                     return {"status": "unloaded", "model": public, "backend_model": backend_model}
 
         # Model not found or not loaded
@@ -7446,12 +7468,12 @@ async def ensure_model(model_name: str, options: dict | None = None, skip_swap: 
         backend_model = resolved["backend_model"]
 
         async with active_requests_lock:
-            active_requests[backend_model] = active_requests.get(backend_model, 0) + 1
+            _track_active(backend_model, 1)
         try:
             return await _ensure_model_impl(model_name, options, resolved, skip_swap)
         finally:
             async with active_requests_lock:
-                active_requests[backend_model] = max(0, active_requests.get(backend_model, 0) - 1)
+                _track_active(backend_model, -1)
                 active_requests_lock.notify_all()
 
 
@@ -8745,7 +8767,7 @@ async def chat(request: Request):
         finally:
             if resolved_backend:
                 async with active_requests_lock:
-                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                    _track_active(resolved_backend, -1)
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
@@ -8875,7 +8897,7 @@ async def chat(request: Request):
     finally:
         if resolved_backend:
             async with active_requests_lock:
-                active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                _track_active(resolved_backend, -1)
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                 )
@@ -9094,7 +9116,7 @@ async def generate(request: Request):
                 # above), so it is already 0 here.
                 with suppress(BaseException):
                     async with active_requests_lock:
-                        active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                        _track_active(resolved_backend, -1)
                         logger.info(
                             f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                         )
@@ -9251,7 +9273,7 @@ async def generate(request: Request):
             # already 0 here.
             with suppress(BaseException):
                 async with active_requests_lock:
-                    active_requests[resolved_backend] = max(0, active_requests.get(resolved_backend, 0) - 1)
+                    _track_active(resolved_backend, -1)
                     logger.info(
                         f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
                     )
