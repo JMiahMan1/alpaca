@@ -289,6 +289,16 @@ card with llama-server and sd-server. Ten minutes of bed is the one thing it doe
   quarter-tone `correct_pitch` refuses to act on. Any voice inside it outranks a closer one
   outside it, because inside means `correct_pitch` does not run at all. Ties break on
   |semitones|, and the sort is total so registry order can never change the answer.
+- **Inside the free band, similarity decides.** A 15 s probe and a real narration disagree by
+  more than the gaps between free candidates: on the enrolled profile `af_bella` probed at
+  -0.03 st and `am_liam` at +0.16, but on narration `af_bella` needed -0.9 st of vocoder and
+  `am_liam` none, and `am_liam` scored 0.930 similarity to `af_bella`'s 0.910. So the probe also
+  records `clone_similarity` of its converted audio (cached with the F0; a cache without it is
+  re-measured once), free voices rank by it, and pitch only orders voices that are not free or
+  could not be compared. A voice outside the band never wins on similarity.
+- **`clone_unit: "paragraph"` converts a paragraph in one pass.** The default (`"chunk"`)
+  converts each synthesized piece separately, which lets timbre move at every seam. Paragraph
+  mode joins the paragraph's Kokoro speech (with its sentence pauses) and converts it once.
 - **Gender is not a filter.** `pair_base_voice` measures every voice in the 28-voice registry,
   af_* and am_* together, and prefers the one that lands nearest the speaker *after* conversion.
   A wrong guess about gender is no reason to exclude a voice that lands where the speaker is.

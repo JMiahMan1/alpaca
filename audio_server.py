@@ -541,6 +541,12 @@ async def api_tts(request: Request):
             {"error": f"group_chars must be 0 or within 80..{MAX_GROUP_CHARS}"}, status_code=400
         )
     peak_normalize = bool(data.get("peak_normalize", True))
+    # "chunk" re-timbres each synthesized piece on its own; "paragraph" joins a
+    # paragraph's Kokoro speech first and converts it in one pass, so the voice
+    # cannot shift at the seams between pieces. Only matters with a clone.
+    clone_unit = str(data.get("clone_unit", "chunk"))
+    if clone_unit not in ("chunk", "paragraph"):
+        return JSONResponse({"error": "clone_unit must be 'chunk' or 'paragraph'"}, status_code=400)
     normalized = bool(data.get("normalize", True))
     if normalized:
         text = tts_text.normalize(text)
@@ -638,18 +644,29 @@ async def api_tts(request: Request):
                     if group_chars
                     else tts_text.sentences(paragraph)
                 )
+                whole = convert is not None and clone_unit == "paragraph"
+                spoken: list = []
                 for s_idx, sentence in enumerate(units):
                     for audio in await asyncio.to_thread(_synth, sentence):
-                        if convert is not None:
+                        if convert is not None and not whole:
                             audio = await asyncio.to_thread(convert, audio)
                         audio = _trim_and_fade(audio, sr)
                         if audio.size == 0:
                             continue
-                        if pieces:
-                            gap = paragraph_pause if (s_idx == 0 and p_idx > 0) else sentence_pause
-                            pieces.append(np.zeros(int(gap * sr), dtype=np.float32))
-                        pieces.append(audio)
+                        if spoken:
+                            spoken.append(np.zeros(int(sentence_pause * sr), dtype=np.float32))
+                        spoken.append(audio)
                         n_chunks += 1
+                if not spoken:
+                    continue
+                block = np.concatenate(spoken)
+                if whole:
+                    block = _trim_and_fade(await asyncio.to_thread(convert, block), sr)
+                    if block.size == 0:
+                        continue
+                if pieces:
+                    pieces.append(np.zeros(int(paragraph_pause * sr), dtype=np.float32))
+                pieces.append(block)
             _state["last_used"]["tts"] = time.time()  # type: ignore[index]
         if not pieces:
             return JSONResponse({"error": "TTS produced no audio"}, status_code=502)
@@ -741,6 +758,7 @@ async def api_tts(request: Request):
                 "sentence_pause_s": sentence_pause,
                 "paragraph_pause_s": paragraph_pause,
                 "group_chars": group_chars,
+                "clone_unit": clone_unit,
                 "peak_normalized": peak_normalize,
                 "normalized": normalized,
                 "clone": clone_meta_out,

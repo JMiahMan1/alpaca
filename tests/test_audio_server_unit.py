@@ -1074,3 +1074,18 @@ def test_wav_bytes_can_keep_the_level_it_was_given():
             return int(np.max(np.abs(np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16))))
     assert peak(audio._wav_bytes(quiet, SR)) == 32767
     assert abs(peak(audio._wav_bytes(quiet, SR, peak_normalize=False)) - 8191) <= 1
+
+
+def test_clone_unit_paragraph_converts_each_paragraph_once(client):
+    """Converting piece by piece lets the timbre move at every seam. A paragraph
+    converted in one pass has no seams to move at."""
+    _clone_tts(client, {"text": "One. Two. Three.\n\nFour. Five.", "clone": "v", "voice": "am_liam",
+                        "clone_unit": "paragraph"})
+    assert _LAST_CONVERT.call_count == 2
+    _clone_tts(client, {"text": "One. Two. Three.\n\nFour. Five.", "clone": "v", "voice": "am_liam"})
+    assert _LAST_CONVERT.call_count == 5
+
+
+def test_clone_unit_rejects_an_unknown_mode(client):
+    resp = client.post("/api/tts", json={"text": "hi", "clone_unit": "sentence"})
+    assert resp.status_code == 400 and "clone_unit" in resp.json()["error"]
