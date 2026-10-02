@@ -471,6 +471,39 @@ async def test_loaded_models_from_router_returns_only_loaded_models():
     assert [item["name"] for item in loaded] == ["tinyllama"]
 
 
+def test_track_active_derives_peak_and_total():
+    """The dashboard shows peak/total, so they must be derived, not literal 0."""
+    bm = "m--q4_k_m--latest"
+    alpaca_proxy.active_requests.pop(bm, None)
+    alpaca_proxy.peak_active_requests.pop(bm, None)
+    alpaca_proxy.total_requests_processed.pop(bm, None)
+
+    alpaca_proxy._track_active(bm, 1)
+    alpaca_proxy._track_active(bm, 1)
+    assert alpaca_proxy.active_requests[bm] == 2
+    assert alpaca_proxy.peak_active_requests[bm] == 2
+    assert alpaca_proxy.total_requests_processed[bm] == 2
+
+    alpaca_proxy._track_active(bm, -1)
+    assert alpaca_proxy.active_requests[bm] == 1
+    assert alpaca_proxy.peak_active_requests[bm] == 2, "peak is a high-water mark"
+    assert alpaca_proxy.total_requests_processed[bm] == 2, "completions are not admissions"
+
+    # A third request after the first drained raises peak again.
+    alpaca_proxy._track_active(bm, 1)
+    alpaca_proxy._track_active(bm, -1)
+    assert alpaca_proxy.total_requests_processed[bm] == 3
+
+    # Never goes negative, even if a completion path double-decrements.
+    alpaca_proxy._track_active(bm, -1)
+    alpaca_proxy._track_active(bm, -1)
+    assert alpaca_proxy.active_requests[bm] == 0
+
+    for store in (alpaca_proxy.active_requests, alpaca_proxy.peak_active_requests,
+                  alpaca_proxy.total_requests_processed):
+        store.pop(bm, None)
+
+
 @pytest.mark.asyncio
 async def test_chat_endpoint_maps_request_and_returns_ollama_shape():
     alpaca_proxy.ensure_model = AsyncMock(return_value={"backend_model": "router-backend"})
