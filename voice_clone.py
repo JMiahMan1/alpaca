@@ -536,9 +536,69 @@ def _seed_devices(torch, device) -> list:
     return [dev.index if dev.index is not None else torch.cuda.current_device()]
 
 
+#: Bounds for `highband_hz`. Below 1.5 kHz the crossover would take formants,
+#: which carry who is speaking; above 8 kHz there is nothing left to keep.
+HIGHBAND_MIN_HZ = 1500
+HIGHBAND_MAX_HZ = 8000
+_CROSSOVER_TAPS = 511
+_ALIGN_MAX_S = 0.05
+
+
+def _align(reference, moving, max_lag: int):
+    """`moving` shifted to line up with `reference`, by cross-correlation within ±max_lag."""
+    import numpy as np
+    from scipy.signal import correlate
+
+    n = min(len(reference), len(moving))
+    a, b = reference[:n].astype(np.float64), moving[:n].astype(np.float64)
+    c = correlate(a, b, mode="full", method="fft")
+    mid = n - 1
+    lo, hi = max(mid - max_lag, 0), min(mid + max_lag + 1, len(c))
+    lag = int(np.argmax(c[lo:hi])) + lo - mid
+    out = np.zeros_like(reference, dtype=np.float32)
+    if lag >= 0:
+        seg = moving[: len(reference) - lag]
+        out[lag:lag + len(seg)] = seg
+    else:
+        seg = moving[-lag:-lag + len(reference)]
+        out[: len(seg)] = seg
+    return out
+
+
+def band_blend(converted, source, sr: int, highband_hz: float):
+    """Converted speech below `highband_hz`, the unconverted source above it.
+
+    OpenVoice's decoder smears harmonics above about 2 kHz into noise and can
+    leave steady tones there; that is what listeners call a metallic or digital
+    echo. Who is speaking lives mostly in the formants below that, so the clone
+    keeps the converted low band and takes the clean high band from the Kokoro
+    speech it was made from. The two filters are one linear-phase FIR and its
+    complement, so where the two signals agree they sum back exactly and there
+    is no seam at the crossover. The source is aligned first, by
+    cross-correlation of the high bands, in case the decoder shifted timing.
+    """
+    import numpy as np
+    from scipy.signal import fftconvolve, firwin
+
+    y = np.asarray(converted, dtype=np.float32)
+    x = np.asarray(source, dtype=np.float32)
+    low = firwin(_CROSSOVER_TAPS, float(highband_hz), fs=sr).astype(np.float32)
+    high = -low
+    high[_CROSSOVER_TAPS // 2] += 1.0
+    x_high = fftconvolve(x, high, mode="same")
+    y_high = fftconvolve(y, high, mode="same")
+    x_high = _align(y_high, x_high, int(_ALIGN_MAX_S * sr))
+    out = fftconvolve(y, low, mode="same") + x_high[: len(y)]
+    return out.astype(np.float32)
+
+
 def convert(audio, sr: int, src_se, tgt_se, tau: float = DEFAULT_TAU,
-            seed: int | None = CONVERT_SEED):
+            seed: int | None = CONVERT_SEED, highband_hz: float | None = None):
     """Re-timbre one utterance from src_se toward tgt_se; returns audio at `sr`.
+
+    `highband_hz` keeps the source's own audio above that frequency (see
+    `band_blend`). The watermark is applied after the blend, so it marks the
+    audio that is actually returned.
 
     `seed` fixes the converter's latent noise so the same draw is reused on
     every call (see `CONVERT_SEED` for why that matters). The generator is
@@ -569,6 +629,8 @@ def convert(audio, sr: int, src_se, tgt_se, tau: float = DEFAULT_TAU,
             with torch.random.fork_rng(devices=_seed_devices(torch, conv.device)):
                 torch.manual_seed(int(seed))
                 y = _conversion()
+    if highband_hz:
+        y = band_blend(y, x, SR, highband_hz)
     y = conv.add_watermark(y, "alpaca") if len(y) >= 16000 else y
     return _resample(y, SR, sr)
 

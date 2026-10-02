@@ -303,6 +303,15 @@ card with llama-server and sd-server. Ten minutes of bed is the one thing it doe
   measured from their takes (`speaker_prosody`, cached as `prosody.json` in the profile), and free
   candidates rank on `delivery_mismatch`: timbre, pace and intonation, each in a just-noticeable
   unit, summed.
+- **`clone_highband_hz` is a cleanliness/likeness trade, measured.** OpenVoice's decoder smears
+  harmonics above ~2 kHz and leaves steady tones there (heard as a metallic "digital echo"; the
+  20-500 ms `echo_r` check does not see it). `band_blend` keeps the converted audio below the
+  cutoff and the clean Kokoro source above it (complementary linear-phase FIRs, source aligned by
+  cross-correlation). It removes the artefact, but similarity to the speaker fell from 0.93 to
+  0.64 (2.5 kHz) / 0.70 (3.5 kHz) against 0.49 for plain Kokoro: much of what the reference
+  encoder hears as the speaker is in the band the decoder smears. Off by default.
+- **The WavMark watermark is not the distortion.** Applied alone to clean speech its residual is
+  53 dB below the signal.
 - **`checks: true` on `/api/tts` measures the result** (`narration_checks`): `echo_r` is the peak
   speech autocorrelation at 20-500 ms lags, and `steadiness_min` / `largest_shift_at_s` is the
   lowest timbre cosine between neighbouring 3 s windows, which is where a voice change shows.

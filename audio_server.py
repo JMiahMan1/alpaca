@@ -558,6 +558,17 @@ async def api_tts(request: Request):
     clone_id = str(data.get("clone") or "").strip()
     clone_meta = None
     clone_tau = float(data.get("clone_tau", voice_clone.DEFAULT_TAU))
+    # Keep the base voice's own audio above this frequency (voice_clone.band_blend).
+    try:
+        clone_highband = int(data.get("clone_highband_hz") or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "clone_highband_hz must be an integer"}, status_code=400)
+    if clone_highband and not voice_clone.HIGHBAND_MIN_HZ <= clone_highband <= voice_clone.HIGHBAND_MAX_HZ:
+        return JSONResponse(
+            {"error": f"clone_highband_hz must be 0 or within "
+                      f"{voice_clone.HIGHBAND_MIN_HZ}..{voice_clone.HIGHBAND_MAX_HZ}"},
+            status_code=400,
+        )
     # The converter draws its latent from a Gaussian, once per sentence. Pinning
     # that draw is what makes a narration one voice; `null` opts back out. See
     # voice_clone.CONVERT_SEED.
@@ -640,7 +651,8 @@ async def api_tts(request: Request):
                 tgt_se = voice_clone.target_se(clone_id)
 
                 def convert(a):
-                    return voice_clone.convert(a, sr, src_se, tgt_se, clone_tau, clone_seed)
+                    return voice_clone.convert(a, sr, src_se, tgt_se, clone_tau, clone_seed,
+                                               clone_highband or None)
 
             for p_idx, paragraph in enumerate(tts_text.paragraphs(text)):
                 units = (
@@ -707,6 +719,7 @@ async def api_tts(request: Request):
                 "id": clone_id,
                 "name": clone_meta["name"],
                 "tau": clone_tau,
+                "highband_hz": clone_highband or None,
                 # Whether the converter's latent draw was pinned. Unseeded means
                 # a different timbre on every sentence, which is the sound of a
                 # narrator who cannot hold a voice.

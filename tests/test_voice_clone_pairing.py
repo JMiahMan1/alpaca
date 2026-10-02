@@ -609,3 +609,38 @@ def test_the_probe_reads_the_script_a_sentence_at_a_time(kit):
     vc._probe_render(synth, "am_liam")
     assert len(seen) > 5 and all(len(t) < 200 for t in seen)
     assert " ".join(seen) == " ".join(vc._SOURCE_SCRIPT.split())
+
+
+# --------------------------------------------------------------------------- #
+# The crossover                                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_band_blend_of_a_signal_with_itself_gives_it_back():
+    pytest.importorskip("scipy")
+    """Complementary filters: no seam where the two signals agree."""
+    rng = np.random.default_rng(1)
+    x = (rng.standard_normal(vc.SR) * 0.1).astype(np.float32)
+    out = vc.band_blend(x, x, vc.SR, 3000)
+    inner = slice(1000, -1000)
+    assert np.max(np.abs(out[inner] - x[inner])) < 1e-4
+
+
+def test_band_blend_takes_the_high_band_from_the_source_and_realigns_it():
+    pytest.importorskip("scipy")
+    sr = vc.SR
+    t = np.arange(sr, dtype=np.float32) / sr
+    low_tone = np.sin(2 * np.pi * 300 * t).astype(np.float32)
+    hiss = (np.random.default_rng(2).standard_normal(sr) * 0.2).astype(np.float32)
+    from scipy.signal import firwin, fftconvolve
+
+    hp = -firwin(511, 5000, fs=sr)
+    hp[255] += 1
+    clean_high = fftconvolve(np.sin(2 * np.pi * 6000 * t) * (t > 0.2), hp, mode="same").astype(np.float32)
+    converted = low_tone + fftconvolve(hiss, hp, mode="same").astype(np.float32)
+    shifted = np.roll(low_tone + clean_high, 120)  # the decoder moved timing by ~5 ms
+    out = vc.band_blend(converted, shifted, sr, 3000)
+    spec = np.abs(np.fft.rfft(out[2000:-2000]))
+    freqs = np.fft.rfftfreq(len(out) - 4000, 1 / sr)
+    # The 6 kHz partial came from the source; the converted hiss did not survive.
+    assert spec[np.argmin(abs(freqs - 6000))] > 20 * np.median(spec[(freqs > 7000) & (freqs < 9000)])
