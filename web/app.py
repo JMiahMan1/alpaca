@@ -3163,7 +3163,15 @@ def image_animate_render():
 
     import imageanim
 
-    source: Mapping[str, Any] = request.form if request.form else (request.get_json(silent=True) or {})
+    # Parameters may arrive in the body (the dashboard posts FormData) or in the
+    # query string (how curl and a browser link do it). The body wins on a
+    # conflict because it is the more specific statement, but the query string is
+    # consulted for anything the body left out -- otherwise `?frames=8` is
+    # accepted and then silently ignored, and the caller gets the defaults with
+    # no indication that their request was not honoured.
+    body_source: Mapping[str, Any] = request.form if request.form else (request.get_json(silent=True) or {})
+    source: dict[str, Any] = {k: v for k, v in request.args.items() if k not in body_source}
+    source.update(body_source)
 
     try:
         kind = str(source.get("kind") or "ken_burns").strip().lower()

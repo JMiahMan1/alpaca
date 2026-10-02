@@ -476,3 +476,32 @@ def test_a_wav_upload_is_refused_rather_than_half_rendered(client):
         data={"image": _upload(buf.getvalue(), "clip.wav"), "size": "128x128", "frames": "6"},
     )
     assert resp.status_code == 400
+
+
+def test_a_query_string_caller_is_not_silently_ignored(client, tmp_path, monkeypatch):
+    """`POST /api/image/animate?frames=8` used to come back as 48 frames with no
+    error at all. The dashboard posts FormData so it never saw this, and every
+    other test posted a body too -- a caller passing their knobs in the query
+    string (curl, a browser link, a bookmark) got the defaults and had no way to
+    tell. Silently ignoring a parameter is worse than refusing it."""
+    res = client.post(
+        "/api/image/animate?kind=ken_burns&frames=8&duration_ms=120&size=320x240",
+        data={"image": _upload(_png_bytes())},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)[:300]
+    body = res.get_json()
+    assert body["frames"] == 8, body
+    assert body["duration_ms"] == 120, body
+    assert body["size"] == [320, 240], body
+
+
+def test_the_body_still_wins_over_the_query_string(client, tmp_path, monkeypatch):
+    """The body is the more specific statement, so it must take precedence."""
+    res = client.post(
+        "/api/image/animate?frames=8",
+        data={"image": _upload(_png_bytes()), "frames": "6"},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)[:300]
+    assert res.get_json()["frames"] == 6
