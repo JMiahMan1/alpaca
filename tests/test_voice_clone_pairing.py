@@ -420,8 +420,23 @@ def test_the_cache_is_per_profile_not_just_per_voice(kit):
     meta = {"id": "other", "name": "Other", "created": 1, "median_f0_hz": 103.2}
     (kit2 / "meta.json").write_text(json.dumps(meta))
     assert vc.converted_voice_f0("other", "am_liam", _voice_at("am_liam", 125.5))["converted_f0_hz"] == pytest.approx(104.9, abs=0.05)
-    assert (kit / "_sources" / "am_liam~narrator-aaa111.converted.f0").is_file()
-    assert (kit / "_sources" / "am_liam~other.converted.f0").is_file()
+    assert (kit / "_sources" / "am_liam~narrator-aaa111~0.3.converted.f0").is_file()
+    assert (kit / "_sources" / "am_liam~other~0.3.converted.f0").is_file()
+
+
+def test_the_cache_is_also_per_conversion_strength(kit):
+    """`tau` is the strength of the conversion being measured, and a caller may
+    ask for anything in 0.1..1.0. A cache written at one strength says nothing
+    about where another strength will put the voice, so a shared key would hand
+    back a ranking measured under different conditions than the narration it is
+    ranking for -- silently, because the numbers look perfectly plausible."""
+    for tau in (0.3, 0.9):
+        vc.converted_voice_f0("narrator-aaa111", "am_liam", _voice_at("am_liam", 125.5), tau=tau)
+    sources = sorted(p.name for p in (kit / "_sources").glob("am_liam~narrator-aaa111*"))
+    assert sources == [
+        "am_liam~narrator-aaa111~0.3.converted.f0",
+        "am_liam~narrator-aaa111~0.9.converted.f0",
+    ], sources
 
 
 def test_a_stale_base_pitch_cache_is_not_read(kit):

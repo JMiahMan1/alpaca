@@ -1162,53 +1162,104 @@ def base_voice_candidates(gender: str | None = None) -> list[str]:
     return list(PAIRING_FEMALE) + list(PAIRING_MALE)
 
 
-def base_voice_f0(voice: str, synth) -> float | None:
-    """Median F0 of a Kokoro voice, cached next to its source embedding.
+#: Seconds of audio to render per candidate when pairing. A median F0 over a
+#: fifteen-second read-aloud is as stable as one over thirty, and pairing has to
+#: convert every candidate once, so the shorter window halves the one-time cost
+#: of the first pairing for a profile.
+PAIRING_PROBE_S = 15.0
 
-    Rendered with the same read-aloud script the embedding is built from, so
-    the number describes the voice as the converter will actually meet it.
+
+def _source_key(voice: str) -> str:
+    """Cache-key form of a Kokoro voice name: `af_sky,am_adam` -> `af_sky+am_adam`."""
+    return re.sub(r"[^a-z0-9_,]+", "", voice.lower()).replace(",", "+")
+
+
+def converted_voice_f0(pid: str, voice: str, synth,
+                       tau: float = DEFAULT_TAU) -> dict:
+    """The pitch a candidate base voice speaks at *after* conversion to `pid`, cached.
+
+    The base voice's own pitch is the wrong number to pair on, and this function
+    used to return it. The converter does not leave the source voice's F0 alone:
+    it moves the whole utterance, and by how much depends on the voice in a way
+    that is not monotonic in that voice's own pitch. Measured on a real profile,
+    `am_echo` speaks 9.1 Hz *above* its own 106.9 Hz base while `am_liam` speaks
+    20.6 Hz *below* its own 125.5 Hz one, and `af_nicole` 49.5 Hz below its 151.2.
+    Ranking candidates on base pitch therefore picked the one voice that then had
+    to be vocoded by two semitones, which is worse than the hardcoded default the
+    pairing was written to replace. Nothing about the base voice predicts the
+    offset, so the only honest measurement is the converted audio itself, which
+    is exactly the audio `correct_pitch` measures afterwards.
+
+    Returns `{"base_f0_hz": float|None, "converted_f0_hz": float|None}`. Both come
+    from one render and one conversion, and the pair is cached per voice, per
+    profile *and* per tau, because the same voice converts differently for every
+    speaker and `tau` is the strength of that conversion -- a caller may ask for
+    anything in 0.1..1.0, so a cache written at one strength says nothing about
+    another. The first pairing for a profile at a given tau is therefore slow;
+    every one after it is a file read.
+
     `synth(text, voice) -> (audio, sr)` renders Kokoro speech in `voice`.
     """
     import torch
 
-    key = re.sub(r"[^a-z0-9_,]+", "", voice.lower()).replace(",", "+")
-    path = os.path.join(VOICES_DIR, "_sources", f"{key}.f0")
+    # tau is in the key because it is the strength of the conversion being
+    # measured: a cached value from another strength would rank the candidate as
+    # though it landed where this one will actually put it.
+    path = os.path.join(
+        VOICES_DIR, "_sources", f"{_source_key(voice)}~{pid}~{float(tau):g}.converted.f0"
+    )
     if os.path.isfile(path):
         try:
-            return float(torch.load(path, map_location="cpu", weights_only=True))
+            cached = torch.load(path, map_location="cpu", weights_only=True)
+            return {
+                "base_f0_hz": cached.get("base_f0_hz"),
+                "converted_f0_hz": cached.get("converted_f0_hz"),
+            }
         except Exception:
-            logger.warning(f"[voice_clone] unreadable cached f0 for {voice}; re-measuring")
+            logger.warning(f"[voice_clone] unreadable cached f0 for {voice} on {pid}; re-measuring")
+
     audio, sr = synth(_SOURCE_SCRIPT, voice)
-    window = min(len(audio), int(F0_ANALYSIS_MAX_S * sr))
-    f0 = median_f0(audio[:window], sr)
-    if f0 is None:
-        return None
+    window = min(len(audio), int(PAIRING_PROBE_S * sr), int(F0_ANALYSIS_MAX_S * sr))
+    windowed = audio[:window]
+    converted = convert(windowed, sr, source_se(voice, synth), target_se(pid), tau=tau)
+    measured = {
+        "base_f0_hz": median_f0(windowed, sr),
+        "converted_f0_hz": median_f0(converted[:window], sr),
+    }
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
-        torch.save(f0, path)
+        torch.save(measured, path)
     except Exception as exc:
-        logger.warning(f"[voice_clone] could not cache f0 for {voice}: {exc}")
-    return f0
+        logger.warning(f"[voice_clone] could not cache f0 for {voice} on {pid}: {exc}")
+    return measured
 
 
 def pair_base_voice(pid: str, synth, gender: str | None = None,
-                    candidates: list[str] | None = None) -> dict:
+                    candidates: list[str] | None = None,
+                    tau: float = DEFAULT_TAU) -> dict:
     """Pick the Kokoro voice that needs the least correction to sound like `pid`.
 
-    `correct_pitch` measures how far the render landed from the enrolled F0 and
-    vocoder-shifts the difference, so the base voice sets how much correction
-    the speaker's own narration has to survive. Ranking by that distance rather
-    than by post-hoc timbre similarity is deliberate: a base voice that starts
-    near the target is worth more than one that needs a whole narration pushed
+    `correct_pitch` measures how far the finished narration landed from the enrolled
+    F0 and vocoder-shifts the difference, so what a base voice decides is how much
+    of that a speaker's own narration has to survive. Ranking by that distance
+    rather than by post-hoc timbre similarity is deliberate: a base voice that
+    lands on the target is worth more than one that needs a whole narration pushed
     two semitones to get there, because a phase vocoder run over several minutes
-    smears transients and adds flutter that no amount of speaker similarity
-    makes unnoticeable. Ties within `PAIRING_MAX_SEMITONES` go to the earlier
-    candidate so the choice is stable across calls.
+    smears transients and adds flutter that no amount of speaker similarity makes
+    unnoticeable.
+
+    The distance is measured on *converted* audio, not on the base voice's own
+    pitch, because the converter does not preserve the base voice's register (see
+    `converted_voice_f0`). That makes the first pairing for a profile slow: it
+    renders and converts every candidate at `tau`, the strength the narration will
+    use, and the results are cached on disk from then on. The sort is total - free
+    first, then nearest, then registry order - so the answer cannot change with the
+    order a caller offers its registry in, and two candidates that are equally
+    free are settled by that order. An operator who knows the speaker better than a
+    measurement does should pin the voice on the profile and skip the search
+    entirely.
 
     `synth(text, voice) -> (audio, sr)` renders Kokoro speech in a given voice.
-    Every candidate has to be rendered once to be measured, so the result is
-    worth caching on the profile; the per-voice F0 is cached on disk.
-
     The answer is advisory: a pairing is a recommendation, a pin is a decision,
     and a pinned value is never overridden here. Returns a report suitable for
     storing on the profile and for logging.
@@ -1235,18 +1286,25 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
         }
 
     measured: list[dict] = []
+    logger.info(f"[voice_clone] pairing a base voice for {pid}: probing {len(pool)} candidates")
     for voice in pool:
         try:
-            f0 = base_voice_f0(voice, synth)
+            probe = converted_voice_f0(pid, voice, synth, tau=tau)
         except Exception as exc:
-            logger.warning(f"[voice_clone] f0 probe failed for {voice}: {exc}")
+            logger.warning(f"[voice_clone] conversion probe failed for {voice}: {exc}")
             continue
+        f0 = probe.get("converted_f0_hz")
         if not f0:
             continue
         semitones = _semitones_between(f0, target_f0)
+        base_f0 = probe.get("base_f0_hz")
         measured.append({
             "base_voice": voice,
-            "base_f0_hz": round(float(f0), 1),
+            "base_f0_hz": round(float(base_f0), 1) if base_f0 else None,
+            "converted_f0_hz": round(float(f0), 1),
+            "converter_offset_semitones": (
+                round(_semitones_between(f0, base_f0), 2) if base_f0 else None
+            ),
             "semitones_from_target": round(semitones, 2),
             "free": abs(semitones) <= PAIRING_MAX_SEMITONES,
         })
@@ -1267,11 +1325,11 @@ def pair_base_voice(pid: str, synth, gender: str | None = None,
     return {
         "base_voice": best["base_voice"],
         "reason": (
-            f"{best['base_voice']} sits {best['semitones_from_target']:+.2f} semitones from the "
-            f"enrolled {target_f0:.1f} Hz"
+            f"{best['base_voice']} converts to {best['converted_f0_hz']:.1f} Hz, "
+            f"{best['semitones_from_target']:+.2f} semitones from the enrolled {target_f0:.1f} Hz"
         ),
         "pinned": False,
-        "base_f0_hz": best["base_f0_hz"],
+        "converted_f0_hz": best["converted_f0_hz"],
         "semitones_from_target": best["semitones_from_target"],
         "target_f0_hz": round(float(target_f0), 1),
         "candidates": measured,
@@ -1282,7 +1340,7 @@ def source_se(voice: str, synth):
     """SE for a Kokoro voice, cached. `synth(text, voice) -> (audio, sr)` renders Kokoro speech."""
     import torch
 
-    key = re.sub(r"[^a-z0-9_,]+", "", voice.lower()).replace(",", "+")
+    key = _source_key(voice)
     path = os.path.join(VOICES_DIR, "_sources", f"{key}.pt")
     if os.path.isfile(path):
         return torch.load(path, map_location="cpu", weights_only=True)
