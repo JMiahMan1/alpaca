@@ -593,11 +593,13 @@ async def api_tts(request: Request):
                 # Nobody asked for a base voice, so the server picks the one that
                 # needs no pitch correction: a phase vocoder over a whole
                 # narration is the most audible thing in the pipeline, and asking
-                # every client to know which Kokoro voice sits near which speaker
-                # is a default nobody would get right. A caller that does name a
-                # voice keeps it, and a pin on the profile outranks the guess.
+                # every client to know which Kokoro voice lands nearest which
+                # speaker after conversion is a default nobody would get right. A
+                # caller that does name a voice keeps it, and a pin on the profile
+                # outranks the guess. The probe converts each candidate, so the
+                # first request for a profile is slow; the results are cached.
                 pairing = await asyncio.to_thread(
-                    voice_clone.pair_base_voice, clone_id, _render, None, KOKORO_VOICES
+                    voice_clone.pair_base_voice, clone_id, _render, None, KOKORO_VOICES, clone_tau
                 )
                 voice = pairing["base_voice"] or DEFAULT_BASE_VOICE
             voice = voice or DEFAULT_BASE_VOICE
@@ -625,11 +627,14 @@ async def api_tts(request: Request):
         if not pieces:
             return JSONResponse({"error": "TTS produced no audio"}, status_code=502)
         merged = np.concatenate(pieces)
-        # Pitch is not the converter's job: it moves timbre and leaves F0 alone,
-        # so a clone lands on the *source voice's* pitch. Correct the merged
-        # result once rather than each sentence - it is the same shift for all
-        # of them, and one vocoder pass over the whole utterance is cheaper and
-        # more consistent than one per chunk. See voice_clone.correct_pitch.
+        # Pitch is not something the converter guarantees: it re-timbres the whole
+        # utterance and where it lands depends on the base voice in a way that is
+        # not predictable from that voice's own pitch, which is why the default
+        # base voice above is chosen by converting candidates rather than by
+        # reading their register. Correct the merged result once rather than each
+        # sentence - it is the same shift for all of them, and one vocoder pass
+        # over the whole utterance is cheaper and more consistent than one per
+        # chunk. See voice_clone.correct_pitch.
         clone_meta_out = None
         if clone_meta:
             target_f0 = clone_meta.get("median_f0_hz")

@@ -289,20 +289,34 @@ card with llama-server and sd-server. Ten minutes of bed is the one thing it doe
   quarter-tone `correct_pitch` refuses to act on. Any voice inside it outranks a closer one
   outside it, because inside means `correct_pitch` does not run at all. Ties break on
   |semitones|, and the sort is total so registry order can never change the answer.
-- **Gender is not a filter.** `pair_base_voice` measures every voice in the 28-voice registry
-  and prefers the one on the speaker's pitch, af_* and am_* together. A wrong guess about gender
-  is no reason to exclude the voice that sits where the speaker actually is.
-- **The measurement is cached, and so is the answer's cost.** `base_voice_f0` renders a short
-  `_SOURCE_SCRIPT` and stores the float in `VOICES_DIR/_sources/{key}.f0` (the same key scheme as
-  `source_se`), so pairing is one cheap render per registry entry, once. An unreadable cache is
-  re-measured, an unwritable one is a warning, and neither is fatal.
+- **Gender is not a filter.** `pair_base_voice` measures every voice in the 28-voice registry,
+  af_* and am_* together, and prefers the one that lands nearest the speaker *after* conversion.
+  A wrong guess about gender is no reason to exclude a voice that lands where the speaker is.
+- **The ranking is on converted pitch, which is not the same number as base pitch.**
+  `converted_voice_f0` renders a short `_SOURCE_SCRIPT` in the candidate, runs it through
+  `convert` at the request's `tau`, and measures the result — because the converter does not
+  preserve the base voice's register, and by how much depends on the voice in a way that is
+  **not monotonic in that voice's own pitch**. Measured on a real profile, `am_echo` speaks
+  9.1 Hz *above* its own 106.9 Hz base while `am_liam` speaks 20.6 Hz *below* its 125.5 Hz one,
+  and `af_nicole` 49.5 Hz below its 151.2. Ranking on base pitch therefore picks the voice that
+  then has to be vocoded by two semitones — worse than the hardcoded default the pairing was
+  written to replace. This is the same audio `correct_pitch` measures afterwards, so the
+  measurement is the one the correction is actually applied to.
+- **The measurement is cached per voice *and* per profile, so the first pairing is slow.**
+  `converted_voice_f0` stores `{"base_f0_hz", "converted_f0_hz"}` in
+  `VOICES_DIR/_sources/{key}~{pid}.converted.f0` (`key` is the `source_se` scheme; `~pid` because
+  the same voice converts differently for every speaker). Every pairing after the first is a file
+  read. An unreadable cache is re-measured, an unwritable one is a warning, and neither is fatal.
+  `PAIRING_PROBE_S = 15.0` bounds the probe, because a median F0 over fifteen seconds is as stable
+  as one over thirty and pairing converts *every* candidate once.
 - **Three overrides, in this order:** an explicit `voice` in the request wins outright (blends
   like `"af_heart,am_adam"` are still allowed and skip pairing); a profile's `pinned_base_voice`
   outranks the guess; nothing else does. Omitting `voice` is *not* a request for the default
   when a clone is in play, so an explicitly empty `voice` still 400s while the absent key does not.
 - **The response says which was used.** `meta.clone.base_voice` is the voice actually rendered,
   `base_voice_source` is `"requested"` or `"paired"`, and `base_voice_pairing` is the full report
-  with every candidate's `semitones_from_target`. A pairing that cannot be decided returns
+  with every candidate's `semitones_from_target` plus `base_f0_hz`, `converted_f0_hz` and
+  `converter_offset_semitones`. A pairing that cannot be decided returns
   `base_voice: null` with a `reason` and the request falls back to `DEFAULT_BASE_VOICE`
   (`af_heart`) — the fallback is visible, never a surprise.
 - **Pairing refuses to guess without a target.** No `median_f0_hz` on the profile means no
