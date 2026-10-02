@@ -537,15 +537,32 @@ def _save_completed_requests() -> None:
 
 
 def _load_completed_requests() -> None:
-    """Load completed_requests from disk on startup (best-effort)."""
+    """Load completed_requests from disk on startup (best-effort).
+
+    Restored records go through `_for_persistence` for the same reason written
+    ones do: a file written before that existed still holds its base64 blobs,
+    and restoring those verbatim would pin megabytes of proxy RAM for the life
+    of the process to serve image previews for requests that already finished.
+    The only thing lost is a thumbnail on a record nobody is looking at any more,
+    and `image_count` survives so the omission is visible rather than silent.
+    """
     global completed_requests
     try:
         if os.path.exists(_COMPLETED_REQUESTS_PATH):
             with open(_COMPLETED_REQUESTS_PATH) as f:
                 data = json.load(f)
             if isinstance(data, list):
-                completed_requests = data[-_COMPLETED_REQUESTS_MAX:]
-                logger.info(f"Restored {len(completed_requests)} completed requests from disk.")
+                rows = [r for r in data if isinstance(r, dict)][-_COMPLETED_REQUESTS_MAX:]
+                completed_requests = [_for_persistence(r) for r in rows]
+                stripped = sum(1 for r in rows if r.get("images"))
+                if stripped:
+                    logger.info(
+                        f"Restored {len(completed_requests)} completed requests from disk, "
+                        f"dropping image data from {stripped} of them (the file predates "
+                        f"that being stripped on write)."
+                    )
+                else:
+                    logger.info(f"Restored {len(completed_requests)} completed requests from disk.")
     except Exception as e:
         logger.warning(f"Failed to load completed requests from disk: {e}")
 

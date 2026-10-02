@@ -3447,3 +3447,46 @@ def test_an_image_request_keeps_its_preview_in_the_live_buffer(history):
     live = alpaca_proxy.completed_requests[0]
     assert len(live["images"]) == 2
     assert live["images"][0]["data"].startswith("iVBORw0KGgo")
+
+
+def test_restoring_a_legacy_file_drops_its_image_blobs(history):
+    """A file written before the blobs were stripped on write still holds them.
+    Restoring those verbatim would pin megabytes of proxy RAM to serve previews
+    for requests that already finished, so the load path strips them too."""
+    legacy = [
+        {
+            "request_id": "old-1", "type": "image_generation", "model": "m",
+            "prompt": "a poster", "duration_seconds": 9.5,
+            "images": [{"data": "iVBORw0KGgo" + "A" * 4000}],
+        },
+        {"request_id": "old-2", "type": "chat", "model": "m", "prompt": "hello"},
+    ]
+    history.write_text(json.dumps(legacy))
+
+    alpaca_proxy._load_completed_requests()
+
+    assert len(alpaca_proxy.completed_requests) == 2
+    old = alpaca_proxy.completed_requests[0]
+    assert old["request_id"] == "old-1"
+    assert "images" not in old
+    assert old["image_count"] == 1
+    # the audit trail survives, so the record is still debuggable
+    assert old["prompt"] == "a poster"
+    assert old["duration_seconds"] == 9.5
+    # a record that never had images is untouched
+    assert alpaca_proxy.completed_requests[1] == legacy[1]
+
+
+def test_restoring_skips_rows_that_are_not_records(history):
+    """A partially written or hand-edited file must not take the proxy down, and
+    must not put junk where the Request Monitor expects a dict."""
+    history.write_text(json.dumps([None, "junk", 7, {"request_id": "ok"}]))
+    alpaca_proxy._load_completed_requests()
+    assert alpaca_proxy.completed_requests == [{"request_id": "ok"}]
+
+
+def test_restoring_a_file_that_is_not_json_leaves_the_buffer_empty(history, caplog):
+    history.write_text("{ this is not json")
+    alpaca_proxy._load_completed_requests()
+    assert alpaca_proxy.completed_requests == []
+    assert any("Failed to load" in r.message for r in caplog.records)
