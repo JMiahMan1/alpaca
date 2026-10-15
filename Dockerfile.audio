@@ -39,7 +39,7 @@ RUN pip install --no-cache-dir \
     && pip install --no-cache-dir --no-deps \
     "MyShell-OpenVoice @ https://github.com/myshell-ai/OpenVoice/archive/74a1d147b17a8c3092dd5430504bd83ef6c7eb23.zip"
 
-COPY audio_server.py tts_text.py voice_clone.py /app/
+COPY audio_server.py music_song.py tts_text.py voice_clone.py /app/
 COPY audio/ /app/audio/
 
 WORKDIR /app

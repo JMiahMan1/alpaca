@@ -32,6 +32,10 @@ Endpoints:
   POST /api/voices/identify   -> {audio_b64, threshold?} -> who is speaking
   POST /api/voices/calibrate  -> {clips: [{voice_id, audio_b64}]} -> own vs impostor scores
   POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
+                         (one clip <= AUDIO_MAX_MUSIC_S, queued with songs, answered when done)
+  POST /api/music/jobs -> {prompt, duration_s<=AUDIO_MAX_SONG_S, structure?} -> 202 {id, status, position}
+  GET  /api/music/jobs/<id> -> status, position, progress {done,total,section}; audio_b64 when done
+  DELETE /api/music/jobs/<id> -> cancel a queued job
   POST /api/unload    -> free all VRAM immediately
 """
 
@@ -108,7 +112,9 @@ _state: dict[str, object] = {
     "tts": None,  # KPipeline instance once loaded
     "music": None,  # {"model": ..., "processor": ...} once loaded
     "loading": set(),  # model names currently loading
-    "last_used": {"tts": 0.0, "music": 0.0},
+    "last_used": {"tts": 0.0, "music": 0.0, "music_cpu": 0.0},
+    "music_cpu": None,  # CPU MusicGen, used when the GPU has no room
+    "music_busy": False,  # a music job is running (the GPU model must stay)
 }
 _lock = asyncio.Lock()
 
@@ -185,6 +191,8 @@ async def _unload_model(name: str) -> bool:
             _state["tts"] = None
             voice_clone.unload()
         elif name == "music" and _state["music"] is not None:
+            if _state.get("music_busy"):
+                return False  # a song is being written on it; TTS shares the card
             _state["music"] = None
         else:
             return False
@@ -235,7 +243,7 @@ async def _ensure_model(name: str):
                 MUSIC_MODEL_ID,
                 torch_dtype="float16" if _device() == "cuda" else "float32",
             ).to(_device())
-            return {"model": model, "processor": proc}
+            return {"model": model, "processor": proc, "device": _device()}
 
         _state["music"] = await asyncio.to_thread(_load_music)
         last_used4: dict[str, float] = _state["last_used"]  # type: ignore[assignment]
@@ -254,6 +262,13 @@ async def _idle_unloader() -> None:
             if active and now - _state["last_used"][name] > IDLE_UNLOAD_S:  # type: ignore[index]
                 logger.info(f"[audio] idle timeout ({IDLE_UNLOAD_S}s) -> unloading {name}")
                 await _unload_model(name)
+        if (
+            _state.get("music_cpu") is not None
+            and not _state.get("music_busy")
+            and now - _state["last_used"].get("music_cpu", 0.0) > IDLE_UNLOAD_S  # type: ignore[union-attr]
+        ):
+            _state["music_cpu"] = None
+            logger.info("[audio] idle timeout -> dropped the cpu music model")
 
 
 _idle_unload_task: asyncio.Task | None = None
@@ -293,7 +308,10 @@ async def health():
             "model": MUSIC_MODEL_ID,
             "loaded": _state["music"] is not None,
             "max_duration_s": MAX_MUSIC_SECONDS,
+            "max_song_s": MAX_SONG_SECONDS,
             "presets": MUSIC_PRESETS,
+            "queued": len(_music_order),
+            "busy": bool(_state.get("music_busy")),
         },
         "vram_free_mb": free_mb,
         "vram_total_mb": total_mb,
@@ -798,84 +816,321 @@ async def api_tts(request: Request):
 # --------------------------------------------------------------------------- #
 # Music                                                                        #
 # --------------------------------------------------------------------------- #
+#
+# Every music request is a job on one queue, run one at a time: the card is
+# shared with llama-server, and two generations (or a generation racing a TTS
+# load) is how it ran out of memory. A job uses the GPU only when there is room
+# for it next to the resident LLM and falls back to the CPU otherwise, or when
+# the GPU runs out mid-song: slower, but the song arrives instead of a 500.
+# A song (structure + up to MAX_SONG_SECONDS) is built section by section by
+# music_song; a plain clip is one call, as before.
+
+MUSIC_GPU_MIN_FREE_MB = int(os.getenv("AUDIO_MUSIC_GPU_MIN_FREE_MB", "1400"))
+MAX_SONG_SECONDS = float(os.getenv("AUDIO_MAX_SONG_S", "240"))
+MUSIC_JOB_KEEP_S = int(os.getenv("AUDIO_MUSIC_JOB_KEEP_S", "1800"))
+MAX_QUEUED_MUSIC_JOBS = 8
+
+_music_jobs: dict[str, dict] = {}
+_music_order: list[str] = []  # queued job ids, oldest first
+_music_wakeup: asyncio.Event | None = None
+_music_worker_task: asyncio.Task | None = None
+
+
+def _is_oom(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower() or type(exc).__name__ == "OutOfMemoryError"
+
+
+async def _ensure_music_cpu():
+    """A CPU copy of MusicGen, kept apart from the GPU one so TTS never evicts it."""
+    if _state.get("music_cpu") is None:
+
+        def _load():
+            from transformers import AutoProcessor, MusicgenForConditionalGeneration
+
+            proc = AutoProcessor.from_pretrained(MUSIC_MODEL_ID)
+            model = MusicgenForConditionalGeneration.from_pretrained(MUSIC_MODEL_ID, torch_dtype="float32").to("cpu")
+            return {"model": model, "processor": proc, "device": "cpu"}
+
+        logger.info("[audio] loading music on cpu (GPU has no room next to the LLM)")
+        _state["music_cpu"] = await asyncio.to_thread(_load)
+    _state["last_used"]["music_cpu"] = time.time()  # type: ignore[index]
+    return _state["music_cpu"]
+
+
+async def _music_bundle(force_cpu: bool = False):
+    """(bundle, device) for the next generation."""
+    if _device() != "cuda":
+        return await _ensure_model("music"), "cpu"  # no GPU at all: the one model is on the CPU
+    if not force_cpu:
+        if _state["music"] is not None:
+            return await _ensure_model("music"), "cuda"
+        free_mb, _ = _free_vram_mb()
+        if free_mb is None or free_mb >= MUSIC_GPU_MIN_FREE_MB:
+            try:
+                return await _ensure_model("music"), "cuda"
+            except Exception as e:
+                if not _is_oom(e):
+                    raise
+                logger.warning(f"[audio] music did not fit on the GPU ({e}); using cpu")
+                await _unload_model("music")
+        else:
+            logger.info(f"[audio] {free_mb} MB VRAM free (< {MUSIC_GPU_MIN_FREE_MB}); music on cpu")
+    return await _ensure_music_cpu(), "cpu"
+
+
+def _generate_clip(bundle: dict, prompt: str, seconds: float, context, knobs: dict):
+    """One MusicGen call: new audio only, continuing ``context`` when given."""
+    import numpy as np
+    import torch
+
+    model, proc = bundle["model"], bundle["processor"]
+    sr = model.config.audio_encoder.sampling_rate
+    kwargs: dict = {"text": [prompt], "padding": True, "return_tensors": "pt"}
+    context_tokens = 0
+    if context is not None and len(context):
+        kwargs.update(audio=[np.asarray(context, dtype=np.float32)], sampling_rate=sr)
+        context_tokens = int(len(context) / sr * 50) + 1
+    inputs = proc(**kwargs).to(bundle.get("device") or _device())
+    half = getattr(torch, "float16", None)
+    if context_tokens and half is not None and getattr(model, "dtype", None) == half and "input_values" in inputs:
+        inputs["input_values"] = inputs["input_values"].half()
+    max_tokens = max(1, min(int(seconds * 50), 1500 - context_tokens))
+    with torch.no_grad():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            do_sample=True,
+            temperature=knobs["temperature"],
+            guidance_scale=knobs["guidance_scale"],
+            top_k=knobs["top_k"],
+        )
+    arr = out[0, 0].float().cpu().numpy().astype(np.float32)
+    if context_tokens:
+        arr = arr[len(context) :]  # the output repeats the prompt audio first
+    return arr, sr, max_tokens
+
+
+def _music_job_view(job: dict, with_audio: bool = True) -> dict:
+    view = {k: v for k, v in job.items() if k not in ("audio_b64", "future", "request")}
+    if job["status"] == "queued":
+        view["position"] = _music_order.index(job["id"]) + 1 if job["id"] in _music_order else None
+    if with_audio and job.get("audio_b64"):
+        view["audio_b64"] = job["audio_b64"]
+        view["mime"] = "audio/wav"
+    return view
+
+
+async def _run_music_job(job: dict) -> None:
+    import music_song
+
+    req = job["request"]
+    knobs = {k: req[k] for k in ("temperature", "guidance_scale", "top_k")}
+    t0 = time.perf_counter()
+    try:
+        bundle, device = await _music_bundle()
+    except Exception as e:
+        raise RuntimeError(f"music model failed to load: {e}") from e
+    used = {device}
+    fell_back = False
+
+    def progress(done: int, total: int, section: str) -> None:
+        job["progress"] = {"done": done, "total": total, "section": section}
+
+    if req.get("seed") is not None:
+        _torch().manual_seed(int(req["seed"]))
+
+    sr_holder: dict = {}
+    tokens: list[int] = []
+
+    def generate(prompt: str, seconds: float, context):
+        nonlocal bundle, device, fell_back
+        try:
+            arr, sr, n = _generate_clip(bundle, prompt, seconds, context, knobs)
+        except Exception as e:
+            if device != "cuda" or not _is_oom(e):
+                raise
+            # The LLM grew into the room this job counted on: finish on the CPU.
+            logger.warning(f"[audio] music ran out of GPU memory mid-job ({e}); continuing on cpu")
+            _empty_cache()
+            bundle = asyncio.run_coroutine_threadsafe(_music_bundle(force_cpu=True), loop).result()[0]
+            device, fell_back = "cpu", True
+            used.add("cpu")
+            arr, sr, n = _generate_clip(bundle, prompt, seconds, context, knobs)
+        sr_holder["sr"] = sr
+        tokens.append(n)
+        return arr
+
+    loop = asyncio.get_running_loop()
+    if req["kind"] == "song":
+        plan = music_song.plan_song(req["prompt"], req["duration_s"], req.get("structure"))
+        job["sections"] = [s.name for s in plan.sections]
+        sr = bundle["model"].config.audio_encoder.sampling_rate
+        arr = await asyncio.to_thread(music_song.render_song, plan, sr, generate, progress)
+    else:
+        progress(0, 1, "clip")
+        arr = await asyncio.to_thread(generate, req["prompt"], req["duration_s"], None)
+        progress(1, 1, "done")
+    sr = sr_holder.get("sr") or bundle["model"].config.audio_encoder.sampling_rate
+    wav = await asyncio.to_thread(_wav_bytes, arr, sr)
+    _empty_cache()
+    elapsed = time.perf_counter() - t0
+    duration = len(arr) / float(sr)
+    job["audio_b64"] = base64.b64encode(wav).decode("ascii")
+    job["meta"] = {
+        "engine": "musicgen",
+        "model": MUSIC_MODEL_ID,
+        "prompt": req["prompt"][:200],
+        "kind": req["kind"],
+        "structure": job.get("sections"),
+        "requested_duration_s": req["duration_s"],
+        "duration_s": round(duration, 2),
+        "sample_rate": sr,
+        "tokens": sum(tokens),
+        "seed": req.get("seed"),
+        "temperature": knobs["temperature"],
+        "guidance_scale": knobs["guidance_scale"],
+        "device": "+".join(sorted(used)),
+        "fell_back_to_cpu": fell_back,
+        "elapsed_s": round(elapsed, 2),
+        "rtf": round(elapsed / max(duration, 1e-6), 4),
+    }
+
+
+async def _music_worker(wakeup: asyncio.Event) -> None:
+    while True:
+        if not _music_order:
+            wakeup.clear()
+            await wakeup.wait()
+            continue
+        job = _music_jobs[_music_order.pop(0)]
+        job["status"] = "running"
+        job["started_at"] = time.time()
+        _state["music_busy"] = True
+        try:
+            await _run_music_job(job)
+            job["status"] = "done"
+        except Exception as e:
+            logger.exception("Music generation failed")
+            job["status"] = "error"
+            job["error"] = str(e) if "failed to load" in str(e) else f"music generation failed: {e}"
+        finally:
+            _state["music_busy"] = False
+            job["finished_at"] = time.time()
+            fut = job.get("future")
+            if fut is not None and not fut.done():
+                fut.set_result(None)
+        cutoff = time.time() - MUSIC_JOB_KEEP_S
+        for jid in [j for j, v in _music_jobs.items() if v.get("finished_at") and v["finished_at"] < cutoff]:
+            _music_jobs.pop(jid, None)
+
+
+def _ensure_music_worker() -> asyncio.Event:
+    """The worker for this event loop (a fresh loop, as in tests, gets its own)."""
+    global _music_worker_task, _music_wakeup
+    loop = asyncio.get_running_loop()
+    if _music_worker_task is None or _music_worker_task.done() or _music_worker_task.get_loop() is not loop:
+        _music_wakeup = asyncio.Event()
+        _music_worker_task = loop.create_task(_music_worker(_music_wakeup))
+    assert _music_wakeup is not None
+    return _music_wakeup
+
+
+def _parse_music_request(data: dict, song: bool) -> dict:
+    prompt = str(data.get("prompt", data.get("tags", ""))).strip()
+    if not prompt:
+        raise ValueError("prompt is required")
+    limit = MAX_SONG_SECONDS if song else MAX_MUSIC_SECONDS
+    duration_s = float(data.get("duration_s", 90 if song else 10))
+    if not 2 <= duration_s <= limit:
+        raise ValueError(f"duration_s must be within 2..{limit:g}")
+    req = {
+        "kind": "song" if song else "clip",
+        "prompt": prompt,
+        "duration_s": duration_s,
+        "temperature": float(data.get("temperature", 1.0)),
+        "guidance_scale": float(data.get("guidance_scale", 3.0)),
+        "top_k": int(data.get("top_k", 250)),
+        "seed": data.get("seed"),
+    }
+    if song:
+        import music_song
+
+        req["structure"] = music_song.resolve_structure(data.get("structure"))
+        music_song.plan_song(prompt, duration_s, req["structure"])  # validates lengths now, not mid-queue
+    return req
+
+
+def _enqueue_music(req: dict, with_future: bool = False) -> dict:
+    if len(_music_order) >= MAX_QUEUED_MUSIC_JOBS:
+        raise OverflowError(f"{len(_music_order)} songs are already waiting; try again in a few minutes")
+    import uuid
+
+    job = {"id": uuid.uuid4().hex[:12], "status": "queued", "created_at": time.time(), "request": req,
+           "progress": {"done": 0, "total": 0, "section": "queued"}}
+    if with_future:
+        job["future"] = asyncio.get_running_loop().create_future()
+    _music_jobs[job["id"]] = job
+    _music_order.append(job["id"])
+    _ensure_music_worker().set()
+    return job
 
 
 @app.post("/api/music")
 async def api_music(request: Request):
-    data = await request.json()
-    prompt = str(data.get("prompt", data.get("tags", ""))).strip()
-    if not prompt:
-        return JSONResponse({"error": "prompt is required"}, status_code=400)
-    duration_s = float(data.get("duration_s", 10))
-    if not 2 <= duration_s <= MAX_MUSIC_SECONDS:
-        return JSONResponse(
-            {"error": f"duration_s must be within 2..{MAX_MUSIC_SECONDS:g}"},
-            status_code=400,
-        )
-    temperature = float(data.get("temperature", 1.0))
-    guidance = float(data.get("guidance_scale", 3.0))
-    seed = data.get("seed")
+    """One clip (<= MAX_MUSIC_SECONDS), answered when it is ready.
 
-    t0 = time.perf_counter()
+    Goes through the same queue as songs, so it waits its turn rather than
+    competing for the GPU.
+    """
     try:
-        bundle = await _ensure_model("music")
-    except Exception as e:
-        logger.exception("Music model load failed")
-        return JSONResponse({"error": f"music model failed to load: {e}"}, status_code=503)
+        req = _parse_music_request(await request.json(), song=False)
+        job = _enqueue_music(req, with_future=True)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OverflowError as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    await job["future"]
+    if job["status"] != "done":
+        status = 503 if "failed to load" in job.get("error", "") else 500
+        return JSONResponse({"error": job.get("error", "music generation failed")}, status_code=status)
+    return {"audio_b64": job["audio_b64"], "mime": "audio/wav", "meta": job["meta"]}
 
+
+@app.post("/api/music/jobs")
+async def api_music_job_create(request: Request):
+    """Queue a whole song: {prompt, duration_s (<= MAX_SONG_SECONDS), structure?, ...}.
+
+    ``structure`` is a preset (song, short, ballad, pop, loop) or a list of
+    sections (intro, verse, pre-chorus, chorus, bridge, solo, outro).
+    """
     try:
-        import numpy as np
-        import torch
+        job = _enqueue_music(_parse_music_request(await request.json(), song=True))
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OverflowError as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    return JSONResponse(_music_job_view(job), status_code=202)
 
-        assert isinstance(bundle, dict)
-        model = bundle["model"]
-        proc = bundle["processor"]
 
-        gen_kwargs: dict = {
-            "do_sample": True,
-            "top_k": int(data.get("top_k", 250)),
-        }
-        if seed is not None:
-            torch.manual_seed(int(seed))
+@app.get("/api/music/jobs/{job_id}")
+async def api_music_job_get(job_id: str):
+    job = _music_jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": "no such music job (finished jobs are kept 30 minutes)"}, status_code=404)
+    return _music_job_view(job)
 
-        inputs = proc(text=[prompt], padding=True, return_tensors="pt").to(_device())
-        max_tokens = min(int(duration_s * 50), 1500)
-        sr = model.config.audio_encoder.sampling_rate
-        with torch.no_grad():
-            audio = model.generate(
-                **inputs,
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-                guidance_scale=guidance,
-                **gen_kwargs,
-            )
-        arr = audio[0, 0].float().cpu().numpy().astype(np.float32)
-        elapsed = time.perf_counter() - t0
-        actual_dur = len(arr) / float(sr)
-        wav = await asyncio.to_thread(_wav_bytes, arr, sr)
-        b64 = base64.b64encode(wav).decode("ascii")
-        _empty_cache()
-        return {
-            "audio_b64": b64,
-            "mime": "audio/wav",
-            "meta": {
-                "engine": "musicgen",
-                "model": MUSIC_MODEL_ID,
-                "prompt": prompt[:200],
-                "requested_duration_s": duration_s,
-                "duration_s": round(actual_dur, 2),
-                "sample_rate": sr,
-                "tokens": max_tokens,
-                "seed": seed,
-                "temperature": temperature,
-                "guidance_scale": guidance,
-                "elapsed_s": round(elapsed, 2),
-                "rtf": round(elapsed / max(actual_dur, 1e-6), 4),
-            },
-        }
-    except Exception as e:
-        logger.exception("Music generation failed")
-        return JSONResponse({"error": f"music generation failed: {e}"}, status_code=500)
+
+@app.delete("/api/music/jobs/{job_id}")
+async def api_music_job_cancel(job_id: str):
+    job = _music_jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": "no such music job"}, status_code=404)
+    if job["status"] != "queued":
+        return JSONResponse({"error": f"the job is {job['status']} and cannot be cancelled"}, status_code=409)
+    _music_order.remove(job_id)
+    job["status"] = "cancelled"
+    job["finished_at"] = time.time()
+    return _music_job_view(job)
 
 
 @app.post("/api/unload")
