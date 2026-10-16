@@ -253,22 +253,32 @@ async def _ensure_model(name: str):
         loading.discard(name)
 
 
+async def _idle_unload_once() -> None:
+    """One sweep: unload whichever model has sat idle past IDLE_UNLOAD_S."""
+    now = time.time()
+    for name in ("tts", "music"):
+        active = _state[name] is not None or (name == "tts" and voice_clone.loaded())
+        if active and now - _state["last_used"][name] > IDLE_UNLOAD_S:  # type: ignore[index]
+            logger.info(f"[audio] idle timeout ({IDLE_UNLOAD_S}s) -> unloading {name}")
+            await _unload_model(name)
+    if (
+        _state.get("music_cpu") is not None
+        and not _state.get("music_busy")
+        and now - _state["last_used"].get("music_cpu", 0.0) > IDLE_UNLOAD_S  # type: ignore[union-attr]
+    ):
+        _state["music_cpu"] = None
+        logger.info("[audio] idle timeout -> dropped the cpu music model")
+
+
 async def _idle_unloader() -> None:
     while True:
         await asyncio.sleep(15)
-        now = time.time()
-        for name in ("tts", "music"):
-            active = _state[name] is not None or (name == "tts" and voice_clone.loaded())
-            if active and now - _state["last_used"][name] > IDLE_UNLOAD_S:  # type: ignore[index]
-                logger.info(f"[audio] idle timeout ({IDLE_UNLOAD_S}s) -> unloading {name}")
-                await _unload_model(name)
-        if (
-            _state.get("music_cpu") is not None
-            and not _state.get("music_busy")
-            and now - _state["last_used"].get("music_cpu", 0.0) > IDLE_UNLOAD_S  # type: ignore[union-attr]
-        ):
-            _state["music_cpu"] = None
-            logger.info("[audio] idle timeout -> dropped the cpu music model")
+        # One failed unload must not end the task: with it gone, an idle model
+        # would hold the GPU until the next restart.
+        try:
+            await _idle_unload_once()
+        except Exception:
+            logger.exception("[audio] idle unload sweep failed")
 
 
 _idle_unload_task: asyncio.Task | None = None

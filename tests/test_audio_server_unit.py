@@ -1089,3 +1089,28 @@ def test_clone_unit_paragraph_converts_each_paragraph_once(client):
 def test_clone_unit_rejects_an_unknown_mode(client):
     resp = client.post("/api/tts", json={"text": "hi", "clone_unit": "sentence"})
     assert resp.status_code == 400 and "clone_unit" in resp.json()["error"]
+
+
+def test_the_idle_unloader_survives_a_failed_sweep(monkeypatch):
+    """A raising unload used to end the task, leaving idle models on the GPU for good."""
+    import asyncio
+
+    class _Stop(Exception):
+        pass
+
+    calls = {"sweep": 0, "sleep": 0}
+
+    async def failing_sweep():
+        calls["sweep"] += 1
+        raise RuntimeError("cuda error")
+
+    async def fake_sleep(_s):
+        calls["sleep"] += 1
+        if calls["sleep"] > 2:
+            raise _Stop
+
+    monkeypatch.setattr(audio, "_idle_unload_once", failing_sweep)
+    monkeypatch.setattr(audio.asyncio, "sleep", fake_sleep)
+    with pytest.raises(_Stop):
+        asyncio.run(audio._idle_unloader())
+    assert calls["sweep"] == 2
