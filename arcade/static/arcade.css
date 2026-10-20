@@ -307,6 +307,35 @@ body > * { position: relative; z-index: 1; }
   .marquee h1, .marquee, .bulbs i, .tagline, .arcade-footer .coin, body::before { animation: none; }
 }
 
+/* ---------- Family-hub embed ---------- */
+/* The Jarvis Family hub opens a game in a full-screen modal. Give the game
+   the whole viewport there: no site header, score rail, marquee or hints. */
+body.arcade-embed .arcade-header,
+body.arcade-embed .score-pane,
+body.arcade-embed .cabinet-marquee,
+body.arcade-embed .cabinet-hint,
+body.arcade-embed .fs-toggle {
+  display: none;
+}
+body.arcade-embed .play-layout {
+  display: block;
+  max-width: none;
+  padding: 0;
+}
+body.arcade-embed .cabinet {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  height: 100dvh;
+}
+body.arcade-embed .screen,
+body.arcade-embed .screen iframe {
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+}
+
 /* ---------- Player card ---------- */
 .player-wrap { max-width: 1060px; margin: 0 auto; padding: 1.2rem 1.2rem 3rem; display: flex; flex-direction: column; gap: 1.4rem; }
 .player-hero {
