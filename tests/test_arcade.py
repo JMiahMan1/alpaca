@@ -288,6 +288,36 @@ def test_arcade_play_missing(arcade_client):
     assert res.status_code == 404
 
 
+def test_player_id_keeps_high_scores_when_initials_change(arcade_client):
+    slug = "demo-model_demo-breakout"
+    first = arcade_client.post(
+        f"/api/games/{slug}/scores",
+        json={"initials": "OLD", "player_id": "jeremiah", "score": 100},
+    )
+    assert first.status_code == 200
+    assert first.get_json()["scores"][0]["player_id"] == "jeremiah"
+
+    moved = arcade_client.get("/api/players/NEW?player_id=jeremiah").get_json()["player"]
+    assert moved["submits"] == 1
+    assert moved["best_score"] == 100
+
+    arcade_client.post(
+        f"/api/games/{slug}/scores",
+        json={"initials": "NEW", "player_id": "jeremiah", "score": 200},
+    )
+    moved = arcade_client.get("/api/players/NEW?player_id=jeremiah").get_json()["player"]
+    assert moved["submits"] == 2
+    assert moved["best_score"] == 200
+
+    table = arcade_client.get("/api/highscores").get_json()
+    assert table["success"] is True
+    row = next(p for p in table["players"] if p["player_id"] == "jeremiah")
+    assert row["initials"] == "NEW"
+    assert row["best_score"] == 200
+    game = next(g for g in table["games"] if g["slug"] == slug)
+    assert {s["initials"] for s in game["scores"]} == {"NEW"}
+
+
 def test_arcade_score_submit_and_top5(arcade_client):
     for i, pts in enumerate([50, 200, 30, 400, 10, 300]):
         res = arcade_client.post(
@@ -2036,3 +2066,61 @@ def test_arcade_lower_is_better_ranking_and_personal_best(arcade_client, games_d
     assert [s["score"] for s in game["scores"]] == [40, 80, 100]
     assert game["scores"][0]["initials"] == "AAA"
     assert game["top_score"]["score"] == 40
+
+
+# --- mobile readiness and sorting -------------------------------------------
+
+
+def test_mobile_readiness_and_injected_fit_css():
+    from arcade.mobile import assess_html, prepare_playable_html
+
+    fixed = '<html><body><canvas width="800" height="600"></canvas></body></html>'
+    responsive = (
+        '<html><head><meta name="viewport" content="width=device-width">'
+        '<style>canvas{width:100%;max-width:100%;}@media(max-width:600px){body{margin:0}}'
+        '</style></head><body><script>touchstart</script></body></html>'
+    )
+    assert assess_html(responsive)["score"] > assess_html(fixed)["score"]
+    prepared = prepare_playable_html(fixed)
+    assert 'name="viewport"' in prepared
+    assert "arcade-mobile-fit" in prepared
+    assert "max-width: 100vw" in prepared
+
+
+def test_playable_game_html_is_prepared_for_mobile(arcade_client):
+    res = arcade_client.get("/game/demo-model_demo-breakout/index.html")
+    assert res.status_code == 200
+    assert b'name="viewport"' in res.data
+    assert b"arcade-mobile-fit" in res.data
+
+
+def test_games_sort_by_benchmark_family_and_plays(arcade_client, games_dir, source_html):
+    first = "demo-model_demo-breakout"
+    second = _publish(games_dir, source_html, test_id="demo_second", benchmark_score=50.0)["slug"]
+
+    arcade_client.post(f"/api/games/{first}/rate", json={"stars": 1, "initials": "AAA"})
+    arcade_client.post(f"/api/games/{second}/rate", json={"stars": 5, "initials": "AAA"})
+
+    benchmark = [g["slug"] for g in arcade_client.get("/api/games?sort=benchmark").get_json()["games"]]
+    family = [g["slug"] for g in arcade_client.get("/api/games?sort=family").get_json()["games"]]
+    assert benchmark[:2] == [first, second]
+    assert family[:2] == [second, first]
+
+    meta_path = games_dir / second / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["plays"] = 10
+    meta_path.write_text(json.dumps(meta))
+    plays = [g["slug"] for g in arcade_client.get("/api/games?sort=plays").get_json()["games"]]
+    assert plays[:2] == [second, first]
+
+
+def test_ooda_decides_one_mobile_game_per_title():
+    from web.arcade_ooda import decide
+
+    rows = [
+        {"slug": "a", "title": "Space Game", "mobile_ready": True, "benchmark_score": 98, "mobile_score": 90},
+        {"slug": "b", "title": "Space Game", "mobile_ready": True, "benchmark_score": 97, "mobile_score": 95},
+        {"slug": "c", "title": "Puzzle", "mobile_ready": False, "benchmark_score": 100, "mobile_score": 0},
+    ]
+    chosen = decide(rows, set())
+    assert [row["slug"] for row in chosen] == ["a"]

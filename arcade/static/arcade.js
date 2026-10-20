@@ -124,6 +124,11 @@
   }
 
   // Remember the player's callsign across machines; it IS the arcade account.
+  // SharedLLM embeds the page with ?player=JER so the family member plays as
+  // themselves without typing a callsign.
+  const urlPlayer = (new URLSearchParams(window.location.search).get("player") || "")
+    .replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase();
+  if (urlPlayer) localStorage.setItem(CALLSIGN_KEY, urlPlayer);
   const savedCallsign = (localStorage.getItem(CALLSIGN_KEY) || "").toUpperCase();
   if (savedCallsign && $("score-initials") && !$("score-initials").value) {
     $("score-initials").value = savedCallsign;
@@ -147,7 +152,10 @@
   }
   const COARSE = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
   const controlsBtn = $("btn-controls");
-  let showControls = localStorage.getItem("arcade_show_controls") === "1";
+  const savedControls = localStorage.getItem("arcade_show_controls");
+  // On a phone the touch pad is the only keyboard: show it on first visit.
+  // A person can still hide it, and that choice is remembered.
+  let showControls = savedControls === null ? COARSE : savedControls === "1";
   function paintControls() {
     if (!screenEl || !controlsBtn) return;
     screenEl.classList.toggle("show-controls", showControls);
@@ -490,6 +498,12 @@
       if (data.personal_best) extra += " 🚀 New personal record!";
       if (data.pioneer) extra += " 🚩 First score ever on this machine!";
       msg.innerHTML = (data.made_board ? `🏆 #${data.rank} on the board!` : "Saved, but outside the top 5.") + extra + who;
+      if (window.parent !== window) {
+        window.parent.postMessage(
+          { source: "arcade-score", slug, initials: callsign, score: body.score, rank: data.rank },
+          "*",
+        );
+      }
       refreshScores();
       celebrate(data.new_unlocks);
     } else {
@@ -608,6 +622,12 @@
       return;
     }
     if (data.status === "no score yet" || data.duplicate) return;
+    if (window.parent !== window) {
+      window.parent.postMessage(
+        { source: "arcade-score", slug, initials: data.initials, score: data.score, rank: data.rank },
+        "*",
+      );
+    }
     const initials = $("score-initials");
     const value = $("score-value");
     if (initials && !initials.value) initials.value = data.initials || "";

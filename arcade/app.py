@@ -31,14 +31,16 @@ import time
 import urllib.request
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file
 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
     from achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from curation import is_curated, load_curated
+    from mobile import assess_html, prepare_playable_html
 except ImportError:  # tests import `arcade.app` as a package from the repo root
     from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from arcade.curation import is_curated, load_curated
+    from arcade.mobile import assess_html, prepare_playable_html
 
 ARCADE_DIR = Path(os.getenv("ARCADE_DIR", "data/arcade"))
 GAMES_DIR = ARCADE_DIR / "games"
@@ -112,11 +114,21 @@ def _hour_of(stamp: str) -> int | None:
         return None
 
 
-def _player_rank(scores: list, initials: str) -> int | None:
-    """Best (lowest) 1-based rank of this player in a top-5 board."""
+def _player_rank(scores: list, initials: str, player_id: str | None = None) -> int | None:
+    """Best (lowest) 1-based rank of this player in a top-5 board.
+
+    A stable player_id wins over a callsign: two family members can share
+    initials, and a display-name change can change initials without losing
+    their history.
+    """
     best = None
     for i, s in enumerate(scores):
-        if isinstance(s, dict) and str(s.get("initials", "")).upper() == initials:
+        if not isinstance(s, dict):
+            continue
+        matches = bool(player_id) and str(s.get("player_id") or "") == player_id
+        if not matches:
+            matches = str(s.get("initials", "")).upper() == initials
+        if matches:
             best = i + 1 if best is None else min(best, i + 1)
     return best
 
@@ -192,14 +204,18 @@ def _accumulate_game(stats: dict, scores: list, bests: dict, mine: dict, votes: 
             stats["gave_five_stars"] = True
 
 
-def player_stats(initials: str) -> dict:
+def player_stats(initials: str, player_id: str | None = None) -> dict:
     """Aggregate one player's cross-game stats + achievements.
 
     Reads every published game's scores/bests/ratings; purely derived, so it
-    stays correct no matter when games were published or removed.
+    stays correct no matter when games were published or removed. When a
+    stable player_id is supplied, the durable per-id ledger is preferred over
+    the callsign entry, so changing a display name does not lose history.
     """
     initials = (initials or "").upper()
+    player_id = (player_id or "").strip()[:64]
     stats = _empty_stats(initials)
+    stats["player_id"] = player_id or None
     stats["per_game"] = []
     if not GAMES_DIR.exists():
         stats["achievements"] = evaluate(stats)
@@ -215,12 +231,15 @@ def player_stats(initials: str) -> dict:
         if not isinstance(bests, dict):
             bests = _read_json(child / "bests.json", {})
         players = bests.get("players", {}) if isinstance(bests.get("players"), dict) else {}
-        mine = players.get(initials, {}) if isinstance(players.get(initials), dict) else {}
+        by_id = bests.get("players_by_id", {}) if isinstance(bests.get("players_by_id"), dict) else {}
+        mine = by_id.get(player_id, {}) if player_id and isinstance(by_id.get(player_id), dict) else {}
+        if not mine:
+            mine = players.get(initials, {}) if isinstance(players.get(initials), dict) else {}
         votes = _read_json(child / "ratings.json", {}).get("votes", [])
 
         _accumulate_game(stats, scores, bests, mine, votes)
         my_count = int(mine.get("count", 0) or 0)
-        rank = _player_rank(scores, initials)
+        rank = _player_rank(scores, initials, player_id or None)
         stats["per_game"].append(
             {
                 "slug": child.name,
@@ -322,6 +341,13 @@ def _game_card(slug: str) -> dict | None:
         return None
     meta = _read_json(d / "meta.json", {})
     scores = _read_json(d / "scores.json", {}).get("scores", [])
+    html_file = d / "game.html"
+    mobile = {"score": 0, "ready": False, "reasons": []}
+    if html_file.is_file():
+        try:
+            mobile = assess_html(html_file.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
     card = {
         "slug": slug,
         "title": meta.get("title") or slug,
@@ -344,11 +370,13 @@ def _game_card(slug: str) -> dict | None:
         "top_score": scores[0] if scores else None,
         "score_count": len(scores),
         "rating": _rating_stats(d),
+        "mobile_score": int(mobile.get("score", 0) or 0),
+        "mobile_ready": bool(mobile.get("ready")),
     }
     return card
 
 
-def list_games(category: str | None = None) -> list:
+def list_games(category: str | None = None, sort: str | None = None) -> list:
     if not GAMES_DIR.exists():
         return []
     cards = []
@@ -361,9 +389,18 @@ def list_games(category: str | None = None) -> list:
     if category:
         want = category.strip().lower()
         cards = [c for c in cards if (c.get("category") or "").lower() == want]
-    # Group by category server-side (order by category, then benchmark quality
-    # within it) so the index can render grouped sections without reshuffling.
-    cards.sort(key=lambda c: ((c.get("category") or "").lower(), -(c["benchmark_score"] or 0), c["title"] or ""))
+    mode = (sort or "benchmark").strip().lower()
+    if mode == "family":
+        cards.sort(key=lambda c: (-float((c.get("rating") or {}).get("average") or 0), -int((c.get("rating") or {}).get("count") or 0), c["title"] or ""))
+    elif mode == "plays":
+        cards.sort(key=lambda c: (-int(c.get("plays") or 0), -(c["benchmark_score"] or 0), c["title"] or ""))
+    elif mode == "title":
+        cards.sort(key=lambda c: (c["title"] or "").lower())
+    else:
+        # Group by category server-side (order by category, then benchmark
+        # quality within it) so the index can render grouped sections without
+        # reshuffling.
+        cards.sort(key=lambda c: ((c.get("category") or "").lower(), -(c["benchmark_score"] or 0), c["title"] or ""))
     return cards
 
 
@@ -478,7 +515,8 @@ def serve_game(slug):
     d = _game_dir(slug)
     if d is None or not (d / "game.html").exists():
         return jsonify({"error": "game not found"}), 404
-    return send_file(d / "game.html", mimetype="text/html")
+    html = (d / "game.html").read_text(encoding="utf-8", errors="replace")
+    return Response(prepare_playable_html(html), mimetype="text/html")
 
 
 @app.route("/game/<slug>/three.min.js", methods=["GET"])
@@ -678,7 +716,8 @@ def serve_game_screenshot(slug):
 @app.route("/api/games", methods=["GET"])
 def api_games():
     category = request.args.get("category") or None
-    return jsonify({"success": True, "games": list_games(category=category)})
+    sort = request.args.get("sort") or None
+    return jsonify({"success": True, "games": list_games(category=category, sort=sort)})
 
 
 @app.route("/api/games/<slug>", methods=["GET"])
@@ -692,7 +731,9 @@ def api_game(slug):
     return jsonify({"success": True, "game": card})
 
 
-def _store_score(d: Path, initials: str, score: int, capture_id: str | None = None) -> dict:
+def _store_score(
+    d: Path, initials: str, score: int, capture_id: str | None = None, player_id: str | None = None
+) -> dict:
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
     with _lock, open(d / ".scores.lock", "a", encoding="utf-8") as score_lock:
         fcntl.flock(score_lock, fcntl.LOCK_EX)
@@ -715,9 +756,17 @@ def _store_score(d: Path, initials: str, score: int, capture_id: str | None = No
                 "personal_best": False,
                 "pioneer": False,
             }
-        before = unlocked_ids(player_stats(initials))
+        player_id = (player_id or "").strip()[:64] or None
+        before = unlocked_ids(player_stats(initials, player_id))
         pioneer = not scores
-        scores.append({"initials": initials, "score": score, "at": stamp})
+        if player_id:
+            for existing in scores:
+                if isinstance(existing, dict) and str(existing.get("player_id") or "") == player_id:
+                    existing["initials"] = initials
+        score_entry = {"initials": initials, "score": score, "at": stamp}
+        if player_id:
+            score_entry["player_id"] = player_id
+        scores.append(score_entry)
         desc = _higher_is_better(d)
         scores.sort(key=lambda s: int(s.get("score", 0) or 0), reverse=desc)
         scores = scores[:MAX_SCORES]
@@ -726,7 +775,9 @@ def _store_score(d: Path, initials: str, score: int, capture_id: str | None = No
         bests["submits"] = int(bests.get("submits", 0) or 0) + 1
         if pioneer and not bests.get("first_by"):
             bests["first_by"] = initials
-        entry = bests["players"].get(initials, {})
+        by_id = bests.get("players_by_id") if isinstance(bests.get("players_by_id"), dict) else {}
+        durable = by_id.get(player_id) if player_id else None
+        entry = dict(durable) if isinstance(durable, dict) else dict(bests["players"].get(initials, {}))
         had_best = entry.get("best") is not None
         prev_best = int(entry.get("best", 0) or 0)
         if desc:
@@ -742,14 +793,20 @@ def _store_score(d: Path, initials: str, score: int, capture_id: str | None = No
         if hour is not None and NIGHT_OWL_START <= hour < NIGHT_OWL_END:
             entry.setdefault("night_owl_at", stamp)
         entry.setdefault("first_at", stamp)
+        if player_id:
+            entry["player_id"] = player_id
         bests["players"][initials] = entry
+        if player_id:
+            if not isinstance(bests.get("players_by_id"), dict):
+                bests["players_by_id"] = {}
+            bests["players_by_id"][player_id] = {**entry, "initials": initials}
         if capture_id is not None:
             captures.append(capture_id)
         _write_json(d / "scores.json", {**data, "scores": scores, "bests": bests, "captures": captures})
         _write_json(d / "bests.json", bests)
-        after_stats = player_stats(initials)
+        after_stats = player_stats(initials, player_id)
     new_unlocks = [a for a in after_stats["achievements"] if a["unlocked"] and a["id"] not in before]
-    rank = next((i + 1 for i, s in enumerate(scores) if s["initials"] == initials and s["score"] == score), None)
+    rank = _player_rank(scores, initials, player_id)
     return {
         "scores": scores,
         "rank": rank,
@@ -895,13 +952,14 @@ def api_submit_score(slug):
         return jsonify({"success": False, "error": "game not found"}), 404
     body = request.get_json(force=True, silent=True) or {}
     initials = _clean_initials(body.get("initials")) or "YOU"
+    player_id = str(body.get("player_id") or "").strip()[:64] or None
     try:
         score = int(body.get("score", 0))
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "score must be an integer"}), 400
     if score < 0 or score > 999_999_999:
         return jsonify({"success": False, "error": "score out of range"}), 400
-    return jsonify({"success": True, **_store_score(d, initials, score)})
+    return jsonify({"success": True, **_store_score(d, initials, score, player_id=player_id)})
 
 
 @app.route("/api/games/<slug>/rate", methods=["POST"])
@@ -955,7 +1013,8 @@ def api_player(initials):
     clean = _clean_initials(initials)
     if not clean:
         return jsonify({"success": False, "error": "invalid callsign"}), 404
-    return jsonify({"success": True, "player": player_stats(clean)})
+    player_id = (request.args.get("player_id") or "").strip()[:64] or None
+    return jsonify({"success": True, "player": player_stats(clean, player_id)})
 
 
 @app.route("/players", methods=["GET"])
@@ -968,6 +1027,59 @@ def api_players():
     q = (request.args.get("q") or "").strip().lower()
     players = [p for p in list_players() if not q or q in p["initials"].lower()]
     return jsonify({"success": True, "players": players, "count": len(players)})
+
+
+@app.route("/api/highscores", methods=["GET"])
+def api_highscores():
+    """Family high-score table: player standings plus each game's top scores."""
+    if not GAMES_DIR.exists():
+        return jsonify({"success": True, "players": [], "games": []})
+    curated = set(load_curated())
+    identities: dict[str, str] = {}
+    games = []
+    for child in sorted(GAMES_DIR.iterdir()):
+        if not child.is_dir() or child.name not in curated or _playable_file(child) is None:
+            continue
+        meta = _read_json(child / "meta.json", {})
+        score_state = _read_json(child / "scores.json", {})
+        scores = score_state.get("scores", [])
+        bests = score_state.get("bests")
+        if not isinstance(bests, dict):
+            bests = _read_json(child / "bests.json", {})
+        players = bests.get("players", {}) if isinstance(bests.get("players"), dict) else {}
+        by_id = bests.get("players_by_id", {}) if isinstance(bests.get("players_by_id"), dict) else {}
+        for player_id, entry in by_id.items():
+            if isinstance(entry, dict):
+                identities.setdefault(str(player_id), str(entry.get("initials") or player_id).upper())
+        for initials, entry in players.items():
+            if not isinstance(entry, dict):
+                continue
+            key = str(entry.get("player_id") or initials)
+            identities.setdefault(key, str(initials).upper())
+        games.append(
+            {
+                "slug": child.name,
+                "title": meta.get("title") or child.name,
+                "scores": scores[:5],
+            }
+        )
+    rows = []
+    for key, initials in identities.items():
+        stats = player_stats(initials, key if key != initials else None)
+        rows.append(
+            {
+                "player_id": key if key != initials else None,
+                "initials": stats.get("initials") or initials,
+                "best_score": stats.get("best_score", 0),
+                "total_games": stats.get("total_games", 0),
+                "games_scored": stats.get("games_scored", 0),
+                "submits": stats.get("submits", 0),
+                "crowns": stats.get("crowns", 0),
+                "podiums": stats.get("podiums", 0),
+            }
+        )
+    rows.sort(key=lambda r: (-r["crowns"], -r["podiums"], -r["games_scored"], -r["best_score"], r["initials"]))
+    return jsonify({"success": True, "players": rows, "games": games})
 
 
 @app.route("/api/admin/games/<slug>", methods=["DELETE"])
