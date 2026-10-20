@@ -16,6 +16,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from arcade.curation import load_curated, save_curated, set_curated
+except ImportError:  # container runs with the repo root on sys.path
+    from curation import load_curated, save_curated, set_curated
+
 ARCADE_DIR = Path(os.getenv("ARCADE_DIR", "data/arcade"))
 GAMES_DIR = ARCADE_DIR / "games"
 AUTO_PUBLISH_SCORE = float(os.getenv("ARCADE_AUTO_PUBLISH_SCORE", "80"))
@@ -410,6 +415,9 @@ def publish_game(
         "plays": previous_plays,
     }
     (game_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    # A manual publish also chooses the game for the public shelf. Curation
+    # is separate from the directory so scores survive if it is hidden again.
+    set_curated(slug, True)
     # The arcade container runs as a non-root user while publishes often
     # happen as root (web container / sudo). Leave everything group- and
     # world-writable so score/rating/play-count writes never 500.
@@ -435,6 +443,8 @@ def unpublish_game(slug: str) -> bool:
     game_dir = GAMES_DIR / slug
     if not game_dir.is_dir():
         return False
+    with contextlib.suppress(ValueError):
+        set_curated(slug, False)
     shutil.rmtree(game_dir)
     return True
 
@@ -471,14 +481,18 @@ def _count_player_scores(game_dir: Path) -> int:
     return 0
 
 
-def published_games() -> list:
-    """Metadata for every published game, newest first (drives the dashboard Arcade section)."""
+def published_games(include_hidden: bool = False) -> list:
+    """Metadata for every chosen game, newest first (drives the dashboard Arcade section)."""
     games: list[dict[str, Any]] = []
     if not GAMES_DIR.is_dir():
         return games
+    curated = set(load_curated())
     for game_dir in sorted(GAMES_DIR.iterdir()):
         meta_path = game_dir / "meta.json"
         if not game_dir.is_dir() or not meta_path.exists():
+            continue
+        chosen = game_dir.name in curated
+        if not include_hidden and not chosen:
             continue
         try:
             meta = json.loads(meta_path.read_text())
@@ -502,6 +516,7 @@ def published_games() -> list:
                 "run_date": meta.get("benchmark_date") or meta.get("run_date") or "",
                 "published_at": meta.get("published_at") or "",
                 "auto_published": bool(meta.get("auto_published")),
+                "curated": chosen,
                 "plays": plays,
             }
         )

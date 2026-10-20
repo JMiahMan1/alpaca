@@ -5646,9 +5646,16 @@ def arcade_published():
     """List published arcade slugs + game cards (drives dashboard Publish buttons + Arcade section)."""
     try:
         from web.arcade_publish import published_games, published_slugs
+        from arcade.curation import load_curated
 
         games = published_games()
-        return jsonify({"slugs": sorted(published_slugs()), "games": games})
+        return jsonify(
+            {
+                "slugs": sorted(published_slugs()),
+                "curated_slugs": sorted(load_curated()),
+                "games": games,
+            }
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -5690,18 +5697,25 @@ def arcade_publish():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/arcade/publish-all", methods=["POST"])
-def arcade_publish_all():
-    """Deliberately publish every eligible benchmark game result (idempotent).
+@app.route("/api/arcade/curate", methods=["POST"])
+def arcade_curate():
+    """Choose whether a published game appears on the public arcade shelf.
 
-    Keeps the manual/reviewed publish model; this is an explicit bulk
-    reconciliation action, never triggered by benchmark completion.
+    Hiding a game never deletes it or its player data; publish/unpublish are
+    separate operations.
     """
     try:
-        from web.arcade_publish import publish_all_eligible
+        from web.arcade_publish import set_curated
 
-        result = publish_all_eligible()
-        return jsonify({"success": True, **result})
+        body = request.get_json(force=True) or {}
+        slug = (body.get("slug") or "").strip()
+        if not slug:
+            return jsonify({"success": False, "error": "slug is required"}), 400
+        curated = bool(body.get("curated", True))
+        state = set_curated(slug, curated)
+        return jsonify({"success": True, "slug": slug, "curated": state})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
