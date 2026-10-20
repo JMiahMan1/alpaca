@@ -10,7 +10,7 @@
 @media (pointer: fine) { .screen:not(.show-controls) #play-keys { display: none; } }
 </style>
 </head>
-<body>
+<body{% if request.args.get('embed') %} class="arcade-embed"{% endif %}>
 <header class="arcade-header slim">
   <a href="/">&larr; Arcade</a>
   <a href="/players">🏆 Players</a>

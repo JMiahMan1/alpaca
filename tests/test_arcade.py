@@ -227,6 +227,9 @@ def test_arcade_index_and_play(arcade_client):
     assert res.status_code == 200
     assert b"2026-09-11" in res.data
     assert b"build breakout" in res.data
+    assert b'<body class="arcade-embed">' not in res.data
+    embedded = arcade_client.get("/play/demo-model_demo-breakout?embed=1")
+    assert b'<body class="arcade-embed">' in embedded.data
     # Fullscreen play mode: toggle, overlay key bar + exit present.
     assert b"btn-fullscreen" in res.data
     assert b"play-overlay-bar" in res.data
