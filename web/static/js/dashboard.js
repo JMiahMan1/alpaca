@@ -11522,9 +11522,34 @@ const saved = _loadHumanRatings(t.id) || {};
                     }
                 });
                 row.appendChild(add);
+            } else if (!c.curated) {
+                const show = document.createElement('button');
+                show.textContent = 'Show';
+                show.className = 'btn btn-secondary btn-sm';
+                show.title = 'Put this game back on the family shelf without touching its scores';
+                show.addEventListener('click', async () => {
+                    show.disabled = true;
+                    try {
+                        const r = await fetch('/api/arcade/curate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ slug: c.slug, curated: true })
+                        });
+                        const d = await r.json();
+                        if (!d.success) throw new Error(d.error || 'show failed');
+                        showToast(`Added ${c.title || c.slug} back to the arcade`, 'success');
+                        await loadArcadeGames();
+                        await loadArcadeCandidates();
+                        await loadArcadeOodaStatus();
+                    } catch (err) {
+                        show.disabled = false;
+                        showToast(`Show failed: ${err.message}`, 'error');
+                    }
+                });
+                row.appendChild(show);
             } else {
                 const badge = document.createElement('span');
-                badge.textContent = c.curated ? 'On shelf' : 'Hidden';
+                badge.textContent = 'On shelf';
                 badge.style.cssText = 'font-size:0.68rem; color:var(--text-muted);';
                 row.appendChild(badge);
             }
