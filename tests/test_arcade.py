@@ -16,6 +16,9 @@ import web.arcade_publish as ap
 def games_dir(tmp_path, monkeypatch):
     d = tmp_path / "games"
     monkeypatch.setattr(ap, "GAMES_DIR", d)
+    from arcade import curation
+
+    monkeypatch.setattr(curation, "CURATED_FILE", tmp_path / "curated.json")
     return d
 
 
@@ -157,6 +160,41 @@ def test_unpublish_and_slugs(games_dir, source_html):
     assert ap.unpublish_game("never-existed") is False
 
 
+def test_publishing_chooses_a_game_and_hiding_keeps_its_scores(games_dir, source_html):
+    from arcade import curation
+
+    res = _publish(games_dir, source_html)
+    slug = res["slug"]
+    assert curation.load_curated() == [slug]
+    (games_dir / slug / "scores.json").write_text(json.dumps({"scores": [{"initials": "ABC", "score": 7}]}))
+
+    curation.set_curated(slug, False)
+    assert curation.load_curated() == []
+    assert (games_dir / slug / "game.html").exists()
+    assert json.loads((games_dir / slug / "scores.json").read_text())["scores"][0]["score"] == 7
+    assert ap.published_games() == []
+
+    curation.set_curated(slug, True)
+    assert [g["slug"] for g in ap.published_games()] == [slug]
+    assert ap.published_games()[0]["curated"] is True
+
+
+def test_no_bulk_publish_route(web_client):
+    assert web_client.post("/api/arcade/publish-all").status_code == 404
+
+
+def test_curate_endpoint_hides_and_shows_a_published_game(web_client, games_dir, source_html):
+    slug = _publish(games_dir, source_html)["slug"]
+    res = web_client.post("/api/arcade/curate", json={"slug": slug, "curated": False})
+    assert res.status_code == 200
+    assert res.get_json()["curated"] is False
+    assert (games_dir / slug / "game.html").exists()
+    assert ap.published_games() == []
+    res = web_client.post("/api/arcade/curate", json={"slug": slug, "curated": True})
+    assert res.get_json()["curated"] is True
+    assert [g["slug"] for g in ap.published_games()] == [slug]
+
+
 # --- arcade service ---
 
 
@@ -170,6 +208,12 @@ def arcade_client(games_dir, source_html, monkeypatch):
     arcade_app.app.config["TESTING"] = True
     with arcade_app.app.test_client() as client:
         yield client
+
+
+def test_arcade_index_and_play(arcade_client):
+    res = arcade_client.get("/")
+    assert res.status_code == 200
+    assert b"demo-model_demo-breakout" in res.data
 
 
 def test_arcade_index_and_play(arcade_client):
@@ -197,6 +241,19 @@ def test_arcade_index_and_play(arcade_client):
     # never scrolls to the score form (regression: old handler exited to it).
     assert b'id="kbd-proxy"' in res.data
     assert b"open the initials form" not in res.data
+
+
+def test_hidden_game_keeps_its_files_but_is_not_on_the_shelf(arcade_client):
+    from arcade import curation
+
+    slug = "demo-model_demo-breakout"
+    curation.set_curated(slug, False)
+    assert slug.encode() not in arcade_client.get("/").data
+    assert arcade_client.get(f"/play/{slug}").status_code == 404
+    assert arcade_client.get(f"/api/games/{slug}").status_code == 404
+    curation.set_curated(slug, True)
+    assert slug.encode() in arcade_client.get("/").data
+    assert arcade_client.get(f"/play/{slug}").status_code == 200
 
 
 def test_api_games_json(arcade_client):
@@ -328,11 +385,12 @@ def test_web_unpublish_requires_slug(web_client):
 def test_web_published_list(web_client, games_dir, source_html):
     res = web_client.get("/api/arcade/published")
     assert res.status_code == 200
-    assert json.loads(res.data.decode()) == {"slugs": [], "games": []}
+    assert json.loads(res.data.decode()) == {"slugs": [], "curated_slugs": [], "games": []}
     slug = _publish(games_dir, source_html)["slug"]
     res = web_client.get("/api/arcade/published")
     data = json.loads(res.data.decode())
     assert data["slugs"] == [slug]
+    assert data["curated_slugs"] == [slug]
     assert len(data["games"]) == 1
     game = data["games"][0]
     assert game["slug"] == slug
@@ -738,6 +796,9 @@ def test_arcade_code_game_page(arcade_client):
     (d / "meta.json").write_text(
         json.dumps({"slug": slug, "title": "Retro", "model": "pymod", "kind": "code", "lang": "python"})
     )
+    from arcade import curation
+
+    curation.set_curated(slug, True)
     res = arcade_client.get(f"/play/{slug}")
     assert res.status_code == 200
     html = res.get_data(as_text=True)
@@ -761,6 +822,9 @@ def _code_slug(arcade_client):
     (d / "meta.json").write_text(
         json.dumps({"slug": slug, "title": "Launch", "model": "pymod", "kind": "code", "lang": "python"})
     )
+    from arcade import curation
+
+    curation.set_curated(slug, True)
     return slug
 
 
@@ -1944,15 +2008,8 @@ def test_publish_all_eligible_is_idempotent(games_dir, tmp_path, monkeypatch):
     assert set(ap.published_slugs()) == {"g1_game-a", "g2_game-b"}
 
 
-def test_web_publish_all_endpoint(web_client, games_dir, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _write_game_result(tmp_path, "g1", "game_a", PYGAME_RESP, score=80)
-    res = web_client.post("/api/arcade/publish-all")
-    assert res.status_code == 200
-    data = json.loads(res.data.decode())
-    assert data["success"] is True
-    assert data["counts"]["published"] == 1
-    assert "g1_game-a" in ap.published_slugs()
+def test_web_publish_all_route_is_gone(web_client):
+    assert web_client.post("/api/arcade/publish-all").status_code == 404
 
 
 # --- category grouping / filtering + lower-is-better scoreboards ---

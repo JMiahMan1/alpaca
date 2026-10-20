@@ -11383,6 +11383,29 @@ const saved = _loadHumanRatings(t.id) || {};
                 playBtn.className = 'btn btn-secondary btn-sm btn-slate';
                 playBtn.addEventListener('click', () => window.open(`${arcadeBaseUrl()}/play/${g.slug}`, '_blank'));
                 row.appendChild(playBtn);
+                const hideBtn = document.createElement('button');
+                hideBtn.textContent = 'Hide';
+                hideBtn.className = 'btn btn-secondary btn-sm';
+                hideBtn.title = 'Remove this game from the public shelf but keep its player scores';
+                hideBtn.addEventListener('click', async () => {
+                    try {
+                        const r = await fetch('/api/arcade/curate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ slug: g.slug, curated: false })
+                        });
+                        const d = await r.json();
+                        if (d.success) {
+                            showToast(`Hid ${g.slug} (scores kept)`, 'success');
+                            await loadArcadeGames();
+                        } else {
+                            showToast(`Hide failed: ${d.error || 'unknown'}`, 'error');
+                        }
+                    } catch (err) {
+                        showToast(`Hide failed: ${err.message}`, 'error');
+                    }
+                });
+                row.appendChild(hideBtn);
                 const unpubBtn = document.createElement('button');
                 unpubBtn.textContent = '🗑 Unpublish';
                 unpubBtn.className = 'btn btn-secondary btn-sm';
@@ -11418,31 +11441,6 @@ const saved = _loadHumanRatings(t.id) || {};
     if (btnRefreshArcade) {
         btnRefreshArcade.addEventListener('click', async () => {
             await loadArcadeGames();
-        });
-    }
-
-    const btnPublishAllArcade = document.getElementById('btn-publish-all-arcade');
-    if (btnPublishAllArcade) {
-        btnPublishAllArcade.addEventListener('click', async () => {
-            if (!confirm('Publish every eligible benchmark game result to the Arcade?\n\nThis is idempotent — existing games and their player scores are preserved.')) return;
-            btnPublishAllArcade.disabled = true;
-            btnPublishAllArcade.textContent = '⏳ Publishing…';
-            try {
-                const r = await fetch('/api/arcade/publish-all', { method: 'POST' });
-                const d = await r.json();
-                if (d.success) {
-                    const c = d.counts || {};
-                    showToast(`Arcade reconcile: ${c.published || 0} published, ${c.republished || 0} republished, ${c.skipped || 0} skipped, ${c.failed || 0} failed`, 'success');
-                    await loadArcadeGames();
-                } else {
-                    showToast(`Publish-all failed: ${d.error || 'unknown'}`, 'error');
-                }
-            } catch (err) {
-                showToast(`Publish-all failed: ${err.message}`, 'error');
-            } finally {
-                btnPublishAllArcade.disabled = false;
-                btnPublishAllArcade.textContent = '🗂 Publish all eligible';
-            }
         });
     }
 

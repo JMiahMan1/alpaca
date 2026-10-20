@@ -35,8 +35,10 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
     from achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
+    from curation import is_curated, load_curated
 except ImportError:  # tests import `arcade.app` as a package from the repo root
     from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
+    from arcade.curation import is_curated, load_curated
 
 ARCADE_DIR = Path(os.getenv("ARCADE_DIR", "data/arcade"))
 GAMES_DIR = ARCADE_DIR / "games"
@@ -202,8 +204,9 @@ def player_stats(initials: str) -> dict:
     if not GAMES_DIR.exists():
         stats["achievements"] = evaluate(stats)
         return stats
+    curated = set(load_curated())
     for child in sorted(GAMES_DIR.iterdir()):
-        if not child.is_dir() or _playable_file(child) is None:
+        if not child.is_dir() or child.name not in curated or _playable_file(child) is None:
             continue
         meta = _read_json(child / "meta.json", {})
         score_state = _read_json(child / "scores.json", {})
@@ -247,8 +250,9 @@ def list_players() -> list:
         return []
     games = []
     total_games = 0
+    curated = set(load_curated())
     for child in sorted(GAMES_DIR.iterdir()):
-        if not child.is_dir() or _playable_file(child) is None:
+        if not child.is_dir() or child.name not in curated or _playable_file(child) is None:
             continue
         total_games += 1
         score_state = _read_json(child / "scores.json", {})
@@ -348,8 +352,9 @@ def list_games(category: str | None = None) -> list:
     if not GAMES_DIR.exists():
         return []
     cards = []
+    curated = set(load_curated())
     for child in sorted(GAMES_DIR.iterdir()):
-        if child.is_dir():
+        if child.is_dir() and child.name in curated:
             card = _game_card(child.name)
             if card:
                 cards.append(card)
@@ -440,7 +445,7 @@ def _run_hint(lang: str) -> dict:
 @app.route("/play/<slug>", methods=["GET"])
 def play(slug):
     d = _game_dir(slug)
-    if d is None or _playable_file(d) is None:
+    if d is None or not is_curated(slug) or _playable_file(d) is None:
         return render_template("index.html", games=list_games(), error=f"Game '{slug}' not found."), 404
     card = _game_card(slug)
     meta = _read_json(d / "meta.json", {})
@@ -679,7 +684,7 @@ def api_games():
 @app.route("/api/games/<slug>", methods=["GET"])
 def api_game(slug):
     card = _game_card(slug)
-    if card is None:
+    if card is None or not is_curated(slug):
         return jsonify({"success": False, "error": "game not found"}), 404
     d = _game_dir(slug)
     card["scores"] = _read_json(d / "scores.json", {}).get("scores", [])
