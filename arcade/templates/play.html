@@ -135,13 +135,8 @@
       </ol>
       <div class="score-form">
         <input id="score-initials" maxlength="3" placeholder="ABC" aria-label="Initials">
-        <input id="score-value" type="number" min="0" placeholder="Score" aria-label="Score">
-        {% if kind == "playable" %}
-        <button id="btn-fetch-score" class="arcade-btn ghost" type="button" title="Try to read your score from the game">🎮 Get my score</button>
-        {% endif %}
-        <button id="btn-submit-score" class="arcade-btn" type="button">Submit</button>
+        <span class="muted">Scores are captured automatically when you play.</span>
       </div>
-      <div id="score-candidates" class="candidates"></div>
       <div id="score-msg" class="form-msg"></div>
     </div>
     <div class="pane-block neon-pink">
@@ -157,7 +152,11 @@
     </div>
   </aside>
 </main>
-<script>window.ARCADE_SLUG = {{ card.slug|tojson }};</script>
+<script>
+window.ARCADE_SLUG = {{ card.slug|tojson }};
+window.ARCADE_KIND = {{ kind|tojson }};
+window.ARCADE_HIGHER_IS_BETTER = {{ card.higher_is_better|tojson }};
+</script>
 <script src="/static/arcade.js"></script>
 </body>
 </html>

@@ -595,9 +595,10 @@ def stop_game(slug):
         return jsonify({"error": "No container_id provided"}), 400
     score_sync = None
     d = _game_dir(slug)
+    preview = bool(data.get("preview"))
     if d is not None and _playable_file(d) is not None:
         try:
-            score_sync, _ = _capture_container_score(d, cid)
+            score_sync, _ = _capture_container_score(d, cid, store=not preview)
         except Exception as e:
             score_sync = {"success": False, "error": f"final score sync failed: {str(e)[:200]}"}
     payload = json.dumps({"container_id": cid}).encode("utf-8")
@@ -894,7 +895,7 @@ def _sync_score_from_container(container_id: str) -> dict | None:
     return None
 
 
-def _capture_container_score(d: Path, container_id: str) -> tuple[dict, int]:
+def _capture_container_score(d: Path, container_id: str, *, store: bool = True) -> tuple[dict, int]:
     score_data = _sync_score_from_container(container_id)
     if score_data is None:
         return {"success": True, "status": "no score yet"}, 200
@@ -916,6 +917,15 @@ def _capture_container_score(d: Path, container_id: str) -> tuple[dict, int]:
         score,
     ]
     capture_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+    if not store:
+        return {
+            "success": True,
+            "status": "captured",
+            "initials": initials,
+            "score": score,
+            "capture_id": capture_id,
+            "auto": True,
+        }, 200
     try:
         stored = _store_score(d, initials, score, capture_id=capture_id)
     except OSError as e:
@@ -941,7 +951,8 @@ def api_sync_score(slug):
     container_id = data.get("container_id")
     if not container_id:
         return jsonify({"success": False, "error": "No container_id provided"}), 400
-    result, status = _capture_container_score(d, container_id)
+    preview = bool(data.get("preview"))
+    result, status = _capture_container_score(d, container_id, store=not preview)
     return jsonify(result), status
 
 
@@ -953,13 +964,18 @@ def api_submit_score(slug):
     body = request.get_json(force=True, silent=True) or {}
     initials = _clean_initials(body.get("initials")) or "YOU"
     player_id = str(body.get("player_id") or "").strip()[:64] or None
+    capture_id = str(body.get("capture_id") or "").strip()[:128] or None
+    if player_id and not capture_id:
+        return jsonify({"success": False, "error": "a captured score is required"}), 400
     try:
         score = int(body.get("score", 0))
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "score must be an integer"}), 400
     if score < 0 or score > 999_999_999:
         return jsonify({"success": False, "error": "score out of range"}), 400
-    return jsonify({"success": True, **_store_score(d, initials, score, player_id=player_id)})
+    return jsonify(
+        {"success": True, **_store_score(d, initials, score, capture_id=capture_id, player_id=player_id)}
+    )
 
 
 @app.route("/api/games/<slug>/rate", methods=["POST"])

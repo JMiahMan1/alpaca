@@ -292,7 +292,7 @@ def test_player_id_keeps_high_scores_when_initials_change(arcade_client):
     slug = "demo-model_demo-breakout"
     first = arcade_client.post(
         f"/api/games/{slug}/scores",
-        json={"initials": "OLD", "player_id": "jeremiah", "score": 100},
+        json={"initials": "OLD", "player_id": "jeremiah", "score": 100, "capture_id": "test-capture-1"},
     )
     assert first.status_code == 200
     assert first.get_json()["scores"][0]["player_id"] == "jeremiah"
@@ -303,7 +303,7 @@ def test_player_id_keeps_high_scores_when_initials_change(arcade_client):
 
     arcade_client.post(
         f"/api/games/{slug}/scores",
-        json={"initials": "NEW", "player_id": "jeremiah", "score": 200},
+        json={"initials": "NEW", "player_id": "jeremiah", "score": 200, "capture_id": "test-capture-2"},
     )
     moved = arcade_client.get("/api/players/NEW?player_id=jeremiah").get_json()["player"]
     assert moved["submits"] == 2
@@ -1522,6 +1522,46 @@ def test_arcade_sync_score_success(arcade_client, monkeypatch):
     assert data["auto"] is True
     assert data["rank"] == 1
     assert data["made_board"] is True
+
+
+def test_arcade_sync_score_preview_does_not_store(arcade_client, monkeypatch):
+    """Embedded code games preview the captured score so the authenticated
+    family parent can submit it with player_id."""
+    import arcade.app as arcade_app
+
+    slug = _code_slug(arcade_client)
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/sandbox/ui/exec" in req.full_url:
+            return _FakeResp({"output": '{"initials": "XYZ", "score": 350}'})
+        return _FakeResp({})
+
+    monkeypatch.setattr(arcade_app.urllib.request, "urlopen", fake_urlopen)
+    res = arcade_client.post(
+        f"/api/games/{slug}/sync_score",
+        json={"container_id": "abc123", "preview": True},
+    )
+    assert res.status_code == 200
+    data = json.loads(res.data.decode())
+    assert data["success"] is True
+    assert data["status"] == "captured"
+    assert data["score"] == 350
+    assert data["capture_id"]
+    d = arcade_app._game_dir(slug)
+    scores_path = d / "scores.json"
+    scores = json.loads(scores_path.read_text()) if scores_path.exists() else {"scores": []}
+    assert scores["scores"] == []
+
+
+def test_family_score_requires_a_capture(arcade_client):
+    """A score posted with a player_id must come from an automatic capture;
+    the family facade cannot type a score in."""
+    res = arcade_client.post(
+        "/api/games/demo-model_demo-breakout/scores",
+        json={"initials": "JER", "score": 500, "player_id": "jeremiah"},
+    )
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "a captured score is required"
 
 
 def test_arcade_sync_score_no_score_yet(arcade_client, monkeypatch):
