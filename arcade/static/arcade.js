@@ -478,38 +478,158 @@
 
   watchBoard(refreshScores);
 
-  $("btn-submit-score").addEventListener("click", async () => {
-    const msg = $("score-msg");
+  // Scores are captured automatically. Code games are read server-side from
+  // the sandbox; browser games are scanned in the same-origin iframe. There is
+  // no score input, so a player cannot type a score they did not earn.
+  let autoSession = Math.random().toString(36).slice(2);
+  let autoBaseline = null;
+  let autoBest = 0;
+  let autoLastSubmitted = 0;
+  let autoLastCaptureId = "";
+  let autoLastChange = 0;
+  let autoTickTimer = null;
+  let autoPending = 0;
+
+  function readPlayableScores() {
+    const frame = $("game-frame");
+    let ls;
+    try {
+      ls = frame && frame.contentWindow && frame.contentWindow.localStorage;
+    } catch (_) {
+      return [];
+    }
+    if (!ls) return [];
+    const found = [];
+    for (let i = 0; i < ls.length; i++) {
+      const key = ls.key(i);
+      const raw = ls.getItem(key);
+      if (!/score|high|best|top|points|record/i.test(key)) continue;
+      const num = Number(raw);
+      if (Number.isFinite(num) && raw.trim() !== "") {
+        found.push({ key, score: Math.floor(num), persistent: /high|best|top|record/i.test(key) });
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        const arr = Array.isArray(parsed) ? parsed : parsed.scores || parsed.highscores || parsed.highScores || [];
+        (Array.isArray(arr) ? arr.slice(0, 5) : []).forEach((entry, index) => {
+          const score = Number(entry && (entry.score ?? entry.points ?? entry.value));
+          if (Number.isFinite(score)) {
+            found.push({ key: `${key}[${index}]`, score: Math.floor(score), persistent: /high|best|top|record/i.test(key) });
+          }
+        });
+        ["highScore", "highscore", "best", "bestScore", "topScore"].forEach((k) => {
+          const score = Number(parsed && parsed[k]);
+          if (Number.isFinite(score)) {
+            found.push({ key: `${key}.${k}`, score: Math.floor(score), persistent: true });
+          }
+        });
+      } catch (_) {
+        /* not JSON — skip */
+      }
+    }
+    return found;
+  }
+
+  function postCapturedScore(score, rank) {
+    if (window.parent === window) return;
+    window.parent.postMessage(
+      { source: "arcade-score", slug, initials: $("score-initials").value, score, rank },
+      "*",
+    );
+  }
+
+  async function submitCapturedScore(score, keepalive) {
     const callsign = rememberCallsign($("score-initials").value);
-    const body = { initials: callsign, score: Number($("score-value").value) };
-    if (!Number.isFinite(body.score) || body.score < 0) {
-      msg.textContent = "Enter a valid score first (or use 🎮 Get my score).";
+    if (!callsign) {
+      autoPending = Math.max(autoPending, score);
+      $("score-msg").textContent = "Enter your initials to save your score automatically.";
+      return;
+    }
+    if (!Number.isFinite(score) || score <= autoLastSubmitted) return;
+    autoPending = 0;
+    const captureId = `${slug}:${autoSession}:${score}`;
+    // Embedded in the family arcade: the authenticated parent submits the
+    // captured score so it is stored against the real family member. The
+    // public arcade page has no family identity, so it stores locally.
+    if (window.parent !== window) {
+      autoLastSubmitted = score;
+      $("score-msg").textContent = "Score captured — saving to the family board…";
+      window.parent.postMessage(
+        { source: "arcade-score", slug, initials: callsign, score, capture_id: captureId },
+        "*",
+      );
       return;
     }
     const res = await fetch(`/api/games/${slug}/scores`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      keepalive: Boolean(keepalive),
+      body: JSON.stringify({ initials: callsign, score, capture_id: captureId }),
     });
     const data = await res.json();
-    if (data.success) {
-      const who = data.player_url ? ` <a href="${data.player_url}">📊 my stats</a>` : "";
-      let extra = "";
-      if (data.personal_best) extra += " 🚀 New personal record!";
-      if (data.pioneer) extra += " 🚩 First score ever on this machine!";
-      msg.innerHTML = (data.made_board ? `🏆 #${data.rank} on the board!` : "Saved, but outside the top 5.") + extra + who;
-      if (window.parent !== window) {
-        window.parent.postMessage(
-          { source: "arcade-score", slug, initials: callsign, score: body.score, rank: data.rank },
-          "*",
-        );
-      }
-      refreshScores();
-      celebrate(data.new_unlocks);
-    } else {
-      msg.textContent = data.error || "Submit failed.";
+    if (!data.success) {
+      $("score-msg").textContent = data.error || "Score capture failed.";
+      return;
     }
-  });
+    autoLastSubmitted = score;
+    const who = data.player_url ? ` <a href="${data.player_url}">📊 my stats</a>` : "";
+    let extra = "";
+    if (data.personal_best) extra += " 🚀 New personal record!";
+    if (data.pioneer) extra += " 🚩 First score ever on this machine!";
+    $("score-msg").innerHTML =
+      (data.made_board ? `🏆 #${data.rank} on the board!` : "Saved, but outside the top 5.") + extra + who;
+    postCapturedScore(score, data.rank);
+    refreshScores();
+    celebrate(data.new_unlocks);
+  }
+
+  function startPlayableAutoCapture() {
+    const frame = $("game-frame");
+    if (!frame) return;
+    const begin = () => {
+      const baseline = {};
+      readPlayableScores().forEach((entry) => { baseline[entry.key] = entry.score; });
+      autoBaseline = baseline;
+      autoLastChange = Date.now();
+    };
+    if (frame.contentDocument && frame.contentDocument.readyState === "complete") {
+      setTimeout(begin, 1000);
+    } else {
+      frame.addEventListener("load", () => setTimeout(begin, 1000), { once: true });
+    }
+    autoTickTimer = setInterval(() => {
+      if (document.hidden || !autoBaseline) return;
+      const candidates = readPlayableScores().filter(
+        (entry) => entry.score > (autoBaseline[entry.key] ?? -1),
+      );
+      const best = candidates.reduce((top, entry) => Math.max(top, entry.score), 0);
+      if (best > autoBest) {
+        autoBest = best;
+        autoLastChange = Date.now();
+        return;
+      }
+      if (autoBest > 0 && Date.now() - autoLastChange > 15000) {
+        void submitCapturedScore(autoBest, false);
+      }
+    }, 2000);
+    const flush = () => {
+      if (autoBest > autoLastSubmitted) void submitCapturedScore(autoBest, true);
+    };
+    document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
+    window.addEventListener("pagehide", flush);
+  }
+
+  if (window.ARCADE_KIND === "playable") {
+    startPlayableAutoCapture();
+    const initials = $("score-initials");
+    if (initials) {
+      initials.addEventListener("input", () => {
+        rememberCallsign(initials.value);
+        if (autoPending > autoLastSubmitted) void submitCapturedScore(autoPending, false);
+      });
+    }
+  }
 
   // Live sandbox play for code-kind games: same UI sandbox the Tests page
   // uses (Xvfb + x11vnc + noVNC). The backend launches the container and
@@ -623,26 +743,35 @@
     }
     if (data.status === "no score yet" || data.duplicate) return;
     if (window.parent !== window) {
+      if (!data.capture_id || data.capture_id === autoLastCaptureId) return;
+      autoLastCaptureId = data.capture_id;
       window.parent.postMessage(
-        { source: "arcade-score", slug, initials: data.initials, score: data.score, rank: data.rank },
+        {
+          source: "arcade-score",
+          slug,
+          initials: data.initials,
+          score: data.score,
+          capture_id: data.capture_id,
+        },
         "*",
       );
+      const msg = $("score-msg");
+      if (msg) msg.textContent = `Score captured: ${data.score} points — saving to the family board…`;
+      return;
     }
     const initials = $("score-initials");
-    const value = $("score-value");
     if (initials && !initials.value) initials.value = data.initials || "";
-    if (value) value.value = data.score ?? "";
     const msg = $("score-msg");
     if (msg) msg.textContent = `Auto-captured: ${data.score} points (${data.rank ? "#" + data.rank + " on the board" : "saved"})`;
     refreshScores().catch(() => {});
     celebrate(data.new_unlocks);
   }
 
-  async function syncScore(cid) {
+  async function syncScore(cid, preview) {
     const res = await fetch(`/api/games/${slug}/sync_score`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ container_id: cid }),
+      body: JSON.stringify({ container_id: cid, preview: Boolean(preview) }),
     });
     return res.json();
   }
@@ -651,10 +780,11 @@
     stopScorePoll();
     const token = scorePollToken;
     const cid = window.__arcadeCid;
+    const preview = window.parent !== window;
     async function tick() {
       if (token !== scorePollToken || !cid || cid !== window.__arcadeCid) return;
       try {
-        const data = await syncScore(cid);
+        const data = await syncScore(cid, preview);
         if (token === scorePollToken && cid === window.__arcadeCid) applyScoreSync(data, status);
       } catch (_) {
       } finally {
@@ -671,14 +801,15 @@
     if (!cid) return Promise.resolve();
     stoppingSession = (async () => {
       try {
+        const preview = window.parent !== window;
         try {
-          applyScoreSync(await syncScore(cid), $("live-status"));
+          applyScoreSync(await syncScore(cid, preview), $("live-status"));
         } catch (_) {
         }
         const res = await fetch(`/api/games/${slug}/stop`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ container_id: cid }),
+          body: JSON.stringify({ container_id: cid, preview }),
         });
         const data = await res.json();
         applyScoreSync(data.score_sync, $("live-status"));
@@ -743,69 +874,6 @@
     }
     if ($("btn-play-live")) $("btn-play-live").disabled = false;
     if ($("btn-stop-live")) $("btn-stop-live").disabled = true;
-  });
-
-  // Score auto-capture: the game is served same-origin, so we can read its
-  // localStorage. Scan for numeric candidates and let the player pick one.
-  // Falls back to manual entry when nothing plausible is found.
-  // (Absent on code-kind games, which have no iframe to read from.)
-  if ($("btn-fetch-score")) $("btn-fetch-score").addEventListener("click", () => {
-    const box = $("score-candidates");
-    const msg = $("score-msg");
-    box.innerHTML = "";
-    let found = [];
-    try {
-      const ls = document.getElementById("game-frame").contentWindow.localStorage;
-      for (let i = 0; i < ls.length; i++) {
-        const key = ls.key(i);
-        const raw = ls.getItem(key);
-        if (/score|high|best|top|points|record/i.test(key)) {
-          found.push({ key, raw });
-        }
-      }
-    } catch (e) {
-      msg.textContent = "Could not read the game storage — enter your score manually.";
-      return;
-    }
-    const candidates = [];
-    for (const { key, raw } of found) {
-      const num = Number(raw);
-      if (Number.isFinite(num) && raw.trim() !== "") {
-        candidates.push({ label: `${key}: ${num}`, score: Math.floor(num) });
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(raw);
-        const arr = Array.isArray(parsed) ? parsed : parsed.scores || parsed.highscores || parsed.highScores || [];
-        (Array.isArray(arr) ? arr.slice(0, 5) : []).forEach((entry) => {
-          const s = Number(entry && (entry.score ?? entry.points ?? entry.value));
-          if (Number.isFinite(s)) candidates.push({ label: `${key}: ${s}`, score: Math.floor(s) });
-        });
-        ["highScore", "highscore", "best", "bestScore", "topScore"].forEach((k) => {
-          const s = Number(parsed && parsed[k]);
-          if (Number.isFinite(s)) candidates.push({ label: `${key}.${k}: ${s}`, score: Math.floor(s) });
-        });
-      } catch (e) {
-        /* not JSON — skip */
-      }
-    }
-    if (!candidates.length) {
-      msg.textContent = found.length
-        ? "Found game data but no clear score — enter it manually."
-        : "No score found in the game — enter it manually.";
-      return;
-    }
-    msg.textContent = "Pick your score:";
-    candidates.slice(0, 8).forEach((c) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = c.label;
-      b.addEventListener("click", () => {
-        $("score-value").value = c.score;
-        msg.textContent = "Score filled in — add initials and Submit!";
-      });
-      box.appendChild(b);
-    });
   });
 
   // Star ratings.
