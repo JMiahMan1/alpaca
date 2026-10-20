@@ -21,6 +21,7 @@ COPY imageops.py /app/
 COPY imageanim.py /app/
 COPY three.min.js /app/
 COPY arcade/curation.py /app/curation.py
+COPY arcade/mobile.py /app/mobile.py
 COPY web/ /app/web/
 
 # Expose Dashboard Port

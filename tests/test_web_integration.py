@@ -2426,3 +2426,50 @@ def test_learning_export_reports_eligibility_and_filters(client, tmp_path):
         data = json.loads(res.data.decode("utf-8"))
         assert data["record_count"] == 1
         assert data["records"][0]["test_id"] == "code_1"
+
+
+def test_arcade_candidates_lists_eligible_benchmark_games(client, monkeypatch):
+    import web.arcade_publish as wp
+
+    monkeypatch.setattr(
+        wp,
+        "iter_eligible_game_results",
+        lambda: [
+            {
+                "model": "demo",
+                "test_id": "space",
+                "label": "Space Game",
+                "category": "gamedev",
+                "type": "ui",
+                "score": 98,
+                "response": '<html><head><meta name="viewport" content="width=device-width"></head>'
+                "<body><canvas width=\"800\" height=\"600\"></canvas></body></html>",
+            }
+        ],
+    )
+    monkeypatch.setattr(wp, "load_curated", lambda: [])
+    monkeypatch.setattr(wp, "published_slugs", lambda: set())
+
+    res = client.get("/api/arcade/candidates")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["count"] == 1
+    candidate = data["candidates"][0]
+    assert candidate["slug"] == "demo_space"
+    assert candidate["kind"] == "playable"
+    assert candidate["published"] is False
+
+
+def test_ooda_status_and_refresh_routes(client, tmp_path, monkeypatch):
+    from web import arcade_ooda
+
+    monkeypatch.setattr(arcade_ooda, "STATUS_FILE", tmp_path / "ooda.json")
+    status = client.get("/api/arcade/ooda/status")
+    assert status.status_code == 200
+    assert status.get_json()["at"] is None
+
+    monkeypatch.setattr(arcade_ooda, "act", lambda: {"added": ["demo_space"], "chosen": ["demo_space"]})
+    refreshed = client.post("/api/arcade/ooda/refresh")
+    assert refreshed.status_code == 200
+    assert refreshed.get_json()["added"] == ["demo_space"]

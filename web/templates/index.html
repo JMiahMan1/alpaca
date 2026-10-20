@@ -3180,9 +3180,16 @@ text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spa
                     </p>
                     <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
                         <button id="btn-refresh-arcade" class="btn btn-secondary btn-sm btn-slate">↻ Refresh list</button>
+                        <button id="btn-ooda-arcade" class="btn btn-secondary btn-sm btn-slate">◎ OODA refresh</button>
+                        <span id="arcade-ooda-status" style="font-size:0.7rem; color:var(--text-muted);"></span>
                     </div>
                     <div id="arcade-current" style="font-size:0.72rem; color:var(--text-muted);"></div>
                     <div id="arcade-games-list" style="display:flex; flex-direction:column; gap:0.4rem;"></div>
+                    <div style="display:flex; gap:0.5rem; align-items:center; margin-top:0.4rem;">
+                        <strong style="color:white; font-size:0.78rem;">Add from benchmark</strong>
+                        <input id="arcade-candidate-search" placeholder="Search games or models…" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem 0.6rem; border-radius:6px; font-size:0.75rem;">
+                    </div>
+                    <div id="arcade-candidates-list" style="display:flex; flex-direction:column; gap:0.35rem; max-height:260px; overflow:auto;"></div>
                 </div>
 
                 <!-- OpenRouter Section -->

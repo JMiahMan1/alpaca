@@ -5659,6 +5659,94 @@ def arcade_published():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/arcade/candidates", methods=["GET"])
+def arcade_candidates():
+    """Eligible benchmark games the admin can add to the arcade.
+
+    The arcade is curated: every future benchmark result is discoverable here
+    but nothing is published until an admin clicks Add.
+    """
+    try:
+        from web.arcade_publish import (
+            iter_eligible_game_results,
+            load_curated,
+            published_slugs,
+            slugify,
+        )
+        try:
+            from arcade.mobile import assess_html
+        except ImportError:
+            from mobile import assess_html
+
+        curated = set(load_curated())
+        published = published_slugs()
+        seen: set[str] = set()
+        rows = []
+        for rec in iter_eligible_game_results():
+            model = str(rec.get("model") or "")
+            test_id = str(rec.get("test_id") or "")
+            if not model or not test_id:
+                continue
+            slug = slugify(model, test_id)
+            if slug in seen:
+                continue
+            seen.add(slug)
+            response = str(rec.get("response") or "")
+            html = response.lower()
+            playable = str(rec.get("type") or "").lower() == "ui" or "<html" in html or "<!doctype" in html
+            mobile = assess_html(response) if playable else {"score": 0, "ready": False}
+            rows.append(
+                {
+                    "slug": slug,
+                    "model": model,
+                    "test_id": test_id,
+                    "title": rec.get("label") or rec.get("test_id") or slug,
+                    "category": rec.get("category") or "",
+                    "label": rec.get("label") or "",
+                    "type": rec.get("type"),
+                    "kind": "playable" if playable else (rec.get("kind") or "code"),
+                    "benchmark_score": rec.get("score") or 0,
+                    "max_score": rec.get("max_score"),
+                    "higher_is_better": rec.get("higher_is_better") is not False,
+                    "metric": rec.get("metric") or "score",
+                    "run_id": rec.get("run_id") or "",
+                    "run_date": rec.get("run_date") or "",
+                    "test_hash": rec.get("test_hash") or "",
+                    "validation": rec.get("validation"),
+                    "prompt": rec.get("prompt") or "",
+                    "mobile_score": mobile["score"],
+                    "mobile_ready": mobile["ready"],
+                    "published": slug in published,
+                    "curated": slug in curated,
+                }
+            )
+        rows.sort(key=lambda r: (-float(r["benchmark_score"] or 0), -int(r["mobile_score"] or 0), r["title"]))
+        return jsonify({"success": True, "candidates": rows, "count": len(rows)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/arcade/ooda/status", methods=["GET"])
+def arcade_ooda_status():
+    try:
+        from web.arcade_ooda import status
+
+        return jsonify({"success": True, **status()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/arcade/ooda/refresh", methods=["POST"])
+def arcade_ooda_refresh():
+    """Add a few top mobile-ready benchmark games without mass publishing."""
+    try:
+        from web.arcade_ooda import act
+
+        return jsonify({"success": True, **act()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/arcade/publish", methods=["POST"])
 def arcade_publish():
     """Manually publish a benchmark game to the arcade (port 5001).

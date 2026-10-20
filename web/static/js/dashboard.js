@@ -11196,6 +11196,10 @@ const saved = _loadHumanRatings(t.id) || {};
     const badgeStatusArcade = document.getElementById('badge-status-arcade');
     const arcadeCurrent = document.getElementById('arcade-current');
     const arcadeGamesList = document.getElementById('arcade-games-list');
+    const btnOodaArcade = document.getElementById('btn-ooda-arcade');
+    const arcadeOodaStatus = document.getElementById('arcade-ooda-status');
+    const arcadeCandidateSearch = document.getElementById('arcade-candidate-search');
+    const arcadeCandidatesList = document.getElementById('arcade-candidates-list');
     const linkOpenArcade = document.getElementById('link-open-arcade');
 
     function updateAlpacaSnippet(token) {
@@ -11333,6 +11337,8 @@ const saved = _loadHumanRatings(t.id) || {};
         await loadLlmServerSettings();
         await loadArcadeSettings();
         await loadArcadeGames();
+        await loadArcadeCandidates();
+        await loadArcadeOodaStatus();
     }
 
     function arcadeBaseUrl() {
@@ -11438,9 +11444,124 @@ const saved = _loadHumanRatings(t.id) || {};
         }
     }
 
+    let arcadeCandidateCache = [];
+
+    async function loadArcadeOodaStatus() {
+        if (!arcadeOodaStatus) return;
+        try {
+            const res = await fetch('/api/arcade/ooda/status');
+            const data = await res.json();
+            if (!data.success) return;
+            const added = (data.added || []).length;
+            arcadeOodaStatus.textContent = data.at
+                ? `OODA: ${data.scanned || 0} scanned · ${data.existing || 0} on shelf · ${added} added · ${String(data.at).replace('T', ' ')}`
+                : 'OODA: not run yet';
+        } catch (err) {
+            arcadeOodaStatus.textContent = 'OODA: unavailable';
+        }
+    }
+
+    async function loadArcadeCandidates() {
+        if (!arcadeCandidatesList) return;
+        arcadeCandidatesList.innerHTML = '<div style="font-size:0.72rem; color:var(--text-muted);">Scanning benchmark results…</div>';
+        try {
+            const res = await fetch('/api/arcade/candidates');
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'failed');
+            arcadeCandidateCache = data.candidates || [];
+            renderArcadeCandidates();
+        } catch (err) {
+            arcadeCandidatesList.innerHTML = `<div style="font-size:0.72rem; color:#f87171;">Could not load benchmark games: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    function renderArcadeCandidates() {
+        if (!arcadeCandidatesList) return;
+        const q = (arcadeCandidateSearch?.value || '').trim().toLowerCase();
+        const rows = arcadeCandidateCache
+            .filter(c => !q || `${c.title} ${c.model} ${c.test_id}`.toLowerCase().includes(q))
+            .slice(0, 80);
+        if (!rows.length) {
+            arcadeCandidatesList.innerHTML = '<div style="font-size:0.72rem; color:var(--text-muted);">No matching benchmark games.</div>';
+            return;
+        }
+        arcadeCandidatesList.innerHTML = '';
+        rows.forEach(c => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex; align-items:center; gap:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; padding:0.4rem 0.55rem; font-size:0.74rem;';
+            const info = document.createElement('div');
+            info.style.cssText = 'flex:1; min-width:0;';
+            const score = c.benchmark_score == null ? '—' : Number(c.benchmark_score).toFixed(1);
+            const mobile = c.mobile_ready ? `📱 ${c.mobile_score}` : '🖥 desktop';
+            info.innerHTML = `<strong style="color:white;">${escapeHtml(c.title || c.slug)}</strong>` +
+                `<div style="color:var(--text-muted); font-size:0.68rem;">${escapeHtml(c.model || '')} · ★ ${score} · ${mobile}${c.curated ? ' · on shelf' : c.published ? ' · hidden' : ''}</div>`;
+            row.appendChild(info);
+            if (!c.published) {
+                const add = document.createElement('button');
+                add.textContent = 'Add';
+                add.className = 'btn btn-secondary btn-sm';
+                add.addEventListener('click', async () => {
+                    add.disabled = true;
+                    add.textContent = 'Adding…';
+                    try {
+                        const r = await fetch('/api/arcade/publish', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(c)
+                        });
+                        const d = await r.json();
+                        if (!d.success) throw new Error(d.error || 'publish failed');
+                        showToast(`Added ${c.title || c.slug}`, 'success');
+                        await loadArcadeGames();
+                        await loadArcadeCandidates();
+                        await loadArcadeOodaStatus();
+                    } catch (err) {
+                        add.disabled = false;
+                        add.textContent = 'Add';
+                        showToast(`Add failed: ${err.message}`, 'error');
+                    }
+                });
+                row.appendChild(add);
+            } else {
+                const badge = document.createElement('span');
+                badge.textContent = c.curated ? 'On shelf' : 'Hidden';
+                badge.style.cssText = 'font-size:0.68rem; color:var(--text-muted);';
+                row.appendChild(badge);
+            }
+            arcadeCandidatesList.appendChild(row);
+        });
+    }
+
+    if (arcadeCandidateSearch) {
+        arcadeCandidateSearch.addEventListener('input', renderArcadeCandidates);
+    }
+
+    if (btnOodaArcade) {
+        btnOodaArcade.addEventListener('click', async () => {
+            btnOodaArcade.disabled = true;
+            btnOodaArcade.textContent = '◎ Observing…';
+            try {
+                const r = await fetch('/api/arcade/ooda/refresh', { method: 'POST' });
+                const d = await r.json();
+                if (!d.success) throw new Error(d.error || 'OODA refresh failed');
+                showToast(`OODA added ${(d.added || []).length} game(s)`, 'success');
+                await loadArcadeGames();
+                await loadArcadeCandidates();
+                await loadArcadeOodaStatus();
+            } catch (err) {
+                showToast(`OODA failed: ${err.message}`, 'error');
+            } finally {
+                btnOodaArcade.disabled = false;
+                btnOodaArcade.textContent = '◎ OODA refresh';
+            }
+        });
+    }
+
     if (btnRefreshArcade) {
         btnRefreshArcade.addEventListener('click', async () => {
             await loadArcadeGames();
+            await loadArcadeCandidates();
+            await loadArcadeOodaStatus();
         });
     }
 
