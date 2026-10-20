@@ -4,7 +4,9 @@ import os
 import tarfile
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +28,7 @@ from sandbox_exec import (
     ensure_audio_encoder,
     extract_clean_code,
     grade_code,
+    reap_arcade_sessions,
     run_code_once,
     serve_app,
     serve_ui,
@@ -890,6 +893,9 @@ def test_arcade_launches_overlap_without_replacing_players_or_benchmarks(tmp_pat
         assert payload["exclusive"] is False
         assert payload["timeout"] == 7200
         assert payload["lang"] == "python"
+    for call in client.containers.run.call_args_list:
+        if call.kwargs["name"].startswith("alpaca-arcade-"):
+            assert call.kwargs["labels"] == {"alpaca.arcade.session": "1"}
     for result in results:
         assert result["launcher_url"].endswith(f"/ui/launcher/{result['container_id']}?embed=1")
     assert len({c.ports["6080/tcp"][0]["HostPort"] for c in created}) == 4
@@ -938,6 +944,43 @@ def test_arcade_name_collision_does_not_remove_existing_session(exclusive):
     client.containers.get.assert_not_called()
     client.containers.list.assert_not_called()
     client.close.assert_called_once()
+
+
+def test_arcade_reaper_removes_only_old_stopped_sessions():
+    now = time.time()
+
+    def _container(name, status, finished="", created=""):
+        container = MagicMock()
+        container.name = name
+        container.attrs = {
+            "State": {"Status": status, "FinishedAt": finished, "StartedAt": created},
+            "Created": created,
+        }
+        return container
+
+    def _stamp(seconds_ago):
+        return datetime.fromtimestamp(now - seconds_ago, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+    running = _container("alpaca-arcade-running", "running")
+    old_stopped = _container("alpaca-arcade-old", "exited", _stamp(400))
+    young_stopped = _container("alpaca-arcade-young", "exited", _stamp(60))
+    old_created = _container("alpaca-arcade-created", "created", created=_stamp(400))
+    unrelated = _container("alpaca-ui-old", "exited", _stamp(400))
+
+    with patch("docker.DockerClient") as docker:
+        client = docker.return_value
+        client.containers.list.return_value = [
+            running, old_stopped, young_stopped, old_created, unrelated
+        ]
+        result = reap_arcade_sessions(grace_s=300, now=now)
+
+    assert result == {"removed": 2, "kept": 2, "error": ""}
+    old_stopped.remove.assert_called_once_with(force=True)
+    old_created.remove.assert_called_once_with(force=True)
+    running.remove.assert_not_called()
+    young_stopped.remove.assert_not_called()
+    unrelated.remove.assert_not_called()
+    client.containers.list.assert_called_once_with(all=True, filters={"name": "alpaca-arcade-"})
 
 
 def test_serve_ui_rejects_unsupported_language():

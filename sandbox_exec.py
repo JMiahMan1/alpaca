@@ -1707,6 +1707,101 @@ def stop_serve(container_id: str) -> dict[str, Any]:
 
 _UI_LAUNCH_LOCK = threading.Lock()
 _ARCADE_SESSION_PREFIX = "alpaca-arcade-"
+#: Stopped arcade containers are removed after this grace period. Running
+#: sessions are never touched, so cleanup cannot interrupt a game in progress.
+_ARCADE_REAP_GRACE_S = 300
+_ARCADE_REAP_INTERVAL_S = 300
+_ARCADE_REAPER_STARTED = False
+_ARCADE_REAPER_LOCK = threading.Lock()
+_ARCADE_REAPER_WAKE = threading.Event()
+
+
+def _container_age_s(stamp: str, now: float | None = None) -> float | None:
+    """Age of a Docker RFC3339 timestamp, or None when it is unset/invalid."""
+    if not stamp or stamp.startswith("0001-"):
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        return (now if now is not None else time.time()) - parsed.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def reap_arcade_sessions(
+    *, grace_s: float = _ARCADE_REAP_GRACE_S, now: float | None = None
+) -> dict[str, Any]:
+    """Remove *stopped* arcade sandbox containers; never a running game.
+
+    Each code-game launch creates its own uniquely named container and exits
+    after its timeout. Docker keeps exited containers around unless something
+    removes them, so this sweep deletes only containers that are already
+    stopped (and have been for ``grace_s``). A live noVNC game is untouched.
+    """
+    result: dict[str, Any] = {"removed": 0, "kept": 0, "error": ""}
+    try:
+        import docker
+    except Exception as e:  # pragma: no cover - environment dependent
+        result["error"] = f"docker unavailable: {e}"
+        return result
+    client = None
+    try:
+        client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+        for container in client.containers.list(all=True, filters={"name": _ARCADE_SESSION_PREFIX}):
+            if not container.name.startswith(_ARCADE_SESSION_PREFIX):
+                continue
+            with contextlib.suppress(Exception):
+                container.reload()
+            state = (getattr(container, "attrs", {}) or {}).get("State") or {}
+            status = state.get("Status") or getattr(container, "status", "")
+            if status not in ("exited", "dead", "created"):
+                result["kept"] += 1
+                continue
+            age = _container_age_s(
+                state.get("FinishedAt") or state.get("StartedAt") or (getattr(container, "attrs", {}) or {}).get("Created", ""),
+                now,
+            )
+            if age is None or age < grace_s:
+                result["kept"] += 1
+                continue
+            try:
+                container.remove(force=True)
+                result["removed"] += 1
+            except Exception as e:
+                result["error"] = str(e)[:200]
+                result["kept"] += 1
+    except Exception as e:  # pragma: no cover - runtime dependent
+        result["error"] = str(e)[:200]
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+    return result
+
+
+def _arcade_reaper_loop() -> None:
+    # Wait before the first sweep so the launch that started this thread is up.
+    while not _ARCADE_REAPER_WAKE.wait(60):
+        try:
+            out = reap_arcade_sessions()
+            if out.get("removed"):
+                print(f"[arcade] removed {out['removed']} stopped sandbox session(s)", flush=True)
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"[arcade] sandbox cleanup failed: {e}", flush=True)
+        _ARCADE_REAPER_WAKE.wait(_ARCADE_REAP_INTERVAL_S)
+
+
+def ensure_arcade_reaper() -> None:
+    """Start the stopped-session sweeper once, lazily after a launch."""
+    global _ARCADE_REAPER_STARTED
+    if _ARCADE_REAPER_STARTED:
+        return
+    with _ARCADE_REAPER_LOCK:
+        if _ARCADE_REAPER_STARTED:
+            return
+        _ARCADE_REAPER_STARTED = True
+        threading.Thread(target=_arcade_reaper_loop, name="arcade-sandbox-reaper", daemon=True).start()
 
 
 def serve_ui(
@@ -1865,6 +1960,7 @@ def serve_ui(
                 user="sandbox",
                 working_dir="/tmp",
                 name=name,
+                labels={"alpaca.arcade.session": "1"} if arcade_session else None,
                 remove=False,
             )
             cleaned_code = extract_clean_code(code, lang)
@@ -1882,6 +1978,8 @@ def serve_ui(
             result["container_id"] = container.id
             result["host_port"] = host_port
             result["audio_host_port"] = audio_host_port
+            if arcade_session and container.id:
+                ensure_arcade_reaper()
     except Exception as e:  # pragma: no cover - runtime dependent
         result["error"] = str(e)
     finally:
