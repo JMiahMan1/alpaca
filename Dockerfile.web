@@ -20,6 +20,7 @@ COPY online_providers.py /app/
 COPY imageops.py /app/
 COPY imageanim.py /app/
 COPY three.min.js /app/
+COPY arcade/curation.py /app/curation.py
 COPY web/ /app/web/
 
 # Expose Dashboard Port

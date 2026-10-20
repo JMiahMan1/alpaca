@@ -5645,8 +5645,7 @@ def get_artifact(filename):
 def arcade_published():
     """List published arcade slugs + game cards (drives dashboard Publish buttons + Arcade section)."""
     try:
-        from web.arcade_publish import published_games, published_slugs
-        from arcade.curation import load_curated
+        from web.arcade_publish import load_curated, published_games, published_slugs
 
         games = published_games()
         return jsonify(
