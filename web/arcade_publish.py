@@ -528,72 +528,11 @@ def iter_eligible_game_results():
     """Yield every benchmark result that describes a playable game.
 
     A result is eligible when its test type is ``ui`` or its category is a
-    known game category. Used by the deliberate bulk reconcile; never runs
-    automatically.
+    known game category. This is a read-only helper; publishing remains an
+    explicit per-game action.
     """
     for rec in _iter_result_records(None):
         category = (rec.get("category") or "").lower()
         rtype = str(rec.get("type") or "").lower()
         if rtype == "ui" or category in GAME_CATEGORIES:
             yield rec
-
-
-def publish_all_eligible() -> dict:
-    """Deliberately publish every eligible benchmark game result (idempotent).
-
-    Re-running is safe: already-published games are republished in place
-    (player scores/ratings/play counts are preserved), and games with no
-    usable source are skipped rather than failing the whole sweep.
-    """
-    published: list[str] = []
-    republished: list[str] = []
-    skipped: list[dict] = []
-    failed: dict[str, str] = {}
-    seen: set[str] = set()
-    for rec in iter_eligible_game_results():
-        model = rec.get("model") or ""
-        test_id = rec.get("test_id") or ""
-        if not model or not test_id:
-            continue
-        slug = slugify(model, test_id)
-        if slug in seen:
-            continue
-        seen.add(slug)
-        try:
-            result = publish_game(
-                model=model,
-                test_id=test_id,
-                benchmark_score=rec.get("score"),
-                max_score=rec.get("max_score"),
-                prompt=rec.get("prompt") or "",
-                run_date=rec.get("run_date") or "",
-                category=rec.get("category") or "",
-                label=rec.get("label") or "",
-                type=rec.get("type"),
-                run_id=rec.get("run_id") or "",
-                test_hash=rec.get("test_hash") or "",
-                validation=rec.get("validation"),
-                higher_is_better=(
-                    bool(rec.get("higher_is_better")) if rec.get("higher_is_better") is not None else True
-                ),
-                metric=rec.get("metric") or "score",
-            )
-            (republished if result["republished"] else published).append(result["slug"])
-        except FileNotFoundError:
-            skipped.append({"model": model, "test_id": test_id, "reason": "no saved game source"})
-        except (TypeError, ValueError):
-            skipped.append({"model": model, "test_id": test_id, "reason": "invalid result"})
-        except Exception as e:  # pragma: no cover - defensive bulk sweep
-            failed[slug] = str(e)
-    return {
-        "published": published,
-        "republished": republished,
-        "skipped": skipped,
-        "failed": failed,
-        "counts": {
-            "published": len(published),
-            "republished": len(republished),
-            "skipped": len(skipped),
-            "failed": len(failed),
-        },
-    }

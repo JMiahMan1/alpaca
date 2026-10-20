@@ -1987,30 +1987,6 @@ def _write_game_result(root, model, test_id, response, **extra):
     )
 
 
-def test_publish_all_eligible_is_idempotent(games_dir, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _write_game_result(tmp_path, "g1", "game_a", PYGAME_RESP, score=80)
-    _write_game_result(tmp_path, "g2", "game_b", HTML_RESP, score=90)
-    # A non-game result must never be picked up by the bulk sweep.
-    _write_general_result(tmp_path, "g3", "not_a_game", "just prose, no game here", score=50)
-
-    first = ap.publish_all_eligible()
-    assert first["counts"]["published"] == 2
-    assert first["counts"]["republished"] == 0
-    assert set(ap.published_slugs()) == {"g1_game-a", "g2_game-b"}
-
-    # Idempotent second sweep: republish in place, keep player data, no dupes.
-    (games_dir / "g1_game-a" / "scores.json").write_text(json.dumps({"scores": [{"initials": "X", "score": 5}]}))
-    second = ap.publish_all_eligible()
-    assert second["counts"]["published"] == 0
-    assert second["counts"]["republished"] == 2
-    assert second["skipped"] == []
-    assert second["counts"]["failed"] == 0
-    saved = json.loads((games_dir / "g1_game-a" / "scores.json").read_text())
-    assert saved["scores"][0]["initials"] == "X"
-    assert set(ap.published_slugs()) == {"g1_game-a", "g2_game-b"}
-
-
 def test_web_publish_all_route_is_gone(web_client):
     assert web_client.post("/api/arcade/publish-all").status_code == 404
 
