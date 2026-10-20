@@ -5714,6 +5714,7 @@ def arcade_candidates():
                     "test_hash": rec.get("test_hash") or "",
                     "validation": rec.get("validation"),
                     "prompt": rec.get("prompt") or "",
+                    "source_file": rec.get("source_file") or "",
                     "mobile_score": mobile["score"],
                     "mobile_ready": mobile["ready"],
                     "published": slug in published,
