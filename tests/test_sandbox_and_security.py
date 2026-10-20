@@ -949,11 +949,11 @@ def test_arcade_name_collision_does_not_remove_existing_session(exclusive):
 def test_arcade_reaper_removes_only_old_stopped_sessions():
     now = time.time()
 
-    def _container(name, status, finished="", created=""):
+    def _container(name, status, finished="", created="", started=""):
         container = MagicMock()
         container.name = name
         container.attrs = {
-            "State": {"Status": status, "FinishedAt": finished, "StartedAt": created},
+            "State": {"Status": status, "FinishedAt": finished, "StartedAt": started or created},
             "Created": created,
         }
         return container
@@ -965,18 +965,27 @@ def test_arcade_reaper_removes_only_old_stopped_sessions():
     old_stopped = _container("alpaca-arcade-old", "exited", _stamp(400))
     young_stopped = _container("alpaca-arcade-young", "exited", _stamp(60))
     old_created = _container("alpaca-arcade-created", "created", created=_stamp(400))
+    # Real Docker uses this sentinel for both timestamps before first start.
+    old_created_never_started = _container(
+        "alpaca-arcade-created-never-started",
+        "created",
+        finished="0001-01-01T00:00:00Z",
+        started="0001-01-01T00:00:00Z",
+        created=_stamp(400),
+    )
     unrelated = _container("alpaca-ui-old", "exited", _stamp(400))
 
     with patch("docker.DockerClient") as docker:
         client = docker.return_value
         client.containers.list.return_value = [
-            running, old_stopped, young_stopped, old_created, unrelated
+            running, old_stopped, young_stopped, old_created, old_created_never_started, unrelated
         ]
         result = reap_arcade_sessions(grace_s=300, now=now)
 
-    assert result == {"removed": 2, "kept": 2, "error": ""}
+    assert result == {"removed": 3, "kept": 2, "error": ""}
     old_stopped.remove.assert_called_once_with(force=True)
     old_created.remove.assert_called_once_with(force=True)
+    old_created_never_started.remove.assert_called_once_with(force=True)
     running.remove.assert_not_called()
     young_stopped.remove.assert_not_called()
     unrelated.remove.assert_not_called()

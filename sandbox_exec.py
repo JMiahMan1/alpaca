@@ -1758,10 +1758,19 @@ def reap_arcade_sessions(
             if status not in ("exited", "dead", "created"):
                 result["kept"] += 1
                 continue
-            age = _container_age_s(
-                state.get("FinishedAt") or state.get("StartedAt") or (getattr(container, "attrs", {}) or {}).get("Created", ""),
-                now,
-            )
+            attrs = getattr(container, "attrs", {}) or {}
+            # Docker reports "0001-01-01T00:00:00Z" for a container that has
+            # never started. _container_age_s returns None for that sentinel,
+            # so fall through to the next timestamp and finally Created.
+            age = None
+            for stamp in (
+                state.get("FinishedAt"),
+                state.get("StartedAt"),
+                attrs.get("Created"),
+            ):
+                age = _container_age_s(stamp, now)
+                if age is not None:
+                    break
             if age is None or age < grace_s:
                 result["kept"] += 1
                 continue
