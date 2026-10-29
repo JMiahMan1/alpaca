@@ -95,6 +95,14 @@ services:
       LLAMA_SERVER_URL: "http://localhost:8080"
       SD_SERVER_URL: "http://localhost:8081"
       SD_CONTAINER_NAME: "sd-server"
+      # Keep the assistant model resident. The card is an 8 GB RTX 4060, so only
+      # one model fits (MAX_LOADED_MODELS=1) and the default 5m keep-alive unloads
+      # it between chats; the next request then pays the whole 35B cold load,
+      # which outlives wait_for_slot's 120 s slot wait and comes back to the
+      # caller as the 503 "No llama-server slots available within timeout"
+      # (queue_timeout). A negative keep-alive means "forever" in
+      # apply_keep_alive_policy().
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:--1}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

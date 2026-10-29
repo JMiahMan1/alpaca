@@ -331,6 +331,15 @@ Important defaults:
 - `OLLAMA_KEEP_ALIVE` defaults to `5m`
 - `MAX_LOADED_MODELS` defaults to `1`
 
+The shipped `docker-compose.yml` pins `OLLAMA_KEEP_ALIVE: "-1"` on the
+`alpaca-proxy` service. A negative keep-alive means "never unload"
+(`apply_keep_alive_policy` maps it to `FOREVER_EXPIRES_AT`). On the 8 GB
+RTX 4060 only one model fits, so the 5m default unloads the 35B assistant
+between chats and the next request pays the full cold load - long enough
+to blow past `wait_for_slot`'s 120s slot wait and surface as
+`503 {"error":"No llama-server slots available within timeout","status":"queue_timeout"}`.
+Override the value in `.env` if you need the old behaviour back.
+
 ## Deployment
 
 Bring the stack up:
