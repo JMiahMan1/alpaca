@@ -14,9 +14,14 @@ services:
       ROUTER_MODELS_DIR: /router-models
 
   llama-server:
-    # model weights + KV cache, with headroom for a large
-    # quant and CPU offload.
-    mem_limit: 12g
+    # model weights + KV cache + CPU offload. The assistant GGUF is 17.3 GiB
+    # and is mmap'ed (load-mode = mmap), so its pages are reclaimable page
+    # cache - but the cgroup cap still counts them. Keep the cap above the
+    # weights so the cgroup never pins at memory.max: with a 12g cap the
+    # pressure spiked and systemd-oomd SIGKILLed the container mid-load
+    # (exit 137, then the 503 queue_timeout). Same reasoning as sd-server's
+    # 24g cap on this 30 GB box.
+    mem_limit: 20g
     build:
       context: .
       dockerfile: Dockerfile.llama-server
