@@ -9,6 +9,11 @@ services:
     volumes:
       - /usr/share/ollama/.ollama/models:/models:ro
       - ./.alpaca-router:/router-models
+      # Mount the puller like the proxy does: without this the one-shot
+      # reindex runs the copy baked into the image, so a changed models.ini
+      # generator (e.g. the mlock -> mmap default) silently does nothing
+      # until someone rebuilds.
+      - ./alpaca-puller.py:/app/alpaca-puller.py:ro
     environment:
       MODELS_DIR: /models
       ROUTER_MODELS_DIR: /router-models
