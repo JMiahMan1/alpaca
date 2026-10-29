@@ -385,9 +385,14 @@ def update_models_ini():
         "",
         "[*]",
         # NOTE (2026-09): llama.cpp removed --mlock/--mmap/--no-mmap; the
-        # preset parser hard-fails on those keys. load-mode = mlock preserves
-        # the old global (mlock=true + no-mmap=true) semantics.
-        "load-mode = mlock",
+        # preset parser hard-fails on those keys. load-mode selects the
+        # replacement (mlock = pin pages, mmap = demand-paged file mapping).
+        # Default to mmap: a pinned 17.3 GiB GGUF inside a cgroup memory cap
+        # cannot be reclaimed, so the cgroup sits at memory.max, memory
+        # pressure spikes and systemd-oomd SIGKILLs llama-server mid-load
+        # (exit 137 -> the 503 queue_timeout). mmap keeps the weights in
+        # reclaimable page cache instead.
+        "load-mode = mmap",
         "slot-save-path = /slots-cache",
         "batch-size = 1024",
         "ubatch-size = 1024",
