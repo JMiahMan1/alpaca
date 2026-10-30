@@ -49,6 +49,38 @@ FIT_CSS = """
 </style>
 """
 
+# A page that already lays itself out (fluid width, its own scrolling) must NOT
+# get the block above: pinning html/body to 100% height with overflow:hidden and
+# touch-action:none centres the page, clips anything past one screen and stops it
+# scrolling. A card game with a board and a sidebar would be unreachable on a
+# phone. Those pages only need their canvases capped.
+SOFT_CSS = """
+<style id="arcade-mobile-fit">
+  canvas {
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+  }
+  #arcade, #game, #game-container, .game-container, .canvas-wrap, .game-wrap {
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+  }
+</style>
+"""
+
+CANVAS_RE = re.compile(r"<canvas", re.IGNORECASE)
+
+
+def needs_full_fit(html: str) -> bool:
+    """Whether a page needs the whole-screen fit, or just its canvas capped.
+
+    A page that draws to a canvas is scaled by the fit. A page that already lays
+    itself out - fluid width, its own media queries - is left to scroll: forcing
+    the fit on it hides the lower half of the board behind a pinned body.
+    """
+    if CANVAS_RE.search(html or ""):
+        return True
+    return "fluid-width" not in (assess_html(html).get("reasons") or [])
+
 
 def assess_html(html: str) -> dict:
     """Return an explainable 0-100 mobile readiness score for a game page."""
@@ -78,6 +110,16 @@ def assess_html(html: str) -> dict:
     return {"score": score, "ready": score >= 40, "reasons": reasons}
 
 
+def fit_css_for(html: str) -> str:
+    """The fit CSS a page needs.
+
+    A page that draws at a fixed size (a canvas, or no fluid width of its own)
+    gets the full screen-fitting block. A page that already lays itself out gets
+    only the canvas caps - see SOFT_CSS.
+    """
+    return FIT_CSS if needs_full_fit(html) else SOFT_CSS
+
+
 def prepare_playable_html(html: str) -> str:
     """Make a standalone game page fit a phone without rewriting its game."""
     if not html:
@@ -91,8 +133,9 @@ def prepare_playable_html(html: str) -> str:
             output = re.sub(r"(<html[^>]*>)", r"\1<head>" + viewport + "</head>", output, count=1, flags=re.IGNORECASE)
         else:
             output = viewport + output
+    fit = fit_css_for(output)
     if "</head>" in output.lower():
-        output = re.sub(r"</head\s*>", FIT_CSS + "\n</head>", output, count=1, flags=re.IGNORECASE)
+        output = re.sub(r"</head\s*>", fit + "\n</head>", output, count=1, flags=re.IGNORECASE)
     else:
-        output = FIT_CSS + output
+        output = fit + output
     return output
