@@ -2127,6 +2127,33 @@ def test_mobile_readiness_and_injected_fit_css():
     assert "max-width: 100vw" in prepared
 
 
+def test_a_fixed_canvas_page_keeps_the_full_screen_fit():
+    from arcade.mobile import prepare_playable_html
+
+    prepared = prepare_playable_html('<html><body><canvas width="800" height="600"></canvas></body></html>')
+    assert "arcade-mobile-fit" in prepared
+    assert "overflow: hidden" in prepared
+    assert "touch-action: none" in prepared
+
+
+def test_a_page_that_lays_itself_out_keeps_its_own_scrolling():
+    from arcade.mobile import prepare_playable_html
+
+    page = (
+        '<html><head><style>body{width:100%;margin:0}'
+        '@media(max-width:600px){.board{grid-template-columns:repeat(4,1fr)}}</style></head>'
+        '<body><div class="board"></div></body></html>'
+    )
+    prepared = prepare_playable_html(page)
+    # It still gets the canvas caps, but not the screen-fitting block: pinning
+    # html/body to one screen and turning off touch gestures centres and clips a
+    # page like a memory board, which has to be reachable and scrollable.
+    assert "arcade-mobile-fit" in prepared
+    assert "max-width: 100vw" in prepared
+    assert "overflow: hidden" not in prepared
+    assert "touch-action: none" not in prepared
+
+
 def test_playable_game_html_is_prepared_for_mobile(arcade_client):
     res = arcade_client.get("/game/demo-model_demo-breakout/index.html")
     assert res.status_code == 200
