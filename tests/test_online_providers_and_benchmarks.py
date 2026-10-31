@@ -202,6 +202,20 @@ def test_online_decode_preserves_json_and_malformed_body():
     assert "non-JSON body" in error["error"]
 
 
+def test_online_decode_unwraps_nested_completion_envelope():
+    import httpx
+
+    # ClinePass nests the completion under "data": {"choices": [...]}.
+    enveloped = {"data": {"choices": [{"message": {"content": "PONG"}}]}, "success": True}
+    data, error = OnlineModelProvider._decode_json_response(httpx.Response(200, json=enveloped), "Cline API")
+    assert error is None
+    assert data == {"choices": [{"message": {"content": "PONG"}}]}
+    # A "data" key that is not a completion envelope (e.g. a models list) is left alone.
+    models = {"data": [{"id": "a"}]}
+    data, error = OnlineModelProvider._decode_json_response(httpx.Response(200, json=models), "Cline API")
+    assert data == {"data": [{"id": "a"}]}
+
+
 @pytest.mark.parametrize("measured", [False, True])
 def test_online_tracker_marks_estimates_and_unknown_ttft(monkeypatch, measured):
     from collections import deque

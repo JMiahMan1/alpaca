@@ -1922,7 +1922,7 @@ class OnlineModelProvider:
                         finish_reason = ch.get("finish_reason")
             return {"choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish_reason}]}, None
         try:
-            return resp.json(), None
+            data = resp.json()
         except Exception as exc:
             latency = 0.0
             with suppress(RuntimeError):
@@ -1937,6 +1937,14 @@ class OnlineModelProvider:
                     f"{resp.text[:200]!r}. Verify the provider base URL and credentials."
                 ),
             }
+        # Some gateways (e.g. ClinePass) nest the completion one level deep as
+        # {"data": {"choices": [...]}} instead of the flat OpenAI shape. Unwrap it
+        # so the rest of the pipeline parses the completion normally.
+        if isinstance(data, dict) and "choices" not in data:
+            inner = data.get("data")
+            if isinstance(inner, dict) and "choices" in inner:
+                data = inner
+        return data, None
 
     def _extract_online_content(
         self, data: dict, provider_label: str
