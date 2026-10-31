@@ -1271,11 +1271,86 @@ def render_template_prompt(body):
     return rendered
 
 
-def apply_thinking_override(payload, body):
-    # Keep thinking enabled downstream so reasoning models do not crash.
-    # The proxy filters/strips the thinking trace from responses when think is False.
-    # Do NOT set thinking=False here; upstream always gets thinking=True.
-    payload["thinking"] = True
+def resolve_think_value(body):
+    """Return the caller's explicit thinking preference, or None if unspecified.
+
+    The OpenAI-style ``enable_thinking`` and the Ollama-style ``think`` are
+    treated identically, and a value nested under ``options`` counts too.
+    """
+    for key in ("think", "enable_thinking"):
+        if body.get(key) is not None:
+            return body[key]
+    options = body.get("options")
+    if isinstance(options, dict):
+        for key in ("think", "enable_thinking"):
+            if options.get(key) is not None:
+                return options[key]
+    return None
+
+
+def apply_voice_thinking_default(body, request_state):
+    """Voice-assistant requests default to thinking OFF unless the caller asked
+    otherwise.
+
+    A reasoning model that is allowed to think spends tokens on a thinking phase
+    before it produces content. Voice replies run with a small ``num_predict``
+    budget (~80-120), so the whole budget can be consumed by the thinking phase
+    and the answer comes back empty. The ``--direct`` benchmark in
+    ``.tmp/benchmarks_assisant.md`` proved that disabling thinking at
+    chat-template render time fixes this. An explicit caller value always wins.
+    """
+    if getattr(request_state, "request_source", None) != "voice/assistant":
+        return
+    if resolve_think_value(body) is None:
+        body["think"] = False
+
+
+def _merge_thinking_fields(target, think_val):
+    """Merge the upstream thinking controls into ``target`` for ``think_val``.
+
+    With thinking disabled we set both the ``thinking`` field and the
+    ``chat_template_kwargs.enable_thinking`` kwarg: the field alone is not
+    honoured by every llama.cpp build, while the template kwarg is applied at
+    render time and is the form proven to actually suppress the thinking phase.
+    """
+    if think_val is False:
+        target["thinking"] = False
+        ct_kwargs = target.get("chat_template_kwargs")
+        if not isinstance(ct_kwargs, dict):
+            ct_kwargs = {}
+        ct_kwargs["enable_thinking"] = False
+        target["chat_template_kwargs"] = ct_kwargs
+    else:
+        # Keep thinking enabled downstream so reasoning models do not crash.
+        target["thinking"] = True
+    return target
+
+
+def apply_thinking_to_body(body, request_source=None):
+    """Normalize think/enable_thinking into the fields llama-server understands,
+    in place.
+
+    The raw-passthrough OpenAI endpoint does not go through
+    apply_thinking_override, so it needs this to honour ``think=False`` upstream.
+    Returns the body unchanged when the caller expressed no preference.
+    """
+    think_val = resolve_think_value(body)
+    if think_val is None and request_source == "voice/assistant":
+        think_val = False
+    if think_val is None:
+        return body
+    return _merge_thinking_fields(body, think_val)
+
+
+def apply_thinking_override(payload, body, request_source=None):
+    # Honour the caller's explicit thinking preference instead of blindly
+    # forcing thinking on (which left reasoning models burning their whole
+    # budget on the thinking phase and returning empty content).
+    think_val = resolve_think_value(body)
+    if think_val is None and request_source == "voice/assistant":
+        think_val = False
+
+    _merge_thinking_fields(payload, think_val)
 
     # Forward an explicit reasoning-budget cap when the caller supplied one.
     # llama.cpp's --reasoning-budget N (-1 unrestricted, 0 immediate end)
@@ -1287,6 +1362,11 @@ def apply_thinking_override(payload, body):
     if budget is not None:
         with suppress(TypeError, ValueError):
             payload["reasoning_budget"] = int(budget)
+
+    # With thinking disabled there is no thinking phase to reserve headroom for,
+    # so leave n_predict untouched.
+    if think_val is False:
+        return payload
 
     # Reasoning models ALWAYS consume tokens on a thinking phase before producing
     # content (thinking stays enabled upstream so the model does not crash), so
@@ -2356,6 +2436,7 @@ async def openai_chat_completions(request: Request):
     """OpenAI-compatible chat completions. Proxies directly to llama-server."""
     global client_httpx
     body = await request.json()
+    apply_thinking_to_body(body, getattr(request.state, "request_source", None))
     started_ns = now_ns()
     model_name = body.get("model", "")
     online_rejection = _online_model_rejection(model_name)
@@ -8485,6 +8566,7 @@ def prune_slots_cache(max_files: int = 15):
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()
+    apply_voice_thinking_default(body, request.state)
     model_name = body.get("model")
     online_rejection = _online_model_rejection(model_name)
     if online_rejection is not None:
@@ -8913,6 +8995,7 @@ async def generate(request: Request):
     if online_rejection is not None:
         return online_rejection
     use_chat_backend = should_generate_via_chat(body)
+    apply_voice_thinking_default(body, request.state)
     endpoint = "/v1/chat/completions" if use_chat_backend else "/completion"
     keep_alive = effective_keep_alive(body.get("keep_alive"))
 

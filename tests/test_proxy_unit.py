@@ -1356,7 +1356,12 @@ async def test_thinking_behavior_generate_think_false(monkeypatch):
     body = json.loads(response.body)
     assert body["response"] == "done"
     assert "thinking" not in body
-    assert mock_http.calls[0]["json"]["thinking"] is True
+    # think=False must be honoured UPSTREAM (not just filtered client-side):
+    # the reasoning phase is disabled at the chat-template level so the model
+    # does not burn its whole budget thinking and return empty content.
+    upstream = mock_http.calls[0]["json"]
+    assert upstream["thinking"] is False
+    assert upstream["chat_template_kwargs"]["enable_thinking"] is False
 
 
 @pytest.mark.asyncio
@@ -1435,7 +1440,9 @@ async def test_thinking_behavior_chat_think_false(monkeypatch):
     body = json.loads(response.body)
     assert body["message"]["content"] == "done"
     assert "thinking" not in body["message"]
-    assert mock_http.calls[0]["json"]["thinking"] is True
+    upstream = mock_http.calls[0]["json"]
+    assert upstream["thinking"] is False
+    assert upstream["chat_template_kwargs"]["enable_thinking"] is False
 
 
 @pytest.mark.asyncio
@@ -1513,7 +1520,11 @@ async def test_thinking_behavior_voice_origin_auto_override_chat(monkeypatch):
     body = json.loads(response.body)
     assert body["message"]["content"] == "done"
     assert "thinking" not in body["message"]
-    assert mock_http.calls[0]["json"]["thinking"] is True
+    # Voice-origin requests default to thinking OFF upstream so the small voice
+    # num_predict budget is not consumed by a thinking phase.
+    upstream = mock_http.calls[0]["json"]
+    assert upstream["thinking"] is False
+    assert upstream["chat_template_kwargs"]["enable_thinking"] is False
 
 
 @pytest.mark.asyncio
@@ -1553,7 +1564,9 @@ async def test_thinking_behavior_voice_origin_auto_override_generate(monkeypatch
     body = json.loads(response.body)
     assert body["response"] == "done"
     assert "thinking" not in body
-    assert mock_http.calls[0]["json"]["thinking"] is True
+    upstream = mock_http.calls[0]["json"]
+    assert upstream["thinking"] is False
+    assert upstream["chat_template_kwargs"]["enable_thinking"] is False
 
 
 def test_resolve_ini_section_name():
@@ -2980,7 +2993,9 @@ async def test_chat_think_false_empty_content_falls_back_to_thinking():
     body = json.loads(response.body)
     assert body["message"]["content"] == "Let me reason about this carefully."
     assert "thinking" not in body["message"]
-    assert mock_http.calls[0]["json"]["thinking"] is True
+    # think=False disables thinking upstream, but the fallback is defensive: even
+    # if a model still emits a stray thinking trace it is surfaced, never dropped.
+    assert mock_http.calls[0]["json"]["thinking"] is False
 
 
 @pytest.mark.asyncio
@@ -3018,12 +3033,11 @@ async def test_chat_think_false_empty_content_and_no_thinking_stays_empty():
 
 def test_apply_thinking_override_pads_from_env_budget(monkeypatch):
     # Pad == UI-owned server budget from the environment, not a literal.
-    # thinking stays enabled upstream regardless of the caller's flag.
     monkeypatch.setenv("LLAMA_REASONING_BUDGET", "2048")
 
     # Small bounded budget -> padded by the full thinking cap (guaranteed answer room).
     payload = {"model": "x", "n_predict": 200, "thinking": None}
-    alpaca_proxy.apply_thinking_override(payload, {"think": False})
+    alpaca_proxy.apply_thinking_override(payload, {"think": True})
     assert payload["n_predict"] == 200 + 2048
     assert payload["thinking"] is True
 
@@ -3050,6 +3064,61 @@ def test_apply_thinking_override_pads_from_env_budget(monkeypatch):
     payload = {"model": "x", "n_predict": 200}
     alpaca_proxy.apply_thinking_override(payload, {"think": True})
     assert payload["n_predict"] == 200
+
+
+def test_apply_thinking_override_disables_thinking_without_padding(monkeypatch):
+    # think=False disables the reasoning phase upstream (field + template kwarg)
+    # and leaves n_predict untouched - there is no thinking phase to reserve room for.
+    monkeypatch.setenv("LLAMA_REASONING_BUDGET", "2048")
+    payload = {"model": "x", "n_predict": 200}
+    alpaca_proxy.apply_thinking_override(payload, {"think": False})
+    assert payload["thinking"] is False
+    assert payload["chat_template_kwargs"]["enable_thinking"] is False
+    assert payload["n_predict"] == 200
+
+
+def test_apply_thinking_override_voice_origin_disables_thinking():
+    # Voice-origin requests default to thinking OFF even when the caller omitted it.
+    payload = {"model": "x"}
+    alpaca_proxy.apply_thinking_override(payload, {}, request_source="voice/assistant")
+    assert payload["thinking"] is False
+    assert payload["chat_template_kwargs"]["enable_thinking"] is False
+
+    # An explicit caller value still wins over the voice default.
+    payload = {"model": "x"}
+    alpaca_proxy.apply_thinking_override(payload, {"think": True}, request_source="voice/assistant")
+    assert payload["thinking"] is True
+
+
+def test_resolve_think_value_precedence():
+    assert alpaca_proxy.resolve_think_value({"think": False}) is False
+    assert alpaca_proxy.resolve_think_value({"enable_thinking": False}) is False
+    assert alpaca_proxy.resolve_think_value({"options": {"think": True}}) is True
+    assert alpaca_proxy.resolve_think_value({"options": {"enable_thinking": True}}) is True
+    # Top-level wins over options.
+    assert alpaca_proxy.resolve_think_value({"think": False, "options": {"think": True}}) is False
+    assert alpaca_proxy.resolve_think_value({}) is None
+    assert alpaca_proxy.resolve_think_value({"options": {}}) is None
+
+
+def test_apply_thinking_to_body_normalizes_openai_passthrough():
+    # The raw OpenAI endpoint forwards the body, so think/enable_thinking must be
+    # normalized into the fields llama-server understands.
+    body = {"model": "x", "enable_thinking": False}
+    alpaca_proxy.apply_thinking_to_body(body, "openai/client")
+    assert body["thinking"] is False
+    assert body["chat_template_kwargs"]["enable_thinking"] is False
+
+    # Voice origin defaults to thinking OFF when the caller did not specify.
+    body = {"model": "x"}
+    alpaca_proxy.apply_thinking_to_body(body, "voice/assistant")
+    assert body["thinking"] is False
+
+    # Unspecified non-voice caller -> untouched (no accidental mutation).
+    body = {"model": "x"}
+    alpaca_proxy.apply_thinking_to_body(body, "openai/client")
+    assert "thinking" not in body
+    assert "chat_template_kwargs" not in body
 
 
 # ---------------------------------------------------------------------------
