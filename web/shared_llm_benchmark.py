@@ -131,7 +131,17 @@ async def _read_generate_stream(resp: httpx.Response, watchdog: Any = None) -> d
 
 _THINKING_PATTERNS = [
     re.compile(r"<(think|thinking)>[\s\S]*?</\1>", re.IGNORECASE | re.DOTALL),
-    re.compile(r" thinking.*? response", re.DOTALL),
+    # The gateway's prose marker is a *leading* delimiter: a reasoning preamble
+    # that opens the response and is closed by ``response``. It must be anchored
+    # to the start of the text. Unanchored, " thinking" ... " response" matches
+    # two ordinary English words anywhere in an answer and deletes everything
+    # between them -- measured destroying a correct logic_knights conclusion into
+    # "A is is that A is a knight.", and leaving just whitespace ("\\n") when the
+    # word "response" fell near the end, which graded 0 on a right answer.
+    # Requiring the preamble to *lead* preserves the gateway's shape while making
+    # prose inside an answer untouchable; both markers are case-insensitive so the
+    # old lowercase-only luck no longer decides whether text survives.
+    re.compile(r"\A\s*thinking\b[\s\S]*?\bresponse\b", re.IGNORECASE | re.DOTALL),
 ]
 
 # Canonical downstream SharedLLM tool names (ALLOWED_TOOLS in the gateway's

@@ -697,6 +697,41 @@ def test_shared_llm_strip_thinking_handles_prose_blocks():
     assert "thinking" not in bench.strip_thinking(text)
 
 
+def test_shared_llm_strip_thinking_keeps_prose_that_merely_says_thinking():
+    """The prose marker must not delete an answer that uses the words as English.
+
+    Regression: the unanchored " thinking.*? response" pattern matched two
+    ordinary words anywhere in a response and deleted the span between them.
+    On a correct logic_knights answer it reduced the conclusion to
+    "A is is that A is a knight.", and when "response" fell near the end it
+    left only whitespace -- stored as response='\\n', scored 0 on a right answer.
+    """
+    bench = SharedLLMModelBenchmark()
+
+    # The real failing shape: "thinking" and "response" both appear mid-answer.
+    answer = (
+        "## Solution\n\n"
+        "A is thinking about what to say. Each case:\n\n"
+        "1. A knight, B knave -> consistent.\n"
+        "2. A knave, B knight -> inconsistent.\n\n"
+        "The final response is that A is a knight."
+    )
+    assert bench.strip_thinking(answer) == answer
+
+    # A correct answer must survive verbatim, not just "mostly survive".
+    knights = "A is thinking about the knight puzzle. **A is a knight, and B is a knave.**"
+    assert bench.strip_thinking(knights) == knights
+
+    # Whitespace-only residue was the observable symptom: never return just "\n".
+    trailing = "Let me work through the response very carefully indeed"
+    assert bench.strip_thinking(trailing).strip() != ""
+
+    # Anchored behaviour is unchanged for the gateway's leading-preamble shape,
+    # and now works regardless of capitalisation.
+    preamble = " Thinking step by step about the request response light_on"
+    assert bench.strip_thinking(preamble) == "light_on"
+
+
 def test_shared_llm_clean_json_block_brace_depth():
     bench = SharedLLMModelBenchmark()
     # Trailing prose after the JSON payload must NOT be swallowed by a greedy regex.
