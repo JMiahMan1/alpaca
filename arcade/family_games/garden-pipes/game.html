@@ -10,7 +10,7 @@
   html, body { background: #2f6b2a; }
   #gp-safe {
     position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
-    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    padding: var(--fk-safe-top) var(--fk-safe-right) var(--fk-safe-bottom) var(--fk-safe-left);
   }
   .fk-card ul.fk-how li { background: rgba(60, 170, 90, 0.1); }
   .fk-stats div { background: rgba(60, 170, 90, 0.1); }

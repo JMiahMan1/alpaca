@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0{% if score_bridge %}, maximum-scale=1, user-scalable=no, viewport-fit=cover{% endif %}">
 <title>{{ card.title }} - Alpaca Arcade</title>
 <link rel="stylesheet" href="/static/arcade.css">
 <style>
@@ -10,7 +10,7 @@
 @media (pointer: fine) { .screen:not(.show-controls) #play-keys { display: none; } }
 </style>
 </head>
-<body{% if request.args.get('embed') %} class="arcade-embed"{% endif %}>
+<body class="{% if request.args.get('embed') %}arcade-embed{% endif %}{% if score_bridge %} touch-native{% endif %}">
 <header class="arcade-header slim">
   <a href="/">&larr; Arcade</a>
   <a href="/players">🏆 Players</a>
@@ -23,7 +23,7 @@
       <div class="cabinet-marquee">★ {{ card.title }} ★</div>
       <div class="screen">
         {% if kind == "playable" %}
-        <iframe id="game-frame" src="/game/{{ card.slug }}/index.html" title="{{ card.title }}" sandbox="allow-scripts allow-same-origin allow-pointer-lock"></iframe>
+        <iframe id="game-frame" src="/game/{{ card.slug }}/index.html{% if score_bridge and request.query_string %}?{{ request.query_string.decode('utf-8', 'replace') }}{% endif %}" title="{{ card.title }}" sandbox="allow-scripts allow-same-origin allow-pointer-lock"></iframe>
         {% else %}
         <div class="code-game">
           {% if has_screenshot %}
@@ -53,6 +53,7 @@
           </details>
         </div>
         {% endif %}
+        {% if not score_bridge %}
         <button id="btn-fullscreen" class="arcade-btn fs-toggle" type="button">⛶ Full screen</button>
         <button id="btn-controls" class="arcade-btn fs-toggle" type="button" aria-pressed="false" aria-controls="play-keys">Show Controls</button>
         <div id="play-overlay-bar" hidden>
@@ -99,8 +100,11 @@
           <input id="kbd-proxy" type="text" autocomplete="off" autocapitalize="characters"
             autocorrect="off" spellcheck="false" aria-label="Type letters into the game" />
         </div>
+        {% endif %}
       </div>
-      {% if kind == "playable" %}
+      {% if score_bridge %}
+      <p class="cabinet-hint">📱 Made for phones: tap and swipe right on the game</p>
+      {% elif kind == "playable" %}
       <p class="cabinet-hint">🎮 Click the screen, then use the keyboard (often <kbd>Space</kbd> to start) - sound on for the full effect</p>
       {% else %}
       <p class="cabinet-hint">{{ run_hint.long }}</p>
@@ -108,6 +112,7 @@
     </div>
   </section>
   <aside class="score-pane">
+    {% if card.collection != "family" %}
     <div class="pane-block neon-cyan">
       <h3>🤖 Benchmark scorecard</h3>
       <div class="bench-stars">★ {{ card.benchmark_score if card.benchmark_score is not none else '-' }}{% if card.max_score is not none %} / {{ card.max_score }}{% endif %}</div>
@@ -128,6 +133,7 @@
       {% endif %}
       <details><summary>Original prompt</summary><pre class="prompt-box">{{ prompt if prompt is string else prompt|join('\n\n---\n\n') }}</pre></details>
     </div>
+    {% endif %}
     <div class="pane-block neon-gold">
       <h3>🏆 Top scores</h3>
       <ol id="score-list" class="score-list">

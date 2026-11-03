@@ -8,8 +8,8 @@
 <style>
   html, body { background: #8fd8ff; }
   #mm-safe { position: absolute; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
-    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
-    padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+    padding-top: var(--fk-safe-top); padding-bottom: var(--fk-safe-bottom);
+    padding-left: var(--fk-safe-left); padding-right: var(--fk-safe-right); }
   #fk-hud .fk-extra { gap: 8px; align-items: center; padding: 5px 10px; }
   .mm-lv, .mm-t { display: inline-flex; align-items: center; gap: 3px; font-size: 17px; }
   .mm-lv b, .mm-t b { font-weight: 900; min-width: 1ch; }
