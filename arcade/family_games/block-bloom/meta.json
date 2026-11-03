@@ -1,0 +1,19 @@
+{
+  "title": "Block Bloom",
+  "tagline": "Fill a line, grow a garden!",
+  "description": "A calm, clever block puzzle: drag pieces onto the 8×8 garden, fill rows and columns to make them bloom, chain combos and earn power-ups. Every deal is fair, there is a hold slot and an undo, and Today's Puzzle gives the whole family the same pieces.",
+  "emoji": "🌼",
+  "art": { "from": "#7ed957", "to": "#ff8fc7" },
+  "genre": "puzzle",
+  "ages": "6+",
+  "players": "1",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Drag a piece onto the garden. Fill a whole row or column and it blooms away.",
+    "Clear lines on back-to-back turns for a combo. Empty the whole garden for a big bonus.",
+    "Drop a piece on Hold to save it. Combos earn power-ups: rotate, bloom bomb and new pieces.",
+    "Every deal can always be placed. You have one undo a game. Try Today's Puzzle with the family!"
+  ]
+}

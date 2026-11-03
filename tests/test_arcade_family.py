@@ -291,6 +291,8 @@ def test_mobile_benchmarks_are_registered_ui_html_tests():
         "mobile_drag_catcher",
         "mobile_bubble_pop",
         "mobile_block_blast",
+        "mobile_cord_swing_platformer",
+        "mobile_block_placement_puzzle",
     }
     for t in tests:
         assert t["type"] == "ui" and t["lang"] == "html"

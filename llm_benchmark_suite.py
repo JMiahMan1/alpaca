@@ -2572,6 +2572,38 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["game over", "gameover", "game_over", "nomoves", "no moves", "canfit", "anyfit"])
                 and self._has_mobile_contract(cleaned)
             )
+        elif test_id == "mobile_cord_swing_platformer":
+            # A rope swing: a hook, a length constraint, release to fling,
+            # wrapping round the hook, and collectibles across rooms.
+            return (
+                any(x in cleaned for x in ["cord", "rope", "plug"])
+                and "hook" in cleaned
+                and any(x in cleaned for x in ["swing", "pendulum"])
+                and any(x in cleaned for x in ["wrap", "wraps"])
+                and any(x in cleaned for x in ["release", "letgo", "let go", "pointerup"])
+                and any(x in cleaned for x in ["spark", "cell", "collect"])
+                and any(x in cleaned for x in ["room", "level"])
+                and any(x in cleaned for x in ["checkpoint", "respawn"])
+                and self._has_mobile_contract(cleaned)
+            )
+        elif test_id == "mobile_block_placement_puzzle":
+            # The block puzzle plus what makes it fair and kind: a verified
+            # deal, a hold slot, power-ups, an undo and a daily seed.
+            return (
+                any(x in cleaned for x in ["board", "grid"])
+                and any(x in cleaned for x in ["tray", "pieces"])
+                and "pointermove" in cleaned
+                and any(x in cleaned for x in ["ghost", "preview", "highlight"])
+                and "row" in cleaned
+                and any(x in cleaned for x in ["col", "column"])
+                and "combo" in cleaned
+                and "hold" in cleaned
+                and "undo" in cleaned
+                and any(x in cleaned for x in ["rotate", "bomb", "shuffle", "power"])
+                and any(x in cleaned for x in ["daily", "seed"])
+                and "localstorage" in cleaned
+                and self._has_mobile_contract(cleaned)
+            )
         # ---- gamedev_alt: web UI games (HTML5 canvas / three.js / WebGL) ----
         elif test_id == "game_snake_canvas":
             return (
