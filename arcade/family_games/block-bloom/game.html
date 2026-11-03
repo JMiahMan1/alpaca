@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Block Bloom</title>
+<!-- @family-kit -->
+<style>
+  html, body { background: #eaf8dc; }
+  #fk-hud .fk-pill { white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+  .bb-line { margin-top: 6px; font-size: 13px; opacity: 0.8; }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<script>
+(function () {
+  "use strict";
+  const FK = window.FamilyKit;
+  const { clamp, lerp, roundRect, easeOutBack } = FK;
+  const TAU = Math.PI * 2;
+  const N = 8;
+
+  const kit = FK.create({
+    slug: "family-block-bloom",
+    title: "Block Bloom",
+    tagline: "Fill a line, grow a garden!",
+    emoji: "🌼",
+    accent: "#43b05c",
+    accent2: "#ff7fb5",
+    scoreLabel: "Score",
+    howTo: [
+      ["👆", "Drag a piece onto the garden. Fill a whole row or column and it blooms away."],
+      ["🔥", "Clear lines on back-to-back turns for a combo. Empty the whole garden for a big bonus."],
+      ["🫙", "Drop a piece on Hold to save it. Combos earn power-ups: rotate, bloom bomb and new pieces."],
+      ["🤝", "Every deal can always be placed, and you get one undo a game. Try Today's Puzzle with the family!"],
+    ],
+    onStart: () => startGame(),
+    onPause: () => { drag = null; },
+    onResume: () => { drag = null; },
+  });
+
+  /* ---------------- pieces ---------------- */
+  const COLORS = [
+    { fill: "#ff6b6b", dark: "#d94848", glyph: "circle" },
+    { fill: "#ffa94d", dark: "#e08422", glyph: "diamond" },
+    { fill: "#ffd43b", dark: "#d9ab12", glyph: "star" },
+    { fill: "#69db7c", dark: "#3fb555", glyph: "leaf" },
+    { fill: "#4dabf7", dark: "#2a86d1", glyph: "drop" },
+    { fill: "#9775fa", dark: "#7350d8", glyph: "heart" },
+    { fill: "#f783ac", dark: "#d95a88", glyph: "flower" },
+  ];
+  const SHAPES = [
+    { cells: [[0, 0]], w: 1.5 },
+    { cells: [[0, 0], [0, 1]], w: 3.5 },
+    { cells: [[0, 0], [0, 1], [0, 2]], w: 4 },
+    { cells: [[0, 0], [0, 1], [0, 2], [0, 3]], w: 3 },
+    { cells: [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]], w: 1.6 },
+    { cells: [[0, 0], [0, 1], [1, 0], [1, 1]], w: 4.5 },
+    { cells: [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]], w: 1.1 },
+    { cells: [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2]], w: 2 },
+    { cells: [[0, 0], [1, 0], [1, 1]], w: 4.5 },
+    { cells: [[0, 0], [1, 0], [2, 0], [2, 1]], w: 3.5 },
+    { cells: [[0, 0], [0, 1], [0, 2], [1, 1]], w: 3 },
+    { cells: [[0, 1], [0, 2], [1, 0], [1, 1]], w: 2.2 },
+    { cells: [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2]], w: 1.8 },
+  ];
+
+  function normalize(cells) {
+    const minR = Math.min(...cells.map((c) => c[0]));
+    const minC = Math.min(...cells.map((c) => c[1]));
+    return cells.map(([r, c]) => [r - minR, c - minC]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  }
+  function rotate(cells) {
+    return normalize(cells.map(([r, c]) => [c, -r]));
+  }
+  function dims(cells) {
+    return { rows: Math.max(...cells.map((c) => c[0])) + 1, cols: Math.max(...cells.map((c) => c[1])) + 1 };
+  }
+
+  function rng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---------------- board rules ---------------- */
+  function fits(board, cells, r, c) {
+    for (const [dr, dc] of cells) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (rr < 0 || rr >= N || cc < 0 || cc >= N || board[rr * N + cc]) return false;
+    }
+    return true;
+  }
+  function fitsAnywhere(board, cells) {
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (fits(board, cells, r, c)) return true;
+    return false;
+  }
+  function fullLines(board) {
+    const rows = [];
+    const cols = [];
+    for (let i = 0; i < N; i++) {
+      let row = true;
+      let col = true;
+      for (let j = 0; j < N; j++) {
+        if (!board[i * N + j]) row = false;
+        if (!board[j * N + i]) col = false;
+      }
+      if (row) rows.push(i);
+      if (col) cols.push(i);
+    }
+    return { rows, cols };
+  }
+  function placeOn(board, cells, r, c, color) {
+    const next = board.slice();
+    for (const [dr, dc] of cells) next[(r + dr) * N + (c + dc)] = color + 1;
+    const { rows, cols } = fullLines(next);
+    for (const rr of rows) for (let j = 0; j < N; j++) next[rr * N + j] = 0;
+    for (const cc of cols) for (let j = 0; j < N; j++) next[j * N + cc] = 0;
+    return { board: next, rows, cols };
+  }
+
+  // Can all of these pieces be placed, in some order? A bounded search: a
+  // deal is only offered when the answer is yes.
+  function placeableAll(board, pieces, budget) {
+    const b = { left: budget || 25000 };
+    function go(bd, list) {
+      if (!list.length) return true;
+      for (let i = 0; i < list.length; i++) {
+        const rest = list.slice(0, i).concat(list.slice(i + 1));
+        const cells = list[i].cells;
+        for (let r = 0; r < N; r++) {
+          for (let c = 0; c < N; c++) {
+            if (--b.left < 0) return false;
+            if (!fits(bd, cells, r, c)) continue;
+            if (go(placeOn(bd, cells, r, c, 0).board, rest)) return true;
+          }
+        }
+      }
+      return false;
+    }
+    return go(board, pieces);
+  }
+
+  /* ---------------- game state ---------------- */
+  let g = null;
+  let nextMode = "classic";
+  const SAVE_KEY = (mode) => `fk:family-block-bloom:save:${mode}`;
+  const DAILY_BEST = "fk:family-block-bloom:daily";
+
+  function today() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function seedOf(text) {
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+    return h >>> 0;
+  }
+
+  function newGame(mode) {
+    const day = today();
+    const seed = mode === "daily" ? seedOf(`bloom:${day}`) : (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0;
+    return {
+      mode,
+      day,
+      seed,
+      draws: 0,
+      board: new Array(N * N).fill(0),
+      tray: [null, null, null],
+      hold: null,
+      combo: 0,
+      sinceClear: 0,
+      bestCombo: 0,
+      lines: 0,
+      blooms: 0,
+      moves: 0,
+      powers: { rotate: 1, bomb: 1, shuffle: 1 },
+      undo: null,
+      undoUsed: false,
+      tool: null, // "rotate" | "bomb" while choosing
+      over: false,
+    };
+  }
+
+  // Deals come from the game's own seeded stream, so Today's Puzzle gives
+  // everyone the same pieces and a resumed game carries on as it would have.
+  function draw() {
+    const r = rng(g.seed + g.draws * 2654435761);
+    g.draws += 1;
+    return r;
+  }
+
+  function randomPiece(r, fullness) {
+    // A crowded garden leans toward smaller pieces.
+    const weights = SHAPES.map((s) => s.w * (s.cells.length >= 5 ? Math.max(0.15, 1 - fullness * 1.4) : 1));
+    const total = weights.reduce((a, b) => a + b, 0);
+    let x = r() * total;
+    let k = 0;
+    while (x > weights[k] && k < weights.length - 1) {
+      x -= weights[k];
+      k += 1;
+    }
+    let cells = normalize(SHAPES[k].cells);
+    const turns = Math.floor(r() * 4);
+    for (let i = 0; i < turns; i++) cells = rotate(cells);
+    if (r() < 0.5 && (k === 9 || k === 11 || k === 12)) cells = normalize(cells.map(([rr, c]) => [rr, -c]));
+    return { cells, color: Math.floor(r() * COLORS.length), id: Math.floor(r() * 1e9) };
+  }
+
+  function deal() {
+    const r = draw();
+    const filled = g.board.filter(Boolean).length / (N * N);
+    let fallback = null;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const pieces = [randomPiece(r, filled), randomPiece(r, filled), randomPiece(r, filled)];
+      if (placeableAll(g.board, pieces)) {
+        g.tray = pieces;
+        return;
+      }
+      if (!fallback && pieces.some((p) => fitsAnywhere(g.board, p.cells))) fallback = pieces;
+    }
+    g.tray = fallback || [0, 1, 2].map(() => ({ cells: [[0, 0]], color: Math.floor(r() * COLORS.length), id: Math.floor(r() * 1e9) }));
+  }
+
+  function snapshot() {
+    return JSON.stringify({ board: g.board, tray: g.tray, hold: g.hold, combo: g.combo, sinceClear: g.sinceClear, bestCombo: g.bestCombo, lines: g.lines, blooms: g.blooms, moves: g.moves, powers: g.powers, draws: g.draws, score: kit.score });
+  }
+  function restore(json) {
+    const s = JSON.parse(json);
+    Object.assign(g, { board: s.board, tray: s.tray, hold: s.hold, combo: s.combo, sinceClear: s.sinceClear, bestCombo: s.bestCombo, lines: s.lines, blooms: s.blooms, moves: s.moves, powers: s.powers, draws: s.draws });
+    kit.setScore(s.score, { quiet: true });
+  }
+
+  function save() {
+    if (!g || g.over) return;
+    try {
+      localStorage.setItem(SAVE_KEY(g.mode), JSON.stringify({ mode: g.mode, day: g.day, seed: g.seed, undoUsed: g.undoUsed, state: snapshot() }));
+    } catch (_) {
+      /* storage blocked: the game still plays */
+    }
+  }
+  function clearSave(mode) {
+    try {
+      localStorage.removeItem(SAVE_KEY(mode));
+    } catch (_) {
+      /* nothing saved */
+    }
+  }
+  function loadSave(mode) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SAVE_KEY(mode)) || "null");
+      if (!raw || (mode === "daily" && raw.day !== today())) return null;
+      return raw;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function startGame() {
+    const mode = nextMode;
+    nextMode = "classic";
+    g = newGame(mode);
+    pops.length = 0;
+    blooms.length = 0;
+    drag = null;
+    const saved = loadSave(mode);
+    if (saved) {
+      g.seed = saved.seed;
+      g.undoUsed = saved.undoUsed;
+      restore(saved.state);
+      kit.toast("Welcome back! Your garden was saved.", "#e9ffd9");
+    } else {
+      deal();
+      kit.toast(mode === "daily" ? `Today's Puzzle · ${g.day}` : "Grow a garden!", "#e9ffd9");
+    }
+    updateHud();
+    checkStuck();
+  }
+
+  function updateHud() {
+    if (!g) return;
+    const combo = g.combo > 1 ? ` · 🔥${g.combo}` : "";
+    kit.setExtra(`<span>${g.mode === "daily" ? "📅 Daily" : "🌼"}${combo}</span>`);
+  }
+
+  /* ---------------- moves ---------------- */
+  function place(slot, r, c) {
+    const piece = slot === 3 ? g.hold : g.tray[slot];
+    if (!piece || !fits(g.board, piece.cells, r, c)) return false;
+    if (!g.undoUsed) g.undo = snapshot();
+    const before = g.board;
+    const res = placeOn(g.board, piece.cells, r, c, piece.color);
+    // Every cell that clears blooms where it was.
+    for (const rr of res.rows) for (let j = 0; j < N; j++) pops.push({ r: rr, c: j, color: (before[rr * N + j] || piece.color + 1) - 1, t: 0 });
+    for (const cc of res.cols) for (let j = 0; j < N; j++) if (!res.rows.includes(j)) pops.push({ r: j, c: cc, color: (before[j * N + cc] || piece.color + 1) - 1, t: 0 });
+    for (const [dr, dc] of piece.cells) {
+      const key = (r + dr) * N + (c + dc);
+      if (!res.rows.includes(r + dr) && !res.cols.includes(c + dc)) landed.push({ i: key, t: 0 });
+    }
+    g.board = res.board;
+    if (slot === 3) g.hold = null;
+    else g.tray[slot] = null;
+    g.moves += 1;
+    let gained = piece.cells.length;
+    const lines = res.rows.length + res.cols.length;
+    if (lines) {
+      g.combo += 1;
+      g.sinceClear = 0;
+      g.bestCombo = Math.max(g.bestCombo, g.combo);
+      g.lines += lines;
+      const base = lines * 80 * (1 + 0.5 * (lines - 1));
+      const mult = 1 + 0.5 * (g.combo - 1);
+      const pts = Math.round(base * mult);
+      gained += pts;
+      const centre = cellCentre(r + 1, c + 1);
+      kit.fx.text(centre.x, centre.y - 10, `+${pts}`, { color: "#fff", size: 26 });
+      if (g.combo > 1) kit.toast(`Combo ×${g.combo}!`, "#ffe066");
+      else if (lines >= 2) kit.toast(lines >= 3 ? "Wonderful!" : "Double bloom!", "#ffe066");
+      kit.sound.play("combo", Math.min(8, g.combo + lines - 1));
+      kit.haptic(lines >= 2 ? 30 : 18);
+      kit.shake(lines >= 2 ? 6 : 3, 0.2);
+      if (lines >= 2 || g.combo % 3 === 0) earnPower();
+      if (g.board.every((v) => !v)) {
+        gained += 500;
+        g.blooms += 1;
+        kit.toast("Perfect garden! +500", "#7dffb0");
+        kit.sound.play("win");
+        for (let i = 0; i < 6; i++) blooms.push({ x: rand01() * W, y: rand01() * H * 0.6, t: -i * 0.08 });
+      }
+    } else {
+      g.sinceClear += 1;
+      // A combo survives two quiet turns; the third ends it.
+      if (g.sinceClear >= 3 && g.combo) {
+        g.combo = 0;
+      }
+      kit.sound.play("tap");
+      kit.haptic(8);
+    }
+    kit.addScore(gained);
+    if (!g.tray.some(Boolean)) deal();
+    updateHud();
+    save();
+    checkStuck();
+    return true;
+  }
+
+  function rand01() {
+    return Math.random();
+  }
+
+  function earnPower() {
+    const kinds = ["rotate", "bomb", "shuffle"].filter((k) => g.powers[k] < 3);
+    if (!kinds.length) return;
+    const k = kinds[Math.floor(Math.random() * kinds.length)];
+    g.powers[k] += 1;
+    kit.toast(`Power-up! ${POWER_LABEL[k]}`, "#7dffb0");
+  }
+  const POWER_LABEL = { rotate: "🔄 Rotate", bomb: "🌸 Bloom bomb", shuffle: "🎲 New pieces" };
+
+  function useBomb(r, c) {
+    if (!g.undoUsed) g.undo = snapshot();
+    let cleared = 0;
+    for (let rr = r - 1; rr <= r + 1; rr++) {
+      for (let cc = c - 1; cc <= c + 1; cc++) {
+        if (rr < 0 || cc < 0 || rr >= N || cc >= N) continue;
+        const v = g.board[rr * N + cc];
+        if (v) {
+          pops.push({ r: rr, c: cc, color: v - 1, t: 0 });
+          g.board[rr * N + cc] = 0;
+          cleared += 1;
+        }
+      }
+    }
+    g.powers.bomb -= 1;
+    g.tool = null;
+    kit.addScore(cleared * 5);
+    kit.sound.play("whoosh");
+    kit.shake(7, 0.25);
+    kit.haptic(25);
+    save();
+    checkStuck();
+  }
+
+  function useRotate(slot) {
+    const piece = slot === 3 ? g.hold : g.tray[slot];
+    if (!piece) return;
+    if (!g.undoUsed) g.undo = snapshot();
+    piece.cells = rotate(piece.cells);
+    g.powers.rotate -= 1;
+    g.tool = null;
+    kit.sound.play("pop", 1.3);
+    save();
+    checkStuck();
+  }
+
+  function useShuffle() {
+    if (!g.undoUsed) g.undo = snapshot();
+    g.powers.shuffle -= 1;
+    deal();
+    kit.sound.play("whoosh");
+    save();
+    checkStuck();
+  }
+
+  function useUndo() {
+    if (!g.undo || g.undoUsed) return;
+    restore(g.undo);
+    g.undo = null;
+    g.undoUsed = true;
+    g.tool = null;
+    pops.length = 0;
+    kit.toast("Undone", "#e9ffd9");
+    kit.sound.play("tap");
+    updateHud();
+    save();
+  }
+
+  function holdPiece(slot) {
+    if (slot === 3) return;
+    const piece = g.tray[slot];
+    if (!piece) return;
+    if (!g.undoUsed) g.undo = snapshot();
+    g.tray[slot] = g.hold;
+    g.hold = piece;
+    if (!g.tray.some(Boolean)) deal();
+    kit.sound.play("pop", 0.9);
+    save();
+    checkStuck();
+  }
+
+  // When nothing fits: a power-up may still save the garden; otherwise it ends.
+  let stuckTimer = 0;
+  function checkStuck() {
+    const pieces = [...g.tray, g.hold].filter(Boolean);
+    const canMove = pieces.some((p) => fitsAnywhere(g.board, p.cells));
+    g.stuck = !canMove;
+    if (canMove) return;
+    const rotations = g.powers.rotate > 0 && pieces.some((p) => {
+      let cells = p.cells;
+      for (let i = 0; i < 3; i++) {
+        cells = rotate(cells);
+        if (fitsAnywhere(g.board, cells)) return true;
+      }
+      return false;
+    });
+    const canUndo = g.undo && !g.undoUsed;
+    if (rotations || g.powers.bomb > 0 || g.powers.shuffle > 0 || canUndo) {
+      kit.toast("No room! Use a power-up below.", "#ffd166");
+      return;
+    }
+    stuckTimer = 0.9;
+  }
+
+  function finish() {
+    g.over = true;
+    clearSave(g.mode);
+    if (g.mode === "daily") {
+      try {
+        const prev = JSON.parse(localStorage.getItem(DAILY_BEST) || "null");
+        if (!prev || prev.day !== g.day || prev.score < kit.score) localStorage.setItem(DAILY_BEST, JSON.stringify({ day: g.day, score: kit.score }));
+      } catch (_) {
+        /* storage blocked */
+      }
+    }
+    kit.gameOver({
+      reason: "No more room in the garden",
+      emoji: "🌻",
+      title: g.mode === "daily" ? "Today's Puzzle done" : "Garden full!",
+      stats: [["Lines", g.lines], ["Best combo", g.bestCombo], ["Perfect gardens", g.blooms]],
+    });
+  }
+
+  /* ---------------- layout ---------------- */
+  let view = null;
+  let ctx = null;
+  let W = 1;
+  let H = 1;
+  const L = { cell: 32, bx: 0, by: 0, slots: [], buttons: [] };
+
+  function onResize(v) {
+    view = v;
+    ctx = v.ctx;
+    W = v.w;
+    H = v.h;
+    layout();
+  }
+
+  function layout() {
+    const top = 72;
+    const portrait = H / W > 1.12;
+    const pad = 14;
+    if (portrait) {
+      const cell = Math.floor(Math.min((W - pad * 2) / N, (H - top - 250) / N, 64));
+      L.cell = Math.max(24, cell);
+      L.bx = Math.round((W - L.cell * N) / 2);
+      L.by = top + Math.max(4, Math.round((H - top - 250 - L.cell * N) * 0.35));
+      const ty = L.by + L.cell * N + 14;
+      const sw = (W - pad * 2 - 3 * 8) / 4;
+      const sh = Math.min(sw, 120, H - ty - 80);
+      L.slots = [0, 1, 2, 3].map((i) => ({ x: pad + i * (sw + 8), y: ty, w: sw, h: sh }));
+      const by = ty + sh + 10;
+      const bw = (W - pad * 2 - 3 * 8) / 4;
+      L.buttons = ["rotate", "bomb", "shuffle", "undo"].map((k, i) => ({ k, x: pad + i * (bw + 8), y: by, w: bw, h: Math.max(48, Math.min(58, H - by - 14)) }));
+    } else {
+      const cell = Math.floor(Math.min((H - top - 16) / N, (W * 0.56) / N, 64));
+      L.cell = Math.max(22, cell);
+      const panelW = Math.min(360, W - L.cell * N - pad * 3);
+      const total = L.cell * N + pad + panelW;
+      L.bx = Math.round((W - total) / 2);
+      L.by = top + Math.round((H - top - L.cell * N - 10) / 2);
+      const px = L.bx + L.cell * N + pad;
+      const sw = (panelW - 8) / 2;
+      const sh = Math.min(sw, (L.cell * N - 66) / 2 - 4);
+      L.slots = [0, 1, 2, 3].map((i) => ({ x: px + (i % 2) * (sw + 8), y: L.by + Math.floor(i / 2) * (sh + 8), w: sw, h: sh }));
+      const by = L.by + 2 * (sh + 8) + 2;
+      const bw = (panelW - 8) / 2;
+      L.buttons = ["rotate", "bomb", "shuffle", "undo"].map((k, i) => ({ k, x: px + (i % 2) * (bw + 8), y: by + Math.floor(i / 2) * 56, w: bw, h: 48 }));
+    }
+  }
+
+  function cellCentre(r, c) {
+    return { x: L.bx + c * L.cell, y: L.by + r * L.cell };
+  }
+
+  /* ---------------- input ---------------- */
+  let drag = null; // { slot, piece, x, y, lift, target }
+  let pressed = null;
+
+  function hit(rect, p) {
+    return p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h;
+  }
+
+  function onDown(p, e) {
+    if (!g || g.over) return;
+    pressed = null;
+    for (const b of L.buttons) {
+      if (hit(b, p)) {
+        pressed = b.k;
+        return;
+      }
+    }
+    const boardRect = { x: L.bx, y: L.by, w: L.cell * N, h: L.cell * N };
+    if (g.tool === "bomb" && hit(boardRect, p)) {
+      bombAim = cellAt(p);
+      return;
+    }
+    for (let i = 0; i < 4; i++) {
+      const piece = i === 3 ? g.hold : g.tray[i];
+      if (!piece || !hit(L.slots[i], p)) continue;
+      if (g.tool === "rotate") {
+        useRotate(i);
+        return;
+      }
+      const touch = !e || e.pointerType !== "mouse";
+      drag = { slot: i, piece, x: p.x, y: p.y, lift: touch ? L.cell * 1.9 : L.cell * 0.4, target: null, t: 0 };
+      kit.sound.play("tap");
+      return;
+    }
+  }
+
+  let bombAim = null;
+  function cellAt(p) {
+    const c = Math.floor((p.x - L.bx) / L.cell);
+    const r = Math.floor((p.y - L.by) / L.cell);
+    return r >= 0 && r < N && c >= 0 && c < N ? { r, c } : null;
+  }
+
+  function dragOrigin(d) {
+    // Top-left of the piece as drawn, floating above the finger.
+    const { rows, cols } = dims(d.piece.cells);
+    return { x: d.x - (cols * L.cell) / 2, y: d.y - d.lift - rows * L.cell };
+  }
+
+  function onMove(p) {
+    if (g && g.tool === "bomb" && bombAim) {
+      bombAim = cellAt(p) || bombAim;
+      return;
+    }
+    if (!drag) return;
+    drag.x = p.x;
+    drag.y = p.y;
+    const o = dragOrigin(drag);
+    const r = Math.round((o.y - L.by) / L.cell);
+    const c = Math.round((o.x - L.bx) / L.cell);
+    drag.target = fits(g.board, drag.piece.cells, r, c) ? { r, c } : null;
+  }
+
+  function onUp(p) {
+    if (!g) return;
+    if (pressed) {
+      const b = L.buttons.find((x) => x.k === pressed);
+      const k = pressed;
+      pressed = null;
+      if (b && hit(b, p)) pressButton(k);
+      return;
+    }
+    if (g.tool === "bomb" && bombAim) {
+      const at = cellAt(p) || bombAim;
+      bombAim = null;
+      useBomb(at.r, at.c);
+      return;
+    }
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.slot !== 3 && hit(L.slots[3], p)) {
+      holdPiece(d.slot);
+      return;
+    }
+    if (d.target) place(d.slot, d.target.r, d.target.c);
+    else kit.sound.play("bad");
+  }
+
+  function pressButton(k) {
+    if (k === "undo") return useUndo();
+    if (g.powers[k] <= 0) {
+      kit.toast(k === "rotate" ? "Earn rotations with combos!" : k === "bomb" ? "Earn bloom bombs with combos!" : "Earn new pieces with combos!", "#ffd166");
+      return;
+    }
+    if (k === "shuffle") return useShuffle();
+    g.tool = g.tool === k ? null : k;
+    if (g.tool === "rotate") kit.toast("Tap a piece to turn it", "#e9ffd9");
+    if (g.tool === "bomb") kit.toast("Tap the garden to bloom a 3×3 patch", "#e9ffd9");
+    kit.sound.play("tap");
+  }
+
+  /* ---------------- drawing ---------------- */
+  const pops = [];
+  const landed = [];
+  const blooms = [];
+  let clock = 0;
+
+  function glyph(kind, x, y, s) {
+    ctx.beginPath();
+    if (kind === "circle") ctx.arc(x, y, s * 0.5, 0, TAU);
+    else if (kind === "diamond") {
+      ctx.moveTo(x, y - s * 0.6);
+      ctx.lineTo(x + s * 0.5, y);
+      ctx.lineTo(x, y + s * 0.6);
+      ctx.lineTo(x - s * 0.5, y);
+    } else if (kind === "star") FK.starPath(ctx, x, y, s * 0.65, s * 0.28, 5);
+    else if (kind === "leaf") ctx.ellipse(x, y, s * 0.32, s * 0.6, Math.PI / 4, 0, TAU);
+    else if (kind === "drop") {
+      ctx.moveTo(x, y - s * 0.65);
+      ctx.quadraticCurveTo(x + s * 0.55, y + s * 0.1, x, y + s * 0.5);
+      ctx.quadraticCurveTo(x - s * 0.55, y + s * 0.1, x, y - s * 0.65);
+    } else if (kind === "heart") {
+      ctx.moveTo(x, y + s * 0.45);
+      ctx.bezierCurveTo(x - s * 0.7, y - s * 0.05, x - s * 0.3, y - s * 0.6, x, y - s * 0.2);
+      ctx.bezierCurveTo(x + s * 0.3, y - s * 0.6, x + s * 0.7, y - s * 0.05, x, y + s * 0.45);
+    } else {
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * TAU;
+        ctx.moveTo(x + Math.cos(a) * s * 0.32, y + Math.sin(a) * s * 0.32);
+        ctx.arc(x + Math.cos(a) * s * 0.32, y + Math.sin(a) * s * 0.32, s * 0.22, 0, TAU);
+      }
+    }
+    ctx.fill();
+  }
+
+  function block(x, y, s, colorIndex, alpha) {
+    const col = COLORS[colorIndex] || COLORS[0];
+    const inset = Math.max(1, s * 0.06);
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    ctx.fillStyle = col.dark;
+    roundRect(ctx, x + inset, y + inset, s - inset * 2, s - inset * 2, s * 0.2);
+    ctx.fill();
+    ctx.fillStyle = col.fill;
+    roundRect(ctx, x + inset, y + inset, s - inset * 2, s - inset * 2 - s * 0.1, s * 0.2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    roundRect(ctx, x + s * 0.18, y + s * 0.14, s * 0.4, s * 0.12, s * 0.06);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    glyph(col.glyph, x + s / 2, y + s * 0.52, s * 0.3);
+    ctx.globalAlpha = 1;
+  }
+
+  function flower(x, y, s, colorIndex, k) {
+    const col = COLORS[colorIndex] || COLORS[0];
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(k * 2);
+    ctx.fillStyle = col.fill;
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * TAU;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * s * 0.28, Math.sin(a) * s * 0.28, s * 0.22, s * 0.14, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#fff3a6";
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.14, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function background() {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, "#dff6c8");
+    grad.addColorStop(1, "#ffe3f0");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    for (let i = 0; i < 14; i++) {
+      const x = ((i * 137.5 + clock * (8 + (i % 4) * 3)) % (W + 40)) - 20;
+      const y = ((i * 71.3 + clock * (12 + (i % 3) * 4)) % (H + 40)) - 20;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 5, 3, clock + i, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  function previewLines() {
+    // Which rows and columns the piece being dragged would clear.
+    if (!drag || !drag.target) return null;
+    const b = g.board.slice();
+    for (const [dr, dc] of drag.piece.cells) b[(drag.target.r + dr) * N + (drag.target.c + dc)] = 1;
+    const lines = fullLines(b);
+    return lines.rows.length || lines.cols.length ? lines : null;
+  }
+
+  function drawBoard() {
+    const s = L.cell;
+    const size = s * N;
+    ctx.fillStyle = "#2f6b3e";
+    roundRect(ctx, L.bx - 8, L.by - 8, size + 16, size + 16, 18);
+    ctx.fill();
+    const lines = previewLines();
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const x = L.bx + c * s;
+        const y = L.by + r * s;
+        const lit = lines && (lines.rows.includes(r) || lines.cols.includes(c));
+        ctx.fillStyle = lit ? "#6fbf5a" : (r + c) % 2 ? "#3f7d4b" : "#438453";
+        roundRect(ctx, x + 1.5, y + 1.5, s - 3, s - 3, s * 0.16);
+        ctx.fill();
+        const v = g.board[r * N + c];
+        if (v) {
+          const land = landed.find((l) => l.i === r * N + c);
+          if (land) {
+            const k = easeOutBack(clamp(land.t / 0.22, 0, 1));
+            const sz = s * (0.6 + 0.4 * k);
+            block(x + (s - sz) / 2, y + (s - sz) / 2, sz, lit ? drag.piece.color : v - 1);
+          } else {
+            block(x, y, s, lit ? drag.piece.color : v - 1);
+          }
+        }
+      }
+    }
+    // Ghost of where the dragged piece will land.
+    if (drag && drag.target) {
+      for (const [dr, dc] of drag.piece.cells) block(L.bx + (drag.target.c + dc) * s, L.by + (drag.target.r + dr) * s, s, drag.piece.color, 0.42);
+    }
+    if (g.tool === "bomb" && bombAim) {
+      ctx.strokeStyle = "#ffe066";
+      ctx.lineWidth = 3;
+      roundRect(ctx, L.bx + (bombAim.c - 1) * s, L.by + (bombAim.r - 1) * s, s * 3, s * 3, s * 0.2);
+      ctx.stroke();
+    }
+    for (const p of pops) {
+      const k = clamp(p.t / 0.45, 0, 1);
+      const x = L.bx + p.c * s + s / 2;
+      const y = L.by + p.r * s + s / 2;
+      if (k < 0.35) {
+        const sz = s * (1 - k * 1.5);
+        block(x - sz / 2, y - sz / 2, sz, p.color);
+      } else {
+        ctx.globalAlpha = 1 - (k - 0.35) / 0.65;
+        flower(x, y - k * s * 0.6, s * (0.6 + k * 0.6), p.color, k);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  function drawPiece(piece, x, y, s, alpha) {
+    for (const [r, c] of piece.cells) block(x + c * s, y + r * s, s, piece.color, alpha);
+  }
+
+  function drawSlots() {
+    for (let i = 0; i < 4; i++) {
+      const sl = L.slots[i];
+      const isHold = i === 3;
+      ctx.fillStyle = isHold ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.35)";
+      roundRect(ctx, sl.x, sl.y, sl.w, sl.h, 16);
+      ctx.fill();
+      if (isHold) {
+        ctx.strokeStyle = "rgba(67,176,92,0.6)";
+        ctx.setLineDash([6, 5]);
+        ctx.lineWidth = 2;
+        roundRect(ctx, sl.x + 1, sl.y + 1, sl.w - 2, sl.h - 2, 15);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#3b7a48";
+        ctx.font = "800 11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("HOLD", sl.x + sl.w / 2, sl.y + 14);
+      }
+      const piece = isHold ? g.hold : g.tray[i];
+      if (!piece || (drag && drag.slot === i)) continue;
+      const { rows, cols } = dims(piece.cells);
+      const s = Math.min((sl.w - 14) / Math.max(cols, 3), (sl.h - (isHold ? 24 : 14)) / Math.max(rows, 3), L.cell * 0.62);
+      const fitsNow = fitsAnywhere(g.board, piece.cells);
+      const px = sl.x + (sl.w - cols * s) / 2;
+      const py = sl.y + (isHold ? 8 : 0) + (sl.h - rows * s) / 2;
+      drawPiece(piece, px, py, s, fitsNow ? 1 : 0.35);
+      if (g.tool === "rotate") {
+        ctx.strokeStyle = "#ffe066";
+        ctx.lineWidth = 3;
+        roundRect(ctx, sl.x + 2, sl.y + 2, sl.w - 4, sl.h - 4, 14);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function drawButtons() {
+    const labels = { rotate: "🔄", bomb: "🌸", shuffle: "🎲", undo: "↶" };
+    const names = { rotate: "Rotate", bomb: "Bomb", shuffle: "New", undo: "Undo" };
+    for (const b of L.buttons) {
+      const count = b.k === "undo" ? (g.undo && !g.undoUsed ? 1 : 0) : g.powers[b.k];
+      const active = g.tool === b.k;
+      ctx.fillStyle = active ? "#ffe066" : count ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.4)";
+      roundRect(ctx, b.x, b.y, b.w, b.h, 14);
+      ctx.fill();
+      if (g.stuck && count) {
+        ctx.strokeStyle = `rgba(255,140,60,${0.5 + 0.5 * Math.sin(clock * 6)})`;
+        ctx.lineWidth = 3;
+        roundRect(ctx, b.x + 1, b.y + 1, b.w - 2, b.h - 2, 13);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = count ? 1 : 0.45;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#24402c";
+      const narrow = b.w < 82;
+      ctx.font = `700 ${narrow ? 18 : 17}px system-ui, sans-serif`;
+      ctx.fillText(narrow ? labels[b.k] : `${labels[b.k]} ${names[b.k]}`, b.x + b.w / 2, b.y + b.h / 2 - (narrow ? 6 : 0));
+      ctx.font = "800 11px system-ui, sans-serif";
+      if (narrow) ctx.fillText(`${names[b.k]}${b.k === "undo" ? "" : ` ×${count}`}`, b.x + b.w / 2, b.y + b.h / 2 + 13);
+      else if (b.k !== "undo") {
+        ctx.fillStyle = "#43b05c";
+        ctx.beginPath();
+        ctx.arc(b.x + b.w - 12, b.y + 12, 9, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.fillText(String(count), b.x + b.w - 12, b.y + 12.5);
+      }
+      ctx.globalAlpha = 1;
+      ctx.textBaseline = "alphabetic";
+    }
+  }
+
+  function drawDrag() {
+    if (!drag) return;
+    const o = dragOrigin(drag);
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.25)";
+    ctx.shadowBlur = 14;
+    ctx.shadowOffsetY = 6;
+    drawPiece(drag.piece, o.x, o.y, L.cell);
+    ctx.restore();
+  }
+
+  // A demo garden behind the title card, so it is never a blank screen.
+  let demo = null;
+  function demoGarden() {
+    if (demo) return demo;
+    const r = rng(42);
+    demo = { board: new Array(N * N).fill(0), tray: [], hold: null, powers: { rotate: 1, bomb: 1, shuffle: 1 }, undo: null, undoUsed: false, tool: null };
+    for (let i = 0; i < N * N; i++) if (r() < 0.38) demo.board[i] = 1 + Math.floor(r() * COLORS.length);
+    demo.tray = [0, 1, 2].map(() => randomPiece(r, 0.3));
+    return demo;
+  }
+
+  function update(dt) {
+    if (stuckTimer > 0) {
+      stuckTimer -= dt;
+      if (stuckTimer <= 0) finish();
+    }
+  }
+
+  function render(dt) {
+    if (!ctx) return;
+    clock += dt;
+    for (let i = pops.length - 1; i >= 0; i--) {
+      pops[i].t += dt;
+      if (pops[i].t > 0.45) pops.splice(i, 1);
+    }
+    for (let i = landed.length - 1; i >= 0; i--) {
+      landed[i].t += dt;
+      if (landed[i].t > 0.25) landed.splice(i, 1);
+    }
+    ctx.save();
+    kit.applyShake(ctx);
+    background();
+    const real = g;
+    if (!g || kit.state === "title") g = demoGarden();
+    drawBoard();
+    drawSlots();
+    drawButtons();
+    drawDrag();
+    for (let i = blooms.length - 1; i >= 0; i--) {
+      const b = blooms[i];
+      b.t += dt;
+      if (b.t > 1.2) {
+        blooms.splice(i, 1);
+        continue;
+      }
+      if (b.t > 0) {
+        ctx.globalAlpha = 1 - b.t / 1.2;
+        flower(b.x, b.y - b.t * 40, 40 + b.t * 50, i % COLORS.length, b.t);
+        ctx.globalAlpha = 1;
+      }
+    }
+    kit.fx.draw(ctx);
+    ctx.restore();
+    g = real;
+  }
+
+  /* ---------------- title card: Today's Puzzle ---------------- */
+  function tap(node, fn) {
+    if (!node) return;
+    let down = null;
+    node.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY }; });
+    node.addEventListener("pointerup", (e) => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved < 24) {
+        e.preventDefault();
+        fn();
+      }
+    });
+    node.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        fn();
+      }
+    });
+  }
+
+  const overlayEl = document.getElementById("fk-overlay");
+  new MutationObserver(() => {
+    const card = overlayEl.querySelector(".fk-card");
+    if (!card || !card.querySelector('[data-fk="go"]') || card.querySelector('[data-bb="daily"]')) return;
+    const go = card.querySelector('[data-fk="go"]');
+    if (loadSave("classic")) go.textContent = "▶ Continue garden";
+    const btn = document.createElement("button");
+    btn.className = "fk-btn fk-ghost";
+    btn.type = "button";
+    btn.dataset.bb = "daily";
+    btn.textContent = loadSave("daily") ? "📅 Continue Today's Puzzle" : "📅 Today's Puzzle";
+    go.insertAdjacentElement("afterend", btn);
+    tap(btn, () => {
+      nextMode = "daily";
+      kit.start();
+    });
+    try {
+      const best = JSON.parse(localStorage.getItem(DAILY_BEST) || "null");
+      if (best && best.day === today()) {
+        const line = document.createElement("div");
+        line.className = "bb-line";
+        line.textContent = `Today's best: ${FK.fmt(best.score)}`;
+        btn.insertAdjacentElement("afterend", line);
+      }
+    } catch (_) {
+      /* storage blocked */
+    }
+  }).observe(overlayEl, { childList: true, subtree: true });
+
+  view = kit.canvas(onResize);
+  kit.pointer(view.canvas, { down: onDown, move: onMove, up: onUp });
+  kit.run(update, render);
+
+  // For tests: read and drive the garden without a finger.
+  window.__bloom = {
+    get state() { return g; },
+    place: (slot, r, c) => place(slot, r, c),
+    fits: (cells, r, c) => fits(g.board, cells, r, c),
+    placeableAll: (board, pieces) => placeableAll(board, pieces),
+    daily: () => { nextMode = "daily"; kit.start(); },
+  };
+})();
+</script>
+</body>
+</html>
