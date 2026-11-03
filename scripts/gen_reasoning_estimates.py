@@ -33,7 +33,7 @@ TIER_STANDARD = 1024  # Short factual / formatting / small-snippet answers.
 
 # Category sets mirroring LLMModelBenchmark.CODE_CATEGORIES shape, kept here so
 # the generated data file is self-describing (suite falls back to same rules).
-UI_GAME_CATEGORIES = {"gamedev", "gamedev_alt", "retrogames", "youtuber"}
+UI_GAME_CATEGORIES = {"gamedev", "gamedev_alt", "retrogames", "youtuber", "mobilegames"}
 CODE_CATEGORIES = {
     "coding",
     "appdev",

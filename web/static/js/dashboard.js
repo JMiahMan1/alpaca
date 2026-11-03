@@ -6688,7 +6688,7 @@ const saved = _loadHumanRatings(t.id) || {};
         let totalPassed = 0, totalRun = 0;
 
         results.forEach(m => {
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'mobilegames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(cat => {
                 const catData = m[`category_${cat}`];
                 if (catData) {
@@ -6893,7 +6893,7 @@ const saved = _loadHumanRatings(t.id) || {};
         // TPS chart - one dataset per model so legend renders model names cleanly
         const tpsDatasets = results.map((r, idx) => {
             let totalTps = 0, tpsCount = 0;
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'mobilegames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(cat => {
                 const catData = r[`category_${cat}`];
                 if (catData && catData.avg_tokens_per_sec > 0) {
@@ -6920,7 +6920,7 @@ const saved = _loadHumanRatings(t.id) || {};
         // TTFT chart - one dataset per model
         const ttftDatasets = results.map((r, idx) => {
             let totalTtft = 0, ttftCount = 0;
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'mobilegames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(cat => {
                 const catData = r[`category_${cat}`];
                 if (catData && catData.avg_ttft_ms > 0) {
@@ -6947,7 +6947,7 @@ const saved = _loadHumanRatings(t.id) || {};
         // Category success rate chart - one dataset per model, 5 categories
         const datasets = [];
         results.forEach((r, idx) => {
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'mobilegames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             const data = categories.map(c => {
                 const catData = r[`category_${c}`];
                 if (!catData) return 0;
@@ -7090,7 +7090,7 @@ const saved = _loadHumanRatings(t.id) || {};
     }
 
     function computeGeneralRow(m) {
-        const cats = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+        const cats = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'mobilegames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
         let passed = 0, run = 0, tpsSum = 0, tpsN = 0, ttftSum = 0, ttftN = 0, tokSum = 0, tokN = 0;
         cats.forEach(cat => {
             const cd = m[`category_${cat}`];
@@ -7527,7 +7527,7 @@ const saved = _loadHumanRatings(t.id) || {};
 
     function renderModelDetailedTable(modelData) {
         detailedResultsBody.innerHTML = '';
-        const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+        const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'mobilegames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
         let hasRows = false;
 
         categories.forEach(catKey => {
@@ -10988,7 +10988,7 @@ const saved = _loadHumanRatings(t.id) || {};
             }
             md += `\n`;
             
-            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
+            const categories = ['coding', 'reasoning', 'instruction', 'creative', 'home_automation', 'gamedev', 'appdev', 'linux_admin', 'webdev', 'database', 'cpp', 'java', 'debugging', 'logic', 'retrogames', 'mobilegames', 'threedprint', 'languages', 'tvdev', 'uiux', 'office', 'life', 'biblical', 'metacog'];
             categories.forEach(catKey => {
                 const catStats = modelData[`category_${catKey}`];
                 if (!catStats || !catStats.tests) return;
