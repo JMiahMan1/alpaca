@@ -437,8 +437,8 @@ other fails the build.
 - Lifecycle in `data/arcade/family.json`: `testing` (new games; playable, votable, not on the
   board) → `published` ⇄ `unpublished`. `POST /api/admin/family/<slug>/state` needs
   `ARCADE_ADMIN_TOKEN` (503 naming the variable when unset). `GET /api/family/games` lists all
-  with their state; **Jarvis** decides what each viewer sees (players: published *and* rated at
-  least `FAMILY_GAMES_MIN_RATING` from `FAMILY_GAMES_MIN_VOTES` votes).
+  with their state; **Jarvis** decides what each viewer sees (players: every published game,
+  best rated first; the benchmark shelf shows a game only once it is published to the family).
 - **Mobile games only.** `arcade/mobile.py` `contract_report()` is the one mobile contract (viewport,
   fills any screen, no fixed canvas, DPR, touch input, no page gestures, safe areas, pause when hidden,
   rAF loop, personal best, score bridge, no name prompt). A built-in game that fails it is not

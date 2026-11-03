@@ -1,0 +1,19 @@
+{
+  "title": "Telly Swing",
+  "tagline": "Swing home on your power cord!",
+  "description": "Telly is a little cartoon TV who travels by lassoing hooks with its power cord. Swing over gaps, wrap the cord for speed, grab sparks and plug in at the end of every room.",
+  "emoji": "📺",
+  "art": { "from": "#ff9f43", "to": "#7b6cff" },
+  "genre": "action",
+  "ages": "5+",
+  "players": "1",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Telly rolls along by itself. Hold anywhere to throw the cord at the glowing hook.",
+    "Let go to fly! Keep holding to swing all the way round and wrap the cord for speed.",
+    "Grab ⚡ sparks and the three 🔋 cells in every room, then plug into the outlet.",
+    "Mind the gaps and the puddles: each zap costs a battery. Tap on the ground to hop."
+  ]
+}

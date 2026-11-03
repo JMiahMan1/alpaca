@@ -1,0 +1,1508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Telly Swing</title>
+<!-- @family-kit -->
+<style>
+  html, body { background: #ffc9a8; }
+  #fk-hud .fk-pill { white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+  #fk-hud .fk-extra small { font-size: 13px; opacity: 0.9; }
+  .ts-bench-line { margin-top: 6px; font-size: 13px; opacity: 0.8; }
+  .ts-bench-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 4px; text-align: center; }
+  .ts-bench-grid div { background: rgba(0,0,0,0.06); border-radius: 12px; padding: 8px 4px; }
+  .ts-bench-grid b { display: block; font-size: 22px; }
+  .ts-bench-grid span { font-size: 12px; opacity: 0.75; }
+  .ts-bench-note { font-size: 12px; opacity: 0.7; margin: 6px 0 2px; }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<script>
+(function () {
+  "use strict";
+  const FK = window.FamilyKit;
+  const { clamp, lerp, roundRect } = FK;
+  const TAU = Math.PI * 2;
+
+  /* ---------------- physics, in tile units (y grows downward) ---------------- */
+  const G = 32;            // gravity
+  const WALK = 3.4;        // Telly rolls along by itself
+  const HOP = -10;         // a hop clears about 1.5 tiles up, 2 tiles across
+  const SPRING = -17.5;    // a speaker launches about 4.5 tiles up
+  const RANGE = 6.8;       // how far the cord reaches
+  const LMAX = 4.8;        // the cord reels in to this on a long throw
+  const LMIN = 1.6;        // wrapping stops shortening here
+  const SWING_TO = 1.15;   // a throw always swings Telly at least this far past the hook (radians)
+  const PUMP = 7;          // holding pushes along the swing, tiles/s²
+  const HW = 0.5;          // half width of Telly's body
+  const BODY = 0.86;       // body height (feet to top)
+  const STEP = 1 / 120;
+  const BATTERIES = 3;
+
+  const kit = FK.create({
+    slug: "family-telly-swing",
+    title: "Telly Swing",
+    tagline: "Swing home on your power cord!",
+    emoji: "📺",
+    accent: "#ff8a2a",
+    accent2: "#7b6cff",
+    scoreLabel: "Score",
+    howTo: [
+      ["👆", "Telly rolls along by itself. Hold anywhere to throw the cord at the glowing hook."],
+      ["🌀", "Let go to fly! Keep holding to swing all the way round: each wrap speeds Telly up."],
+      ["⚡", "Grab sparks and the three 🔋 cells in every room, then plug into the outlet 🔌."],
+      ["💧", "Mind gaps and puddles: each zap costs a battery. Tap on the ground to hop."],
+    ],
+    onStart: () => startGame(),
+    onPause: () => { holding = false; },
+    onResume: () => { holding = false; },
+  });
+
+  /* ---------------- themes: one per room, then they come round again ---------------- */
+  const THEMES = [
+    { name: "Living Room", sky: ["#ffe7c7", "#ffc4d8"], hill: ["rgba(255,170,140,0.45)", "rgba(230,120,140,0.35)"], top: "#f2b27a", body: "#c4844d", line: "#9c6436", mote: "#fff6e0" },
+    { name: "Kitchen", sky: ["#dff7ff", "#bcdcff"], hill: ["rgba(140,190,240,0.45)", "rgba(110,150,220,0.35)"], top: "#f4f8fc", body: "#93b7cc", line: "#6f93aa", mote: "#ffffff" },
+    { name: "Garden", sky: ["#c3f1ff", "#e8ffd8"], hill: ["rgba(120,200,120,0.5)", "rgba(80,170,90,0.45)"], top: "#78c94f", body: "#8d5c3c", line: "#5f3c24", mote: "#fff8b0" },
+    { name: "Garage", sky: ["#ddd6ff", "#ffe2bd"], hill: ["rgba(150,150,200,0.45)", "rgba(120,120,170,0.4)"], top: "#b6bfcf", body: "#7d8597", line: "#5a6172", mote: "#fffbe6" },
+    { name: "Rooftops", sky: ["#ff9f8e", "#ffd772"], hill: ["rgba(190,80,90,0.4)", "rgba(150,60,90,0.4)"], top: "#d0654c", body: "#8f3b2c", line: "#6b2a1f", mote: "#ffe9c4" },
+    { name: "Night Sky", sky: ["#1d2758", "#5b4aa8"], hill: ["rgba(90,80,170,0.55)", "rgba(60,55,130,0.6)"], top: "#eef0ff", body: "#b9c0f0", line: "#8890cc", mote: "#fff7c2", night: true },
+  ];
+
+  /* ---------------- seeded levels: the same rooms for everyone ---------------- */
+  function rng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function buildLevel(n, opts) {
+    const o = opts || {};
+    const r = rng(1009 + n * 7919);
+    const between = (lo, hi) => lo + r() * (hi - lo);
+    const L = { n, theme: THEMES[n % THEMES.length], platforms: [], hooks: [], sparks: [], cells: [], puddles: [], springs: [], pads: [], outlet: null };
+    let x = 7;
+    let y = 0;
+    L.platforms.push({ x0: -8, x1: x, y });
+    L.pads.push({ x: 1.5, y, on: true });
+    const segs = o.segments || Math.min(24, 9 + n * 2);
+    const kinds = ["gap1", "gap1", "step"];
+    if (n >= 1) kinds.push("gap2", "puddle");
+    if (n >= 2) kinds.push("spring", "gap2");
+    if (n >= 3) kinds.push("moving", "moving");
+    if (n >= 4) kinds.push("chain");
+    const arcSparks = (hx, hy, rad, count) => {
+      for (let k = 0; k < count; k++) {
+        const a = (k - (count - 1) / 2) * 0.32;
+        L.sparks.push({ x: hx + Math.sin(a) * rad, y: hy + Math.cos(a) * rad, got: false });
+      }
+    };
+    const nextY = (from) => clamp(from + [-1, 0, 0, 1, 1.5][Math.floor(r() * 5)], -3, 1.5);
+    const cellAt = new Set([Math.floor(segs * 0.25), Math.floor(segs * 0.55), Math.floor(segs * 0.85)]);
+    for (let i = 0; i < segs; i++) {
+      const kind = kinds[Math.floor(r() * kinds.length)];
+      const start = x;
+      if (kind === "gap1" || kind === "moving") {
+        const g = between(3.2, 4.4 + Math.min(n, 4) * 0.4);
+        const hx = x + g / 2;
+        const y2 = nextY(y);
+        // High enough that the whole swing clears both ledges.
+        const hy = Math.min(y, y2) - between(5.8, 6.2);
+        const hook = { bx: hx, by: hy, ax: kind === "moving" ? between(0.9, 1.4) : 0, ay: 0, sp: between(0.9, 1.3), ph: r() * TAU };
+        L.hooks.push(hook);
+        arcSparks(hx, hy, 4.6, 5);
+        x += g;
+        y = y2;
+        const len = between(4, 7.5);
+        L.platforms.push({ x0: x, x1: x + len, y });
+        x += len;
+      } else if (kind === "gap2" || kind === "chain") {
+        const count = kind === "chain" ? 3 : 2;
+        const g = kind === "chain" ? between(11, 12.5) : between(7, 8.8);
+        const y2 = nextY(y);
+        for (let k = 0; k < count; k++) {
+          const hx = x + (g * (k + 1)) / (count + 1);
+          const hy = Math.min(y, y2) - between(5.8, 6.2);
+          L.hooks.push({ bx: hx, by: hy, ax: 0, ay: kind === "chain" && k === 1 ? 0.6 : 0, sp: 1.1, ph: r() * TAU });
+          arcSparks(hx, hy, 4.6, 3);
+        }
+        x += g;
+        y = y2;
+        const len = between(4.5, 7.5);
+        L.platforms.push({ x0: x, x1: x + len, y });
+        x += len;
+      } else if (kind === "step") {
+        const up = r() < 0.55;
+        y = clamp(up ? y - 1 : y + 1.5, -3, 1.5);
+        const len = between(3.5, 6);
+        L.platforms.push({ x0: x, x1: x + len, y });
+        L.sparks.push({ x: x + len / 2, y: y - 1.2, got: false });
+        x += len;
+      } else if (kind === "puddle") {
+        const w = between(1.4, 1.8);
+        const before = 2;
+        const len = before + w + between(3, 5);
+        // The puddle sits in the platform this segment adds.
+        L.platforms.push({ x0: x, x1: x + len, y });
+        L.puddles.push({ x0: x + before, x1: x + before + w, y });
+        L.hooks.push({ bx: x + before + w / 2, by: y - 5.9, ax: 0, ay: 0, sp: 1, ph: 0 });
+        L.sparks.push({ x: x + before + w / 2, y: y - 2.1, got: false });
+        x += len;
+      } else if (kind === "spring") {
+        const len = between(3.5, 5);
+        L.platforms.push({ x0: x, x1: x + len, y });
+        L.springs.push({ x: x + len - 1.1, y, squash: 0 });
+        x += len + 1.2;
+        y = clamp(y - 3.5, -6, 1.5);
+        const len2 = between(4.5, 6.5);
+        L.platforms.push({ x0: x, x1: x + len2, y });
+        L.sparks.push({ x: x - 0.4, y: y - 3.2, got: false }, { x: x + 0.6, y: y - 2.4, got: false });
+        x += len2;
+      }
+      if (cellAt.has(i)) {
+        const last = L.hooks[L.hooks.length - 1];
+        // A cell is a little out of the way: high on the swing, or on the ledge.
+        if (last && last.bx > start) L.cells.push({ x: last.bx + 1.6, y: last.by + 2.4, got: false });
+        else L.cells.push({ x: x - 1.5, y: y - 1.6, got: false });
+      }
+      if (i % 5 === 4) {
+        const p = L.platforms[L.platforms.length - 1];
+        L.pads.push({ x: p.x0 + 1.2, y: p.y, on: false });
+      }
+    }
+    const endLen = 8;
+    const last = L.platforms[L.platforms.length - 1];
+    if (x - last.x1 > 0.01 || last.x1 < x) L.platforms.push({ x0: x, x1: x + endLen, y });
+    else last.x1 += endLen;
+    L.outlet = { x: x + 5, y };
+    L.end = x + endLen;
+    L.par = segs * 3.4 + 6;
+    return L;
+  }
+
+  /* ---------------- the world ---------------- */
+  let world = null;     // the running level
+  let holding = false;
+  let mode = "demo";    // demo | play | bench
+  let auto = false;     // the autopilot also plays a real game (tests)
+  const stats = { sparks: 0, cells: 0, wraps: 0, rooms: 0 };
+  let batteries = BATTERIES;
+  let roomTime = 0;
+
+  function newWorld(n, opts) {
+    const L = buildLevel(n, opts);
+    world = {
+      L,
+      t: 0,
+      acc: 0,
+      p: { x: 0, y: 0, vx: 0, vy: 0, grounded: true, face: "happy", faceT: 0, walk: 0, squash: 1, tilt: 0, look: 1, worried: false },
+      rope: null,      // { hook, L, angle, wraps, accum, shoot }
+      flick: 0,
+      zap: 0,
+      invuln: 0,
+      plug: 0,
+      checkpoint: { x: 1.5, y: 0 },
+      cam: { x: 2, y: -2 },
+      trail: [],
+    };
+    roomTime = 0;
+    return world;
+  }
+
+  function hookPos(h, t) {
+    return { x: h.bx + Math.sin(t * h.sp + h.ph) * h.ax, y: h.by + Math.sin(t * h.sp * 1.3 + h.ph) * h.ay };
+  }
+
+  function center(p) {
+    return { x: p.x, y: p.y - BODY * 0.52 };
+  }
+
+  function bestHook() {
+    const w = world;
+    const c = center(w.p);
+    let best = null;
+    let bestScore = Infinity;
+    for (const h of w.L.hooks) {
+      const hp = hookPos(h, w.t);
+      if (hp.y > c.y - 0.6) continue;               // only hooks above
+      if (hp.x < c.x - 1.6) continue;               // not ones far behind
+      const d = Math.hypot(hp.x - c.x, hp.y - c.y);
+      if (d > RANGE) continue;
+      const score = Math.abs(hp.x - (c.x + 2.4)) + d * 0.35;
+      if (score < bestScore) {
+        bestScore = score;
+        best = h;
+      }
+    }
+    return best;
+  }
+
+  function attach(h) {
+    const w = world;
+    const c = center(w.p);
+    const hp = hookPos(h, w.t);
+    const d = Math.hypot(hp.x - c.x, hp.y - c.y);
+    const angle = Math.atan2(c.x - hp.x, c.y - hp.y);
+    const len = clamp(d, LMIN, LMAX);
+    w.rope = { hook: h, L: len, angle, wraps: 0, accum: 0, shoot: 0.09 };
+    w.p.grounded = false;
+    // The throw yanks Telly forward: enough to swing well past the hook,
+    // however slowly it was rolling when the cord caught.
+    if (angle < SWING_TO) {
+      const tx = Math.cos(angle);
+      const ty = -Math.sin(angle);
+      const vt = w.p.vx * tx + w.p.vy * ty;
+      const need = Math.sqrt(Math.max(0, 2 * G * len * (Math.cos(angle) - Math.cos(SWING_TO))));
+      if (vt < need) {
+        w.p.vx += (need - vt) * tx;
+        w.p.vy += (need - vt) * ty;
+      }
+    }
+    kit.sound.play("whoosh");
+    kit.haptic(10);
+  }
+
+  function release() {
+    const w = world;
+    if (!w.rope) return;
+    const p = w.p;
+    // A little extra on the way out makes the fling feel springy.
+    p.vx *= 1.06;
+    p.vy *= 1.06;
+    if (w.rope.wraps > 0) kit.sound.play("pop", 1.2);
+    w.rope = null;
+  }
+
+  function hop() {
+    const p = world.p;
+    if (!p.grounded) return;
+    p.vy = HOP;
+    p.grounded = false;
+    p.squash = 0.8;
+    kit.sound.play("bounce", 1.2);
+  }
+
+  function press() {
+    const w = world;
+    if (!w || w.zap > 0 || w.plug > 0) return;
+    holding = true;
+    if (w.rope) return;
+    const h = bestHook();
+    if (h) attach(h);
+    else if (w.p.grounded) hop();
+    else w.flick = 0.25;
+  }
+  function letGo() {
+    holding = false;
+    if (world) release();
+  }
+
+  /* ---------------- stepping ---------------- */
+  function platformAt(x, yTop, below) {
+    // The platform whose top is under x, nearest beneath yTop within `below` tiles.
+    let best = null;
+    for (const pl of world.L.platforms) {
+      if (x < pl.x0 || x > pl.x1) continue;
+      if (pl.y < yTop - 0.05 || pl.y > yTop + below) continue;
+      if (!best || pl.y < best.y) best = pl;
+    }
+    return best;
+  }
+
+  function step(dt) {
+    const w = world;
+    const p = w.p;
+    w.t += dt;
+    if (w.invuln > 0) w.invuln -= dt;
+    if (w.flick > 0) w.flick -= dt;
+    if (w.plug > 0) {
+      w.plug -= dt;
+      if (w.plug <= 0) roomDone();
+      return;
+    }
+    if (w.zap > 0) {
+      w.zap -= dt;
+      if (w.zap <= 0) respawn();
+      return;
+    }
+    if (mode !== "play" || auto) autopilot();
+    const prevY = p.y;
+
+    if (p.grounded && !w.rope) {
+      // Roll along, but wait at the edge of a gap or a puddle for the player.
+      let target = WALK;
+      const ahead = p.x + HW + 0.15;
+      const under = platformAt(p.x, p.y, 0.05);
+      if (under && ahead > under.x1) {
+        const next = platformAt(under.x1 + 0.5, p.y - 1.6, 3.2) || platformAt(under.x1 + 0.2, p.y - 1.6, 3.2);
+        if (!next) target = 0;
+      }
+      for (const pd of w.L.puddles) {
+        if (Math.abs(pd.y - p.y) < 0.1 && p.x + HW + 0.25 > pd.x0 && p.x < pd.x0) target = 0;
+      }
+      // Little steps up are hopped automatically.
+      for (const pl of w.L.platforms) {
+        if (pl.x0 > p.x && pl.x0 - (p.x + HW) < 0.3 && pl.y < p.y - 0.05 && pl.y > p.y - 1.45) {
+          hop();
+          break;
+        }
+      }
+      p.worried = target === 0;
+      p.vx = lerp(p.vx, target, Math.min(1, dt * 8));
+      if (target === 0 && under) p.x = Math.min(p.x, under.x1 - 0.2);
+    } else {
+      p.worried = false;
+      p.vx *= 1 - dt * 0.05;
+      // Off a hop, Telly keeps rolling forward through the air, so a wall it
+      // bumped on the way up does not leave it hopping on the spot.
+      if (!w.rope && p.vx < WALK) p.vx = Math.min(WALK, p.vx + dt * 10);
+    }
+
+    p.vy += G * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+
+    if (w.rope) {
+      const r = w.rope;
+      if (r.shoot > 0) r.shoot -= dt;
+      const hp = hookPos(r.hook, w.t);
+      const c = center(p);
+      let dx = c.x - hp.x;
+      let dy = c.y - hp.y;
+      const d = Math.hypot(dx, dy) || 0.0001;
+      if (d > r.L) {
+        // Taut: back onto the circle, outward speed removed.
+        const nx = dx / d;
+        const ny = dy / d;
+        p.x -= nx * (d - r.L);
+        p.y -= ny * (d - r.L);
+        const out = p.vx * nx + p.vy * ny;
+        if (out > 0) {
+          p.vx -= out * nx;
+          p.vy -= out * ny;
+        }
+        dx = nx * r.L;
+        dy = ny * r.L;
+      }
+      const angle = Math.atan2(dx, dy);
+      // Holding pushes along the swing, the way a kid pumps a swing, so it
+      // grows until Telly goes right round the hook.
+      if (holding) {
+        const tx = Math.cos(angle);
+        const ty = -Math.sin(angle);
+        const vt = p.vx * tx + p.vy * ty;
+        const dir = vt >= 0 ? 1 : -1;
+        p.vx += tx * PUMP * dt * dir;
+        p.vy += ty * PUMP * dt * dir;
+      }
+      let delta = angle - r.angle;
+      if (delta > Math.PI) delta -= TAU;
+      if (delta < -Math.PI) delta += TAU;
+      r.angle = angle;
+      r.accum += delta;
+      if (Math.abs(r.accum) >= TAU) {
+        r.accum -= Math.sign(r.accum) * TAU;
+        r.wraps += 1;
+        stats.wraps += 1;
+        const before = r.L;
+        r.L = Math.max(LMIN, r.L * 0.82);
+        // Shorter cord, same angular momentum: Telly speeds up.
+        const k = before / r.L;
+        p.vx *= Math.min(1.25, k);
+        p.vy *= Math.min(1.25, k);
+        if (mode === "play") kit.addScore(25);
+        const s = toScreen(hp.x, hp.y);
+        kit.fx.text(s.x, s.y - 20, "WRAP! +25", { color: "#ffe066", size: 20 });
+        kit.sound.play("combo", r.wraps);
+        kit.haptic(15);
+      }
+      p.tilt = lerp(p.tilt, clamp(-dx * 0.18, -0.6, 0.6), 0.2);
+    } else {
+      p.tilt = lerp(p.tilt, clamp(p.vx * 0.02, -0.15, 0.15), 0.1);
+    }
+
+    // Landing on platform tops, then the walls of the ones beside.
+    const wasGrounded = p.grounded;
+    p.grounded = false;
+    for (const pl of w.L.platforms) {
+      if (p.x + HW * 0.6 < pl.x0 || p.x - HW * 0.6 > pl.x1) continue;
+      if (prevY <= pl.y + 0.02 && p.y >= pl.y && p.vy >= 0) {
+        p.y = pl.y;
+        p.vy = 0;
+        p.grounded = true;
+        if (w.rope) release();
+        if (!wasGrounded) {
+          p.squash = 0.78;
+          kit.sound.play("thud");
+        }
+      }
+    }
+    for (const pl of w.L.platforms) {
+      if (p.y <= pl.y + 0.05) continue;
+      if (p.x + HW > pl.x0 && p.x - HW < pl.x1) {
+        const left = p.x + HW - pl.x0;
+        const right = pl.x1 - (p.x - HW);
+        if (left < right) {
+          p.x = pl.x0 - HW;
+          if (p.vx > 0) p.vx = 0;
+        } else {
+          p.x = pl.x1 + HW;
+          if (p.vx < 0) p.vx = 0;
+        }
+      }
+    }
+    p.squash = lerp(p.squash, 1, Math.min(1, dt * 10));
+    if (p.grounded) p.walk += Math.abs(p.vx) * dt * 4;
+
+    // Springs, puddles, pads, the outlet.
+    for (const s of w.L.springs) {
+      if (s.squash > 0) s.squash -= dt * 3;
+      if (p.grounded && Math.abs(p.x - s.x) < 0.5 && Math.abs(p.y - s.y) < 0.05) {
+        p.vy = SPRING;
+        p.grounded = false;
+        s.squash = 1;
+        kit.sound.play("bounce", 0.8);
+        kit.haptic(14);
+      }
+    }
+    if (w.invuln <= 0) {
+      for (const pd of w.L.puddles) {
+        if (p.grounded && Math.abs(p.y - pd.y) < 0.05 && p.x > pd.x0 + 0.15 && p.x < pd.x1 - 0.15) zap("Splash! Telly fizzed.");
+      }
+    }
+    for (const pad of w.L.pads) {
+      if (!pad.on && p.grounded && Math.abs(p.x - pad.x) < 0.7 && Math.abs(p.y - pad.y) < 0.05) {
+        pad.on = true;
+        w.checkpoint = { x: pad.x, y: pad.y };
+        if (mode === "play") kit.toast("Checkpoint!", "#7dffb0");
+        kit.sound.play("coin");
+      }
+    }
+    const c = center(p);
+    for (const s of w.L.sparks) {
+      if (!s.got && Math.hypot(s.x - c.x, s.y - c.y) < 0.75) {
+        s.got = true;
+        stats.sparks += 1;
+        if (mode === "play") kit.addScore(10);
+        const sc = toScreen(s.x, s.y);
+        kit.fx.burst(sc.x, sc.y, ["#ffe066", "#fff4b8", "#ffb347"], mode === "bench" ? 22 : 9, { size: 4, speed: 160 });
+        kit.sound.play("coin");
+      }
+    }
+    for (const cell of w.L.cells) {
+      if (!cell.got && Math.hypot(cell.x - c.x, cell.y - c.y) < 0.85) {
+        cell.got = true;
+        stats.cells += 1;
+        if (mode === "play") {
+          kit.addScore(50);
+          kit.toast("Power cell! +50", "#7dffb0");
+        }
+        const sc = toScreen(cell.x, cell.y);
+        kit.fx.burst(sc.x, sc.y, ["#7dffb0", "#ffffff"], 18, { size: 5, shape: "star" });
+        kit.sound.play("win");
+        kit.haptic(20);
+      }
+    }
+    const out = w.L.outlet;
+    if (p.grounded && p.x >= out.x - 0.7 && Math.abs(p.y - out.y) < 0.1) {
+      p.vx = 0;
+      p.x = out.x - 0.7;
+      w.plug = 1.3;
+      p.face = "love";
+      kit.sound.play("start");
+      kit.haptic(25);
+    }
+    if (p.y > deathLine()) zap("Down the gap! Telly lost a battery.");
+    if (mode === "bench" && w.trail.length < 2000) w.trail.push({ x: c.x, y: c.y });
+  }
+
+  function deathLine() {
+    let lowest = -Infinity;
+    for (const pl of world.L.platforms) lowest = Math.max(lowest, pl.y);
+    return lowest + 9;
+  }
+
+  function zap(why) {
+    const w = world;
+    if (w.zap > 0) return;
+    w.rope = null;
+    w.zap = 0.9;
+    w.p.face = "zap";
+    const c = center(w.p);
+    const s = toScreen(c.x, Math.min(c.y, deathLine() - 4));
+    kit.fx.burst(s.x, s.y, ["#ffe066", "#7fd6ff", "#ffffff"], 20, { size: 4, speed: 260 });
+    kit.sound.play("bad");
+    kit.shake(9, 0.3);
+    kit.haptic(40);
+    if (mode !== "play") return;
+    batteries -= 1;
+    updateHud();
+    kit.toast(why, "#ffd166");
+  }
+
+  function respawn() {
+    const w = world;
+    if (mode === "play" && batteries <= 0) {
+      kit.gameOver({
+        reason: "Out of battery!",
+        emoji: "🪫",
+        stats: [["Rooms", stats.rooms], ["Sparks", stats.sparks], ["Wraps", stats.wraps]],
+      });
+      return;
+    }
+    const p = w.p;
+    p.x = w.checkpoint.x;
+    p.y = w.checkpoint.y;
+    p.vx = 0;
+    p.vy = 0;
+    p.grounded = true;
+    p.face = "happy";
+    w.invuln = 1.2;
+  }
+
+  function roomDone() {
+    const w = world;
+    stats.rooms += 1;
+    if (mode === "play") {
+      const fast = Math.max(0, Math.round((w.L.par - roomTime) * 4));
+      const cells = w.L.cells.filter((c) => c.got).length;
+      kit.addScore(200 + fast);
+      kit.toast(`${w.L.theme.name} done! +${200 + fast}${cells === 3 ? " · all 3 cells ⭐" : ""}`, "#7dffb0");
+      if (batteries < BATTERIES) batteries += 1;
+    }
+    const next = w.L.n + 1;
+    if (mode === "demo") newWorld(next % 3, { segments: 8 });
+    else if (mode === "bench") newWorld(next, { segments: 12 });
+    else newWorld(next);
+    placeAtStart();
+    updateHud();
+  }
+
+  function placeAtStart() {
+    const p = world.p;
+    p.x = 1.5;
+    p.y = 0;
+    p.grounded = true;
+    world.cam.x = p.x + 2;
+    world.cam.y = p.y - 2;
+  }
+
+  /* ---------------- the autopilot: the attract screen and the benchmark ---------------- */
+  function autopilot() {
+    const w = world;
+    const p = w.p;
+    if (w.rope) {
+      const hp = hookPos(w.rope.hook, w.t);
+      const c = center(p);
+      const ahead = c.x - hp.x;
+      // On the benchmark every third hook is wrapped round, for the show.
+      if (mode === "bench" && w.rope.wraps < 1 && w.L.hooks.indexOf(w.rope.hook) % 3 === 0) {
+        holding = true;
+        return;
+      }
+      w.rope.still = Math.hypot(p.vx, p.vy) < 0.8 ? (w.rope.still || 0) + STEP : 0;
+      if ((ahead > w.rope.L * 0.55 && p.vy < 1.5) || ahead > w.rope.L * 0.85 || w.rope.still > 1.5) {
+        holding = false;
+        release();
+      }
+      return;
+    }
+    holding = false;
+    const h = bestHook();
+    if (h) {
+      const hp = hookPos(h, w.t);
+      if ((p.grounded && hp.x - p.x < 4.4) || (!p.grounded && hp.x > p.x + 0.8 && p.vy > -2)) {
+        attach(h);
+        holding = true;
+        return;
+      }
+    }
+    if (p.grounded && p.worried && !h) hop();
+  }
+
+  /* ---------------- drawing ---------------- */
+  let view = null;
+  let ctx = null;
+  let W = 1;
+  let H = 1;
+  let T = 32;
+  let skyCache = null;
+  let skyKey = "";
+
+  function onResize(v) {
+    view = v;
+    ctx = v.ctx;
+    W = v.w;
+    H = v.h;
+    T = Math.max(26, Math.min(W / 10.5, H / 11));
+    skyKey = "";
+  }
+
+  function toScreen(x, y) {
+    const cam = world ? world.cam : { x: 0, y: 0 };
+    return { x: (x - cam.x) * T + W * 0.42, y: (y - cam.y) * T + H * 0.58 };
+  }
+
+  function sky(theme) {
+    const key = `${theme.name}:${W}x${H}`;
+    if (key === skyKey && skyCache) return skyCache;
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(W));
+    c.height = Math.max(1, Math.round(H));
+    const g = c.getContext("2d");
+    const grad = g.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, theme.sky[0]);
+    grad.addColorStop(1, theme.sky[1]);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, W, H);
+    if (theme.night) {
+      const r = rng(77);
+      for (let i = 0; i < 90; i++) {
+        g.globalAlpha = 0.4 + r() * 0.6;
+        g.fillStyle = "#fff";
+        g.beginPath();
+        g.arc(r() * W, r() * H * 0.8, 0.6 + r() * 1.6, 0, TAU);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+    }
+    skyCache = c;
+    skyKey = key;
+    return c;
+  }
+
+  function hills(color, factor, amp, base, period) {
+    const cam = world.cam;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    const off = cam.x * T * factor;
+    for (let sx = 0; sx <= W + 20; sx += 16) {
+      const u = (sx + off) / (period * T);
+      const y = H * base - Math.sin(u * TAU) * amp * T - Math.sin(u * TAU * 2.3 + 1) * amp * 0.4 * T + cam.y * T * factor * 0.3;
+      ctx.lineTo(sx, y);
+    }
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function motes(theme, count) {
+    const t = world.t;
+    ctx.fillStyle = theme.mote;
+    for (let i = 0; i < count; i++) {
+      const seedX = (i * 97.13) % 1;
+      const seedY = (i * 57.71) % 1;
+      const x = ((seedX * W * 1.5 - world.cam.x * T * 0.3 + t * 10 * (0.5 + seedY)) % (W + 40) + W + 40) % (W + 40) - 20;
+      const y = (seedY * H + Math.sin(t * 0.8 + i) * 12) % H;
+      ctx.globalAlpha = 0.35 + 0.35 * Math.sin(t * 2 + i);
+      ctx.beginPath();
+      ctx.arc(x, y, 1.5 + (i % 3), 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Each room's backdrop: a few props that slide by slower than the floor.
+  function props(theme) {
+    const cam = world.cam;
+    const f = 0.55;
+    const period = 9 * T;
+    const baseY = H * 0.84 - cam.y * T * 0.15;
+    const first = Math.floor((cam.x * T * f - W) / period) - 1;
+    ctx.save();
+    ctx.globalAlpha = theme.night ? 0.55 : 0.32;
+    ctx.fillStyle = theme.line;
+    ctx.strokeStyle = theme.line;
+    ctx.lineWidth = Math.max(2, T * 0.08);
+    if (theme.night) {
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "#fff6c9";
+      ctx.beginPath();
+      ctx.arc(W * 0.78, H * 0.16, T * 0.9, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = theme.sky[0];
+      ctx.beginPath();
+      ctx.arc(W * 0.78 + T * 0.35, H * 0.16 - T * 0.2, T * 0.75, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    for (let k = first; k < first + Math.ceil(W / period) + 3; k++) {
+      const x = k * period - cam.x * T * f + W * 0.5;
+      const kind = ((k % 2) + 2) % 2;
+      const n = theme.name;
+      ctx.beginPath();
+      if (n === "Living Room") {
+        if (kind === 0) {
+          ctx.fillRect(x - T * 0.06, baseY - T * 3.2, T * 0.12, T * 3.2);
+          ctx.moveTo(x - T * 0.7, baseY - T * 3.2);
+          ctx.lineTo(x + T * 0.7, baseY - T * 3.2);
+          ctx.lineTo(x + T * 0.45, baseY - T * 4.1);
+          ctx.lineTo(x - T * 0.45, baseY - T * 4.1);
+          ctx.fill();
+        } else {
+          ctx.strokeRect(x - T * 0.9, baseY - T * 6, T * 1.8, T * 1.3);
+          ctx.strokeRect(x + T * 1.3, baseY - T * 5.6, T * 0.9, T * 1.1);
+        }
+      } else if (n === "Kitchen") {
+        if (kind === 0) {
+          ctx.strokeRect(x - T * 1.2, baseY - T * 6.4, T * 2.4, T * 1.8);
+          ctx.moveTo(x, baseY - T * 6.4);
+          ctx.lineTo(x, baseY - T * 4.6);
+          ctx.moveTo(x - T * 1.2, baseY - T * 5.5);
+          ctx.lineTo(x + T * 1.2, baseY - T * 5.5);
+          ctx.stroke();
+        } else {
+          // Wall cabinets (not a hanging lamp, which would look like a hook).
+          ctx.strokeRect(x - T * 1.3, baseY - T * 7, T * 1.25, T * 1.5);
+          ctx.strokeRect(x + T * 0.05, baseY - T * 7, T * 1.25, T * 1.5);
+          ctx.fillRect(x - T * 0.25, baseY - T * 6.3, T * 0.12, T * 0.4);
+          ctx.fillRect(x + T * 0.15, baseY - T * 6.3, T * 0.12, T * 0.4);
+        }
+      } else if (n === "Garden") {
+        if (kind === 0) {
+          ctx.fillRect(x - T * 0.05, baseY - T * 2.4, T * 0.1, T * 2.4);
+          for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * TAU;
+            ctx.moveTo(x, baseY - T * 2.6);
+            ctx.arc(x + Math.cos(a) * T * 0.35, baseY - T * 2.6 + Math.sin(a) * T * 0.35, T * 0.2, 0, TAU);
+          }
+          ctx.fill();
+        } else {
+          ctx.fillRect(x - T * 0.15, baseY - T * 2.2, T * 0.3, T * 2.2);
+          ctx.arc(x, baseY - T * 2.9, T * 1.1, 0, TAU);
+          ctx.fill();
+        }
+      } else if (n === "Garage") {
+        if (kind === 0) {
+          ctx.fillRect(x - T * 1.4, baseY - T * 4, T * 2.8, T * 0.14);
+          ctx.fillRect(x - T * 1.1, baseY - T * 4.8, T * 0.8, T * 0.8);
+          ctx.fillRect(x + T * 0.1, baseY - T * 4.6, T * 0.6, T * 0.6);
+        } else {
+          ctx.arc(x, baseY - T * 0.9, T * 0.9, 0, TAU);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(x, baseY - T * 0.9, T * 0.4, 0, TAU);
+          ctx.stroke();
+        }
+      } else if (n === "Rooftops") {
+        if (kind === 0) {
+          ctx.fillRect(x - T * 0.4, baseY - T * 4.5, T * 0.8, T * 1.6);
+          ctx.fillRect(x - T * 0.55, baseY - T * 4.7, T * 1.1, T * 0.25);
+        } else {
+          ctx.moveTo(x, baseY - T * 3);
+          ctx.lineTo(x, baseY - T * 5.2);
+          ctx.moveTo(x - T * 0.7, baseY - T * 4.8);
+          ctx.lineTo(x + T * 0.7, baseY - T * 4.8);
+          ctx.moveTo(x - T * 0.45, baseY - T * 4.4);
+          ctx.lineTo(x + T * 0.45, baseY - T * 4.4);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawPlatform(pl, theme) {
+    const a = toScreen(pl.x0, pl.y);
+    const b = toScreen(pl.x1, pl.y);
+    if (b.x < -20 || a.x > W + 20) return;
+    const bottom = H + 40;
+    ctx.fillStyle = theme.body;
+    roundRect(ctx, a.x, a.y, b.x - a.x, bottom - a.y, T * 0.18);
+    ctx.fill();
+    ctx.fillStyle = theme.top;
+    roundRect(ctx, a.x, a.y, b.x - a.x, T * 0.32, T * 0.16);
+    ctx.fill();
+    ctx.strokeStyle = theme.line;
+    ctx.lineWidth = Math.max(1, T * 0.05);
+    ctx.globalAlpha = 0.35;
+    for (let sx = a.x + T * 0.6; sx < b.x - T * 0.3; sx += T * 1.1) {
+      ctx.beginPath();
+      ctx.moveTo(sx, a.y + T * 0.55);
+      ctx.lineTo(sx + T * 0.4, a.y + T * 0.55);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPuddle(pd) {
+    const a = toScreen(pd.x0, pd.y);
+    const b = toScreen(pd.x1, pd.y);
+    if (b.x < -20 || a.x > W + 20) return;
+    const cx = (a.x + b.x) / 2;
+    ctx.fillStyle = "#4fb6ff";
+    ctx.beginPath();
+    ctx.ellipse(cx, a.y + T * 0.06, (b.x - a.x) / 2, T * 0.18, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    const shimmer = Math.sin(world.t * 4) * T * 0.2;
+    ctx.beginPath();
+    ctx.ellipse(cx - T * 0.2 + shimmer, a.y, T * 0.18, T * 0.05, 0, 0, TAU);
+    ctx.fill();
+  }
+
+  function drawSpring(s) {
+    const p = toScreen(s.x, s.y);
+    if (p.x < -40 || p.x > W + 40) return;
+    const sq = 1 - Math.max(0, s.squash) * 0.3;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.scale(1, sq);
+    ctx.fillStyle = "#3b3f55";
+    roundRect(ctx, -T * 0.42, -T * 0.7, T * 0.84, T * 0.7, T * 0.12);
+    ctx.fill();
+    ctx.fillStyle = "#9aa3c7";
+    ctx.beginPath();
+    ctx.arc(0, -T * 0.36, T * 0.26, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#3b3f55";
+    ctx.beginPath();
+    ctx.arc(0, -T * 0.36, T * 0.1, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPad(pad) {
+    const p = toScreen(pad.x, pad.y);
+    if (p.x < -40 || p.x > W + 40) return;
+    ctx.fillStyle = "#4b4f6b";
+    roundRect(ctx, p.x - T * 0.45, p.y - T * 0.14, T * 0.9, T * 0.14, T * 0.06);
+    ctx.fill();
+    ctx.fillStyle = pad.on ? "#5dff9a" : "#c8cbe0";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y - T * 0.32, T * 0.14, 0, TAU);
+    ctx.fill();
+    if (pad.on) {
+      ctx.globalAlpha = 0.3 + 0.2 * Math.sin(world.t * 5);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y - T * 0.32, T * 0.32, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawOutlet(out, glow) {
+    const p = toScreen(out.x, out.y);
+    if (p.x < -60 || p.x > W + 60) return;
+    ctx.fillStyle = "#7c6bd6";
+    roundRect(ctx, p.x - T * 0.12, p.y - T * 1.3, T * 0.24, T * 1.3, T * 0.06);
+    ctx.fill();
+    if (glow) {
+      ctx.fillStyle = "rgba(255,240,140,0.35)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y - T * 1.75, T * (0.95 + 0.08 * Math.sin(world.t * 5)), 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#ffffff";
+    roundRect(ctx, p.x - T * 0.48, p.y - T * 2.4, T * 0.96, T * 1.3, T * 0.18);
+    ctx.fill();
+    ctx.strokeStyle = "#c9c4ee";
+    ctx.lineWidth = Math.max(1, T * 0.05);
+    ctx.stroke();
+    ctx.fillStyle = "#4b4466";
+    for (const dy of [-1.98, -1.52]) {
+      roundRect(ctx, p.x - T * 0.2, p.y + T * dy, T * 0.08, T * 0.22, T * 0.03);
+      ctx.fill();
+      roundRect(ctx, p.x + T * 0.12, p.y + T * dy, T * 0.08, T * 0.22, T * 0.03);
+      ctx.fill();
+    }
+  }
+
+  function drawHook(h, target) {
+    const hp = hookPos(h, world.t);
+    const p = toScreen(hp.x, hp.y);
+    if (p.x < -40 || p.x > W + 40) return;
+    if (target) {
+      ctx.strokeStyle = "rgba(255,230,90,0.85)";
+      ctx.lineWidth = Math.max(2, T * 0.08);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, T * (0.45 + 0.06 * Math.sin(world.t * 8)), 0, TAU);
+      ctx.stroke();
+    }
+    if (h.ax || h.ay) {
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.setLineDash([T * 0.12, T * 0.12]);
+      ctx.lineWidth = Math.max(1, T * 0.04);
+      const a = toScreen(h.bx - h.ax, h.by - h.ay);
+      const b = toScreen(h.bx + h.ax, h.by + h.ay);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = "#e3e8f4";
+    ctx.strokeStyle = "#5c6680";
+    ctx.lineWidth = Math.max(1.5, T * 0.07);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, T * 0.22, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#5c6680";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, T * 0.08, 0, TAU);
+    ctx.fill();
+  }
+
+  function bolt(x, y, s) {
+    ctx.beginPath();
+    ctx.moveTo(x + s * 0.12, y - s * 0.5);
+    ctx.lineTo(x - s * 0.28, y + s * 0.06);
+    ctx.lineTo(x - s * 0.02, y + s * 0.06);
+    ctx.lineTo(x - s * 0.14, y + s * 0.5);
+    ctx.lineTo(x + s * 0.3, y - s * 0.1);
+    ctx.lineTo(x + s * 0.04, y - s * 0.1);
+    ctx.closePath();
+  }
+
+  function drawSpark(s) {
+    if (s.got) return;
+    const p = toScreen(s.x, s.y + Math.sin(world.t * 3 + s.x) * 0.08);
+    if (p.x < -20 || p.x > W + 20) return;
+    ctx.fillStyle = "#ffe066";
+    ctx.strokeStyle = "#f29d1f";
+    ctx.lineWidth = Math.max(1, T * 0.05);
+    bolt(p.x, p.y, T * 0.62);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  function drawCell(cell) {
+    if (cell.got) return;
+    const p = toScreen(cell.x, cell.y + Math.sin(world.t * 2.5 + cell.x) * 0.1);
+    if (p.x < -30 || p.x > W + 30) return;
+    ctx.fillStyle = "rgba(125,255,176,0.3)";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, T * 0.55, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#3ccf7a";
+    roundRect(ctx, p.x - T * 0.22, p.y - T * 0.32, T * 0.44, T * 0.64, T * 0.08);
+    ctx.fill();
+    ctx.fillStyle = "#2b9a5a";
+    roundRect(ctx, p.x - T * 0.1, p.y - T * 0.42, T * 0.2, T * 0.12, T * 0.03);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    bolt(p.x, p.y, T * 0.36);
+    ctx.fill();
+  }
+
+  // Where the cord leaves Telly: low on its back.
+  function cordStart(p) {
+    const s = toScreen(p.x - 0.42, p.y - 0.22);
+    return s;
+  }
+
+  function drawPlug(x, y, angle) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.fillStyle = "#3b3f55";
+    roundRect(ctx, -T * 0.16, -T * 0.11, T * 0.24, T * 0.22, T * 0.05);
+    ctx.fill();
+    ctx.fillStyle = "#d9dce8";
+    ctx.fillRect(T * 0.08, -T * 0.08, T * 0.14, T * 0.04);
+    ctx.fillRect(T * 0.08, T * 0.04, T * 0.14, T * 0.04);
+    ctx.restore();
+  }
+
+  function drawCord() {
+    const w = world;
+    const p = w.p;
+    const a = cordStart(p);
+    ctx.strokeStyle = "#2f3346";
+    ctx.lineWidth = Math.max(2, T * 0.09);
+    ctx.lineCap = "round";
+    if (w.rope) {
+      const r = w.rope;
+      const hp = hookPos(r.hook, w.t);
+      const h = toScreen(hp.x, hp.y);
+      const k = r.shoot > 0 ? 1 - r.shoot / 0.09 : 1;
+      const ex = a.x + (h.x - a.x) * k;
+      const ey = a.y + (h.y - a.y) * k;
+      const c = center(p);
+      const slack = Math.max(0, r.L - Math.hypot(c.x - hp.x, c.y - hp.y));
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.quadraticCurveTo((a.x + ex) / 2, (a.y + ey) / 2 + slack * T * 0.6, ex, ey);
+      ctx.stroke();
+      // Each wrap is a coil round the hook.
+      for (let i = 0; i < Math.min(r.wraps, 5); i++) {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, T * (0.26 + i * 0.07), 0, TAU);
+        ctx.stroke();
+      }
+      return;
+    }
+    if (w.plug > 0) {
+      const o = toScreen(w.L.outlet.x, w.L.outlet.y);
+      const k = clamp(1 - (w.plug - 0.6) / 0.7, 0, 1);
+      const tx = lerp(a.x - T * 0.8, o.x - T * 0.25, k);
+      const ty = lerp(a.y + T * 0.2, o.y - T * 1.65, k);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.quadraticCurveTo((a.x + tx) / 2, Math.max(a.y, ty) + T * 0.5, tx, ty);
+      ctx.stroke();
+      drawPlug(tx, ty, 0);
+      return;
+    }
+    // Trailing behind, swaying as Telly rolls.
+    const sway = Math.sin(w.t * 6 + p.walk) * T * 0.08;
+    const flick = w.flick > 0 ? Math.sin(w.flick * 30) * T * 0.4 : 0;
+    const tx = a.x - T * 1.15;
+    const ty = a.y + T * 0.18 + sway - flick;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo(a.x - T * 0.5, a.y + T * 0.45 + sway, tx, ty);
+    ctx.stroke();
+    drawPlug(tx, ty, Math.PI);
+  }
+
+  function drawTelly() {
+    const w = world;
+    const p = w.p;
+    const s = T * 1.05;
+    const base = toScreen(p.x, p.y);
+    if (w.invuln > 0 && Math.floor(w.invuln * 12) % 2 === 0) return;
+    ctx.save();
+    ctx.translate(base.x, base.y - s * 0.46);
+    ctx.rotate(p.tilt);
+    const sq = p.squash;
+    ctx.scale(1 / Math.sqrt(sq), sq);
+    // feet
+    const bob = p.grounded ? Math.sin(p.walk * 3) * s * 0.04 : 0;
+    ctx.fillStyle = "#3b3f55";
+    ctx.beginPath();
+    ctx.ellipse(-s * 0.22, s * 0.43 + bob, s * 0.12, s * 0.06, 0, 0, TAU);
+    ctx.ellipse(s * 0.22, s * 0.43 - bob, s * 0.12, s * 0.06, 0, 0, TAU);
+    ctx.fill();
+    // antennae
+    ctx.strokeStyle = "#3b3f55";
+    ctx.lineWidth = Math.max(1.5, s * 0.04);
+    const wob = Math.sin(w.t * 7) * s * 0.03;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.1, -s * 0.4);
+    ctx.lineTo(-s * 0.3 + wob, -s * 0.76);
+    ctx.moveTo(s * 0.1, -s * 0.4);
+    ctx.lineTo(s * 0.32 - wob, -s * 0.74);
+    ctx.stroke();
+    ctx.fillStyle = "#ff6b8a";
+    ctx.beginPath();
+    ctx.arc(-s * 0.3 + wob, -s * 0.78, s * 0.065, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#ffd93d";
+    ctx.beginPath();
+    ctx.arc(s * 0.32 - wob, -s * 0.76, s * 0.065, 0, TAU);
+    ctx.fill();
+    // body
+    ctx.fillStyle = "#ff9f43";
+    roundRect(ctx, -s * 0.55, -s * 0.42, s * 1.1, s * 0.84, s * 0.2);
+    ctx.fill();
+    ctx.strokeStyle = "#d9711b";
+    ctx.lineWidth = Math.max(1.5, s * 0.045);
+    ctx.stroke();
+    // knobs and speaker grille
+    ctx.fillStyle = "#ffe0bd";
+    ctx.beginPath();
+    ctx.arc(s * 0.4, -s * 0.18, s * 0.055, 0, TAU);
+    ctx.arc(s * 0.4, -s * 0.02, s * 0.055, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = "#d9711b";
+    ctx.lineWidth = Math.max(1, s * 0.025);
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(s * 0.32, s * 0.12 + i * s * 0.07);
+      ctx.lineTo(s * 0.48, s * 0.12 + i * s * 0.07);
+      ctx.stroke();
+    }
+    // screen
+    const glowing = w.plug > 0;
+    const sg = ctx.createLinearGradient(0, -s * 0.3, 0, s * 0.3);
+    sg.addColorStop(0, glowing ? "#bff6ff" : "#33476b");
+    sg.addColorStop(1, glowing ? "#7fe0ff" : "#1c2640");
+    ctx.fillStyle = sg;
+    roundRect(ctx, -s * 0.44, -s * 0.31, s * 0.7, s * 0.62, s * 0.14);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.14)";
+    roundRect(ctx, -s * 0.38, -s * 0.26, s * 0.28, s * 0.12, s * 0.06);
+    ctx.fill();
+    drawFace(s, glowing);
+    ctx.restore();
+  }
+
+  function drawFace(s, glowing) {
+    const w = world;
+    const p = w.p;
+    const fx = -s * 0.09;
+    const fy = 0;
+    const ink = glowing ? "#1c2640" : "#ffffff";
+    const speed = Math.hypot(p.vx, p.vy);
+    let face = p.face;
+    if (face !== "zap" && face !== "love") {
+      if (p.worried) face = "worried";
+      else if (w.rope && speed > 9) face = "whee";
+      else if (!p.grounded && p.vy > 8) face = "oh";
+      else face = "happy";
+    }
+    ctx.fillStyle = ink;
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = Math.max(1.5, s * 0.04);
+    ctx.lineCap = "round";
+    const lookX = clamp(p.vx * 0.006, -0.03, 0.03) * s;
+    if (face === "zap") {
+      for (const ex of [-0.12, 0.12]) {
+        ctx.beginPath();
+        ctx.moveTo(fx + s * (ex - 0.05), fy - s * 0.12);
+        ctx.lineTo(fx + s * (ex + 0.05), fy - s * 0.02);
+        ctx.moveTo(fx + s * (ex + 0.05), fy - s * 0.12);
+        ctx.lineTo(fx + s * (ex - 0.05), fy - s * 0.02);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.moveTo(fx - s * 0.08, fy + s * 0.12);
+      for (let i = 1; i <= 4; i++) ctx.lineTo(fx - s * 0.08 + i * s * 0.04, fy + s * (i % 2 ? 0.08 : 0.12));
+      ctx.stroke();
+      return;
+    }
+    if (face === "love") {
+      for (const ex of [-0.12, 0.12]) {
+        const hx = fx + s * ex;
+        const hy = fy - s * 0.07;
+        ctx.fillStyle = "#ff5c8a";
+        ctx.beginPath();
+        ctx.moveTo(hx, hy + s * 0.05);
+        ctx.bezierCurveTo(hx - s * 0.08, hy - s * 0.02, hx - s * 0.03, hy - s * 0.08, hx, hy - s * 0.03);
+        ctx.bezierCurveTo(hx + s * 0.03, hy - s * 0.08, hx + s * 0.08, hy - s * 0.02, hx, hy + s * 0.05);
+        ctx.fill();
+      }
+      ctx.strokeStyle = ink;
+      ctx.beginPath();
+      ctx.arc(fx, fy + s * 0.06, s * 0.08, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
+      return;
+    }
+    // eyes: a blink every few seconds
+    const blink = face === "happy" && (w.t % 3.7) < 0.12;
+    if (blink) {
+      ctx.strokeStyle = ink;
+      for (const ex of [-0.12, 0.12]) {
+        ctx.beginPath();
+        ctx.moveTo(fx + s * (ex - 0.05) + lookX, fy - s * 0.07);
+        ctx.lineTo(fx + s * (ex + 0.05) + lookX, fy - s * 0.07);
+        ctx.stroke();
+      }
+    }
+    for (const ex of blink ? [] : [-0.12, 0.12]) {
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      ctx.ellipse(fx + s * ex + lookX, fy - s * 0.07, s * 0.055, face === "oh" || face === "whee" ? s * 0.075 : s * 0.065, 0, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = glowing ? "#ffffff" : "#1c2640";
+      ctx.beginPath();
+      ctx.arc(fx + s * ex + lookX + s * 0.015, fy - s * 0.09, s * 0.02, 0, TAU);
+      ctx.fill();
+    }
+    // cheeks
+    ctx.fillStyle = "rgba(255,120,150,0.55)";
+    ctx.beginPath();
+    ctx.arc(fx - s * 0.22, fy + s * 0.05, s * 0.045, 0, TAU);
+    ctx.arc(fx + s * 0.22, fy + s * 0.05, s * 0.045, 0, TAU);
+    ctx.fill();
+    // mouth
+    ctx.strokeStyle = ink;
+    ctx.fillStyle = ink;
+    ctx.beginPath();
+    if (face === "oh") {
+      ctx.ellipse(fx, fy + s * 0.1, s * 0.045, s * 0.06, 0, 0, TAU);
+      ctx.fill();
+    } else if (face === "whee") {
+      ctx.arc(fx, fy + s * 0.05, s * 0.09, 0, Math.PI);
+      ctx.fill();
+    } else if (face === "worried") {
+      ctx.moveTo(fx - s * 0.07, fy + s * 0.12);
+      ctx.quadraticCurveTo(fx, fy + s * 0.06, fx + s * 0.07, fy + s * 0.12);
+      ctx.stroke();
+    } else {
+      ctx.arc(fx, fy + s * 0.04, s * 0.08, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
+    }
+  }
+
+  let lastRender = 0;
+  function render() {
+    if (!ctx) return;
+    const now = performance.now();
+    const realDt = lastRender ? clamp((now - lastRender) / 1000, 0, 1 / 30) : 1 / 60;
+    lastRender = now;
+    if (bench.active) bench.frame(now);
+    if (!world) {
+      newWorld(0, { segments: 8 });
+      placeAtStart();
+    }
+    const w = world;
+    // The attract screen plays itself behind the title and result cards.
+    if (kit.state !== "playing" && kit.state !== "paused" && mode === "play") {
+      mode = "demo";
+      newWorld(0, { segments: 8 });
+      placeAtStart();
+    }
+    if (kit.state !== "playing" && kit.state !== "paused") simulate(realDt);
+    const p = w.p;
+    w.cam.x = lerp(w.cam.x, p.x + 1.8 + (w.rope ? 0.6 : 0), 0.08);
+    w.cam.y = lerp(w.cam.y, Math.min(p.y - 1.6, w.L.platforms.reduce((m, pl) => Math.max(m, pl.y), -9) - 2), 0.06);
+    const theme = w.L.theme;
+    ctx.save();
+    kit.applyShake(ctx);
+    ctx.drawImage(sky(theme), 0, 0, W, H);
+    hills(theme.hill[0], 0.15, 1.6, 0.72, 9);
+    motes(theme, bench.active ? 120 : 26);
+    props(theme);
+    hills(theme.hill[1], 0.4, 1.1, 0.86, 6);
+    for (const pl of w.L.platforms) drawPlatform(pl, theme);
+    for (const pd of w.L.puddles) drawPuddle(pd);
+    for (const s of w.L.springs) drawSpring(s);
+    for (const pad of w.L.pads) drawPad(pad);
+    drawOutlet(w.L.outlet, Math.abs(w.L.outlet.x - p.x) < 6);
+    const target = !w.rope && w.zap <= 0 ? bestHook() : null;
+    for (const h of w.L.hooks) drawHook(h, h === target);
+    for (const s of w.L.sparks) drawSpark(s);
+    for (const c of w.L.cells) drawCell(c);
+    if (bench.active && w.trail.length > 1) {
+      ctx.strokeStyle = "rgba(255,230,120,0.35)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      const from = Math.max(0, w.trail.length - 240);
+      for (let i = from; i < w.trail.length; i++) {
+        const s = toScreen(w.trail[i].x, w.trail[i].y);
+        if (i === from) ctx.moveTo(s.x, s.y);
+        else ctx.lineTo(s.x, s.y);
+      }
+      ctx.stroke();
+    }
+    drawCord();
+    drawTelly();
+    kit.fx.draw(ctx);
+    ctx.restore();
+  }
+
+  function simulate(dt) {
+    const w = world;
+    w.acc += dt;
+    let n = 0;
+    while (w.acc >= STEP && n < 8) {
+      step(STEP);
+      w.acc -= STEP;
+      n += 1;
+    }
+    if (n === 8) w.acc = 0;
+  }
+
+  function update(dt) {
+    if (mode !== "play") return;
+    roomTime += dt;
+    simulate(dt);
+  }
+
+  function updateHud() {
+    if (mode !== "play") return;
+    const cells = world ? world.L.cells.filter((c) => c.got).length : 0;
+    kit.setExtra(`<span>🔋${Math.max(0, batteries)} · Room ${world.L.n + 1}${cells ? ` · ${cells}/3` : ""}</span>`);
+  }
+
+  function startGame() {
+    bench.stop(false);
+    mode = "play";
+    batteries = BATTERIES;
+    stats.sparks = 0;
+    stats.cells = 0;
+    stats.wraps = 0;
+    stats.rooms = 0;
+    holding = false;
+    newWorld(0);
+    placeAtStart();
+    updateHud();
+    kit.toast(`Room 1: ${world.L.theme.name}`, "#ffe9c4");
+  }
+
+  /* ---------------- benchmark: "Test this device" ---------------- */
+  const BENCH_SECONDS = 20;
+  const BENCH_KEY = "fk:family-telly-swing:bench";
+  const bench = {
+    active: false,
+    started: 0,
+    last: 0,
+    frames: [],
+    begin() {
+      if (kit.state === "playing" || kit.state === "paused") return;
+      const overlay = document.getElementById("fk-overlay");
+      overlay.classList.remove("fk-show");
+      overlay.innerHTML = "";
+      mode = "bench";
+      newWorld(2, { segments: 12 });
+      placeAtStart();
+      this.active = true;
+      this.frames = [];
+      this.started = performance.now();
+      this.last = 0;
+      kit.sound.unlock();
+    },
+    frame(now) {
+      if (this.last) this.frames.push(now - this.last);
+      this.last = now;
+      if (now - this.started >= BENCH_SECONDS * 1000) this.stop(true);
+    },
+    stop(show) {
+      if (!this.active) return;
+      this.active = false;
+      mode = "demo";
+      newWorld(0, { segments: 8 });
+      placeAtStart();
+      if (show) showBenchResult(summarize(this.frames));
+    },
+  };
+
+  function summarize(frames) {
+    const sorted = frames.slice().sort((a, b) => a - b);
+    const total = frames.reduce((s, f) => s + f, 0) || 1;
+    const pct = (q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] || 0;
+    const slowest = sorted.slice(Math.floor(sorted.length * 0.99));
+    const low = slowest.length ? 1000 / (slowest.reduce((s, f) => s + f, 0) / slowest.length) : 0;
+    const result = {
+      fps: Math.round((frames.length / total) * 1000),
+      low1: Math.round(low),
+      p95: Math.round(pct(0.95) * 10) / 10,
+      hitches: frames.filter((f) => f > 50).length,
+      frames: frames.length,
+      w: Math.round(W),
+      h: Math.round(H),
+      dpr: view ? view.dpr : 1,
+      ua: navigator.userAgent.slice(0, 160),
+      at: new Date().toISOString(),
+    };
+    result.grade = result.fps >= 55 && result.hitches <= 2 ? "Silky smooth" : result.fps >= 40 ? "Smooth" : result.fps >= 25 ? "Playable" : "Struggling";
+    try {
+      localStorage.setItem(BENCH_KEY, JSON.stringify(result));
+    } catch (_) {
+      /* storage blocked */
+    }
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ source: "arcade-game", slug: "family-telly-swing", type: "benchmark", result }, "*");
+      }
+    } catch (_) {
+      /* parent gone */
+    }
+    return result;
+  }
+
+  function lastBench() {
+    try {
+      return JSON.parse(localStorage.getItem(BENCH_KEY) || "null");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function showBenchResult(r) {
+    const overlay = document.getElementById("fk-overlay");
+    overlay.innerHTML =
+      `<div class="fk-card"><div class="fk-emoji">🧪</div><h2>${r.grade}</h2>` +
+      `<p class="fk-tag">This device ran Telly's busiest room for ${BENCH_SECONDS} seconds.</p>` +
+      `<div class="ts-bench-grid">` +
+      `<div><b>${r.fps}</b><span>frames a second</span></div>` +
+      `<div><b>${r.low1}</b><span>slowest 1% (fps)</span></div>` +
+      `<div><b>${r.p95} ms</b><span>95% of frames under</span></div>` +
+      `<div><b>${r.hitches}</b><span>hitches over 50 ms</span></div>` +
+      `</div>` +
+      `<p class="ts-bench-note">${r.w}×${r.h} at ${r.dpr}× pixels. 60 is perfect; above 40 plays well.</p>` +
+      `<button class="fk-btn" type="button" data-ts="again">↻ Test again</button>` +
+      `<button class="fk-btn fk-ghost" type="button" data-ts="back">Back</button></div>`;
+    overlay.classList.add("fk-show");
+    tap(overlay.querySelector('[data-ts="again"]'), () => bench.begin());
+    tap(overlay.querySelector('[data-ts="back"]'), () => kit.showTitle());
+  }
+
+  function tap(node, fn) {
+    if (!node) return;
+    let down = null;
+    node.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY }; });
+    node.addEventListener("pointerup", (e) => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved < 24) {
+        e.preventDefault();
+        fn();
+      }
+    });
+    node.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        fn();
+      }
+    });
+  }
+
+  // Add "Test this device" to the kit's title card whenever it is shown.
+  const overlayEl = document.getElementById("fk-overlay");
+  new MutationObserver(() => {
+    const card = overlayEl.querySelector(".fk-card");
+    if (!card || !card.querySelector('[data-fk="go"]') || card.querySelector('[data-ts="bench"]')) return;
+    const btn = document.createElement("button");
+    btn.className = "fk-btn fk-ghost";
+    btn.type = "button";
+    btn.dataset.ts = "bench";
+    btn.textContent = "🧪 Test this device";
+    const go = card.querySelector('[data-fk="go"]');
+    go.insertAdjacentElement("afterend", btn);
+    tap(btn, () => bench.begin());
+    const prev = lastBench();
+    if (prev) {
+      const line = document.createElement("div");
+      line.className = "ts-bench-line";
+      line.textContent = `Last test: ${prev.fps} fps (${prev.grade.toLowerCase()})`;
+      btn.insertAdjacentElement("afterend", line);
+    }
+  }).observe(overlayEl, { childList: true, subtree: true });
+
+  /* ---------------- input ---------------- */
+  view = kit.canvas(onResize);
+  kit.pointer(view.canvas, {
+    down: () => press(),
+    up: () => letGo(),
+  });
+  window.addEventListener("keydown", (e) => {
+    if (kit.state !== "playing" || e.repeat) return;
+    if (e.key === " " || e.key === "ArrowUp" || e.key === "w") {
+      e.preventDefault();
+      press();
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (kit.state !== "playing") return;
+    if (e.key === " " || e.key === "ArrowUp" || e.key === "w") letGo();
+  });
+
+  kit.run(update, render);
+
+  // For tests and the phone check: drive the game without a finger.
+  window.__telly = {
+    get mode() { return mode; },
+    get room() { return world ? world.L.n : -1; },
+    get batteries() { return batteries; },
+    get stats() { return { ...stats }; },
+    autopilot(on) { auto = !!on; },
+    bench: () => bench.begin(),
+    level: (n) => buildLevel(n),
+  };
+})();
+</script>
+</body>
+</html>
