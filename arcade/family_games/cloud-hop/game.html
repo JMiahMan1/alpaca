@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cloud Hop</title>
+<!-- @family-kit -->
+<style>
+  html, body { background: #5ec8ff; }
+  #fk-hud .fk-pill { white-space: nowrap; flex: 0 0 auto; }
+  #fk-hud .fk-extra small { font-size: 13px; opacity: 0.9; }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<script>
+(function () {
+  "use strict";
+  const FK = window.FamilyKit;
+  const { clamp, lerp, rand } = FK;
+  const TAU = Math.PI * 2;
+
+  const kit = FK.create({
+    slug: "family-cloud-hop",
+    title: "Cloud Hop",
+    tagline: "Bounce up through the sky!",
+    emoji: "☁️",
+    accent: "#4f9dff",
+    accent2: "#ff7fc0",
+    scoreLabel: "Score",
+    howTo: [
+      ["👆", "Hold your finger left or right to steer. Bouncing is automatic!"],
+      ["☁️", "Pink puff clouds pop after one bounce. Blue ones drift."],
+      ["⭐", "Grab stars for bonus points. Rainbow mushrooms and balloons zoom you up!"],
+      ["💤", "Steer around sleepy storm clouds, and don't fall!"],
+    ],
+    onStart: () => { reset(); },
+    onPause: () => { touching = false; },
+    onResume: () => { touching = false; },
+  });
+
+  /* ---------------- sizing & physics constants ---------------- */
+  let W = 1, Hh = 1, U = 1;          // view width, height, unit = min(w,h)
+  let R = 18;                        // critter radius
+  let JUMP_H = 160, G = 600, V0 = 400, MAXV = 600, MPX = 25;
+  let sprites = null;
+  let rainbowGrad = null;
+
+  let view = null, ctx = null;
+
+  function onResize(v) {
+    view = v; ctx = v.ctx;
+    const oldW = W, oldU = U;
+    W = v.w; Hh = v.h;
+    U = Math.min(W, Hh);
+    if (W / Hh > 1.25) U = Math.min(Hh, W * 0.6); // landscape: base on height
+    R = Math.min(U * 0.05, 36);
+    JUMP_H = U * 0.42;
+    G = (2 * JUMP_H) / (0.7 * 0.7);
+    V0 = G * 0.7;
+    MAXV = U * 2.1;
+    MPX = JUMP_H / 6;
+    buildSprites();
+    if (world.ready && (oldW !== W || oldU !== U)) rescaleWorld(W / oldW, U / oldU);
+  }
+
+  /* ---------------- sprites (pre-rendered once per resize) ---------------- */
+  const CLOUD_STYLES = {
+    normal: { main: "#ffffff", line: "rgba(120,145,215,0.55)", tint: "rgba(165,185,240,0.6)", shadow: "rgba(60,80,150,0.16)" },
+    drift: { main: "#e4f3ff", line: "rgba(70,140,230,0.65)", tint: "rgba(110,170,255,0.55)", shadow: "rgba(40,90,170,0.16)" },
+    puff: { main: "#ffe4f4", line: "rgba(235,120,190,0.65)", tint: "rgba(255,150,205,0.55)", shadow: "rgba(170,60,130,0.14)" },
+    storm: { main: "#a3a8cc", line: "rgba(55,55,105,0.65)", tint: "rgba(70,70,125,0.65)", shadow: "rgba(30,30,70,0.2)" },
+  };
+  const SPR_ASPECT = 0.56;   // sprite height / width
+  const SURF = 0.12;         // standing surface offset from sprite top (fraction of width)
+
+  function cloudShape(c, s, e, dy) {
+    // union of circles + rounded base, normalised to width s
+    c.beginPath();
+    const circ = [[0.27, 0.27, 0.15], [0.5, 0.19, 0.18], [0.73, 0.27, 0.14], [0.39, 0.3, 0.13], [0.62, 0.29, 0.13]];
+    for (const [x, y, r] of circ) {
+      c.moveTo((x + r + e) * s, (y + dy) * s);
+      c.arc(x * s, (y + dy) * s, (r + e) * s, 0, TAU);
+    }
+    c.fill();
+    FK.roundRect(c, (0.07 - e) * s, (0.24 + dy - e) * s, (0.86 + 2 * e) * s, (0.2 + 2 * e) * s, (0.1 + e) * s);
+    c.fill();
+  }
+
+  function makeCloud(style, s, dpr) {
+    const cv = document.createElement("canvas");
+    cv.width = Math.ceil(s * dpr);
+    cv.height = Math.ceil(s * SPR_ASPECT * dpr);
+    const c = cv.getContext("2d");
+    c.scale(dpr, dpr);
+    c.fillStyle = style.line;
+    cloudShape(c, s, 0.014, 0);
+    c.fillStyle = style.main;
+    cloudShape(c, s, 0, 0);
+    c.globalCompositeOperation = "source-atop";
+    const g = c.createLinearGradient(0, s * 0.22, 0, s * 0.46);
+    g.addColorStop(0, "rgba(255,255,255,0)");
+    g.addColorStop(1, style.tint);
+    c.fillStyle = g;
+    c.fillRect(0, 0, s, s);
+    c.fillStyle = "rgba(255,255,255,0.75)";
+    c.beginPath();
+    c.ellipse(s * 0.43, s * 0.1, s * 0.07, s * 0.035, -0.3, 0, TAU);
+    c.fill();
+    c.beginPath();
+    c.ellipse(s * 0.23, s * 0.2, s * 0.04, s * 0.02, -0.4, 0, TAU);
+    c.fill();
+    c.globalCompositeOperation = "destination-over";
+    c.fillStyle = style.shadow;
+    cloudShape(c, s, 0.01, 0.04);
+    return cv;
+  }
+
+  function makeGlow(r, inner, outer, dpr) {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = Math.ceil(r * 2 * dpr);
+    const c = cv.getContext("2d");
+    c.scale(dpr, dpr);
+    const g = c.createRadialGradient(r, r, 0, r, r, r);
+    g.addColorStop(0, inner);
+    g.addColorStop(1, outer);
+    c.fillStyle = g;
+    c.fillRect(0, 0, r * 2, r * 2);
+    return cv;
+  }
+
+  function makeMoon(r, dpr) {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = Math.ceil(r * 2 * dpr);
+    const c = cv.getContext("2d");
+    c.scale(dpr, dpr);
+    c.fillStyle = "#fbf6dc";
+    c.beginPath(); c.arc(r, r, r * 0.98, 0, TAU); c.fill();
+    c.globalCompositeOperation = "destination-out";
+    c.beginPath(); c.arc(r + r * 0.47, r - r * 0.3, r * 0.87, 0, TAU); c.fill();
+    return cv;
+  }
+
+  function buildSprites() {
+    const dpr = Math.min(view.dpr || 1, 2);
+    const s = Math.ceil(U * 0.34);
+    sprites = {
+      s,
+      normal: makeCloud(CLOUD_STYLES.normal, s, dpr),
+      drift: makeCloud(CLOUD_STYLES.drift, s, dpr),
+      puff: makeCloud(CLOUD_STYLES.puff, s, dpr),
+      storm: makeCloud(CLOUD_STYLES.storm, s, dpr),
+      home: makeCloud(CLOUD_STYLES.normal, Math.ceil(Math.min(W * 0.9, U * 0.9)), dpr),
+      sunGlow: makeGlow(U * 0.32, "rgba(255,245,190,0.85)", "rgba(255,230,150,0)", dpr),
+      moonGlow: makeGlow(U * 0.26, "rgba(220,230,255,0.5)", "rgba(200,210,255,0)", dpr),
+      moon: makeMoon(U * 0.06, dpr),
+      starGlow: makeGlow(R * 1.3, "rgba(255,240,140,0.7)", "rgba(255,230,120,0)", dpr),
+    };
+    const cr = springCapR();
+    rainbowGrad = ctx.createLinearGradient(-cr, 0, cr, 0);
+    ["#ff5c7a", "#ffa24c", "#ffe14d", "#5fd97a", "#4fb5ff", "#9a7bff"].forEach((col, i) => rainbowGrad.addColorStop(i / 5, col));
+  }
+  const springCapR = () => U * 0.075;
+  const springH = () => U * 0.075;
+
+  /* ---------------- world state ---------------- */
+  const world = { ready: false };
+  const P = { x: 0, y: 0, vx: 0, vy: 0, squash: 0, sqV: 0, face: 1, blink: 0, stun: 0, balloon: 0, flip: 0 };
+  let plats = [], stars = [], balloons = [], storms = [];
+  let camY = 0, camY0 = 0, startY = 0, minY = 0;
+  let lastRowY = 0, lastRowX = 0, rowCount = 0, lastSpringRow = -10, lastBalloonRow = 0, lastStormRow = 0, nextId = 1, stormSide = 0;
+  let metres = 0, bonus = 0, starCount = 0, streak = 0, bestStreak = 0, lastLandY = 0, lastLandId = 0, nextMilestone = 100;
+  let t = 0, shownHeight = -1;
+  let touching = false, tx = 0, keyL = false, keyR = false;
+  let bgClouds = [], bgStars = [];
+
+  function rescaleWorld(sx, sy) {
+    const fy = (y) => y * sy;
+    P.x *= sx; P.y = fy(P.y); P.vx *= sy; P.vy *= sy;
+    for (const p of plats) { p.x *= sx; p.bx *= sx; p.y = fy(p.y); p.cw *= sy; p.amp *= sx; }
+    for (const s of stars) { s.x *= sx; s.y = fy(s.y); }
+    for (const b of balloons) { b.x *= sx; b.y = fy(b.y); }
+    for (const s of storms) { s.x *= sx; s.bx *= sx; s.y = fy(s.y); s.cw *= sy; s.amp *= sx; }
+    camY = fy(camY); camY0 = fy(camY0); startY = fy(startY); minY = fy(minY);
+    lastRowY = fy(lastRowY); lastRowX *= sx; lastLandY = fy(lastLandY);
+    tx *= sx;
+  }
+
+  function addPlat(x, y, cw, type, extra) {
+    const p = { id: nextId++, x, bx: x, y, cw, type, amp: 0, spd: 0, ph: rand(0, TAU), spring: false, sq: 0, pop: -1, wob: rand(0, TAU) };
+    if (type === "drift") {
+      const room = Math.max(0, (W - cw) / 2 - Math.abs(x - W / 2));
+      p.amp = Math.min(U * rand(0.12, 0.24), room + U * 0.1);
+      p.spd = rand(0.7, 1.2);
+      // keep it fully on screen: clamp base so base +- amp stays inside
+      const lo = cw / 2 + p.amp, hi = W - cw / 2 - p.amp;
+      if (lo < hi) p.bx = clamp(x, lo, hi); else { p.bx = W / 2; p.amp = Math.max(0, W / 2 - cw / 2); }
+      p.x = p.bx + Math.sin(p.ph) * p.amp;
+    }
+    if (extra) Object.assign(p, extra);
+    plats.push(p);
+    return p;
+  }
+
+  function heightAt(y) { return Math.max(0, (startY - y) / MPX); }
+  function diffAt(y) { const m = heightAt(y); return clamp(m / 700, 0, 1); }
+
+  function reset() {
+    plats = []; stars = []; balloons = []; storms = [];
+    nextId = 1;
+    startY = 0;
+    camY = -Hh * 0.8; camY0 = camY;
+    const home = addPlat(W / 2, 0, Math.min(W * 0.9, U * 0.9), "normal", { home: true });
+    P.x = W / 2; P.y = home.y - R * 0.9 - JUMP_H * 0.2; P.vx = 0; P.vy = 0; P.squash = 0; P.sqV = 0;
+    P.stun = 0; P.balloon = 0; P.flip = 0; P.face = 1;
+    minY = 0; lastRowY = 0; lastRowX = W / 2; rowCount = 0; lastSpringRow = -10; lastBalloonRow = 0; lastStormRow = 0; stormSide = 0;
+    metres = 0; bonus = 0; starCount = 0; streak = 0; bestStreak = 0; lastLandY = 0; lastLandId = home.id; nextMilestone = 100;
+    t = 0; shownHeight = -1; touching = false; tx = W / 2;
+    // the first rows are easy and close together
+    generate();
+    bgClouds = [];
+    for (let i = 0; i < 9; i++) bgClouds.push({ x: Math.random(), y: Math.random(), s: rand(0.35, 0.8), a: rand(0.25, 0.5), drift: rand(4, 12) });
+    bgStars = [];
+    for (let i = 0; i < 90; i++) bgStars.push({ x: Math.random(), y: Math.random(), r: rand(0.6, 1.8), ph: rand(0, TAU), sp: rand(1, 3) });
+    world.ready = true;
+    updateHud(true);
+  }
+
+  function pickType(m, d, row) {
+    const pDrift = m < 20 ? 0 : 0.08 + 0.3 * d;
+    const pPuff = m < 35 ? 0 : 0.06 + 0.24 * d;
+    const r = Math.random();
+    if (r < pDrift) return "drift";
+    if (r < pDrift + pPuff) return "puff";
+    return "normal";
+  }
+
+  function generate() {
+    while (lastRowY > camY - Hh * 0.9) spawnRow();
+  }
+
+  function spawnRow() {
+    const d = diffAt(lastRowY);
+    const m = heightAt(lastRowY);
+    rowCount++;
+    let gap = JUMP_H * lerp(0.42, 0.76, d) * rand(0.88, 1.1);
+    if (rowCount < 4) gap = JUMP_H * rand(0.4, 0.46);
+    gap = Math.min(gap, JUMP_H * 0.8);
+    const y = lastRowY - gap;
+    const cw = U * lerp(0.31, 0.21, d) * rand(0.93, 1.07);
+    const margin = cw / 2 + 4;
+    const maxDx = Math.min(U * lerp(0.5, 0.78, d), W - 2 * margin);
+    let x = lastRowX + rand(-1, 1) * maxDx;
+    if (stormSide !== 0) {
+      // the cloud after a storm goes back the other way
+      x = lastRowX - stormSide * rand(0.15, 1) * maxDx;
+      stormSide = 0;
+    }
+    if (x < margin) x = margin + (margin - x);
+    if (x > W - margin) x = W - margin - (x - (W - margin));
+    x = clamp(x, margin, W - margin);
+    const type = rowCount < 4 ? "normal" : pickType(m, d, rowCount);
+    const plat = addPlat(x, y, cw, type);
+    // rainbow mushroom springs
+    if (type === "normal" && rowCount > 6 && rowCount - lastSpringRow > 7 && Math.random() < 0.07) {
+      plat.spring = true; lastSpringRow = rowCount;
+    }
+    // balloons: rare
+    let usedAbove = plat.spring;
+    if (!usedAbove && m > 50 && rowCount - lastBalloonRow > 40 && Math.random() < 0.06) {
+      balloons.push({ x: plat.x, y: y - JUMP_H * 0.75, ph: rand(0, TAU), alive: true, plat: plat });
+      lastBalloonRow = rowCount; usedAbove = true;
+    }
+    // stars
+    if (!usedAbove && rowCount > 2) {
+      const r = Math.random();
+      if (r < 0.08 && rowCount > 8) {
+        for (let k = 0; k < 3; k++) stars.push({ x: plat.bx, y: y - JUMP_H * (0.35 + k * 0.22), ph: k * 0.6, alive: true });
+      } else if (r < 0.36) {
+        stars.push({ x: plat.bx, y: y - JUMP_H * rand(0.45, 0.7), ph: rand(0, TAU), alive: true });
+      }
+    }
+    // sleepy storm clouds: float beside the landing cloud, on the side away from where
+    // the critter comes from, and the next cloud is forced to the other side.
+    if (m > 140 && rowCount - lastStormRow > 4 && type !== "drift" && !plat.spring && Math.random() < 0.12 + 0.3 * d) {
+      const sw = U * 0.27;
+      let side = Math.sign(x - lastRowX) || (Math.random() < 0.5 ? -1 : 1);
+      const off = cw / 2 + sw * 0.45 + R * 2 + U * 0.05;
+      let sx = x + side * off;
+      if (sx < sw * 0.3 || sx > W - sw * 0.3) { side = -side; sx = x + side * off; }
+      const cameFrom = Math.sign(lastRowX - x);
+      if (sx >= sw * 0.3 && sx <= W - sw * 0.3 && (side !== cameFrom || Math.abs(lastRowX - x) < cw * 0.3)) {
+        storms.push({ x: sx, bx: sx, y: y - JUMP_H * 0.12, cw: sw, amp: U * 0.02, ph: rand(0, TAU), bonked: false, bt: 0 });
+        lastStormRow = rowCount;
+        stormSide = side;
+      }
+    }
+    // extra clouds: more on wide screens, fewer as it gets harder
+    const extras = (W / U > 1.35 ? 1 : 0) + (Math.random() < (1 - d) * 0.4 ? 1 : 0);
+    for (let k = 0; k < extras; k++) {
+      const ecw = cw * rand(0.85, 1);
+      for (let tries = 0; tries < 6; tries++) {
+        const ex = rand(ecw / 2 + 4, W - ecw / 2 - 4);
+        if (Math.abs(ex - x) < (ecw + cw) * 0.62) continue;
+        const ey = y + gap * rand(-0.35, 0.3);
+        let clash = false;
+        for (const q of plats) {
+          if (Math.abs(q.y - ey) < U * 0.16 && Math.abs(q.bx - ex) < (q.cw + ecw) * 0.55 + q.amp) { clash = true; break; }
+        }
+        for (const q of storms) {
+          if (Math.abs(q.y - ey) < U * 0.25 && Math.abs(q.bx - ex) < (q.cw + ecw) * 0.6) { clash = true; break; }
+        }
+        if (clash) continue;
+        const et = m > 35 && Math.random() < 0.3 + d * 0.3 ? "puff" : (m > 20 && Math.random() < 0.3 ? "drift" : "normal");
+        addPlat(ex, ey, ecw, et);
+        break;
+      }
+    }
+    // sleepy storm clouds, placed well away from the climbing path
+    lastRowY = y;
+    lastRowX = plat.bx;
+  }
+
+  /* ---------------- input ---------------- */
+  kit.pointer(null, {
+    down(p) { touching = true; tx = p.x; },
+    move(p) { tx = p.x; },
+    up() { touching = false; },
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") keyL = true;
+    if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") keyR = true;
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") keyL = false;
+    if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") keyR = false;
+  });
+  window.addEventListener("blur", () => { keyL = keyR = false; touching = false; });
+
+  /* ---------------- update ---------------- */
+  function updateHud(force) {
+    const score = metres + bonus;
+    if (force || score !== kit.score) kit.setScore(score, { quiet: true });
+    if (force || metres !== shownHeight) {
+      shownHeight = metres;
+      kit.setExtra(`<small>⬆</small><span>${metres} m</span>`);
+    }
+  }
+
+  function step(dt, demo) {
+    t += dt;
+    // horizontal steering with a little inertia
+    let desired = 0, k = 3.5;
+    if (!demo) {
+      if (keyL || keyR) { desired = (keyR ? 1 : 0) - (keyL ? 1 : 0); desired *= MAXV * 0.85; k = 7; }
+      else if (touching) { desired = clamp((tx - P.x) * 8, -MAXV, MAXV); k = 11; }
+    }
+    if (P.stun > 0) { P.stun -= dt; k *= 0.15; }
+    P.vx += (desired - P.vx) * Math.min(1, dt * k);
+    P.x += P.vx * dt;
+    if (P.x < 0) P.x += W; else if (P.x > W) P.x -= W;
+    if (Math.abs(P.vx) > U * 0.15) P.face = P.vx > 0 ? 1 : -1;
+
+    // moving clouds
+    for (const p of plats) {
+      if (p.type === "drift") p.x = p.bx + Math.sin(t * p.spd + p.ph) * p.amp;
+      if (p.sq > 0) p.sq = Math.max(0, p.sq - dt * 4);
+      if (p.pop >= 0) p.pop += dt;
+    }
+    for (const s of storms) {
+      if (s.bonked) { s.bt += dt; s.x += dt * U * 0.5 * (s.x < W / 2 ? -1 : 1); s.y -= dt * U * 0.1; }
+      else s.x = s.bx + Math.sin(t * 0.6 + s.ph) * s.amp;
+    }
+
+    // vertical
+    const prevFeet = P.y + R * 0.9;
+    if (P.balloon > 0) {
+      P.balloon -= dt;
+      P.vy += (-V0 * 0.95 - P.vy) * Math.min(1, dt * 4);
+      if (P.balloon <= 0) {
+        P.vy = -V0 * 0.9;
+        kit.fx.burst(P.x, P.y - R * 3.2, ["#ff6b8b", "#ffd166", "#fff"], 14, { speed: 200, size: 4 });
+        kit.sound.play("pop", 0.8);
+      }
+    } else {
+      P.vy += G * dt;
+    }
+    P.y += P.vy * dt;
+    const feet = P.y + R * 0.9;
+
+    if (P.vy > 0 && P.balloon <= 0) {
+      for (const p of plats) {
+        if (p.pop >= 0) continue;
+        const half = p.cw * 0.46 + R * 0.55;
+        const dx = Math.abs(P.x - p.x);
+        if (p.spring) {
+          const st = p.y - springH();
+          if (dx < springCapR() + R * 0.6 && prevFeet <= st + 6 && feet >= st - 1) { land(p, st, true); break; }
+        }
+        if (dx < half && prevFeet <= p.y + 6 && feet >= p.y - 1) { land(p, p.y, p.spring); break; }
+      }
+    }
+
+    // spring squash
+    const spring = 180, damp = 14;
+    P.sqV += (-spring * P.squash - damp * P.sqV) * dt;
+    P.squash += P.sqV * dt;
+    if (P.flip > 0) P.flip = Math.max(0, P.flip - dt * 2.2);
+
+    if (demo) { camFollow(dt); return; }
+
+    // pickups
+    const rr = R + U * 0.04;
+    for (const s of stars) {
+      if (!s.alive) continue;
+      const dx = s.x - P.x, dy = s.y - P.y;
+      if (dx * dx + dy * dy < rr * rr) {
+        s.alive = false;
+        starCount++;
+        const val = 10;
+        bonus += val;
+        kit.fx.burst(s.x, s.y, ["#ffe14d", "#fff6b0", "#ffb84d"], 12, { speed: 200, size: 4, shape: "star", gravity: 200 });
+        kit.fx.text(s.x, s.y - R, "+" + val, { color: "#ffe66b", size: Math.round(clamp(U * 0.06, 20, 32)) });
+        kit.sound.play("coin");
+        kit.haptic(8);
+      }
+    }
+    for (const b of balloons) {
+      if (!b.alive) continue;
+      const by = b.y + Math.sin(t * 2 + b.ph) * U * 0.02;
+      const dx = b.x - P.x, dy = by - P.y;
+      const br = R + U * 0.06;
+      if (dx * dx + dy * dy < br * br) {
+        b.alive = false;
+        P.balloon = 2.1;
+        bonus += 25;
+        kit.fx.text(P.x, P.y - R * 2, "Up, up! +25", { color: "#ff9ec4", size: Math.round(clamp(U * 0.055, 18, 30)) });
+        kit.sound.play("whoosh");
+        kit.sound.tone(500, 0.6, { type: "triangle", slide: 1200, vol: 0.18 });
+        kit.haptic(15);
+      }
+    }
+    for (const s of storms) {
+      if (s.bonked) continue;
+      const ex = s.cw * 0.4 + R * 0.7, ey = s.cw * 0.16 + R * 0.7;
+      const cy = s.y + s.cw * 0.1;
+      const dx = (P.x - s.x) / ex, dy = (P.y - cy) / ey;
+      if (dx * dx + dy * dy < 1) {
+        s.bonked = true;
+        P.vy = Math.max(P.vy, V0 * 0.3);
+        P.vx = (P.x < s.x ? -1 : 1) * MAXV * 0.5;
+        P.stun = 0.45;
+        P.balloon = 0;
+        P.flip = 1;
+        streak = 0;
+        kit.shake(7, 0.3);
+        kit.haptic(35);
+        kit.sound.play("bad");
+        kit.sound.play("thud");
+        kit.toast("Bonk! Sleepy cloud 💤", "#dfe4ff");
+        kit.fx.burst(P.x, P.y, ["#c6cbef", "#ffffff", "#8ea0ff"], 10, { speed: 160, size: 4 });
+      }
+    }
+
+    // height score
+    if (P.y < minY) minY = P.y;
+    const m = Math.floor(Math.max(0, startY - (minY + R * 0.9) - JUMP_H) / MPX);
+    if (m > metres) {
+      metres = m;
+      if (metres >= nextMilestone) {
+        kit.toast(`${nextMilestone} m! ${milestoneWord(nextMilestone)}`, "#fff7c2");
+        kit.sound.play("combo", Math.min(6, nextMilestone / 100));
+        nextMilestone += 100;
+      }
+    }
+    updateHud(false);
+
+    camFollow(dt);
+    generate();
+    cull();
+
+    // fell off the bottom
+    if (P.y - R - camY > Hh) {
+      kit.gameOver({
+        title: "Whoops!",
+        emoji: "☁️",
+        reason: metres >= 300 ? "What a climb! You touched the stars." : "You slipped through the clouds.",
+        stats: [["Height", metres + " m"], ["Stars", starCount], ["Best streak", bestStreak]],
+      });
+    }
+  }
+
+  function milestoneWord(m) {
+    const words = ["Wow!", "Super!", "Amazing!", "Sky high!", "Incredible!", "Starry!", "Legend!"];
+    return words[Math.min(words.length - 1, Math.floor(m / 100) - 1)];
+  }
+
+  function land(p, surfY, boosted) {
+    P.y = surfY - R * 0.9;
+    const big = !!boosted;
+    P.vy = big ? -V0 * 1.75 : -V0;
+    P.squash = big ? 0.55 : 0.38;
+    P.sqV = 0;
+    p.sq = 1;
+    if (kit.state !== "playing") return;
+    // streak: landing on a higher cloud than last time
+    if (p.id !== lastLandId && p.y < lastLandY - 1) {
+      streak++;
+      if (streak > bestStreak) bestStreak = streak;
+      if (streak % 10 === 0) {
+        bonus += 20;
+        kit.fx.text(P.x, P.y - R * 2.2, `${streak} hops! +20`, { color: "#9ff0ff", size: Math.round(clamp(U * 0.05, 18, 28)) });
+        kit.sound.play("combo", streak / 10);
+      }
+    } else if (p.y > lastLandY + 1) {
+      streak = 0;
+    }
+    lastLandId = p.id; lastLandY = p.y;
+    const pitch = 1 + Math.min(streak, 12) * 0.035;
+    if (big) {
+      kit.sound.play("whoosh");
+      kit.sound.tone(300, 0.35, { type: "triangle", slide: 1100, vol: 0.22 });
+      kit.fx.burst(P.x, surfY, ["#ff5c7a", "#ffa24c", "#ffe14d", "#5fd97a", "#4fb5ff", "#9a7bff"], 18, { speed: 260, size: 5, shape: "star", gravity: 300 });
+      kit.haptic(20);
+    } else {
+      kit.sound.play("bounce", pitch);
+      kit.fx.burst(P.x, surfY + 2, p.type === "puff" ? "#ffd0ea" : "#ffffff", 6, { speed: 90, size: 4, life: 0.45, gravity: 120, lift: 20 });
+    }
+    if (p.type === "puff") {
+      p.pop = 0;
+      kit.sound.play("pop", 1.2);
+      kit.fx.burst(p.x, p.y + p.cw * 0.1, ["#ffe4f4", "#ffc4e4", "#ffffff"], 14, { speed: 150, size: 7, life: 0.6, gravity: -40, lift: 0 });
+    }
+  }
+
+  function camFollow(dt) {
+    const target = P.y - Hh * 0.52;
+    if (target < camY) camY += (target - camY) * Math.min(1, dt * 7);
+    const topLimit = P.y - Math.max(Hh * 0.3, 90 + R * 3);
+    if (camY > topLimit) camY = topLimit;
+  }
+
+  function cull() {
+    const bottom = camY + Hh + U * 0.5;
+    let j = 0;
+    for (let i = 0; i < plats.length; i++) {
+      const p = plats[i];
+      if (p.y < bottom && !(p.pop > 0.35)) plats[j++] = p;
+    }
+    plats.length = j;
+    j = 0;
+    for (let i = 0; i < stars.length; i++) if (stars[i].alive && stars[i].y < bottom) stars[j++] = stars[i];
+    stars.length = j;
+    j = 0;
+    for (let i = 0; i < balloons.length; i++) if (balloons[i].alive && balloons[i].y < bottom) balloons[j++] = balloons[i];
+    balloons.length = j;
+    j = 0;
+    for (let i = 0; i < storms.length; i++) if (storms[i].y < bottom && storms[i].bt < 3) storms[j++] = storms[i];
+    storms.length = j;
+  }
+
+  /* ---------------- rendering ---------------- */
+  const SKY = [
+    // metres, top, bottom
+    [0, [94, 200, 255], [214, 244, 255]],
+    [160, [80, 170, 245], [255, 232, 186]],
+    [320, [126, 104, 210], [255, 160, 128]],
+    [480, [52, 40, 128], [196, 98, 160]],
+    [640, [14, 18, 70], [52, 44, 128]],
+    [1000, [6, 8, 40], [24, 50, 110]],
+  ];
+  const skyTop = [0, 0, 0], skyBot = [0, 0, 0];
+  function skyAt(m) {
+    let i = 0;
+    while (i < SKY.length - 2 && m > SKY[i + 1][0]) i++;
+    const a = SKY[i], b = SKY[i + 1];
+    const k = clamp((m - a[0]) / (b[0] - a[0]), 0, 1);
+    const e = k * k * (3 - 2 * k);
+    for (let c = 0; c < 3; c++) { skyTop[c] = lerp(a[1][c], b[1][c], e); skyBot[c] = lerp(a[2][c], b[2][c], e); }
+  }
+  const rgb = (a, alpha) => alpha === undefined
+    ? `rgb(${a[0] | 0},${a[1] | 0},${a[2] | 0})`
+    : `rgba(${a[0] | 0},${a[1] | 0},${a[2] | 0},${alpha})`;
+
+  function viewMetres() { return Math.max(0, (startY - (camY + Hh * 0.5)) / MPX - 10); }
+
+  function drawSky() {
+    const m = viewMetres();
+    skyAt(m);
+    const g = ctx.createLinearGradient(0, 0, 0, Hh);
+    g.addColorStop(0, rgb(skyTop));
+    g.addColorStop(1, rgb(skyBot));
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, Hh);
+    const climb = camY0 - camY;
+
+    // night stars
+    const night = clamp((m - 380) / 260, 0, 1);
+    if (night > 0) {
+      ctx.fillStyle = "#fff";
+      for (const s of bgStars) {
+        const y = ((s.y * Hh + climb * 0.03) % Hh + Hh) % Hh;
+        ctx.globalAlpha = night * (0.45 + 0.55 * Math.sin(t * s.sp + s.ph) * 0.5 + 0.275);
+        ctx.fillRect(s.x * W - s.r / 2, y - s.r / 2, s.r, s.r);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // sun sets as you climb, moon rises at night
+    const sunK = clamp(m / 420, 0, 1);
+    if (sunK < 1) {
+      const sx = W * 0.8, sy = lerp(Hh * 0.2, Hh * 1.05, sunK * sunK);
+      const sr = U * 0.32;
+      ctx.globalAlpha = 1 - sunK * 0.6;
+      ctx.drawImage(sprites.sunGlow, sx - sr, sy - sr, sr * 2, sr * 2);
+      ctx.fillStyle = sunK < 0.6 ? "#fff3b0" : "#ffc48a";
+      ctx.beginPath(); ctx.arc(sx, sy, U * 0.075, 0, TAU); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (night > 0) {
+      const mx = W * 0.2, my = lerp(Hh * 0.5, Hh * 0.22, night);
+      const mr = U * 0.26;
+      ctx.globalAlpha = night;
+      ctx.drawImage(sprites.moonGlow, mx - mr, my - mr, mr * 2, mr * 2);
+      const r = U * 0.06;
+      ctx.drawImage(sprites.moon, mx - r, my - r, r * 2, r * 2);
+      ctx.globalAlpha = 1;
+    }
+
+    // distant clouds (parallax)
+    const span = Hh + U * 0.6;
+    const day = 1 - night * 0.7;
+    for (const c of bgClouds) {
+      const cw = U * c.s * 0.9;
+      const x = (((c.x * (W + cw) + t * c.drift) % (W + cw)) + (W + cw)) % (W + cw) - cw / 2;
+      const y = ((c.y * span + climb * 0.12) % span + span) % span - U * 0.3;
+      ctx.globalAlpha = c.a * day;
+      ctx.drawImage(sprites.normal, x - cw / 2, y, cw, cw * SPR_ASPECT);
+    }
+    ctx.globalAlpha = 1;
+
+    // rolling hills at the start
+    const hillBase = Hh * 0.92 + climb * 0.35;
+    if (hillBase - U * 0.3 < Hh) {
+      drawHills(hillBase - U * 0.12, U * 0.16, 0.9, "#8fdc8a", 1.3);
+      drawHills(hillBase + climb * 0.15, U * 0.12, 1.7, "#5fc46f", 0);
+    }
+  }
+
+  function drawHills(base, amp, freq, col, ph) {
+    if (base - amp > Hh) return;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(0, Hh + 2);
+    const n = 24;
+    for (let i = 0; i <= n; i++) {
+      const x = (i / n) * W;
+      const y = base - amp * (0.55 + 0.45 * Math.sin((i / n) * TAU * freq + ph));
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W, Hh + 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawCloud(p) {
+    const spr = p.home ? sprites.home : (sprites[p.type] || sprites.normal);
+    const sq = p.sq;
+    let sx = 1 + sq * 0.06, sy = 1 - sq * 0.12;
+    let alpha = 1;
+    if (p.type === "puff") {
+      const w = Math.sin(t * 3 + p.wob) * 0.03;
+      sx += w; sy -= w;
+      if (p.pop >= 0) {
+        const k = p.pop / 0.35;
+        sx = sy = 1 + k * 0.5;
+        alpha = Math.max(0, 1 - k);
+      }
+    }
+    const cw = p.cw * sx, ch = p.cw * SPR_ASPECT * sy;
+    const top = p.y - p.cw * SURF * sy + sq * p.cw * 0.03;
+    if (alpha < 1) ctx.globalAlpha = alpha;
+    ctx.drawImage(spr, p.x - cw / 2, top, cw, ch);
+    if (alpha < 1) ctx.globalAlpha = 1;
+    if (p.type === "drift" && p.amp > 0) {
+      // little speed streaks on the trailing side
+      const v = Math.cos(t * p.spd + p.ph);
+      const dir = v > 0 ? -1 : 1;
+      const a = Math.abs(v) * 0.8;
+      if (a > 0.1) {
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = "rgba(255,255,255,0.95)";
+        ctx.lineWidth = Math.max(2, U * 0.008);
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        const ex = p.x + dir * p.cw * 0.5;
+        ctx.moveTo(ex, p.y + p.cw * 0.03); ctx.lineTo(ex + dir * p.cw * 0.16, p.y + p.cw * 0.03);
+        ctx.moveTo(ex - dir * p.cw * 0.02, p.y + p.cw * 0.12); ctx.lineTo(ex + dir * p.cw * 0.1, p.y + p.cw * 0.12);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+    if (p.spring) drawSpring(p);
+  }
+
+  function drawSpring(p) {
+    const cr = springCapR(), h = springH();
+    const s = p.sq;
+    ctx.save();
+    ctx.translate(p.x, p.y + 2);
+    ctx.scale(1 + s * 0.25, 1 - s * 0.35);
+    // stem
+    ctx.fillStyle = "#fff4dc";
+    FK.roundRect(ctx, -cr * 0.36, -h * 0.75, cr * 0.72, h * 0.8, cr * 0.2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(200,150,110,0.35)";
+    FK.roundRect(ctx, -cr * 0.36, -h * 0.3, cr * 0.72, h * 0.35, cr * 0.2);
+    ctx.fill();
+    // rainbow cap
+    ctx.translate(0, -h * 0.62);
+    ctx.fillStyle = "rgba(80,40,120,0.35)";
+    ctx.beginPath(); ctx.ellipse(0, 2, cr * 1.04, cr * 0.32, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = rainbowGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, cr, cr * 0.72, 0, Math.PI, TAU);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath(); ctx.arc(-cr * 0.45, -cr * 0.32, cr * 0.13, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(cr * 0.1, -cr * 0.52, cr * 0.1, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(cr * 0.55, -cr * 0.25, cr * 0.11, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawStorm(s) {
+    const cw = s.cw;
+    const bob = Math.sin(t * 1.4 + s.ph) * U * 0.01;
+    const y = s.y + bob;
+    ctx.globalAlpha = s.bonked ? Math.max(0, 1 - s.bt / 1.5) : 1;
+    ctx.drawImage(sprites.storm, s.x - cw / 2, y - cw * SURF, cw, cw * SPR_ASPECT);
+    // face
+    const fx = s.x, fy = y + cw * 0.12;
+    ctx.strokeStyle = "#3b3a6b";
+    ctx.fillStyle = "#3b3a6b";
+    ctx.lineWidth = Math.max(2, cw * 0.022);
+    ctx.lineCap = "round";
+    const ex = cw * 0.11;
+    if (!s.bonked) {
+      ctx.beginPath();
+      ctx.arc(fx - ex, fy, cw * 0.04, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.moveTo(fx + ex + cw * 0.04 * Math.cos(0.15 * Math.PI), fy + cw * 0.04 * Math.sin(0.15 * Math.PI));
+      ctx.arc(fx + ex, fy, cw * 0.04, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(fx, fy + cw * 0.08, cw * 0.025, cw * 0.018, 0, 0, TAU); ctx.fill();
+      // floating Zzz
+      ctx.font = `900 ${Math.round(cw * 0.12)}px ${fontFam}`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      for (let i = 0; i < 3; i++) {
+        const k = ((t * 0.5 + i / 3) % 1);
+        ctx.globalAlpha = Math.sin(k * Math.PI) * 0.9;
+        ctx.font = `900 ${Math.round(cw * (0.08 + k * 0.08))}px ${fontFam}`;
+        ctx.fillStyle = "#eef0ff";
+        ctx.fillText("z", s.x + cw * (0.3 + k * 0.15), y - cw * (0.02 + k * 0.22));
+      }
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.beginPath(); ctx.arc(fx - ex, fy, cw * 0.035, 0, TAU); ctx.arc(fx + ex, fy, cw * 0.035, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(fx, fy + cw * 0.08, cw * 0.03, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawStar(s) {
+    const pulse = 1 + Math.sin(t * 5 + s.ph) * 0.08;
+    const r = U * 0.038 * pulse;
+    const gr = R * 1.3;
+    ctx.drawImage(sprites.starGlow, s.x - gr, s.y - gr, gr * 2, gr * 2);
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(Math.sin(t * 2 + s.ph) * 0.25);
+    FK.starPath(ctx, 0, 0, r, r * 0.5, 5);
+    ctx.fillStyle = "#ffd23f";
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, r * 0.14);
+    ctx.strokeStyle = "#e89a12";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.beginPath(); ctx.arc(-r * 0.2, -r * 0.25, r * 0.16, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBalloon(x, y, sway, stringTo) {
+    const br = U * 0.055;
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y + br * 1.15);
+    if (stringTo) ctx.quadraticCurveTo(x + sway * br, (y + stringTo) / 2 + br, P.x, stringTo);
+    else ctx.quadraticCurveTo(x + sway * br, y + br * 2, x, y + br * 2.8);
+    ctx.stroke();
+    ctx.fillStyle = "#ff5f86";
+    ctx.beginPath(); ctx.ellipse(x, y, br * 0.85, br, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x - br * 0.15, y + br * 1.15); ctx.lineTo(x + br * 0.15, y + br * 1.15); ctx.lineTo(x, y + br * 0.95); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
+    ctx.beginPath(); ctx.ellipse(x - br * 0.3, y - br * 0.38, br * 0.18, br * 0.28, -0.5, 0, TAU); ctx.fill();
+  }
+
+  let fontFam = "system-ui, sans-serif";
+  try { fontFam = getComputedStyle(document.body).fontFamily || fontFam; } catch (_) { /* keep default */ }
+
+  function drawShadow() {
+    // soft shadow on the nearest cloud below
+    let best = null, bestD = JUMP_H * 1.6;
+    const feet = P.y + R * 0.9;
+    for (const p of plats) {
+      if (p.pop >= 0) continue;
+      const d = p.y - feet;
+      if (d < -2 || d > bestD) continue;
+      if (Math.abs(P.x - p.x) > p.cw * 0.45) continue;
+      best = p; bestD = d;
+    }
+    if (!best) return;
+    const k = 1 - clamp(bestD / (JUMP_H * 1.6), 0, 1);
+    ctx.fillStyle = `rgba(60,70,140,${(0.22 * k).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.ellipse(P.x, best.y + 1, R * (0.5 + 0.5 * k), R * 0.22 * (0.5 + 0.5 * k), 0, 0, TAU);
+    ctx.fill();
+  }
+
+  function drawCritter(x, y) {
+    // squash & stretch: squash>0 is squashed, stretch while moving fast vertically
+    const stretch = clamp(Math.abs(P.vy) / V0, 0, 1.4) * 0.1;
+    const sqY = 1 - P.squash * 0.55 + stretch;
+    const sqX = 1 + P.squash * 0.45 - stretch * 0.6;
+    ctx.save();
+    ctx.translate(x, y + R * (1 - sqY) * 0.9);
+    if (P.flip > 0) ctx.rotate(P.face * (1 - P.flip) * TAU);
+    ctx.scale(sqX, sqY);
+    const r = R;
+    const tilt = clamp(P.vx / MAXV, -1, 1) * 0.18;
+    ctx.rotate(tilt);
+    // feet
+    const tuck = P.vy < 0 ? 0.15 : 0;
+    ctx.fillStyle = "#ff9d3c";
+    ctx.beginPath(); ctx.ellipse(-r * 0.42, r * (0.86 - tuck), r * 0.28, r * 0.16, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(r * 0.42, r * (0.86 - tuck), r * 0.28, r * 0.16, 0, 0, TAU); ctx.fill();
+    // sprout
+    ctx.strokeStyle = "#3fae5a"; ctx.lineWidth = Math.max(2, r * 0.12); ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(0, -r * 0.92); ctx.quadraticCurveTo(r * 0.05, -r * 1.2, -r * 0.05, -r * 1.3); ctx.stroke();
+    ctx.fillStyle = "#5fd07a";
+    ctx.beginPath(); ctx.ellipse(-r * 0.22, -r * 1.3, r * 0.22, r * 0.11, -0.5, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(r * 0.16, -r * 1.36, r * 0.2, r * 0.1, 0.6, 0, TAU); ctx.fill();
+    // body
+    ctx.fillStyle = "#e9a21f";
+    ctx.beginPath(); ctx.arc(0, 0, r * 1.06, 0, TAU); ctx.fill();
+    ctx.fillStyle = "#ffc93c";
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+    ctx.fillStyle = "#ffdc6e";
+    ctx.beginPath(); ctx.arc(-r * 0.12, -r * 0.14, r * 0.8, 0, TAU); ctx.fill();
+    ctx.fillStyle = "#fff0c2";
+    ctx.beginPath(); ctx.ellipse(0, r * 0.45, r * 0.55, r * 0.4, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath(); ctx.ellipse(-r * 0.45, -r * 0.5, r * 0.18, r * 0.11, -0.6, 0, TAU); ctx.fill();
+    // cheeks
+    ctx.fillStyle = "rgba(255,120,140,0.55)";
+    ctx.beginPath(); ctx.ellipse(-r * 0.58, r * 0.12, r * 0.17, r * 0.11, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(r * 0.58, r * 0.12, r * 0.17, r * 0.11, 0, 0, TAU); ctx.fill();
+    // eyes look toward travel
+    const lx = clamp(P.vx / MAXV, -1, 1) * r * 0.12;
+    const ly = clamp(P.vy / V0, -1, 1) * r * 0.08;
+    const blink = (t % 3.7) < 0.12 || P.stun > 0;
+    const ex = r * 0.3, ey = -r * 0.12;
+    if (blink) {
+      ctx.strokeStyle = "#2b1d3f"; ctx.lineWidth = Math.max(2, r * 0.1);
+      ctx.beginPath();
+      if (P.stun > 0) {
+        // dizzy x-eyes are too scary; use squeezed > < eyes
+        ctx.moveTo(-ex - r * 0.12, ey - r * 0.1); ctx.lineTo(-ex + r * 0.06, ey); ctx.lineTo(-ex - r * 0.12, ey + r * 0.1);
+        ctx.moveTo(ex + r * 0.12, ey - r * 0.1); ctx.lineTo(ex - r * 0.06, ey); ctx.lineTo(ex + r * 0.12, ey + r * 0.1);
+      } else {
+        ctx.moveTo(-ex - r * 0.12, ey); ctx.lineTo(-ex + r * 0.12, ey);
+        ctx.moveTo(ex - r * 0.12, ey); ctx.lineTo(ex + r * 0.12, ey);
+      }
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath(); ctx.ellipse(-ex, ey, r * 0.2, r * 0.25, 0, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(ex, ey, r * 0.2, r * 0.25, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = "#2b1d3f";
+      ctx.beginPath(); ctx.arc(-ex + lx, ey + ly, r * 0.12, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(ex + lx, ey + ly, r * 0.12, 0, TAU); ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(-ex + lx + r * 0.04, ey + ly - r * 0.05, r * 0.045, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(ex + lx + r * 0.04, ey + ly - r * 0.05, r * 0.045, 0, TAU); ctx.fill();
+    }
+    // mouth: smile, or "o" when falling fast
+    ctx.strokeStyle = "#7a3b1e"; ctx.fillStyle = "#7a3b1e"; ctx.lineWidth = Math.max(1.5, r * 0.08);
+    if (P.vy > V0 * 0.9 || P.stun > 0) {
+      ctx.beginPath(); ctx.ellipse(lx * 0.5, r * 0.25, r * 0.09, r * 0.11, 0, 0, TAU); ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.arc(lx * 0.5, r * 0.14, r * 0.17, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function render() {
+    if (!sprites || !world.ready) return;
+    const st = kit.state;
+    if (st === "title") step(1 / 60, true);
+    ctx.save();
+    kit.applyShake(ctx);
+    drawSky();
+    ctx.translate(0, -Math.round(camY * 2) / 2);
+    const top = camY - U * 0.4, bot = camY + Hh + U * 0.4;
+    for (const p of plats) if (p.y > top && p.y < bot) drawCloud(p);
+    for (const s of storms) if (s.y > top && s.y < bot) drawStorm(s);
+    for (const s of stars) if (s.y > top && s.y < bot) drawStar(s);
+    for (const b of balloons) {
+      if (b.y > top && b.y < bot) drawBalloon(b.x, b.y + Math.sin(t * 2 + b.ph) * U * 0.02, Math.sin(t * 1.7 + b.ph) * 0.4, 0);
+    }
+    drawShadow();
+    if (P.balloon > 0) {
+      const bx = P.x + Math.sin(t * 3) * R * 0.3;
+      drawBalloon(bx, P.y - R * 3.2, Math.sin(t * 2), P.y - R);
+    }
+    drawCritter(P.x, P.y);
+    if (P.x < R * 1.4) drawCritter(P.x + W, P.y);
+    else if (P.x > W - R * 1.4) drawCritter(P.x - W, P.y);
+    kit.fx.draw(ctx);
+    ctx.restore();
+  }
+
+  kit.canvas(onResize);
+  // read-only debug hook for automated checks
+  window.__cloudHop = { P, get plats() { return plats; }, get storms() { return storms; }, get camY() { return camY; }, get metres() { return metres; }, get h() { return Hh; },
+    warp(m) { startY += m * MPX; nextMilestone = Math.ceil((m + 1) / 100) * 100; } };
+  reset();
+  kit.run(step, render);
+})();
+</script>
+</body>
+</html>

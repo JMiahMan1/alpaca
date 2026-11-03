@@ -1,0 +1,1347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f6b2a">
+<title>Garden Pipes</title>
+<!-- @family-kit -->
+<style>
+  html, body { background: #2f6b2a; }
+  #gp-safe {
+    position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+  .fk-card ul.fk-how li { background: rgba(60, 170, 90, 0.1); }
+  .fk-stats div { background: rgba(60, 170, 90, 0.1); }
+  /* Narrow phones: keep the sound and pause buttons on screen. */
+  @media (max-width: 400px) {
+    #fk-hud { gap: 6px; }
+    #fk-hud .fk-pill { padding: 6px 9px; font-size: 17px; }
+    #fk-hud [data-fk="score"] small, #fk-hud [data-fk="best"] small { display: none; }
+  }
+  @media (max-width: 350px) { #fk-hud [data-fk="best"] { display: none; } }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<div id="gp-safe"></div>
+<script>
+(() => {
+  "use strict";
+  const FK = window.FamilyKit;
+  const { clamp, lerp, easeOutBack, easeOutCubic, roundRect } = FK;
+  const RM = FK.reducedMotion;
+
+  /* ---------------- Grid logic (pure) ---------------- */
+  // Directions: 0=N 1=E 2=S 3=W; a tile's connections are a 4-bit mask (bit d).
+  const DX = [0, 1, 0, -1];
+  const DY = [-1, 0, 1, 0];
+  const OPP = (d) => (d + 2) & 3;
+  const rotCW = (m) => ((m << 1) | (m >> 3)) & 15;
+  const rotK = (m, k) => { for (let i = 0; i < (k & 3); i++) m = rotCW(m); return m; };
+  const bitCount = (m) => (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1);
+  function minTurns(from, to) {
+    for (let k = 0; k < 4; k++) if (rotK(from, k) === to) return k;
+    return -1;
+  }
+  const rnd = Math.random;
+  const rint = (lo, hi) => Math.floor(lo + rnd() * (hi - lo + 1));
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
+  }
+  function mulberry(seed) {
+    let a = seed | 0;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // [short side, long side, flowers]
+  const LEVELS = [[4, 4, 1], [5, 5, 2], [5, 6, 2], [6, 6, 3], [6, 7, 3], [7, 7, 3], [7, 8, 4]];
+  function levelSpec(level, maxCols, maxRows, landscape) {
+    const s = LEVELS[Math.min(level - 1, LEVELS.length - 1)];
+    let cols = landscape ? s[1] : s[0];
+    let rows = landscape ? s[0] : s[1];
+    cols = clamp(cols, 3, Math.max(3, maxCols));
+    rows = clamp(rows, 3, Math.max(3, maxRows));
+    const flowers = Math.max(1, Math.min(s[2], Math.floor((cols * rows) / 8)));
+    return {
+      cols, rows, flowers,
+      crosses: level >= 4,
+      decoyRate: level < 2 ? 0 : Math.min(0.6, 0.15 * (level - 1)),
+    };
+  }
+
+  // Uniform random spanning tree (Wilson's algorithm); parent[] points toward root.
+  function wilson(cols, rows, root) {
+    const n = cols * rows;
+    const inTree = new Uint8Array(n);
+    const next = new Int32Array(n).fill(-1);
+    const parent = new Int32Array(n).fill(-1);
+    inTree[root] = 1;
+    const order = shuffle([...Array(n).keys()]);
+    for (const start of order) {
+      let u = start;
+      while (!inTree[u]) {
+        const x = u % cols, y = (u / cols) | 0;
+        let d, nx, ny;
+        do { d = (rnd() * 4) | 0; nx = x + DX[d]; ny = y + DY[d]; } while (nx < 0 || ny < 0 || nx >= cols || ny >= rows);
+        next[u] = ny * cols + nx;
+        u = next[u];
+      }
+      u = start;
+      while (!inTree[u]) { parent[u] = next[u]; inTree[u] = 1; u = next[u]; }
+    }
+    return parent;
+  }
+  function dirBetween(cols, a, b) {
+    const ax = a % cols, ay = (a / cols) | 0, bx = b % cols, by = (b / cols) | 0;
+    for (let d = 0; d < 4; d++) if (ax + DX[d] === bx && ay + DY[d] === by) return d;
+    return -1;
+  }
+  const manhattan = (cols, a, b) => Math.abs((a % cols) - (b % cols)) + Math.abs(((a / cols) | 0) - ((b / cols) | 0));
+
+  // Water flow from the spring: which cells are wet, BFS depth and the side water entered from.
+  function flow(b, useSol) {
+    const { cols, rows, cells } = b;
+    const n = cols * rows;
+    const wet = new Uint8Array(n), depth = new Int16Array(n), entry = new Int8Array(n).fill(-1);
+    const maskAt = (i) => (useSol && cells[i].sol !== undefined ? cells[i].sol : cells[i].mask);
+    const q = [b.src];
+    wet[b.src] = 1;
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h], m = maskAt(i), x = i % cols, y = (i / cols) | 0;
+      for (let d = 0; d < 4; d++) {
+        if (!(m & (1 << d))) continue;
+        const nx = x + DX[d], ny = y + DY[d];
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+        const j = ny * cols + nx;
+        if (wet[j] || cells[j].t === "decor") continue;
+        if (maskAt(j) & (1 << OPP(d))) { wet[j] = 1; depth[j] = depth[i] + 1; entry[j] = OPP(d); q.push(j); }
+      }
+    }
+    return { wet, depth, entry };
+  }
+  const allWatered = (b, f) => b.flowers.every((i) => f.wet[i]);
+
+  const DECOR = ["stones", "stones", "mushroom", "bush", "bush", "daisies", "daisies", "tuft", "clover"];
+  const FLOWER_STYLES = [
+    { petal: "#ff7eb6", dark: "#e0508f", center: "#ffd23f", n: 8 },
+    { petal: "#ffd23f", dark: "#f0a500", center: "#7a4a1e", n: 12 },
+    { petal: "#b48cff", dark: "#8a5ce6", center: "#fff2a8", n: 6 },
+    { petal: "#ff6b5a", dark: "#d9473a", center: "#ffe08a", n: 8 },
+    { petal: "#ffffff", dark: "#d8dce6", center: "#ffc93c", n: 10 },
+  ];
+
+  function generate(level, maxCols, maxRows, landscape) {
+    const sp = levelSpec(level, maxCols, maxRows, landscape);
+    const { cols, rows } = sp;
+    let want = sp.flowers;
+    const n = cols * rows;
+    for (let attempt = 0; attempt < 2000; attempt++) {
+      if (attempt > 0 && attempt % 500 === 0 && want > 1) want--;
+      const relax = attempt % 500 > 250;
+      // Spring: usually on the garden edge.
+      let src;
+      if (rnd() < 0.75) {
+        const side = rint(0, 3);
+        if (side === 0) src = rint(0, cols - 1);
+        else if (side === 1) src = (rows - 1) * cols + rint(0, cols - 1);
+        else if (side === 2) src = rint(0, rows - 1) * cols;
+        else src = rint(0, rows - 1) * cols + cols - 1;
+      } else src = rint(0, n - 1);
+      const parent = wilson(cols, rows, src);
+      const deg = new Uint8Array(n);
+      for (let i = 0; i < n; i++) if (parent[i] >= 0) { deg[i]++; deg[parent[i]]++; }
+      const depth = new Int16Array(n).fill(-1);
+      depth[src] = 0;
+      const depthOf = (i) => {
+        if (depth[i] >= 0) return depth[i];
+        const chain = [];
+        let u = i;
+        while (depth[u] < 0) { chain.push(u); u = parent[u]; }
+        let d = depth[u];
+        for (let k = chain.length - 1; k >= 0; k--) depth[chain[k]] = ++d;
+        return depth[i];
+      };
+      for (let i = 0; i < n; i++) depthOf(i);
+      let minD = want === 1 ? Math.max(4, cols + rows - 3) : Math.max(3, Math.floor((cols + rows) / 2));
+      if (relax) minD = Math.max(2, minD - 2);
+      const cands = [];
+      for (let i = 0; i < n; i++) {
+        if (i !== src && deg[i] === 1 && depth[i] >= minD && manhattan(cols, i, src) >= 2) cands.push({ i, k: depth[i] + rnd() * 4 });
+      }
+      cands.sort((a, b) => b.k - a.k);
+      const flowers = [];
+      for (const c of cands) {
+        if (flowers.length >= want) break;
+        if (flowers.every((f) => manhattan(cols, f, c.i) >= 2)) flowers.push(c.i);
+      }
+      if (flowers.length < want) continue;
+      const sol = new Uint8Array(n), inNet = new Uint8Array(n);
+      inNet[src] = 1;
+      for (const f of flowers) {
+        let u = f;
+        inNet[u] = 1;
+        while (u !== src) {
+          const p = parent[u];
+          const d = dirBetween(cols, u, p);
+          sol[u] |= 1 << d;
+          sol[p] |= 1 << OPP(d);
+          u = p;
+          inNet[u] = 1;
+        }
+      }
+      let netCount = 0;
+      for (let i = 0; i < n; i++) netCount += inNet[i];
+      if (!relax && netCount < Math.max(6, Math.round(n * 0.36))) continue;
+      let bad = false;
+      for (let i = 0; i < n; i++) if (inNet[i] && sol[i] === 15 && (!sp.crosses || i === src)) bad = true;
+      if (bad) continue;
+      if (!relax && bitCount(sol[src]) > 2) continue;
+
+      const seedBase = (rnd() * 1e9) | 0;
+      const cells = [];
+      const flowerSet = new Set(flowers);
+      const order = shuffle([0, 1, 2, 3, 4]);
+      for (let i = 0; i < n; i++) {
+        const seed = seedBase + i * 7919;
+        if (i === src) cells.push({ t: "src", mask: sol[i], sol: sol[i], seed });
+        else if (flowerSet.has(i)) cells.push({ t: "flower", mask: sol[i], sol: sol[i], seed, style: FLOWER_STYLES[order[flowers.indexOf(i) % 5]] });
+        else if (inNet[i]) cells.push({ t: "pipe", mask: sol[i], sol: sol[i], seed });
+        else cells.push({ t: "decor", mask: 0, seed, decor: DECOR[(mulberry(seed)() * DECOR.length) | 0] });
+      }
+      const pipes = [];
+      for (let i = 0; i < n; i++) if (cells[i].t === "pipe") pipes.push(i);
+      const b = { cols, rows, cells, src, flowers, level, minTaps: 0 };
+      // Scramble until it takes real work and is not already solved.
+      const need = Math.max(2, Math.ceil(pipes.length * 0.45));
+      let ok = false;
+      for (let tries = 0; tries < 60 && !ok; tries++) {
+        let total = 0;
+        for (const i of pipes) {
+          const c = cells[i];
+          c.mask = rotK(c.sol, rint(0, 3));
+          total += minTurns(c.mask, c.sol);
+        }
+        b.minTaps = total;
+        ok = total >= need && !allWatered(b, flow(b, false));
+      }
+      if (!ok) continue;
+      // Decoy pipes in the empty soil (later gardens).
+      if (sp.decoyRate > 0) {
+        const decoyShapes = level >= 3 ? [5, 3, 3, 7] : [5, 3];
+        for (let i = 0; i < n; i++) {
+          const c = cells[i];
+          if (c.t !== "decor" || rnd() > sp.decoyRate) continue;
+          c.t = "pipe";
+          c.decoy = true;
+          c.mask = rotK(decoyShapes[rint(0, decoyShapes.length - 1)], rint(0, 3));
+          delete c.decor;
+        }
+        if (allWatered(b, flow(b, false))) {
+          // Extremely rare: a decoy happened to finish the job. Remove them all.
+          for (const c of cells) if (c.decoy) { c.t = "decor"; c.mask = 0; c.decoy = false; c.decor = "tuft"; }
+        }
+      }
+      if (allWatered(b, flow(b, false)) || !allWatered(b, flow(b, true))) continue;
+      return b;
+    }
+    throw new Error("garden generator failed");
+  }
+
+  /* ---------------- Kit + canvas ---------------- */
+  const HOW = [
+    ["🔄", "Tap a pipe to turn it."],
+    ["💧", "Connect the spring to every thirsty flower."],
+    ["⏱️", "Each watered garden adds 15 seconds."],
+    ["⭐", "Fewer taps and quick gardens earn bonus points."],
+  ];
+  const kit = FK.create({
+    slug: "family-garden-pipes",
+    title: "Garden Pipes",
+    tagline: "Turn the pipes, water the flowers!",
+    emoji: "🌻",
+    accent: "#2f9e5b",
+    accent2: "#7cc84a",
+    scoreLabel: "Points",
+    howTo: HOW,
+    onStart: startGame,
+  });
+
+  const safeProbe = document.getElementById("gp-safe");
+  const safe = { t: 0, r: 0, b: 0, l: 0 };
+  function readSafe() {
+    const cs = getComputedStyle(safeProbe);
+    safe.t = parseFloat(cs.paddingTop) || 0;
+    safe.r = parseFloat(cs.paddingRight) || 0;
+    safe.b = parseFloat(cs.paddingBottom) || 0;
+    safe.l = parseFloat(cs.paddingLeft) || 0;
+  }
+
+  const FONT = getComputedStyle(document.body).fontFamily || "system-ui, sans-serif";
+  let view = null;
+  let bgCache = null;
+  let grassPattern = null;
+
+  function makeCanvas(w, h) {
+    const c = document.createElement("canvas");
+    const dpr = view ? view.dpr : 1;
+    c.width = Math.max(1, Math.ceil(w * dpr));
+    c.height = Math.max(1, Math.ceil(h * dpr));
+    const g = c.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c._w = w;
+    c._h = h;
+    return { c, g };
+  }
+
+  function buildGrass() {
+    const S = 160;
+    const { c, g } = makeCanvas(S, S);
+    g.fillStyle = "#5aa845";
+    g.fillRect(0, 0, S, S);
+    const r = mulberry(12345);
+    const greens = ["#4f9a3c", "#64b44c", "#6fbd55", "#468f36", "#7cc65e"];
+    for (let i = 0; i < 260; i++) {
+      const x = r() * S, y = r() * S, len = 3 + r() * 6, a = -Math.PI / 2 + (r() - 0.5) * 1.1;
+      g.strokeStyle = greens[(r() * greens.length) | 0];
+      g.globalAlpha = 0.5 + r() * 0.5;
+      g.lineWidth = 1 + r() * 1.2;
+      g.lineCap = "round";
+      for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) {
+        if (x + ox < -10 || x + ox > S + 10 || y + oy < -10 || y + oy > S + 10) continue;
+        g.beginPath();
+        g.moveTo(x + ox, y + oy);
+        g.lineTo(x + ox + Math.cos(a) * len, y + oy + Math.sin(a) * len);
+        g.stroke();
+      }
+    }
+    g.globalAlpha = 1;
+    const p = view.ctx.createPattern(c, "repeat");
+    try { p.setTransform(new DOMMatrix().scale(1 / view.dpr)); } catch (_) { /* older engines: slightly larger blades */ }
+    return p;
+  }
+
+  function buildBg() {
+    const { w, h } = view;
+    const { c, g } = makeCanvas(w, h);
+    g.fillStyle = "#4f9a3c";
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = grassPattern;
+    g.fillRect(0, 0, w, h);
+    // soft mowing stripes
+    g.save();
+    g.globalAlpha = 0.07;
+    g.fillStyle = "#e8ffd0";
+    const step = 56;
+    for (let x = -h; x < w + h; x += step * 2) {
+      g.beginPath();
+      g.moveTo(x, 0); g.lineTo(x + step, 0); g.lineTo(x + step + h * 0.5, h); g.lineTo(x + h * 0.5, h);
+      g.fill();
+    }
+    g.restore();
+    // a few scattered wild flowers on the lawn around the bed
+    const r = mulberry(777);
+    for (let i = 0; i < Math.round((w * h) / 9000); i++) {
+      const x = r() * w, y = r() * h;
+      g.fillStyle = ["#fff", "#ffe36e", "#ffb3d1"][(r() * 3) | 0];
+      g.globalAlpha = 0.85;
+      for (let k = 0; k < 5; k++) {
+        const a = (k / 5) * Math.PI * 2;
+        g.beginPath(); g.arc(x + Math.cos(a) * 2.2, y + Math.sin(a) * 2.2, 1.6, 0, Math.PI * 2); g.fill();
+      }
+      g.fillStyle = "#f5b400";
+      g.beginPath(); g.arc(x, y, 1.2, 0, Math.PI * 2); g.fill();
+    }
+    g.globalAlpha = 1;
+    const vg = g.createRadialGradient(w / 2, h * 0.55, Math.min(w, h) * 0.3, w / 2, h * 0.55, Math.max(w, h) * 0.8);
+    vg.addColorStop(0, "rgba(0,0,0,0)");
+    vg.addColorStop(1, "rgba(10,40,10,0.45)");
+    g.fillStyle = vg;
+    g.fillRect(0, 0, w, h);
+    // top band behind the HUD
+    const tg = g.createLinearGradient(0, 0, 0, 90 + safe.t);
+    tg.addColorStop(0, "rgba(15,50,20,0.45)");
+    tg.addColorStop(1, "rgba(15,50,20,0)");
+    g.fillStyle = tg;
+    g.fillRect(0, 0, w, 90 + safe.t);
+    return c;
+  }
+
+  /* ---------------- Layout ---------------- */
+  function area() {
+    const top = safe.t + 66;
+    const bottom = safe.b + 40;
+    const side = 12;
+    return {
+      x: safe.l + side, y: top,
+      w: Math.max(100, view.w - safe.l - safe.r - side * 2),
+      h: Math.max(100, view.h - top - bottom),
+    };
+  }
+  const FRAME = 0.3; // hedge width in cells
+  function limits() {
+    const a = area();
+    return {
+      maxCols: Math.floor(a.w / 44 - FRAME * 2),
+      maxRows: Math.floor(a.h / 44 - FRAME * 2),
+      landscape: a.w > a.h * 1.12,
+    };
+  }
+  function layout(b) {
+    const a = area();
+    const cell = Math.floor(Math.min(a.w / (b.cols + FRAME * 2), a.h / (b.rows + FRAME * 2), 96));
+    const gw = b.cols * cell, gh = b.rows * cell;
+    const bx = Math.round(a.x + (a.w - gw) / 2);
+    const by = Math.round(a.y + (a.h - gh) / 2);
+    const P = Math.ceil(cell * 0.55);
+    b.L = { cell, bx, by, gw, gh, P, frame: Math.round(cell * FRAME), W: gw + P * 2, H: gh + P * 2 };
+    b.boardC = null;
+    b.pipeC = null;
+    b.pipeDirty = true;
+  }
+
+  /* ---------------- Board state ---------------- */
+  let T = 0; // animation clock (s)
+  const FILL = RM ? 0.08 : 0.22; // seconds to fill one cell
+  const STEP = RM ? 0.03 : 0.09; // delay per cell along the flow
+  const ROT = RM ? 0.07 : 0.2;
+
+  function makeBoard(level) {
+    const lim = limits();
+    const b = generate(level, lim.maxCols, lim.maxRows, lim.landscape);
+    const n = b.cols * b.rows;
+    for (const c of b.cells) { c.rotT = 1; c.rotFrom = 0; c.bump = 0; }
+    b.isWet = new Uint8Array(n);
+    b.wetP = new Float32Array(n);
+    b.wetStart = new Float32Array(n);
+    b.entry = new Int8Array(n).fill(-1);
+    b.bloom = {};
+    b.bloomed = {};
+    for (const f of b.flowers) { b.bloom[f] = 0; b.bloomed[f] = false; }
+    b.taps = 0;
+    b.elapsed = 0;
+    b.solved = false;
+    b.fired = false;
+    b.bestCorrect = 0;
+    b.stuck = 0;
+    b.hint = -1;
+    layout(b);
+    recompute(b, true);
+    b.bestCorrect = correctCount(b);
+    return b;
+  }
+
+  function correctCount(b) {
+    let k = 0;
+    for (const c of b.cells) if (c.t === "pipe" && !c.decoy && c.mask === c.sol) k++;
+    return k;
+  }
+
+  function recompute(b, initial) {
+    const f = flow(b, false);
+    const n = b.cols * b.rows;
+    let minNew = 1e9;
+    for (let i = 0; i < n; i++) if (f.wet[i] && !b.isWet[i]) minNew = Math.min(minNew, f.depth[i]);
+    let newly = 0;
+    for (let i = 0; i < n; i++) {
+      if (f.wet[i] && !b.isWet[i]) {
+        b.wetStart[i] = initial ? T - 10 : T + (f.depth[i] - minNew) * STEP;
+        if (initial) b.wetP[i] = 1;
+        else b.wetP[i] = 0;
+        newly++;
+      }
+      b.isWet[i] = f.wet[i];
+      b.entry[i] = f.entry[i];
+    }
+    if (!initial && newly) {
+      kit.sound.tone(280, 0.22, { type: "sine", slide: 520, vol: 0.09 });
+      kit.sound.tone(420, 0.16, { type: "sine", slide: 760, vol: 0.05, delay: 0.06 });
+    }
+    if (!initial && !b.solved && allWatered(b, f)) onSolved(b);
+    return newly;
+  }
+
+  /* ---------------- Game state ---------------- */
+  const RUN_SECONDS = 180;
+  let cur = null;
+  let old = null;
+  let phase = "title"; // title | play | celebrate | slide
+  let phaseT = 0;
+  let slideT = 0;
+  let level = 1;
+  let timeLeft = RUN_SECONDS;
+  let gardens = 0;
+  let taps = 0;
+  let bestTime = null;
+  let lastShown = -1;
+  let butterflies = [];
+  let hintToastShown = false;
+  let pendingScore = null;
+
+  function startGame() {
+    level = 1;
+    timeLeft = RUN_SECONDS;
+    gardens = 0;
+    taps = 0;
+    bestTime = null;
+    lastShown = -1;
+    butterflies = [];
+    hintToastShown = false;
+    pendingScore = null;
+    old = null;
+    cur = makeBoard(1);
+    phase = "play";
+    phaseT = 0;
+    showTime();
+  }
+
+  function showTime() {
+    const s = Math.max(0, Math.ceil(timeLeft));
+    if (s === lastShown) return;
+    const ticking = lastShown !== -1 && s < lastShown;
+    lastShown = s;
+    const mm = Math.floor(s / 60), ss = s % 60;
+    const low = s <= 15;
+    kit.setExtra(
+      `<small>⏱</small><span style="color:${low ? "#ffd166" : "#fff"}">${mm}:${String(ss).padStart(2, "0")}</span>`,
+    );
+    if (low && ticking && s > 0 && phase === "play") kit.sound.tone(s <= 5 ? 1046 : 880, 0.05, { type: "triangle", vol: 0.1 });
+  }
+
+  function onSolved(b) {
+    b.solved = true;
+    phase = "celebrate";
+    phaseT = 0;
+    b.hint = -1;
+    gardens++;
+    const t = b.elapsed;
+    if (bestTime === null || t < bestTime) bestTime = t;
+    const base = b.cols * b.rows * 5 + b.flowers.length * 25;
+    const par = 8 + b.minTaps * 1.6;
+    const speed = Math.round(Math.max(0, par - t) * 8);
+    let eff = 0, effLabel = "";
+    if (b.taps <= b.minTaps) { eff = 60; effLabel = "Perfect taps!"; }
+    else if (b.taps <= Math.ceil(b.minTaps * 1.4)) { eff = 30; effLabel = "Tidy pipes!"; }
+    pendingScore = { base, speed, eff, effLabel };
+    timeLeft += 15;
+  }
+
+  function fireCelebration(b) {
+    b.fired = true;
+    const L = b.L;
+    const ps = pendingScore || { base: 0, speed: 0, eff: 0, effLabel: "" };
+    pendingScore = null;
+    kit.addScore(ps.base + ps.speed + ps.eff);
+    kit.sound.play("win");
+    kit.haptic(30);
+    kit.toast(["Garden watered! 🌼", "Lovely blooms! 🌷", "So green! 🌿", "Happy flowers! 🌻"][gardens % 4], "#fff7c2");
+    const cx = L.bx + L.gw / 2, cy = L.by + L.gh / 2;
+    kit.fx.text(cx, cy - 30, `+${ps.base}`, { color: "#fff", size: 34, life: 1.3 });
+    if (ps.speed > 0) setTimeout(() => kit.fx.text(cx, cy + 10, `Speedy +${ps.speed}`, { color: "#bff3ff", size: 22, life: 1.2 }), 220);
+    if (ps.eff > 0) setTimeout(() => kit.fx.text(cx, cy + 44, `${ps.effLabel} +${ps.eff}`, { color: "#ffe066", size: 22, life: 1.2 }), 440);
+    setTimeout(() => kit.fx.text(cx, cy + 78, "+15s", { color: "#c8ffb0", size: 20, life: 1.1 }), 640);
+    for (const f of b.flowers) {
+      const p = cellCenter(b, f);
+      const st = b.cells[f].style;
+      kit.fx.burst(p.x, p.y, [st.petal, st.center, "#ffffff", "#fff59d"], 18, { speed: 200, shape: "star", size: 5, gravity: 220, life: 0.9 });
+      if (!RM) {
+        for (let k = 0; k < 2; k++) {
+          butterflies.push({
+            x: p.x, y: p.y, vx: (rnd() - 0.5) * 120, vy: -60 - rnd() * 60, ph: rnd() * 6,
+            color: ["#ffb347", "#ff8fc7", "#8fd3ff", "#fff07a", "#c9a0ff"][rint(0, 4)], s: 0.7 + rnd() * 0.5, life: 0,
+          });
+        }
+      }
+    }
+  }
+
+  function startSlide() {
+    level++;
+    old = cur;
+    cur = makeBoard(level);
+    lastShown = -1;
+    showTime();
+    if (RM) { old = null; phase = "play"; return; }
+    phase = "slide";
+    slideT = 0;
+    kit.sound.play("whoosh");
+  }
+
+  function cellCenter(b, i) {
+    const L = b.L, c = i % b.cols, r = (i / b.cols) | 0;
+    return { x: L.bx + (c + 0.5) * L.cell, y: L.by + (r + 0.5) * L.cell };
+  }
+
+  /* ---------------- Input ---------------- */
+  function dispOff(c) {
+    if (c.rotT >= 1) return 0;
+    return c.rotFrom * (1 - (RM ? easeOutCubic(c.rotT) : easeOutBack(c.rotT)));
+  }
+
+  function tapAt(x, y) {
+    if (phase !== "play" || !cur) return;
+    const b = cur, L = b.L;
+    const col = Math.floor((x - L.bx) / L.cell), row = Math.floor((y - L.by) / L.cell);
+    if (col < 0 || row < 0 || col >= b.cols || row >= b.rows) return;
+    const i = row * b.cols + col;
+    const c = b.cells[i];
+    if (c.t !== "pipe") {
+      const p = cellCenter(b, i);
+      if (c.t === "decor") kit.fx.burst(p.x, p.y, ["#7cc65e", "#a5dc7a", "#4f9a3c"], 5, { speed: 70, size: 3, gravity: 120, life: 0.45 });
+      kit.sound.tone(c.t === "decor" ? 240 : 520, 0.06, { type: "sine", vol: 0.08 });
+      c.bump = 1;
+      return;
+    }
+    const off = dispOff(c);
+    c.mask = rotCW(c.mask);
+    c.rotFrom = Math.min(off + 1, 2.5);
+    c.rotT = 0;
+    b.pipeDirty = true;
+    b.taps++;
+    taps++;
+    kit.sound.tone(1900, 0.02, { type: "square", vol: 0.035 });
+    kit.sound.tone(460, 0.07, { type: "triangle", vol: 0.15, slide: 330 });
+    kit.haptic(8);
+    recompute(b, false);
+    const cc = correctCount(b);
+    if (cc > b.bestCorrect) { b.bestCorrect = cc; b.stuck = 0; }
+    if (b.hint === i && c.mask === c.sol) { b.hint = -1; b.stuck = 0; }
+  }
+
+  function pickHint(b) {
+    const n = b.cols * b.rows;
+    const wrong = [];
+    for (let i = 0; i < n; i++) {
+      const c = b.cells[i];
+      if (c.t === "pipe" && !c.decoy && c.mask !== c.sol) wrong.push(i);
+    }
+    if (!wrong.length) return -1;
+    // Prefer a wrong tile touching the water: the next step from where the water stops.
+    const near = wrong.filter((i) => {
+      const x = i % b.cols, y = (i / b.cols) | 0;
+      for (let d = 0; d < 4; d++) {
+        const nx = x + DX[d], ny = y + DY[d];
+        if (nx < 0 || ny < 0 || nx >= b.cols || ny >= b.rows) continue;
+        const j = ny * b.cols + nx;
+        if (b.isWet[j] && (b.cells[j].sol & (1 << OPP(d))) && (b.cells[i].sol & (1 << d))) return true;
+      }
+      return false;
+    });
+    const pool = near.length ? near : wrong;
+    return pool[rint(0, pool.length - 1)];
+  }
+
+  /* ---------------- Update ---------------- */
+  function update(dt) {
+    if (phase === "play" && cur) {
+      timeLeft -= dt;
+      cur.elapsed += dt;
+      cur.stuck += dt;
+      if (cur.hint < 0 && cur.stuck > 20) {
+        cur.hint = pickHint(cur);
+        if (cur.hint >= 0 && !hintToastShown) { hintToastShown = true; kit.toast("Try the glowing pipe ✨", "#fff7c2"); }
+      }
+      if (timeLeft <= 0) {
+        timeLeft = 0;
+        showTime();
+        endRun();
+        return;
+      }
+      showTime();
+    } else if (phase === "celebrate" && cur) {
+      phaseT += dt;
+      if (!cur.fired && (cur.flowers.every((f) => cur.bloom[f] > 0.85) || phaseT > 3)) { fireCelebration(cur); phaseT = 0; }
+      if (cur.fired && phaseT > (RM ? 0.9 : 1.7)) startSlide();
+    } else if (phase === "slide") {
+      slideT += dt / 0.6;
+      if (slideT >= 1) { slideT = 1; old = null; phase = "play"; }
+    }
+  }
+
+  function endRun() {
+    phase = "over";
+    kit.gameOver({
+      title: gardens > 0 ? "What a garden!" : "Time's up!",
+      reason: gardens > 0 ? `You watered ${gardens} garden${gardens === 1 ? "" : "s"} before sunset.` : "The flowers are still thirsty. Try again!",
+      emoji: gardens >= 3 ? "🌻" : "🌱",
+      win: gardens >= 3,
+      stats: [
+        ["Gardens", gardens],
+        ["Taps", taps],
+        ["Best time", bestTime === null ? "–" : `${bestTime.toFixed(1)}s`],
+      ],
+    });
+  }
+
+  /* ---------------- Drawing ---------------- */
+  function armsPath(g, x, y, h, m) {
+    g.beginPath();
+    for (let d = 0; d < 4; d++) {
+      if (!(m & (1 << d))) continue;
+      g.moveTo(x, y);
+      g.lineTo(x + DX[d] * h, y + DY[d] * h);
+    }
+  }
+  function circle(g, x, y, r) {
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+  }
+
+  // Terracotta trough pipe; water is drawn separately on top of the groove.
+  function drawShell(g, x, y, s, m) {
+    const h = s / 2;
+    g.lineCap = "butt";
+    // shadow
+    g.strokeStyle = "rgba(40,18,4,0.32)";
+    g.fillStyle = "rgba(40,18,4,0.32)";
+    g.lineWidth = s * 0.36;
+    g.save();
+    g.translate(s * 0.025, s * 0.05);
+    armsPath(g, x, y, h * 0.96, m);
+    g.stroke();
+    circle(g, x, y, s * 0.2);
+    g.fill();
+    g.restore();
+    // body
+    g.strokeStyle = "#b8602f";
+    g.lineWidth = s * 0.32;
+    armsPath(g, x, y, h, m);
+    g.stroke();
+    g.strokeStyle = "#d98250";
+    g.lineWidth = s * 0.24;
+    armsPath(g, x, y, h, m);
+    g.stroke();
+    // collars near each edge
+    for (let d = 0; d < 4; d++) {
+      if (!(m & (1 << d))) continue;
+      const px = -DY[d], py = DX[d];
+      const a0 = h * 0.7, a1 = h * 0.92, w = s * 0.2;
+      g.fillStyle = "#9c4d25";
+      g.beginPath();
+      g.moveTo(x + DX[d] * a0 + px * w, y + DY[d] * a0 + py * w);
+      g.lineTo(x + DX[d] * a1 + px * w, y + DY[d] * a1 + py * w);
+      g.lineTo(x + DX[d] * a1 - px * w, y + DY[d] * a1 - py * w);
+      g.lineTo(x + DX[d] * a0 - px * w, y + DY[d] * a0 - py * w);
+      g.closePath();
+      g.fill();
+      g.fillStyle = "rgba(255,210,170,0.35)";
+      const hl = d === 0 || d === 2 ? -1 : 1;
+      g.beginPath();
+      g.moveTo(x + DX[d] * a0 + px * w * hl, y + DY[d] * a0 + py * w * hl);
+      g.lineTo(x + DX[d] * a1 + px * w * hl, y + DY[d] * a1 + py * w * hl);
+      g.lineTo(x + DX[d] * a1 + px * w * hl * 0.7, y + DY[d] * a1 + py * w * hl * 0.7);
+      g.lineTo(x + DX[d] * a0 + px * w * hl * 0.7, y + DY[d] * a0 + py * w * hl * 0.7);
+      g.fill();
+    }
+    // center fitting
+    const k = bitCount(m);
+    if (k >= 2 && m !== 5 && m !== 10) {
+      g.fillStyle = "#a9552a";
+      circle(g, x, y, s * 0.205);
+      g.fill();
+      g.fillStyle = "#d98250";
+      circle(g, x, y, s * 0.165);
+      g.fill();
+    }
+    // groove
+    g.lineCap = "round";
+    g.strokeStyle = "#4a2614";
+    g.lineWidth = s * 0.13;
+    armsPath(g, x, y, h, m);
+    g.stroke();
+    g.lineCap = "butt";
+    g.strokeStyle = "#4a2614";
+    armsPath(g, x, y, h, m);
+    g.stroke();
+  }
+
+  function drawWater(g, x, y, s, m, entry, p) {
+    if (p <= 0) return;
+    const h = s / 2;
+    g.beginPath();
+    let any = false;
+    for (let d = 0; d < 4; d++) {
+      if (!(m & (1 << d))) continue;
+      if (d === entry) {
+        const t = clamp(p * 2, 0, 1);
+        g.moveTo(x + DX[d] * h, y + DY[d] * h);
+        g.lineTo(x + DX[d] * h * (1 - t), y + DY[d] * h * (1 - t));
+        any = true;
+      } else {
+        const t = entry < 0 ? p : clamp(p * 2 - 1, 0, 1);
+        if (t <= 0) continue;
+        g.moveTo(x, y);
+        g.lineTo(x + DX[d] * h * t, y + DY[d] * h * t);
+        any = true;
+      }
+    }
+    if (!any) return;
+    g.lineCap = "round";
+    g.strokeStyle = "#2f9be0";
+    g.lineWidth = s * 0.115;
+    g.stroke();
+    g.strokeStyle = "#5cc8ff";
+    g.lineWidth = s * 0.075;
+    g.stroke();
+    if (!RM) {
+      g.setLineDash([s * 0.07, s * 0.2]);
+      g.lineDashOffset = -T * s * 0.8;
+      g.strokeStyle = "rgba(230,252,255,0.9)";
+      g.lineWidth = s * 0.03;
+      g.stroke();
+      g.setLineDash([]);
+    }
+  }
+
+  function paintDecor(g, x, y, s, kind, seed) {
+    const r = mulberry(seed);
+    const cx = x + s / 2, cy = y + s / 2;
+    if (kind === "stones") {
+      const k = 2 + ((r() * 2) | 0);
+      for (let i = 0; i < k; i++) {
+        const px = cx + (r() - 0.5) * s * 0.5, py = cy + (r() - 0.5) * s * 0.5, rr = s * (0.09 + r() * 0.09);
+        g.fillStyle = "rgba(20,40,10,0.3)";
+        g.beginPath(); g.ellipse(px + 2, py + 3, rr * 1.15, rr * 0.9, 0, 0, Math.PI * 2); g.fill();
+        const gr = g.createRadialGradient(px - rr * 0.4, py - rr * 0.4, rr * 0.1, px, py, rr * 1.2);
+        gr.addColorStop(0, "#e6e2d8"); gr.addColorStop(1, "#9c968a");
+        g.fillStyle = gr;
+        g.beginPath(); g.ellipse(px, py, rr * 1.15, rr * 0.9, r() * 3, 0, Math.PI * 2); g.fill();
+      }
+    } else if (kind === "mushroom") {
+      const k = 1 + ((r() * 3) | 0);
+      for (let i = 0; i < k; i++) {
+        const px = cx + (r() - 0.5) * s * 0.45, py = cy + (r() - 0.5) * s * 0.45, rr = s * (0.1 + r() * 0.07);
+        g.fillStyle = "rgba(20,40,10,0.3)";
+        circle(g, px + 2, py + 3, rr); g.fill();
+        const gr = g.createRadialGradient(px - rr * 0.3, py - rr * 0.4, rr * 0.1, px, py, rr);
+        gr.addColorStop(0, "#ff6a5c"); gr.addColorStop(1, "#c9302c");
+        g.fillStyle = gr;
+        circle(g, px, py, rr); g.fill();
+        g.fillStyle = "#fff6ea";
+        for (let j = 0; j < 4; j++) {
+          const a = r() * Math.PI * 2, dd = r() * rr * 0.6;
+          circle(g, px + Math.cos(a) * dd, py + Math.sin(a) * dd, rr * 0.16); g.fill();
+        }
+      }
+    } else if (kind === "bush") {
+      const greens = ["#2f7f32", "#3a9440", "#48a64a", "#5dba55"];
+      g.fillStyle = "rgba(10,40,10,0.35)";
+      circle(g, cx + 3, cy + 4, s * 0.32); g.fill();
+      for (let i = 0; i < 4; i++) {
+        g.fillStyle = greens[i];
+        for (let j = 0; j < 5; j++) {
+          const a = r() * Math.PI * 2, dd = r() * s * 0.16 * (1 - i * 0.2);
+          circle(g, cx + Math.cos(a) * dd - i * 1.5, cy + Math.sin(a) * dd - i * 1.5, s * (0.15 - i * 0.022)); g.fill();
+        }
+      }
+      if (r() < 0.6) {
+        g.fillStyle = r() < 0.5 ? "#e0405a" : "#7a5cff";
+        for (let j = 0; j < 4; j++) {
+          const a = r() * Math.PI * 2, dd = r() * s * 0.2;
+          circle(g, cx + Math.cos(a) * dd, cy + Math.sin(a) * dd, s * 0.028); g.fill();
+        }
+      }
+    } else if (kind === "daisies") {
+      const k = 3 + ((r() * 3) | 0);
+      for (let i = 0; i < k; i++) {
+        const px = cx + (r() - 0.5) * s * 0.6, py = cy + (r() - 0.5) * s * 0.6, rr = s * (0.05 + r() * 0.03);
+        g.fillStyle = r() < 0.7 ? "#ffffff" : "#ffd6ea";
+        for (let j = 0; j < 6; j++) {
+          const a = (j / 6) * Math.PI * 2;
+          circle(g, px + Math.cos(a) * rr, py + Math.sin(a) * rr, rr * 0.6); g.fill();
+        }
+        g.fillStyle = "#f5b400";
+        circle(g, px, py, rr * 0.55); g.fill();
+      }
+    } else if (kind === "clover") {
+      for (let i = 0; i < 4; i++) {
+        const px = cx + (r() - 0.5) * s * 0.55, py = cy + (r() - 0.5) * s * 0.55, rr = s * 0.05;
+        g.fillStyle = "#3f9a3a";
+        for (let j = 0; j < 3; j++) {
+          const a = (j / 3) * Math.PI * 2 + r();
+          circle(g, px + Math.cos(a) * rr, py + Math.sin(a) * rr, rr * 0.85); g.fill();
+        }
+      }
+    } else {
+      g.lineCap = "round";
+      for (let i = 0; i < 9; i++) {
+        const px = cx + (r() - 0.5) * s * 0.5, py = cy + (r() - 0.5) * s * 0.4 + s * 0.1;
+        g.strokeStyle = ["#3d8f33", "#4fa83f", "#6cc154"][(r() * 3) | 0];
+        g.lineWidth = 2;
+        g.beginPath(); g.moveTo(px, py); g.lineTo(px + (r() - 0.5) * s * 0.15, py - s * (0.12 + r() * 0.14)); g.stroke();
+      }
+    }
+  }
+
+  function paintBoard(b) {
+    const L = b.L, s = L.cell, P = L.P, fr = L.frame;
+    const { c, g } = makeCanvas(L.W, L.H);
+    const gw = L.gw, gh = L.gh;
+    const r = mulberry(b.cells[0].seed);
+    // shadow
+    g.save();
+    g.shadowColor = "rgba(5,30,5,0.45)";
+    g.shadowBlur = fr * 1.2;
+    g.shadowOffsetY = fr * 0.35;
+    g.fillStyle = "#2b6e2e";
+    roundRect(g, P - fr, P - fr, gw + fr * 2, gh + fr * 2, fr * 1.3);
+    g.fill();
+    g.restore();
+    // hedge bumps
+    const hedge = ["#2c7a31", "#34893a", "#3d9842", "#2a7230"];
+    const rad = fr * 0.6;
+    const per = [];
+    const step = Math.max(6, fr * 0.75);
+    const x0 = P - fr * 0.5, y0 = P - fr * 0.5, x1 = P + gw + fr * 0.5, y1 = P + gh + fr * 0.5;
+    for (let x = x0; x <= x1; x += step) { per.push([x, y0]); per.push([x, y1]); }
+    for (let y = y0; y <= y1; y += step) { per.push([x0, y]); per.push([x1, y]); }
+    for (let pass = 0; pass < 3; pass++) {
+      for (const [x, y] of per) {
+        g.fillStyle = hedge[(r() * hedge.length) | 0];
+        circle(g, x + (r() - 0.5) * fr * 0.4, y + (r() - 0.5) * fr * 0.4, rad * (0.7 + r() * 0.45) * (1 - pass * 0.15));
+        g.fill();
+      }
+    }
+    for (const [x, y] of per) {
+      if (r() < 0.5) continue;
+      g.fillStyle = "rgba(170,230,120,0.35)";
+      circle(g, x - rad * 0.3 + (r() - 0.5) * 4, y - rad * 0.3 + (r() - 0.5) * 4, rad * 0.35);
+      g.fill();
+    }
+    // lawn
+    g.save();
+    roundRect(g, P - 2, P - 2, gw + 4, gh + 4, s * 0.12);
+    g.clip();
+    for (let row = 0; row < b.rows; row++) {
+      for (let col = 0; col < b.cols; col++) {
+        g.fillStyle = (row + col) % 2 ? "#6cbf4c" : "#64b545";
+        g.fillRect(P + col * s, P + row * s, s, s);
+      }
+    }
+    g.globalAlpha = 0.35;
+    g.fillStyle = grassPattern;
+    g.fillRect(P, P, gw, gh);
+    g.globalAlpha = 1;
+    // inner shade along the hedge
+    g.strokeStyle = "rgba(10,50,10,0.28)";
+    g.lineWidth = 6;
+    roundRect(g, P - 2, P - 2, gw + 4, gh + 4, s * 0.12);
+    g.stroke();
+    g.restore();
+    // cells
+    for (let i = 0; i < b.cells.length; i++) {
+      const cell = b.cells[i];
+      const x = P + (i % b.cols) * s, y = P + ((i / b.cols) | 0) * s;
+      if (cell.t === "pipe") {
+        const ins = Math.max(2, s * 0.05);
+        g.fillStyle = "rgba(30,15,5,0.3)";
+        roundRect(g, x + ins, y + ins + 2, s - ins * 2, s - ins * 2, s * 0.18);
+        g.fill();
+        const gr = g.createLinearGradient(x, y, x, y + s);
+        gr.addColorStop(0, "#94633f");
+        gr.addColorStop(1, "#734a2c");
+        g.fillStyle = gr;
+        roundRect(g, x + ins, y + ins, s - ins * 2, s - ins * 2, s * 0.18);
+        g.fill();
+        const rr = mulberry(cell.seed);
+        for (let k = 0; k < 14; k++) {
+          g.fillStyle = rr() < 0.5 ? "rgba(60,35,18,0.5)" : "rgba(190,140,100,0.35)";
+          circle(g, x + ins * 2 + rr() * (s - ins * 4), y + ins * 2 + rr() * (s - ins * 4), 0.8 + rr() * 1.4);
+          g.fill();
+        }
+        g.strokeStyle = "rgba(255,220,180,0.18)";
+        g.lineWidth = 1.5;
+        roundRect(g, x + ins + 1, y + ins + 1, s - ins * 2 - 2, s - ins * 2 - 2, s * 0.16);
+        g.stroke();
+      } else if (cell.t === "flower") {
+        g.fillStyle = "rgba(20,50,10,0.25)";
+        circle(g, x + s / 2 + 1, y + s / 2 + 3, s * 0.4);
+        g.fill();
+        g.fillStyle = "#7fcf5c";
+        circle(g, x + s / 2, y + s / 2, s * 0.4);
+        g.fill();
+      } else if (cell.t === "decor") {
+        paintDecor(g, x, y, s, cell.decor, cell.seed);
+      }
+    }
+    return c;
+  }
+
+  function paintPipes(b) {
+    const L = b.L, s = L.cell, P = L.P;
+    if (!b.pipeC || b.pipeC._w !== L.W) b.pipeC = makeCanvas(L.W, L.H);
+    const { c, g } = b.pipeC;
+    g.clearRect(0, 0, L.W, L.H);
+    for (let i = 0; i < b.cells.length; i++) {
+      const cell = b.cells[i];
+      if (cell.t === "decor" || cell.t === "src") continue;
+      if (cell.t === "pipe" && (cell.rotT < 1 || cell.bump > 0)) continue;
+      const x = P + ((i % b.cols) + 0.5) * s, y = P + (((i / b.cols) | 0) + 0.5) * s;
+      drawShell(g, x, y, s, cell.mask);
+    }
+    b.pipeDirty = false;
+    return c;
+  }
+
+  function drawSpring(g, x, y, s, m) {
+    drawShell(g, x, y, s, m);
+    drawWater(g, x, y, s, m, -1, 1);
+    // stone ring
+    const R = s * 0.36;
+    g.fillStyle = "rgba(20,30,10,0.35)";
+    circle(g, x + 2, y + 4, R + s * 0.06);
+    g.fill();
+    const r = mulberry(99);
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2;
+      const gr = g.createRadialGradient(x + Math.cos(a) * R - 2, y + Math.sin(a) * R - 2, 1, x + Math.cos(a) * R, y + Math.sin(a) * R, s * 0.09);
+      gr.addColorStop(0, "#eeeae0");
+      gr.addColorStop(1, "#8f897c");
+      g.fillStyle = gr;
+      circle(g, x + Math.cos(a) * R, y + Math.sin(a) * R, s * (0.07 + r() * 0.025));
+      g.fill();
+    }
+    // water
+    const wr = R - s * 0.04;
+    const wg = g.createRadialGradient(x - wr * 0.3, y - wr * 0.3, wr * 0.1, x, y, wr);
+    wg.addColorStop(0, "#9be3ff");
+    wg.addColorStop(1, "#1f86d0");
+    g.fillStyle = wg;
+    circle(g, x, y, wr);
+    g.fill();
+    if (!RM) {
+      for (let k = 0; k < 2; k++) {
+        const ph = (T * 0.6 + k * 0.5) % 1;
+        g.strokeStyle = `rgba(255,255,255,${0.55 * (1 - ph)})`;
+        g.lineWidth = 1.5;
+        circle(g, x, y, wr * (0.15 + ph * 0.8));
+        g.stroke();
+      }
+    }
+    g.fillStyle = "rgba(255,255,255,0.7)";
+    g.beginPath();
+    g.ellipse(x - wr * 0.35, y - wr * 0.4, wr * 0.22, wr * 0.1, -0.6, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  function drawFlower(g, x, y, s, st, bloom, wet, seed) {
+    const sway = RM ? 0 : Math.sin(T * 1.6 + seed) * 0.08;
+    // leaves
+    g.fillStyle = "#3d9a3a";
+    for (let k = 0; k < 2; k++) {
+      const a = sway + (k ? 0.6 : -2.4) + (seed % 3) * 0.3;
+      g.save();
+      g.translate(x + Math.cos(a) * s * 0.17, y + Math.sin(a) * s * 0.17);
+      g.rotate(a);
+      g.beginPath();
+      g.ellipse(0, 0, s * 0.15, s * 0.07, 0, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+    const b = clamp(bloom, 0, 1.2);
+    const e = b <= 0 ? 0 : easeOutBack(Math.min(1, b));
+    g.save();
+    g.translate(x, y);
+    g.rotate(sway + e * 0.4);
+    if (e < 0.05) {
+      // closed, thirsty bud
+      g.fillStyle = "rgba(0,0,0,0.2)";
+      circle(g, 1, 2.5, s * 0.13);
+      g.fill();
+      g.fillStyle = "#6aa84f";
+      circle(g, 0, 0, s * 0.12);
+      g.fill();
+      g.fillStyle = st.dark;
+      for (let k = 0; k < 3; k++) {
+        const a = (k / 3) * Math.PI * 2;
+        circle(g, Math.cos(a) * s * 0.04, Math.sin(a) * s * 0.04, s * 0.055);
+        g.fill();
+      }
+    } else {
+      const n = st.n;
+      const L = s * (0.1 + 0.2 * e);
+      const W = s * (0.05 + 0.05 * e);
+      g.fillStyle = "rgba(0,0,0,0.18)";
+      circle(g, 2, 3, L * 0.95);
+      g.fill();
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2;
+        g.save();
+        g.rotate(a);
+        g.fillStyle = k % 2 ? st.petal : st.dark;
+        g.beginPath();
+        g.ellipse(L * 0.55, 0, L * 0.5, W, 0, 0, Math.PI * 2);
+        g.fill();
+        g.restore();
+      }
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2 + Math.PI / n;
+        g.save();
+        g.rotate(a);
+        g.fillStyle = st.petal;
+        g.beginPath();
+        g.ellipse(L * 0.45, 0, L * 0.42, W * 0.85, 0, 0, Math.PI * 2);
+        g.fill();
+        g.restore();
+      }
+      g.fillStyle = st.center;
+      circle(g, 0, 0, s * (0.05 + 0.055 * e));
+      g.fill();
+      g.fillStyle = "rgba(0,0,0,0.18)";
+      for (let k = 0; k < 5; k++) {
+        const a = k * 2.4;
+        circle(g, Math.cos(a) * s * 0.03 * e, Math.sin(a) * s * 0.03 * e, s * 0.01 + 0.5);
+        g.fill();
+      }
+    }
+    g.restore();
+    if (!wet) {
+      // thirsty drop bubble
+      const bob = RM ? 0 : Math.sin(T * 3 + seed) * s * 0.03;
+      const dx = x + s * 0.27, dy = y - s * 0.26 + bob;
+      const a = 0.65 + 0.35 * Math.sin(T * 4 + seed);
+      g.globalAlpha = a;
+      g.fillStyle = "#ffffff";
+      circle(g, dx, dy, s * 0.11);
+      g.fill();
+      g.fillStyle = "#2f9be0";
+      const dr = s * 0.055;
+      g.beginPath();
+      g.moveTo(dx, dy - dr * 1.6);
+      g.quadraticCurveTo(dx + dr * 1.1, dy - dr * 0.1, dx + dr * 0.9, dy + dr * 0.4);
+      g.arc(dx, dy + dr * 0.35, dr * 0.9, 0, Math.PI);
+      g.quadraticCurveTo(dx - dr * 1.1, dy - dr * 0.1, dx, dy - dr * 1.6);
+      g.fill();
+      g.globalAlpha = 1;
+    }
+  }
+
+  function animateBoard(b, dt) {
+    const n = b.cols * b.rows;
+    for (let i = 0; i < n; i++) {
+      const c = b.cells[i];
+      if (b.isWet[i]) b.wetP[i] = clamp((T - b.wetStart[i]) / FILL, 0, 1);
+      else b.wetP[i] = Math.max(0, b.wetP[i] - dt * 6);
+      if (c.rotT < 1) {
+        c.rotT = Math.min(1, c.rotT + dt / ROT);
+        if (c.rotT >= 1) b.pipeDirty = true;
+      }
+      if (c.bump > 0) {
+        c.bump = Math.max(0, c.bump - dt * 5);
+      }
+    }
+    for (const f of b.flowers) {
+      const full = b.isWet[f] && b.wetP[f] >= 1;
+      if (full) {
+        if (!b.bloomed[f]) {
+          b.bloomed[f] = true;
+          const k = b.flowers.filter((x) => b.bloomed[x]).length;
+          kit.sound.play("pop", 1 + k * 0.18);
+          kit.sound.tone(784 * Math.pow(2, k / 6), 0.25, { type: "triangle", vol: 0.12, delay: 0.05 });
+          const p = cellCenter(b, f);
+          const st = b.cells[f].style;
+          kit.fx.burst(p.x, p.y, [st.petal, "#ffffff", "#b9f0ff"], 10, { speed: 120, size: 4, gravity: 150, life: 0.6 });
+        }
+        b.bloom[f] = Math.min(1, b.bloom[f] + dt * (RM ? 6 : 2.2));
+      } else {
+        b.bloomed[f] = false;
+        b.bloom[f] = Math.max(0, b.bloom[f] - dt * 4);
+      }
+    }
+  }
+
+  function drawBoard(g, b, offX) {
+    const L = b.L, s = L.cell, P = L.P;
+    const ox = L.bx - P + offX, oy = L.by - P;
+    if (ox > view.w || ox + L.W < 0) return;
+    if (!b.boardC) b.boardC = paintBoard(b);
+    if (b.pipeDirty || !b.pipeC) paintPipes(b);
+    g.drawImage(b.boardC, ox, oy, L.W, L.H);
+    g.drawImage(b.pipeC.c, ox, oy, L.W, L.H);
+    g.save();
+    g.translate(ox, oy);
+    for (let i = 0; i < b.cells.length; i++) {
+      const c = b.cells[i];
+      const x = P + ((i % b.cols) + 0.5) * s, y = P + (((i / b.cols) | 0) + 0.5) * s;
+      if (c.t === "pipe") {
+        const moving = c.rotT < 1 || c.bump > 0;
+        if (moving) {
+          const off = dispOff(c);
+          const sc = 1 - 0.08 * Math.sin(Math.PI * Math.min(1, c.rotT));
+          g.save();
+          g.translate(x, y);
+          g.rotate((-off * Math.PI) / 2);
+          g.scale(sc, sc);
+          drawShell(g, 0, 0, s, c.mask);
+          drawWater(g, 0, 0, s, c.mask, b.entry[i], b.wetP[i]);
+          g.restore();
+        } else if (b.wetP[i] > 0) {
+          drawWater(g, x, y, s, c.mask, b.entry[i], b.wetP[i]);
+        }
+      } else if (c.t === "src") {
+        drawSpring(g, x, y, s, c.mask);
+      } else if (c.t === "flower") {
+        drawWater(g, x, y, s, c.mask, b.entry[i], b.wetP[i]);
+        g.fillStyle = "#6b4428";
+        circle(g, x, y, s * 0.3);
+        g.fill();
+        g.fillStyle = "#83563a";
+        circle(g, x - s * 0.02, y - s * 0.03, s * 0.25);
+        g.fill();
+        const sc = 1 + (c.bump > 0 ? 0.1 * Math.sin(c.bump * Math.PI) : 0);
+        g.save();
+        g.translate(x, y);
+        g.scale(sc, sc);
+        drawFlower(g, 0, 0, s, c.style, b.bloom[i], !!b.isWet[i], c.seed % 7);
+        g.restore();
+      }
+    }
+    // hint glow
+    if (b.hint >= 0 && phase === "play") {
+      const i = b.hint;
+      const x = P + (i % b.cols) * s, y = P + ((i / b.cols) | 0) * s;
+      const a = 0.7 + 0.3 * Math.sin(T * 5);
+      g.save();
+      g.shadowColor = "rgba(255,240,140,0.9)";
+      g.shadowBlur = 12 * a;
+      g.strokeStyle = `rgba(255,236,120,${a})`;
+      g.lineWidth = 4 + 2 * a;
+      roundRect(g, x + 2, y + 2, s - 4, s - 4, s * 0.2);
+      g.stroke();
+      g.restore();
+      g.fillStyle = `rgba(255,245,170,${a * 0.22})`;
+      roundRect(g, x + 2, y + 2, s - 4, s - 4, s * 0.2);
+      g.fill();
+    }
+    g.restore();
+    // garden label under the board
+    const ly = L.by + L.gh + L.frame + 8;
+    if (ly + 24 < view.h - safe.b && b === cur) {
+      const watered = b.flowers.filter((f) => b.isWet[f]).length;
+      const text = `Garden ${b.level}   🌸 ${watered}/${b.flowers.length}`;
+      g.font = `800 15px ${FONT}`;
+      const tw = g.measureText(text).width;
+      const cx = L.bx + L.gw / 2 + offX;
+      g.fillStyle = "rgba(20,55,20,0.45)";
+      roundRect(g, cx - tw / 2 - 12, ly, tw + 24, 26, 13);
+      g.fill();
+      g.fillStyle = "#f4ffe8";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(text, cx, ly + 13.5);
+    }
+  }
+
+  function drawButterflies(g, dt) {
+    for (let i = butterflies.length - 1; i >= 0; i--) {
+      const f = butterflies[i];
+      f.life += dt;
+      f.ph += dt * 16;
+      f.vx += Math.sin(f.life * 2.3 + f.s * 5) * 90 * dt;
+      f.vy += (-20 + Math.cos(f.life * 3) * 60) * dt;
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+      if (f.y < -40 || f.x < -40 || f.x > view.w + 40 || f.life > 7) { butterflies.splice(i, 1); continue; }
+      const flap = 0.25 + 0.75 * Math.abs(Math.sin(f.ph));
+      const sz = 11 * f.s;
+      g.save();
+      g.translate(f.x, f.y);
+      g.rotate(Math.atan2(f.vy, f.vx) + Math.PI / 2);
+      g.fillStyle = f.color;
+      for (const sgn of [-1, 1]) {
+        g.save();
+        g.scale(sgn * flap, 1);
+        g.beginPath();
+        g.ellipse(sz * 0.55, -sz * 0.25, sz * 0.6, sz * 0.45, -0.4, 0, Math.PI * 2);
+        g.fill();
+        g.beginPath();
+        g.ellipse(sz * 0.4, sz * 0.35, sz * 0.4, sz * 0.32, 0.4, 0, Math.PI * 2);
+        g.fill();
+        g.restore();
+      }
+      g.fillStyle = "#3a2a1a";
+      g.beginPath();
+      g.ellipse(0, 0, sz * 0.12, sz * 0.55, 0, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+  }
+
+  function render(dt) {
+    T += kit.state === "paused" ? 0 : dt;
+    const g = view.ctx;
+    if (!bgCache) bgCache = buildBg();
+    g.drawImage(bgCache, 0, 0, view.w, view.h);
+    g.save();
+    kit.applyShake(g);
+    if (cur) animateBoard(cur, dt);
+    if (old) animateBoard(old, dt);
+    if (phase === "slide" && old) {
+      const e = 0.5 - 0.5 * Math.cos(Math.PI * clamp(slideT, 0, 1));
+      drawBoard(g, old, -e * view.w);
+      drawBoard(g, cur, (1 - e) * view.w);
+    } else if (cur) {
+      drawBoard(g, cur, 0);
+    }
+    drawButterflies(g, dt);
+    kit.fx.draw(g);
+    g.restore();
+  }
+
+  /* ---------------- Boot ---------------- */
+  readSafe();
+  view = kit.canvas((v) => {
+    view = v;
+    readSafe();
+    grassPattern = buildGrass();
+    bgCache = null;
+    if (cur) layout(cur);
+    if (old) layout(old);
+  });
+  kit.pointer(null, { down: (p) => tapAt(p.x, p.y) });
+  cur = makeBoard(1); // a garden behind the title card
+  kit.run(update, render);
+
+  // Test hook (used by our Playwright checks; harmless in play).
+  window.__pipes = {
+    generate: (lv, c, r, land) => generate(lv, c, r, !!land),
+    flow,
+    allWatered,
+    minTurns,
+    rotK,
+    get phase() { return phase; },
+    get level() { return level; },
+    get timeLeft() { return timeLeft; },
+    get gardens() { return gardens; },
+    get taps() { return taps; },
+    board: () => cur,
+    // Page taps (stage CSS px) that solve the current garden from its state now.
+    solveTaps() {
+      const b = cur, out = [];
+      if (!b) return out;
+      for (let i = 0; i < b.cells.length; i++) {
+        const c = b.cells[i];
+        if (c.t !== "pipe" || c.decoy) continue;
+        const k = minTurns(c.mask, c.sol);
+        const p = cellCenter(b, i);
+        for (let j = 0; j < k; j++) out.push({ x: p.x, y: p.y, i });
+      }
+      return out;
+    },
+    wetCount: () => (cur ? cur.isWet.reduce((a, v) => a + v, 0) : 0),
+    wateredFlowers: () => (cur ? cur.flowers.filter((f) => cur.isWet[f]).length : 0),
+    cellSize: () => (cur ? cur.L.cell : 0),
+    setTime: (s) => { timeLeft = s; },
+    forceHint: () => { if (cur) cur.stuck = 99; },
+  };
+})();
+</script>
+</body>
+</html>

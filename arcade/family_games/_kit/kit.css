@@ -1,0 +1,142 @@
+/* Family Games kit: shared shell for every touch-first family game.
+ * Inlined into each game at serve time (see arcade/family.py), so a game is
+ * one self-contained page with no network dependencies. */
+:root {
+  --fk-accent: #7c5cff;
+  --fk-accent-2: #ff7ab6;
+  --fk-ink: #1d1640;
+  --fk-ink-soft: #5b5480;
+  --fk-card: rgba(255, 255, 255, 0.94);
+  --fk-hud-ink: #fff;
+  --fk-font: ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+  --fk-safe-top: env(safe-area-inset-top, 0px);
+  --fk-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --fk-safe-left: env(safe-area-inset-left, 0px);
+  --fk-safe-right: env(safe-area-inset-right, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%;
+  overflow: hidden; overscroll-behavior: none;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  font-family: var(--fk-font); color: var(--fk-ink);
+  background: #241a5c;
+}
+body.fk { position: fixed; inset: 0; }
+#fk-stage { position: absolute; inset: 0; overflow: hidden; }
+#fk-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+/* HUD: score left, best centre, buttons right; always clear of the notch. */
+#fk-hud {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 8px;
+  padding: calc(8px + var(--fk-safe-top)) calc(10px + var(--fk-safe-right)) 8px calc(10px + var(--fk-safe-left));
+  pointer-events: none; color: var(--fk-hud-ink);
+}
+#fk-hud .fk-pill {
+  pointer-events: none; display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 6px 12px; border-radius: 999px;
+  background: rgba(20, 12, 60, 0.38); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  font-weight: 800; font-size: 18px; line-height: 1; letter-spacing: 0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+#fk-hud .fk-pill small { font-size: 11px; font-weight: 700; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.08em; }
+#fk-hud .fk-spacer { flex: 1; }
+#fk-hud .fk-extra:empty { display: none; }
+.fk-icon-btn {
+  pointer-events: auto; width: 44px; height: 44px; border-radius: 14px; border: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(20, 12, 60, 0.38); color: #fff; font-size: 20px; cursor: pointer;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.fk-icon-btn:active { transform: scale(0.92); }
+.fk-score-bump { animation: fk-bump 0.25s ease-out; }
+@keyframes fk-bump { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
+
+/* Overlay cards: title, pause, game over. */
+#fk-overlay {
+  position: absolute; inset: 0; z-index: 10; display: none;
+  align-items: center; justify-content: center;
+  padding: calc(16px + var(--fk-safe-top)) calc(16px + var(--fk-safe-right)) calc(16px + var(--fk-safe-bottom))
+    calc(16px + var(--fk-safe-left));
+  background: rgba(18, 10, 52, 0.45); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+#fk-overlay.fk-show { display: flex; animation: fk-fade 0.2s ease-out; }
+@keyframes fk-fade { from { opacity: 0; } to { opacity: 1; } }
+.fk-card {
+  width: min(380px, 100%); max-height: 100%; overflow: auto;
+  background: var(--fk-card); border-radius: 28px; padding: 22px 20px 18px;
+  box-shadow: 0 20px 60px rgba(10, 5, 40, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+  text-align: center; animation: fk-pop 0.32s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+@keyframes fk-pop { from { transform: scale(0.85) translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+.fk-card .fk-emoji { font-size: 56px; line-height: 1; margin-bottom: 6px; filter: drop-shadow(0 4px 6px rgba(0,0,0,.15)); }
+.fk-card h1 { margin: 0; font-size: 30px; font-weight: 900; letter-spacing: -0.01em; color: var(--fk-ink); }
+.fk-card h2 { margin: 0; font-size: 22px; font-weight: 900; color: var(--fk-ink); }
+.fk-card .fk-tag { margin: 6px 0 0; font-size: 15px; color: var(--fk-ink-soft); font-weight: 600; }
+.fk-card ul.fk-how { list-style: none; margin: 14px 0 4px; padding: 0; text-align: left; display: grid; gap: 8px; }
+.fk-card ul.fk-how li {
+  display: flex; gap: 10px; align-items: flex-start; font-size: 15px; line-height: 1.3; color: var(--fk-ink);
+  background: rgba(124, 92, 255, 0.08); border-radius: 14px; padding: 9px 12px; font-weight: 600;
+}
+.fk-card ul.fk-how li span.fk-i { flex: 0 0 auto; font-size: 18px; line-height: 1.1; }
+.fk-big-score { font-size: 64px; font-weight: 900; line-height: 1; margin: 10px 0 2px; color: var(--fk-accent);
+  font-variant-numeric: tabular-nums; }
+.fk-sub { font-size: 14px; color: var(--fk-ink-soft); font-weight: 700; }
+.fk-newbest {
+  display: inline-block; margin-top: 8px; padding: 6px 12px; border-radius: 999px; font-weight: 900; font-size: 14px;
+  background: linear-gradient(90deg, #ffd166, #ff9f43); color: #4a2600; animation: fk-wiggle 1.2s ease-in-out infinite;
+}
+@keyframes fk-wiggle { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg) scale(1.05); } }
+.fk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; margin: 14px 0 4px; }
+.fk-stats div { background: rgba(124, 92, 255, 0.08); border-radius: 14px; padding: 8px 6px; }
+.fk-stats b { display: block; font-size: 20px; font-weight: 900; color: var(--fk-ink); font-variant-numeric: tabular-nums; }
+.fk-stats span { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fk-ink-soft); }
+.fk-saved { margin-top: 8px; min-height: 18px; font-size: 13px; font-weight: 700; color: #1f9d6b; }
+.fk-btn {
+  display: flex; width: 100%; min-height: 56px; margin-top: 14px; border: 0; border-radius: 18px;
+  align-items: center; justify-content: center; gap: 8px;
+  background: linear-gradient(135deg, var(--fk-accent), var(--fk-accent-2)); color: #fff;
+  font-family: inherit; font-size: 20px; font-weight: 900; letter-spacing: 0.01em; cursor: pointer;
+  box-shadow: 0 8px 0 rgba(0, 0, 0, 0.12), 0 10px 24px rgba(124, 92, 255, 0.35);
+  transition: transform 0.08s ease;
+}
+.fk-btn:focus { outline: none; }
+.fk-btn:focus-visible { outline: 3px solid rgba(124, 92, 255, 0.55); outline-offset: 3px; }
+.fk-btn:active { transform: translateY(3px) scale(0.98); box-shadow: 0 4px 0 rgba(0, 0, 0, 0.12); }
+.fk-btn.fk-ghost { background: rgba(124, 92, 255, 0.1); color: var(--fk-ink); box-shadow: none; font-size: 17px; min-height: 48px; margin-top: 8px; }
+.fk-best-line { margin-top: 10px; font-size: 13px; font-weight: 800; color: var(--fk-ink-soft); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* Floating toast (combo, level up...). */
+#fk-toast {
+  position: absolute; left: 50%; top: calc(70px + var(--fk-safe-top)); z-index: 6;
+  transform: translateX(-50%); pointer-events: none;
+  font-weight: 900; font-size: 24px; color: #fff; text-align: center;
+  width: max-content; max-width: calc(100vw - 32px);
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.2), 0 4px 14px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+}
+#fk-toast.fk-on { animation: fk-toast 1.1s ease-out forwards; }
+@keyframes fk-toast {
+  0% { opacity: 0; transform: translate(-50%, 10px) scale(0.8); }
+  15% { opacity: 1; transform: translate(-50%, 0) scale(1.1); }
+  30% { transform: translate(-50%, 0) scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -16px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fk-newbest, .fk-card, #fk-overlay.fk-show { animation: none; }
+}
+@media (min-height: 700px) { .fk-card { padding: 28px 24px 22px; } }
+/* Narrow phones (iPhone SE and smaller): the pause and sound buttons must
+ * never be pushed off screen, so the pills get compact first. */
+@media (max-width: 400px) {
+  #fk-hud { gap: 6px; }
+  #fk-hud .fk-pill { padding: 6px 9px; font-size: 16px; }
+  #fk-hud .fk-pill small { display: none; }
+}
+@media (max-width: 350px) {
+  #fk-hud [data-fk="best"] { display: none; }
+}

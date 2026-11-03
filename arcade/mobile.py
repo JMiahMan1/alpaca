@@ -139,3 +139,55 @@ def prepare_playable_html(html: str) -> str:
     else:
         output = fit + output
     return output
+
+
+# The Family Games mobile contract. A game is "mobile compatible" - and may
+# join or be published in the Family Games collection - only when every key
+# is true. The ``mobilegames`` benchmark grades answers with the same report,
+# so a passing benchmark game is exactly a game the family shelf accepts.
+CONTRACT_LABELS = {
+    "viewport": "a width=device-width viewport",
+    "fills_screen": "sizing from the screen and on resize",
+    "no_fixed_canvas": "no fixed 600px+ canvas",
+    "hidpi": "devicePixelRatio scaling",
+    "touch_input": "touch/pointer controls",
+    "no_page_gestures": "touch-action and preventDefault",
+    "safe_area": "safe-area insets",
+    "pauses_when_hidden": "pause on visibilitychange",
+    "animation_loop": "a requestAnimationFrame loop",
+    "personal_best": "a localStorage personal best",
+    "score_bridge": "the arcade score bridge",
+    "no_name_prompt": "no name/initials prompt",
+}
+
+
+def contract_report(html: str) -> dict[str, bool]:
+    """Which parts of the mobile contract a game page meets (one key each)."""
+    text = (html or "").lower()
+    return {
+        "viewport": bool(re.search(r"<meta[^>]+name=[\"']viewport[\"'][^>]*width=device-width", text)),
+        "fills_screen": any(x in text for x in ("innerwidth", "clientwidth", "getboundingclientrect"))
+        and bool(re.search(r"addeventlistener\(\s*[\"']resize|onresize|resizeobserver", text)),
+        "no_fixed_canvas": not re.search(r"<canvas[^>]*\bwidth\s*=\s*[\"']?(?:[6-9]\d\d|1\d{3})", text),
+        "hidpi": "devicepixelratio" in text,
+        "touch_input": any(x in text for x in ("pointerdown", "touchstart")),
+        "no_page_gestures": "touch-action" in text and "preventdefault" in text,
+        "safe_area": "safe-area-inset" in text,
+        "pauses_when_hidden": "visibilitychange" in text,
+        "animation_loop": "requestanimationframe" in text,
+        "personal_best": "localstorage" in text,
+        "score_bridge": "postmessage" in text
+        and "arcade-game" in text
+        and bool(re.search(r"type\s*:\s*[\"']score[\"']", text))
+        and "run_id" in text,
+        "no_name_prompt": "prompt(" not in text,
+    }
+
+
+def contract_failures(html: str) -> list[str]:
+    """Human-readable names of the contract items a page misses (empty = compatible)."""
+    return [CONTRACT_LABELS[k] for k, ok in contract_report(html).items() if not ok]
+
+
+def is_mobile_compatible(html: str) -> bool:
+    return not contract_failures(html)

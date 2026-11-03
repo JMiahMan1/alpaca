@@ -4,7 +4,7 @@
 Alpaca is an LLM model management, benchmarking, and telemetry dashboard for local GPU deployments. It provides:
 - **Model pull/download** from Ollama Registry and Hugging Face GGUF repos
 - **Router-based model management** with automatic hot-swap between models
-- **Functional & performance benchmarking** across 292 general tests, 49 SharedLLM tasks and one
+- **Functional & performance benchmarking** across 298 general tests, 49 SharedLLM tasks and one
   multi-turn agentic workflow
 - **Real-time telemetry** (VRAM, RAM, context usage) with self-healing triggers
 - **Image generation** (stable-diffusion.cpp) with deterministic text composition
@@ -74,7 +74,7 @@ images and need `sudo docker compose up -d --build <service>`.
 | `analyzer.py` | Telemetry-driven llama.cpp tuning recommendations |
 | `telemetry_monitor.py` | Async daemon polling llama-server metrics, writes `data/telemetry/{model}.jsonl` |
 | `benchmark-configs.py` | ctx × cache × flash-attn sweep, then a prefill-only batch sweep, then a quality check |
-| `benchmark_tests.json` | **292 tests in 46 categories** — the general suite's data |
+| `benchmark_tests.json` | **298 tests in 47 categories** — the general suite's data |
 | `web/app.py` | Flask web server + SocketIO — dashboard API, benchmark runner, model pull orchestration, podcast routes |
 | `web/podcast_mixer.py` | The podcast mixer: script parsing, bed synthesis, ducking, WAV encode — numpy only |
 
@@ -84,7 +84,7 @@ images and need `sudo docker compose up -d --build <service>`.
 | `web/app.py` | Flask backend: all REST API routes, SocketIO events, benchmark execution, model pull orchestration |
 | `web/podcast_mixer.py` | Podcast mixing (see **Podcast Studio** below) |
 | `web/shared_llm_benchmark.py` | SharedLLM benchmark logic (reused by web app) |
-| `web/arcade_publish.py` | Publishes benchmark games into the standalone arcade service |
+| `web/arcade_publish.py` | Publishes benchmark games into the standalone arcade service (a `mobilegames` game joins the Family collection) |
 | `web/model_tracker.py` | Discovery/seen state and benchmark history per model |
 | `web/thermal.py` | Thermal watchdog: throttle hysteresis, abort, pre-test cool-down |
 | `web/templates/index.html` | Single-page HTML dashboard (10 hash-routed tabs) |
@@ -424,6 +424,38 @@ other fails the build.
   machine-checkable.
 - **Diffusion is never asked to draw text.** The same reasoning applies to the manuscript.
 
+### Family Games (`arcade/family.py`, `arcade/family_games/`)
+- Hand-built, touch-first games for the Jarvis family hub, all on one shared kit
+  (`family_games/_kit/kit.js` + `kit.css`: HUD, title/pause/game-over cards, DPR canvas,
+  pointer input, WebAudio sfx, particles, the score bridge). A game's `game.html` carries a
+  `<!-- @family-kit -->` marker; `family.build_html()` inlines the kit, so the served page
+  has no network dependency.
+- At arcade startup `family.sync()` installs/updates each one as `data/arcade/games/family-<name>/`.
+  It replaces only `game.html` and the descriptive meta; **scores, ratings, bests and plays are
+  never touched**, so a new version keeps its scoreboard. The arcade image COPYs `arcade/`, so
+  a game change needs `sudo docker compose up -d --build alpaca-arcade`.
+- Lifecycle in `data/arcade/family.json`: `testing` (new games; playable, votable, not on the
+  board) → `published` ⇄ `unpublished`. `POST /api/admin/family/<slug>/state` needs
+  `ARCADE_ADMIN_TOKEN` (503 naming the variable when unset). `GET /api/family/games` lists all
+  with their state; **Jarvis** decides what each viewer sees (players: published *and* rated at
+  least `FAMILY_GAMES_MIN_RATING` from `FAMILY_GAMES_MIN_VOTES` votes).
+- **Mobile games only.** `arcade/mobile.py` `contract_report()` is the one mobile contract (viewport,
+  fills any screen, no fixed canvas, DPR, touch input, no page gestures, safe areas, pause when hidden,
+  rAF loop, personal best, score bridge, no name prompt). A built-in game that fails it is not
+  installed; a `mobilegames` benchmark game that fails it stays an ordinary arcade game with
+  `mobile_contract_failures` in its meta; publishing re-checks and refuses (400) a failing page;
+  `is_family()` requires `mobile_compatible: true`. The benchmark grader uses the same function.
+- Boards are per collection: `?collection=family` on `/api/highscores`, `/api/players*`
+  counts only published Family Games; the default `arcade` board excludes them.
+- Ratings count each named voter once (latest vote wins), so the rating bar cannot be
+  stuffed by one member.
+- Score bridge: the game posts `{source:"arcade-game", type:"score", score, run_id}`; the play
+  page (`ARCADE_BRIDGE`) turns it into a capture `slug:run_id`, and relays the parent's
+  `{source:"arcade-host", type:"saved", rank}` back so the game card shows the rank.
+- Phone check: `PLAYWRIGHT_MODULE=<node_modules>/playwright node scripts/family_games_check.mjs <name>`
+  plays a game at iPhone 13 / SE / Pixel 7 / iPad sizes and fails on console errors, a missing
+  bridge message or page overflow.
+
 ### Error Types & Fixes
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -484,7 +516,7 @@ and **`addopts = "-q -m 'not live'"`** — the `live` marker is deselected by de
 | `test_podcast_mixer.py` + `test_podcast_routes.py` + `test_podcast_frontend.py` | Podcast Studio end to end |
 | `test_telemetry_monitor_unit.py` / `test_analyzer_unit.py` / `test_imageops_unit.py` | The daemons and the deterministic image editor |
 | `test_dashboard_frontend.py` / `test_podcast_frontend.py` | `dashboard.js` via the **node-slice** technique |
-| `test_benchmark_tests_schema.py` | All 292 tests + `_compute_test_hash` semantics + the answer-key balance |
+| `test_benchmark_tests_schema.py` | All 298 tests + `_compute_test_hash` semantics + the answer-key balance |
 | `test_manuscript_rubric.py` / `test_screenshot_ink_coverage.py` | The illuminated-manuscript rubric; the blank-page gate |
 | `test_composite_sprite_game.py` | The `composite` tool-test path end to end, through the real publisher |
 | `test_svg_theme_pack_grader.py` / `test_install_theme_pack.py` | The SVG theme-pack grader and its installer |

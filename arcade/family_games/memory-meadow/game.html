@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Memory Meadow</title>
+<!-- @family-kit -->
+<style>
+  html, body { background: #8fd8ff; }
+  #mm-safe { position: absolute; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+  #fk-hud .fk-extra { gap: 8px; align-items: center; padding: 5px 10px; }
+  .mm-lv, .mm-t { display: inline-flex; align-items: center; gap: 3px; font-size: 17px; }
+  .mm-lv b, .mm-t b { font-weight: 900; min-width: 1ch; }
+  .mm-t.mm-low b { color: #ffd0d0; }
+  @media (max-width: 460px) {
+    #fk-hud { gap: 5px; }
+    #fk-hud .fk-pill { padding: 6px 8px; font-size: 16px; gap: 3px; }
+    #fk-hud .fk-extra { gap: 5px; padding: 5px 8px; }
+    .mm-lv, .mm-t { font-size: 15px; gap: 2px; }
+    #fk-hud [data-fk="score"] small, #fk-hud [data-fk="best"] small { display: none; }
+    #fk-hud [data-fk="score"]::before { content: "⭐"; font-size: 13px; }
+    #fk-hud [data-fk="best"]::before { content: "🏆"; font-size: 13px; }
+  }
+  @media (max-width: 350px) { #fk-hud [data-fk="best"] { display: none; } }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<div id="mm-safe"></div>
+<script>
+(function () {
+  "use strict";
+  const FK = window.FamilyKit;
+  const { clamp, lerp, easeOutBack, easeOutCubic, roundRect, starPath, rand, shuffle } = FK;
+  const RM = FK.reducedMotion;
+
+  const ANIMALS = ["🐰", "🦊", "🐻", "🐼", "🐸", "🦋", "🐝", "🐞", "🐢", "🦉", "🐿️", "🦔", "🐥", "🐮", "🐷", "🐨", "🍓", "🌻", "🐌", "🐑", "🐭", "🍄", "🐴", "🌷"];
+  const TINTS = ["#ffd6e0", "#ffe7b8", "#d4f5c9", "#cfe9ff", "#e6dcff", "#ffdccb", "#c9f2ec", "#fff2a8", "#f8d4ff", "#dbeccd", "#ffe0f0", "#d7e3ff"];
+  const RINGS = ["#ff7aa2", "#ffad33", "#4fbf5a", "#3d9bff", "#8f6bff", "#ff8a5c", "#22b5a0", "#e0b800", "#d36bff", "#6fa84a", "#ff5fa8", "#5b7cff"];
+  // pairs, preferred cols x rows, seconds on the clock
+  const LEVELS = [
+    { pairs: 3, a: 2, b: 3, time: 60 },
+    { pairs: 6, a: 3, b: 4, time: 80 },
+    { pairs: 8, a: 4, b: 4, time: 95 },
+    { pairs: 10, a: 4, b: 5, time: 120 },
+    { pairs: 15, a: 5, b: 6, time: 170 },
+    { pairs: 18, a: 6, b: 6, time: 210 },
+  ];
+  const FLIP_DUR = 0.26;
+  const MISS_HOLD = 0.7;
+  const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","Twemoji Mozilla",sans-serif';
+
+  const kit = FK.create({
+    slug: "family-memory-meadow",
+    title: "Memory Meadow",
+    tagline: "Find the matching meadow friends!",
+    emoji: "🐰",
+    accent: "#2fae5b",
+    accent2: "#ffb52e",
+    scoreLabel: "Score",
+    howTo: [
+      ["👆", "Tap a card to flip it over"],
+      ["🐰", "Find two cards that match"],
+      ["🐝", "Match them all before the bee reaches the end"],
+      ["🔥", "Match in a row for bonus points"],
+    ],
+    onStart: startRun,
+  });
+
+  const FONT = getComputedStyle(document.body).fontFamily;
+  const safeEl = document.getElementById("mm-safe");
+  const hudEl = document.getElementById("fk-hud");
+
+  /* ---------------- state ---------------- */
+  let view = null;
+  let layout = null;
+  let cards = [];
+  let levelIdx = 0;
+  let phase = "idle"; // idle | deal | play | clear | timeup | done
+  let phaseT = 0;
+  let timeLeft = 0;
+  let timeMax = 1;
+  let pair = null; // pending mismatch {a, b, t}
+  let streak = 0;
+  let bestStreak = 0;
+  let pairsFound = 0;
+  let levelMisses = 0;
+  let lastSecond = -1;
+  let clearInfo = null;
+  let clock = 0;
+  let clouds = [];
+  let bgCanvas = null;
+  let backCache = null;
+  const faceCache = new Map();
+  let timeEls = null;
+
+  /* ---------------- layout ---------------- */
+  function insets() {
+    const cs = getComputedStyle(safeEl);
+    return {
+      top: parseFloat(cs.paddingTop) || 0,
+      bottom: parseFloat(cs.paddingBottom) || 0,
+      left: parseFloat(cs.paddingLeft) || 0,
+      right: parseFloat(cs.paddingRight) || 0,
+    };
+  }
+
+  function computeLayout(level) {
+    const ins = insets();
+    const hudBottom = Math.max(hudEl ? hudEl.getBoundingClientRect().bottom : 0, 52 + ins.top);
+    const barY = hudBottom + 6;
+    const top = barY + 26;
+    const bottom = view.h - 12 - ins.bottom;
+    const mx = Math.max(6, Math.min(28, view.w * 0.025));
+    const left = mx + ins.left;
+    const right = view.w - mx - ins.right;
+    const availW = right - left;
+    const availH = Math.max(80, bottom - top);
+    const n = level.pairs * 2;
+    let best = null;
+    for (let rows = 2; rows <= n / 2; rows++) {
+      if (n % rows) continue;
+      const cols = n / rows;
+      if (Math.max(rows, cols) / Math.min(rows, cols) > 3) continue;
+      const gap = clamp(Math.min(availW / cols, availH / rows) * 0.08, 4, 14);
+      let w = (availW - (cols - 1) * gap) / cols;
+      let h = (availH - (rows - 1) * gap) / rows;
+      if (h > w * 1.28) h = w * 1.28;
+      if (w > h * 0.9) w = h * 0.9;
+      // A tiny preference for the level's listed grid so the shapes feel deliberate.
+      const listed = (cols === level.a && rows === level.b) || (cols === level.b && rows === level.a);
+      const score = w * h * (listed ? 1.04 : 1);
+      if (!best || score > best.score) best = { rows, cols, w, h, gap, score };
+    }
+    const cap = 190;
+    if (best.w > cap) { best.h *= cap / best.w; best.w = cap; }
+    const gridW = best.cols * best.w + (best.cols - 1) * best.gap;
+    const gridH = best.rows * best.h + (best.rows - 1) * best.gap;
+    const x0 = left + (availW - gridW) / 2;
+    const y0 = top + Math.max(0, (availH - gridH) / 2 - Math.min(20, (availH - gridH) * 0.15));
+    return {
+      ...best, x0, y0, gridW, gridH,
+      bar: { x: Math.max(left + 8, view.w / 2 - Math.min(260, availW * 0.42)), y: barY, w: Math.min(520, availW * 0.84), h: 14 },
+    };
+  }
+
+  // The 6x6 bonus level only appears when its cards can stay finger-sized.
+  function levelFits(idx) {
+    if (idx >= LEVELS.length) return false;
+    if (idx < 5) return true;
+    const l = computeLayout(LEVELS[idx]);
+    return l.w >= 55;
+  }
+
+  function placeCards() {
+    if (!cards.length) return;
+    const lv = LEVELS[levelIdx];
+    layout = computeLayout(lv);
+    cards.forEach((c, i) => {
+      const col = i % layout.cols;
+      const row = Math.floor(i / layout.cols);
+      c.x = layout.x0 + col * (layout.w + layout.gap) + layout.w / 2;
+      c.y = layout.y0 + row * (layout.h + layout.gap) + layout.h / 2;
+      c.w = layout.w;
+      c.h = layout.h;
+    });
+    backCache = null;
+    faceCache.clear();
+  }
+
+  /* ---------------- art (cached per card size) ---------------- */
+  function offscreen(w, h) {
+    const c = document.createElement("canvas");
+    const dpr = view.dpr;
+    c.width = Math.ceil(w * dpr);
+    c.height = Math.ceil(h * dpr);
+    const g = c.getContext("2d");
+    g.scale(dpr, dpr);
+    return { c, g };
+  }
+
+  function daisy(g, x, y, r, petal, center) {
+    g.fillStyle = petal;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      g.beginPath();
+      g.ellipse(x + Math.cos(a) * r * 0.55, y + Math.sin(a) * r * 0.55, r * 0.42, r * 0.22, a, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.fillStyle = center;
+    g.beginPath();
+    g.arc(x, y, r * 0.3, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  function cardBack(w, h) {
+    if (backCache && backCache.w === w && backCache.h === h) return backCache.c;
+    const { c, g } = offscreen(w, h);
+    const r = Math.min(w, h) * 0.14;
+    roundRect(g, 0, 0, w, h, r);
+    const grad = g.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, "#36b37e");
+    grad.addColorStop(1, "#1f8a63");
+    g.fillStyle = grad;
+    g.fill();
+    g.save();
+    roundRect(g, 0, 0, w, h, r);
+    g.clip();
+    // diagonal gingham stripes
+    g.globalAlpha = 0.13;
+    g.fillStyle = "#ffffff";
+    const step = Math.max(9, w / 6);
+    for (let s = -h; s < w + h; s += step) {
+      g.beginPath();
+      g.moveTo(s, 0); g.lineTo(s + step / 2, 0); g.lineTo(s + step / 2 - h, h); g.lineTo(s - h, h);
+      g.closePath(); g.fill();
+    }
+    g.globalAlpha = 1;
+    // little flower dots
+    const dot = Math.max(1.6, w * 0.028);
+    for (let ri = 0, yy = step * 0.5; yy < h; yy += step, ri++) {
+      for (let xx = step * (ri % 2 ? 0 : 0.5); xx < w + step; xx += step) {
+        g.fillStyle = "rgba(255,255,255,0.55)";
+        g.beginPath(); g.arc(xx, yy, dot, 0, Math.PI * 2); g.fill();
+      }
+    }
+    // inner frame
+    const inset = Math.max(4, w * 0.07);
+    roundRect(g, inset, inset, w - inset * 2, h - inset * 2, r * 0.7);
+    g.lineWidth = Math.max(1.5, w * 0.028);
+    g.strokeStyle = "rgba(255, 244, 196, 0.95)";
+    g.setLineDash([Math.max(3, w * 0.06), Math.max(2, w * 0.035)]);
+    g.stroke();
+    g.setLineDash([]);
+    // center medallion with a daisy
+    const mr = Math.min(w, h) * 0.26;
+    g.fillStyle = "#fff7d6";
+    g.beginPath(); g.arc(w / 2, h / 2, mr, 0, Math.PI * 2); g.fill();
+    g.lineWidth = Math.max(2, w * 0.03);
+    g.strokeStyle = "#ffcf4a";
+    g.stroke();
+    daisy(g, w / 2, h / 2, mr * 0.86, "#ffffff", "#ffb703");
+    g.lineWidth = 1;
+    g.strokeStyle = "rgba(0,0,0,0.06)";
+    g.beginPath(); g.arc(w / 2, h / 2, mr * 0.86 * 0.3, 0, Math.PI * 2); g.stroke();
+    // top gloss
+    const gloss = g.createLinearGradient(0, 0, 0, h * 0.5);
+    gloss.addColorStop(0, "rgba(255,255,255,0.28)");
+    gloss.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = gloss;
+    g.fillRect(0, 0, w, h * 0.5);
+    g.restore();
+    roundRect(g, 0.75, 0.75, w - 1.5, h - 1.5, r);
+    g.lineWidth = 1.5;
+    g.strokeStyle = "rgba(255,255,255,0.65)";
+    g.stroke();
+    backCache = { w, h, c };
+    return c;
+  }
+
+  function cardFace(card) {
+    const key = `${card.face}|${card.w}|${card.h}`;
+    let hit = faceCache.get(key);
+    if (hit) return hit;
+    const w = card.w;
+    const h = card.h;
+    const { c, g } = offscreen(w, h);
+    const r = Math.min(w, h) * 0.14;
+    roundRect(g, 0, 0, w, h, r);
+    const grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, "#fffdf6");
+    grad.addColorStop(1, "#fff3dc");
+    g.fillStyle = grad;
+    g.fill();
+    g.lineWidth = Math.max(2, w * 0.035);
+    g.strokeStyle = card.ring;
+    roundRect(g, g.lineWidth / 2, g.lineWidth / 2, w - g.lineWidth, h - g.lineWidth, r);
+    g.stroke();
+    const br = Math.min(w, h) * 0.4;
+    g.fillStyle = card.tint;
+    g.beginPath(); g.arc(w / 2, h / 2, br, 0, Math.PI * 2); g.fill();
+    const fs = Math.min(w, h) * 0.56;
+    g.font = `${Math.round(fs)}px ${EMOJI_FONT}`;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(card.face, w / 2, h / 2 + fs * 0.06);
+    faceCache.set(key, c);
+    return c;
+  }
+
+  function buildBackground() {
+    const { c, g } = offscreen(view.w, view.h);
+    const w = view.w;
+    const h = view.h;
+    const sky = g.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#6cc8ff");
+    sky.addColorStop(0.45, "#b8e8ff");
+    sky.addColorStop(0.62, "#e6f8ff");
+    g.fillStyle = sky;
+    g.fillRect(0, 0, w, h);
+    const hill = (y0, amp, color, phase, freq) => {
+      g.fillStyle = color;
+      g.beginPath();
+      g.moveTo(0, h);
+      for (let x = 0; x <= w + 10; x += 10) {
+        g.lineTo(x, y0 + Math.sin(x / w * Math.PI * freq + phase) * amp + Math.sin(x / 57 + phase) * amp * 0.15);
+      }
+      g.lineTo(w, h);
+      g.closePath();
+      g.fill();
+    };
+    hill(h * 0.5, h * 0.035, "#a6e39a", 0.6, 1.6);
+    hill(h * 0.6, h * 0.04, "#7fd27a", 2.1, 2.2);
+    hill(h * 0.72, h * 0.03, "#5fc163", 4.0, 1.3);
+    const ground = g.createLinearGradient(0, h * 0.72, 0, h);
+    ground.addColorStop(0, "rgba(70,170,80,0)");
+    ground.addColorStop(1, "rgba(40,130,60,0.55)");
+    g.fillStyle = ground;
+    g.fillRect(0, h * 0.7, w, h * 0.3);
+    // flowers and grass tufts scattered over the hills (deterministic pseudo-random)
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const petals = ["#ffffff", "#ffd1e6", "#fff08a", "#ffb3c7", "#e3d4ff"];
+    const count = Math.round((w * h) / 9000);
+    for (let i = 0; i < count; i++) {
+      const y = h * 0.55 + rnd() * h * 0.45;
+      const x = rnd() * w;
+      const depth = (y - h * 0.55) / (h * 0.45);
+      const s = 3 + depth * 6;
+      if (rnd() < 0.5) {
+        g.strokeStyle = "rgba(40,120,50,0.5)";
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.moveTo(x - s * 0.6, y); g.lineTo(x - s * 0.9, y - s * 1.4);
+        g.moveTo(x, y); g.lineTo(x, y - s * 1.8);
+        g.moveTo(x + s * 0.6, y); g.lineTo(x + s * 0.9, y - s * 1.4);
+        g.stroke();
+      } else {
+        daisy(g, x, y, s, petals[Math.floor(rnd() * petals.length)], "#ffb703");
+      }
+    }
+    bgCanvas = c;
+  }
+
+  function makeClouds() {
+    clouds = [];
+    const n = Math.max(3, Math.round(view.w / 180));
+    for (let i = 0; i < n; i++) {
+      clouds.push({ x: rand(0, view.w), y: rand(view.h * 0.06, view.h * 0.4), s: rand(0.6, 1.3), v: rand(6, 14) });
+    }
+  }
+
+  function drawCloud(ctx, x, y, s) {
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath();
+    ctx.arc(x, y, 22 * s, 0, Math.PI * 2);
+    ctx.arc(x + 26 * s, y - 10 * s, 26 * s, 0, Math.PI * 2);
+    ctx.arc(x + 54 * s, y, 20 * s, 0, Math.PI * 2);
+    ctx.arc(x + 28 * s, y + 8 * s, 22 * s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* ---------------- level flow ---------------- */
+  function newCards(lv, deal) {
+    const faces = shuffle(ANIMALS.slice()).slice(0, lv.pairs);
+    const deck = [];
+    faces.forEach((face, i) => {
+      for (let k = 0; k < 2; k++) {
+        deck.push({ face, tint: TINTS[i % TINTS.length], ring: RINGS[i % RINGS.length] });
+      }
+    });
+    shuffle(deck);
+    cards = deck.map((d, i) => ({
+      id: i, face: d.face, tint: d.tint, ring: d.ring,
+      x: 0, y: 0, w: 0, h: 0,
+      state: "down", flip: 0, flipTo: 0,
+      hop: -1, hopDelay: 0, shake: -1, wave: null, glow: 0,
+      deal: deal ? { t: 0, delay: 0, rot: rand(-0.6, 0.6) } : null,
+      out: null,
+    }));
+    placeCards();
+    if (deal) {
+      const stagger = RM ? 0.01 : Math.min(0.07, 1.1 / cards.length);
+      cards.forEach((c, i) => { c.deal.delay = 0.15 + i * stagger; });
+    }
+  }
+
+  function startLevel(idx) {
+    levelIdx = idx;
+    const lv = LEVELS[idx];
+    timeMax = lv.time;
+    timeLeft = lv.time;
+    lastSecond = -1;
+    levelMisses = 0;
+    pair = null;
+    clearInfo = null;
+    newCards(lv, true);
+    phase = "deal";
+    phaseT = 0;
+    kit.sound.play("whoosh");
+    renderExtra(true);
+  }
+
+  function startRun() {
+    streak = 0;
+    bestStreak = 0;
+    pairsFound = 0;
+    clearInfo = null;
+    kit.fx.clear();
+    startLevel(0);
+    setTimeout(() => kit.toast("🌼 Level 1", "#fff"), 120);
+  }
+
+  function renderExtra(force) {
+    const secs = Math.max(0, Math.ceil(timeLeft));
+    if (!force && secs === lastSecond) return;
+    lastSecond = secs;
+    if (force || !timeEls) {
+      kit.setExtra(`<span class="mm-lv">🌼<b>${levelIdx + 1}</b></span><span class="mm-t">⏱<b>${secs}</b></span>`);
+      const t = hudEl.querySelector(".mm-t");
+      timeEls = t ? { t, b: t.querySelector("b") } : null;
+    } else {
+      timeEls.b.textContent = String(secs);
+    }
+    if (timeEls) timeEls.t.classList.toggle("mm-low", secs <= 10);
+  }
+
+  /* ---------------- input ---------------- */
+  function cardAt(x, y) {
+    for (const c of cards) {
+      if (Math.abs(x - c.x) <= c.w / 2 + 2 && Math.abs(y - c.y) <= c.h / 2 + 2) return c;
+    }
+    return null;
+  }
+
+  function flipBack(c) {
+    c.state = "down";
+    c.flipTo = 0;
+    c.shake = -1;
+  }
+
+  function resolvePairNow() {
+    if (!pair) return;
+    flipBack(pair.a);
+    flipBack(pair.b);
+    pair = null;
+  }
+
+  function tapCard(c) {
+    if (pair) {
+      const wasInPair = c === pair.a || c === pair.b;
+      resolvePairNow();
+      kit.sound.tone(420, 0.05, { type: "triangle", vol: 0.1 });
+      if (wasInPair) return;
+    }
+    if (c.state !== "down") {
+      if (c.state === "matched" && c.hop < 0) { c.hop = 0; c.hopDelay = 0; kit.sound.play("pop", 1.4); }
+      return;
+    }
+    c.state = "up";
+    c.flipTo = 1;
+    kit.haptic(8);
+    kit.sound.tone(560 + Math.random() * 80, 0.06, { type: "triangle", vol: 0.16, slide: 820 });
+    const open = cards.filter((k) => k.state === "up");
+    if (open.length < 2) return;
+    const [a, b] = open;
+    if (a.face === b.face) {
+      a.state = b.state = "matched";
+      streak += 1;
+      bestStreak = Math.max(bestStreak, streak);
+      pairsFound += 1;
+      const pts = 100 + (streak - 1) * 50;
+      kit.addScore(pts);
+      for (const k of [a, b]) { k.hop = 0; k.hopDelay = FLIP_DUR * 0.9; }
+      setTimeout(() => {
+        if (kit.state !== "playing") return;
+        if (streak >= 2) kit.sound.play("combo", streak - 1);
+        else kit.sound.play("pop", 1.2);
+      }, FLIP_DUR * 900);
+      kit.haptic(22);
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      kit.fx.text(mx, my - a.h * 0.3, `+${pts}`, { color: "#fff36b", size: clamp(a.w * 0.38, 22, 40) });
+      if (streak >= 2) {
+        kit.fx.text(mx, my + a.h * 0.15, `🔥 x${streak}`, { color: "#ffb347", size: clamp(a.w * 0.3, 18, 32), life: 1.1 });
+      }
+      if (streak === 3 || streak === 5 || streak === 8) kit.toast(streak >= 8 ? "🌈 Amazing!" : streak >= 5 ? "⭐ Super!" : "🔥 Hot streak!", "#fff6b0");
+      if (cards.every((k) => k.state === "matched")) {
+        phase = "clear";
+        phaseT = 0;
+        prepareClear();
+      }
+    } else {
+      streak = 0;
+      levelMisses += 1;
+      pair = { a, b, t: 0 };
+    }
+  }
+
+  kit.pointer(null, {
+    down(p) {
+      if (phase !== "play") return;
+      const c = cardAt(p.x, p.y);
+      if (c) tapCard(c);
+    },
+  });
+
+  /* ---------------- level clear ---------------- */
+  function prepareClear() {
+    const secs = Math.max(0, Math.floor(timeLeft));
+    const perfect = levelMisses === 0 && LEVELS[levelIdx].pairs >= 3;
+    clearInfo = {
+      timeBonus: secs * 10,
+      perfectBonus: perfect ? 250 * (levelIdx + 1) : 0,
+      shown: 0,
+      shownPerfect: 0,
+      added: 0,
+      last: !levelFits(levelIdx + 1),
+      tick: 0,
+    };
+    cards.forEach((c) => { c.wave = { t: 0, delay: 0.7 + (RM ? 0 : ((c.x - layout.x0) / Math.max(1, layout.gridW)) * 0.35) }; });
+  }
+
+  function updateClear(dt) {
+    const ci = clearInfo;
+    if (phaseT > 0.6 && !ci.cheered) {
+      ci.cheered = true;
+      kit.sound.play("win");
+      kit.toast(ci.perfectBonus ? "⭐ Perfect!" : "🎉 Hooray!", "#fff6b0");
+      for (const c of cards) {
+        if (Math.random() < 0.6) kit.fx.burst(c.x, c.y, ["#ffd23f", "#ff7aa2", "#7cf0a0", "#7cc8ff"], 6, { shape: "star", size: 5, speed: 200 });
+      }
+    }
+    const total = ci.timeBonus + ci.perfectBonus;
+    // 0.9s .. 2.3s: count the bonus up into the score
+    if (phaseT > 0.9 && ci.added < total) {
+      const rate = Math.max(total / 1.3, 200);
+      const step = Math.min(total - ci.added, Math.ceil(rate * dt));
+      ci.added += step;
+      ci.shown = Math.min(ci.timeBonus, ci.added);
+      ci.shownPerfect = Math.max(0, ci.added - ci.timeBonus);
+      kit.setScore(kit.score + step, { quiet: true });
+      ci.tick -= dt;
+      if (ci.tick <= 0) {
+        ci.tick = 0.06;
+        kit.sound.tone(700 + (ci.added / Math.max(1, total)) * 700, 0.04, { type: "square", vol: 0.06 });
+      }
+      if (ci.added >= total) {
+        kit.sound.play("coin");
+        kit.setScore(kit.score);
+      }
+    }
+    const doneCount = 0.9 + 1.3 + 0.6;
+    if (phaseT > doneCount && !ci.flying) {
+      ci.flying = true;
+      if (ci.last) {
+        phase = "done";
+        kit.gameOver({
+          win: true,
+          title: "Meadow master!",
+          emoji: "🏆",
+          reason: "You found every pair in the meadow!",
+          stats: [["Level", levelIdx + 1], ["Pairs", pairsFound], ["Best streak", bestStreak]],
+        });
+        return;
+      }
+      kit.sound.play("whoosh");
+      cards.forEach((c, i) => { c.out = { t: 0, delay: RM ? 0 : i * Math.min(0.03, 0.6 / cards.length) }; });
+    }
+    if (ci.flying && phaseT > doneCount + 0.9) {
+      const next = levelIdx + 1;
+      startLevel(next);
+      kit.toast(`🌼 Level ${next + 1}!`, "#fff");
+    }
+  }
+
+  /* ---------------- update ---------------- */
+  function animate(dt) {
+    clock += dt;
+    for (const cl of clouds) {
+      cl.x += cl.v * dt;
+      if (cl.x > view.w + 40) cl.x = -120 * cl.s;
+    }
+    for (const c of cards) {
+      const target = c.flipTo;
+      if (c.flip !== target) {
+        const d = dt / FLIP_DUR;
+        c.flip = target > c.flip ? Math.min(target, c.flip + d) : Math.max(target, c.flip - d);
+      }
+      if (c.deal) {
+        c.deal.t += dt;
+        if (c.deal.t - c.deal.delay > 0.5) c.deal = null;
+      }
+      if (c.hop >= 0) {
+        c.hop += dt;
+        if (c.hop - c.hopDelay > 0.55) c.hop = -2; // -2: finished, stays matched
+      }
+      if (c.wave) {
+        c.wave.t += dt;
+        if (c.wave.t - c.wave.delay > 0.6) c.wave = null;
+      }
+      if (c.shake >= 0) c.shake += dt;
+      if (c.out) c.out.t += dt;
+      c.glow = lerp(c.glow, c.state === "up" ? 1 : 0, Math.min(1, dt * 12));
+    }
+  }
+
+  function update(dt) {
+    animate(dt);
+    phaseT += dt;
+    if (phase === "deal") {
+      if (cards.every((c) => !c.deal)) { phase = "play"; phaseT = 0; }
+      // a soft tick as each card lands
+      for (const c of cards) {
+        if (c.deal && !c.dealTicked && c.deal.t > c.deal.delay + 0.3) {
+          c.dealTicked = true;
+          if (c.id % 2 === 0) kit.sound.tone(380 + c.id * 12, 0.04, { type: "sine", vol: 0.07 });
+        }
+      }
+    } else if (phase === "play") {
+      timeLeft -= dt;
+      const secs = Math.ceil(timeLeft);
+      if (secs !== lastSecond && secs <= 10 && secs > 0) kit.sound.tone(secs <= 5 ? 980 : 760, 0.05, { type: "sine", vol: 0.1 });
+      renderExtra(false);
+      if (pair) {
+        pair.t += dt;
+        if (pair.t >= FLIP_DUR && pair.a.shake < 0) {
+          pair.a.shake = 0;
+          pair.b.shake = 0;
+          kit.haptic(35);
+          kit.sound.tone(300, 0.12, { type: "sine", slide: 220, vol: 0.18 });
+          kit.sound.tone(240, 0.16, { type: "sine", slide: 180, vol: 0.16, delay: 0.1 });
+        }
+        if (pair.t >= FLIP_DUR + MISS_HOLD) resolvePairNow();
+      }
+      if (timeLeft <= 0) {
+        timeLeft = 0;
+        renderExtra(true);
+        phase = "timeup";
+        phaseT = 0;
+        pair = null;
+        kit.sound.play("thud");
+        kit.shake(6, 0.3);
+        kit.toast("⏰ Time's up!", "#ffe0e0");
+        for (const c of cards) if (c.state !== "matched") { c.flipTo = 1; c.shake = -1; }
+      }
+    } else if (phase === "clear") {
+      updateClear(dt);
+    } else if (phase === "timeup") {
+      if (phaseT > 1.6) {
+        phase = "done";
+        kit.gameOver({
+          title: "Time's up!",
+          emoji: "⏰",
+          reason: pairsFound ? "Great matching! Try again to go further." : "Have another go!",
+          stats: [["Level", levelIdx + 1], ["Pairs", pairsFound], ["Best streak", bestStreak]],
+        });
+      }
+    }
+  }
+
+  /* ---------------- render ---------------- */
+  function drawCard(ctx, c) {
+    let x = c.x;
+    let y = c.y;
+    let rot = 0;
+    let scale = 1;
+    let alpha = 1;
+    let lift = 0;
+    if (c.deal) {
+      const t = clamp((c.deal.t - c.deal.delay) / 0.5, 0, 1);
+      if (t <= 0) return;
+      const e = easeOutBack(t);
+      const fx = view.w / 2;
+      const fy = view.h + c.h;
+      x = lerp(fx, c.x, e);
+      y = lerp(fy, c.y, e);
+      rot = c.deal.rot * (1 - easeOutCubic(t));
+      scale = lerp(0.55, 1, easeOutCubic(t));
+      lift = (1 - t) * 10;
+    }
+    if (c.out) {
+      const t = clamp((c.out.t - c.out.delay) / 0.5, 0, 1);
+      if (t >= 1) return;
+      const e = t * t;
+      y -= e * (c.y + c.h);
+      x += (c.x - view.w / 2) * e * 0.3;
+      scale *= 1 - e * 0.5;
+      alpha = 1 - t * 0.6;
+      rot = (c.id % 2 ? 1 : -1) * e * 0.8;
+    }
+    // happy hop on a match
+    if (c.hop >= 0) {
+      const t = clamp((c.hop - c.hopDelay) / 0.55, 0, 1);
+      if (t > 0) {
+        const s = Math.sin(t * Math.PI);
+        y -= s * c.h * 0.22;
+        lift += s * 12;
+        scale *= 1 + s * 0.1;
+        rot += Math.sin(t * Math.PI * 2) * 0.08;
+      }
+    }
+    if (c.wave && c.wave.t > c.wave.delay) {
+      const s = Math.sin(clamp((c.wave.t - c.wave.delay) / 0.6, 0, 1) * Math.PI);
+      y -= s * c.h * 0.16;
+      lift += s * 8;
+    }
+    // shake on a mismatch
+    let tintBad = 0;
+    if (c.shake >= 0 && c.state === "up") {
+      const t = c.shake;
+      const k = Math.max(0, 1 - t / 0.45);
+      if (!RM) x += Math.sin(t * 46) * 7 * k;
+      tintBad = Math.min(1, t * 6) * 0.9;
+    }
+    const f = c.flip;
+    const flipS = Math.abs(Math.cos(f * Math.PI));
+    const mid = Math.sin(f * Math.PI);
+    lift += mid * 10;
+    scale *= 1 + mid * 0.08;
+    const showFace = f > 0.5;
+    const w = c.w;
+    const h = c.h;
+    const r = Math.min(w, h) * 0.14;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // shadow
+    ctx.save();
+    ctx.translate(x + lift * 0.25, y + 3 + lift * 0.6);
+    ctx.rotate(rot);
+    ctx.scale(scale * Math.max(0.15, flipS), scale);
+    roundRect(ctx, -w / 2, -h / 2, w, h, r);
+    ctx.fillStyle = `rgba(20, 60, 30, ${0.22 + lift * 0.006})`;
+    ctx.fill();
+    ctx.restore();
+
+    ctx.translate(x, y - lift * 0.4);
+    ctx.rotate(rot);
+    ctx.scale(scale * Math.max(0.02, flipS), scale);
+
+    // selection glow (face up, not yet matched)
+    if (c.glow > 0.02 && showFace) {
+      roundRect(ctx, -w / 2 - 4, -h / 2 - 4, w + 8, h + 8, r + 4);
+      ctx.fillStyle = tintBad > 0 ? `rgba(255, 90, 90, ${0.85 * c.glow})` : `rgba(255, 232, 80, ${0.95 * c.glow})`;
+      ctx.fill();
+    }
+    const img = showFace ? cardFace(c) : cardBack(w, h);
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+
+    if (showFace && c.state === "matched") {
+      const done = c.hop < 0 || c.hop - c.hopDelay > 0.2;
+      if (done) {
+        // gentle fade + gold rim + corner ribbon
+        roundRect(ctx, -w / 2, -h / 2, w, h, r);
+        ctx.fillStyle = "rgba(255,255,255,0.16)";
+        ctx.fill();
+        ctx.lineWidth = Math.max(2.5, w * 0.045);
+        ctx.strokeStyle = "#ffc93c";
+        roundRect(ctx, -w / 2 + ctx.lineWidth / 2, -h / 2 + ctx.lineWidth / 2, w - ctx.lineWidth, h - ctx.lineWidth, r);
+        ctx.stroke();
+        ctx.save();
+        roundRect(ctx, -w / 2, -h / 2, w, h, r);
+        ctx.clip();
+        const rb = Math.min(w, h) * 0.34;
+        ctx.translate(w / 2, -h / 2);
+        ctx.fillStyle = "#ff5d8f";
+        ctx.beginPath();
+        ctx.moveTo(-rb, 0); ctx.lineTo(-rb * 0.55, 0); ctx.lineTo(0, rb * 0.55); ctx.lineTo(0, rb); ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        ctx.save();
+        ctx.translate(w / 2 - Math.min(w, h) * 0.16, -h / 2 + Math.min(w, h) * 0.16);
+        starPath(ctx, 0, 0, Math.min(w, h) * 0.1, Math.min(w, h) * 0.045, 5);
+        ctx.fillStyle = "#ffd23f";
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = "#c27c00";
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    if (tintBad > 0 && showFace) {
+      roundRect(ctx, -w / 2, -h / 2, w, h, r);
+      ctx.fillStyle = `rgba(255, 70, 70, ${0.14 * tintBad})`;
+      ctx.fill();
+    }
+    // 3D shading while turning: darker as the card goes edge-on
+    if (mid > 0.02) {
+      roundRect(ctx, -w / 2, -h / 2, w, h, r);
+      const sg = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
+      const dir = f < 0.5 ? 1 : -1;
+      sg.addColorStop(dir > 0 ? 0 : 1, `rgba(0,0,0,${0.05 * mid})`);
+      sg.addColorStop(dir > 0 ? 1 : 0, `rgba(0,0,0,${0.42 * mid})`);
+      ctx.fillStyle = sg;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawTimerBar(ctx) {
+    if (!layout || phase === "idle") return;
+    const b = layout.bar;
+    const frac = clamp(timeLeft / timeMax, 0, 1);
+    const low = timeLeft <= 10 && phase === "play";
+    ctx.save();
+    roundRect(ctx, b.x, b.y, b.w, b.h, b.h / 2);
+    ctx.fillStyle = "rgba(20, 50, 40, 0.35)";
+    ctx.fill();
+    const fw = Math.max(b.h, b.w * frac);
+    const pulse = low ? 0.5 + 0.5 * Math.sin(clock * 10) : 0;
+    roundRect(ctx, b.x + b.w - fw, b.y, fw, b.h, b.h / 2);
+    const g = ctx.createLinearGradient(b.x, 0, b.x + b.w, 0);
+    if (frac > 0.35) { g.addColorStop(0, "#9df26b"); g.addColorStop(1, "#3cc25a"); }
+    else if (frac > 0.15 || !low) { g.addColorStop(0, "#ffe066"); g.addColorStop(1, "#ffb020"); }
+    else { g.addColorStop(0, "#ff8a8a"); g.addColorStop(1, `rgb(${230 + pulse * 25}, 60, 60)`); }
+    ctx.fillStyle = g;
+    if (frac > 0) ctx.fill();
+    roundRect(ctx, b.x + b.w - fw + 2, b.y + 2, Math.max(0, fw - 4), b.h * 0.35, b.h / 4);
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    if (frac > 0.05) ctx.fill();
+    // flower at the finish, bee flying along
+    ctx.font = `${Math.round(b.h * 2)}px ${EMOJI_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🌻", b.x + b.w + b.h * 0.2, b.y + b.h / 2);
+    const bx = b.x + b.w - fw;
+    const bob = Math.sin(clock * 8) * 2;
+    ctx.save();
+    ctx.translate(bx, b.y + b.h / 2 + bob);
+    ctx.scale(-1, 1);
+    ctx.font = `${Math.round(b.h * 2.1 * (low ? 1 + pulse * 0.15 : 1))}px ${EMOJI_FONT}`;
+    ctx.fillText("🐝", 0, 0);
+    ctx.restore();
+    ctx.restore();
+  }
+
+  function drawClearBanner(ctx) {
+    if (phase !== "clear" || !clearInfo || phaseT < 0.9) return;
+    const t = phaseT - 0.9;
+    const ap = clamp(t / 0.3, 0, 1);
+    const fade = clearInfo.flying ? clamp(1 - (phaseT - 2.8) / 0.4, 0, 1) : 1;
+    const s = easeOutBack(ap);
+    const bw = Math.min(view.w - 40, 300);
+    const lines = clearInfo.perfectBonus ? 2 : 1;
+    const bh = 64 + (lines - 1) * 46;
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.translate(view.w / 2, view.h / 2);
+    ctx.scale(s, s);
+    roundRect(ctx, -bw / 2, -bh / 2, bw, bh, 24);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.shadowColor = "rgba(0,0,0,0.25)";
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 6;
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#ffc93c";
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const row = (y, icon, value, color) => {
+      ctx.font = `34px ${EMOJI_FONT}`;
+      ctx.fillText(icon, -bw / 2 + 44, y);
+      ctx.font = `900 36px ${FONT}`;
+      ctx.fillStyle = color;
+      ctx.fillText(`+${FK.fmt(value)}`, 22, y);
+    };
+    const y1 = -bh / 2 + 32;
+    row(y1, "⏱", clearInfo.shown, "#1f8a4d");
+    if (clearInfo.perfectBonus) {
+      ctx.fillStyle = "#000";
+      row(y1 + 46, "⭐", clearInfo.shownPerfect, "#d98200");
+    }
+    ctx.restore();
+  }
+
+  function render(dt) {
+    if (kit.state !== "playing" && kit.state !== "paused") animate(dt);
+    const ctx = view.ctx;
+    ctx.save();
+    kit.applyShake(ctx);
+    if (bgCanvas) ctx.drawImage(bgCanvas, 0, 0, view.w, view.h);
+    // sun
+    const sx = view.w - 56;
+    const sy = Math.max(110, view.h * 0.16);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(clock * 0.15);
+    ctx.fillStyle = "rgba(255, 230, 120, 0.45)";
+    for (let i = 0; i < 12; i++) {
+      ctx.rotate(Math.PI / 6);
+      ctx.beginPath();
+      ctx.moveTo(0, -38); ctx.lineTo(6, -56); ctx.lineTo(-6, -56); ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.fillStyle = "#ffe27a";
+    ctx.beginPath(); ctx.arc(sx, sy, 30, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff2b8";
+    ctx.beginPath(); ctx.arc(sx - 8, sy - 8, 12, 0, Math.PI * 2); ctx.fill();
+    for (const cl of clouds) drawCloud(ctx, cl.x, cl.y, cl.s);
+
+    drawTimerBar(ctx);
+    const lifted = [];
+    for (const c of cards) {
+      const busy = c.hop >= 0 || c.deal || c.out || (c.flip > 0 && c.flip < 1) || (c.wave && c.wave.t > c.wave.delay);
+      if (busy) lifted.push(c);
+      else drawCard(ctx, c);
+    }
+    for (const c of lifted) drawCard(ctx, c);
+    drawClearBanner(ctx);
+    kit.fx.draw(ctx);
+    ctx.restore();
+  }
+
+  /* ---------------- boot ---------------- */
+  view = kit.canvas((v) => {
+    view = v;
+    buildBackground();
+    makeClouds();
+    placeCards();
+  });
+  // A face-down board sits behind the title card.
+  levelIdx = 0;
+  newCards(LEVELS[0], false);
+  phase = "idle";
+  kit.run(update, render);
+
+  // Test hook (used by the Playwright check; harmless in play).
+  window.__meadow = {
+    get phase() { return phase; },
+    get level() { return levelIdx + 1; },
+    get timeLeft() { return timeLeft; },
+    get streak() { return streak; },
+    get pairsFound() { return pairsFound; },
+    get layout() { return layout && { rows: layout.rows, cols: layout.cols, w: layout.w, h: layout.h, gap: layout.gap }; },
+    cards() {
+      return cards.map((c) => ({ id: c.id, face: c.face, x: c.x, y: c.y, w: c.w, h: c.h, state: c.state, flip: c.flip }));
+    },
+    setTime(t) { timeLeft = t; },
+  };
+})();
+</script>
+</body>
+</html>

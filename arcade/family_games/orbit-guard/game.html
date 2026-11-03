@@ -1,0 +1,1190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orbit Guard</title>
+<!-- @family-kit -->
+<style>
+  html, body { background: #0d0726; }
+  .og-hearts { font-size: 15px; letter-spacing: 1px; line-height: 1; display: inline-flex; gap: 1px; }
+  .og-hearts i { font-style: normal; display: inline-block; }
+  .og-hearts i.og-lost { animation: og-lose 0.5s ease-out; }
+  .og-hearts i.og-gain { animation: og-gain 0.5s cubic-bezier(0.2, 1.6, 0.4, 1); }
+  @keyframes og-lose { 0% { transform: scale(1.6); } 40% { transform: scale(0.7) rotate(-15deg); } 100% { transform: none; } }
+  @keyframes og-gain { 0% { transform: scale(0.2); } 100% { transform: none; } }
+  #fk-hud .fk-extra { padding: 6px 9px; }
+  @media (max-width: 400px) {
+    #fk-hud { gap: 5px; }
+    #fk-hud .fk-pill { padding: 6px 9px; }
+    #fk-hud .fk-extra { padding: 6px 7px; }
+    .og-hearts { font-size: 12px; letter-spacing: 0; }
+    #fk-hud [data-fk="best"] small { font-size: 0; }
+    #fk-hud [data-fk="best"] small::before { content: "🏆"; font-size: 12px; }
+  }
+  @media (max-width: 340px) { #fk-hud .fk-pill small { display: none; } }
+  #og-probe { position: fixed; left: 0; top: 0; width: 1px; visibility: hidden; pointer-events: none;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<div id="og-probe"></div>
+<script>
+(function () {
+  "use strict";
+  const FK = window.FamilyKit;
+  const { clamp, lerp, rand, randInt } = FK;
+  const TAU = Math.PI * 2;
+  const RM = FK.reducedMotion;
+
+  /* ---------- Palette: colour + shape, so colour-blind players can match by icon ---------- */
+  const COLORS = [
+    { name: "pink", fill: "#ff5c8a", light: "#ffb3c9", dark: "#c22a5c", shape: "circle" },
+    { name: "yellow", fill: "#ffc83d", light: "#ffe9a3", dark: "#c98a00", shape: "triangle" },
+    { name: "green", fill: "#36de8c", light: "#b0f5d2", dark: "#14995a", shape: "square" },
+    { name: "blue", fill: "#3ab4ff", light: "#b5e3ff", dark: "#1475c2", shape: "diamond" },
+    { name: "purple", fill: "#a877ff", light: "#dcc8ff", dark: "#6a3ad1", shape: "plus" },
+    { name: "orange", fill: "#ff8f3a", light: "#ffd0ab", dark: "#c45a0d", shape: "moon" },
+  ];
+  const MAX_HEARTS = 3;
+  const PENTA = [0, 2, 4, 7, 9];
+
+  const kit = FK.create({
+    slug: "family-orbit-guard",
+    title: "Orbit Guard",
+    tagline: "Spin the shield, catch the space sprinkles!",
+    emoji: "🪐",
+    scoreLabel: "Points",
+    accent: "#7c5cff",
+    accent2: "#ff5c8a",
+    howTo: [
+      ["🌀", "Drag around the planet to spin the shield"],
+      ["👆", "Or tap the left or right side to turn it one step"],
+      ["🎯", "Catch each sprinkle with the arc of the same colour and shape"],
+      ["⭐", "Wrong colour costs a heart. Grab golden stars for bonus points"],
+    ],
+    onStart: resetRun,
+    postZero: true,
+  });
+
+  /* ---------- Layout ---------- */
+  const L = { cx: 0, cy: 0, R: 100, planetR: 24, ringR: 42, ringW: 9, sr: 10, maxDist: 400, font: "system-ui" };
+  const sprites = { colors: [], star: null, heart: null, planet: null, bg: null, dpr: 1 };
+  let stars = [];
+  const probe = document.getElementById("og-probe");
+
+  const view = kit.canvas(layout);
+
+  function layout(v) {
+    const hud = document.getElementById("fk-hud");
+    const cs = getComputedStyle(probe);
+    const safeTop = parseFloat(cs.paddingTop) || 0;
+    const safeBottom = parseFloat(cs.paddingBottom) || 0;
+    const hudBottom = hud ? hud.getBoundingClientRect().bottom : 60;
+    const top = Math.max(70 + safeTop, hudBottom + 10);
+    const bottom = safeBottom + 14;
+    const availH = Math.max(120, v.h - top - bottom);
+    L.cx = v.w / 2;
+    L.cy = top + availH / 2;
+    L.R = Math.max(80, Math.min(v.w / 2 - 6, availH / 2));
+    L.planetR = L.R * 0.23;
+    L.ringR = L.R * 0.405;
+    L.ringW = Math.max(10, L.R * 0.088);
+    L.sr = Math.max(12, L.R * 0.07);
+    L.maxDist = Math.hypot(Math.max(L.cx, v.w - L.cx), Math.max(L.cy, v.h - L.cy)) + L.sr * 3;
+    L.font = getComputedStyle(document.body).fontFamily;
+    buildSprites(v);
+    buildStars(v);
+  }
+
+  /* ---------- Pre-rendered sprites ---------- */
+  function makeCanvas(size, dpr) {
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(size * dpr);
+    c.height = Math.ceil(size * dpr);
+    const g = c.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { c, g, size };
+  }
+
+  function iconPath(g, shape, x, y, s) {
+    g.beginPath();
+    if (shape === "circle") {
+      g.arc(x, y, s * 0.78, 0, TAU);
+    } else if (shape === "triangle") {
+      g.moveTo(x, y - s * 0.95);
+      g.lineTo(x + s * 0.92, y + s * 0.68);
+      g.lineTo(x - s * 0.92, y + s * 0.68);
+      g.closePath();
+    } else if (shape === "square") {
+      FK.roundRect(g, x - s * 0.7, y - s * 0.7, s * 1.4, s * 1.4, s * 0.22);
+    } else if (shape === "diamond") {
+      g.moveTo(x, y - s);
+      g.lineTo(x + s * 0.78, y);
+      g.lineTo(x, y + s);
+      g.lineTo(x - s * 0.78, y);
+      g.closePath();
+    } else if (shape === "plus") {
+      const a = s * 0.34, b = s * 0.95;
+      g.moveTo(x - a, y - b); g.lineTo(x + a, y - b); g.lineTo(x + a, y - a); g.lineTo(x + b, y - a);
+      g.lineTo(x + b, y + a); g.lineTo(x + a, y + a); g.lineTo(x + a, y + b); g.lineTo(x - a, y + b);
+      g.lineTo(x - a, y + a); g.lineTo(x - b, y + a); g.lineTo(x - b, y - a); g.lineTo(x - a, y - a);
+      g.closePath();
+    } else if (shape === "moon") {
+      g.arc(x, y, s * 0.85, Math.PI * 0.35, Math.PI * 1.65, false);
+      g.arc(x + s * 0.5, y - s * 0.05, s * 0.62, Math.PI * 1.5, Math.PI * 0.5, true);
+      g.closePath();
+    }
+  }
+
+  function heartPath(g, x, y, s) {
+    g.beginPath();
+    g.moveTo(x, y + s * 0.9);
+    g.bezierCurveTo(x - s * 1.25, y + s * 0.05, x - s * 0.9, y - s * 1.0, x, y - s * 0.38);
+    g.bezierCurveTo(x + s * 0.9, y - s * 1.0, x + s * 1.25, y + s * 0.05, x, y + s * 0.9);
+    g.closePath();
+  }
+
+  function buildSprites(v) {
+    const dpr = v.dpr;
+    sprites.dpr = dpr;
+    const sr = L.sr;
+    // Candy sprinkles: halo + glossy ball + white icon.
+    sprites.colors = COLORS.map((col) => {
+      const size = sr * 4;
+      const s = makeCanvas(size, dpr);
+      const g = s.g, m = size / 2;
+      const halo = g.createRadialGradient(m, m, sr * 0.6, m, m, sr * 2);
+      halo.addColorStop(0, col.fill + "88");
+      halo.addColorStop(1, col.fill + "00");
+      g.fillStyle = halo;
+      g.fillRect(0, 0, size, size);
+      const body = g.createRadialGradient(m - sr * 0.35, m - sr * 0.4, sr * 0.1, m, m, sr);
+      body.addColorStop(0, col.light);
+      body.addColorStop(0.45, col.fill);
+      body.addColorStop(1, col.dark);
+      g.fillStyle = body;
+      g.beginPath(); g.arc(m, m, sr, 0, TAU); g.fill();
+      g.lineWidth = Math.max(1.5, sr * 0.12);
+      g.strokeStyle = "rgba(255,255,255,0.55)";
+      g.beginPath(); g.arc(m, m, sr - g.lineWidth / 2, 0, TAU); g.stroke();
+      iconPath(g, col.shape, m, m + sr * 0.04, sr * 0.5);
+      g.fillStyle = "rgba(255,255,255,0.95)";
+      g.fill();
+      g.lineWidth = Math.max(1, sr * 0.08);
+      g.strokeStyle = col.dark;
+      g.stroke();
+      g.fillStyle = "rgba(255,255,255,0.7)";
+      g.beginPath(); g.ellipse(m - sr * 0.42, m - sr * 0.5, sr * 0.22, sr * 0.13, -0.6, 0, TAU); g.fill();
+      return s;
+    });
+    // Golden star.
+    {
+      const size = sr * 4.4;
+      const s = makeCanvas(size, dpr);
+      const g = s.g, m = size / 2;
+      const halo = g.createRadialGradient(m, m, sr * 0.5, m, m, sr * 2.2);
+      halo.addColorStop(0, "rgba(255,220,90,0.75)");
+      halo.addColorStop(1, "rgba(255,200,60,0)");
+      g.fillStyle = halo;
+      g.fillRect(0, 0, size, size);
+      FK.starPath(g, m, m, sr * 1.35, sr * 0.62, 5);
+      const body = g.createLinearGradient(m, m - sr * 1.3, m, m + sr * 1.3);
+      body.addColorStop(0, "#fff6b0");
+      body.addColorStop(0.5, "#ffd23a");
+      body.addColorStop(1, "#f29a00");
+      g.fillStyle = body;
+      g.fill();
+      g.lineJoin = "round";
+      g.lineWidth = Math.max(1.5, sr * 0.14);
+      g.strokeStyle = "#fff8d0";
+      g.stroke();
+      sprites.star = s;
+    }
+    // Heart power-up.
+    {
+      const size = sr * 4.4;
+      const s = makeCanvas(size, dpr);
+      const g = s.g, m = size / 2;
+      const halo = g.createRadialGradient(m, m, sr * 0.5, m, m, sr * 2.2);
+      halo.addColorStop(0, "rgba(255,120,170,0.75)");
+      halo.addColorStop(1, "rgba(255,90,150,0)");
+      g.fillStyle = halo;
+      g.fillRect(0, 0, size, size);
+      heartPath(g, m, m, sr * 1.15);
+      const body = g.createLinearGradient(m, m - sr, m, m + sr);
+      body.addColorStop(0, "#ffb3cf");
+      body.addColorStop(0.5, "#ff4f8f");
+      body.addColorStop(1, "#d81b60");
+      g.fillStyle = body;
+      g.fill();
+      g.lineWidth = Math.max(1.5, sr * 0.14);
+      g.strokeStyle = "#ffe0ec";
+      g.stroke();
+      g.fillStyle = "rgba(255,255,255,0.75)";
+      g.beginPath(); g.ellipse(m - sr * 0.42, m - sr * 0.3, sr * 0.2, sr * 0.12, -0.7, 0, TAU); g.fill();
+      sprites.heart = s;
+    }
+    // Planet body (face is drawn live).
+    {
+      const pr = L.planetR;
+      const size = pr * 3.2;
+      const s = makeCanvas(size, dpr);
+      const g = s.g, m = size / 2;
+      const atmo = g.createRadialGradient(m, m, pr * 0.9, m, m, pr * 1.55);
+      atmo.addColorStop(0, "rgba(140,200,255,0.45)");
+      atmo.addColorStop(1, "rgba(140,200,255,0)");
+      g.fillStyle = atmo;
+      g.fillRect(0, 0, size, size);
+      g.save();
+      g.beginPath(); g.arc(m, m, pr, 0, TAU); g.clip();
+      const body = g.createRadialGradient(m - pr * 0.35, m - pr * 0.45, pr * 0.1, m, m, pr * 1.05);
+      body.addColorStop(0, "#c9f1ff");
+      body.addColorStop(0.5, "#6fc3ff");
+      body.addColorStop(1, "#4766e0");
+      g.fillStyle = body;
+      g.fillRect(m - pr, m - pr, pr * 2, pr * 2);
+      // soft land blobs
+      g.fillStyle = "rgba(120,235,190,0.55)";
+      [[-0.55, 0.15, 0.42], [0.45, -0.5, 0.3], [0.6, 0.55, 0.36], [-0.1, -0.85, 0.22]].forEach(([dx, dy, r]) => {
+        g.beginPath(); g.ellipse(m + dx * pr, m + dy * pr, r * pr, r * pr * 0.72, 0.5, 0, TAU); g.fill();
+      });
+      // night-side shading
+      const shade = g.createRadialGradient(m - pr * 0.5, m - pr * 0.6, pr * 0.6, m, m, pr * 1.3);
+      shade.addColorStop(0, "rgba(20,10,80,0)");
+      shade.addColorStop(1, "rgba(20,10,80,0.45)");
+      g.fillStyle = shade;
+      g.fillRect(m - pr, m - pr, pr * 2, pr * 2);
+      g.restore();
+      g.fillStyle = "rgba(255,255,255,0.55)";
+      g.beginPath(); g.ellipse(m - pr * 0.45, m - pr * 0.55, pr * 0.22, pr * 0.12, -0.6, 0, TAU); g.fill();
+      sprites.planet = s;
+    }
+    // Background: deep-space gradient + nebula glow.
+    {
+      const w = v.w, h = v.h;
+      const c = document.createElement("canvas");
+      const bdpr = Math.min(dpr, 1.5);
+      c.width = Math.ceil(w * bdpr);
+      c.height = Math.ceil(h * bdpr);
+      const g = c.getContext("2d");
+      g.setTransform(bdpr, 0, 0, bdpr, 0, 0);
+      const bg = g.createLinearGradient(0, 0, w * 0.3, h);
+      bg.addColorStop(0, "#1a0d4a");
+      bg.addColorStop(0.55, "#0e0830");
+      bg.addColorStop(1, "#060418");
+      g.fillStyle = bg;
+      g.fillRect(0, 0, w, h);
+      const blobs = [
+        [0.15, 0.2, 0.55, "rgba(255,92,170,0.16)"],
+        [0.9, 0.75, 0.6, "rgba(60,140,255,0.16)"],
+        [0.75, 0.1, 0.4, "rgba(150,90,255,0.15)"],
+        [0.2, 0.95, 0.45, "rgba(40,220,200,0.09)"],
+      ];
+      const dim = Math.max(w, h);
+      for (const [fx, fy, fr, col] of blobs) {
+        const gr = g.createRadialGradient(fx * w, fy * h, 0, fx * w, fy * h, fr * dim);
+        gr.addColorStop(0, col);
+        gr.addColorStop(1, "rgba(0,0,0,0)");
+        g.fillStyle = gr;
+        g.fillRect(0, 0, w, h);
+      }
+      // soft glow behind the planet
+      const pg = g.createRadialGradient(L.cx, L.cy, L.ringR * 0.6, L.cx, L.cy, L.R * 1.15);
+      pg.addColorStop(0, "rgba(120,110,255,0.22)");
+      pg.addColorStop(1, "rgba(120,110,255,0)");
+      g.fillStyle = pg;
+      g.fillRect(0, 0, w, h);
+      sprites.bg = c;
+    }
+  }
+
+  function buildStars(v) {
+    const n = Math.round(clamp((v.w * v.h) / 3200, 70, 220));
+    const far = Math.hypot(v.w, v.h) * 0.6;
+    stars = [];
+    for (let i = 0; i < n; i++) {
+      const layer = i % 3;
+      stars.push({
+        a: Math.random() * TAU,
+        d: Math.sqrt(Math.random()) * far,
+        layer,
+        size: [0.7, 1.1, 1.7][layer] * rand(0.8, 1.3),
+        phase: Math.random() * TAU,
+        tw: rand(0.6, 2.2),
+        tint: Math.random() < 0.15 ? (Math.random() < 0.5 ? "#ffd6f0" : "#cfe8ff") : "#ffffff",
+      });
+    }
+  }
+
+  /* ---------- Game state ---------- */
+  const G = {
+    time: 0,
+    ring: 0, // ring rotation (radians, clockwise)
+    tween: null,
+    n: 4,
+    weights: [1, 1, 1, 1, 0, 0],
+    sp: [], // sprinkles
+    lastArrival: 0,
+    lastK: 0,
+    hearts: MAX_HEARTS,
+    caught: 0,
+    streak: 0,
+    bestStreak: 0,
+    perfects: 0,
+    wave: 1,
+    colorUp: null,
+    dying: 0,
+    face: { mood: "idle", t: 0, blink: 2.5, look: { x: 0, y: 0 }, bounce: 0 },
+    flash: [0, 0, 0, 0, 0, 0],
+    flashBad: [0, 0, 0, 0, 0, 0],
+    pops: [], // expanding rings
+    turnCue: null,
+    hint: 1,
+    runs: 0,
+    auto: true,
+    lastTickK: 0,
+  };
+  let rt = 0; // real time for ambient animation
+
+  const step = () => TAU / G.n;
+  const offFor = (n) => -Math.PI / 2 - TAU / n / 2; // ring angle where colour 0 is centred at the top
+  const laneAngle = (lane, n) => -Math.PI / 2 + lane * (TAU / (n || G.n));
+  const mod = (a, m) => ((a % m) + m) % m;
+  const normA = (a) => { a = mod(a + Math.PI, TAU) - Math.PI; return a; };
+
+  function level() { return 1 + G.caught / 9; }
+  function targetN(lv) { return lv >= 9 ? 6 : lv >= 5 ? 5 : 4; }
+  function approachTime(lv) { return Math.max(1.3, 3.0 - (lv - 1) * 0.18); }
+  function gapTime(lv) { return Math.max(0.46, 1.5 - (lv - 1) * 0.1); }
+  function reactMin(lv) { return Math.max(0.36, 0.75 - (lv - 1) * 0.035); }
+
+  function resetRun() {
+    G.time = 0;
+    G.n = 4;
+    G.weights = [1, 1, 1, 1, 0, 0];
+    G.ring = offFor(4);
+    G.tween = null;
+    G.sp = [];
+    G.lastArrival = 0.6;
+    G.lastK = 0;
+    G.hearts = MAX_HEARTS;
+    G.caught = 0;
+    G.streak = 0;
+    G.bestStreak = 0;
+    G.perfects = 0;
+    G.wave = 1;
+    G.colorUp = null;
+    G.dying = 0;
+    G.face = { mood: "idle", t: 0, blink: 2.5, look: { x: 0, y: 0 }, bounce: 0 };
+    G.flash = [0, 0, 0, 0, 0, 0];
+    G.flashBad = [0, 0, 0, 0, 0, 0];
+    G.pops = [];
+    G.turnCue = null;
+    G.runs += 1;
+    G.hint = G.runs <= 1 ? 1 : 0;
+    G.auto = true;
+    G.lastTickK = 0;
+    drag = null;
+    renderHearts();
+  }
+
+  let heartAnim = "";
+  function renderHearts(changed) {
+    let html = '<span class="og-hearts" aria-label="hearts">';
+    for (let i = 0; i < MAX_HEARTS; i++) {
+      const full = i < G.hearts;
+      const cls = changed === "lost" && i === G.hearts ? "og-lost" : changed === "gain" && i === G.hearts - 1 ? "og-gain" : "";
+      html += `<i class="${cls}">${full ? "❤️" : "🤍"}</i>`;
+    }
+    kit.setExtra(html + "</span>");
+  }
+
+  /* ---------- Ring geometry ---------- */
+  function segments() {
+    let total = 0;
+    for (let i = 0; i < 6; i++) total += G.weights[i];
+    const out = [];
+    let a = G.ring;
+    for (let i = 0; i < 6; i++) {
+      const w = (G.weights[i] / total) * TAU;
+      if (w > 0.0005) out.push({ c: i, a0: a, a1: a + w });
+      a += w;
+    }
+    return out;
+  }
+  function segmentAt(angle) {
+    const segs = segments();
+    const rel = mod(angle - G.ring, TAU);
+    for (const s of segs) {
+      if (rel >= s.a0 - G.ring && rel < s.a1 - G.ring) return { seg: s, off: rel - (s.a0 - G.ring + (s.a1 - s.a0) / 2), width: s.a1 - s.a0 };
+    }
+    const s = segs[segs.length - 1];
+    return { seg: s, off: 0, width: s.a1 - s.a0 };
+  }
+
+  /* ---------- Rotation controls ---------- */
+  let drag = null;
+  function snapK(angle) { return (angle - offFor(G.n)) / step(); }
+  function tweenTo(to, dur) {
+    G.tween = { from: G.ring, to, t: 0, dur: dur || 0.16 };
+  }
+  function stepRotate(dir) {
+    const base = G.tween ? G.tween.to : G.ring;
+    const k = snapK(base);
+    let kt = dir > 0 ? Math.floor(k + 1e-4) + 1 : Math.ceil(k - 1e-4) - 1;
+    if (Math.abs(kt - k) < 0.3) kt += dir;
+    tweenTo(offFor(G.n) + kt * step(), 0.15);
+    G.turnCue = { dir, t: 0 };
+    kit.sound.tone(dir > 0 ? 760 : 640, 0.05, { type: "triangle", vol: 0.12, slide: dir > 0 ? 980 : 520 });
+    kit.haptic(8);
+  }
+  function snapNearest() {
+    const k = Math.round(snapK(G.ring));
+    const to = offFor(G.n) + k * step();
+    if (Math.abs(to - G.ring) > 0.001) tweenTo(to, 0.14);
+  }
+
+  kit.pointer(null, {
+    down(p) {
+      const a = Math.atan2(p.y - L.cy, p.x - L.cx);
+      drag = { x0: p.x, y0: p.y, t0: p.t, lastA: a, dragging: false };
+    },
+    move(p) {
+      if (!drag || G.dying) return;
+      const dx = p.x - L.cx, dy = p.y - L.cy;
+      const d = Math.hypot(dx, dy);
+      const a = Math.atan2(dy, dx);
+      if (!drag.dragging && Math.hypot(p.x - drag.x0, p.y - drag.y0) > 10) {
+        drag.dragging = true;
+        if (G.tween) { G.ring = G.tween.to; G.tween = null; }
+      }
+      if (drag.dragging) {
+        // Very close to the centre the angle is jittery: track without turning.
+        if (d > L.planetR * 0.5) G.ring += normA(a - drag.lastA);
+        drag.lastA = a;
+        G.hint = Math.min(G.hint, 0.6);
+      }
+    },
+    up(p) {
+      if (!drag) return;
+      const wasDrag = drag.dragging;
+      const quick = p.t - drag.t0 < 450;
+      drag = null;
+      if (G.dying) return;
+      if (wasDrag) snapNearest();
+      else if (quick) stepRotate(p.x < L.cx ? -1 : 1);
+    },
+  });
+  window.addEventListener("keydown", (e) => {
+    if (!kit.playing || G.dying) return;
+    if (e.key === "ArrowLeft" || e.key === "a") { e.preventDefault(); stepRotate(-1); }
+    else if (e.key === "ArrowRight" || e.key === "d") { e.preventDefault(); stepRotate(1); }
+  });
+
+  /* ---------- Spawning (fair by construction) ---------- */
+  function speedFor(lv) { return (L.R - (L.ringR + L.ringW / 2)) / approachTime(lv); }
+  function contactR() { return L.ringR + L.ringW / 2 + L.sr * 0.55; }
+  // Inside the play circle sprinkles move at a steady, readable speed; outside it
+  // (off to the far edges of a tall phone) they move 3x faster so nobody waits.
+  const OUT_K = 3;
+  function spanIn() { return Math.max(1, L.R - contactR()); }
+  function rOf(u) { const si = spanIn(); return contactR() + (u <= si ? u : si + (u - si) * OUT_K); }
+  function uOf(r) { const si = spanIn(); const d = r - contactR(); return d <= si ? d : si + (d - si) / OUT_K; }
+  function radiusOf(s) { return rOf(Math.max(0, (s.T - G.time) * s.v)); }
+  function edgeDist(a) {
+    const c = Math.cos(a), sn = Math.sin(a);
+    let t = Infinity;
+    if (c > 1e-6) t = Math.min(t, (view.w - L.cx) / c);
+    if (c < -1e-6) t = Math.min(t, -L.cx / c);
+    if (sn > 1e-6) t = Math.min(t, (view.h - L.cy) / sn);
+    if (sn < -1e-6) t = Math.min(t, -L.cy / sn);
+    return Math.max(t, L.R) + L.sr * 2;
+  }
+  function earliestFor(lane, v) { return G.time + uOf(edgeDist(laneAngle(lane))) / v; }
+
+  function laneFree(lane, T, v) {
+    const minSep = L.sr * 4.2;
+    for (const s of G.sp) {
+      if (s.lane !== lane || s.done) continue;
+      if (Math.abs(s.T - T) * Math.min(v, s.v) < minSep) return false;
+    }
+    return true;
+  }
+
+  function pushSprinkle(kind, lane, color, T, v) {
+    const jitter = kind === "c" ? rand(-0.2, 0.2) * step() : rand(-0.12, 0.12) * step();
+    G.sp.push({ kind, lane, color, T, v, angle: laneAngle(lane) + jitter, done: false, spin: rand(0, TAU), born: G.time });
+  }
+
+  function scheduleNext() {
+    const lv = level();
+    const n = G.n;
+    const v = speedFor(lv);
+    const gap = gapTime(lv) * rand(0.9, 1.3);
+    const r = Math.random();
+    // Specials: golden star (any arc), heart (any arc, rare).
+    if (lv >= 2 && r < 0.06) return addSpecial("star", G.lastArrival + gap * 0.8, v);
+    if (lv >= 3 && G.hearts < MAX_HEARTS && r < 0.085) return addSpecial("heart", G.lastArrival + gap * 0.8, v);
+    for (let tries = 0; tries < 14; tries++) {
+      const lane = randInt(0, n - 1);
+      let color;
+      // Early on, keep consecutive turns small (0 or 1 step) so it eases kids in.
+      if (lv < 2.2 || Math.random() < 0.35) {
+        const dk = FK.pick([0, 1, -1, 1, -1]);
+        color = mod(lane - (G.lastK + dk), n);
+      } else {
+        color = randInt(0, n - 1);
+      }
+      const k = mod(lane - color, n);
+      const dist = Math.min(mod(k - G.lastK, n), mod(G.lastK - k, n));
+      const T = Math.max(earliestFor(lane, v), G.lastArrival + gap, G.lastArrival + reactMin(lv) + dist * 0.17);
+      if (!laneFree(lane, T, v)) continue;
+      pushSprinkle("c", lane, color, T, v);
+      // Twin: a second sprinkle at the same moment that the SAME ring position catches.
+      const pairChance = lv >= 3 ? Math.min(0.32, 0.08 * (lv - 2)) : 0;
+      if (Math.random() < pairChance) {
+        const lane2 = mod(lane + randInt(1, n - 1), n);
+        const color2 = mod(lane2 - k, n);
+        if (T >= earliestFor(lane2, v) && laneFree(lane2, T, v)) pushSprinkle("c", lane2, color2, T, v);
+      }
+      G.lastArrival = T;
+      G.lastK = k;
+      return;
+    }
+    G.lastArrival += gap * 0.5; // couldn't place one fairly: leave a little breather
+  }
+  function addSpecial(kind, T0, v) {
+    for (let tries = 0; tries < 8; tries++) {
+      const lane = randInt(0, G.n - 1);
+      const T = Math.max(T0, earliestFor(lane, v));
+      if (!laneFree(lane, T, v)) continue;
+      pushSprinkle(kind, lane, -1, T, v);
+      G.lastArrival = T;
+      return;
+    }
+    G.lastArrival += 0.3;
+  }
+
+  /* ---------- Catch / miss ---------- */
+  function contactPoint(s) {
+    const r = L.ringR + L.ringW / 2;
+    return { x: L.cx + Math.cos(s.angle) * r, y: L.cy + Math.sin(s.angle) * r };
+  }
+  function mult() { return Math.min(5, 1 + Math.floor(G.streak / 8)); }
+
+  function resolve(s) {
+    s.done = true;
+    const at = segmentAt(s.angle);
+    const p = contactPoint(s);
+    const textSize = Math.max(18, L.R * 0.12);
+    if (s.kind === "star") {
+      G.streak += 1;
+      const pts = 50 * mult();
+      kit.addScore(pts);
+      kit.fx.burst(p.x, p.y, ["#ffe066", "#fff6b0", "#ffb300"], 26, { speed: L.R * 1.6, life: 0.8, size: L.sr * 0.4, gravity: 0, shape: "star", lift: 0 });
+      kit.fx.text(p.x, p.y - L.sr, `+${pts} ⭐`, { color: "#ffe066", size: textSize * 1.1 });
+      kit.sound.play("coin");
+      kit.haptic(15);
+      G.flash = G.flash.map(() => 1);
+      happy();
+      afterCatch(false);
+      return;
+    }
+    if (s.kind === "heart") {
+      kit.fx.burst(p.x, p.y, ["#ff4f8f", "#ffb3cf", "#ffffff"], 22, { speed: L.R * 1.3, life: 0.8, size: L.sr * 0.35, gravity: 0, lift: 0 });
+      if (G.hearts < MAX_HEARTS) {
+        G.hearts += 1;
+        renderHearts("gain");
+        kit.fx.text(p.x, p.y - L.sr, "+1 ❤️", { color: "#ff9ec4", size: textSize * 1.1 });
+      } else {
+        kit.addScore(30);
+        kit.fx.text(p.x, p.y - L.sr, "+30", { color: "#ff9ec4", size: textSize });
+      }
+      [659.25, 830.6, 987.77, 1318.5].forEach((f, i) => kit.sound.tone(f, 0.16, { type: "triangle", vol: 0.16, delay: i * 0.06 }));
+      kit.haptic(15);
+      happy();
+      return;
+    }
+    const col = COLORS[s.color];
+    if (at.seg.c === s.color) {
+      G.caught += 1;
+      G.streak += 1;
+      G.bestStreak = Math.max(G.bestStreak, G.streak);
+      const perfect = Math.abs(at.off) < at.width * 0.1;
+      const m = mult();
+      const pts = (10 + (perfect ? 5 : 0)) * m;
+      kit.addScore(pts);
+      G.flash[s.color] = 1;
+      G.pops.push({ x: p.x, y: p.y, t: 0, color: col.fill });
+      kit.fx.burst(p.x, p.y, [col.fill, col.light, "#ffffff"], perfect ? 22 : 14, { speed: L.R * (perfect ? 1.5 : 1.1), life: 0.6, size: L.sr * 0.32, gravity: 0, lift: 0 });
+      const note = Math.min(G.streak - 1, 14);
+      const f = 523.25 * Math.pow(2, (Math.floor(note / 5) * 12 + PENTA[note % 5]) / 12);
+      kit.sound.tone(f, 0.14, { type: "triangle", vol: 0.2 });
+      kit.sound.tone(f * 2, 0.08, { type: "sine", vol: 0.06, delay: 0.02 });
+      if (perfect) {
+        G.perfects += 1;
+        kit.fx.text(p.x, p.y - L.sr * 1.4, "Perfect!", { color: "#fff3a0", size: textSize });
+        kit.sound.tone(f * 3, 0.12, { type: "sine", vol: 0.08, delay: 0.06 });
+      } else {
+        kit.fx.text(p.x, p.y - L.sr * 1.2, `+${pts}`, { color: col.light, size: textSize * 0.85 });
+      }
+      kit.haptic(10);
+      happy();
+      afterCatch(true);
+    } else {
+      G.streak = 0;
+      G.hearts -= 1;
+      renderHearts("lost");
+      G.flashBad[at.seg.c] = 1;
+      kit.fx.burst(p.x, p.y, [col.fill, "#8a86a8", "#ffffff"], 18, { speed: L.R * 1.2, life: 0.7, size: L.sr * 0.35, gravity: L.R * 1.5, shape: "square", lift: 0 });
+      kit.fx.text(p.x, p.y - L.sr * 1.2, "Oops!", { color: "#ff8fa8", size: textSize });
+      kit.sound.play("bad");
+      kit.sound.play("thud");
+      kit.shake(9, 0.32);
+      kit.haptic(45);
+      G.face.mood = "wince";
+      G.face.t = 0.8;
+      G.face.bounce = -1;
+      if (G.hearts <= 0) startDying();
+    }
+  }
+
+  function happy() {
+    if (G.face.mood !== "wince" || G.face.t < 0.3) {
+      G.face.mood = "happy";
+      G.face.t = 0.45;
+    }
+    G.face.bounce = 1;
+  }
+
+  function afterCatch(counted) {
+    if (counted && G.streak > 0 && G.streak % 10 === 0) {
+      kit.toast(`${G.streak} in a row! 🔥`, "#ffd166");
+      kit.sound.play("combo", Math.min(6, G.streak / 10));
+    }
+    const w = Math.floor(level());
+    if (w > G.wave) {
+      G.wave = w;
+      if (targetN(level()) <= G.n) {
+        setTimeout(() => kit.playing && kit.toast(`Wave ${w}! 🚀`, "#9fe7ff"), G.streak % 10 === 0 ? 900 : 0);
+        kit.sound.play("start");
+      }
+    }
+  }
+
+  function startDying() {
+    G.dying = 1.1;
+    G.tween = null;
+    for (const s of G.sp) {
+      if (s.done) continue;
+      const r = radiusOf(s);
+      if (r < L.maxDist) {
+        const x = L.cx + Math.cos(s.angle) * r, y = L.cy + Math.sin(s.angle) * r;
+        kit.fx.burst(x, y, s.color >= 0 ? COLORS[s.color].fill : "#ffe066", 8, { speed: 120, life: 0.5, size: 3, gravity: 0 });
+      }
+      s.done = true;
+    }
+    G.sp = [];
+    kit.fx.burst(L.cx, L.cy, COLORS.map((c) => c.fill), 40, { speed: L.R * 1.8, life: 1, size: L.sr * 0.4, gravity: 0, shape: "star", lift: 0 });
+    kit.sound.play("whoosh");
+  }
+
+  /* ---------- Update ---------- */
+  function update(dt) {
+    G.time += dt;
+    // Ring tween (tap steps / release snap).
+    if (G.tween) {
+      const tw = G.tween;
+      tw.t += dt;
+      const x = clamp(tw.t / tw.dur, 0, 1);
+      const c1 = 0.9, c3 = c1 + 1;
+      const e = 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+      G.ring = lerp(tw.from, tw.to, e);
+      if (x >= 1) { G.ring = tw.to; G.tween = null; }
+    }
+    // Soft tick as segments pass the top while dragging.
+    const tk = Math.round(snapK(G.ring));
+    if (tk !== G.lastTickK) {
+      if (drag && drag.dragging) kit.sound.tone(1400, 0.018, { type: "sine", vol: 0.05 });
+      G.lastTickK = tk;
+    }
+    // Ring weights (re-divide animation when a colour is added).
+    for (let i = 0; i < 6; i++) {
+      const target = i < G.n ? 1 : 0;
+      G.weights[i] += (target - G.weights[i]) * (1 - Math.exp(-dt * 7));
+      if (Math.abs(G.weights[i] - target) < 0.001) G.weights[i] = target;
+    }
+    for (let i = 0; i < 6; i++) {
+      G.flash[i] = Math.max(0, G.flash[i] - dt * 3.5);
+      G.flashBad[i] = Math.max(0, G.flashBad[i] - dt * 2.5);
+    }
+    for (let i = G.pops.length - 1; i >= 0; i--) {
+      G.pops[i].t += dt;
+      if (G.pops[i].t > 0.4) G.pops.splice(i, 1);
+    }
+    if (G.turnCue) {
+      G.turnCue.t += dt;
+      if (G.turnCue.t > 0.3) G.turnCue = null;
+    }
+    // Face.
+    const F = G.face;
+    F.t -= dt;
+    F.bounce *= Math.exp(-dt * 7);
+    F.blink -= dt;
+    if (F.blink < -0.12) F.blink = rand(2, 4.5);
+    if (G.hint > 0 && G.hint < 1) G.hint = Math.max(0, G.hint - dt * 0.6);
+    if (G.hint >= 1 && (G.time > 7 || G.caught >= 3)) G.hint = 0.99;
+
+    if (G.dying > 0) {
+      G.dying -= dt;
+      F.mood = "wince";
+      F.t = 1;
+      if (G.dying <= 0) {
+        kit.gameOver({
+          title: "Shield down!",
+          emoji: "🪐",
+          reason: G.caught >= 30 ? "What a guardian! The planet is so proud." : "The planet says thank you for guarding it!",
+          stats: [["Catches", G.caught], ["Best streak", G.bestStreak], ["Wave", G.wave]],
+        });
+      }
+      return;
+    }
+
+    // New colour: wait for the sky to clear, then re-divide the ring.
+    const lv = level();
+    if (G.auto && !G.colorUp && targetN(lv) > G.n) G.colorUp = { phase: "wait", t: 0 };
+    if (G.colorUp) {
+      const cu = G.colorUp;
+      if (cu.phase === "wait" && G.sp.length === 0) {
+        cu.phase = "anim";
+        cu.t = 0;
+        G.n = targetN(lv);
+        const k = Math.round(snapK(G.ring));
+        tweenTo(offFor(G.n) + k * step(), 0.5);
+        G.lastK = mod(k, G.n);
+        kit.toast(`New colour: ${COLORS[G.n - 1].name}! 🎨`, COLORS[G.n - 1].light);
+        kit.sound.play("whoosh");
+        [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => kit.sound.tone(f, 0.18, { type: "triangle", vol: 0.15, delay: 0.1 + i * 0.07 }));
+        G.flash[G.n - 1] = 1;
+      } else if (cu.phase === "anim") {
+        cu.t += dt;
+        if (cu.t > 1.2) {
+          G.colorUp = null;
+          G.lastArrival = G.time + 0.4;
+        }
+      }
+    }
+    if (G.auto && !G.colorUp) {
+      const v = speedFor(lv);
+      const horizon = G.time + uOf(L.maxDist) / v + 0.4;
+      let guard = 0;
+      while (G.lastArrival < horizon && guard++ < 6) scheduleNext();
+    }
+    // Debug autopilot (test hook only): face the next sprinkle's colour.
+    if (G.autopilot && !G.tween) {
+      let nx = null;
+      for (const s of G.sp) if (!s.done && s.kind === "c" && (!nx || s.T < nx.T)) nx = s;
+      if (nx) {
+        const want = offFor(G.n) + mod(nx.lane - nx.color, G.n) * step();
+        const d = normA(want - G.ring);
+        if (Math.abs(d) > 0.01) tweenTo(G.ring + d, 0.12);
+      }
+    }
+    // Move + resolve sprinkles.
+    let nearest = null;
+    for (const s of G.sp) {
+      if (s.done) continue;
+      if (G.time >= s.T) {
+        resolve(s);
+        if (G.dying) break;
+      } else if (!nearest || s.T < nearest.T) nearest = s;
+    }
+    G.sp = G.sp.filter((s) => !s.done);
+    // Planet reacts to what's coming: eyes follow it; gasps if it's about to hit the wrong colour.
+    if (nearest) {
+      const r = radiusOf(nearest);
+      const k = clamp(1 - (r - L.ringR) / (L.maxDist - L.ringR), 0, 1);
+      F.look.x = lerp(F.look.x, Math.cos(nearest.angle) * k, 1 - Math.exp(-dt * 10));
+      F.look.y = lerp(F.look.y, Math.sin(nearest.angle) * k, 1 - Math.exp(-dt * 10));
+      if (F.t <= 0 && nearest.kind === "c" && nearest.T - G.time < 0.55 && segmentAt(nearest.angle).seg.c !== nearest.color) {
+        F.mood = "surprised";
+      } else if (F.t <= 0) F.mood = "idle";
+    } else {
+      F.look.x *= 0.9;
+      F.look.y *= 0.9;
+      if (F.t <= 0) F.mood = "idle";
+    }
+  }
+
+  /* ---------- Render ---------- */
+  function drawBackground(ctx, w, h) {
+    if (sprites.bg) ctx.drawImage(sprites.bg, 0, 0, w, h);
+    const spin = G.ring;
+    const par = [0.04, 0.09, 0.16];
+    for (const s of stars) {
+      const a = s.a + spin * par[s.layer] + rt * 0.004 * (s.layer + 1);
+      const x = L.cx + Math.cos(a) * s.d;
+      const y = L.cy + Math.sin(a) * s.d;
+      if (x < -2 || y < -2 || x > w + 2 || y > h + 2) continue;
+      const tw = RM ? 0.8 : 0.55 + 0.45 * Math.sin(rt * s.tw + s.phase);
+      ctx.globalAlpha = tw * (0.45 + s.layer * 0.2);
+      ctx.fillStyle = s.tint;
+      const z = s.size;
+      if (s.layer === 2 && z > 1.8) {
+        ctx.fillRect(x - z * 1.6, y - 0.4, z * 3.2, 0.8);
+        ctx.fillRect(x - 0.4, y - z * 1.6, 0.8, z * 3.2);
+      }
+      ctx.fillRect(x - z / 2, y - z / 2, z, z);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawLanes(ctx) {
+    const n = G.n;
+    const inner = L.ringR + L.ringW * 1.3;
+    const outer = L.R * 0.98;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([2, 10]);
+    ctx.strokeStyle = "rgba(190,180,255,0.13)";
+    for (let i = 0; i < n; i++) {
+      const a = laneAngle(i, n);
+      ctx.beginPath();
+      ctx.moveTo(L.cx + Math.cos(a) * inner, L.cy + Math.sin(a) * inner);
+      ctx.lineTo(L.cx + Math.cos(a) * outer, L.cy + Math.sin(a) * outer);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "rgba(190,180,255,0.07)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(L.cx, L.cy, L.R * 0.72, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(L.cx, L.cy, L.R * 0.98, 0, TAU); ctx.stroke();
+  }
+
+  function drawRing(ctx) {
+    const segs = segments();
+    const { cx, cy, ringR } = L;
+    const W = L.ringW;
+    ctx.lineCap = "round";
+    // Shadow track.
+    ctx.lineWidth = W + 6;
+    ctx.strokeStyle = "rgba(8,4,30,0.55)";
+    ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, TAU); ctx.stroke();
+    for (const s of segs) {
+      const col = COLORS[s.c];
+      const span = s.a1 - s.a0;
+      if (span < 0.02) continue;
+      const pad = Math.min(span * 0.2, (W * 0.5 + 3) / ringR);
+      const a0 = s.a0 + pad, a1 = s.a1 - pad;
+      if (a1 <= a0) continue;
+      const fl = G.flash[s.c];
+      const bad = G.flashBad[s.c];
+      const grow = W * 0.35 * fl;
+      // Layered glow (cheap substitute for shadowBlur).
+      ctx.globalAlpha = 0.1 + 0.25 * fl;
+      ctx.strokeStyle = col.fill;
+      ctx.lineWidth = W * 2.6 + grow * 2;
+      ctx.beginPath(); ctx.arc(cx, cy, ringR, a0, a1); ctx.stroke();
+      ctx.globalAlpha = 0.22 + 0.3 * fl;
+      ctx.lineWidth = W * 1.7 + grow;
+      ctx.beginPath(); ctx.arc(cx, cy, ringR, a0, a1); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = bad > 0 && Math.floor(bad * 10) % 2 === 0 ? "#ffffff" : col.fill;
+      ctx.lineWidth = W + grow;
+      ctx.beginPath(); ctx.arc(cx, cy, ringR, a0, a1); ctx.stroke();
+      // Glossy inner highlight.
+      ctx.strokeStyle = fl > 0 ? "#ffffff" : col.light;
+      ctx.globalAlpha = 0.6 + 0.4 * fl;
+      ctx.lineWidth = Math.max(1.5, W * 0.22);
+      ctx.beginPath(); ctx.arc(cx, cy, ringR + W * 0.18, a0 + 0.02, a1 - 0.02); ctx.stroke();
+      ctx.globalAlpha = 1;
+      // Icon on the arc for colour-blind play.
+      if (span > 0.35) {
+        const mid = (s.a0 + s.a1) / 2;
+        const ix = cx + Math.cos(mid) * ringR, iy = cy + Math.sin(mid) * ringR;
+        const isz = W * 0.36 * Math.min(1, span / 0.9);
+        iconPath(ctx, col.shape, ix, iy, isz);
+        ctx.fillStyle = "rgba(255,255,255,0.92)";
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = col.dark;
+        ctx.stroke();
+      }
+    }
+    ctx.lineCap = "butt";
+  }
+
+  function drawTurnCue(ctx) {
+    const tc = G.turnCue;
+    if (!tc) return;
+    const k = tc.t / 0.3;
+    const r = L.ringR + L.ringW * 1.6;
+    const side = tc.dir > 0 ? 0 : Math.PI;
+    const a0 = side - 0.5 * tc.dir, a1 = side + 0.5 * tc.dir;
+    ctx.globalAlpha = (1 - k) * 0.8;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.arc(L.cx, L.cy, r, Math.min(a0, a1), Math.max(a0, a1));
+    ctx.stroke();
+    const ex = L.cx + Math.cos(a1) * r, ey = L.cy + Math.sin(a1) * r;
+    const tang = a1 + (Math.PI / 2) * tc.dir;
+    const hs = 8;
+    ctx.beginPath();
+    ctx.moveTo(ex + Math.cos(tang) * hs, ey + Math.sin(tang) * hs);
+    ctx.lineTo(ex + Math.cos(tang + 2.5) * hs, ey + Math.sin(tang + 2.5) * hs);
+    ctx.moveTo(ex + Math.cos(tang) * hs, ey + Math.sin(tang) * hs);
+    ctx.lineTo(ex + Math.cos(tang - 2.5) * hs, ey + Math.sin(tang - 2.5) * hs);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.lineCap = "butt";
+  }
+
+  function drawPlanet(ctx) {
+    const F = G.face;
+    const pr = L.planetR;
+    const b = F.bounce;
+    const wob = F.mood === "wince" && F.t > 0 ? Math.sin(rt * 40) * pr * 0.04 * Math.min(1, F.t) : 0;
+    const sx = 1 + b * 0.06, sy = 1 - b * 0.05;
+    ctx.save();
+    ctx.translate(L.cx + wob, L.cy);
+    ctx.scale(sx, sy);
+    const sp = sprites.planet;
+    if (sp) ctx.drawImage(sp.c, -sp.size / 2, -sp.size / 2, sp.size, sp.size);
+    // Face.
+    const lx = F.look.x * pr * 0.12, ly = F.look.y * pr * 0.1;
+    const ex = pr * 0.34, ey = -pr * 0.12 + ly, er = pr * 0.16;
+    ctx.translate(lx, 0);
+    ctx.fillStyle = "rgba(255,120,170,0.5)";
+    ctx.beginPath(); ctx.ellipse(-pr * 0.55, pr * 0.2 + ly, pr * 0.14, pr * 0.09, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(pr * 0.55, pr * 0.2 + ly, pr * 0.14, pr * 0.09, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = "#1d1450";
+    ctx.fillStyle = "#1d1450";
+    ctx.lineWidth = Math.max(2, pr * 0.075);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    const mood = F.mood;
+    if (mood === "happy") {
+      for (const s of [-1, 1]) {
+        ctx.beginPath(); ctx.arc(s * ex, ey + er * 0.4, er * 0.75, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.moveTo(-pr * 0.3, pr * 0.2 + ly);
+      ctx.quadraticCurveTo(0, pr * 0.72 + ly, pr * 0.3, pr * 0.2 + ly);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#ff7aa6";
+      ctx.beginPath(); ctx.ellipse(0, pr * 0.42 + ly, pr * 0.12, pr * 0.06, 0, 0, TAU); ctx.fill();
+    } else if (mood === "wince") {
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(s * ex - er * 0.7 * s, ey - er * 0.7);
+        ctx.lineTo(s * ex + er * 0.6 * s, ey);
+        ctx.lineTo(s * ex - er * 0.7 * s, ey + er * 0.7);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      const my = pr * 0.4 + ly;
+      ctx.moveTo(-pr * 0.28, my);
+      for (let i = 1; i <= 4; i++) ctx.lineTo(-pr * 0.28 + i * pr * 0.14, my + (i % 2 ? -pr * 0.07 : pr * 0.07));
+      ctx.stroke();
+    } else {
+      const surprised = mood === "surprised";
+      const blink = !surprised && F.blink < 0;
+      for (const s of [-1, 1]) {
+        if (blink) {
+          ctx.beginPath(); ctx.moveTo(s * ex - er * 0.8, ey); ctx.lineTo(s * ex + er * 0.8, ey); ctx.stroke();
+        } else {
+          const r = surprised ? er * 1.2 : er;
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath(); ctx.ellipse(s * ex, ey, r, r * 1.15, 0, 0, TAU); ctx.fill();
+          ctx.fillStyle = "#1d1450";
+          ctx.beginPath(); ctx.arc(s * ex + F.look.x * r * 0.35, ey + F.look.y * r * 0.4, r * 0.55, 0, TAU); ctx.fill();
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath(); ctx.arc(s * ex + F.look.x * r * 0.35 - r * 0.2, ey + F.look.y * r * 0.4 - r * 0.25, r * 0.18, 0, TAU); ctx.fill();
+        }
+      }
+      ctx.fillStyle = "#1d1450";
+      if (surprised) {
+        ctx.beginPath(); ctx.ellipse(0, pr * 0.42 + ly, pr * 0.11, pr * 0.14, 0, 0, TAU); ctx.fill();
+      } else {
+        ctx.beginPath(); ctx.arc(0, pr * 0.2 + ly, pr * 0.22, Math.PI * 0.2, Math.PI * 0.8); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawSprinkles(ctx) {
+    for (const s of G.sp) {
+      if (s.done) continue;
+      const r = radiusOf(s);
+      if (r > L.maxDist) continue;
+      const ux = Math.cos(s.angle), uy = Math.sin(s.angle);
+      const x = L.cx + ux * r, y = L.cy + uy * r;
+      const sr = L.sr;
+      const fill = s.kind === "c" ? COLORS[s.color].fill : s.kind === "star" ? "#ffd23a" : "#ff4f8f";
+      // Tapered trail pointing back the way it came.
+      const tl = sr * 4.2;
+      const tx = x + ux * tl, ty = y + uy * tl;
+      const px = -uy * sr * 0.72, py = ux * sr * 0.72;
+      const grad = ctx.createLinearGradient(x, y, tx, ty);
+      grad.addColorStop(0, fill + "aa");
+      grad.addColorStop(1, fill + "00");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(x + px, y + py);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(x - px, y - py);
+      ctx.closePath();
+      ctx.fill();
+      // little sparkle crumbs
+      ctx.fillStyle = "#ffffff";
+      for (let i = 1; i <= 3; i++) {
+        const k = (i / 4 + (rt * 1.7 + s.spin) % 0.25) * tl;
+        const wob = Math.sin(rt * 9 + i * 2 + s.spin) * sr * 0.35;
+        ctx.globalAlpha = 0.5 * (1 - i / 4);
+        ctx.fillRect(x + ux * k - uy * wob - 1, y + uy * k + ux * wob - 1, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+      if (s.kind === "c") {
+        const spr = sprites.colors[s.color];
+        const pulse = 1 + 0.04 * Math.sin(rt * 6 + s.spin);
+        const sz = spr.size * pulse;
+        ctx.drawImage(spr.c, x - sz / 2, y - sz / 2, sz, sz);
+      } else {
+        const spr = s.kind === "star" ? sprites.star : sprites.heart;
+        ctx.save();
+        ctx.translate(x, y);
+        if (s.kind === "star") ctx.rotate(rt * 2 + s.spin);
+        const sc = s.kind === "heart" ? 1 + 0.1 * Math.sin(rt * 8) : 1;
+        ctx.scale(sc, sc);
+        ctx.drawImage(spr.c, -spr.size / 2, -spr.size / 2, spr.size, spr.size);
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawPops(ctx) {
+    for (const p of G.pops) {
+      const k = p.t / 0.4;
+      ctx.globalAlpha = (1 - k) * 0.9;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 3 * (1 - k) + 1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, L.sr * (0.8 + k * 2.2), 0, TAU); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawStreak(ctx) {
+    if (G.streak < 3 || G.dying) return;
+    const m = mult();
+    const y = L.cy + L.ringR + L.ringW * 2.2 + Math.max(10, L.R * 0.06);
+    const size = Math.max(13, L.R * 0.075);
+    ctx.font = `900 ${size}px ${L.font}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const label = m > 1 ? `🔥 ${G.streak}  ×${m}` : `🔥 ${G.streak}`;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(15,8,45,0.7)";
+    ctx.strokeText(label, L.cx, y);
+    ctx.fillStyle = m > 1 ? "#ffd166" : "#ffffff";
+    ctx.fillText(label, L.cx, y);
+  }
+
+  function drawHint(ctx, w, h) {
+    if (G.hint <= 0 || !kit.playing) return;
+    const a = Math.min(1, G.hint * 1.5);
+    const size = Math.max(14, Math.min(18, L.R * 0.085));
+    ctx.font = `800 ${size}px ${L.font}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const y = Math.min(h - size * 2.2, L.cy + L.R + size * 0.6);
+    const text = "Drag to spin  •  Tap a side to turn";
+    const tw = ctx.measureText(text).width + size * 1.6;
+    ctx.globalAlpha = a * 0.75;
+    ctx.fillStyle = "rgba(20,12,60,0.85)";
+    FK.roundRect(ctx, L.cx - tw / 2, y - size * 0.95, tw, size * 1.9, size * 0.95);
+    ctx.fill();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(text, L.cx, y);
+    // side chevrons
+    const pulse = 0.5 + 0.5 * Math.sin(rt * 5);
+    ctx.globalAlpha = a * (0.25 + 0.35 * pulse);
+    ctx.fillStyle = "#ffffff";
+    const cs = Math.max(14, L.R * 0.09);
+    for (const s of [-1, 1]) {
+      const x = s < 0 ? Math.max(cs * 1.2, L.cx - L.R * 0.92) : Math.min(w - cs * 1.2, L.cx + L.R * 0.92);
+      ctx.beginPath();
+      ctx.moveTo(x + s * cs * 0.5, L.cy);
+      ctx.lineTo(x - s * cs * 0.4, L.cy - cs * 0.7);
+      ctx.lineTo(x - s * cs * 0.4, L.cy + cs * 0.7);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function render(dt) {
+    rt += dt;
+    const ctx = view.ctx;
+    const w = view.w, h = view.h;
+    if (!kit.playing && kit.state === "title") {
+      G.ring += dt * 0.5;
+      G.face.blink -= dt;
+      if (G.face.blink < -0.12) G.face.blink = rand(2, 4.5);
+      G.face.look.x = Math.cos(rt * 0.7) * 0.6;
+      G.face.look.y = Math.sin(rt * 0.9) * 0.4;
+    }
+    ctx.save();
+    kit.applyShake(ctx);
+    drawBackground(ctx, w, h);
+    drawLanes(ctx);
+    drawSprinkles(ctx);
+    drawRing(ctx);
+    drawTurnCue(ctx);
+    drawPlanet(ctx);
+    drawPops(ctx);
+    drawStreak(ctx);
+    kit.fx.draw(ctx);
+    drawHint(ctx, w, h);
+    ctx.restore();
+  }
+
+  // Title-screen scene: ring centred on colour 0 at the top.
+  G.ring = offFor(4);
+  kit.run(update, render);
+  // Re-measure once fonts / HUD settle.
+  setTimeout(() => view.resize(), 50);
+
+  /* ---------- Test hook ---------- */
+  window.__orbit = {
+    get ring() { return G.ring; },
+    get settled() { return !G.tween; },
+    get hearts() { return G.hearts; },
+    get caught() { return G.caught; },
+    get streak() { return G.streak; },
+    get n() { return G.n; },
+    get wave() { return G.wave; },
+    get count() { return G.sp.length; },
+    get step() { return step(); },
+    get center() { return { x: L.cx, y: L.cy, R: L.R, ringR: L.ringR }; },
+    set auto(v) { G.auto = !!v; },
+    set autopilot(v) { G.autopilot = !!v; },
+    set caughtCheat(v) { G.caught = v; },
+    get auto() { return G.auto; },
+    clear() { G.sp = []; G.lastArrival = G.time; },
+    colorAt(angle) { return segmentAt(angle).seg.c; },
+    laneAngle(lane) { return laneAngle(lane); },
+    // Drop a sprinkle of `color` in `lane` that reaches the ring in `inSec` seconds.
+    spawn(color, lane, inSec, kind) {
+      const v = speedFor(level());
+      G.sp.push({ kind: kind || "c", lane, color, T: G.time + (inSec || 0.5), v, angle: laneAngle(lane), done: false, spin: 0, born: G.time });
+    },
+  };
+})();
+</script>
+</body>
+</html>

@@ -155,6 +155,7 @@
 <script>
 window.ARCADE_SLUG = {{ card.slug|tojson }};
 window.ARCADE_KIND = {{ kind|tojson }};
+window.ARCADE_BRIDGE = {{ (score_bridge or false)|tojson }};
 window.ARCADE_HIGHER_IS_BETTER = {{ card.higher_is_better|tojson }};
 </script>
 <script src="/static/arcade.js"></script>

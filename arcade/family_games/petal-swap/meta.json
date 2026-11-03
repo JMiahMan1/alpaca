@@ -1,0 +1,19 @@
+{
+  "title": "Petal Swap",
+  "tagline": "Swap flowers, grow a garden!",
+  "description": "A cheerful garden match-3: swap flowers to make rows of three, chain cascades and set off bees, sunbursts and rainbow seeds in 30 moves.",
+  "emoji": "🌸",
+  "art": { "from": "#ff7eb3", "to": "#ffd36e" },
+  "genre": "puzzle",
+  "ages": "6+",
+  "players": "1",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Swipe a flower toward a neighbour to swap them.",
+    "Line up 3 or more of the same flower to clear them.",
+    "Match 4 for a Bee, an L or T for a Sunburst, 5 for a Rainbow seed.",
+    "You have 30 moves. Big scores earn bonus moves!"
+  ]
+}

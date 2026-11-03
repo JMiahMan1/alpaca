@@ -34,10 +34,12 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
+    import family
     from achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from curation import is_curated, load_curated
     from mobile import assess_html, prepare_playable_html
 except ImportError:  # tests import `arcade.app` as a package from the repo root
+    from arcade import family
     from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from arcade.curation import is_curated, load_curated
     from arcade.mobile import assess_html, prepare_playable_html
@@ -96,9 +98,56 @@ def _write_json(path: Path, data) -> None:
     os.replace(tmp, path)
 
 
+COLLECTIONS = ("arcade", "family")
+
+
+def _collection(raw) -> str:
+    value = str(raw or "arcade").strip().lower()
+    return value if value in COLLECTIONS else "arcade"
+
+
+def _collection_slugs(collection: str = "arcade") -> set[str]:
+    """Games that count for one collection's boards and player stats.
+
+    ``arcade`` is the curated benchmark shelf (Family Games excluded, they have
+    their own board); ``family`` is the Family Games a family admin published.
+    Games still in testing collect scores but are not on the scoreboard yet.
+    """
+    if collection == "family":
+        return family.slugs_in(("published",))
+    return set(load_curated()) - family.all_slugs()
+
+
+def _collection_of(slug: str) -> str:
+    return "family" if family.is_family(slug) else "arcade"
+
+
 def _rating_stats(game_dir: Path) -> dict:
+    """Average stars, counting each named voter once (their latest vote).
+
+    The Family Games shelf only shows games the family rates highly, so one
+    member tapping five stars ten times must not count as ten votes. Votes
+    without a voter (the public page before a callsign is set) still count
+    individually, as before.
+    """
     votes = _read_json(game_dir / "ratings.json", {}).get("votes", [])
-    stars = [v.get("stars") for v in votes if isinstance(v, dict) and 1 <= int(v.get("stars", 0) or 0) <= 5]
+    latest: dict[str, int] = {}
+    anonymous: list[int] = []
+    for v in votes:
+        if not isinstance(v, dict):
+            continue
+        try:
+            value = int(v.get("stars", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= value <= 5:
+            continue
+        voter = str(v.get("by") or "").strip().upper()
+        if voter:
+            latest[voter] = value
+        else:
+            anonymous.append(value)
+    stars = [*latest.values(), *anonymous]
     count = len(stars)
     return {"count": count, "average": round(sum(stars) / count, 2) if count else 0.0}
 
@@ -204,7 +253,7 @@ def _accumulate_game(stats: dict, scores: list, bests: dict, mine: dict, votes: 
             stats["gave_five_stars"] = True
 
 
-def player_stats(initials: str, player_id: str | None = None) -> dict:
+def player_stats(initials: str, player_id: str | None = None, collection: str = "arcade") -> dict:
     """Aggregate one player's cross-game stats + achievements.
 
     Reads every published game's scores/bests/ratings; purely derived, so it
@@ -217,10 +266,11 @@ def player_stats(initials: str, player_id: str | None = None) -> dict:
     stats = _empty_stats(initials)
     stats["player_id"] = player_id or None
     stats["per_game"] = []
+    stats["collection"] = collection
     if not GAMES_DIR.exists():
         stats["achievements"] = evaluate(stats)
         return stats
-    curated = set(load_curated())
+    curated = _collection_slugs(collection)
     for child in sorted(GAMES_DIR.iterdir()):
         if not child.is_dir() or child.name not in curated or _playable_file(child) is None:
             continue
@@ -257,7 +307,7 @@ def player_stats(initials: str, player_id: str | None = None) -> dict:
     return stats
 
 
-def list_players() -> list:
+def list_players(collection: str = "arcade") -> list:
     """Enumerate every known callsign with cross-game standings.
 
     Standings rank by achievements, #1 finishes, machines played and scores
@@ -269,7 +319,7 @@ def list_players() -> list:
         return []
     games = []
     total_games = 0
-    curated = set(load_curated())
+    curated = _collection_slugs(collection)
     for child in sorted(GAMES_DIR.iterdir()):
         if not child.is_dir() or child.name not in curated or _playable_file(child) is None:
             continue
@@ -373,6 +423,26 @@ def _game_card(slug: str) -> dict | None:
         "mobile_score": int(mobile.get("score", 0) or 0),
         "mobile_ready": bool(mobile.get("ready")),
     }
+    if family.is_family(slug):
+        card.update(
+            {
+                "collection": "family",
+                "family_state": family.state_of(slug),
+                "source": family.source(slug),
+                "tagline": meta.get("tagline", ""),
+                "description": meta.get("description", ""),
+                "emoji": meta.get("emoji", ""),
+                "art": meta.get("art") if isinstance(meta.get("art"), dict) else None,
+                "genre": meta.get("genre", ""),
+                "ages": meta.get("ages", ""),
+                "how_to": meta.get("how_to") if isinstance(meta.get("how_to"), list) else [],
+                "version": meta.get("version"),
+                "mobile_ready": True if meta.get("mobile_native") else card["mobile_ready"],
+                "mobile_compatible": meta.get("mobile_compatible") is True,
+            }
+        )
+    else:
+        card["collection"] = "arcade"
     return card
 
 
@@ -380,7 +450,7 @@ def list_games(category: str | None = None, sort: str | None = None) -> list:
     if not GAMES_DIR.exists():
         return []
     cards = []
-    curated = set(load_curated())
+    curated = _collection_slugs("arcade")
     for child in sorted(GAMES_DIR.iterdir()):
         if child.is_dir() and child.name in curated:
             card = _game_card(child.name)
@@ -419,6 +489,13 @@ def health():
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html", games=list_games())
+
+
+def _is_playable(slug: str) -> bool:
+    """A benchmark game on the curated shelf, or a family game in testing/published."""
+    if family.is_family(slug):
+        return family.state_of(slug) in family.PLAYABLE_STATES
+    return is_curated(slug)
 
 
 def _launch_lang(meta: dict) -> str:
@@ -482,7 +559,7 @@ def _run_hint(lang: str) -> dict:
 @app.route("/play/<slug>", methods=["GET"])
 def play(slug):
     d = _game_dir(slug)
-    if d is None or not is_curated(slug) or _playable_file(d) is None:
+    if d is None or not _is_playable(slug) or _playable_file(d) is None:
         return render_template("index.html", games=list_games(), error=f"Game '{slug}' not found."), 404
     card = _game_card(slug)
     meta = _read_json(d / "meta.json", {})
@@ -507,6 +584,7 @@ def play(slug):
         run_hint=_run_hint(code_lang),
         smart_keys=detect_game_keys(code_text) if kind == "code" else None,
         has_screenshot=(d / "screenshot.png").exists(),
+        score_bridge=bool(meta.get("score_bridge")),
     )
 
 
@@ -516,6 +594,10 @@ def serve_game(slug):
     if d is None or not (d / "game.html").exists():
         return jsonify({"error": "game not found"}), 404
     html = (d / "game.html").read_text(encoding="utf-8", errors="replace")
+    meta = _read_json(d / "meta.json", {})
+    # Phone-first games lay themselves out; the fit shim would only fight them.
+    if meta.get("mobile_native") and assess_html(html).get("ready"):
+        return Response(html, mimetype="text/html")
     return Response(prepare_playable_html(html), mimetype="text/html")
 
 
@@ -724,7 +806,7 @@ def api_games():
 @app.route("/api/games/<slug>", methods=["GET"])
 def api_game(slug):
     card = _game_card(slug)
-    if card is None or not is_curated(slug):
+    if card is None or not _is_playable(slug):
         return jsonify({"success": False, "error": "game not found"}), 404
     d = _game_dir(slug)
     card["scores"] = _read_json(d / "scores.json", {}).get("scores", [])
@@ -758,7 +840,8 @@ def _store_score(
                 "pioneer": False,
             }
         player_id = (player_id or "").strip()[:64] or None
-        before = unlocked_ids(player_stats(initials, player_id))
+        collection = _collection_of(d.name)
+        before = unlocked_ids(player_stats(initials, player_id, collection))
         pioneer = not scores
         if player_id:
             for existing in scores:
@@ -805,7 +888,7 @@ def _store_score(
             captures.append(capture_id)
         _write_json(d / "scores.json", {**data, "scores": scores, "bests": bests, "captures": captures})
         _write_json(d / "bests.json", bests)
-        after_stats = player_stats(initials, player_id)
+        after_stats = player_stats(initials, player_id, collection)
     new_unlocks = [a for a in after_stats["achievements"] if a["unlocked"] and a["id"] not in before]
     rank = _player_rank(scores, initials, player_id)
     return {
@@ -1030,7 +1113,8 @@ def api_player(initials):
     if not clean:
         return jsonify({"success": False, "error": "invalid callsign"}), 404
     player_id = (request.args.get("player_id") or "").strip()[:64] or None
-    return jsonify({"success": True, "player": player_stats(clean, player_id)})
+    collection = _collection(request.args.get("collection"))
+    return jsonify({"success": True, "player": player_stats(clean, player_id, collection)})
 
 
 @app.route("/players", methods=["GET"])
@@ -1041,7 +1125,8 @@ def players_page():
 @app.route("/api/players", methods=["GET"])
 def api_players():
     q = (request.args.get("q") or "").strip().lower()
-    players = [p for p in list_players() if not q or q in p["initials"].lower()]
+    collection = _collection(request.args.get("collection"))
+    players = [p for p in list_players(collection) if not q or q in p["initials"].lower()]
     return jsonify({"success": True, "players": players, "count": len(players)})
 
 
@@ -1050,7 +1135,8 @@ def api_highscores():
     """Family high-score table: player standings plus each game's top scores."""
     if not GAMES_DIR.exists():
         return jsonify({"success": True, "players": [], "games": []})
-    curated = set(load_curated())
+    collection = _collection(request.args.get("collection"))
+    curated = _collection_slugs(collection)
     identities: dict[str, str] = {}
     games = []
     for child in sorted(GAMES_DIR.iterdir()):
@@ -1081,7 +1167,7 @@ def api_highscores():
         )
     rows = []
     for key, initials in identities.items():
-        stats = player_stats(initials, key if key != initials else None)
+        stats = player_stats(initials, key if key != initials else None, collection)
         rows.append(
             {
                 "player_id": key if key != initials else None,
@@ -1096,6 +1182,42 @@ def api_highscores():
         )
     rows.sort(key=lambda r: (-r["crowns"], -r["podiums"], -r["games_scored"], -r["best_score"], r["initials"]))
     return jsonify({"success": True, "players": rows, "games": games})
+
+
+@app.route("/api/family/games", methods=["GET"])
+def api_family_games():
+    """Every Family Games title with its lifecycle state, rating and plays.
+
+    Unfiltered on purpose: Jarvis decides what each viewer may see (players
+    get published, well-rated games; admins see everything), so the arcade
+    does not need to know who is asking.
+    """
+    cards = [card for slug in sorted(family.all_slugs()) if (card := _game_card(slug))]
+    return jsonify({"success": True, "games": cards, "states": list(family.STATES)})
+
+
+def _admin_ok() -> bool:
+    return bool(ADMIN_TOKEN) and request.headers.get("X-Arcade-Token") == ADMIN_TOKEN
+
+
+@app.route("/api/admin/family/<slug>/state", methods=["POST"])
+def api_family_state(slug):
+    """Move a Family game between testing, published and unpublished.
+
+    Needs ARCADE_ADMIN_TOKEN; Jarvis forwards it only for a family admin.
+    """
+    if not ADMIN_TOKEN:
+        return jsonify({"success": False, "error": "ARCADE_ADMIN_TOKEN is not configured on the arcade"}), 503
+    if not _admin_ok():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    try:
+        result = family.set_state(slug, str(body.get("state") or ""), by=body.get("by"))
+    except LookupError:
+        return jsonify({"success": False, "error": "family game not found"}), 404
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **result, "game": _game_card(slug)})
 
 
 @app.route("/api/admin/games/<slug>", methods=["DELETE"])
@@ -1113,4 +1235,7 @@ def api_unpublish(slug):
 
 if __name__ == "__main__":
     GAMES_DIR.mkdir(parents=True, exist_ok=True)
+    # Install/update the built-in Family Games shipped with this image. Player
+    # data is never touched, so a new game version keeps its scoreboard.
+    print("family games:", json.dumps(family.sync()), flush=True)
     app.run(host="0.0.0.0", port=PORT, threaded=True)

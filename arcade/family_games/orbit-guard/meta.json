@@ -1,0 +1,19 @@
+{
+  "title": "Orbit Guard",
+  "tagline": "Spin the shield, catch the space sprinkles!",
+  "description": "Spin a rainbow shield around a friendly little planet so every space sprinkle lands on the arc of its own colour.",
+  "emoji": "🪐",
+  "art": {"from": "#2b1a6b", "to": "#ff5c8a"},
+  "genre": "reflex",
+  "ages": "6+",
+  "players": "1",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Drag around the planet to spin the shield",
+    "Or tap the left or right side to turn it one step",
+    "Catch each sprinkle with the arc of the same colour and shape",
+    "Wrong colour costs a heart. Grab golden stars for bonus points"
+  ]
+}
