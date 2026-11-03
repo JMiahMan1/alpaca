@@ -272,7 +272,10 @@
     // edge like a native game, so it passes the phone's safe-area insets in
     // (env() is always 0 inside an iframe), takes the exit request, and
     // plays haptics through the native layer.
+    // The app's details arrive in the #fragment (so the game page is one
+    // cacheable URL); the query string is still read for direct links.
     const params = new URLSearchParams(window.location.search);
+    new URLSearchParams(window.location.hash.replace(/^#/, "")).forEach((value, key) => params.set(key, value));
     const inApp = embedded && params.get("embed") === "1";
     // The signed-in family member, so a player sees who they compete as.
     // Scores are saved under the Jarvis account by the app, not by this name.

@@ -147,7 +147,7 @@ def test_testing_and_published_games_play_but_unpublished_do_not(env):
     assert client.get("/play/family-cloud-hop?embed=1").status_code == 404
     assert client.get("/api/games/family-cloud-hop").status_code == 404
     _set(client, "family-cloud-hop", "published")
-    page = client.get("/play/family-cloud-hop?embed=1").get_data(as_text=True)
+    page = client.get("/play/family-cloud-hop").get_data(as_text=True)
     assert "window.ARCADE_BRIDGE = true" in page
 
 
@@ -318,3 +318,31 @@ def test_block_blast_benchmark_needs_the_complete_game():
     assert bench._verify_functional_response({"id": "mobile_block_blast"}, game)
     assert not bench._verify_functional_response({"id": "mobile_block_blast"}, game.replace("combo", "streak"))
     assert not bench._verify_functional_response({"id": "mobile_block_blast"}, game.replace("pointermove", "click"))
+
+
+def test_the_family_app_gets_a_lean_player_page(env):
+    """Embedded, a touch game loads no cabinet assets, and the player's
+    details ride in the fragment so the game page is one cacheable URL."""
+    env["family"].sync()
+    resp = env["client"].get("/play/family-cloud-hop?embed=1&player=JER&name=Jeremiah&safe=47,0,34,0&junk=1")
+    page = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "arcade.js" not in page and "arcade.css" not in page
+    assert 'src="/game/family-cloud-hop/index.html#embed=1&amp;player=JER&amp;name=Jeremiah&amp;safe=47%2C0%2C34%2C0"' in page
+    assert "junk" not in page
+    assert "arcade-score" in page and "arcade-relay" in page
+    meta = json.loads((env["games"] / "family-cloud-hop" / "meta.json").read_text())
+    assert meta["plays"] == 1
+
+
+def test_a_touch_game_page_is_cached_and_revalidated(env):
+    env["family"].sync()
+    client = env["client"]
+    first = client.get("/game/family-cloud-hop/index.html")
+    assert first.status_code == 200
+    assert "max-age" in first.headers["Cache-Control"] and "no-store" not in first.headers["Cache-Control"]
+    etag = first.headers["ETag"]
+    again = client.get("/game/family-cloud-hop/index.html", headers={"If-None-Match": etag})
+    assert again.status_code == 304
+    # The rest of the arcade still never caches its pages.
+    assert client.get("/play/family-cloud-hop").headers["Cache-Control"] == "no-store"
