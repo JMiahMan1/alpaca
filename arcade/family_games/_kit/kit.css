@@ -52,6 +52,7 @@ body.fk { position: fixed; inset: 0; }
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 .fk-icon-btn:active { transform: scale(0.92); }
+.fk-icon-btn.fk-exit { font-size: 18px; font-weight: 900; }
 .fk-score-bump { animation: fk-bump 0.25s ease-out; }
 @keyframes fk-bump { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
 
@@ -139,4 +140,36 @@ body.fk { position: fixed; inset: 0; }
 }
 @media (max-width: 350px) {
   #fk-hud [data-fk="best"] { display: none; }
+}
+
+/* Buttons in the HUD never shrink below a thumb: the pills give way first.
+ * (Some games restyle the HUD for narrow screens; these rules win.) */
+#fk-hud .fk-icon-btn {
+  flex: 0 0 44px !important; width: 44px !important; height: 44px !important;
+  min-width: 44px !important; min-height: 44px !important;
+}
+#fk-hud .fk-pill { min-width: 0; flex-shrink: 1; overflow: hidden; white-space: nowrap; }
+.fk-player { margin-top: 6px; font-size: 13px; font-weight: 800; color: var(--fk-ink-soft); }
+.fk-player b { color: var(--fk-ink); }
+
+/* Short screens (iPhone SE, landscape phones): the whole card, Play and Exit
+ * included, fits without scrolling. */
+@media (max-height: 740px) {
+  .fk-card { padding: 14px 14px 12px; border-radius: 22px; }
+  .fk-card .fk-emoji { font-size: 40px; margin-bottom: 2px; }
+  .fk-card h1 { font-size: 24px; }
+  .fk-card h2 { font-size: 20px; }
+  .fk-card .fk-tag { font-size: 13px; margin-top: 2px; }
+  .fk-card ul.fk-how { margin: 8px 0 2px; gap: 5px; }
+  .fk-card ul.fk-how li { font-size: 13px; padding: 6px 10px; border-radius: 12px; }
+  .fk-big-score { font-size: 48px; margin: 6px 0 0; }
+  .fk-stats { margin: 8px 0 2px; gap: 6px; }
+  .fk-stats b { font-size: 17px; }
+  .fk-btn { min-height: 50px; margin-top: 10px; font-size: 18px; }
+  .fk-btn.fk-ghost { min-height: 44px; margin-top: 6px; font-size: 15px; }
+  .fk-best-line { margin-top: 6px; }
+}
+@media (max-height: 560px) {
+  .fk-card ul.fk-how li:nth-child(n + 3) { display: none; }
+  .fk-card .fk-emoji { display: none; }
 }

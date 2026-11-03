@@ -51,7 +51,7 @@ const html = fs.readFileSync(built, "utf8");
 // Stand-in for the arcade play page: an iframe that records bridge messages.
 const host = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%;display:block}</style></head>
-<body><iframe id="g" src="/game.html" allow="autoplay"></iframe><script>
+<body><iframe id="g" src="/game.html?embed=1&safe=47,0,34,0&name=Jeremiah" allow="autoplay"></iframe><script>
 window.__msgs=[];addEventListener('message',e=>{const m=e.data;if(!m||m.source!=='arcade-game')return;window.__msgs.push(m);
 if(m.type==='score')document.getElementById('g').contentWindow.postMessage({source:'arcade-host',type:'saved',slug:m.slug,rank:1},'*');});
 </script></body></html>`;
@@ -129,11 +129,25 @@ for (const key of wanted) {
   await page.waitForTimeout(700);
   await page.screenshot({ path: path.join(outDir, `${dev.label}-3-over.png`) });
   const msgs = await page.evaluate(() => window.__msgs);
+  // Played as the family app runs it (embed=1, a notch and a home bar): the
+  // HUD's exit, sound and pause buttons must all be on screen and tappable.
+  const hudProblems = await frame.evaluate(() => {
+    const out = [];
+    for (const key of ["exit-hud", "sound", "pause"]) {
+      const el = document.querySelector(`[data-fk="${key}"]`);
+      if (!el) { out.push(`HUD ${key} button missing`); continue; }
+      const r = el.getBoundingClientRect();
+      if (r.width && (r.right > innerWidth + 0.5 || r.left < -0.5)) out.push(`HUD ${key} off screen (${Math.round(r.left)}..${Math.round(r.right)} of ${innerWidth})`);
+      if (r.width && (r.width < 43.5 || r.height < 43.5)) out.push(`HUD ${key} too small ${Math.round(r.width)}x${Math.round(r.height)}`);
+      if (r.width && r.top < 46) out.push(`HUD ${key} under the notch (top ${Math.round(r.top)})`);
+    }
+    return out;
+  });
   const overflow = await frame.evaluate(() => {
     const d = document.documentElement;
     return { scrollW: d.scrollWidth, scrollH: d.scrollHeight, w: innerWidth, h: innerHeight };
   });
-  const problems = [...errors];
+  const problems = [...errors, ...hudProblems];
   if (started !== "playing") problems.push(`Play did not start a run (state=${started})`);
   if (!msgs.some((m) => m.type === "ready")) problems.push("no ready message");
   const over = msgs.filter((m) => m.type === "over");

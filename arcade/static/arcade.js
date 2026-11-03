@@ -155,7 +155,9 @@
   const savedControls = localStorage.getItem("arcade_show_controls");
   // On a phone the touch pad is the only keyboard: show it on first visit.
   // A person can still hide it, and that choice is remembered.
-  let showControls = savedControls === null ? COARSE : savedControls === "1";
+  // Touch-native games bring their own controls; the key pad would only
+  // cover the game.
+  let showControls = window.ARCADE_BRIDGE ? false : savedControls === null ? COARSE : savedControls === "1";
   function paintControls() {
     if (!screenEl || !controlsBtn) return;
     screenEl.classList.toggle("show-controls", showControls);
@@ -662,7 +664,16 @@
       const frame = $("game-frame");
       const msg = event.data;
       if (frame && event.source === frame.contentWindow) {
-        if (!msg || msg.source !== "arcade-game" || msg.type !== "score") return;
+        if (!msg || msg.source !== "arcade-game") return;
+        // Launch, exit and haptics belong to the app the game runs in.
+        if (["ready", "exit", "haptic"].includes(msg.type)) {
+          if (window.parent !== window) {
+            const ms = Math.max(1, Math.min(400, Number(msg.ms) || 12));
+            window.parent.postMessage({ source: "arcade-relay", slug, type: msg.type, ms }, "*");
+          }
+          return;
+        }
+        if (msg.type !== "score") return;
         const score = Math.trunc(Number(msg.score));
         if (!Number.isFinite(score) || score < 0 || !msg.run_id) return;
         void submitBridgedRun(score, msg.run_id);

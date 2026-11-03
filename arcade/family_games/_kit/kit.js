@@ -268,6 +268,22 @@
     const sound = createSound(slug);
     const fx = createFx();
     const embedded = window.parent && window.parent !== window;
+    // Opened from the family app (?embed=1): the app runs the game edge to
+    // edge like a native game, so it passes the phone's safe-area insets in
+    // (env() is always 0 inside an iframe), takes the exit request, and
+    // plays haptics through the native layer.
+    const params = new URLSearchParams(window.location.search);
+    const inApp = embedded && params.get("embed") === "1";
+    // The signed-in family member, so a player sees who they compete as.
+    // Scores are saved under the Jarvis account by the app, not by this name.
+    const playerName = (params.get("name") || "").replace(/[^\p{L}\p{N} .'-]/gu, "").slice(0, 24);
+    const playingAs = () => (inApp && playerName ? `<div class="fk-player">Playing as <b>${esc(playerName)}</b></div>` : "");
+    const safe = (params.get("safe") || "").split(",").map((v) => Math.max(0, Math.min(120, Number(v) || 0)));
+    if (inApp && safe.length === 4) {
+      ["top", "right", "bottom", "left"].forEach((side, i) =>
+        document.documentElement.style.setProperty(`--fk-safe-${side}`, `${safe[i]}px`),
+      );
+    }
 
     if (cfg.accent) document.documentElement.style.setProperty("--fk-accent", cfg.accent);
     if (cfg.accent2) document.documentElement.style.setProperty("--fk-accent-2", cfg.accent2);
@@ -279,6 +295,8 @@
     const hud = el("div");
     hud.id = "fk-hud";
     hud.innerHTML =
+      // In the family app, leaving is always one tap away.
+      (inApp ? `<button class="fk-icon-btn fk-exit" type="button" data-fk="exit-hud" aria-label="Exit game">✕</button>` : "") +
       `<span class="fk-pill" data-fk="score"><small>${esc(cfg.scoreLabel || "Score")}</small><span>0</span></span>` +
       `<span class="fk-pill fk-extra" data-fk="extra"></span>` +
       `<span class="fk-spacer"></span>` +
@@ -349,6 +367,10 @@
 
     function haptic(ms) {
       if (sound.muted) return;
+      if (inApp) {
+        post({ type: "haptic", ms: ms || 12 });
+        return;
+      }
       try {
         if (navigator.vibrate) navigator.vibrate(ms || 12);
       } catch (_) {
@@ -375,6 +397,20 @@
       } catch (_) {
         /* parent gone */
       }
+    }
+
+    function exitGame() {
+      if (state === "playing") {
+        state = "paused";
+        if (cfg.onPause) cfg.onPause();
+      }
+      post({ type: "exit" });
+    }
+    const exitButton = () =>
+      inApp ? `<button class="fk-btn fk-ghost" type="button" data-fk="exit">Exit game</button>` : "";
+    function bindExit(root) {
+      const node = root.querySelector('[data-fk="exit"]');
+      if (node) onTap(node, exitGame);
     }
 
     function hideOverlay() {
@@ -427,11 +463,14 @@
         `<div class="fk-emoji">${cfg.emoji || "🎮"}</div><h1>${esc(cfg.title)}</h1>` +
           (cfg.tagline ? `<p class="fk-tag">${esc(cfg.tagline)}</p>` : "") +
           `<ul class="fk-how">${howToHtml()}</ul>` +
+          playingAs() +
           `<button class="fk-btn" type="button" data-fk="go">▶ Play</button>` +
+          exitButton() +
           (b !== null ? `<div class="fk-best-line">Your best: ${fmt(b)}</div>` : ""),
         (root) => {
           const go = root.querySelector('[data-fk="go"]');
           onTap(go, startRun);
+          bindExit(root);
         },
       );
     }
@@ -460,9 +499,11 @@
         `<div class="fk-emoji">⏸️</div><h2>Paused</h2><p class="fk-tag">Take a breather.</p>` +
           `<div class="fk-stats"><div><b>${fmt(score)}</b><span>${esc(cfg.scoreLabel || "Score")}</span></div></div>` +
           `<button class="fk-btn" type="button" data-fk="resume">▶ Keep playing</button>` +
-          `<button class="fk-btn fk-ghost" type="button" data-fk="quit">End this game</button>`,
+          `<button class="fk-btn fk-ghost" type="button" data-fk="quit">End this game</button>` +
+          exitButton(),
         (root) => {
           onTap(root.querySelector('[data-fk="resume"]'), resume);
+          bindExit(root);
           onTap(root.querySelector('[data-fk="quit"]'), () => {
             hideOverlay();
             state = "playing";
@@ -504,7 +545,10 @@
       const stats = (o.stats || [])
         .map(([label, value]) => `<div><b>${esc(typeof value === "number" ? fmt(value) : value)}</b><span>${esc(label)}</span></div>`)
         .join("");
-      const savedText = embedded && finalScore > 0 ? "Saving to the family scoreboard…" : "";
+      const savedText =
+        embedded && finalScore > 0
+          ? `Saving${inApp && playerName ? ` for ${esc(playerName)}` : ""} to the family scoreboard…`
+          : "";
       showCard(
         `<div class="fk-emoji">${o.emoji || (o.win ? "🏆" : cfg.emoji || "🎮")}</div>` +
           `<h2>${esc(o.title || (o.win ? "You did it!" : "Game over"))}</h2>` +
@@ -514,8 +558,10 @@
           (stats ? `<div class="fk-stats">${stats}</div>` : "") +
           `<div class="fk-saved" data-fk="saved">${savedText}</div>` +
           `<button class="fk-btn" type="button" data-fk="again">↻ Play again</button>` +
-          `<button class="fk-btn fk-ghost" type="button" data-fk="menu">How to play</button>`,
+          `<button class="fk-btn fk-ghost" type="button" data-fk="menu">How to play</button>` +
+          exitButton(),
         (root) => {
+          bindExit(root);
           const again = root.querySelector('[data-fk="again"]');
           // A short guard so a frantic tap that ended the game does not
           // immediately start the next one.
@@ -538,7 +584,10 @@
       const saved = overlay.querySelector('[data-fk="saved"]');
       if (!saved) return;
       if (msg.type === "saved") {
-        saved.textContent = msg.rank ? `Saved! #${msg.rank} on the family board 🎉` : "Saved to the family scoreboard ✓";
+        const who = inApp && playerName ? ` for ${playerName}` : "";
+        saved.textContent = msg.rank
+          ? `Saved${who}! #${msg.rank} on the family board 🎉`
+          : `Saved${who} to the family scoreboard ✓`;
       } else if (msg.type === "error") {
         saved.style.color = "#c0392b";
         saved.textContent = "Couldn't save this score.";
@@ -552,11 +601,14 @@
       if (!sound.muted) sound.play("tap");
     });
     onTap(pauseBtn, pause);
+    const hudExit = hud.querySelector('[data-fk="exit-hud"]');
+    if (hudExit) onTap(hudExit, exitGame);
 
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) pause();
     });
-    window.addEventListener("blur", () => pause());
+    // Only a hidden page pauses. "blur" fires inside the family app's nested
+    // frames on ordinary taps, which paused games mid-move.
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" || e.key === "p") {
         if (state === "playing") pause();
