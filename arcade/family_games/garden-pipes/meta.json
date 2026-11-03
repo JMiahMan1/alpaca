@@ -1,0 +1,19 @@
+{
+  "title": "Garden Pipes",
+  "tagline": "Turn the pipes, water the flowers!",
+  "description": "A calm pipe-turning puzzle: rotate garden pipes to carry water from the spring to every thirsty flower before the sun sets.",
+  "emoji": "🌻",
+  "art": { "from": "#5cc46a", "to": "#2f8fd6" },
+  "genre": "logic",
+  "ages": "7+",
+  "players": "1",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Tap a pipe to turn it.",
+    "Connect the spring to every thirsty flower.",
+    "Each watered garden adds 15 seconds.",
+    "Fewer taps and quick gardens earn bonus points."
+  ]
+}

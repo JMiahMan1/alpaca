@@ -620,7 +620,62 @@
     window.addEventListener("pagehide", flush);
   }
 
-  if (window.ARCADE_KIND === "playable") {
+  // Explicit score bridge (Family Games and mobile benchmark games): the game
+  // posts {source: "arcade-game", type: "score", score, run_id} once per
+  // finished run, so every run counts exactly once and nothing is guessed from
+  // localStorage. Embedded in Jarvis, the parent saves it under the signed-in
+  // member and answers with {source: "arcade-host", type: "saved", rank},
+  // which is relayed to the game so its result card can say so.
+  function relayToGame(msg) {
+    const frame = $("game-frame");
+    if (frame && frame.contentWindow) frame.contentWindow.postMessage(msg, "*");
+  }
+  async function submitBridgedRun(score, runId) {
+    const captureId = `${slug}:${String(runId).slice(0, 80)}`;
+    if (window.parent !== window) {
+      window.parent.postMessage({ source: "arcade-score", slug, score, capture_id: captureId }, "*");
+      return;
+    }
+    const callsign = rememberCallsign($("score-initials") ? $("score-initials").value : "");
+    if (!callsign) {
+      if ($("score-msg")) $("score-msg").textContent = "Enter your initials to save your scores.";
+      relayToGame({ source: "arcade-host", type: "error", slug });
+      return;
+    }
+    try {
+      const res = await fetch(`/api/games/${slug}/scores`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initials: callsign, score, capture_id: captureId }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "save failed");
+      relayToGame({ source: "arcade-host", type: "saved", slug, rank: data.rank || null });
+      refreshScores();
+      celebrate(data.new_unlocks);
+    } catch (_) {
+      relayToGame({ source: "arcade-host", type: "error", slug });
+    }
+  }
+  if (window.ARCADE_BRIDGE) {
+    window.addEventListener("message", (event) => {
+      const frame = $("game-frame");
+      const msg = event.data;
+      if (frame && event.source === frame.contentWindow) {
+        if (!msg || msg.source !== "arcade-game" || msg.type !== "score") return;
+        const score = Math.trunc(Number(msg.score));
+        if (!Number.isFinite(score) || score < 0 || !msg.run_id) return;
+        void submitBridgedRun(score, msg.run_id);
+        return;
+      }
+      // From the Jarvis parent: the saved rank, forwarded into the game.
+      if (window.parent !== window && event.source === window.parent && msg && msg.source === "arcade-host" && msg.slug === slug) {
+        relayToGame(msg);
+      }
+    });
+  }
+
+  if (window.ARCADE_KIND === "playable" && !window.ARCADE_BRIDGE) {
     startPlayableAutoCapture();
     const initials = $("score-initials");
     if (initials) {

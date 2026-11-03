@@ -1,0 +1,19 @@
+{
+  "title": "Memory Meadow",
+  "tagline": "Find the matching meadow friends!",
+  "description": "Flip cards to find pairs of meadow animals before the sun sets, from 3 pairs for little ones up to 18 for grown-ups.",
+  "emoji": "🐰",
+  "art": { "from": "#7fd6ff", "to": "#7bd389" },
+  "genre": "memory",
+  "ages": "4+",
+  "players": "1",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Tap a card to flip it over",
+    "Find two cards that match",
+    "Match them all before the bee reaches the end",
+    "Match in a row for bonus points"
+  ]
+}

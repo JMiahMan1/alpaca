@@ -1,0 +1,19 @@
+{
+  "title": "Cloud Hop",
+  "tagline": "Bounce up through the sky!",
+  "description": "Steer a bouncy little critter from cloud to cloud and climb from sunny skies to a starry night.",
+  "emoji": "☁️",
+  "art": { "from": "#5ec8ff", "to": "#ff9ecf" },
+  "genre": "action",
+  "ages": "5+",
+  "players": "1",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Hold your finger left or right to steer. Bouncing is automatic!",
+    "Pink puff clouds pop after one bounce. Blue ones drift.",
+    "Grab stars for bonus points. Rainbow mushrooms and balloons zoom you up!",
+    "Steer around sleepy storm clouds, and don't fall!"
+  ]
+}
