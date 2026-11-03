@@ -51,7 +51,7 @@ const html = fs.readFileSync(built, "utf8");
 // Stand-in for the arcade play page: an iframe that records bridge messages.
 const host = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%;display:block}</style></head>
-<body><iframe id="g" src="/game.html?embed=1&safe=47,0,34,0&name=Jeremiah" allow="autoplay"></iframe><script>
+<body><iframe id="g" src="/game.html#embed=1&safe=47,0,34,0&name=Jeremiah" allow="autoplay"></iframe><script>
 window.__msgs=[];addEventListener('message',e=>{const m=e.data;if(!m||m.source!=='arcade-game')return;window.__msgs.push(m);
 if(m.type==='score')document.getElementById('g').contentWindow.postMessage({source:'arcade-host',type:'saved',slug:m.slug,rank:1},'*');});
 </script></body></html>`;

@@ -28,6 +28,7 @@ import re
 import shlex
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -476,6 +477,9 @@ def list_games(category: str | None = None, sort: str | None = None) -> list:
 
 @app.after_request
 def _no_store_static(resp):
+    # A route that chose its own caching (the cacheable game pages) keeps it.
+    if "Cache-Control" in resp.headers:
+        return resp
     if request.path.startswith("/static/") or resp.mimetype == "text/html":
         resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -567,6 +571,14 @@ def play(slug):
         meta["plays"] = int(meta.get("plays", 0) or 0) + 1
         _write_json(d / "meta.json", meta)
         card["plays"] = meta["plays"]
+    if meta.get("score_bridge") and request.args.get("embed"):
+        # A touch game in the family app: the lean page (no cabinet assets),
+        # with the player's details handed to the game in the URL fragment so
+        # the game page itself stays one cacheable URL.
+        fragment = urllib.parse.urlencode(
+            {k: v for k, v in request.args.items() if k in ("embed", "player", "name", "safe")}
+        )
+        return render_template("play_touch.html", card=card, fragment=fragment)
     scores = _read_json(d / "scores.json", {}).get("scores", [])
     kind = meta.get("kind") or ("code" if (d / "game.py").exists() else "playable")
     code_text = (d / "game.py").read_text(encoding="utf-8", errors="replace") if (d / "game.py").exists() else ""
@@ -597,7 +609,13 @@ def serve_game(slug):
     meta = _read_json(d / "meta.json", {})
     # Phone-first games lay themselves out; the fit shim would only fight them.
     if meta.get("mobile_native") and assess_html(html).get("ready"):
-        return Response(html, mimetype="text/html")
+        # Cached on the phone and revalidated by ETag: a repeat launch starts
+        # from the local copy, and a new version of the game is picked up on
+        # the launch after it ships.
+        resp = Response(html, mimetype="text/html")
+        resp.set_etag(hashlib.sha256(html.encode("utf-8")).hexdigest()[:32])
+        resp.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=604800"
+        return resp.make_conditional(request)
     return Response(prepare_playable_html(html), mimetype="text/html")
 
 

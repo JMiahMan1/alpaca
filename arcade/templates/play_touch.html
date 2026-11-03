@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>{{ card.title }}</title>
+{#- The player page for a touch-native game inside the family app. Nothing
+    else loads: no arcade stylesheet or script (74 KB the cabinet needs and
+    a phone game does not), just the game and the score bridge. The player's
+    details go in the game URL's #fragment, so the game page itself stays
+    one cacheable URL. -#}
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
+  iframe { display: block; width: 100%; height: 100%; border: 0; }
+</style>
+</head>
+<body>
+<iframe id="game-frame" src="/game/{{ card.slug }}/index.html#{{ fragment }}" title="{{ card.title }}"
+  sandbox="allow-scripts allow-same-origin allow-pointer-lock" allow="autoplay"></iframe>
+<script>
+(function () {
+  "use strict";
+  var slug = {{ card.slug|tojson }};
+  var frame = document.getElementById("game-frame");
+  var toGame = function (msg) { if (frame.contentWindow) frame.contentWindow.postMessage(msg, "*"); };
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (event.source === frame.contentWindow) {
+      if (!msg || msg.source !== "arcade-game") return;
+      if (msg.type === "ready" || msg.type === "exit" || msg.type === "haptic") {
+        var ms = Math.max(1, Math.min(400, Number(msg.ms) || 12));
+        window.parent.postMessage({ source: "arcade-relay", slug: slug, type: msg.type, ms: ms }, "*");
+        return;
+      }
+      if (msg.type !== "score") return;
+      var score = Math.trunc(Number(msg.score));
+      if (!isFinite(score) || score < 0 || !msg.run_id) return;
+      // The family app saves it under the signed-in member and answers with
+      // the rank, which goes back into the game's result card.
+      window.parent.postMessage(
+        { source: "arcade-score", slug: slug, score: score, capture_id: slug + ":" + String(msg.run_id).slice(0, 80) },
+        "*"
+      );
+      return;
+    }
+    if (event.source === window.parent && msg && msg.source === "arcade-host" && msg.slug === slug) toGame(msg);
+  });
+})();
+</script>
+</body>
+</html>
