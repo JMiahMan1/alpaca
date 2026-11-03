@@ -27,7 +27,9 @@ AUTO_PUBLISH_SCORE = float(os.getenv("ARCADE_AUTO_PUBLISH_SCORE", "80"))
 
 # Benchmark categories whose tests produce playable games. Used by the
 # deliberate bulk reconcile to decide which results are eligible.
-GAME_CATEGORIES = frozenset({"gamedev", "gamedev_alt", "retrogames", "youtuber"})
+GAME_CATEGORIES = frozenset({"gamedev", "gamedev_alt", "retrogames", "youtuber", "mobilegames"})
+# Benchmarks written to the phone contract; their games are Family Games candidates.
+MOBILE_GAME_CATEGORIES = frozenset({"mobilegames"})
 
 
 def slugify(model: str, test_id: str) -> str:
@@ -414,6 +416,26 @@ def publish_game(
         "auto_published": bool(auto),
         "plays": previous_plays,
     }
+    # A mobile benchmark game was written to the phone contract (touch, any
+    # screen size, the arcade score bridge). It joins the Family Games
+    # collection as a candidate: the arcade puts it in "testing" and only an
+    # admin's publish, plus the family's ratings, put it in front of players.
+    # Family Games are mobile games only: the page must pass the same contract
+    # the benchmark grades. One that does not stays an ordinary arcade game,
+    # with the missing items recorded so the dashboard can say why.
+    if str(resolved_category).lower() in MOBILE_GAME_CATEGORIES and kind == "playable":
+        try:
+            from arcade.mobile import contract_failures
+        except ImportError:
+            from mobile import contract_failures  # type: ignore[no-redef]
+        page = (game_dir / "game.html").read_text(encoding="utf-8", errors="replace")
+        failures = contract_failures(page)
+        if failures:
+            meta["mobile_contract_failures"] = failures
+        else:
+            meta.update(
+                {"collection": "family", "score_bridge": True, "mobile_native": True, "mobile_compatible": True}
+            )
     (game_dir / "meta.json").write_text(json.dumps(meta, indent=2))
     # A manual publish also chooses the game for the public shelf. Curation
     # is separate from the directory so scores survive if it is hidden again.
