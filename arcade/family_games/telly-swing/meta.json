@@ -1,19 +1,22 @@
 {
   "title": "Telly Swing",
-  "tagline": "Swing home on your power cord!",
-  "description": "Telly is a little cartoon TV who travels by lassoing hooks with its power cord. Swing over gaps, wrap the cord for speed, grab sparks and plug in at the end of every room.",
+  "tagline": "Swing, plug in and power your way home!",
+  "description": "Telly is a little cartoon TV with a power cord. Roll and jump through eight hand-built rooms, swing from hooks, push crates onto plates and plug into sockets that power doors, lifts, fans and bridges, then plug in at the gold outlet. Three stars a room.",
   "emoji": "📺",
-  "art": { "from": "#ff9f43", "to": "#7b6cff" },
+  "art": {
+    "from": "#ff9f43",
+    "to": "#7b6cff"
+  },
   "genre": "action",
   "ages": "5+",
   "players": "1",
-  "version": 1,
+  "version": 2,
   "metric": "points",
   "higher_is_better": true,
   "how_to": [
-    "Telly rolls along by itself. Hold anywhere to throw the cord at the glowing hook.",
-    "Let go to fly! Keep holding to swing all the way round and wrap the cord for speed.",
-    "Grab ⚡ sparks and the three 🔋 cells in every room, then plug into the outlet.",
-    "Mind the gaps and the puddles: each zap costs a battery. Tap on the ground to hop."
+    "◀ ▶ roll Telly along and ⤒ jumps (on a keyboard: the arrows and Space).",
+    "🔌 near a glowing hook throws the cord: hold to swing, let go to fly. Swing right round to wrap it for speed.",
+    "🔌 beside a socket plugs in and powers a door, lift, fan or bridge, often only for a while, so hurry. Crates on plates work too.",
+    "Grab ⚡ and the three 🔋 in each room, then plug into the gold outlet. Mind water and sparks!"
   ]
 }
