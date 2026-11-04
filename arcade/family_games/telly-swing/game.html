@@ -6,9 +6,11 @@
 <title>Telly Swing</title>
 <!-- @family-kit -->
 <style>
-  html, body { background: #ffc9a8; }
+  html, body { background: #2a2140; }
+  #fk-stage canvas { touch-action: none; }
   #fk-hud .fk-pill { white-space: nowrap; flex: 0 1 auto; min-width: 0; }
-  #fk-hud .fk-extra small { font-size: 13px; opacity: 0.9; }
+  #ts-safe { position: fixed; left: 0; bottom: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--fk-safe-bottom, 0px)); }
   .ts-bench-line { margin-top: 6px; font-size: 13px; opacity: 0.8; }
   .ts-bench-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 4px; text-align: center; }
   .ts-bench-grid div { background: rgba(0,0,0,0.06); border-radius: 12px; padding: 8px 4px; }
@@ -19,6 +21,7 @@
 </head>
 <body>
 <div id="fk-stage"></div>
+<div id="ts-safe"></div>
 <script>
 (function () {
   "use strict";
@@ -26,193 +29,529 @@
   const { clamp, lerp, roundRect } = FK;
   const TAU = Math.PI * 2;
 
-  /* ---------------- physics, in tile units (y grows downward) ---------------- */
-  const G = 32;            // gravity
-  const WALK = 3.4;        // Telly rolls along by itself
-  const HOP = -10;         // a hop clears about 1.5 tiles up, 2 tiles across
-  const SPRING = -17.5;    // a speaker launches about 4.5 tiles up
-  const RANGE = 6.8;       // how far the cord reaches
-  const LMAX = 4.8;        // the cord reels in to this on a long throw
-  const LMIN = 1.6;        // wrapping stops shortening here
-  const SWING_TO = 1.15;   // a throw always swings Telly at least this far past the hook (radians)
-  const PUMP = 7;          // holding pushes along the swing, tiles/s²
-  const HW = 0.5;          // half width of Telly's body
-  const BODY = 0.86;       // body height (feet to top)
+  /* ---------------- physics, in tiles and seconds (y grows downward) ---------------- */
+  const G_UP = 42;          // gravity while rising with jump held
+  const G_DOWN = 66;        // falling, or jump let go early (short hops)
+  const MAX_FALL = 24;
+  const RUN = 6.2;
+  const PUSH_RUN = 2.6;     // pushing a crate is slow going
+  const ACC_GROUND = 48;
+  const ACC_AIR = 30;
+  const FRICTION = 44;
+  const JUMP_V = -Math.sqrt(2 * G_UP * 3.4);   // about 3.4 tiles up, 4.5 across
+  const SPRING_V = -Math.sqrt(2 * G_UP * 6.4);
+  const COYOTE = 0.1;       // a jump still works just after running off a ledge
+  const BUFFER = 0.14;      // and just before landing
+  const RANGE = 7.6;        // how far the cord reaches for a hook
+  const LMAX = 5;
+  const LMIN = 1.6;
+  const SWING_TO = 0.95;    // a throw always swings Telly at least this far past the hook
+  const PUMP = 11;          // ◀ ▶ push the swing along
+  const PW = 0.78;
+  const PH = 0.86;
+  const WIND = 125;
+  const WIND_MAX = 7.5;
   const STEP = 1 / 120;
   const BATTERIES = 3;
+  const BOTTOM = 15;        // the lowest row of every room
+  const EPS = 1e-5;
 
   const kit = FK.create({
     slug: "family-telly-swing",
     title: "Telly Swing",
-    tagline: "Swing home on your power cord!",
+    tagline: "Swing, plug in and power your way home!",
     emoji: "📺",
     accent: "#ff8a2a",
     accent2: "#7b6cff",
     scoreLabel: "Score",
     howTo: [
-      ["👆", "Telly rolls along by itself. Hold anywhere to throw the cord at the glowing hook."],
-      ["🌀", "Let go to fly! Keep holding to swing all the way round: each wrap speeds Telly up."],
-      ["⚡", "Grab sparks and the three 🔋 cells in every room, then plug into the outlet 🔌."],
-      ["💧", "Mind gaps and puddles: each zap costs a battery. Tap on the ground to hop."],
+      ["🕹️", "◀ ▶ roll, ⤒ jumps (arrows and Space)."],
+      ["🌀", "🔌 at a hook: hold to swing, let go to fly."],
+      ["🔌", "🔌 at a socket powers doors, lifts and fans."],
+      ["🔋", "Get 3 🔋, then plug into the gold outlet."],
     ],
     onStart: () => startGame(),
-    onPause: () => { holding = false; },
-    onResume: () => { holding = false; },
+    onPause: () => clearInput(),
+    onResume: () => clearInput(),
   });
 
-  /* ---------------- themes: one per room, then they come round again ---------------- */
-  const THEMES = [
-    { name: "Living Room", sky: ["#ffe7c7", "#ffc4d8"], hill: ["rgba(255,170,140,0.45)", "rgba(230,120,140,0.35)"], top: "#f2b27a", body: "#c4844d", line: "#9c6436", mote: "#fff6e0" },
-    { name: "Kitchen", sky: ["#dff7ff", "#bcdcff"], hill: ["rgba(140,190,240,0.45)", "rgba(110,150,220,0.35)"], top: "#f4f8fc", body: "#93b7cc", line: "#6f93aa", mote: "#ffffff" },
-    { name: "Garden", sky: ["#c3f1ff", "#e8ffd8"], hill: ["rgba(120,200,120,0.5)", "rgba(80,170,90,0.45)"], top: "#78c94f", body: "#8d5c3c", line: "#5f3c24", mote: "#fff8b0" },
-    { name: "Garage", sky: ["#ddd6ff", "#ffe2bd"], hill: ["rgba(150,150,200,0.45)", "rgba(120,120,170,0.4)"], top: "#b6bfcf", body: "#7d8597", line: "#5a6172", mote: "#fffbe6" },
-    { name: "Rooftops", sky: ["#ff9f8e", "#ffd772"], hill: ["rgba(190,80,90,0.4)", "rgba(150,60,90,0.4)"], top: "#d0654c", body: "#8f3b2c", line: "#6b2a1f", mote: "#ffe9c4" },
-    { name: "Night Sky", sky: ["#1d2758", "#5b4aa8"], hill: ["rgba(90,80,170,0.55)", "rgba(60,55,130,0.6)"], top: "#eef0ff", body: "#b9c0f0", line: "#8890cc", mote: "#fff7c2", night: true },
-  ];
+  /* ---------------- looks: one per room ---------------- */
+  const THEMES = {
+    living: { name: "Living Room", sky: ["#ffe9cf", "#ffc6d6"], far: "rgba(214,120,130,0.22)", mid: "rgba(150,80,90,0.18)",
+      top: "#e8875a", topHi: "#ffb48a", body: "#b9774a", side: "#8e5530", line: "#7a4626", tex: "planks", light: "#fff3d6" },
+    kitchen: { name: "Kitchen", sky: ["#e2f6ff", "#c2dcff"], far: "rgba(110,150,210,0.2)", mid: "rgba(80,120,180,0.16)",
+      top: "#f6fbff", topHi: "#ffffff", body: "#9cc3d8", side: "#6e98b0", line: "#5d849c", tex: "tiles", light: "#ffffff" },
+    garage: { name: "Garage", sky: ["#d9d4f6", "#f7dcc0"], far: "rgba(110,110,160,0.22)", mid: "rgba(80,80,120,0.18)",
+      top: "#aab4c6", topHi: "#d5dceb", body: "#7a8296", side: "#596073", line: "#474d5e", tex: "metal", light: "#fff8e6" },
+    garden: { name: "Garden", sky: ["#bfeeff", "#ecffd9"], far: "rgba(90,170,110,0.28)", mid: "rgba(60,140,80,0.24)",
+      top: "#6cc24a", topHi: "#9be26f", body: "#8a5b3b", side: "#6a4229", line: "#553220", tex: "soil", grass: true, light: "#fffbd0" },
+    roofs: { name: "Rooftops", sky: ["#ff9c8a", "#ffd977"], far: "rgba(170,70,90,0.26)", mid: "rgba(130,50,80,0.24)",
+      top: "#cc5f47", topHi: "#ef8a6a", body: "#a1786a", side: "#7c574b", line: "#5f3f35", tex: "bricks", light: "#fff0c9" },
+    workshop: { name: "Workshop", sky: ["#3b3561", "#7b5a7c"], far: "rgba(30,25,60,0.4)", mid: "rgba(20,15,45,0.35)",
+      top: "#8f97ad", topHi: "#c3cadb", body: "#5b6178", side: "#41465a", line: "#33374a", tex: "metal", light: "#ffd98a", dim: true },
+    dusk: { name: "Back Yard", sky: ["#6f5cc9", "#ff9f80"], far: "rgba(60,40,110,0.4)", mid: "rgba(40,25,80,0.35)",
+      top: "#4f9a46", topHi: "#76c062", body: "#6b4a37", side: "#4d3324", line: "#3b2519", tex: "soil", grass: true, light: "#ffe2a8", dim: true },
+    night: { name: "Night Sky", sky: ["#151c48", "#4b3d97"], far: "rgba(80,70,170,0.4)", mid: "rgba(50,45,130,0.4)",
+      top: "#dfe3ff", topHi: "#ffffff", body: "#9aa1dc", side: "#7279b8", line: "#5c62a0", tex: "tiles", light: "#fff7c2", night: true, dim: true },
+  };
 
-  /* ---------------- seeded levels: the same rooms for everyone ---------------- */
-  function rng(seed) {
-    let a = seed >>> 0;
-    return () => {
-      a = (a + 0x6d2b79f5) >>> 0;
-      let t = a;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  /* ---------------- the rooms, built by hand ----------------
+   * Coordinates are tiles: x to the right, y downward; a ground's "top" is
+   * the row Telly stands on. Every room has exactly three power cells. */
+  function builder() {
+    const L = {
+      solids: [], ledges: [], water: [], hooks: [], sparks: [], cells: [], pads: [], springs: [], crates: [],
+      sparkers: [], sockets: [], doors: [], lifts: [], fans: [], bridges: [], plates: [], start: { x: 2, y: 11 }, exit: null,
     };
+    const b = {
+      L,
+      ground: (x0, x1, top) => L.solids.push([x0, x1, top, BOTTOM + 1]),
+      block: (x0, x1, y0, y1) => L.solids.push([x0, x1, y0, y1]),
+      ledge: (x0, x1, y) => L.ledges.push([x0, x1, y]),
+      water: (x0, x1, y) => {
+        L.water.push({ x0, x1, y });
+        L.solids.push([x0, x1, y + 1, BOTTOM + 1]);
+      },
+      start: (x, y) => { L.start = { x, y }; },
+      exit: (x, y) => { L.exit = { x, y }; },
+      pad: (x, y) => L.pads.push({ x, y, on: false }),
+      spark: (x, y) => L.sparks.push({ x, y, got: false }),
+      sparks: (list) => list.forEach(([x, y]) => L.sparks.push({ x, y, got: false })),
+      cell: (x, y) => L.cells.push({ x, y, got: false }),
+      hook: (x, y, o) => L.hooks.push({ bx: x, by: y, ax: (o && o.ax) || 0, ay: (o && o.ay) || 0, sp: (o && o.sp) || 1, ph: (o && o.ph) || 0 }),
+      spring: (x, y) => L.springs.push({ x, y, squash: 0 }),
+      crate: (x, y) => L.crates.push({ hx: x, hy: y }),
+      sparker: (x, y, phase) => L.sparkers.push({ x, y, h: 2.7, phase: phase || 0 }),
+      socket: (x, y, time) => {
+        const s = { kind: "socket", x, y, time: time || 0, left: 0, latched: false };
+        L.sockets.push(s);
+        return s;
+      },
+      plate: (x0, x1, y) => {
+        const p = { kind: "plate", x0, x1, y, pressed: false, depth: 0 };
+        L.plates.push(p);
+        return p;
+      },
+      door: (x, y0, y1, by) => L.doors.push({ x, y0, y1, by, open: 0 }),
+      lift: (x0, x1, yDown, yUp, by) => L.lifts.push({ x0, x1, yDown, yUp, y: yDown, by, dy: 0 }),
+      fan: (x, y, h, by) => L.fans.push({ x, y, h, by, spin: 0, a: 0 }),
+      bridge: (x0, x1, y, by) => L.bridges.push({ x0, x1, y, by, ext: 0 }),
+    };
+    return b;
   }
 
-  function buildLevel(n, opts) {
-    const o = opts || {};
-    const r = rng(1009 + n * 7919);
-    const between = (lo, hi) => lo + r() * (hi - lo);
-    const L = { n, theme: THEMES[n % THEMES.length], platforms: [], hooks: [], sparks: [], cells: [], puddles: [], springs: [], pads: [], outlet: null };
-    let x = 7;
-    let y = 0;
-    L.platforms.push({ x0: -8, x1: x, y });
-    L.pads.push({ x: 1.5, y, on: true });
-    const segs = o.segments || Math.min(24, 9 + n * 2);
-    const kinds = ["gap1", "gap1", "step"];
-    if (n >= 1) kinds.push("gap2", "puddle");
-    if (n >= 2) kinds.push("spring", "gap2");
-    if (n >= 3) kinds.push("moving", "moving");
-    if (n >= 4) kinds.push("chain");
-    const arcSparks = (hx, hy, rad, count) => {
-      for (let k = 0; k < count; k++) {
-        const a = (k - (count - 1) / 2) * 0.32;
-        L.sparks.push({ x: hx + Math.sin(a) * rad, y: hy + Math.cos(a) * rad, got: false });
-      }
+  const ROOMS = [
+    {
+      name: "First Steps", theme: "living", par: 40,
+      build(b) {
+        b.ground(0, 14, 11); b.start(2, 11);
+        b.sparks([[5, 10.3], [6, 10.3], [7, 10.3], [15, 8.6], [16, 8.6]]);
+        b.ground(17, 24, 11);
+        b.ground(24, 30, 9); b.ledge(26, 29, 7); b.cell(27.5, 6.1);
+        b.ground(30, 36, 11);
+        b.water(36, 39, 11);
+        b.ground(39, 48, 11); b.pad(41, 11);
+        b.ground(48, 52, 10); b.ground(52, 56, 9);
+        b.sparks([[53, 8], [54, 8], [55, 8]]);
+        b.cell(57.5, 7.4);
+        b.ground(59, 82, 9);
+        b.spring(67, 9); b.ledge(68, 73, 4);
+        b.sparks([[69, 3.2], [72, 3.2]]); b.cell(70.5, 3);
+        b.exit(78, 9);
+      },
+    },
+    {
+      name: "Swing Time", theme: "kitchen", par: 50,
+      build(b) {
+        b.ground(0, 10, 11); b.start(2, 11);
+        b.sparks([[5, 10.3], [6, 10.3], [7, 10.3]]);
+        b.hook(13.5, 5); b.sparks([[12, 9.4], [13.5, 9.9], [15, 9.4]]);
+        b.ground(17, 25, 11); b.pad(19, 11);
+        b.hook(28.5, 5); b.hook(32.5, 5); b.cell(30.5, 7.6);
+        b.ground(36, 44, 11);
+        b.hook(48.5, 4.5, { ax: 1.4, sp: 0.9 });
+        b.ground(53, 62, 10); b.pad(55, 10); b.ledge(56, 60, 8); b.cell(58, 7);
+        b.hook(65.5, 4); b.hook(69, 4.5); b.hook(72.5, 4); b.cell(69, 0.4);
+        b.sparks([[65.5, 8.8], [69, 9.3], [72.5, 8.8]]);
+        b.ground(76, 92, 11); b.exit(88, 11);
+      },
+    },
+    {
+      name: "Power Up", theme: "garage", par: 55,
+      build(b) {
+        b.ground(0, 24, 11); b.start(2, 11);
+        const a = b.socket(7, 11, 0);
+        b.cell(9.5, 7.8);
+        b.block(11, 14, 0, 6); b.door(12, 6, 11, a);
+        b.sparks([[15, 10.3], [16, 10.3]]);
+        const lift = b.socket(18, 11, 6);
+        b.lift(21, 24, 10.55, 6, lift);
+        b.ground(24, 34, 6); b.cell(22.5, 3.4);
+        b.sparks([[27, 5.3], [29, 5.3], [31, 5.3]]);
+        b.ground(34, 48, 11); b.pad(36, 11);
+        const c = b.socket(39, 11, 3.5);
+        b.cell(41.5, 8);
+        b.block(44, 47, 0, 6); b.door(45, 6, 11, c);
+        b.ground(48, 62, 11); b.exit(58, 11);
+      },
+    },
+    {
+      name: "Heavy Lifting", theme: "garden", par: 65,
+      build(b) {
+        b.ground(0, 20, 11); b.start(2, 11);
+        b.crate(8, 11);
+        b.ground(20, 32, 7); b.cell(26, 5.4);
+        b.sparks([[23, 6.3], [24, 6.3], [28, 6.3], [29, 6.3]]);
+        b.ground(32, 52, 11); b.pad(34, 11);
+        b.crate(38, 11);
+        const plate = b.plate(42.5, 44.5, 11);
+        b.cell(47, 8.4);
+        b.block(48, 51, 0, 6); b.door(49, 6, 11, plate);
+        b.ground(52, 58, 11);
+        b.hook(61.5, 5); b.cell(61.5, 9.6);
+        b.ground(65, 78, 11); b.exit(74, 11);
+      },
+    },
+    {
+      name: "Up and Away", theme: "roofs", par: 60,
+      build(b) {
+        b.ground(0, 15, 11); b.start(2, 11);
+        const a = b.socket(6, 11, 7);
+        b.fan(14.1, 11, 8, a); b.cell(14.1, 5);
+        b.sparks([[14.1, 8], [14.1, 6.5]]);
+        b.ground(15, 26, 4);
+        b.sparks([[18, 3.3], [20, 3.3], [22, 3.3]]);
+        b.hook(29, -1); b.cell(29, 3.9);
+        b.ground(32, 40, 6); b.cell(36, 3.2);
+        b.ground(40, 51, 11); b.pad(42, 11);
+        const c = b.socket(45, 11, 0);
+        b.fan(50.1, 11, 9, c);
+        b.sparks([[50.1, 7], [50.1, 5]]);
+        b.ground(51, 64, 3); b.exit(60, 3);
+      },
+    },
+    {
+      name: "Zap Alley", theme: "workshop", par: 75,
+      build(b) {
+        b.ground(0, 15, 11); b.start(2, 11);
+        b.sparker(8, 11, 0);
+        b.water(15, 18, 11); b.ground(18, 26, 11);
+        b.sparker(22, 11, 1.3);
+        b.ground(26, 32, 11); b.pad(27, 11);
+        const a = b.socket(29, 11, 5);
+        b.lift(32, 35, 10.55, 5, a); b.cell(33.5, 2.5);
+        b.ground(32, 35, 11);
+        b.ground(35, 46, 5);
+        b.sparker(40, 5, 0.6);
+        b.hook(49, 0); b.hook(53, 0); b.cell(51, 4);
+        b.sparks([[49, 4], [53, 4]]);
+        b.ground(56, 80, 7); b.pad(58, 7);
+        b.cell(62, 4.1);
+        b.sparker(66, 7, 0.9);
+        b.exit(76, 7);
+      },
+    },
+    {
+      name: "Bridge Builder", theme: "dusk", par: 75,
+      build(b) {
+        b.ground(0, 10, 11); b.start(2, 11);
+        b.hook(13, 5, { ax: 1.2, sp: 0.9 }); b.hook(17, 5, { ax: 1.2, sp: 0.9, ph: Math.PI });
+        b.cell(15, 9);
+        b.ground(20, 30, 11);
+        b.crate(22, 11);
+        const plate = b.plate(27, 29, 11);
+        b.bridge(30, 40, 11, plate); b.cell(35, 8.6);
+        b.sparks([[32, 10.3], [34, 10.3], [36, 10.3], [38, 10.3]]);
+        b.ground(40, 50, 11); b.pad(42, 11);
+        const a = b.socket(44, 11, 6);
+        b.fan(49.1, 11, 8, a);
+        b.ground(50, 70, 4); b.cell(52, 1.2);
+        const c = b.socket(53, 4, 3);
+        b.door(56, -3, 4, c);
+        b.exit(66, 4);
+      },
+    },
+    {
+      name: "Starlight", theme: "night", par: 80,
+      build(b) {
+        b.ground(0, 8, 9); b.start(2, 9);
+        b.hook(11, 3); b.hook(15, 3.5, { ay: 0.8 }); b.hook(19, 3);
+        b.sparks([[11, 7.6], [15, 8.2], [19, 7.6]]);
+        b.ground(22, 30, 9); b.cell(24, 7.4);
+        b.spring(28, 9);
+        b.ground(31, 52, 4);
+        b.sparker(35, 4, 0); b.cell(35, 0.6);
+        b.pad(41, 4);
+        const a = b.socket(39, 4, 4);
+        b.door(44, -3, 4, a);
+        b.hook(55, -1.5, { ax: 1, sp: 0.8 }); b.hook(59.5, -1, { ax: 1, sp: 0.8, ph: Math.PI }); b.cell(57, 3);
+        b.ground(64, 80, 6); b.exit(76, 6);
+      },
+    },
+  ];
+
+  /* ---------------- building a room into a grid ---------------- */
+  function buildRoom(n) {
+    const def = ROOMS[n % ROOMS.length];
+    const b = builder();
+    def.build(b);
+    const L = b.L;
+    L.n = n;
+    L.def = def;
+    L.theme = THEMES[def.theme];
+    L.par = def.par;
+    let width = 0;
+    for (const s of L.solids) width = Math.max(width, s[1]);
+    L.w = width + 6;
+    L.h = BOTTOM + 1;
+    L.top = -6;
+    const rows = L.h - L.top;
+    L.grid = new Uint8Array(L.w * rows);
+    const set = (x, y, v) => {
+      if (x < 0 || x >= L.w || y < L.top || y >= L.h) return;
+      L.grid[(y - L.top) * L.w + x] = v;
     };
-    const nextY = (from) => clamp(from + [-1, 0, 0, 1, 1.5][Math.floor(r() * 5)], -3, 1.5);
-    const cellAt = new Set([Math.floor(segs * 0.25), Math.floor(segs * 0.55), Math.floor(segs * 0.85)]);
-    for (let i = 0; i < segs; i++) {
-      const kind = kinds[Math.floor(r() * kinds.length)];
-      const start = x;
-      if (kind === "gap1" || kind === "moving") {
-        const g = between(3.2, 4.4 + Math.min(n, 4) * 0.4);
-        const hx = x + g / 2;
-        const y2 = nextY(y);
-        // High enough that the whole swing clears both ledges.
-        const hy = Math.min(y, y2) - between(5.8, 6.2);
-        const hook = { bx: hx, by: hy, ax: kind === "moving" ? between(0.9, 1.4) : 0, ay: 0, sp: between(0.9, 1.3), ph: r() * TAU };
-        L.hooks.push(hook);
-        arcSparks(hx, hy, 4.6, 5);
-        x += g;
-        y = y2;
-        const len = between(4, 7.5);
-        L.platforms.push({ x0: x, x1: x + len, y });
-        x += len;
-      } else if (kind === "gap2" || kind === "chain") {
-        const count = kind === "chain" ? 3 : 2;
-        const g = kind === "chain" ? between(11, 12.5) : between(7, 8.8);
-        const y2 = nextY(y);
-        for (let k = 0; k < count; k++) {
-          const hx = x + (g * (k + 1)) / (count + 1);
-          const hy = Math.min(y, y2) - between(5.8, 6.2);
-          L.hooks.push({ bx: hx, by: hy, ax: 0, ay: kind === "chain" && k === 1 ? 0.6 : 0, sp: 1.1, ph: r() * TAU });
-          arcSparks(hx, hy, 4.6, 3);
-        }
-        x += g;
-        y = y2;
-        const len = between(4.5, 7.5);
-        L.platforms.push({ x0: x, x1: x + len, y });
-        x += len;
-      } else if (kind === "step") {
-        const up = r() < 0.55;
-        y = clamp(up ? y - 1 : y + 1.5, -3, 1.5);
-        const len = between(3.5, 6);
-        L.platforms.push({ x0: x, x1: x + len, y });
-        L.sparks.push({ x: x + len / 2, y: y - 1.2, got: false });
-        x += len;
-      } else if (kind === "puddle") {
-        const w = between(1.4, 1.8);
-        const before = 2;
-        const len = before + w + between(3, 5);
-        // The puddle sits in the platform this segment adds.
-        L.platforms.push({ x0: x, x1: x + len, y });
-        L.puddles.push({ x0: x + before, x1: x + before + w, y });
-        L.hooks.push({ bx: x + before + w / 2, by: y - 5.9, ax: 0, ay: 0, sp: 1, ph: 0 });
-        L.sparks.push({ x: x + before + w / 2, y: y - 2.1, got: false });
-        x += len;
-      } else if (kind === "spring") {
-        const len = between(3.5, 5);
-        L.platforms.push({ x0: x, x1: x + len, y });
-        L.springs.push({ x: x + len - 1.1, y, squash: 0 });
-        x += len + 1.2;
-        y = clamp(y - 3.5, -6, 1.5);
-        const len2 = between(4.5, 6.5);
-        L.platforms.push({ x0: x, x1: x + len2, y });
-        L.sparks.push({ x: x - 0.4, y: y - 3.2, got: false }, { x: x + 0.6, y: y - 2.4, got: false });
-        x += len2;
-      }
-      if (cellAt.has(i)) {
-        const last = L.hooks[L.hooks.length - 1];
-        // A cell is a little out of the way: high on the swing, or on the ledge.
-        if (last && last.bx > start) L.cells.push({ x: last.bx + 1.6, y: last.by + 2.4, got: false });
-        else L.cells.push({ x: x - 1.5, y: y - 1.6, got: false });
-      }
-      if (i % 5 === 4) {
-        const p = L.platforms[L.platforms.length - 1];
-        L.pads.push({ x: p.x0 + 1.2, y: p.y, on: false });
-      }
-    }
-    const endLen = 8;
-    const last = L.platforms[L.platforms.length - 1];
-    if (x - last.x1 > 0.01 || last.x1 < x) L.platforms.push({ x0: x, x1: x + endLen, y });
-    else last.x1 += endLen;
-    L.outlet = { x: x + 5, y };
-    L.end = x + endLen;
-    L.par = segs * 3.4 + 6;
+    for (const [x0, x1, y0, y1] of L.solids) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) set(x, y, 1);
+    for (const [x0, x1, y] of L.ledges) for (let x = x0; x < x1; x++) set(x, y, 2);
+    for (const wtr of L.water) for (let x = wtr.x0; x < wtr.x1; x++) set(x, wtr.y, 0);
+    // Below the last row the ground carries on (and holes stay holes), so a
+    // tall screen never shows sky under the floor.
+    L.tile = (x, y) => (x < 0 || x >= L.w || y < L.top ? 0 : L.grid[(Math.min(y, L.h - 1) - L.top) * L.w + x]);
+    L.crates = L.crates.map((c) => ({ x: c.hx + 0.5, y: c.hy, w: 0.96, h: 0.96, vx: 0, vy: 0, ground: false, hx: c.hx + 0.5, hy: c.hy, isCrate: true }));
     return L;
   }
 
   /* ---------------- the world ---------------- */
-  let world = null;     // the running level
-  let holding = false;
-  let mode = "demo";    // demo | play | bench
-  let auto = false;     // the autopilot also plays a real game (tests)
-  const stats = { sparks: 0, cells: 0, wraps: 0, rooms: 0 };
+  let world = null;
+  let mode = "demo";        // demo | play | bench
+  let auto = false;
+  const stats = { sparks: 0, cells: 0, wraps: 0, rooms: 0, stars: 0 };
   let batteries = BATTERIES;
   let roomTime = 0;
+  const input = { left: false, right: false, jump: false, cord: false, jumpPressed: false, cordPressed: false, cordReleased: false };
 
-  function newWorld(n, opts) {
-    const L = buildLevel(n, opts);
+  function clearInput() {
+    input.left = input.right = input.jump = input.cord = false;
+    input.jumpPressed = input.cordPressed = input.cordReleased = false;
+    touches.clear();
+  }
+
+  function newWorld(n) {
+    const L = buildRoom(n);
     world = {
       L,
       t: 0,
       acc: 0,
-      p: { x: 0, y: 0, vx: 0, vy: 0, grounded: true, face: "happy", faceT: 0, walk: 0, squash: 1, tilt: 0, look: 1, worried: false },
-      rope: null,      // { hook, L, angle, wraps, accum, shoot }
-      flick: 0,
+      p: {
+        x: L.start.x, y: L.start.y, w: PW, h: PH, vx: 0, vy: 0, ground: true, on: null, dir: 1,
+        coyote: 0, buffer: 0, squash: 1, tilt: 0, walk: 0, face: "happy", worried: false, pushing: false,
+        ant: [0, 0], antV: [0, 0],
+      },
+      rope: null,
+      plug: null,
+      finishing: 0,
       zap: 0,
       invuln: 0,
-      plug: 0,
-      checkpoint: { x: 1.5, y: 0 },
-      cam: { x: 2, y: -2 },
+      flick: 0,
+      checkpoint: { x: L.start.x, y: L.start.y },
+      cam: { x: L.start.x + 2, y: L.start.y - 2 },
+      dust: [],
+      wind: [],
+      cord: null,
+      progress: { x: L.start.x, t: 0 },
       trail: [],
     };
+    world.cord = makeCord();
     roomTime = 0;
     return world;
+  }
+
+  /* ---------------- solids and collisions ---------------- */
+  function doorRect(d) {
+    if (d.open >= 0.98) return null;
+    const h = (d.y1 - d.y0) * (1 - d.open);
+    return { x: d.x + 0.08, y: d.y0, w: 0.84, h };
+  }
+  function bridgeRect(br) {
+    if (br.ext <= 0.02) return null;
+    return { x: br.x0, y: br.y, w: (br.x1 - br.x0) * br.ext, h: 0.4 };
+  }
+
+  // Calls fn(rect) for every solid that overlaps the box [l,r]x[t,b].
+  // A rect is {x,y,w,h, oneWay?, crate?, lift?}.
+  const tmpRect = { x: 0, y: 0, w: 1, h: 1, oneWay: false, crate: null, lift: null };
+  function eachSolid(l, t, r, b, self, fn) {
+    const L = world.L;
+    for (let ty = Math.floor(t); ty <= Math.floor(b - EPS); ty++) {
+      for (let tx = Math.floor(l); tx <= Math.floor(r - EPS); tx++) {
+        const v = L.tile(tx, ty);
+        if (!v) continue;
+        tmpRect.x = tx; tmpRect.y = ty; tmpRect.w = 1; tmpRect.h = v === 2 ? 0.3 : 1;
+        tmpRect.oneWay = v === 2; tmpRect.crate = null; tmpRect.lift = null;
+        if (fn(tmpRect) === false) return;
+      }
+    }
+    if (l < 0) {
+      // The room's left edge is a wall.
+      if (fn({ x: -5, y: -50, w: 5, h: 100, oneWay: false, crate: null, lift: null }) === false) return;
+    }
+    for (const d of L.doors) {
+      const rc = doorRect(d);
+      if (rc && rc.x < r && rc.x + rc.w > l && rc.y < b && rc.y + rc.h > t && fn({ ...rc, oneWay: false }) === false) return;
+    }
+    for (const br of L.bridges) {
+      const rc = bridgeRect(br);
+      if (rc && rc.x < r && rc.x + rc.w > l && rc.y < b && rc.y + rc.h > t && fn({ ...rc, oneWay: false }) === false) return;
+    }
+    for (const lf of L.lifts) {
+      const rc = { x: lf.x0, y: lf.y, w: lf.x1 - lf.x0, h: 0.45, oneWay: false, lift: lf };
+      if (rc.x < r && rc.x + rc.w > l && rc.y < b && rc.y + rc.h > t && fn(rc) === false) return;
+    }
+    for (const c of L.crates) {
+      if (c === self) continue;
+      const rc = { x: c.x - c.w / 2, y: c.y - c.h, w: c.w, h: c.h, oneWay: false, crate: c };
+      if (rc.x < r && rc.x + rc.w > l && rc.y < b && rc.y + rc.h > t && fn(rc) === false) return;
+    }
+  }
+
+  function overlaps(bd, rc) {
+    return bd.x - bd.w / 2 < rc.x + rc.w - EPS && bd.x + bd.w / 2 > rc.x + EPS && bd.y - bd.h < rc.y + rc.h - EPS && bd.y > rc.y + EPS;
+  }
+
+  function boxFree(bd, x, y) {
+    let free = true;
+    eachSolid(x - bd.w / 2, y - bd.h, x + bd.w / 2, y, bd, (rc) => {
+      if (rc.oneWay) return true;
+      if (x - bd.w / 2 < rc.x + rc.w - EPS && x + bd.w / 2 > rc.x + EPS && y - bd.h < rc.y + rc.h - EPS && y > rc.y + EPS) {
+        free = false;
+        return false;
+      }
+      return true;
+    });
+    return free;
+  }
+
+  function moveX(bd, dx) {
+    if (!dx) return false;
+    bd.x += dx;
+    let hit = false;
+    eachSolid(bd.x - bd.w / 2, bd.y - bd.h, bd.x + bd.w / 2, bd.y, bd, (rc) => {
+      if (rc.oneWay || !overlaps(bd, rc)) return true;
+      // A low lip (a lift resting on the floor) is stepped up onto.
+      if (bd.ground && rc.y < bd.y && bd.y - rc.y <= 0.55 && boxFree(bd, bd.x, rc.y)) {
+        bd.y = rc.y;
+        return true;
+      }
+      let left = rc.x;
+      let width = rc.w;
+      if (rc.crate) {
+        const c = rc.crate;
+        // Telly shoves a crate along instead of stopping.
+        if (!bd.isCrate && bd.ground && c.ground) {
+          moveX(c, dx > 0 ? bd.x + bd.w / 2 - (c.x - c.w / 2) : bd.x - bd.w / 2 - (c.x + c.w / 2));
+          bd.pushing = true;
+        }
+        left = c.x - c.w / 2;
+        width = c.w;
+        if (!(bd.x - bd.w / 2 < left + width - EPS && bd.x + bd.w / 2 > left + EPS)) return true;
+      }
+      if (dx > 0) bd.x = left - bd.w / 2;
+      else bd.x = left + width + bd.w / 2;
+      hit = true;
+      return true;
+    });
+    if (hit) bd.vx = 0;
+    return hit;
+  }
+
+  function moveY(bd, dy) {
+    if (!dy) return false;
+    const prev = bd.y;
+    bd.y += dy;
+    let hit = false;
+    eachSolid(bd.x - bd.w / 2, bd.y - bd.h, bd.x + bd.w / 2, bd.y, bd, (rc) => {
+      if (rc.oneWay) {
+        if (dy > 0 && prev <= rc.y + 0.02 && bd.y > rc.y && bd.x + bd.w / 2 > rc.x + EPS && bd.x - bd.w / 2 < rc.x + rc.w - EPS) {
+          bd.y = rc.y;
+          hit = true;
+        }
+        return true;
+      }
+      if (!overlaps(bd, rc)) return true;
+      if (dy > 0) bd.y = rc.y;
+      else bd.y = rc.y + rc.h + bd.h;
+      hit = true;
+      return true;
+    });
+    if (hit) bd.vy = 0;
+    return hit;
+  }
+
+  // What a body stands on: a solid, a ledge, a lift or a crate (or null).
+  function standingOn(bd) {
+    let on = null;
+    eachSolid(bd.x - bd.w / 2 + 0.02, bd.y - 0.01, bd.x + bd.w / 2 - 0.02, bd.y + 0.04, bd, (rc) => {
+      if (Math.abs(rc.y - bd.y) < 0.03) {
+        on = rc.lift || rc.crate || { ground: true };
+        return false;
+      }
+      return true;
+    });
+    return on;
+  }
+
+  // Pushed out of anything that moved into it (a closing door, a lift).
+  function depenetrate(bd) {
+    for (let k = 0; k < 3; k++) {
+      let moved = false;
+      eachSolid(bd.x - bd.w / 2, bd.y - bd.h, bd.x + bd.w / 2, bd.y, bd, (rc) => {
+        if (rc.oneWay || !overlaps(bd, rc)) return true;
+        const up = bd.y - rc.y;
+        const down = rc.y + rc.h - (bd.y - bd.h);
+        const left = bd.x + bd.w / 2 - rc.x;
+        const right = rc.x + rc.w - (bd.x - bd.w / 2);
+        const m = Math.min(up + 0.0, down + 0.2, left, right);
+        if (m === up) { bd.y = rc.y; if (bd.vy > 0) bd.vy = 0; }
+        else if (m === left) bd.x = rc.x - bd.w / 2;
+        else if (m === right) bd.x = rc.x + rc.w + bd.w / 2;
+        else { bd.y = rc.y + rc.h + bd.h; if (bd.vy < 0) bd.vy = 0; }
+        moved = true;
+        return false;
+      });
+      if (!moved) return;
+    }
+  }
+
+  function solidAt(x, y) {
+    let hit = false;
+    eachSolid(x - 0.01, y - 0.01, x + 0.01, y + 0.01, null, (rc) => {
+      if (rc.oneWay) return true;
+      hit = true;
+      return false;
+    });
+    return hit;
+  }
+
+  // The first floor under (x, y) within `depth` tiles, or null.
+  function floorBelow(x, y, depth) {
+    const L = world.L;
+    for (let ty = Math.floor(y); ty <= Math.floor(y + depth); ty++) {
+      const v = L.tile(Math.floor(x), ty);
+      if (v && ty >= y - 0.01) return ty;
+    }
+    for (const lf of L.lifts) if (x >= lf.x0 && x <= lf.x1 && lf.y >= y - 0.01 && lf.y <= y + depth) return lf.y;
+    for (const br of L.bridges) {
+      const rc = bridgeRect(br);
+      if (rc && x >= rc.x && x <= rc.x + rc.w && rc.y >= y - 0.01 && rc.y <= y + depth) return rc.y;
+    }
+    return null;
+  }
+
+  /* ---------------- machines ---------------- */
+  function powered(by) {
+    if (!by) return false;
+    if (by.kind === "plate") return by.pressed;
+    return by.latched || by.left > 0;
   }
 
   function hookPos(h, t) {
@@ -220,9 +559,82 @@
   }
 
   function center(p) {
-    return { x: p.x, y: p.y - BODY * 0.52 };
+    return { x: p.x, y: p.y - PH * 0.52 };
   }
 
+  function updateMachines(dt) {
+    const w = world;
+    const L = w.L;
+    for (const s of L.sockets) {
+      if (s.left > 0) {
+        const before = s.left;
+        s.left = Math.max(0, s.left - dt);
+        if (mode === "play" && s.left > 0 && s.left < 1.6 && Math.floor(before * 3) !== Math.floor(s.left * 3)) kit.sound.play("tap");
+      }
+    }
+    const bodies = [w.p, ...L.crates];
+    for (const pl of L.plates) {
+      pl.pressed = bodies.some((bd) => Math.abs(bd.y - pl.y) < 0.06 && Math.min(bd.x + bd.w / 2, pl.x1) - Math.max(bd.x - bd.w / 2, pl.x0) > 0.3);
+      pl.depth = lerp(pl.depth, pl.pressed ? 1 : 0, Math.min(1, dt * 14));
+    }
+    for (const d of L.doors) {
+      const was = d.open;
+      d.open = clamp(d.open + (powered(d.by) ? 3 : -2.2) * dt, 0, 1);
+      if (was === 0 && d.open > 0 && mode !== "bench") kit.sound.play("whoosh");
+    }
+    for (const br of L.bridges) br.ext = clamp(br.ext + (powered(br.by) ? 2.2 : -2.2) * dt, 0, 1);
+    for (const lf of L.lifts) {
+      // A powered lift waits for a rider, then goes up while the power lasts.
+      const riding = bodies.some((bd) => standingOn(bd) === lf);
+      const target = powered(lf.by) && (riding || lf.y < lf.yDown - 0.01) ? lf.yUp : lf.yDown;
+      const dy = clamp(target - lf.y, -3 * dt, 3 * dt);
+      lf.dy = dy;
+      if (dy) {
+        // Whatever stands on the lift rides it.
+        for (const bd of bodies) if (standingOn(bd) === lf) bd.y += dy;
+        lf.y += dy;
+      }
+    }
+    for (const f of L.fans) {
+      f.spin = lerp(f.spin, powered(f.by) ? 1 : 0, Math.min(1, dt * 3));
+      f.a += f.spin * dt * 22;
+    }
+    for (const c of L.crates) stepCrate(c, dt);
+    for (const sp of L.sparkers) {
+      const t = (w.t + sp.phase) % 2.6;
+      sp.active = t < 1.1;
+      sp.warn = t > 2.15;
+    }
+  }
+
+  function inWind(bd) {
+    for (const f of world.L.fans) {
+      if (f.spin < 0.3) continue;
+      if (Math.abs(bd.x - f.x) < 0.85 && bd.y <= f.y + 0.01 && bd.y - bd.h * 0.5 > f.y - f.h) return f;
+    }
+    return null;
+  }
+
+  function stepCrate(c, dt) {
+    const f = inWind(c);
+    c.vy = Math.min(MAX_FALL, c.vy + G_DOWN * dt);
+    if (f) c.vy = Math.max(-WIND_MAX * 0.6, c.vy - WIND * f.spin * dt);
+    if (c.ground) c.vx *= Math.max(0, 1 - dt * 12);
+    moveX(c, c.vx * dt);
+    moveY(c, c.vy * dt);
+    const on = standingOn(c);
+    c.ground = !!on;
+    if (c.ground && c.vy > 0) c.vy = 0;
+    depenetrate(c);
+    if (c.y > BOTTOM + 3) {
+      // A crate lost down a hole comes back where it started.
+      c.x = c.hx;
+      c.y = c.hy;
+      c.vx = c.vy = 0;
+    }
+  }
+
+  /* ---------------- Telly ---------------- */
   function bestHook() {
     const w = world;
     const c = center(w.p);
@@ -230,11 +642,11 @@
     let bestScore = Infinity;
     for (const h of w.L.hooks) {
       const hp = hookPos(h, w.t);
-      if (hp.y > c.y - 0.6) continue;               // only hooks above
-      if (hp.x < c.x - 1.6) continue;               // not ones far behind
+      if (hp.y > c.y - 0.6) continue;
+      if ((hp.x - c.x) * w.p.dir < -1.6) continue;
       const d = Math.hypot(hp.x - c.x, hp.y - c.y);
       if (d > RANGE) continue;
-      const score = Math.abs(hp.x - (c.x + 2.4)) + d * 0.35;
+      const score = Math.abs(hp.x - (c.x + w.p.dir * 2.2)) + d * 0.35;
       if (score < bestScore) {
         bestScore = score;
         best = h;
@@ -243,241 +655,227 @@
     return best;
   }
 
+  function nearSocket() {
+    const p = world.p;
+    if (!p.ground) return null;
+    for (const s of world.L.sockets) if (Math.abs(s.x - p.x) < 1.3 && Math.abs(s.y - p.y) < 0.6) return s;
+    return null;
+  }
+
+  function nearExit() {
+    const p = world.p;
+    const e = world.L.exit;
+    return p.ground && Math.abs(e.x - p.x) < 1.6 && Math.abs(e.y - p.y) < 0.6;
+  }
+
   function attach(h) {
     const w = world;
-    const c = center(w.p);
+    const p = w.p;
+    const c = center(p);
     const hp = hookPos(h, w.t);
     const d = Math.hypot(hp.x - c.x, hp.y - c.y);
     const angle = Math.atan2(c.x - hp.x, c.y - hp.y);
     const len = clamp(d, LMIN, LMAX);
-    w.rope = { hook: h, L: len, angle, wraps: 0, accum: 0, shoot: 0.09 };
-    w.p.grounded = false;
-    // The throw yanks Telly forward: enough to swing well past the hook,
-    // however slowly it was rolling when the cord caught.
-    if (angle < SWING_TO) {
-      const tx = Math.cos(angle);
-      const ty = -Math.sin(angle);
-      const vt = w.p.vx * tx + w.p.vy * ty;
-      const need = Math.sqrt(Math.max(0, 2 * G * len * (Math.cos(angle) - Math.cos(SWING_TO))));
+    w.rope = { hook: h, L: len, angle, wraps: 0, accum: 0, shoot: 0.08, still: 0 };
+    p.ground = false;
+    p.dir = hp.x >= c.x ? 1 : -1;
+    // The throw yanks Telly forward, enough to swing well past the hook.
+    if (angle * p.dir < SWING_TO) {
+      const tx = Math.cos(angle) * p.dir;
+      const ty = -Math.sin(angle) * p.dir;
+      const vt = p.vx * tx + p.vy * ty;
+      const need = Math.sqrt(Math.max(0, 2 * G_UP * len * (Math.cos(Math.abs(angle)) - Math.cos(SWING_TO))));
       if (vt < need) {
-        w.p.vx += (need - vt) * tx;
-        w.p.vy += (need - vt) * ty;
+        p.vx += (need - vt) * tx;
+        p.vy += (need - vt) * ty;
       }
     }
     kit.sound.play("whoosh");
     kit.haptic(10);
   }
 
-  function release() {
+  function release(boost) {
     const w = world;
     if (!w.rope) return;
     const p = w.p;
-    // A little extra on the way out makes the fling feel springy.
     p.vx *= 1.06;
     p.vy *= 1.06;
+    if (boost) {
+      p.vy = Math.min(p.vy, 0) - 5;
+      p.vx += p.dir * 1;
+    }
+    p.flung = true;
     if (w.rope.wraps > 0) kit.sound.play("pop", 1.2);
     w.rope = null;
   }
 
-  function hop() {
-    const p = world.p;
-    if (!p.grounded) return;
-    p.vy = HOP;
-    p.grounded = false;
-    p.squash = 0.8;
-    kit.sound.play("bounce", 1.2);
-  }
-
-  function press() {
+  function cordPress() {
     const w = world;
-    if (!w || w.zap > 0 || w.plug > 0) return;
-    holding = true;
+    if (!w || w.zap > 0 || w.plug || w.finishing > 0) return;
     if (w.rope) return;
+    const s = nearSocket();
+    if (s) {
+      w.plug = { target: s, t: 0, dur: 0.45, exit: false };
+      kit.sound.play("pop", 0.8);
+      return;
+    }
+    if (nearExit()) {
+      w.plug = { target: w.L.exit, t: 0, dur: 0.6, exit: true };
+      kit.sound.play("start");
+      return;
+    }
     const h = bestHook();
     if (h) attach(h);
-    else if (w.p.grounded) hop();
-    else w.flick = 0.25;
-  }
-  function letGo() {
-    holding = false;
-    if (world) release();
+    else w.flick = 0.3;
   }
 
-  /* ---------------- stepping ---------------- */
-  function platformAt(x, yTop, below) {
-    // The platform whose top is under x, nearest beneath yTop within `below` tiles.
-    let best = null;
-    for (const pl of world.L.platforms) {
-      if (x < pl.x0 || x > pl.x1) continue;
-      if (pl.y < yTop - 0.05 || pl.y > yTop + below) continue;
-      if (!best || pl.y < best.y) best = pl;
-    }
-    return best;
+  function hop(v) {
+    const p = world.p;
+    p.vy = v;
+    p.flung = v === SPRING_V;
+    p.ground = false;
+    p.coyote = 0;
+    p.buffer = 0;
+    p.squash = 0.78;
+    dust(p.x, p.y, 5, 0);
+    kit.sound.play("bounce", 1.2);
   }
 
   function step(dt) {
     const w = world;
     const p = w.p;
+    const L = w.L;
     w.t += dt;
     if (w.invuln > 0) w.invuln -= dt;
     if (w.flick > 0) w.flick -= dt;
-    if (w.plug > 0) {
-      w.plug -= dt;
-      if (w.plug <= 0) roomDone();
+    updateMachines(dt);
+    stepDust(dt);
+    if (w.finishing > 0) {
+      w.finishing -= dt;
+      p.face = "love";
+      if (w.finishing <= 0) roomDone();
+      stepCord(dt);
       return;
     }
     if (w.zap > 0) {
       w.zap -= dt;
       if (w.zap <= 0) respawn();
+      stepCord(dt);
       return;
     }
-    if (mode !== "play" || auto) autopilot();
-    const prevY = p.y;
+    if (mode !== "play" || auto) autopilot(dt);
 
-    if (p.grounded && !w.rope) {
-      // Roll along, but wait at the edge of a gap or a puddle for the player.
-      let target = WALK;
-      const ahead = p.x + HW + 0.15;
-      const under = platformAt(p.x, p.y, 0.05);
-      if (under && ahead > under.x1) {
-        const next = platformAt(under.x1 + 0.5, p.y - 1.6, 3.2) || platformAt(under.x1 + 0.2, p.y - 1.6, 3.2);
-        if (!next) target = 0;
-      }
-      for (const pd of w.L.puddles) {
-        if (Math.abs(pd.y - p.y) < 0.1 && p.x + HW + 0.25 > pd.x0 && p.x < pd.x0) target = 0;
-      }
-      // Little steps up are hopped automatically.
-      for (const pl of w.L.platforms) {
-        if (pl.x0 > p.x && pl.x0 - (p.x + HW) < 0.3 && pl.y < p.y - 0.05 && pl.y > p.y - 1.45) {
-          hop();
-          break;
-        }
-      }
-      p.worried = target === 0;
-      p.vx = lerp(p.vx, target, Math.min(1, dt * 8));
-      if (target === 0 && under) p.x = Math.min(p.x, under.x1 - 0.2);
-    } else {
-      p.worried = false;
-      p.vx *= 1 - dt * 0.05;
-      // Off a hop, Telly keeps rolling forward through the air, so a wall it
-      // bumped on the way up does not leave it hopping on the spot.
-      if (!w.rope && p.vx < WALK) p.vx = Math.min(WALK, p.vx + dt * 10);
-    }
+    if (input.cordPressed) cordPress();
+    if (input.cordReleased) release(false);
+    input.cordPressed = input.cordReleased = false;
+    if (input.jumpPressed) p.buffer = BUFFER;
+    input.jumpPressed = false;
+    p.buffer = Math.max(0, p.buffer - dt);
+    p.coyote = p.ground ? COYOTE : Math.max(0, p.coyote - dt);
 
-    p.vy += G * dt;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-
-    if (w.rope) {
-      const r = w.rope;
-      if (r.shoot > 0) r.shoot -= dt;
-      const hp = hookPos(r.hook, w.t);
-      const c = center(p);
-      let dx = c.x - hp.x;
-      let dy = c.y - hp.y;
-      const d = Math.hypot(dx, dy) || 0.0001;
-      if (d > r.L) {
-        // Taut: back onto the circle, outward speed removed.
-        const nx = dx / d;
-        const ny = dy / d;
-        p.x -= nx * (d - r.L);
-        p.y -= ny * (d - r.L);
-        const out = p.vx * nx + p.vy * ny;
-        if (out > 0) {
-          p.vx -= out * nx;
-          p.vy -= out * ny;
-        }
-        dx = nx * r.L;
-        dy = ny * r.L;
-      }
-      const angle = Math.atan2(dx, dy);
-      // Holding pushes along the swing, the way a kid pumps a swing, so it
-      // grows until Telly goes right round the hook.
-      if (holding) {
-        const tx = Math.cos(angle);
-        const ty = -Math.sin(angle);
-        const vt = p.vx * tx + p.vy * ty;
-        const dir = vt >= 0 ? 1 : -1;
-        p.vx += tx * PUMP * dt * dir;
-        p.vy += ty * PUMP * dt * dir;
-      }
-      let delta = angle - r.angle;
-      if (delta > Math.PI) delta -= TAU;
-      if (delta < -Math.PI) delta += TAU;
-      r.angle = angle;
-      r.accum += delta;
-      if (Math.abs(r.accum) >= TAU) {
-        r.accum -= Math.sign(r.accum) * TAU;
-        r.wraps += 1;
-        stats.wraps += 1;
-        const before = r.L;
-        r.L = Math.max(LMIN, r.L * 0.82);
-        // Shorter cord, same angular momentum: Telly speeds up.
-        const k = before / r.L;
-        p.vx *= Math.min(1.25, k);
-        p.vy *= Math.min(1.25, k);
-        if (mode === "play") kit.addScore(25);
-        const s = toScreen(hp.x, hp.y);
-        kit.fx.text(s.x, s.y - 20, "WRAP! +25", { color: "#ffe066", size: 20 });
-        kit.sound.play("combo", r.wraps);
-        kit.haptic(15);
-      }
-      p.tilt = lerp(p.tilt, clamp(-dx * 0.18, -0.6, 0.6), 0.2);
-    } else {
-      p.tilt = lerp(p.tilt, clamp(p.vx * 0.02, -0.15, 0.15), 0.1);
-    }
-
-    // Landing on platform tops, then the walls of the ones beside.
-    const wasGrounded = p.grounded;
-    p.grounded = false;
-    for (const pl of w.L.platforms) {
-      if (p.x + HW * 0.6 < pl.x0 || p.x - HW * 0.6 > pl.x1) continue;
-      if (prevY <= pl.y + 0.02 && p.y >= pl.y && p.vy >= 0) {
-        p.y = pl.y;
-        p.vy = 0;
-        p.grounded = true;
-        if (w.rope) release();
-        if (!wasGrounded) {
-          p.squash = 0.78;
-          kit.sound.play("thud");
-        }
-      }
-    }
-    for (const pl of w.L.platforms) {
-      if (p.y <= pl.y + 0.05) continue;
-      if (p.x + HW > pl.x0 && p.x - HW < pl.x1) {
-        const left = p.x + HW - pl.x0;
-        const right = pl.x1 - (p.x - HW);
-        if (left < right) {
-          p.x = pl.x0 - HW;
-          if (p.vx > 0) p.vx = 0;
+    if (w.plug) {
+      w.plug.t += dt;
+      p.vx = 0;
+      if (w.plug.t >= w.plug.dur && !w.plug.done) {
+        w.plug.done = true;
+        const s = w.plug.target;
+        if (w.plug.exit) {
+          w.finishing = 1.3;
+          kit.sound.play("win");
+          kit.haptic(25);
+          const sc = toScreen(s.x, s.y - 1.6);
+          kit.fx.burst(sc.x, sc.y, ["#ffe066", "#fff4b8", "#7dffb0"], 30, { size: 5, shape: "star", speed: 240 });
         } else {
-          p.x = pl.x1 + HW;
-          if (p.vx < 0) p.vx = 0;
+          if (s.time > 0) s.left = s.time;
+          else s.latched = true;
+          kit.sound.play("coin");
+          kit.haptic(15);
+          const sc = toScreen(s.x, s.y - 1);
+          kit.fx.burst(sc.x, sc.y, ["#ffe066", "#7fd6ff"], 14, { size: 4, speed: 180 });
         }
       }
+      if (w.plug.t >= w.plug.dur + (w.plug.exit ? 9 : 0.3)) w.plug = null;
     }
-    p.squash = lerp(p.squash, 1, Math.min(1, dt * 10));
-    if (p.grounded) p.walk += Math.abs(p.vx) * dt * 4;
 
-    // Springs, puddles, pads, the outlet.
-    for (const s of w.L.springs) {
+    const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    const prevGround = p.ground;
+    p.pushing = false;
+    if (!w.rope && !w.plug) {
+      if (dir) p.dir = dir;
+      const top = p.wasPushing ? PUSH_RUN : RUN;
+      if (dir) {
+        const acc = p.ground ? ACC_GROUND : ACC_AIR;
+        // Turning round is snappy.
+        const boost = Math.sign(p.vx) !== dir && p.vx !== 0 ? 1.8 : 1;
+        p.vx = clamp(p.vx + dir * acc * boost * dt, -Math.max(top, Math.abs(p.vx) * (p.ground ? 0 : 1)), Math.max(top, Math.abs(p.vx) * (p.ground ? 0 : 1)));
+        if (p.ground && Math.abs(p.vx) > top) p.vx = Math.sign(p.vx) * top;
+      } else if (p.ground) {
+        const f = FRICTION * dt;
+        p.vx = Math.abs(p.vx) <= f ? 0 : p.vx - Math.sign(p.vx) * f;
+      } else {
+        p.vx *= 1 - dt * 0.6;
+      }
+      if (p.buffer > 0 && (p.ground || p.coyote > 0)) hop(JUMP_V);
+    } else if (w.rope && p.buffer > 0) {
+      p.buffer = 0;
+      release(true);
+    }
+
+    // Gravity, with a lighter pull while rising and holding jump (or flung
+    // by a spring or the cord, which always fly their full height).
+    if (p.vy >= 0) p.flung = false;
+    const rising = p.vy < 0 && (input.jump || p.flung) && !w.rope;
+    p.vy = Math.min(MAX_FALL, p.vy + (rising || w.rope ? G_UP : G_DOWN) * dt);
+    const fan = !w.rope ? inWind(p) : null;
+    if (fan) {
+      p.vy = Math.max(-WIND_MAX, p.vy - WIND * fan.spin * dt);
+      if (Math.random() < 0.3) dust(p.x + (Math.random() - 0.5) * 0.6, p.y, 1, -3);
+    }
+
+    if (w.rope) pumpRope(dir, dt);
+
+    moveX(p, p.vx * dt);
+    p.wasPushing = p.pushing;
+    moveY(p, p.vy * dt);
+    if (w.rope) constrainRope(dt);
+    depenetrate(p);
+    const on = standingOn(p);
+    p.ground = !!on && p.vy >= -0.01;
+    p.on = on;
+    if (p.ground && !prevGround) {
+      if (w.rope) release(false);
+      p.squash = 0.76;
+      dust(p.x, p.y, 7, 0);
+      kit.sound.play("thud");
+    }
+    if (p.ground && p.vy > 0) p.vy = 0;
+    p.squash = lerp(p.squash, 1, Math.min(1, dt * 10));
+    if (p.ground) {
+      p.walk += Math.abs(p.vx) * dt * 3.2;
+      if (Math.abs(p.vx) > 4 && Math.random() < dt * 14) dust(p.x - p.dir * 0.3, p.y, 1, -p.dir * 1.5);
+    }
+    p.tilt = lerp(p.tilt, w.rope ? clamp(-(center(p).x - hookPos(w.rope.hook, w.t).x) * 0.18, -0.6, 0.6) : clamp(p.vx * 0.018, -0.12, 0.12), 0.2);
+    // Antennae spring about as Telly speeds up and slows down.
+    for (let i = 0; i < 2; i++) {
+      const force = -p.ant[i] * 160 - p.antV[i] * 9 - (p.vx - (p.lastVx || 0)) * (i ? 3 : 2.4);
+      p.antV[i] += force * dt;
+      p.ant[i] = clamp(p.ant[i] + p.antV[i] * dt, -0.7, 0.7);
+    }
+    p.lastVx = p.vx;
+    p.worried = p.ground && !dir && !w.rope && floorBelow(p.x + p.dir * 0.7, p.y, 3) === null;
+
+    // Springs, pads, pickups and hazards.
+    for (const s of L.springs) {
       if (s.squash > 0) s.squash -= dt * 3;
-      if (p.grounded && Math.abs(p.x - s.x) < 0.5 && Math.abs(p.y - s.y) < 0.05) {
-        p.vy = SPRING;
-        p.grounded = false;
+      if (p.ground && Math.abs(p.x - s.x) < 0.5 && Math.abs(p.y - s.y) < 0.05) {
+        hop(SPRING_V);
         s.squash = 1;
         kit.sound.play("bounce", 0.8);
         kit.haptic(14);
       }
     }
-    if (w.invuln <= 0) {
-      for (const pd of w.L.puddles) {
-        if (p.grounded && Math.abs(p.y - pd.y) < 0.05 && p.x > pd.x0 + 0.15 && p.x < pd.x1 - 0.15) zap("Splash! Telly fizzed.");
-      }
-    }
-    for (const pad of w.L.pads) {
-      if (!pad.on && p.grounded && Math.abs(p.x - pad.x) < 0.7 && Math.abs(p.y - pad.y) < 0.05) {
+    for (const pad of L.pads) {
+      if (!pad.on && p.ground && Math.abs(p.x - pad.x) < 0.7 && Math.abs(p.y - pad.y) < 0.05) {
         pad.on = true;
         w.checkpoint = { x: pad.x, y: pad.y };
         if (mode === "play") kit.toast("Checkpoint!", "#7dffb0");
@@ -485,7 +883,7 @@
       }
     }
     const c = center(p);
-    for (const s of w.L.sparks) {
+    for (const s of L.sparks) {
       if (!s.got && Math.hypot(s.x - c.x, s.y - c.y) < 0.75) {
         s.got = true;
         stats.sparks += 1;
@@ -495,13 +893,14 @@
         kit.sound.play("coin");
       }
     }
-    for (const cell of w.L.cells) {
+    for (const cell of L.cells) {
       if (!cell.got && Math.hypot(cell.x - c.x, cell.y - c.y) < 0.85) {
         cell.got = true;
         stats.cells += 1;
         if (mode === "play") {
           kit.addScore(50);
-          kit.toast("Power cell! +50", "#7dffb0");
+          kit.toast(`Power cell ${L.cells.filter((k) => k.got).length}/3! +50`, "#7dffb0");
+          updateHud();
         }
         const sc = toScreen(cell.x, cell.y);
         kit.fx.burst(sc.x, sc.y, ["#7dffb0", "#ffffff"], 18, { size: 5, shape: "star" });
@@ -509,34 +908,101 @@
         kit.haptic(20);
       }
     }
-    const out = w.L.outlet;
-    if (p.grounded && p.x >= out.x - 0.7 && Math.abs(p.y - out.y) < 0.1) {
-      p.vx = 0;
-      p.x = out.x - 0.7;
-      w.plug = 1.3;
-      p.face = "love";
-      kit.sound.play("start");
-      kit.haptic(25);
+    if (w.invuln <= 0) {
+      for (const wtr of L.water) {
+        if (p.x > wtr.x0 + 0.1 && p.x < wtr.x1 - 0.1 && p.y > wtr.y + 0.3) zap("Splash! Telly fizzed.", true);
+      }
+      for (const sp of L.sparkers) {
+        if (sp.active && Math.abs(p.x - sp.x - 0.5) < 0.35 + p.w / 2 && p.y > sp.y - sp.h && p.y - p.h < sp.y) zap("Bzzt! Mind the sparks.");
+      }
     }
-    if (p.y > deathLine()) zap("Down the gap! Telly lost a battery.");
+    if (p.y > BOTTOM + 3) zap("Down the hole! Telly lost a battery.");
     if (mode === "bench" && w.trail.length < 2000) w.trail.push({ x: c.x, y: c.y });
+    stepCord(dt);
   }
 
-  function deathLine() {
-    let lowest = -Infinity;
-    for (const pl of world.L.platforms) lowest = Math.max(lowest, pl.y);
-    return lowest + 9;
+  function pumpRope(dir, dt) {
+    const w = world;
+    const p = w.p;
+    const r = w.rope;
+    const hp = hookPos(r.hook, w.t);
+    const c = center(p);
+    const angle = Math.atan2(c.x - hp.x, c.y - hp.y);
+    if (dir) {
+      // ◀ ▶ push along the swing, the way a kid pumps a swing.
+      const tx = Math.cos(angle);
+      const ty = -Math.sin(angle);
+      p.vx += tx * PUMP * dt * dir;
+      p.vy += ty * PUMP * dt * dir;
+      p.dir = dir;
+    } else if (input.cord) {
+      // Holding on with no direction keeps the swing going the way it goes.
+      const tx = Math.cos(angle);
+      const ty = -Math.sin(angle);
+      const vt = p.vx * tx + p.vy * ty;
+      const s = vt >= 0 ? 1 : -1;
+      p.vx += tx * PUMP * 0.5 * dt * s;
+      p.vy += ty * PUMP * 0.5 * dt * s;
+    }
+    if (r.shoot > 0) r.shoot -= dt;
   }
 
-  function zap(why) {
+  function constrainRope() {
+    const w = world;
+    const p = w.p;
+    const r = w.rope;
+    const hp = hookPos(r.hook, w.t);
+    const c = center(p);
+    let dx = c.x - hp.x;
+    let dy = c.y - hp.y;
+    const d = Math.hypot(dx, dy) || 0.0001;
+    if (d > r.L) {
+      const nx = dx / d;
+      const ny = dy / d;
+      p.x -= nx * (d - r.L);
+      p.y -= ny * (d - r.L);
+      const out = p.vx * nx + p.vy * ny;
+      if (out > 0) {
+        p.vx -= out * nx;
+        p.vy -= out * ny;
+      }
+      dx = nx * r.L;
+      dy = ny * r.L;
+    }
+    const angle = Math.atan2(dx, dy);
+    let delta = angle - r.angle;
+    if (delta > Math.PI) delta -= TAU;
+    if (delta < -Math.PI) delta += TAU;
+    r.angle = angle;
+    r.accum += delta;
+    r.still = Math.hypot(p.vx, p.vy) < 0.8 ? r.still + STEP : 0;
+    if (Math.abs(r.accum) >= TAU) {
+      r.accum -= Math.sign(r.accum) * TAU;
+      r.wraps += 1;
+      stats.wraps += 1;
+      const before = r.L;
+      r.L = Math.max(LMIN, r.L * 0.82);
+      const k = Math.min(1.25, before / r.L);
+      p.vx *= k;
+      p.vy *= k;
+      if (mode === "play") kit.addScore(25);
+      const s = toScreen(hp.x, hp.y);
+      kit.fx.text(s.x, s.y - 20, "WRAP! +25", { color: "#ffe066", size: 20 });
+      kit.sound.play("combo", r.wraps);
+      kit.haptic(15);
+    }
+  }
+
+  function zap(why, splash) {
     const w = world;
     if (w.zap > 0) return;
     w.rope = null;
+    w.plug = null;
     w.zap = 0.9;
     w.p.face = "zap";
     const c = center(w.p);
-    const s = toScreen(c.x, Math.min(c.y, deathLine() - 4));
-    kit.fx.burst(s.x, s.y, ["#ffe066", "#7fd6ff", "#ffffff"], 20, { size: 4, speed: 260 });
+    const s = toScreen(c.x, Math.min(c.y, BOTTOM));
+    kit.fx.burst(s.x, s.y, splash ? ["#7fd6ff", "#ffffff", "#4fb6ff"] : ["#ffe066", "#7fd6ff", "#ffffff"], 20, { size: 4, speed: 260 });
     kit.sound.play("bad");
     kit.shake(9, 0.3);
     kit.haptic(40);
@@ -552,78 +1018,233 @@
       kit.gameOver({
         reason: "Out of battery!",
         emoji: "🪫",
-        stats: [["Rooms", stats.rooms], ["Sparks", stats.sparks], ["Wraps", stats.wraps]],
+        stats: [["Rooms", stats.rooms], ["Stars", stats.stars], ["Sparks", stats.sparks], ["Wraps", stats.wraps]],
       });
       return;
     }
     const p = w.p;
     p.x = w.checkpoint.x;
     p.y = w.checkpoint.y;
-    p.vx = 0;
-    p.vy = 0;
-    p.grounded = true;
+    p.vx = p.vy = 0;
+    p.ground = true;
     p.face = "happy";
     w.invuln = 1.2;
+    w.cord = makeCord();
+  }
+
+  const STAR_KEY = "fk:family-telly-swing:stars";
+  function bestStars() {
+    try {
+      return JSON.parse(localStorage.getItem(STAR_KEY) || "{}") || {};
+    } catch (_) {
+      return {};
+    }
   }
 
   function roomDone() {
     const w = world;
     stats.rooms += 1;
     if (mode === "play") {
-      const fast = Math.max(0, Math.round((w.L.par - roomTime) * 4));
       const cells = w.L.cells.filter((c) => c.got).length;
-      kit.addScore(200 + fast);
-      kit.toast(`${w.L.theme.name} done! +${200 + fast}${cells === 3 ? " · all 3 cells ⭐" : ""}`, "#7dffb0");
+      const quick = roomTime <= w.L.par;
+      const stars = 1 + (cells === 3 ? 1 : 0) + (quick ? 1 : 0);
+      stats.stars += stars;
+      const fast = Math.max(0, Math.round((w.L.par - roomTime) * 4));
+      const points = 200 + stars * 100 + fast;
+      kit.addScore(points);
+      kit.toast(`${"★".repeat(stars)}${"☆".repeat(3 - stars)} ${w.L.def.name}! +${points}`, "#7dffb0");
+      const best = bestStars();
+      const key = String(w.L.n % ROOMS.length);
+      if ((best[key] || 0) < stars) {
+        best[key] = stars;
+        try {
+          localStorage.setItem(STAR_KEY, JSON.stringify(best));
+        } catch (_) {
+          /* storage blocked */
+        }
+      }
       if (batteries < BATTERIES) batteries += 1;
     }
     const next = w.L.n + 1;
-    if (mode === "demo") newWorld(next % 3, { segments: 8 });
-    else if (mode === "bench") newWorld(next, { segments: 12 });
+    if (mode === "demo") newWorld(next % 2);
+    else if (mode === "bench") newWorld(1);
     else newWorld(next);
-    placeAtStart();
     updateHud();
+    if (mode === "play") kit.toast(`Room ${next + 1}: ${world.L.def.name}`, "#ffe9c4");
   }
 
-  function placeAtStart() {
-    const p = world.p;
-    p.x = 1.5;
-    p.y = 0;
-    p.grounded = true;
-    world.cam.x = p.x + 2;
-    world.cam.y = p.y - 2;
-  }
-
-  /* ---------------- the autopilot: the attract screen and the benchmark ---------------- */
-  function autopilot() {
+  /* ---------------- the autopilot: attract screen, benchmark and tests ---------------- */
+  function autopilot(dt) {
     const w = world;
     const p = w.p;
+    input.left = false;
+    input.right = true;
+    input.jump = p.vy < 0 && !p.ground;
     if (w.rope) {
       const hp = hookPos(w.rope.hook, w.t);
       const c = center(p);
-      const ahead = c.x - hp.x;
-      // On the benchmark every third hook is wrapped round, for the show.
-      if (mode === "bench" && w.rope.wraps < 1 && w.L.hooks.indexOf(w.rope.hook) % 3 === 0) {
-        holding = true;
-        return;
-      }
-      w.rope.still = Math.hypot(p.vx, p.vy) < 0.8 ? (w.rope.still || 0) + STEP : 0;
-      if ((ahead > w.rope.L * 0.55 && p.vy < 1.5) || ahead > w.rope.L * 0.85 || w.rope.still > 1.5) {
-        holding = false;
-        release();
+      input.cord = true;
+      if (mode === "bench" && w.rope.wraps < 1 && w.L.hooks.indexOf(w.rope.hook) % 3 === 0) return;
+      const landing = floorBelow(c.x + 1, p.y, 6) !== null;
+      if ((c.x - hp.x > w.rope.L * 0.5 && p.vy < 1.5) || c.x - hp.x > w.rope.L * 0.85 || w.rope.still > 1.5 || (landing && c.x > hp.x + 0.5 && p.vy < 0)) {
+        input.cord = false;
+        input.cordReleased = true;
       }
       return;
     }
-    holding = false;
+    input.cord = false;
+    if (w.plug) return;
+    const s = nearSocket();
+    if (s && !powered(s) && s.x > p.x - 1.2) {
+      input.cordPressed = true;
+      return;
+    }
+    if (nearExit()) {
+      input.cordPressed = true;
+      return;
+    }
     const h = bestHook();
-    if (h) {
-      const hp = hookPos(h, w.t);
-      if ((p.grounded && hp.x - p.x < 4.4) || (!p.grounded && hp.x > p.x + 0.8 && p.vy > -2)) {
-        attach(h);
-        holding = true;
-        return;
+    const hp = h ? hookPos(h, w.t) : null;
+    if (p.ground) {
+      const ahead = p.x + 0.9;
+      const gap = floorBelow(ahead, p.y, 4) === null || w.L.water.some((q) => ahead > q.x0 && ahead < q.x1 && Math.abs(q.y - p.y) < 0.1);
+      const wall = solidAt(p.x + 0.6, p.y - 0.5) || solidAt(p.x + 0.6, p.y - 1.4);
+      if (gap || wall) {
+        if (gap && hp && hp.x > p.x + 0.5) input.cordPressed = true;
+        else input.jumpPressed = true;
+      }
+    } else if (p.vy > 1 && hp && hp.x > p.x + 0.8 && floorBelow(p.x, p.y, 3) === null) {
+      input.cordPressed = true;
+    }
+    // On the attract screen a stuck Telly hops on to the next pad.
+    const prog = w.progress;
+    if (p.x > prog.x + 0.4) {
+      prog.x = p.x;
+      prog.t = 0;
+    } else {
+      prog.t += dt;
+      if (prog.t > 4 && (mode !== "play" || auto)) {
+        prog.t = 0;
+        w.skips = (w.skips || 0) + 1;
+        const next = w.L.pads.find((pd) => pd.x > p.x + 1) || w.L.exit;
+        p.x = next.x;
+        p.y = next.y;
+        p.vx = p.vy = 0;
+        w.rope = null;
+        prog.x = p.x;
       }
     }
-    if (p.grounded && p.worried && !h) hop();
+  }
+
+  /* ---------------- the power cord: a little chain of points ---------------- */
+  const CORD_N = 14;
+  function makeCord() {
+    const pts = [];
+    const p = world ? world.p : { x: 2, y: 11, dir: 1 };
+    for (let i = 0; i < CORD_N; i++) pts.push({ x: p.x - p.dir * (0.4 + i * 0.1), y: p.y - 0.25, px: p.x - p.dir * (0.4 + i * 0.1), py: p.y - 0.25 });
+    return pts;
+  }
+
+  function cordAnchor(p) {
+    return { x: p.x - p.dir * 0.4, y: p.y - 0.3 };
+  }
+
+  function stepCord(dt) {
+    const w = world;
+    const pts = w.cord;
+    const p = w.p;
+    const a = cordAnchor(p);
+    let endPin = null;
+    let seg = 0.11;
+    if (w.rope) {
+      const hp = hookPos(w.rope.hook, w.t);
+      const k = w.rope.shoot > 0 ? 1 - w.rope.shoot / 0.08 : 1;
+      endPin = { x: lerp(a.x, hp.x, k), y: lerp(a.y, hp.y, k) };
+      seg = (Math.hypot(hp.x - a.x, hp.y - a.y) * 1.02) / (CORD_N - 1);
+    } else if (w.plug) {
+      const s = w.plug.target;
+      const k = clamp(w.plug.t / (w.plug.dur * 0.8), 0, 1);
+      const sx = s.x + (w.plug.exit ? -0.45 : -0.32);
+      const sy = s.y - (w.plug.exit ? 1.25 : 0.72);
+      endPin = { x: lerp(pts[CORD_N - 1].x, sx, k), y: lerp(pts[CORD_N - 1].y, sy, k) };
+      seg = Math.max(0.11, (Math.hypot(sx - a.x, sy - a.y) * 1.15) / (CORD_N - 1));
+    } else if (w.flick > 0) {
+      const k = Math.sin((1 - w.flick / 0.3) * Math.PI);
+      endPin = { x: a.x + p.dir * 2.6 * k, y: a.y - 1.6 * k };
+      seg = 0.2;
+    }
+    const g = 30 * dt * dt;
+    for (let i = 1; i < CORD_N; i++) {
+      const q = pts[i];
+      const vx = (q.x - q.px) * 0.96;
+      const vy = (q.y - q.py) * 0.96;
+      q.px = q.x;
+      q.py = q.y;
+      q.x += vx;
+      q.y += vy + g;
+    }
+    for (let it = 0; it < 6; it++) {
+      pts[0].x = a.x;
+      pts[0].y = a.y;
+      if (endPin) {
+        pts[CORD_N - 1].x = endPin.x;
+        pts[CORD_N - 1].y = endPin.y;
+      }
+      for (let i = 0; i < CORD_N - 1; i++) {
+        const q = pts[i];
+        const r = pts[i + 1];
+        const dx = r.x - q.x;
+        const dy = r.y - q.y;
+        const d = Math.hypot(dx, dy) || 0.0001;
+        const diff = (d - seg) / d;
+        const wq = i === 0 ? 0 : 0.5;
+        const wr = i + 1 === CORD_N - 1 && endPin ? 0 : 0.5;
+        const sum = wq + wr || 1;
+        q.x += dx * diff * (wq / sum);
+        q.y += dy * diff * (wq / sum);
+        r.x -= dx * diff * (wr / sum);
+        r.y -= dy * diff * (wr / sum);
+      }
+      // The trailing cord lies on the floor rather than through it.
+      for (let i = 1; i < CORD_N; i++) {
+        const q = pts[i];
+        const v = w.L.tile(Math.floor(q.x), Math.floor(q.y));
+        if (v === 1) q.y = Math.floor(q.y) - 0.02;
+      }
+    }
+  }
+
+  /* ---------------- dust and wind, in world units ---------------- */
+  function dust(x, y, n, vx) {
+    const w = world;
+    for (let i = 0; i < n && w.dust.length < 160; i++) {
+      w.dust.push({ x: x + (Math.random() - 0.5) * 0.6, y: y - 0.05, vx: vx + (Math.random() - 0.5) * 2.4, vy: -Math.random() * 2.2, life: 0.5 + Math.random() * 0.3, max: 0.8, r: 0.06 + Math.random() * 0.1 });
+    }
+  }
+  function stepDust(dt) {
+    const w = world;
+    for (let i = w.dust.length - 1; i >= 0; i--) {
+      const d = w.dust[i];
+      d.life -= dt;
+      if (d.life <= 0) {
+        w.dust.splice(i, 1);
+        continue;
+      }
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.vx *= 1 - dt * 3;
+      d.vy += 3 * dt;
+    }
+    for (const f of w.L.fans) {
+      if (f.spin > 0.3 && Math.random() < dt * 30 * f.spin && w.wind.length < 120) {
+        w.wind.push({ x: f.x + (Math.random() - 0.5) * 1.3, y: f.y - 0.2, len: 0.4 + Math.random() * 0.7, top: f.y - f.h, v: 7 + Math.random() * 5 });
+      }
+    }
+    for (let i = w.wind.length - 1; i >= 0; i--) {
+      const s = w.wind[i];
+      s.y -= s.v * dt;
+      if (s.y < s.top) w.wind.splice(i, 1);
+    }
   }
 
   /* ---------------- drawing ---------------- */
@@ -632,60 +1253,233 @@
   let W = 1;
   let H = 1;
   let T = 32;
+  let DPR = 1;
+  let safeBottom = 0;
   let skyCache = null;
   let skyKey = "";
+  let vignette = null;
+  const patterns = {};
+  let glowCache = {};
 
   function onResize(v) {
     view = v;
     ctx = v.ctx;
     W = v.w;
     H = v.h;
-    T = Math.max(26, Math.min(W / 10.5, H / 11));
+    DPR = v.dpr;
+    T = Math.max(26, Math.min(W / 10, H / 10.5));
     skyKey = "";
+    vignette = null;
+    for (const k of Object.keys(patterns)) delete patterns[k];
+    glowCache = {};
+    const probe = document.getElementById("ts-safe");
+    safeBottom = probe ? parseFloat(getComputedStyle(probe).paddingBottom) || 0 : 0;
+  }
+
+  function anchorY() {
+    return showPad ? 0.48 : 0.58;
   }
 
   function toScreen(x, y) {
     const cam = world ? world.cam : { x: 0, y: 0 };
-    return { x: (x - cam.x) * T + W * 0.42, y: (y - cam.y) * T + H * 0.58 };
+    return { x: (x - cam.x) * T + W * 0.42, y: (y - cam.y) * T + H * anchorY() };
   }
 
   function sky(theme) {
     const key = `${theme.name}:${W}x${H}`;
     if (key === skyKey && skyCache) return skyCache;
     const c = document.createElement("canvas");
-    c.width = Math.max(1, Math.round(W));
-    c.height = Math.max(1, Math.round(H));
+    c.width = Math.max(1, Math.round(W * Math.min(DPR, 1.5)));
+    c.height = Math.max(1, Math.round(H * Math.min(DPR, 1.5)));
     const g = c.getContext("2d");
+    g.scale(c.width / W, c.height / H);
     const grad = g.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, theme.sky[0]);
     grad.addColorStop(1, theme.sky[1]);
     g.fillStyle = grad;
     g.fillRect(0, 0, W, H);
-    if (theme.night) {
-      const r = rng(77);
-      for (let i = 0; i < 90; i++) {
-        g.globalAlpha = 0.4 + r() * 0.6;
+    const r = rngFn(77);
+    if (theme.night || theme.dim) {
+      for (let i = 0; i < (theme.night ? 110 : 40); i++) {
+        g.globalAlpha = 0.3 + r() * 0.6;
         g.fillStyle = "#fff";
         g.beginPath();
-        g.arc(r() * W, r() * H * 0.8, 0.6 + r() * 1.6, 0, TAU);
+        g.arc(r() * W, r() * H * 0.7, 0.5 + r() * 1.5, 0, TAU);
         g.fill();
       }
       g.globalAlpha = 1;
+    }
+    // A soft light: the sun, a window or the moon.
+    const lx = W * 0.78;
+    const ly = H * 0.18;
+    const lg = g.createRadialGradient(lx, ly, 0, lx, ly, Math.max(W, H) * 0.55);
+    lg.addColorStop(0, theme.night ? "rgba(255,247,200,0.35)" : "rgba(255,255,240,0.55)");
+    lg.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = lg;
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = theme.night ? "#fff6c9" : theme.dim ? "#ffd9a0" : "rgba(255,255,255,0.85)";
+    g.beginPath();
+    g.arc(lx, ly, Math.min(W, H) * 0.06, 0, TAU);
+    g.fill();
+    if (theme.night) {
+      g.fillStyle = theme.sky[0];
+      g.beginPath();
+      g.arc(lx + Math.min(W, H) * 0.025, ly - Math.min(W, H) * 0.015, Math.min(W, H) * 0.052, 0, TAU);
+      g.fill();
     }
     skyCache = c;
     skyKey = key;
     return c;
   }
 
-  function hills(color, factor, amp, base, period) {
+  function rngFn(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function getVignette() {
+    if (vignette) return vignette;
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(W / 2));
+    c.height = Math.max(1, Math.round(H / 2));
+    const g = c.getContext("2d");
+    const grad = g.createRadialGradient(c.width / 2, c.height / 2, Math.min(c.width, c.height) * 0.35, c.width / 2, c.height / 2, Math.max(c.width, c.height) * 0.75);
+    grad.addColorStop(0, "rgba(10,5,30,0)");
+    grad.addColorStop(1, "rgba(10,5,30,0.45)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, c.width, c.height);
+    vignette = c;
+    return c;
+  }
+
+  // A soft round glow, cached per colour, drawn with "lighter".
+  function glow(x, y, r, color, alpha) {
+    let c = glowCache[color];
+    if (!c) {
+      c = document.createElement("canvas");
+      c.width = c.height = 64;
+      const g = c.getContext("2d");
+      const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, color);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+      glowCache[color] = c;
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(c, x - r, y - r, r * 2, r * 2);
+    ctx.restore();
+  }
+
+  // The texture inside blocks: two tiles square, in tile units.
+  function texture(theme) {
+    if (patterns[theme.name] !== undefined) return patterns[theme.name];
+    const px = Math.max(16, Math.round(T * Math.min(DPR, 2)));
+    const c = document.createElement("canvas");
+    c.width = c.height = px * 2;
+    const g = c.getContext("2d");
+    g.fillStyle = theme.body;
+    g.fillRect(0, 0, px * 2, px * 2);
+    g.strokeStyle = theme.line;
+    g.fillStyle = theme.line;
+    g.lineWidth = Math.max(1, px * 0.05);
+    const r = rngFn(theme.name.length * 31);
+    g.globalAlpha = 0.45;
+    if (theme.tex === "planks") {
+      for (let i = 0; i < 4; i++) {
+        g.beginPath();
+        g.moveTo(0, i * px * 0.5);
+        g.lineTo(px * 2, i * px * 0.5);
+        g.stroke();
+        const sx = ((i * 0.7) % 2) * px;
+        g.beginPath();
+        g.moveTo(sx, i * px * 0.5);
+        g.lineTo(sx, (i + 1) * px * 0.5);
+        g.stroke();
+      }
+    } else if (theme.tex === "tiles") {
+      for (let i = 0; i <= 2; i++) {
+        g.beginPath();
+        g.moveTo(i * px, 0); g.lineTo(i * px, px * 2);
+        g.moveTo(0, i * px); g.lineTo(px * 2, i * px);
+        g.stroke();
+      }
+      g.globalAlpha = 0.12;
+      g.fillStyle = "#ffffff";
+      g.fillRect(px * 0.08, px * 0.08, px * 0.4, px * 0.15);
+      g.fillRect(px * 1.08, px * 1.08, px * 0.4, px * 0.15);
+    } else if (theme.tex === "metal") {
+      for (let i = 0; i <= 2; i++) {
+        g.beginPath();
+        g.moveTo(0, i * px); g.lineTo(px * 2, i * px);
+        g.stroke();
+      }
+      g.globalAlpha = 0.6;
+      for (const [x, y] of [[0.15, 0.15], [0.85, 0.15], [1.15, 1.15], [1.85, 1.15], [0.15, 1.15], [0.85, 1.15], [1.15, 0.15], [1.85, 0.15]]) {
+        g.beginPath();
+        g.arc(x * px, y * px, px * 0.05, 0, TAU);
+        g.fill();
+      }
+    } else if (theme.tex === "bricks") {
+      for (let row = 0; row < 4; row++) {
+        const y = row * px * 0.5;
+        g.beginPath();
+        g.moveTo(0, y); g.lineTo(px * 2, y);
+        g.stroke();
+        const off = row % 2 ? px * 0.5 : 0;
+        for (let x = off; x < px * 2; x += px) {
+          g.beginPath();
+          g.moveTo(x, y); g.lineTo(x, y + px * 0.5);
+          g.stroke();
+        }
+      }
+    } else {
+      for (let i = 0; i < 26; i++) {
+        g.globalAlpha = 0.2 + r() * 0.35;
+        g.beginPath();
+        g.ellipse(r() * px * 2, r() * px * 2, px * (0.04 + r() * 0.08), px * (0.03 + r() * 0.05), r() * 3, 0, TAU);
+        g.fill();
+      }
+    }
+    g.globalAlpha = 1;
+    let pat = null;
+    try {
+      pat = ctx.createPattern(c, "repeat");
+      if (pat && pat.setTransform && window.DOMMatrix) pat.setTransform(new DOMMatrix().scale(1 / px));
+      else pat = null;
+    } catch (_) {
+      pat = null;
+    }
+    patterns[theme.name] = pat;
+    return pat;
+  }
+
+  function farLayer(theme, factor, color, base, amp, period, seed) {
     const cam = world.cam;
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(0, H);
     const off = cam.x * T * factor;
-    for (let sx = 0; sx <= W + 20; sx += 16) {
+    const yOff = (cam.y * T * factor) * 0.3;
+    const r = rngFn(seed);
+    const bumps = [];
+    for (let i = 0; i < 16; i++) bumps.push(r());
+    for (let sx = 0; sx <= W + 24; sx += 12) {
       const u = (sx + off) / (period * T);
-      const y = H * base - Math.sin(u * TAU) * amp * T - Math.sin(u * TAU * 2.3 + 1) * amp * 0.4 * T + cam.y * T * factor * 0.3;
+      const k = Math.floor(u);
+      const f = u - k;
+      const hA = bumps[((k % 16) + 16) % 16];
+      const hB = bumps[(((k + 1) % 16) + 16) % 16];
+      const sm = f * f * (3 - 2 * f);
+      const y = H * base - (lerp(hA, hB, sm) * amp * T) - Math.sin(u * TAU * 2.1) * amp * 0.12 * T - yOff;
       ctx.lineTo(sx, y);
     }
     ctx.lineTo(W, H);
@@ -693,262 +1487,573 @@
     ctx.fill();
   }
 
-  function motes(theme, count) {
+  function drawBackground(theme) {
+    ctx.drawImage(sky(theme), 0, 0, W, H);
+    farLayer(theme, 0.12, theme.far, 0.7, 3, 7, 11);
+    // Light shafts from a window, indoors.
+    if (!theme.night && theme.tex !== "soil") {
+      ctx.save();
+      ctx.globalAlpha = 0.09;
+      ctx.fillStyle = theme.light;
+      const off = (-world.cam.x * T * 0.2) % (W * 0.9);
+      for (let i = 0; i < 3; i++) {
+        const x = off + i * W * 0.45 + W * 0.2;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x + W * 0.1, 0);
+        ctx.lineTo(x + W * 0.32, H);
+        ctx.lineTo(x + W * 0.14, H);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    farLayer(theme, 0.35, theme.mid, 0.86, 2.2, 5, 29);
+    // Floating motes.
     const t = world.t;
-    ctx.fillStyle = theme.mote;
+    ctx.fillStyle = theme.light;
+    const count = bench.active ? 140 : 30;
     for (let i = 0; i < count; i++) {
-      const seedX = (i * 97.13) % 1;
-      const seedY = (i * 57.71) % 1;
-      const x = ((seedX * W * 1.5 - world.cam.x * T * 0.3 + t * 10 * (0.5 + seedY)) % (W + 40) + W + 40) % (W + 40) - 20;
-      const y = (seedY * H + Math.sin(t * 0.8 + i) * 12) % H;
-      ctx.globalAlpha = 0.35 + 0.35 * Math.sin(t * 2 + i);
+      const sxs = (i * 97.13) % 1;
+      const sys = (i * 57.71) % 1;
+      const x = ((((sxs * W * 1.5 - world.cam.x * T * 0.3 + t * 10 * (0.5 + sys)) % (W + 40)) + W + 40) % (W + 40)) - 20;
+      const y = (sys * H + Math.sin(t * 0.8 + i) * 12) % H;
+      ctx.globalAlpha = 0.25 + 0.3 * Math.sin(t * 2 + i);
       ctx.beginPath();
-      ctx.arc(x, y, 1.5 + (i % 3), 0, TAU);
+      ctx.arc(x, y, 1.2 + (i % 3), 0, TAU);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
-  // Each room's backdrop: a few props that slide by slower than the floor.
-  function props(theme) {
+  // Everything below draws in tile units: ctx is translated and scaled by T.
+  function visibleCols() {
     const cam = world.cam;
-    const f = 0.55;
-    const period = 9 * T;
-    const baseY = H * 0.84 - cam.y * T * 0.15;
-    const first = Math.floor((cam.x * T * f - W) / period) - 1;
-    ctx.save();
-    ctx.globalAlpha = theme.night ? 0.55 : 0.32;
-    ctx.fillStyle = theme.line;
-    ctx.strokeStyle = theme.line;
-    ctx.lineWidth = Math.max(2, T * 0.08);
-    if (theme.night) {
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = "#fff6c9";
-      ctx.beginPath();
-      ctx.arc(W * 0.78, H * 0.16, T * 0.9, 0, TAU);
-      ctx.fill();
-      ctx.fillStyle = theme.sky[0];
-      ctx.beginPath();
-      ctx.arc(W * 0.78 + T * 0.35, H * 0.16 - T * 0.2, T * 0.75, 0, TAU);
-      ctx.fill();
-      ctx.restore();
-      return;
+    const x0 = Math.floor(cam.x - (W * 0.42) / T) - 2;
+    const x1 = Math.ceil(cam.x + (W * 0.58) / T) + 2;
+    const y0 = Math.floor(cam.y - (H * anchorY()) / T) - 2;
+    const y1 = Math.ceil(cam.y + (H * (1 - anchorY())) / T) + 2;
+    return { x0, x1, y0, y1 };
+  }
+
+  function drawTiles(theme) {
+    const L = world.L;
+    const v = visibleCols();
+    const pat = texture(theme);
+    const d = 0.16;
+    const solid = (x, y) => L.tile(x, y) === 1;
+    const yA = Math.max(L.top, v.y0);
+    const yB = v.y1;
+    // Shadows cast under overhangs, one gradient a row.
+    for (let y = yA; y <= yB; y++) {
+      let g = null;
+      for (let x = v.x0; x <= v.x1; x++) {
+        const t = L.tile(x, y);
+        if (!t || L.tile(x, y + 1)) continue;
+        const top = y + (t === 2 ? 0.3 : 1);
+        if (!g) {
+          g = ctx.createLinearGradient(0, y + 1, 0, y + 1.7);
+          g.addColorStop(0, "rgba(20,10,40,0.28)");
+          g.addColorStop(1, "rgba(20,10,40,0)");
+          ctx.fillStyle = g;
+        }
+        ctx.fillRect(x, top, 1, y + 1.7 - top);
+      }
     }
-    for (let k = first; k < first + Math.ceil(W / period) + 3; k++) {
-      const x = k * period - cam.x * T * f + W * 0.5;
-      const kind = ((k % 2) + 2) % 2;
-      const n = theme.name;
-      ctx.beginPath();
-      if (n === "Living Room") {
-        if (kind === 0) {
-          ctx.fillRect(x - T * 0.06, baseY - T * 3.2, T * 0.12, T * 3.2);
-          ctx.moveTo(x - T * 0.7, baseY - T * 3.2);
-          ctx.lineTo(x + T * 0.7, baseY - T * 3.2);
-          ctx.lineTo(x + T * 0.45, baseY - T * 4.1);
-          ctx.lineTo(x - T * 0.45, baseY - T * 4.1);
-          ctx.fill();
-        } else {
-          ctx.strokeRect(x - T * 0.9, baseY - T * 6, T * 1.8, T * 1.3);
-          ctx.strokeRect(x + T * 1.3, baseY - T * 5.6, T * 0.9, T * 1.1);
-        }
-      } else if (n === "Kitchen") {
-        if (kind === 0) {
-          ctx.strokeRect(x - T * 1.2, baseY - T * 6.4, T * 2.4, T * 1.8);
-          ctx.moveTo(x, baseY - T * 6.4);
-          ctx.lineTo(x, baseY - T * 4.6);
-          ctx.moveTo(x - T * 1.2, baseY - T * 5.5);
-          ctx.lineTo(x + T * 1.2, baseY - T * 5.5);
-          ctx.stroke();
-        } else {
-          // Wall cabinets (not a hanging lamp, which would look like a hook).
-          ctx.strokeRect(x - T * 1.3, baseY - T * 7, T * 1.25, T * 1.5);
-          ctx.strokeRect(x + T * 0.05, baseY - T * 7, T * 1.25, T * 1.5);
-          ctx.fillRect(x - T * 0.25, baseY - T * 6.3, T * 0.12, T * 0.4);
-          ctx.fillRect(x + T * 0.15, baseY - T * 6.3, T * 0.12, T * 0.4);
-        }
-      } else if (n === "Garden") {
-        if (kind === 0) {
-          ctx.fillRect(x - T * 0.05, baseY - T * 2.4, T * 0.1, T * 2.4);
-          for (let i = 0; i < 8; i++) {
-            const a = (i / 8) * TAU;
-            ctx.moveTo(x, baseY - T * 2.6);
-            ctx.arc(x + Math.cos(a) * T * 0.35, baseY - T * 2.6 + Math.sin(a) * T * 0.35, T * 0.2, 0, TAU);
-          }
-          ctx.fill();
-        } else {
-          ctx.fillRect(x - T * 0.15, baseY - T * 2.2, T * 0.3, T * 2.2);
-          ctx.arc(x, baseY - T * 2.9, T * 1.1, 0, TAU);
-          ctx.fill();
-        }
-      } else if (n === "Garage") {
-        if (kind === 0) {
-          ctx.fillRect(x - T * 1.4, baseY - T * 4, T * 2.8, T * 0.14);
-          ctx.fillRect(x - T * 1.1, baseY - T * 4.8, T * 0.8, T * 0.8);
-          ctx.fillRect(x + T * 0.1, baseY - T * 4.6, T * 0.6, T * 0.6);
-        } else {
-          ctx.arc(x, baseY - T * 0.9, T * 0.9, 0, TAU);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(x, baseY - T * 0.9, T * 0.4, 0, TAU);
-          ctx.stroke();
-        }
-      } else if (n === "Rooftops") {
-        if (kind === 0) {
-          ctx.fillRect(x - T * 0.4, baseY - T * 4.5, T * 0.8, T * 1.6);
-          ctx.fillRect(x - T * 0.55, baseY - T * 4.7, T * 1.1, T * 0.25);
-        } else {
-          ctx.moveTo(x, baseY - T * 3);
-          ctx.lineTo(x, baseY - T * 5.2);
-          ctx.moveTo(x - T * 0.7, baseY - T * 4.8);
-          ctx.lineTo(x + T * 0.7, baseY - T * 4.8);
-          ctx.moveTo(x - T * 0.45, baseY - T * 4.4);
-          ctx.lineTo(x + T * 0.45, baseY - T * 4.4);
-          ctx.stroke();
+    // The back faces give the blocks depth.
+    ctx.fillStyle = theme.side;
+    for (let y = yA; y <= yB; y++) {
+      let run = -1;
+      for (let x = v.x0; x <= v.x1 + 1; x++) {
+        const s = x <= v.x1 && solid(x, y);
+        if (s && run < 0) run = x;
+        if (!s && run >= 0) {
+          ctx.fillRect(run + d, y - d, x - run, 1);
+          run = -1;
         }
       }
     }
-    ctx.restore();
+    // Fronts.
+    ctx.fillStyle = pat || theme.body;
+    for (let y = yA; y <= yB; y++) {
+      let run = -1;
+      for (let x = v.x0; x <= v.x1 + 1; x++) {
+        const s = x <= v.x1 && solid(x, y);
+        if (s && run < 0) run = x;
+        if (!s && run >= 0) {
+          ctx.fillRect(run, y, x - run, 1.01);
+          run = -1;
+        }
+      }
+    }
+    // Top surfaces: carpet, tiles, grass, roof.
+    for (let y = yA; y <= yB; y++) {
+      for (let x = v.x0; x <= v.x1; x++) {
+        if (!solid(x, y) || solid(x, y - 1)) continue;
+        ctx.fillStyle = theme.top;
+        ctx.fillRect(x, y, 1.01, 0.24);
+        ctx.fillStyle = theme.topHi;
+        ctx.fillRect(x + d * 0.5, y - d, 1, d);
+        if (theme.grass) {
+          ctx.fillStyle = theme.top;
+          const r = (x * 13 + y * 7) % 5;
+          ctx.beginPath();
+          for (let k = 0; k < 4; k++) {
+            const gx = x + 0.12 + k * 0.25 + (r * 0.03);
+            ctx.moveTo(gx - 0.06, y + 0.2);
+            ctx.lineTo(gx + 0.02, y - 0.1 - ((k + r) % 3) * 0.05);
+            ctx.lineTo(gx + 0.08, y + 0.2);
+          }
+          ctx.fill();
+        }
+        // Outer edges get a highlight.
+        if (!solid(x - 1, y)) {
+          ctx.fillStyle = theme.topHi;
+          ctx.fillRect(x, y, 0.06, 0.6);
+        }
+      }
+    }
+    // Side shading where a block ends.
+    ctx.fillStyle = "rgba(0,0,0,0.12)";
+    for (let y = yA; y <= yB; y++) {
+      for (let x = v.x0; x <= v.x1; x++) {
+        if (solid(x, y) && !solid(x + 1, y)) ctx.fillRect(x + 0.88, y + 0.24, 0.12, 0.76);
+      }
+    }
+    // One-way shelves.
+    for (let y = yA; y <= yB; y++) {
+      for (let x = v.x0; x <= v.x1; x++) {
+        if (L.tile(x, y) !== 2) continue;
+        ctx.fillStyle = theme.side;
+        ctx.fillRect(x + d, y - d, 1, 0.3);
+        ctx.fillStyle = theme.top;
+        ctx.fillRect(x, y, 1.01, 0.3);
+        ctx.fillStyle = theme.topHi;
+        ctx.fillRect(x, y, 1.01, 0.07);
+        if (L.tile(x - 1, y) !== 2) {
+          ctx.fillStyle = theme.line;
+          ctx.fillRect(x + 0.1, y + 0.3, 0.1, 0.5);
+        }
+        if (L.tile(x + 1, y) !== 2) {
+          ctx.fillStyle = theme.line;
+          ctx.fillRect(x + 0.8, y + 0.3, 0.1, 0.5);
+        }
+      }
+    }
   }
 
-  function drawPlatform(pl, theme) {
-    const a = toScreen(pl.x0, pl.y);
-    const b = toScreen(pl.x1, pl.y);
-    if (b.x < -20 || a.x > W + 20) return;
-    const bottom = H + 40;
-    ctx.fillStyle = theme.body;
-    roundRect(ctx, a.x, a.y, b.x - a.x, bottom - a.y, T * 0.18);
+  function drawWater(wtr, theme) {
+    const t = world.t;
+    const top = wtr.y + 0.3;
+    const g = ctx.createLinearGradient(0, top, 0, wtr.y + 1);
+    g.addColorStop(0, theme.dim ? "#3a7bd5" : "#5cc2ff");
+    g.addColorStop(1, theme.dim ? "#1d3f86" : "#2b7ad1");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(wtr.x0, wtr.y + 1);
+    for (let x = wtr.x0; x <= wtr.x1 + 0.001; x += 0.25) ctx.lineTo(x, top + Math.sin(t * 3 + x * 2.6) * 0.05);
+    ctx.lineTo(wtr.x1, wtr.y + 1);
+    ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = theme.top;
-    roundRect(ctx, a.x, a.y, b.x - a.x, T * 0.32, T * 0.16);
+    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.lineWidth = 0.05;
+    ctx.beginPath();
+    for (let x = wtr.x0; x <= wtr.x1 + 0.001; x += 0.25) {
+      const y = top + Math.sin(t * 3 + x * 2.6) * 0.05;
+      if (x === wtr.x0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // A little warning sign: water and Telly do not mix.
+    ctx.fillStyle = "#ffd23f";
+    ctx.beginPath();
+    const mx = (wtr.x0 + wtr.x1) / 2;
+    ctx.moveTo(mx, wtr.y - 1.2);
+    ctx.lineTo(mx + 0.32, wtr.y - 0.66);
+    ctx.lineTo(mx - 0.32, wtr.y - 0.66);
+    ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = theme.line;
-    ctx.lineWidth = Math.max(1, T * 0.05);
-    ctx.globalAlpha = 0.35;
-    for (let sx = a.x + T * 0.6; sx < b.x - T * 0.3; sx += T * 1.1) {
+    ctx.fillStyle = "#3b2a10";
+    ctx.fillRect(mx - 0.03, wtr.y - 1.05, 0.06, 0.22);
+    ctx.fillRect(mx - 0.03, wtr.y - 0.78, 0.06, 0.06);
+    ctx.fillStyle = "#6b5a40";
+    ctx.fillRect(mx - 0.03, wtr.y - 0.66, 0.06, 0.66);
+  }
+
+  function machineAnchor(m) {
+    if (m.x0 !== undefined && m.yDown !== undefined) return { x: (m.x0 + m.x1) / 2, y: m.yDown + 0.3 };
+    if (m.x0 !== undefined) return { x: m.x0, y: m.y + 0.2 };
+    if (m.y0 !== undefined) return { x: m.x + 0.5, y: m.y1 - 0.2 };
+    return { x: m.x, y: m.y };
+  }
+
+  // Cables on the back wall from each socket or plate to what it powers.
+  function drawWires() {
+    const L = world.L;
+    const all = [...L.doors, ...L.lifts, ...L.fans, ...L.bridges];
+    for (const m of all) {
+      if (!m.by) continue;
+      const from = m.by.kind === "plate" ? { x: (m.by.x0 + m.by.x1) / 2, y: m.by.y } : { x: m.by.x, y: m.by.y - 0.5 };
+      const to = machineAnchor(m);
+      const on = powered(m.by);
+      const midX = (from.x + to.x) / 2;
+      const sag = Math.min(2.5, Math.abs(to.x - from.x) * 0.15) + 0.3;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "rgba(30,25,50,0.55)";
+      ctx.lineWidth = 0.12;
       ctx.beginPath();
-      ctx.moveTo(sx, a.y + T * 0.55);
-      ctx.lineTo(sx + T * 0.4, a.y + T * 0.55);
+      ctx.moveTo(from.x, from.y);
+      ctx.quadraticCurveTo(midX, Math.max(from.y, to.y) + sag - 1.2, to.x, to.y);
+      ctx.stroke();
+      if (on) {
+        ctx.strokeStyle = "#ffe066";
+        ctx.lineWidth = 0.07;
+        ctx.setLineDash([0.25, 0.45]);
+        ctx.lineDashOffset = -world.t * 3;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  function drawSocket(s) {
+    const on = powered(s);
+    const x = s.x;
+    const y = s.y;
+    // A little charging post.
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.beginPath();
+    ctx.ellipse(x, y, 0.5, 0.1, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#4b4f6b";
+    roundRect(ctx, x - 0.42, y - 1.15, 0.84, 1.15, 0.14);
+    ctx.fill();
+    ctx.fillStyle = "#5e6385";
+    roundRect(ctx, x - 0.42, y - 1.15, 0.68, 1.15, 0.14);
+    ctx.fill();
+    ctx.fillStyle = "#f4f2ff";
+    roundRect(ctx, x - 0.3, y - 1.0, 0.5, 0.55, 0.1);
+    ctx.fill();
+    ctx.fillStyle = "#3d3756";
+    ctx.fillRect(x - 0.17, y - 0.86, 0.06, 0.18);
+    ctx.fillRect(x + 0.02, y - 0.86, 0.06, 0.18);
+    ctx.beginPath();
+    ctx.arc(x - 0.05, y - 0.58, 0.04, 0, TAU);
+    ctx.fill();
+    // Its light: red off, green on, with a ring that runs down.
+    ctx.fillStyle = on ? "#5dff9a" : "#ff6b6b";
+    ctx.beginPath();
+    ctx.arc(x - 0.05, y - 0.27, 0.09, 0, TAU);
+    ctx.fill();
+    if (s.left > 0 && s.time > 0) {
+      ctx.strokeStyle = s.left < 1.6 && Math.floor(world.t * 6) % 2 ? "#ff6b6b" : "#ffe066";
+      ctx.lineWidth = 0.08;
+      ctx.beginPath();
+      ctx.arc(x - 0.05, y - 1.55, 0.26, -Math.PI / 2, -Math.PI / 2 + TAU * (s.left / s.time));
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    if (s.time > 0 && !on) {
+      // Text in screen pixels: tiny fonts scaled up render poorly.
+      ctx.save();
+      ctx.scale(1 / T, 1 / T);
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.font = `bold ${Math.round(T * 0.34)}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText(`${Math.round(s.time)}s`, (x - 0.05) * T, (y - 1.32) * T);
+      ctx.restore();
+    }
+    if (on) glow(x - 0.05, y - 0.27, 0.6, "#5dff9a", 0.5);
+    else if (nearSocket() === s && !world.plug) glow(x - 0.05, y - 0.7, 1.1, "#fff3a0", 0.35 + 0.15 * Math.sin(world.t * 6));
   }
 
-  function drawPuddle(pd) {
-    const a = toScreen(pd.x0, pd.y);
-    const b = toScreen(pd.x1, pd.y);
-    if (b.x < -20 || a.x > W + 20) return;
-    const cx = (a.x + b.x) / 2;
-    ctx.fillStyle = "#4fb6ff";
+  function drawExit(e) {
+    const x = e.x;
+    const y = e.y;
+    const near = Math.abs(world.p.x - x) < 6;
+    if (near) glow(x - 0.1, y - 1.3, 2.2, "#ffe58a", 0.45 + 0.1 * Math.sin(world.t * 4));
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
     ctx.beginPath();
-    ctx.ellipse(cx, a.y + T * 0.06, (b.x - a.x) / 2, T * 0.18, 0, 0, TAU);
+    ctx.ellipse(x, y, 0.8, 0.14, 0, 0, TAU);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
-    const shimmer = Math.sin(world.t * 4) * T * 0.2;
+    ctx.fillStyle = "#b8860b";
+    roundRect(ctx, x - 0.62, y - 2.3, 1.24, 2.3, 0.2);
+    ctx.fill();
+    const g = ctx.createLinearGradient(x - 0.6, 0, x + 0.6, 0);
+    g.addColorStop(0, "#ffe27a");
+    g.addColorStop(1, "#f2b32c");
+    ctx.fillStyle = g;
+    roundRect(ctx, x - 0.62, y - 2.3, 1.06, 2.3, 0.2);
+    ctx.fill();
+    ctx.fillStyle = "#fffaf0";
+    roundRect(ctx, x - 0.42, y - 1.75, 0.66, 0.85, 0.12);
+    ctx.fill();
+    ctx.fillStyle = "#5b4a1a";
+    ctx.fillRect(x - 0.25, y - 1.55, 0.07, 0.22);
+    ctx.fillRect(x + 0.0, y - 1.55, 0.07, 0.22);
     ctx.beginPath();
-    ctx.ellipse(cx - T * 0.2 + shimmer, a.y, T * 0.18, T * 0.05, 0, 0, TAU);
+    ctx.arc(x - 0.09, y - 1.17, 0.05, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    FK.starPath(ctx, x - 0.09, y - 2.02, 0.17, 0.08, 5);
     ctx.fill();
   }
 
-  function drawSpring(s) {
-    const p = toScreen(s.x, s.y);
-    if (p.x < -40 || p.x > W + 40) return;
-    const sq = 1 - Math.max(0, s.squash) * 0.3;
-    ctx.save();
-    ctx.translate(p.x, p.y);
-    ctx.scale(1, sq);
+  function drawDoor(d) {
+    const h = (d.y1 - d.y0) * (1 - d.open);
+    const x = d.x + 0.08;
+    // The frame stays; the slab slides up into the header.
+    ctx.fillStyle = "rgba(20,15,40,0.35)";
+    ctx.fillRect(d.x, d.y0, 1, d.y1 - d.y0);
+    if (h > 0.02) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, d.y0, 0.84, h);
+      ctx.clip();
+      ctx.fillStyle = "#59607a";
+      ctx.fillRect(x, d.y0, 0.84, h);
+      ctx.fillStyle = "#ffcf3f";
+      for (let yy = d.y0 + h - 1.1; yy > d.y0 - 1; yy -= 0.7) {
+        ctx.beginPath();
+        ctx.moveTo(x, yy);
+        ctx.lineTo(x + 0.84, yy - 0.35);
+        ctx.lineTo(x + 0.84, yy - 0.05);
+        ctx.lineTo(x, yy + 0.3);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#2f3346";
+      ctx.fillRect(x, d.y0 + h - 0.6, 0.84, 0.6);
+      ctx.fillStyle = powered(d.by) ? "#5dff9a" : "#ff6b6b";
+      ctx.beginPath();
+      ctx.arc(x + 0.42, d.y0 + h - 0.3, 0.11, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawLift(lf) {
+    const w = lf.x1 - lf.x0;
+    // Scissor arms down to the floor.
+    ctx.strokeStyle = "#596073";
+    ctx.lineWidth = 0.1;
+    const base = lf.yDown + 0.45;
+    const span = base - (lf.y + 0.45);
+    if (span > 0.05) {
+      const n = Math.max(1, Math.ceil(span / 1.2));
+      const segH = span / n;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const yTop = lf.y + 0.45 + i * segH;
+        ctx.moveTo(lf.x0 + 0.3, yTop);
+        ctx.lineTo(lf.x1 - 0.3, yTop + segH);
+        ctx.moveTo(lf.x1 - 0.3, yTop);
+        ctx.lineTo(lf.x0 + 0.3, yTop + segH);
+      }
+      ctx.stroke();
+    }
     ctx.fillStyle = "#3b3f55";
-    roundRect(ctx, -T * 0.42, -T * 0.7, T * 0.84, T * 0.7, T * 0.12);
+    ctx.fillRect(lf.x0 + 0.12, lf.y - 0.1, w, 0.45);
+    ctx.fillStyle = "#ffcf3f";
+    ctx.fillRect(lf.x0, lf.y, w, 0.45);
+    ctx.fillStyle = "#2f3346";
+    for (let x = lf.x0 + 0.1; x < lf.x1 - 0.1; x += 0.5) {
+      ctx.beginPath();
+      ctx.moveTo(x, lf.y + 0.45);
+      ctx.lineTo(x + 0.25, lf.y);
+      ctx.lineTo(x + 0.45, lf.y);
+      ctx.lineTo(x + 0.2, lf.y + 0.45);
+      ctx.fill();
+    }
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.fillRect(lf.x0, lf.y, w, 0.06);
+  }
+
+  function drawFan(f) {
+    const x = f.x;
+    const y = f.y;
+    if (f.spin > 0.05) {
+      const g = ctx.createLinearGradient(0, y, 0, y - f.h);
+      g.addColorStop(0, `rgba(200,240,255,${0.28 * f.spin})`);
+      g.addColorStop(1, "rgba(200,240,255,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(x - 0.85, y - f.h, 1.7, f.h);
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.75)";
+    ctx.lineWidth = 0.05;
+    for (const s of world.wind) {
+      if (Math.abs(s.x - x) > 1) continue;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x, s.y + s.len);
+      ctx.stroke();
+    }
+    // The grate and its blades, seen a little from above.
+    ctx.fillStyle = "#3b3f55";
+    ctx.beginPath();
+    ctx.ellipse(x, y + 0.02, 0.85, 0.2, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#9aa3c7";
+    for (let k = 0; k < 4; k++) {
+      const a = f.a + (k * TAU) / 4;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * 0.38, y + Math.sin(a) * 0.08, 0.3, 0.06, 0, 0, TAU);
+      ctx.fill();
+    }
+    ctx.strokeStyle = "#596073";
+    ctx.lineWidth = 0.06;
+    ctx.beginPath();
+    ctx.ellipse(x, y + 0.02, 0.85, 0.2, 0, 0, TAU);
+    ctx.stroke();
+  }
+
+  function drawBridge(br) {
+    const rc = bridgeRect(br);
+    // Its housing at the near end.
+    ctx.fillStyle = "#596073";
+    roundRect(ctx, br.x0 - 0.35, br.y - 0.15, 0.45, 0.7, 0.08);
+    ctx.fill();
+    if (!rc) return;
+    for (let x = rc.x; x < rc.x + rc.w - 0.01; x += 0.5) {
+      const ww = Math.min(0.46, rc.x + rc.w - x);
+      ctx.fillStyle = "#8a6a4a";
+      ctx.fillRect(x + 0.1, br.y - 0.1, ww, 0.4);
+      ctx.fillStyle = "#c79a68";
+      ctx.fillRect(x, br.y, ww, 0.4);
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.fillRect(x, br.y, ww, 0.06);
+    }
+  }
+
+  function drawPlate(pl) {
+    const dpt = pl.depth * 0.12;
+    ctx.fillStyle = "#3b3f55";
+    ctx.fillRect(pl.x0 - 0.05, pl.y - 0.08, pl.x1 - pl.x0 + 0.1, 0.12);
+    ctx.fillStyle = pl.pressed ? "#5dff9a" : "#ff8a5c";
+    ctx.fillRect(pl.x0 + 0.08, pl.y - 0.2 + dpt, pl.x1 - pl.x0 - 0.16, 0.14);
+    if (pl.pressed) glow((pl.x0 + pl.x1) / 2, pl.y - 0.1, 0.9, "#5dff9a", 0.35);
+  }
+
+  function drawCrate(c) {
+    const x = c.x - c.w / 2;
+    const y = c.y - c.h;
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y, 0.55, 0.1, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#8a5a2e";
+    ctx.fillRect(x + 0.12, y - 0.12, c.w, c.h);
+    ctx.fillStyle = "#c58b4e";
+    ctx.fillRect(x, y, c.w, c.h);
+    ctx.strokeStyle = "#7a4a22";
+    ctx.lineWidth = 0.08;
+    ctx.strokeRect(x + 0.04, y + 0.04, c.w - 0.08, c.h - 0.08);
+    ctx.beginPath();
+    ctx.moveTo(x + 0.1, y + 0.1);
+    ctx.lineTo(x + c.w - 0.1, y + c.h - 0.1);
+    ctx.moveTo(x + c.w - 0.1, y + 0.1);
+    ctx.lineTo(x + 0.1, y + c.h - 0.1);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.22)";
+    ctx.fillRect(x, y, c.w, 0.07);
+  }
+
+  function drawSparker(sp) {
+    const x = sp.x + 0.5;
+    const y = sp.y;
+    ctx.fillStyle = "#3b3f55";
+    roundRect(ctx, x - 0.25, y - 0.5, 0.5, 0.5, 0.08);
     ctx.fill();
     ctx.fillStyle = "#9aa3c7";
     ctx.beginPath();
-    ctx.arc(0, -T * 0.36, T * 0.26, 0, TAU);
+    ctx.arc(x, y - 0.55, 0.16, 0, TAU);
+    ctx.fill();
+    if (sp.warn) glow(x, y - 0.6, 0.6, "#7fd6ff", 0.3 + 0.3 * Math.sin(world.t * 30));
+    if (!sp.active) return;
+    glow(x, y - sp.h / 2, 1.6, "#7fd6ff", 0.45);
+    ctx.strokeStyle = "#e9fbff";
+    ctx.lineWidth = 0.07;
+    for (let k = 0; k < 2; k++) {
+      ctx.beginPath();
+      ctx.moveTo(x, y - 0.6);
+      const r = rngFn(Math.floor(world.t * 24) + k * 99);
+      for (let yy = y - 0.6; yy > y - sp.h; yy -= 0.3) ctx.lineTo(x + (r() - 0.5) * 0.5, yy);
+      ctx.stroke();
+    }
+  }
+
+  function drawSpring(s) {
+    const sq = 1 - Math.max(0, s.squash) * 0.3;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.scale(1, sq);
+    ctx.fillStyle = "#2f3346";
+    roundRect(ctx, -0.32, -0.75, 0.84, 0.75, 0.12);
+    ctx.fill();
+    ctx.fillStyle = "#3b3f55";
+    roundRect(ctx, -0.42, -0.7, 0.84, 0.7, 0.12);
+    ctx.fill();
+    ctx.fillStyle = "#9aa3c7";
+    ctx.beginPath();
+    ctx.arc(0, -0.36, 0.26, 0, TAU);
     ctx.fill();
     ctx.fillStyle = "#3b3f55";
     ctx.beginPath();
-    ctx.arc(0, -T * 0.36, T * 0.1, 0, TAU);
+    ctx.arc(0, -0.36, 0.1, 0, TAU);
     ctx.fill();
     ctx.restore();
+    if (s.squash > 0) glow(s.x, s.y - 0.6, 0.9, "#ffe066", s.squash * 0.5);
   }
 
   function drawPad(pad) {
-    const p = toScreen(pad.x, pad.y);
-    if (p.x < -40 || p.x > W + 40) return;
     ctx.fillStyle = "#4b4f6b";
-    roundRect(ctx, p.x - T * 0.45, p.y - T * 0.14, T * 0.9, T * 0.14, T * 0.06);
+    roundRect(ctx, pad.x - 0.45, pad.y - 0.14, 0.9, 0.14, 0.06);
     ctx.fill();
     ctx.fillStyle = pad.on ? "#5dff9a" : "#c8cbe0";
     ctx.beginPath();
-    ctx.arc(p.x, p.y - T * 0.32, T * 0.14, 0, TAU);
+    ctx.arc(pad.x, pad.y - 0.32, 0.14, 0, TAU);
     ctx.fill();
-    if (pad.on) {
-      ctx.globalAlpha = 0.3 + 0.2 * Math.sin(world.t * 5);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y - T * 0.32, T * 0.32, 0, TAU);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  function drawOutlet(out, glow) {
-    const p = toScreen(out.x, out.y);
-    if (p.x < -60 || p.x > W + 60) return;
-    ctx.fillStyle = "#7c6bd6";
-    roundRect(ctx, p.x - T * 0.12, p.y - T * 1.3, T * 0.24, T * 1.3, T * 0.06);
-    ctx.fill();
-    if (glow) {
-      ctx.fillStyle = "rgba(255,240,140,0.35)";
-      ctx.beginPath();
-      ctx.arc(p.x, p.y - T * 1.75, T * (0.95 + 0.08 * Math.sin(world.t * 5)), 0, TAU);
-      ctx.fill();
-    }
-    ctx.fillStyle = "#ffffff";
-    roundRect(ctx, p.x - T * 0.48, p.y - T * 2.4, T * 0.96, T * 1.3, T * 0.18);
-    ctx.fill();
-    ctx.strokeStyle = "#c9c4ee";
-    ctx.lineWidth = Math.max(1, T * 0.05);
-    ctx.stroke();
-    ctx.fillStyle = "#4b4466";
-    for (const dy of [-1.98, -1.52]) {
-      roundRect(ctx, p.x - T * 0.2, p.y + T * dy, T * 0.08, T * 0.22, T * 0.03);
-      ctx.fill();
-      roundRect(ctx, p.x + T * 0.12, p.y + T * dy, T * 0.08, T * 0.22, T * 0.03);
-      ctx.fill();
-    }
+    if (pad.on) glow(pad.x, pad.y - 0.32, 0.6, "#5dff9a", 0.35 + 0.2 * Math.sin(world.t * 5));
   }
 
   function drawHook(h, target) {
     const hp = hookPos(h, world.t);
-    const p = toScreen(hp.x, hp.y);
-    if (p.x < -40 || p.x > W + 40) return;
-    if (target) {
-      ctx.strokeStyle = "rgba(255,230,90,0.85)";
-      ctx.lineWidth = Math.max(2, T * 0.08);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, T * (0.45 + 0.06 * Math.sin(world.t * 8)), 0, TAU);
-      ctx.stroke();
-    }
     if (h.ax || h.ay) {
-      ctx.strokeStyle = "rgba(255,255,255,0.35)";
-      ctx.setLineDash([T * 0.12, T * 0.12]);
-      ctx.lineWidth = Math.max(1, T * 0.04);
-      const a = toScreen(h.bx - h.ax, h.by - h.ay);
-      const b = toScreen(h.bx + h.ax, h.by + h.ay);
+      ctx.strokeStyle = "rgba(255,255,255,0.3)";
+      ctx.setLineDash([0.12, 0.12]);
+      ctx.lineWidth = 0.04;
       ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
+      ctx.moveTo(h.bx - h.ax, h.by - h.ay);
+      ctx.lineTo(h.bx + h.ax, h.by + h.ay);
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    // A short chain up to the ceiling we cannot see.
+    ctx.strokeStyle = "rgba(60,64,90,0.6)";
+    ctx.lineWidth = 0.05;
+    ctx.beginPath();
+    ctx.moveTo(hp.x, hp.y - 0.22);
+    ctx.lineTo(hp.x, hp.y - 1.2);
+    ctx.stroke();
+    if (target) {
+      glow(hp.x, hp.y, 0.9, "#ffe066", 0.55);
+      ctx.strokeStyle = "rgba(255,230,90,0.9)";
+      ctx.lineWidth = 0.07;
+      ctx.beginPath();
+      ctx.arc(hp.x, hp.y, 0.45 + 0.06 * Math.sin(world.t * 8), 0, TAU);
+      ctx.stroke();
+    }
     ctx.fillStyle = "#e3e8f4";
     ctx.strokeStyle = "#5c6680";
-    ctx.lineWidth = Math.max(1.5, T * 0.07);
+    ctx.lineWidth = 0.08;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, T * 0.22, 0, TAU);
+    ctx.arc(hp.x, hp.y, 0.22, 0, TAU);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = "#5c6680";
     ctx.beginPath();
-    ctx.arc(p.x, p.y, T * 0.08, 0, TAU);
+    ctx.arc(hp.x, hp.y, 0.08, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.beginPath();
+    ctx.arc(hp.x - 0.08, hp.y - 0.08, 0.05, 0, TAU);
     ctx.fill();
   }
 
@@ -965,39 +2070,32 @@
 
   function drawSpark(s) {
     if (s.got) return;
-    const p = toScreen(s.x, s.y + Math.sin(world.t * 3 + s.x) * 0.08);
-    if (p.x < -20 || p.x > W + 20) return;
+    const y = s.y + Math.sin(world.t * 3 + s.x) * 0.08;
+    glow(s.x, y, 0.55, "#ffd23f", 0.4);
     ctx.fillStyle = "#ffe066";
     ctx.strokeStyle = "#f29d1f";
-    ctx.lineWidth = Math.max(1, T * 0.05);
-    bolt(p.x, p.y, T * 0.62);
+    ctx.lineWidth = 0.05;
+    bolt(s.x, y, 0.6);
     ctx.fill();
     ctx.stroke();
   }
 
   function drawCell(cell) {
     if (cell.got) return;
-    const p = toScreen(cell.x, cell.y + Math.sin(world.t * 2.5 + cell.x) * 0.1);
-    if (p.x < -30 || p.x > W + 30) return;
-    ctx.fillStyle = "rgba(125,255,176,0.3)";
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, T * 0.55, 0, TAU);
+    const y = cell.y + Math.sin(world.t * 2.5 + cell.x) * 0.1;
+    glow(cell.x, y, 0.9, "#7dffb0", 0.5);
+    ctx.fillStyle = "#2b9a5a";
+    roundRect(ctx, cell.x - 0.18, y - 0.36, 0.48, 0.66, 0.08);
     ctx.fill();
     ctx.fillStyle = "#3ccf7a";
-    roundRect(ctx, p.x - T * 0.22, p.y - T * 0.32, T * 0.44, T * 0.64, T * 0.08);
+    roundRect(ctx, cell.x - 0.24, y - 0.32, 0.44, 0.64, 0.08);
     ctx.fill();
     ctx.fillStyle = "#2b9a5a";
-    roundRect(ctx, p.x - T * 0.1, p.y - T * 0.42, T * 0.2, T * 0.12, T * 0.03);
+    roundRect(ctx, cell.x - 0.12, y - 0.42, 0.2, 0.12, 0.03);
     ctx.fill();
     ctx.fillStyle = "#ffffff";
-    bolt(p.x, p.y, T * 0.36);
+    bolt(cell.x - 0.02, y, 0.36);
     ctx.fill();
-  }
-
-  // Where the cord leaves Telly: low on its back.
-  function cordStart(p) {
-    const s = toScreen(p.x - 0.42, p.y - 0.22);
-    return s;
   }
 
   function drawPlug(x, y, angle) {
@@ -1005,141 +2103,165 @@
     ctx.translate(x, y);
     ctx.rotate(angle);
     ctx.fillStyle = "#3b3f55";
-    roundRect(ctx, -T * 0.16, -T * 0.11, T * 0.24, T * 0.22, T * 0.05);
+    roundRect(ctx, -0.16, -0.11, 0.26, 0.22, 0.05);
     ctx.fill();
     ctx.fillStyle = "#d9dce8";
-    ctx.fillRect(T * 0.08, -T * 0.08, T * 0.14, T * 0.04);
-    ctx.fillRect(T * 0.08, T * 0.04, T * 0.14, T * 0.04);
+    ctx.fillRect(0.1, -0.08, 0.13, 0.04);
+    ctx.fillRect(0.1, 0.04, 0.13, 0.04);
     ctx.restore();
   }
 
   function drawCord() {
-    const w = world;
-    const p = w.p;
-    const a = cordStart(p);
-    ctx.strokeStyle = "#2f3346";
-    ctx.lineWidth = Math.max(2, T * 0.09);
+    const pts = world.cord;
     ctx.lineCap = "round";
-    if (w.rope) {
-      const r = w.rope;
-      const hp = hookPos(r.hook, w.t);
-      const h = toScreen(hp.x, hp.y);
-      const k = r.shoot > 0 ? 1 - r.shoot / 0.09 : 1;
-      const ex = a.x + (h.x - a.x) * k;
-      const ey = a.y + (h.y - a.y) * k;
-      const c = center(p);
-      const slack = Math.max(0, r.L - Math.hypot(c.x - hp.x, c.y - hp.y));
+    ctx.lineJoin = "round";
+    for (const [color, width] of [["#1d2030", 0.13], ["#3a3f58", 0.08]]) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
       ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.quadraticCurveTo((a.x + ex) / 2, (a.y + ey) / 2 + slack * T * 0.6, ex, ey);
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i].x + pts[i + 1].x) / 2;
+        const my = (pts[i].y + pts[i + 1].y) / 2;
+        ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+      }
+      ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
       ctx.stroke();
-      // Each wrap is a coil round the hook.
+    }
+    const end = pts[pts.length - 1];
+    const prev = pts[pts.length - 3];
+    const r = world.rope;
+    if (r) {
+      const hp = hookPos(r.hook, world.t);
+      ctx.strokeStyle = "#1d2030";
+      ctx.lineWidth = 0.08;
       for (let i = 0; i < Math.min(r.wraps, 5); i++) {
         ctx.beginPath();
-        ctx.arc(h.x, h.y, T * (0.26 + i * 0.07), 0, TAU);
+        ctx.arc(hp.x, hp.y, 0.26 + i * 0.07, 0, TAU);
         ctx.stroke();
       }
-      return;
     }
-    if (w.plug > 0) {
-      const o = toScreen(w.L.outlet.x, w.L.outlet.y);
-      const k = clamp(1 - (w.plug - 0.6) / 0.7, 0, 1);
-      const tx = lerp(a.x - T * 0.8, o.x - T * 0.25, k);
-      const ty = lerp(a.y + T * 0.2, o.y - T * 1.65, k);
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.quadraticCurveTo((a.x + tx) / 2, Math.max(a.y, ty) + T * 0.5, tx, ty);
-      ctx.stroke();
-      drawPlug(tx, ty, 0);
-      return;
-    }
-    // Trailing behind, swaying as Telly rolls.
-    const sway = Math.sin(w.t * 6 + p.walk) * T * 0.08;
-    const flick = w.flick > 0 ? Math.sin(w.flick * 30) * T * 0.4 : 0;
-    const tx = a.x - T * 1.15;
-    const ty = a.y + T * 0.18 + sway - flick;
+    drawPlug(end.x, end.y, Math.atan2(end.y - prev.y, end.x - prev.x));
+  }
+
+  function drawShadow(bd, size) {
+    const fy = floorBelow(bd.x, bd.y - 0.05, 8);
+    if (fy === null) return;
+    const dist = fy - bd.y;
+    const a = clamp(0.3 - dist * 0.04, 0.05, 0.3);
+    const s = size * clamp(1 - dist * 0.06, 0.5, 1);
+    ctx.fillStyle = `rgba(20,10,40,${a})`;
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.quadraticCurveTo(a.x - T * 0.5, a.y + T * 0.45 + sway, tx, ty);
-    ctx.stroke();
-    drawPlug(tx, ty, Math.PI);
+    ctx.ellipse(bd.x, fy, s, s * 0.22, 0, 0, TAU);
+    ctx.fill();
   }
 
   function drawTelly() {
     const w = world;
     const p = w.p;
-    const s = T * 1.05;
-    const base = toScreen(p.x, p.y);
     if (w.invuln > 0 && Math.floor(w.invuln * 12) % 2 === 0) return;
+    const s = 1.05;
+    drawShadow(p, 0.5);
     ctx.save();
-    ctx.translate(base.x, base.y - s * 0.46);
+    ctx.translate(p.x, p.y - s * 0.46);
     ctx.rotate(p.tilt);
     const sq = p.squash;
-    ctx.scale(1 / Math.sqrt(sq), sq);
-    // feet
-    const bob = p.grounded ? Math.sin(p.walk * 3) * s * 0.04 : 0;
-    ctx.fillStyle = "#3b3f55";
-    ctx.beginPath();
-    ctx.ellipse(-s * 0.22, s * 0.43 + bob, s * 0.12, s * 0.06, 0, 0, TAU);
-    ctx.ellipse(s * 0.22, s * 0.43 - bob, s * 0.12, s * 0.06, 0, 0, TAU);
-    ctx.fill();
-    // antennae
+    ctx.scale((1 / Math.sqrt(sq)) * p.dir, sq);
+    // Little legs, stepping as Telly rolls.
+    const moving = p.ground && Math.abs(p.vx) > 0.3;
+    const ph = p.walk * 2.2;
     ctx.strokeStyle = "#3b3f55";
-    ctx.lineWidth = Math.max(1.5, s * 0.04);
-    const wob = Math.sin(w.t * 7) * s * 0.03;
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.1, -s * 0.4);
-    ctx.lineTo(-s * 0.3 + wob, -s * 0.76);
-    ctx.moveTo(s * 0.1, -s * 0.4);
-    ctx.lineTo(s * 0.32 - wob, -s * 0.74);
+    ctx.lineWidth = 0.09;
+    ctx.lineCap = "round";
+    for (const [lx, o] of [[-0.2, 0], [0.2, Math.PI]]) {
+      const lift = moving ? Math.max(0, Math.sin(ph + o)) * 0.08 : 0;
+      const swing = moving ? Math.cos(ph + o) * 0.1 : !p.ground ? 0.06 : 0;
+      ctx.beginPath();
+      ctx.moveTo(lx, 0.36);
+      ctx.lineTo(lx + swing, 0.46 - lift);
+      ctx.stroke();
+      ctx.fillStyle = "#3b3f55";
+      ctx.beginPath();
+      ctx.ellipse(lx + swing + 0.04, 0.47 - lift, 0.11, 0.055, 0, 0, TAU);
+      ctx.fill();
+    }
+    // Antennae on springs.
+    ctx.strokeStyle = "#3b3f55";
+    ctx.lineWidth = 0.04;
+    const tips = [[-0.1, -0.4, -0.3, -0.78, p.ant[0], "#ff6b8a"], [0.1, -0.4, 0.32, -0.76, p.ant[1], "#ffd93d"]];
+    for (const [bx, by, tx, ty, a, col] of tips) {
+      const ex = bx + (tx - bx) * Math.cos(a) - (ty - by) * Math.sin(a);
+      const ey = by + (tx - bx) * Math.sin(a) + (ty - by) * Math.cos(a);
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.quadraticCurveTo((bx + ex) / 2 - a * 0.1, (by + ey) / 2, ex, ey);
+      ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 0.065, 0, TAU);
+      ctx.fill();
+    }
+    // Body: a back face for depth, then the front.
+    ctx.fillStyle = "#c95f12";
+    roundRect(ctx, -0.55 - 0.09, -0.42 - 0.07, 1.1, 0.84, 0.2);
+    ctx.fill();
+    const bg = ctx.createLinearGradient(0, -0.42, 0, 0.42);
+    bg.addColorStop(0, "#ffb866");
+    bg.addColorStop(1, "#f28324");
+    ctx.fillStyle = bg;
+    roundRect(ctx, -0.55, -0.42, 1.1, 0.84, 0.2);
+    ctx.fill();
+    ctx.strokeStyle = "#c9650f";
+    ctx.lineWidth = 0.045;
     ctx.stroke();
-    ctx.fillStyle = "#ff6b8a";
-    ctx.beginPath();
-    ctx.arc(-s * 0.3 + wob, -s * 0.78, s * 0.065, 0, TAU);
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    roundRect(ctx, -0.48, -0.38, 0.9, 0.08, 0.04);
     ctx.fill();
-    ctx.fillStyle = "#ffd93d";
-    ctx.beginPath();
-    ctx.arc(s * 0.32 - wob, -s * 0.76, s * 0.065, 0, TAU);
-    ctx.fill();
-    // body
-    ctx.fillStyle = "#ff9f43";
-    roundRect(ctx, -s * 0.55, -s * 0.42, s * 1.1, s * 0.84, s * 0.2);
-    ctx.fill();
-    ctx.strokeStyle = "#d9711b";
-    ctx.lineWidth = Math.max(1.5, s * 0.045);
-    ctx.stroke();
-    // knobs and speaker grille
+    // Knobs and speaker grille.
     ctx.fillStyle = "#ffe0bd";
     ctx.beginPath();
-    ctx.arc(s * 0.4, -s * 0.18, s * 0.055, 0, TAU);
-    ctx.arc(s * 0.4, -s * 0.02, s * 0.055, 0, TAU);
+    ctx.arc(0.4, -0.18, 0.055, 0, TAU);
+    ctx.arc(0.4, -0.02, 0.055, 0, TAU);
     ctx.fill();
-    ctx.strokeStyle = "#d9711b";
-    ctx.lineWidth = Math.max(1, s * 0.025);
+    ctx.strokeStyle = "#c9650f";
+    ctx.lineWidth = 0.025;
     for (let i = 0; i < 3; i++) {
       ctx.beginPath();
-      ctx.moveTo(s * 0.32, s * 0.12 + i * s * 0.07);
-      ctx.lineTo(s * 0.48, s * 0.12 + i * s * 0.07);
+      ctx.moveTo(0.32, 0.12 + i * 0.07);
+      ctx.lineTo(0.48, 0.12 + i * 0.07);
       ctx.stroke();
     }
-    // screen
-    const glowing = w.plug > 0;
-    const sg = ctx.createLinearGradient(0, -s * 0.3, 0, s * 0.3);
-    sg.addColorStop(0, glowing ? "#bff6ff" : "#33476b");
-    sg.addColorStop(1, glowing ? "#7fe0ff" : "#1c2640");
+    // Screen, with scanlines and a glassy shine.
+    const glowing = w.finishing > 0 || (w.plug && w.plug.done);
+    const sg = ctx.createLinearGradient(0, -0.3, 0, 0.3);
+    sg.addColorStop(0, glowing ? "#c9f8ff" : "#3a5280");
+    sg.addColorStop(1, glowing ? "#7fe0ff" : "#1b2440");
     ctx.fillStyle = sg;
-    roundRect(ctx, -s * 0.44, -s * 0.31, s * 0.7, s * 0.62, s * 0.14);
+    roundRect(ctx, -0.44, -0.31, 0.7, 0.62, 0.14);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.14)";
-    roundRect(ctx, -s * 0.38, -s * 0.26, s * 0.28, s * 0.12, s * 0.06);
+    ctx.save();
+    roundRect(ctx, -0.44, -0.31, 0.7, 0.62, 0.14);
+    ctx.clip();
+    ctx.fillStyle = glowing ? "rgba(255,255,255,0.12)" : "rgba(140,190,255,0.08)";
+    const scroll = (w.t * 0.4) % 0.08;
+    for (let yy = -0.31 + scroll; yy < 0.31; yy += 0.08) ctx.fillRect(-0.44, yy, 0.7, 0.03);
+    ctx.fillStyle = "rgba(255,255,255,0.13)";
+    ctx.beginPath();
+    ctx.moveTo(-0.44, -0.31);
+    ctx.lineTo(-0.1, -0.31);
+    ctx.lineTo(-0.36, 0.31);
+    ctx.lineTo(-0.44, 0.31);
     ctx.fill();
-    drawFace(s, glowing);
+    ctx.restore();
+    if (glowing) glow(-0.09, 0, 0.7, "#7fe0ff", 0.4);
+    drawFace(glowing);
     ctx.restore();
   }
 
-  function drawFace(s, glowing) {
+  function drawFace(glowing) {
     const w = world;
     const p = w.p;
+    const s = 1.05;
     const fx = -s * 0.09;
     const fy = 0;
     const ink = glowing ? "#1c2640" : "#ffffff";
@@ -1148,14 +2270,14 @@
     if (face !== "zap" && face !== "love") {
       if (p.worried) face = "worried";
       else if (w.rope && speed > 9) face = "whee";
-      else if (!p.grounded && p.vy > 8) face = "oh";
+      else if (p.pushing) face = "push";
+      else if (!p.ground && p.vy > 8) face = "oh";
       else face = "happy";
     }
     ctx.fillStyle = ink;
     ctx.strokeStyle = ink;
-    ctx.lineWidth = Math.max(1.5, s * 0.04);
+    ctx.lineWidth = 0.04;
     ctx.lineCap = "round";
-    const lookX = clamp(p.vx * 0.006, -0.03, 0.03) * s;
     if (face === "zap") {
       for (const ex of [-0.12, 0.12]) {
         ctx.beginPath();
@@ -1188,34 +2310,32 @@
       ctx.stroke();
       return;
     }
-    // eyes: a blink every few seconds
-    const blink = face === "happy" && (w.t % 3.7) < 0.12;
+    const blink = face === "happy" && w.t % 3.7 < 0.12;
     if (blink) {
-      ctx.strokeStyle = ink;
       for (const ex of [-0.12, 0.12]) {
         ctx.beginPath();
-        ctx.moveTo(fx + s * (ex - 0.05) + lookX, fy - s * 0.07);
-        ctx.lineTo(fx + s * (ex + 0.05) + lookX, fy - s * 0.07);
+        ctx.moveTo(fx + s * (ex - 0.05), fy - s * 0.07);
+        ctx.lineTo(fx + s * (ex + 0.05), fy - s * 0.07);
         ctx.stroke();
       }
+    } else {
+      for (const ex of [-0.12, 0.12]) {
+        ctx.fillStyle = ink;
+        ctx.beginPath();
+        const squint = face === "push" ? 0.035 : face === "oh" || face === "whee" ? 0.075 : 0.065;
+        ctx.ellipse(fx + s * ex + 0.02, fy - s * 0.07, s * 0.055, s * squint, 0, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = glowing ? "#ffffff" : "#1b2440";
+        ctx.beginPath();
+        ctx.arc(fx + s * ex + 0.04, fy - s * 0.09, s * 0.02, 0, TAU);
+        ctx.fill();
+      }
     }
-    for (const ex of blink ? [] : [-0.12, 0.12]) {
-      ctx.fillStyle = ink;
-      ctx.beginPath();
-      ctx.ellipse(fx + s * ex + lookX, fy - s * 0.07, s * 0.055, face === "oh" || face === "whee" ? s * 0.075 : s * 0.065, 0, 0, TAU);
-      ctx.fill();
-      ctx.fillStyle = glowing ? "#ffffff" : "#1c2640";
-      ctx.beginPath();
-      ctx.arc(fx + s * ex + lookX + s * 0.015, fy - s * 0.09, s * 0.02, 0, TAU);
-      ctx.fill();
-    }
-    // cheeks
     ctx.fillStyle = "rgba(255,120,150,0.55)";
     ctx.beginPath();
     ctx.arc(fx - s * 0.22, fy + s * 0.05, s * 0.045, 0, TAU);
     ctx.arc(fx + s * 0.22, fy + s * 0.05, s * 0.045, 0, TAU);
     ctx.fill();
-    // mouth
     ctx.strokeStyle = ink;
     ctx.fillStyle = ink;
     ctx.beginPath();
@@ -1225,14 +2345,95 @@
     } else if (face === "whee") {
       ctx.arc(fx, fy + s * 0.05, s * 0.09, 0, Math.PI);
       ctx.fill();
-    } else if (face === "worried") {
+    } else if (face === "worried" || face === "push") {
       ctx.moveTo(fx - s * 0.07, fy + s * 0.12);
-      ctx.quadraticCurveTo(fx, fy + s * 0.06, fx + s * 0.07, fy + s * 0.12);
+      ctx.quadraticCurveTo(fx, fy + s * (face === "push" ? 0.09 : 0.06), fx + s * 0.07, fy + s * 0.12);
       ctx.stroke();
     } else {
       ctx.arc(fx, fy + s * 0.04, s * 0.08, 0.15 * Math.PI, 0.85 * Math.PI);
       ctx.stroke();
     }
+  }
+
+  function drawDust() {
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    for (const d of world.dust) {
+      ctx.globalAlpha = clamp(d.life / d.max, 0, 1) * 0.7;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------------- on-screen buttons ---------------- */
+  let showPad = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+  const touches = new Map();     // pointerId -> button
+  function buttons() {
+    const R = clamp(Math.min(W, H) * 0.085, 30, 52);
+    const by = H - safeBottom - R - 16;
+    return [
+      { id: "left", x: 16 + R, y: by, r: R, icon: "◀" },
+      { id: "right", x: 16 + R * 3.3, y: by, r: R, icon: "▶" },
+      { id: "jump", x: W - 16 - R * 1.15, y: by - R * 0.15, r: R * 1.15, icon: "⤒" },
+      { id: "cord", x: W - 16 - R * 3.5, y: by + R * 0.1, r: R, icon: "🔌" },
+    ];
+  }
+  function buttonAt(x, y) {
+    let best = null;
+    let bestD = Infinity;
+    for (const b of buttons()) {
+      const d = Math.hypot(x - b.x, y - b.y) / b.r;
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    }
+    return bestD < 2.4 ? best.id : null;
+  }
+  function applyTouches() {
+    const held = new Set(touches.values());
+    input.left = held.has("left");
+    input.right = held.has("right");
+    if (held.has("jump") && !input.jump) input.jumpPressed = true;
+    input.jump = held.has("jump");
+    if (held.has("cord") && !input.cord) input.cordPressed = true;
+    if (!held.has("cord") && input.cord) input.cordReleased = true;
+    input.cord = held.has("cord");
+  }
+
+  function drawButtons() {
+    if (!showPad || kit.state !== "playing") return;
+    const held = new Set(touches.values());
+    const w = world;
+    let cordIcon = "🔌";
+    if (w && !w.rope) {
+      if (nearSocket() || nearExit()) cordIcon = "🔌";
+      else if (bestHook()) cordIcon = "🪝";
+    }
+    for (const b of buttons()) {
+      const on = held.has(b.id);
+      ctx.fillStyle = on ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.28)";
+      ctx.strokeStyle = "rgba(255,255,255,0.7)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(30,25,60,0.85)";
+      ctx.font = `bold ${Math.round(b.r * 0.85)}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(b.id === "cord" ? cordIcon : b.icon, b.x, b.y + 1);
+      if (b.id === "cord" && w && !w.rope && (nearSocket() || nearExit() || bestHook())) {
+        ctx.strokeStyle = `rgba(255,230,90,${0.6 + 0.3 * Math.sin(w.t * 8)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r + 4, 0, TAU);
+        ctx.stroke();
+      }
+    }
+    ctx.textBaseline = "alphabetic";
   }
 
   let lastRender = 0;
@@ -1242,53 +2443,63 @@
     const realDt = lastRender ? clamp((now - lastRender) / 1000, 0, 1 / 30) : 1 / 60;
     lastRender = now;
     if (bench.active) bench.frame(now);
-    if (!world) {
-      newWorld(0, { segments: 8 });
-      placeAtStart();
-    }
-    const w = world;
+    if (!world) newWorld(0);
     // The attract screen plays itself behind the title and result cards.
     if (kit.state !== "playing" && kit.state !== "paused" && mode === "play") {
       mode = "demo";
-      newWorld(0, { segments: 8 });
-      placeAtStart();
+      newWorld(0);
     }
     if (kit.state !== "playing" && kit.state !== "paused") simulate(realDt);
+    const w = world;
     const p = w.p;
-    w.cam.x = lerp(w.cam.x, p.x + 1.8 + (w.rope ? 0.6 : 0), 0.08);
-    w.cam.y = lerp(w.cam.y, Math.min(p.y - 1.6, w.L.platforms.reduce((m, pl) => Math.max(m, pl.y), -9) - 2), 0.06);
-    const theme = w.L.theme;
+    const L = w.L;
+    const tx = p.x + p.dir * 1.6 + (w.rope ? p.vx * 0.12 : 0);
+    w.cam.x = lerp(w.cam.x, tx, 0.07);
+    w.cam.y = lerp(w.cam.y, Math.min(p.y, BOTTOM + 1) - 1.8, 0.07);
+    w.cam.x = Math.max(w.cam.x, (W * 0.42) / T - 1);
+    const theme = L.theme;
     ctx.save();
     kit.applyShake(ctx);
-    ctx.drawImage(sky(theme), 0, 0, W, H);
-    hills(theme.hill[0], 0.15, 1.6, 0.72, 9);
-    motes(theme, bench.active ? 120 : 26);
-    props(theme);
-    hills(theme.hill[1], 0.4, 1.1, 0.86, 6);
-    for (const pl of w.L.platforms) drawPlatform(pl, theme);
-    for (const pd of w.L.puddles) drawPuddle(pd);
-    for (const s of w.L.springs) drawSpring(s);
-    for (const pad of w.L.pads) drawPad(pad);
-    drawOutlet(w.L.outlet, Math.abs(w.L.outlet.x - p.x) < 6);
-    const target = !w.rope && w.zap <= 0 ? bestHook() : null;
-    for (const h of w.L.hooks) drawHook(h, h === target);
-    for (const s of w.L.sparks) drawSpark(s);
-    for (const c of w.L.cells) drawCell(c);
+    drawBackground(theme);
+    ctx.save();
+    ctx.translate(Math.round(W * 0.42 - w.cam.x * T), Math.round(H * anchorY() - w.cam.y * T));
+    ctx.scale(T, T);
+    drawWires();
+    drawTiles(theme);
+    for (const wtr of L.water) drawWater(wtr, theme);
+    for (const pl of L.plates) drawPlate(pl);
+    for (const br of L.bridges) drawBridge(br);
+    for (const d of L.doors) drawDoor(d);
+    for (const lf of L.lifts) drawLift(lf);
+    for (const f of L.fans) drawFan(f);
+    for (const sp of L.sparkers) drawSparker(sp);
+    for (const s of L.springs) drawSpring(s);
+    for (const pad of L.pads) drawPad(pad);
+    for (const s of L.sockets) drawSocket(s);
+    drawExit(L.exit);
+    const target = !w.rope && w.zap <= 0 && !w.plug ? bestHook() : null;
+    for (const h of L.hooks) drawHook(h, h === target);
+    for (const s of L.sparks) drawSpark(s);
+    for (const c of L.cells) drawCell(c);
+    for (const c of L.crates) drawCrate(c);
     if (bench.active && w.trail.length > 1) {
       ctx.strokeStyle = "rgba(255,230,120,0.35)";
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 0.08;
       ctx.beginPath();
       const from = Math.max(0, w.trail.length - 240);
       for (let i = from; i < w.trail.length; i++) {
-        const s = toScreen(w.trail[i].x, w.trail[i].y);
-        if (i === from) ctx.moveTo(s.x, s.y);
-        else ctx.lineTo(s.x, s.y);
+        if (i === from) ctx.moveTo(w.trail[i].x, w.trail[i].y);
+        else ctx.lineTo(w.trail[i].x, w.trail[i].y);
       }
       ctx.stroke();
     }
     drawCord();
     drawTelly();
+    drawDust();
+    ctx.restore();
+    if (theme.dim) ctx.drawImage(getVignette(), 0, 0, W, H);
     kit.fx.draw(ctx);
+    drawButtons();
     ctx.restore();
   }
 
@@ -1300,19 +2511,20 @@
       step(STEP);
       w.acc -= STEP;
       n += 1;
+      if (world !== w) return;
     }
     if (n === 8) w.acc = 0;
   }
 
   function update(dt) {
     if (mode !== "play") return;
-    roomTime += dt;
+    if (world.finishing <= 0) roomTime += dt;
     simulate(dt);
   }
 
   function updateHud() {
-    if (mode !== "play") return;
-    const cells = world ? world.L.cells.filter((c) => c.got).length : 0;
+    if (mode !== "play" || !world) return;
+    const cells = world.L.cells.filter((c) => c.got).length;
     kit.setExtra(`<span>🔋${Math.max(0, batteries)} · Room ${world.L.n + 1}${cells ? ` · ${cells}/3` : ""}</span>`);
   }
 
@@ -1320,15 +2532,11 @@
     bench.stop(false);
     mode = "play";
     batteries = BATTERIES;
-    stats.sparks = 0;
-    stats.cells = 0;
-    stats.wraps = 0;
-    stats.rooms = 0;
-    holding = false;
+    for (const k of Object.keys(stats)) stats[k] = 0;
+    clearInput();
     newWorld(0);
-    placeAtStart();
     updateHud();
-    kit.toast(`Room 1: ${world.L.theme.name}`, "#ffe9c4");
+    kit.toast(`Room 1: ${world.L.def.name}`, "#ffe9c4");
   }
 
   /* ---------------- benchmark: "Test this device" ---------------- */
@@ -1345,8 +2553,7 @@
       overlay.classList.remove("fk-show");
       overlay.innerHTML = "";
       mode = "bench";
-      newWorld(2, { segments: 12 });
-      placeAtStart();
+      newWorld(1);
       this.active = true;
       this.frames = [];
       this.started = performance.now();
@@ -1362,8 +2569,7 @@
       if (!this.active) return;
       this.active = false;
       mode = "demo";
-      newWorld(0, { segments: 8 });
-      placeAtStart();
+      newWorld(0);
       if (show) showBenchResult(summarize(this.frames));
     },
   };
@@ -1450,7 +2656,7 @@
     });
   }
 
-  // Add "Test this device" to the kit's title card whenever it is shown.
+  // Add "Test this device" and the stars won so far to the title card.
   const overlayEl = document.getElementById("fk-overlay");
   new MutationObserver(() => {
     const card = overlayEl.querySelector(".fk-card");
@@ -1463,31 +2669,83 @@
     const go = card.querySelector('[data-fk="go"]');
     go.insertAdjacentElement("afterend", btn);
     tap(btn, () => bench.begin());
+    const won = Object.values(bestStars()).reduce((s, n) => s + (Number(n) || 0), 0);
     const prev = lastBench();
-    if (prev) {
+    if (won || prev) {
       const line = document.createElement("div");
       line.className = "ts-bench-line";
-      line.textContent = `Last test: ${prev.fps} fps (${prev.grade.toLowerCase()})`;
+      line.textContent = [won ? `★ ${won} of ${ROOMS.length * 3} stars` : "", prev ? `Last test: ${prev.fps} fps` : ""].filter(Boolean).join(" · ");
       btn.insertAdjacentElement("afterend", line);
     }
   }).observe(overlayEl, { childList: true, subtree: true });
 
   /* ---------------- input ---------------- */
   view = kit.canvas(onResize);
-  kit.pointer(view.canvas, {
-    down: () => press(),
-    up: () => letGo(),
+  const cv = view.canvas;
+  const local = (e) => {
+    const r = cv.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  cv.addEventListener("pointerdown", (e) => {
+    if (kit.state !== "playing") return;
+    e.preventDefault();
+    try {
+      cv.setPointerCapture(e.pointerId);
+    } catch (_) {
+      /* synthetic pointer */
+    }
+    if (e.pointerType !== "mouse") showPad = true;
+    if (!showPad) {
+      // A mouse with no on-screen pad: a click throws the cord (or plugs in).
+      touches.set(e.pointerId, "cord");
+    } else {
+      const at = local(e);
+      const b = buttonAt(at.x, at.y);
+      if (!b) return;
+      touches.set(e.pointerId, b);
+    }
+    applyTouches();
   });
-  window.addEventListener("keydown", (e) => {
-    if (kit.state !== "playing" || e.repeat) return;
-    if (e.key === " " || e.key === "ArrowUp" || e.key === "w") {
-      e.preventDefault();
-      press();
+  cv.addEventListener("pointermove", (e) => {
+    if (!touches.has(e.pointerId) || !showPad) return;
+    e.preventDefault();
+    const at = local(e);
+    const b = buttonAt(at.x, at.y);
+    // Sliding a thumb between ◀ and ▶ changes direction; other buttons hold.
+    const was = touches.get(e.pointerId);
+    if (b && (was === "left" || was === "right") && (b === "left" || b === "right") && b !== was) {
+      touches.set(e.pointerId, b);
+      applyTouches();
     }
   });
+  const lift = (e) => {
+    if (!touches.has(e.pointerId)) return;
+    touches.delete(e.pointerId);
+    applyTouches();
+  };
+  cv.addEventListener("pointerup", lift);
+  cv.addEventListener("pointercancel", lift);
+
+  const KEYS = {
+    ArrowLeft: "left", a: "left", A: "left",
+    ArrowRight: "right", d: "right", D: "right",
+    ArrowUp: "jump", " ": "jump", w: "jump", W: "jump", z: "jump", Z: "jump",
+    x: "cord", X: "cord", Shift: "cord", e: "cord", E: "cord", ArrowDown: "cord", s: "cord", S: "cord",
+  };
+  window.addEventListener("keydown", (e) => {
+    const k = KEYS[e.key];
+    if (!k || kit.state !== "playing") return;
+    e.preventDefault();
+    if (e.repeat) return;
+    if (k === "jump") input.jumpPressed = true;
+    if (k === "cord") input.cordPressed = true;
+    input[k] = true;
+  });
   window.addEventListener("keyup", (e) => {
-    if (kit.state !== "playing") return;
-    if (e.key === " " || e.key === "ArrowUp" || e.key === "w") letGo();
+    const k = KEYS[e.key];
+    if (!k) return;
+    if (k === "cord" && input.cord) input.cordReleased = true;
+    input[k] = false;
   });
 
   kit.run(update, render);
@@ -1498,9 +2756,53 @@
     get room() { return world ? world.L.n : -1; },
     get batteries() { return batteries; },
     get stats() { return { ...stats }; },
+    get rooms() { return ROOMS.length; },
     autopilot(on) { auto = !!on; },
     bench: () => bench.begin(),
-    level: (n) => buildLevel(n),
+    level: (n) => {
+      const L = buildRoom(n);
+      return { name: L.def.name, cells: L.cells.length, sparks: L.sparks.length, hooks: L.hooks.length, sockets: L.sockets.length, exit: L.exit, width: L.w };
+    },
+    goto(n) {
+      if (mode !== "play") return;
+      newWorld(n);
+      updateHud();
+    },
+    teleport(x, y) {
+      const p = world.p;
+      p.x = x;
+      p.y = y;
+      p.vx = p.vy = 0;
+      world.rope = null;
+      world.cord = makeCord();
+    },
+    refill() {
+      batteries = BATTERIES;
+    },
+    advance(seconds) {
+      // Run the game forward without waiting for frames (tests).
+      const n = Math.round(seconds / STEP);
+      for (let i = 0; i < n && kit.state === "playing"; i++) {
+        if (world.finishing <= 0) roomTime += STEP;
+        step(STEP);
+      }
+    },
+    hold(key, on) {
+      if (key === "jump" && on && !input.jump) input.jumpPressed = true;
+      if (key === "cord" && on && !input.cord) input.cordPressed = true;
+      if (key === "cord" && !on && input.cord) input.cordReleased = true;
+      input[key] = !!on;
+    },
+    state() {
+      const w = world;
+      const p = w.p;
+      return {
+        x: p.x, y: p.y, vx: p.vx, vy: p.vy, ground: p.ground, roped: !!w.rope, plugged: !!w.plug, zap: w.zap > 0, finishing: w.finishing > 0,
+        doors: w.L.doors.map((d) => d.open), lifts: w.L.lifts.map((l) => l.y), fans: w.L.fans.map((f) => f.spin),
+        bridges: w.L.bridges.map((b) => b.ext), plates: w.L.plates.map((pl) => pl.pressed),
+        crates: w.L.crates.map((c) => ({ x: c.x, y: c.y })), cells: w.L.cells.filter((c) => c.got).length, skips: w.skips || 0,
+      };
+    },
   };
 })();
 </script>
