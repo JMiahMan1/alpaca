@@ -148,7 +148,7 @@ def test_room_plays_a_quick_draw_round_end_to_end():
     assert snap["race"]["flash"] and snap["step"] == "0f"
     assert snap["race"]["item"]["answer"] == item["answer"]
     assert snap["race"]["right"] == ["P0", "P1"] and snap["race"]["mine"]["correct"] is False
-    assert "P0 was fastest" in snap["announce"]
+    assert snap["announce"].endswith("! P0 was fastest!")
     # Run the clock out on the rest.
     with party._lock:
         for _ in range(40):
