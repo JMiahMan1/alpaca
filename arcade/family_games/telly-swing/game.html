@@ -17,6 +17,11 @@
   .ts-bench-grid b { display: block; font-size: 22px; }
   .ts-bench-grid span { font-size: 12px; opacity: 0.75; }
   .ts-bench-note { font-size: 12px; opacity: 0.7; margin: 6px 0 2px; }
+  .ts-room-pick { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 6px 0 8px;
+    background: rgba(0,0,0,0.06); border-radius: 12px; padding: 4px 6px; font-size: 13px; font-weight: 700; }
+  .ts-room-pick button { border: 0; background: rgba(255,255,255,0.75); border-radius: 8px; width: 28px; height: 26px;
+    font-size: 13px; font-weight: 800; cursor: pointer; color: #2a2140; }
+  .ts-room-pick span { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -101,7 +106,7 @@
    * the row Telly stands on. Every room has exactly three power cells. */
   function builder() {
     const L = {
-      solids: [], ledges: [], water: [], hooks: [], sparks: [], cells: [], pads: [], springs: [], crates: [],
+      solids: [], ledges: [], water: [], hooks: [], sparks: [], cells: [], pads: [], springs: [], boosters: [], crates: [],
       baddies: [], sparkers: [], sockets: [], doors: [], lifts: [], fans: [], bridges: [], plates: [], start: { x: 2, y: 11 }, exit: null,
     };
     const b = {
@@ -121,10 +126,12 @@
       cell: (x, y) => L.cells.push({ x, y, got: false }),
       hook: (x, y, o) => L.hooks.push({ bx: x, by: y, ax: (o && o.ax) || 0, ay: (o && o.ay) || 0, sp: (o && o.sp) || 1, ph: (o && o.ph) || 0 }),
       spring: (x, y) => L.springs.push({ x, y, squash: 0 }),
+      booster: (x, y, vx, vy) => L.boosters.push({ x, y, vx: vx || 13.2, vy: vy || -15.8, pulse: 0, cool: 0 }),
       crate: (x, y) => L.crates.push({ hx: x, hy: y }),
       baddie: (x, y, x0, x1, kind) => L.baddies.push({
         x, y, hx: x, hy: y, x0, x1, kind: kind || "bug", dir: 1, vx: 0, vy: 0,
-        w: 0.84, h: kind === "roller" ? 0.96 : 0.74, walk: 0, pause: 0, squash: 0, dead: false, deadT: 0, spin: 0,
+        w: 0.84, h: kind === "roller" ? 0.96 : kind === "hopper" ? 1.02 : 0.74,
+        walk: 0, pause: 0, squash: 0, hopT: 0, dead: false, deadT: 0, spin: 0,
       }),
       sparker: (x, y, phase) => L.sparkers.push({ x, y, h: 2.7, phase: phase || 0 }),
       socket: (x, y, time) => {
@@ -138,7 +145,11 @@
         return p;
       },
       door: (x, y0, y1, by) => L.doors.push({ x, y0, y1, by, open: 0 }),
-      lift: (x0, x1, yDown, yUp, by) => L.lifts.push({ x0, x1, yDown, yUp, y: yDown, by, dy: 0 }),
+      lift: (x0, x1, yDown, yUp, by) => L.lifts.push({ x0, x1, yDown, yUp, y: yDown, by, dy: 0, dx: 0 }),
+      mover: (x0, x1, y, o) => L.lifts.push({
+        x0, x1, bx0: x0, bx1: x1, yDown: y, yUp: y, y, by: null, dy: 0, dx: 0,
+        mover: true, ax: (o && o.ax) || 0, ay: (o && o.ay) || 0, sp: (o && o.sp) || 1.2, ph: (o && o.ph) || 0,
+      }),
       fan: (x, y, h, by) => L.fans.push({ x, y, h, by, spin: 0, a: 0 }),
       bridge: (x0, x1, y, by) => L.bridges.push({ x0, x1, y, by, ext: 0 }),
     };
@@ -310,6 +321,198 @@
         b.ground(64, 80, 6);
         b.baddie(70, 6, 65.5, 74, "roller");
         b.exit(76, 6);
+      },
+    },
+    {
+      name: "Sky Gondolas", theme: "kitchen", par: 75,
+      build(b) {
+        b.ground(0, 13, 11); b.start(2, 11);
+        b.sparks([[5, 10.3], [7, 10.3], [9, 10.3]]);
+        b.mover(15, 19, 10.5, { ax: 1.3, sp: 1.3 });
+        b.cell(17, 7.6);
+        b.ground(21, 33, 10); b.pad(23, 10);
+        b.baddie(28, 10, 24.5, 31.2, "hopper");
+        b.hook(36.5, 4.5); b.hook(40.5, 4.5);
+        b.sparks([[36.5, 8.8], [40.5, 8.8]]);
+        b.ground(44, 54, 10); b.pad(46, 10);
+        b.mover(56, 60, 8.5, { ax: 1.1, ay: 1.0, sp: 1.15 });
+        b.cell(58, 5.6);
+        b.ground(62, 76, 8);
+        b.baddie(68.5, 8, 64.5, 72.5, "roller");
+        b.cell(71, 5.2);
+        b.ground(76, 88, 9);
+        b.exit(84, 9);
+      },
+    },
+    {
+      name: "Turbo Boost", theme: "garage", par: 75,
+      build(b) {
+        b.ground(0, 14, 11); b.start(2, 11);
+        b.sparks([[5, 10.3], [7, 10.3], [9, 10.3]]);
+        b.water(14, 19, 11);
+        b.booster(13.4, 11, 13.2, -15.6);
+        b.cell(16.5, 7.6);
+        b.ground(19, 34, 11); b.pad(21, 11);
+        b.baddie(27.5, 11, 24, 30.8, "roller");
+        const a = b.socket(32, 11, 5.5);
+        b.block(35, 38, 0, 6); b.door(36, 6, 11, a);
+        b.ground(34, 44, 11);
+        b.booster(43.4, 11, 13.4, -16.0);
+        b.cell(46, 7.2);
+        b.ground(48, 62, 9); b.pad(50, 9);
+        b.baddie(56, 9, 52.5, 59.5, "hopper");
+        b.hook(65.5, 3.5, { ax: 1.1, sp: 1.0 }); b.hook(69.5, 3.5);
+        b.cell(67.5, 7.5);
+        b.ground(73, 88, 9);
+        b.baddie(79, 9, 75, 82.5, "bug");
+        b.exit(85, 9);
+      },
+    },
+    {
+      name: "Clockwork Climb", theme: "living", par: 80,
+      build(b) {
+        b.ground(0, 14, 11); b.start(2, 11);
+        b.baddie(8.5, 11, 5.5, 11.2, "bug");
+        b.sparks([[6, 10.3], [8, 10.3], [10, 10.3]]);
+        const a = b.socket(12.2, 11, 6.5);
+        b.lift(14, 17, 10.55, 6, a); b.cell(15.5, 3.4);
+        b.ground(17, 29, 6); b.pad(19, 6);
+        b.baddie(24, 6, 20.5, 27.5, "hopper");
+        b.mover(31, 35, 6, { ax: 1.2, sp: 1.25 });
+        b.sparks([[32, 5], [34, 5]]);
+        b.ground(37, 49, 6);
+        b.spring(42, 6); b.ledge(43, 48, 1.5); b.cell(45.5, 0.5);
+        b.hook(52.5, 0.5, { ax: 1.1, sp: 0.95 }); b.hook(56.5, 0.5);
+        b.ground(60, 74, 7); b.pad(62, 7);
+        const c = b.socket(64.5, 7, 4.5);
+        b.cell(67, 4.2);
+        b.block(68, 71, -2, 2); b.door(69, 2, 7, c);
+        b.ground(74, 88, 7);
+        b.baddie(79, 7, 75.5, 82.5, "roller");
+        b.exit(85, 7);
+      },
+    },
+    {
+      name: "Boogaloo's Patrol", theme: "garden", par: 80,
+      build(b) {
+        b.ground(0, 16, 11); b.start(2, 11);
+        b.baddie(8.5, 11, 5.5, 11.2, "bug");
+        b.baddie(13.5, 11, 11.5, 15, "hopper");
+        b.hook(19.5, 5); b.cell(19.5, 9.2);
+        b.ground(23, 44, 11); b.pad(25, 11);
+        b.crate(29, 11);
+        const pl = b.plate(34, 36, 11);
+        b.bridge(44, 53, 11, pl); b.cell(48.5, 8.5);
+        b.baddie(39.5, 11, 36.8, 42.5, "roller");
+        b.ground(53, 66, 11); b.pad(55, 11);
+        b.sparker(59, 11, 0.4);
+        b.booster(65.4, 11, 13.4, -15.8);
+        b.cell(68, 7.2);
+        b.ground(70, 88, 9);
+        b.baddie(77, 9, 73, 81, "hopper");
+        b.exit(84, 9);
+      },
+    },
+    {
+      name: "High Voltage", theme: "workshop", par: 85,
+      build(b) {
+        b.ground(0, 15, 11); b.start(2, 11);
+        b.sparker(6, 11, 0); b.sparker(10.5, 11, 1.1);
+        b.sparks([[8.5, 10.2], [13, 10.2]]);
+        b.mover(16.5, 20.5, 10.5, { ax: 1.1, sp: 1.25 });
+        b.cell(18.5, 7.6);
+        b.ground(22, 36, 11); b.pad(24, 11);
+        b.baddie(28.5, 11, 25.5, 31.2, "roller");
+        const a = b.socket(32.2, 11, 7);
+        b.fan(35.1, 11, 8.5, a); b.cell(35.1, 5.2);
+        b.ground(36, 50, 4);
+        b.sparker(40, 4, 0.5);
+        b.baddie(45.5, 4, 42.5, 48.5, "hopper");
+        b.hook(53.5, -1.5, { ax: 1.1, sp: 1.0 });
+        b.hook(58, -1.5, { ax: 1.1, sp: 1.0, ph: Math.PI });
+        b.cell(55.8, 3.2);
+        b.ground(62, 82, 6); b.pad(64, 6);
+        b.sparker(68, 6, 0.2);
+        b.baddie(74, 6, 71, 77, "roller");
+        b.exit(79, 6);
+      },
+    },
+    {
+      name: "Skyline Express", theme: "roofs", par: 85,
+      build(b) {
+        b.ground(0, 13, 10); b.start(2, 10);
+        b.booster(12.4, 10, 13.4, -15.8);
+        b.cell(15, 6.4);
+        b.ground(17, 30, 8);
+        b.baddie(24, 8, 20, 28, "roller");
+        b.hook(33.5, 2.5, { ax: 1.1, sp: 1.0 });
+        b.hook(38, 2.0, { ay: 0.8, sp: 1.1 });
+        b.hook(42.5, 2.5);
+        b.cell(38, 6.4);
+        b.ground(46, 58, 8); b.pad(48, 8);
+        b.baddie(53, 8, 49.5, 56.5, "hopper");
+        b.mover(60, 64, 8, { ax: 1.2, sp: 1.25 });
+        b.ground(66, 76, 8);
+        b.booster(75.4, 8, 13.4, -15.8);
+        b.cell(78, 4.4);
+        b.ground(80, 96, 6);
+        b.baddie(87, 6, 83, 90.5, "roller");
+        b.exit(93, 6);
+      },
+    },
+    {
+      name: "Circuit Breaker", theme: "dusk", par: 90,
+      build(b) {
+        b.ground(0, 18, 11); b.start(2, 11);
+        b.crate(7, 11);
+        const pl = b.plate(12, 14, 11);
+        b.bridge(18, 26, 11, pl); b.cell(22, 8.4);
+        b.baddie(15.8, 11, 14.5, 17.4, "bug");
+        b.ground(26, 38, 11); b.pad(28, 11);
+        b.sparker(31, 11, 0.3);
+        const a = b.socket(35.5, 11, 6.5);
+        b.lift(38, 41, 10.55, 5, a); b.cell(39.5, 2.4);
+        b.ground(38, 41, 11);
+        b.ground(41, 55, 5);
+        b.baddie(47, 5, 43, 51, "hopper");
+        b.booster(54.4, 5, 13.2, -15.4);
+        b.ground(59, 71, 4); b.pad(61, 4);
+        const c = b.socket(63.5, 4, 4.5);
+        b.cell(66, 1.2);
+        b.block(67, 70, -4, -1); b.door(68, -1, 4, c);
+        b.hook(74.5, -1.5, { ax: 1.2, sp: 1.05 });
+        b.ground(78, 94, 5);
+        b.baddie(84, 5, 80, 88, "roller");
+        b.exit(91, 5);
+      },
+    },
+    {
+      name: "Boogaloo's Core", theme: "night", par: 95,
+      build(b) {
+        b.ground(0, 12, 10); b.start(2, 10);
+        b.sparker(6, 10, 0);
+        b.booster(11.4, 10, 13.4, -15.8);
+        b.cell(14, 6.4);
+        b.ground(16, 30, 8);
+        b.baddie(21.5, 8, 18.5, 24.5, "hopper");
+        b.baddie(27, 8, 25, 29, "roller");
+        b.mover(32, 36, 8, { ax: 1.2, sp: 1.3 });
+        b.sparks([[33, 7], [35, 7]]);
+        b.ground(38, 50, 8); b.pad(40, 8);
+        const a = b.socket(43, 8, 7);
+        b.fan(49.1, 8, 8.5, a); b.cell(49.1, 2.2);
+        b.ground(50, 64, 2);
+        b.sparker(54, 2, 0.7);
+        b.baddie(60, 2, 57.5, 62.8, "hopper");
+        b.hook(67.5, -3.5, { ax: 1.2, sp: 1.05 });
+        b.hook(72, -3.5, { ay: 0.9, sp: 1.05, ph: 1.5 });
+        b.hook(76.5, -3.5, { ax: 1.2, sp: 1.05, ph: Math.PI });
+        b.cell(72, 1.0);
+        b.ground(80, 98, 4); b.pad(82, 4);
+        const c = b.socket(84.5, 4, 4.5);
+        b.door(88, -3, 4, c);
+        b.baddie(91.5, 4, 89.2, 93.8, "roller");
+        b.exit(95, 4);
       },
     },
   ];
@@ -642,6 +845,24 @@
     }
     for (const br of L.bridges) br.ext = clamp(br.ext + (powered(br.by) ? 2.2 : -2.2) * dt, 0, 1);
     for (const lf of L.lifts) {
+      if (lf.mover) {
+        const nx0 = lf.bx0 + Math.sin(w.t * lf.sp + lf.ph) * lf.ax;
+        const ny = lf.yDown + Math.sin(w.t * lf.sp * 1.15 + lf.ph) * lf.ay;
+        const dx = nx0 - lf.x0;
+        const dy = ny - lf.y;
+        lf.dx = dx;
+        lf.dy = dy;
+        for (const bd of bodies) {
+          if (standingOn(bd) === lf) {
+            moveX(bd, dx);
+            bd.y += dy;
+          }
+        }
+        lf.x0 += dx;
+        lf.x1 += dx;
+        lf.y = ny;
+        continue;
+      }
       // A powered lift waits for a rider, then goes up while the power lasts.
       const riding = bodies.some((bd) => standingOn(bd) === lf);
       const target = powered(lf.by) && (riding || lf.y < lf.yDown - 0.01) ? lf.yUp : lf.yDown;
@@ -704,10 +925,27 @@
       bd.vx = 0;
       return;
     }
-    const spd = bd.kind === "roller" ? 2.6 : 1.9;
+    const spd = bd.kind === "roller" ? 2.6 : bd.kind === "hopper" ? 2.25 : 1.9;
     bd.vx = bd.dir * spd;
     bd.x += bd.vx * dt;
     bd.walk += Math.abs(bd.vx) * dt * 3.4;
+    if (bd.kind === "hopper") {
+      bd.hopT = (bd.hopT || 0) + dt;
+      if (bd.y < bd.hy || bd.vy < 0) {
+        bd.vy += 36 * dt;
+        bd.y += bd.vy * dt;
+        if (bd.y >= bd.hy) {
+          bd.y = bd.hy;
+          bd.vy = 0;
+          bd.squash = 0.35;
+          emit("spark", bd.x, bd.y - 0.05, 3, { speed: 2, color: "#5dff9a" });
+        }
+      } else if (bd.hopT >= 1.05) {
+        bd.hopT = 0;
+        bd.vy = -7.6;
+        bd.squash = 0.25;
+      }
+    }
     if ((bd.dir > 0 && bd.x >= bd.x1) || (bd.dir < 0 && bd.x <= bd.x0)) {
       bd.x = clamp(bd.x, bd.x0, bd.x1);
       bd.dir = -bd.dir;
@@ -726,7 +964,8 @@
       }
     }
     if (Math.random() < dt * 3.5) {
-      emit("spark", bd.x, bd.y - bd.h - 0.08, 1, { speed: 1.8, color: bd.kind === "roller" ? "#7fe0ff" : "#ff6b8a" });
+      const col = bd.kind === "roller" ? "#7fe0ff" : bd.kind === "hopper" ? "#5dff9a" : "#ff6b8a";
+      emit("spark", bd.x, bd.y - bd.h - 0.08, 1, { speed: 1.8, color: col });
     }
   }
 
@@ -1159,7 +1398,7 @@
     }
     p.worried = p.ground && !dir && !w.rope && !w.plug && floorBelow(p.x + p.dir * 0.7, p.y, 3) === null;
 
-    // Springs, pads, pickups and hazards.
+    // Springs, boosters, pads, pickups and hazards.
     for (const s of L.springs) {
       if (s.squash > 0) s.squash -= dt * 3;
       if (p.ground && Math.abs(p.x - s.x) < 0.5 && Math.abs(p.y - s.y) < 0.05) {
@@ -1168,6 +1407,28 @@
         emit("ring", s.x, s.y - 0.4, 1, { color: "#ffe066" });
         kit.sound.play("bounce", 0.8);
         kit.haptic(14);
+      }
+    }
+    for (const bst of L.boosters) {
+      if (bst.pulse > 0) bst.pulse = Math.max(0, bst.pulse - dt * 3);
+      if (bst.cool > 0) bst.cool = Math.max(0, bst.cool - dt);
+      if (bst.cool <= 0 && Math.abs(p.x - bst.x) < 0.72 && Math.abs(p.y - bst.y) < 0.5) {
+        bst.pulse = 1;
+        bst.cool = 0.28;
+        p.vx = bst.vx;
+        p.vy = bst.vy;
+        p.dir = bst.vx >= 0 ? 1 : -1;
+        p.flung = true;
+        p.ground = false;
+        p.coyote = 0;
+        p.buffer = 0;
+        p.hover = 0.45;
+        p.syV += 5.2;
+        emit("ring", bst.x, bst.y - 0.35, 2, { color: "#48f0ff" });
+        emit("star", bst.x, bst.y - 0.35, 10, { speed: 5, color: "#ffe066" });
+        kit.sound.play("whoosh");
+        kit.sound.tone(360, 0.12, { type: "sawtooth", slide: 880, vol: 0.2 });
+        kit.haptic(16);
       }
     }
     for (const pad of L.pads) {
@@ -1598,7 +1859,12 @@
     const hp = h ? hookPos(h, w.t) : null;
     if (p.ground) {
       // Wait on a rising lift until it reaches the top ledge.
-      if (p.on && p.on.yUp !== undefined && powered(p.on.by) && p.on.y > p.on.yUp + 0.2) {
+      if (p.on && !p.on.mover && p.on.yUp !== undefined && powered(p.on.by) && p.on.y > p.on.yUp + 0.2) {
+        input.right = false;
+        return;
+      }
+      // Ride a moving hover-gondola until it nears the far side of its track.
+      if (p.on && p.on.mover && p.x > p.on.x1 - 0.7 && p.on.x1 < p.on.bx1 + p.on.ax - 0.35 && floorBelow(p.x + 2.2, p.y, 4) === null) {
         input.right = false;
         return;
       }
@@ -3128,6 +3394,47 @@
 
   function drawLift(lf) {
     const w = lf.x1 - lf.x0;
+    if (lf.mover) {
+      const cx = (lf.bx0 + lf.bx1) * 0.5;
+      const hw = w * 0.5;
+      ctx.save();
+      ctx.strokeStyle = "rgba(120, 220, 255, 0.35)";
+      ctx.setLineDash([0.14, 0.14]);
+      ctx.lineWidth = 0.05;
+      ctx.beginPath();
+      ctx.moveTo(cx - lf.ax - hw * 0.4, lf.yDown - lf.ay + 0.22);
+      ctx.lineTo(cx + lf.ax + hw * 0.4, lf.yDown + lf.ay + 0.22);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Hover-thruster flames beneath the gondola
+      for (const tx of [lf.x0 + 0.65, lf.x1 - 0.65]) {
+        const fl = 0.22 + 0.08 * Math.sin(world.t * 36 + tx);
+        const fg = ctx.createLinearGradient(tx, lf.y + 0.42, tx, lf.y + 0.42 + fl);
+        fg.addColorStop(0, "rgba(120, 240, 255, 0.85)");
+        fg.addColorStop(1, "rgba(72, 140, 255, 0)");
+        ctx.fillStyle = fg;
+        ctx.beginPath();
+        ctx.moveTo(tx - 0.16, lf.y + 0.42);
+        ctx.lineTo(tx + 0.16, lf.y + 0.42);
+        ctx.lineTo(tx, lf.y + 0.42 + fl);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.fillStyle = "#252b48";
+      roundRect(ctx, lf.x0, lf.y, w, 0.44, 0.12);
+      ctx.fill();
+      ctx.fillStyle = "#48d8ff";
+      roundRect(ctx, lf.x0 + 0.06, lf.y + 0.03, w - 0.12, 0.1, 0.04);
+      ctx.fill();
+      for (const lx of [lf.x0 + 0.22, lf.x1 - 0.22]) {
+        ctx.fillStyle = "#ffe066";
+        ctx.beginPath();
+        ctx.arc(lx, lf.y + 0.26, 0.06, 0, TAU);
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
     ctx.strokeStyle = "#596073";
     ctx.lineWidth = 0.1;
     const base = lf.yDown + 0.45;
@@ -3325,8 +3632,9 @@
     const sy = 1 - bd.squash * 0.32;
     const sx = 1 + bd.squash * 0.28;
     const target = nearBaddie() === bd && !world.rope && !world.plug;
+    const glowCol = bd.kind === "roller" ? "#7fe0ff" : bd.kind === "hopper" ? "#5dff9a" : "#ff6b8a";
     if (!bd.dead) {
-      worldGlow(bd.x, bd.y - bd.h * 0.55, target ? 0.95 : 0.6, bd.kind === "roller" ? "#7fe0ff" : "#ff6b8a", target ? 0.55 : 0.32);
+      worldGlow(bd.x, bd.y - bd.h * 0.55, target ? 0.95 : 0.6, glowCol, target ? 0.55 : 0.32);
       light(bd.x, bd.y - bd.h * 0.5, 1.5, 0.55);
     }
     ctx.save();
@@ -3336,11 +3644,72 @@
       ctx.translate(0, -bd.h * 0.5);
       ctx.rotate(bd.spin);
       ctx.translate(0, bd.h * 0.5);
-    } else if (bd.kind === "roller") {
+    } else if (bd.kind === "roller" || bd.kind === "hopper") {
       ctx.rotate(clamp(bd.vx * 0.04, -0.14, 0.14));
     }
     ctx.scale(sx * bd.dir, sy);
-    if (bd.kind === "roller") {
+    if (bd.kind === "hopper") {
+      // Boogaloo's Pogo-Zapper: spring-loaded plasma hopper with accordion coil & twin horns.
+      ctx.fillStyle = "#1c1f30";
+      roundRect(ctx, -0.22, -0.07, 0.44, 0.07, 0.03);
+      ctx.fill();
+      ctx.strokeStyle = "#98a4cc";
+      ctx.lineWidth = 0.055;
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(0, -0.07);
+      ctx.lineTo(-0.14, -0.15);
+      ctx.lineTo(0.14, -0.23);
+      ctx.lineTo(-0.14, -0.31);
+      ctx.lineTo(0, -0.39);
+      ctx.stroke();
+      const hg = ctx.createRadialGradient(-0.08, -0.74, 0.05, 0, -0.66, 0.42);
+      hg.addColorStop(0, "#7dffb0");
+      hg.addColorStop(0.5, "#1f9d62");
+      hg.addColorStop(1, "#144532");
+      ctx.fillStyle = hg;
+      roundRect(ctx, -0.34, -0.94, 0.68, 0.56, 0.24);
+      ctx.fill();
+      ctx.strokeStyle = "#0e291e";
+      ctx.lineWidth = 0.035;
+      ctx.stroke();
+      for (const hx of [-0.18, 0.18]) {
+        ctx.strokeStyle = "#23263a";
+        ctx.lineWidth = 0.045;
+        ctx.beginPath();
+        ctx.moveTo(hx, -0.92);
+        ctx.lineTo(hx * 1.4, -1.1);
+        ctx.stroke();
+        ctx.fillStyle = "#ffe066";
+        ctx.beginPath();
+        ctx.arc(hx * 1.4, -1.1, 0.06, 0, TAU);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#121828";
+      roundRect(ctx, -0.14, -0.8, 0.42, 0.24, 0.09);
+      ctx.fill();
+      if (bd.dead) {
+        ctx.strokeStyle = "#5dff9a";
+        ctx.lineWidth = 0.035;
+        ctx.beginPath();
+        ctx.moveTo(0.02, -0.73); ctx.lineTo(0.14, -0.63);
+        ctx.moveTo(0.14, -0.73); ctx.lineTo(0.02, -0.63);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = "#ffe066";
+        ctx.beginPath();
+        ctx.arc(0.02, -0.68, 0.05, 0, TAU);
+        ctx.arc(0.18, -0.68, 0.05, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = "#5dff9a";
+        ctx.lineWidth = 0.032;
+        ctx.beginPath();
+        ctx.moveTo(-0.06, -0.76);
+        ctx.lineTo(0.1, -0.71);
+        ctx.lineTo(0.24, -0.76);
+        ctx.stroke();
+      }
+    } else if (bd.kind === "roller") {
       // Boogaloo's Volt-Bot: a grumpy unicycle zapper with a glowing cyan wheel & top coil.
       const ph = bd.walk * 2.2;
       // Unicycle wheel.
@@ -3576,6 +3945,35 @@
     ctx.fill();
     ctx.restore();
     if (s.squash > 0) worldGlow(s.x, s.y - 0.6, 1, "#ffe066", s.squash * 0.5);
+  }
+
+  function drawBooster(bst) {
+    const dir = bst.vx >= 0 ? 1 : -1;
+    worldGlow(bst.x, bst.y - 0.15, 0.9 + bst.pulse * 0.4, "#48f0ff", 0.38 + bst.pulse * 0.35);
+    light(bst.x, bst.y - 0.25, 1.6, 0.6);
+    ctx.save();
+    ctx.translate(bst.x, bst.y);
+    ctx.scale(dir, 1);
+    ctx.fillStyle = "#1f253d";
+    roundRect(ctx, -0.68, -0.22, 1.36, 0.22, 0.08);
+    ctx.fill();
+    ctx.strokeStyle = "#48f0ff";
+    ctx.lineWidth = 0.035;
+    ctx.stroke();
+    for (let k = -1; k <= 1; k++) {
+      const cyc = (world.t * 5.5 - k * 0.33) % 1;
+      ctx.strokeStyle = cyc < 0.45 ? "#ffe066" : "#48f0ff";
+      ctx.lineWidth = 0.06;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      const cx = k * 0.34;
+      ctx.beginPath();
+      ctx.moveTo(cx - 0.1, -0.17);
+      ctx.lineTo(cx + 0.08, -0.11);
+      ctx.lineTo(cx - 0.1, -0.05);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   function drawPad(pad) {
@@ -4587,6 +4985,7 @@
     for (const f of L.fans) drawFan(f);
     for (const sp of L.sparkers) drawSparker(sp);
     for (const s of L.springs) drawSpring(s);
+    for (const bst of L.boosters) drawBooster(bst);
     for (const pad of L.pads) drawPad(pad);
     for (const s of L.sockets) drawSocket(s);
     drawExit(L.exit);
@@ -4649,15 +5048,16 @@
     kit.setExtra(`<span>🔋${Math.max(0, batteries)} · Room ${world.L.n + 1}${cells ? ` · ${cells}/3` : ""}</span>`);
   }
 
+  let startRoomIdx = 0;
   function startGame() {
     bench.stop(false);
     mode = "play";
     batteries = BATTERIES;
     for (const k of Object.keys(stats)) stats[k] = 0;
     clearInput();
-    newWorld(0);
+    newWorld(startRoomIdx);
     updateHud();
-    kit.toast(`Room 1: ${world.L.def.name}`, "#ffe9c4");
+    kit.toast(`Room ${startRoomIdx + 1}: ${world.L.def.name}`, "#ffe9c4");
   }
 
   /* ---------------- benchmark: "Test this device" ---------------- */
@@ -4779,17 +5179,39 @@
     });
   }
 
-  // Add "Test this device" and the stars won so far to the title card.
+  // Add room selector, "Test this device" and the stars won so far to the title card.
   const overlayEl = document.getElementById("fk-overlay");
   new MutationObserver(() => {
     const card = overlayEl.querySelector(".fk-card");
     if (!card || !card.querySelector('[data-fk="go"]') || card.querySelector('[data-ts="bench"]')) return;
+    const go = card.querySelector('[data-fk="go"]');
+    const picker = document.createElement("div");
+    picker.className = "ts-room-pick";
+    picker.innerHTML =
+      `<button type="button" data-ts="prev" aria-label="Previous room">◀</button>` +
+      `<span data-ts="room-label"></span>` +
+      `<button type="button" data-ts="next" aria-label="Next room">▶</button>`;
+    go.insertAdjacentElement("beforebegin", picker);
+    const labelEl = picker.querySelector('[data-ts="room-label"]');
+    const syncPicker = () => {
+      const st = bestStars()[String(startRoomIdx)] || 0;
+      const starStr = st ? ` · ${"★".repeat(st)}` : "";
+      labelEl.textContent = `Room ${startRoomIdx + 1}/${ROOMS.length}: ${ROOMS[startRoomIdx].name}${starStr}`;
+    };
+    syncPicker();
+    tap(picker.querySelector('[data-ts="prev"]'), () => {
+      startRoomIdx = (startRoomIdx + ROOMS.length - 1) % ROOMS.length;
+      syncPicker();
+    });
+    tap(picker.querySelector('[data-ts="next"]'), () => {
+      startRoomIdx = (startRoomIdx + 1) % ROOMS.length;
+      syncPicker();
+    });
     const btn = document.createElement("button");
     btn.className = "fk-btn fk-ghost";
     btn.type = "button";
     btn.dataset.ts = "bench";
     btn.textContent = "🧪 Test this device";
-    const go = card.querySelector('[data-fk="go"]');
     go.insertAdjacentElement("afterend", btn);
     tap(btn, () => bench.begin());
     const won = Object.values(bestStars()).reduce((s, n) => s + (Number(n) || 0), 0);
