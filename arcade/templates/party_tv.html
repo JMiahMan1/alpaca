@@ -97,10 +97,16 @@
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
   .fade { animation: fadein .45s ease-out; }
   @keyframes fadein { from { opacity: 0; transform: translateY(1.5vh); } to { opacity: 1; transform: none; } }
-  .joke { margin-top: 3vh; padding: 1.6vh 2vw; border-radius: 2vh; background: rgba(255, 200, 61, .12); border: .3vh solid rgba(255, 200, 61, .5); max-width: 52vw; }
+  .joke { margin-top: 2vh; padding: 1.6vh 2vw; border-radius: 2vh; background: rgba(255, 200, 61, .12); border: .3vh solid rgba(255, 200, 61, .5); max-width: 52vw; }
   .joke .jk { font-size: 1.8vh; font-weight: 900; letter-spacing: .15em; text-transform: uppercase; color: #ffc83d; }
   .joke .js { font-size: 3vh; font-weight: 800; margin-top: .6vh; }
   .joke .jp { font-size: 3vh; font-weight: 900; color: #2ed3b7; margin-top: .4vh; }
+  .how-now { margin: 2vh auto 0; max-width: 70vw; font-size: 2.6vh; font-weight: 800; color: #fde68a; text-align: center; }
+  .howto { margin-top: 2vh; display: flex; gap: 1.2vw; }
+  .howto .hs { flex: 1; font-size: 2.1vh; font-weight: 700; color: #e2e8f0; line-height: 1.3; }
+  .howto .hs b { display: inline-block; width: 3.4vh; height: 3.4vh; line-height: 3.4vh; text-align: center; border-radius: 50%;
+    background: #ffc83d; color: #1b0f3b; margin-right: .8vw; }
+  .next-in { margin-top: 1.4vh; text-align: center; font-size: 2.4vh; font-weight: 800; color: #cbd5e1; }
 </style>
 </head>
 <body>
@@ -359,6 +365,11 @@
     return '<div class="center fade"><div class="h1">Ready when you are!</div>' +
       '<div class="h3" style="margin-top:3vh">On a phone, open <b>Jarvis → Family Games → Parable Party</b><br>and start a party room. It will appear here automatically.</div></div>';
   }
+  function howToHtml() {
+    return '<div class="howto"><div class="hs"><b>1</b>A Bible-story prompt appears here</div>' +
+      '<div class="hs"><b>2</b>Write a funny or wise answer on your phone</div>' +
+      '<div class="hs"><b>3</b>Vote for your favourite. Dodge the Scribe\'s Trap!</div></div>';
+  }
   function jokeHtml(r) {
     if (!r.joke) return "";
     return '<div class="joke"><div class="jk">😄 Dad joke of the moment</div><div class="js">' + esc(r.joke.setup) +
@@ -372,12 +383,13 @@
       '/join.svg" onerror="this.parentNode.style.display=\'none\'"></div><div><div class="h3">Scan to join, or enter room code</div>' +
       '<div class="huge">' + esc(r.code) + '</div><div class="h3">' + esc(joinUrl.replace(/^https?:\/\//, "")) + "</div>" +
       '<div class="h2" style="margin-top:3vh">' + (count ? count + (count === 1 ? " player is" : " players are") + " in. The host taps <b>Start</b> when everyone's ready."
-        : "Waiting for players…") + "</div>" + jokeHtml(r) + "</div></div>" + playersHtml(r, null);
+        : "Waiting for players…") + "</div>" + howToHtml() + jokeHtml(r) + "</div></div>" + playersHtml(r, null);
   }
   function viewWriting(r) {
     var pr = r.prompt || {};
     return '<div class="fade">' + promptHead(r) + '<div class="prompt">' + esc(pr.prompt) + "</div>" +
       (pr.subprompt || pr.scene ? '<div class="sub">' + esc(pr.subprompt || pr.scene) + "</div>" : "") +
+      (pr.instructions ? '<div class="how-now">👉 ' + esc(pr.instructions) + "</div>" : "") +
       '<div class="row" style="justify-content:center;margin-top:3vh"><div class="gap h2">✍️ Write your answer on your phone</div>' + clockHtml() + "</div>" +
       playersHtml(r, "submitted", "✅ Sealed", "✍️ Writing…") + "</div>";
   }
@@ -389,7 +401,7 @@
       h += '<div class="opt"><div class="n">' + (i + 1) + '</div><div class="t">' + esc(opts[i].text) + "</div></div>";
     }
     h += '</div><div class="row" style="justify-content:center;margin-top:1.2vh">' + clockHtml(true) +
-      '<div class="h2" style="font-size:3.2vh">🗳️ Vote on your phone!</div></div>';
+      '<div class="h2" style="font-size:3.2vh">🗳️ Vote on your phone for your favourite (not your own). One of these is the Scribe\'s Trap!</div></div>';
     return h + chipsHtml(r, "voted", "✅") + "</div>";
   }
   /* Use-Your-Words style reveal: answers are unveiled one at a time, fewest
@@ -411,6 +423,10 @@
     var total = r.phase_seconds || (8 + per * n);
     var elapsed = total - Math.max(0, (deadline - Date.now()) / 1000);
     return Math.max(0, Math.min(n, Math.floor((elapsed - 1) / per) + 1));
+  }
+  function nextInHtml(r) {
+    if (r.round >= r.total_rounds) return "";
+    return '<div class="next-in">Next round in <span id="next-in">' + Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</span>s</div>";
   }
   function viewReveal(r) {
     var opts = revealOrder(r);
@@ -436,7 +452,7 @@
     if (step < opts.length) return h + '<div class="center h3 pulse" style="margin-top:2vh">And the scrolls say…</div></div>';
     var note = (r.reveal && r.reveal.scripture_note) || (r.prompt && r.prompt.scripture_note);
     if (note) h += '<div class="note fade">' + esc(note) + "</div>";
-    return h + '<div class="fade">' + (opts.length > 4 ? scoreChipsHtml(r) : boardHtml(r, 4)) + "</div></div>";
+    return h + '<div class="fade">' + (opts.length > 4 ? scoreChipsHtml(r) : boardHtml(r, 4)) + nextInHtml(r) + "</div></div>";
   }
   function scoreChipsHtml(r) {
     var list = humans(r);
@@ -590,6 +606,8 @@
         $("main").innerHTML = viewReveal(room);
       }
     }
+    var ni = document.getElementById("next-in");
+    if (ni && deadline) ni.textContent = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     var c = document.getElementById("clock");
     if (!c || !deadline) return;
     var left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));

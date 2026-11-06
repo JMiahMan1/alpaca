@@ -116,6 +116,10 @@ STAGE_PRESENCE_SECONDS = 8.0
 #: gets the same extra time.
 STREAM_STAGE_DELAY_S = float(os.getenv("PARTY_STREAM_DELAY_S", "8"))
 WRITE_SECONDS = 55
+#: The announcer reads the prompt (and a quip) as writing starts; that time is not the players'.
+PROMPT_READ_SECONDS = 8
+#: After the last answer is revealed, how long the scores stay up before the next round starts on its own.
+REVEAL_LINGER_SECONDS = 12
 VOTE_SECONDS = 35
 REVEAL_SECONDS = 8
 #: The TV reveals answers one at a time (fewest votes first, the winner last),
@@ -809,7 +813,7 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
     room["total_rounds"] = TOTAL_ROUNDS
     room["phase"] = "writing"
     room["phase_started_at"] = now
-    room["phase_deadline"] = now + WRITE_SECONDS + _stage_delay(room)
+    room["phase_deadline"] = now + WRITE_SECONDS + PROMPT_READ_SECONDS + _stage_delay(room)
     room["current_prompt"] = {
         "id": prompt_item["id"],
         "kind": kind,
@@ -1052,8 +1056,9 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     room["phase"] = "reveal"
     room["phase_started_at"] = now
     room["phase_deadline"] = (now + REVEAL_SECONDS + REVEAL_PER_ANSWER_SECONDS * len(room.get("options") or [])
-                              + _stage_delay(room))
+                              + REVEAL_LINGER_SECONDS + _stage_delay(room))
     room["updated_at"] = now
+    _prefetch_next_prompt_unlocked(room)
 
 
 # --- The host's patter: what makes it sound like a game show, not a narrator ---
@@ -1274,6 +1279,71 @@ def _check_auto_advance_unlocked(room: dict[str, Any]) -> None:
         all_voted = bool(humans) and all(p["id"] in room["votes"] for p in humans)
         if all_voted or (deadline and now >= deadline):
             _score_round_unlocked(room)
+    elif phase == "reveal" and deadline and now >= deadline:
+        # The scores have been up long enough: the show goes on without waiting for the host.
+        _advance_unlocked(room)
+
+
+AI_PROMPT_KINDS = ("blank_o_matic", "survey_says")
+
+
+def _next_kind(room: dict[str, Any]) -> tuple[int, str] | None:
+    nxt = int(room.get("round") or 0) + 1
+    if nxt > int(room.get("total_rounds") or TOTAL_ROUNDS):
+        return None
+    return nxt, MATCH_ROUND_SCHEDULE[max(0, min(len(MATCH_ROUND_SCHEDULE) - 1, nxt - 1))]
+
+
+def _prefetch_next_prompt_unlocked(room: dict[str, Any]) -> None:
+    """Write the next round's AI prompt while the scores are on screen.
+
+    The language model is never called while the room lock is held: that lock
+    serves every room, so a slow model would freeze every game's clock.
+    """
+    nxt = _next_kind(room)
+    if not room.get("ai_prompts") or nxt is None or nxt[1] not in AI_PROMPT_KINDS:
+        return
+    code, round_now, (round_next, kind) = room["code"], room.get("round"), nxt
+
+    def work() -> None:
+        custom = _generate_ai_prompt(kind)
+        if not custom:
+            return
+        with _lock:
+            r = _rooms.get(code)
+            if r is not None and r.get("round") == round_now and r.get("phase") == "reveal":
+                r["next_prompt"] = {"round": round_next, "prompt": custom}
+
+    threading.Thread(target=work, name=f"party-prompt-{code}", daemon=True).start()
+
+
+def _advance_unlocked(room: dict[str, Any], custom: dict[str, Any] | None = None) -> None:
+    """writing -> voting -> reveal -> next round (or finished) -> new match."""
+    phase = room["phase"]
+    if phase == "lobby":
+        _ensure_bots_unlocked(room)
+        _start_round_unlocked(room, 1, custom_prompt=custom)
+    elif phase == "writing":
+        _build_voting_options_unlocked(room)
+    elif phase == "voting":
+        _score_round_unlocked(room)
+    elif phase == "reveal":
+        nxt = _next_kind(room)
+        if nxt is None:
+            room["phase"] = "finished"
+            room["updated_at"] = time.time()
+        else:
+            ready = room.pop("next_prompt", None) or {}
+            if custom is None and ready.get("round") == nxt[0]:
+                custom = ready.get("prompt")
+            _start_round_unlocked(room, nxt[0], custom_prompt=custom)
+    elif phase == "finished":
+        for p in room["players"].values():
+            p["score"] = 0
+            p["round_delta"] = 0
+        _ensure_bots_unlocked(room)
+        room["match_id"] = f"{room['code']}-{int(time.time())}"
+        _start_round_unlocked(room, 1, custom_prompt=custom)
 
 
 def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[str, Any]:
@@ -1648,6 +1718,8 @@ def start_match(code: str, *, use_ai_prompt: bool = False, player_id: str | None
                 p["round_delta"] = 0
         _ensure_bots_unlocked(room)
         room["match_id"] = f"{clean_code}-{int(time.time())}"
+        room["ai_prompts"] = bool(use_ai_prompt)
+        room.pop("next_prompt", None)
         _start_round_unlocked(room, 1, custom_prompt=custom)
         return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
 
@@ -1726,39 +1798,30 @@ def submit_vote(code: str, *, player_id: str, option_id: str) -> dict[str, Any]:
 
 
 def advance_phase(code: str, *, use_ai_prompt: bool = False, player_id: str | None = None) -> dict[str, Any]:
-    """Host or timer advances from writing -> voting -> reveal -> next round / finished."""
+    """The host moves the show on: writing -> voting -> reveal -> next round / finished."""
     clean_code = _clean_code(code)
     with _lock:
         room = _rooms.get(clean_code)
         if room is None:
             raise LookupError(f"Room '{clean_code}' not found.")
         _require_host_unlocked(room, player_id)
-        phase = room["phase"]
-        if phase == "lobby":
-            _ensure_bots_unlocked(room)
-            _start_round_unlocked(room, 1)
-        elif phase == "writing":
-            _build_voting_options_unlocked(room)
-        elif phase == "voting":
-            _score_round_unlocked(room)
-        elif phase == "reveal":
-            next_round = int(room.get("round") or 1) + 1
-            if next_round > int(room.get("total_rounds") or TOTAL_ROUNDS):
-                room["phase"] = "finished"
-                room["updated_at"] = time.time()
-            else:
-                sched_idx = max(0, min(len(MATCH_ROUND_SCHEDULE) - 1, next_round - 1))
-                kind = MATCH_ROUND_SCHEDULE[sched_idx]
-                custom = _generate_ai_prompt(kind) if use_ai_prompt else None
-                _start_round_unlocked(room, next_round, custom_prompt=custom)
-        elif phase == "finished":
-            for p in room["players"].values():
-                p["score"] = 0
-                p["round_delta"] = 0
-            _ensure_bots_unlocked(room)
-            room["match_id"] = f"{clean_code}-{int(time.time())}"
-            _start_round_unlocked(room, 1)
-        return serialize_room(room)
+        if use_ai_prompt:
+            room["ai_prompts"] = True
+        phase, round_now = room["phase"], room.get("round")
+        nxt = _next_kind(room) if phase == "reveal" else None
+        prefetched = (room.get("next_prompt") or {}).get("round") == (nxt[0] if nxt else None)
+        if not (use_ai_prompt and nxt and nxt[1] in AI_PROMPT_KINDS and not prefetched):
+            _advance_unlocked(room)
+            return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
+    # Write the prompt with the lock released, then advance if nothing moved on meanwhile.
+    custom = _generate_ai_prompt(nxt[1])
+    with _lock:
+        room = _rooms.get(clean_code)
+        if room is None:
+            raise LookupError(f"Room '{clean_code}' not found.")
+        if room["phase"] == phase and room.get("round") == round_now:
+            _advance_unlocked(room, custom=custom)
+        return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
 
 
 def _generate_ai_prompt(kind: str) -> dict[str, Any] | None:

@@ -178,6 +178,15 @@
     background: var(--ink); color: #fff; border: 2px solid var(--gold); border-radius: 14px; padding: 12px 14px; font: 800 15px var(--font);
     text-align: center; transform: translateY(20px); opacity: 0; visibility: hidden; transition: transform .25s, opacity .25s, visibility .25s; pointer-events: none; }
   #gw-toast.on { transform: none; opacity: 1; visibility: visible; }
+  .gw-ways { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .gw-join-row { display: flex; gap: 8px; align-items: stretch; }
+  .gw-join-row .gw-field { flex: 1 1 auto; min-width: 0; margin: 0; text-align: center; letter-spacing: .25em; font-size: 22px; }
+  .gw-join-row .gw-btn { flex: 0 0 auto; width: auto; padding-left: 22px; padding-right: 22px; }
+  /* Short phones: a smaller header so both ways in stay above the fold. */
+  @media (max-height: 760px) {
+    .gw-tall-only { display: none; }
+    .gw-logo .a { font-size: 16px; } .gw-logo .b { font-size: 26px; } .gw-logo .c { font-size: 13px; }
+  }
   @media (prefers-reduced-motion: reduce) { .gw-enter, .gw-dots span, .gw-sheet-body { animation: none; } }
 </style>
 </head>
@@ -580,21 +589,33 @@
     const avatars = AVATARS.map((a) => `<button type="button" class="gw-av ${a === myAvatar ? "on" : ""}" data-av="${a}" aria-label="Avatar ${a}">${a}</button>`).join("");
     const rooms = openRooms.slice(0, 3)
       .map((r) => `<button type="button" class="gw-btn small teal" data-open="${esc(r.code)}">Join ${esc(r.code)} · ${esc(r.host_name)} · ${r.player_count} in</button>`).join("");
-    return `${logo()}<div class="gw-tag">The TV is the stage. Your phone is your pen.</div>
+    // Everything a player needs is on the first screen of a small phone: who
+    // you are, then the two ways in (host, or join with a code) side by side.
+    return `${logo()}<div class="gw-tag gw-tall-only">The TV is the stage. Your phone is your pen.</div>
       <div class="gw-card gw-enter">
-        <label class="gw-label" for="gw-code">Room code</label>
-        <input id="gw-code" class="gw-field gw-code-field" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD" value="${esc(code)}">
-        <label class="gw-label" for="gw-name" style="margin-top:14px">Your name</label>
+        <label class="gw-label" for="gw-name">Your name</label>
         <input id="gw-name" class="gw-field" maxlength="20" autocomplete="nickname" placeholder="Name" value="${esc(myName)}">
-        <label class="gw-label" style="margin-top:14px">Pick your look</label>
+        <label class="gw-label" style="margin-top:12px">Pick your look</label>
         <div class="gw-avatars">${avatars}</div>
-        <div style="margin-top:16px"><button type="button" class="gw-btn coral" id="gw-join" ${busy ? "disabled" : ""}>Join game</button></div>
+        <div class="gw-ways">
+          <button type="button" class="gw-btn violet" id="gw-host" ${busy ? "disabled" : ""}>Host a new game</button>
+          <div class="gw-join-row">
+            <input id="gw-code" class="gw-field gw-code-field" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code" value="${esc(code)}">
+            <button type="button" class="gw-btn coral" id="gw-join" ${busy ? "disabled" : ""}>Join</button>
+          </div>
+        </div>
       </div>
-      ${rooms ? `<div class="gw-or">ROOMS OPEN NOW</div>${rooms}` : ""}
-      <div class="gw-or">OR</div>
-      <button type="button" class="gw-btn violet" id="gw-host" ${busy ? "disabled" : ""}>Host a new game</button>`;
+      ${rooms ? `<div class="gw-or">ROOMS OPEN NOW</div>${rooms}` : ""}`;
   }
 
+  function howToCard() {
+    return `<div class="gw-card"><div class="gw-label">How to play</div>
+      <ol style="margin:6px 0 0;padding-left:20px;font-weight:700;line-height:1.45">
+        <li>A Bible-story prompt shows on the TV (and here).</li>
+        <li>Write a funny or wise answer. Stuck? Play the Scribe's Decoy.</li>
+        <li>Vote for your favourite, not your own. Every vote you get is points!</li>
+        <li>Careful: one answer is the Scribe's Trap. Voting for it costs points.</li></ol></div>`;
+  }
   function viewLobby(r) {
     const humans = humansOf(r).length;
     const host = (r.players || []).find((p) => p.is_host);
@@ -617,10 +638,11 @@
             `<option value="${esc(v.id)}" ${v.id === r.voice ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select>
           <label class="gw-switch"><span>✨ Fresh AI-written prompts</span><input type="checkbox" id="gw-ai" ${useAiPrompts ? "checked" : ""}></label>
           <label class="gw-switch"><span>🎵 Game show music</span><input type="checkbox" id="gw-music" ${r.music !== false ? "checked" : ""}></label>
-        </div>`;
+        </div>` + howToCard();
     } else {
       h += `<div class="gw-card gw-wait">Waiting for ${esc(host ? host.name : "the host")} to start<span class="gw-dots"><span>.</span><span>.</span><span>.</span></span>
         <div class="gw-note" style="font-weight:800">${r.stage_connected ? "📺 The game is on the TV." : "Get comfy. You'll write your answers here."}</div></div>`;
+      h += howToCard();
       if (r.joke) h += `<div class="gw-card"><div class="gw-label">😄 Dad joke while you wait</div><p style="font-weight:800;margin:6px 0 4px">${esc(r.joke.setup)}</p><p style="font-weight:900;color:var(--teal);margin:0">${esc(r.joke.punch)}</p></div>`;
     }
     return h;
@@ -721,7 +743,9 @@
       <div class="gw-delta ${d > 0 ? "" : d < 0 ? "neg" : "zero"}">${d > 0 ? "+" : ""}${d} pts</div></div>`;
     if (!r.stage_connected) h += resultsHtml(r) + (r.prompt && r.prompt.scripture_note ? `<div class="gw-tag">${esc(r.prompt.scripture_note)}</div>` : "");
     h += boardHtml(r);
-    if (r.you_are_host) h += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>${r.round >= r.total_rounds ? "Final scores ▶" : "Next round ▶"}</button>`;
+    const last = r.round >= r.total_rounds;
+    h += `<div class="gw-tag" style="margin-top:8px">${last ? "Final scores in" : "Next round starts in"} <b id="gw-next-in">${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}</b>s</div>`;
+    if (r.you_are_host) h += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>${last ? "Final scores now ▶" : "Start next round now ▶"}</button>`;
     return h;
   }
   function viewFinished(r) {
@@ -841,6 +865,10 @@
   }
 
   // the countdown ring ticks between polls without re-rendering the screen
+  setInterval(() => {
+    const ni = $("gw-next-in");
+    if (ni && deadline) ni.textContent = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  }, 250);
   setInterval(() => {
     const n = $("gw-left"), arc = $("gw-arc"), clock = $("gw-clock");
     if (!n || !arc || !clock || !deadline) return;
