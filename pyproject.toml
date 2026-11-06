@@ -23,6 +23,9 @@ ignore = ["E501"]
 # exact characters have to appear literally in the code and the tests.
 "manuscript_rubric.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/test_manuscript_rubric.py" = ["RUF001", "RUF002", "RUF003"]
+# The party announcer's pronunciation lexicon is IPA for misaki, like tts_text's.
+"arcade/announcer.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_party_announcer.py" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.format]
 quote-style = "double"

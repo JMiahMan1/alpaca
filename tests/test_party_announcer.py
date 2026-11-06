@@ -86,9 +86,9 @@ def test_show_line_asks_kokoro_for_the_paper_boy_then_the_announcer(monkeypatch)
     clip_id, wav = party.synthesize_show_line("Extra! Extra! Noah's neighbors called the inspector!", voice="am_onyx")
     voices = [p.get("voice") for p in sent]
     boy = [p["text"] for p in sent if p.get("voice") == announcer.PAPERBOY_VOICE]
-    # The newsboy shouts first, a sentence at a time ("Extra!" twice is one synthesis), then the host.
+    # The newsboy shouts first, in one breath, then the host.
     assert voices[: len(boy)] == [announcer.PAPERBOY_VOICE] * len(boy) and voices[len(boy):] == ["am_onyx"]
-    assert boy == ["Extra!", "Read all about it!"]
+    assert boy == [announcer.PAPERBOY_CALL]  # one breath, not "Extra!" clip-stuttered twice
     assert sent[-1]["text"].startswith("Noah's")
     assert sent[-1]["speed"] == pytest.approx(announcer.cadence(sent[-1]["text"])[0])
     with wave.open(io.BytesIO(wav)) as w:
@@ -206,3 +206,10 @@ def test_every_headline_round_opens_with_the_paper_boy():
             "current_prompt": {"kind": "extra_extra", "announcer": "Live from the Valley of Elah! Write the headline!"}}
     assert p.announce_line(room).startswith("Extra! Extra! Live from the Valley of Elah!")
     assert announcer.split_show_line(p.announce_line(room))[0][0] == "paperboy"
+
+
+def test_bible_names_are_said_right():
+    out = announcer.pronounce("Barnabas and Priscilla wrote about Nineveh")
+    assert "[Barnabas](/bˈɑɹnəbəs/)" in out and "[Priscilla](/" in out and "[Nineveh](/" in out
+    assert announcer.pronounce("[Barnabas](/x/)") == "[Barnabas](/x/)"  # an existing mark is left alone
+    assert announcer.pronounce("Barnabasy") == "Barnabasy"  # whole names only

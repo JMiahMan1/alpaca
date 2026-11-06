@@ -26,12 +26,56 @@ import wave
 #: The newsboy. No Kokoro voice is a boy (every male voice measured 88-166 Hz),
 #: and pitching a man up by a third sounded like a machine. A bright young
 #: voice (~185 Hz) lifted only a little (~2.4 semitones) stays human.
-PAPERBOY_VOICE = os.getenv("PARTY_PAPERBOY_VOICE", "af_kore")
-PAPERBOY_SPEED = 1.05
-PAPERBOY_PITCH = 1.15
+PAPERBOY_VOICE = os.getenv("PARTY_PAPERBOY_VOICE", "am_eric,af_kore")
+PAPERBOY_SPEED = 1.08
+#: No pitch shifting: the blend already sits at a teenage ~172 Hz, and every
+#: resample above 1.0 was heard as "too high" or synthetic.
+PAPERBOY_PITCH = 1.0
 PAPERBOY_CALL = "Extra! Extra! Read all about it!"
 #: Kokoro's own pace is the most natural; cadence varies it per sentence.
 ANNOUNCER_SPEED = 1.0
+
+#: Bible names Kokoro guesses wrong from their spelling, as misaki inline IPA
+#: ("[word](/ipa/)"), which the audio server passes through to the phonemizer.
+PRONUNCIATIONS: dict[str, str] = {
+    "Barnabas": "bˈɑɹnəbəs",
+    "Priscilla": "pɹɪsˈɪlə",
+    "Apollos": "əpˈɑləs",
+    "Eutychus": "jˈutɪkəs",
+    "Zacchaeus": "zækˈiəs",
+    "Nineveh": "nˈɪnɪvə",
+    "Tarshish": "tˈɑɹʃɪʃ",
+    "Balaam": "bˈeɪləm",
+    "Elah": "ˈilə",
+    "Cana": "kˈeɪnə",
+    "Troas": "tɹˈoʊæs",
+    "Cherith": "kˈɪɹɪθ",
+    "Nehemiah": "nˌiəmˈaɪə",
+    "Pharaoh": "fˈɛɹoʊ",
+    "Habakkuk": "həbˈækək",
+    "Philemon": "faɪlˈimən",
+    "Boaz": "bˈoʊæz",
+    "Naomi": "neɪˈoʊmi",
+    "Jericho": "dʒˈɛɹɪkoʊ",
+    "Gideon": "ɡˈɪdiən",
+    "Nicodemus": "nˌɪkədˈiməs",
+    "Bathsheba": "bæθʃˈibə",
+    "Methuselah": "məθˈuzələ",
+    "Lazarus": "lˈæzəɹəs",
+    "Elisha": "ɪlˈaɪʃə",
+    "Hosea": "hoʊzˈeɪə",
+    "Laban": "lˈeɪbən",
+    "Shadrach": "ʃˈædɹæk",
+    "Meshach": "mˈiʃæk",
+    "Abednego": "əbˈɛdnɪɡoʊ",
+}
+_NAMES = re.compile(r"(?<![\[\w])(" + "|".join(sorted(PRONUNCIATIONS, key=len, reverse=True)) + r")(?![\w\]])")
+
+
+def pronounce(text: str) -> str:
+    """Mark the names Kokoro would say wrong with how they are actually said."""
+    return _NAMES.sub(lambda m: f"[{m.group(1)}](/{PRONUNCIATIONS[m.group(1)]}/)", text or "")
+
 
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+(?=\S)")
 
@@ -203,22 +247,54 @@ def announcer_fx(x: list[float], rate: int) -> list[float]:
 
 
 def paperboy_fx(x: list[float], rate: int) -> list[float]:
-    y = resample(x, PAPERBOY_PITCH)
-    y = highpass(y, rate, 260.0)
-    y = lowpass(y, rate, 4200.0)
+    y = resample(x, PAPERBOY_PITCH) if PAPERBOY_PITCH != 1.0 else list(x)
+    y = highpass(y, rate, 200.0)
+    y = lowpass(y, rate, 5200.0)
     y = compress(normalize(y, 0.9), rate, -22.0, 3.0, attack_ms=3.0, release_ms=110.0)
-    y = drive(normalize(y, 0.95), 1.5)
+    y = drive(normalize(y, 0.95), 1.25)
     y = echoes(y, rate, [(135.0, 0.24), (270.0, 0.11), (420.0, 0.05)], 2400.0)
     return normalize(y, 0.93)
 
 
-def _trim(x: list[float], rate: int, floor: float = 0.012, keep_ms: float = 40.0) -> list[float]:
-    """Drop the dead air Kokoro leaves around a clip, so the pauses are ours."""
+def _trim(x: list[float], rate: int, keep_ms: float = 70.0) -> list[float]:
+    """Drop the dead air Kokoro leaves around a clip, so the pauses are ours.
+
+    The cut is relative to the clip's own loudness and is faded (a hard cut
+    was heard as a click in every pause).
+    """
+    peak = max((abs(v) for v in x), default=0.0)
+    floor = max(0.006, 0.04 * peak)
     keep = int(rate * keep_ms / 1000.0)
     idx = [i for i, v in enumerate(x) if abs(v) > floor]
     if not idx:
         return x
-    return x[max(0, idx[0] - keep): min(len(x), idx[-1] + keep)]
+    y = x[max(0, idx[0] - keep): min(len(x), idx[-1] + keep)]
+    fin, fout = min(len(y), int(rate * 0.012)), min(len(y), int(rate * 0.06))
+    for i in range(fin):
+        y[i] *= i / fin
+    for i in range(fout):
+        y[len(y) - 1 - i] *= i / fout
+    return y
+
+
+def gate(x: list[float], rate: int, threshold_db: float = -40.0) -> list[float]:
+    """A soft noise gate: what is left between words (breath, hiss) goes quiet.
+
+    Gain follows a smoothed envelope (quick open, slow close) so it never
+    chatters, and below the threshold it falls off steeply rather than cutting.
+    """
+    peak = max((abs(v) for v in x), default=0.0) or 1.0
+    thr = peak * 10 ** (threshold_db / 20.0)
+    env_a, env_r = math.exp(-1 / (rate * 0.002)), math.exp(-1 / (rate * 0.08))
+    g_a, g_r = math.exp(-1 / (rate * 0.003)), math.exp(-1 / (rate * 0.06))
+    env, gain, out = 0.0, 1.0, []
+    for v in x:
+        lv = abs(v)
+        env = env_a * env + (1 - env_a) * lv if lv > env else env_r * env + (1 - env_r) * lv
+        target = 1.0 if env >= thr else (env / thr) ** 3
+        gain = g_a * gain + (1 - g_a) * target if target > gain else g_r * gain + (1 - g_r) * target
+        out.append(v * gain)
+    return out
 
 
 def assemble(parts: list[tuple[str, bytes]] | list[tuple[str, bytes, float]]) -> bytes:
@@ -244,7 +320,8 @@ def assemble(parts: list[tuple[str, bytes]] | list[tuple[str, bytes, float]]) ->
             groups.append((role, samples, gap))
     out: list[float] = []
     for i, (role, samples, gap) in enumerate(groups):
-        out += paperboy_fx(samples, rate) if role == "paperboy" else announcer_fx(samples, rate)
+        shaped = paperboy_fx(samples, rate) if role == "paperboy" else announcer_fx(samples, rate)
+        out += gate(shaped, rate)
         if i < len(groups) - 1:
             out += silence(rate, max(gap, 380.0))
     return write_wav(out, rate or 24000)

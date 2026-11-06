@@ -127,7 +127,8 @@
   var room = null;
   var deadline = 0;
   var lastSig = "";
-  var lastSpoken = "";
+  var lastSpoken = "";   // the line being voiced now (a newer line wins)
+  var spokenKeys = {};   // every line already said: a re-render never says one twice
   var audio = null;
   var pendingLine = null;
   var soundBlocked = false;
@@ -192,7 +193,8 @@
 
   /* ---------- announcer (Alpaca TTS, played on the TV's speakers) ---------- */
   function speak(text, key) {
-    if (!text || key === lastSpoken) return;
+    if (!text || spokenKeys[key]) return;
+    spokenKeys[key] = true;
     lastSpoken = key;
     var voice = (room && room.voice) || "";
     xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 260), voice: voice }, function (blob) {
@@ -293,8 +295,10 @@
   function announce(r) {
     var key = r.match_id + ":" + r.round + ":" + r.phase;
     // The host's line for this phase comes from the room, so the TV and phones agree.
-    if (r.phase === "lobby" && r.joke && lastSpoken.indexOf("lobby:") === 0 && lastSpoken !== "lobby:" + r.code + ":" + r.joke.setup) {
-      if (!audio || audio.paused || audio.ended) speak(r.joke.setup + " ... " + r.joke.punch, "lobby:" + r.code + ":" + r.joke.setup);
+    if (r.phase === "lobby" && r.joke && spokenKeys["lobby:" + r.code]) {
+      // After the welcome, each new lobby joke once, never over another line.
+      var jk = "lobby:" + r.code + ":" + r.joke.setup;
+      if (!spokenKeys[jk] && (!audio || audio.paused || audio.ended)) speak(r.joke.setup + " ... " + r.joke.punch, jk);
       return;
     }
     if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key); return; }
@@ -365,6 +369,7 @@
     try { if (audio) { audio.pause(); audio = null; } } catch (e) {}
     pendingLine = null;
     lastSpoken = "";
+    spokenKeys = {};
     setBed("");
     setSound(false);
   }
