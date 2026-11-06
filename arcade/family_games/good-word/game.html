@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>Use Your Good Word</title>
+<title>Parable Party</title>
 <!-- @family-kit -->
 <!--
-  The phone controller for Use Your Good Word.
+  The phone controller for Parable Party.
 
   The TV is the show and every phone is a controller, the way Jackbox-style
   party games work: join with a room code, wait in the lobby, then one focused
@@ -246,7 +246,7 @@
   /* ================= kit: controller shell ================= */
   const kit = FamilyKit.create({
     slug: "good-word",
-    title: "Use Your Good Word",
+    title: "Parable Party",
     tagline: "Join on your phone. Watch it on the TV.",
     emoji: "📜",
     accent: "#ffc83d",
@@ -398,8 +398,24 @@
     return { apply, duck, stop: () => setBed("") };
   })();
 
+  // The host's chatter while players write and vote, where the phone is the speaker.
+  let phaseStartLocal = 0, chatterKey = "";
+  const chatterDone = {};
+  setInterval(() => {
+    if (!room || !room.chatter || !room.chatter.length || !phoneMaySpeak() || isAutomatedCheck) return;
+    if (currentAudio && !currentAudio.paused && !currentAudio.ended) return;
+    const age = (Date.now() - phaseStartLocal) / 1000;
+    room.chatter.forEach((c, i) => {
+      const k = chatterKey + ":c" + i;
+      if (chatterDone[k] || age < c.at) return;
+      chatterDone[k] = true;
+      if (age - c.at < 8) announce(c.text, k);
+    });
+  }, 500);
+
   function announceFor(r) {
     const k = r.match_id + ":" + r.round + ":" + r.phase;
+    if (k !== chatterKey) { chatterKey = k; phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000; }
     if (r.phase !== "lobby" && r.announce) { announce(r.announce, k); return; }
     if (r.phase === "writing" && r.prompt) announce(r.prompt.announcer || ("Round " + r.round + "! " + r.prompt.prompt), k);
     else if (r.phase === "voting") announce("All the scrolls are in! Vote for your favorite!", k);
@@ -509,7 +525,7 @@
     const choosing = (r.phase === "writing" && !r.my_submission) || (r.phase === "voting" && !r.my_vote);
     const people = choosing ? [] : (r.players || []).map((p) => [p.id, p.score, p.submitted, p.voted, p.connected, p.avatar, p.is_host]);
     const lobbyPeople = r.phase === "lobby" ? (r.players || []).map((p) => [p.id, p.avatar, p.connected, p.is_host, p.name]) : [];
-    return JSON.stringify([r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, holding(), r.my_vote, !!r.my_submission, r.voice,
+    return JSON.stringify([r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
       people, lobbyPeople, choosing ? [] : (r.options || []).map((o) => [o.option_id, (o.voters || []).length]),
       (r.options || []).map((o) => o.option_id).join(","), activeScreen && activeScreen.id]);
   }
@@ -545,7 +561,7 @@
   function ordinal(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
 
   function logo() {
-    return `<div class="gw-logo"><span class="a">Use Your</span><br><span class="b">Good Word</span><br><span class="c">Family Party</span></div>`;
+    return `<div class="gw-logo"><span class="a">Parable</span><br><span class="b">Party</span><br><span class="c">Family Game Show</span></div>`;
   }
   function playersGrid(r, flag) {
     const seats = seatsOf(r);
@@ -605,6 +621,7 @@
     } else {
       h += `<div class="gw-card gw-wait">Waiting for ${esc(host ? host.name : "the host")} to start<span class="gw-dots"><span>.</span><span>.</span><span>.</span></span>
         <div class="gw-note" style="font-weight:800">${r.stage_connected ? "📺 The game is on the TV." : "Get comfy. You'll write your answers here."}</div></div>`;
+      if (r.joke) h += `<div class="gw-card"><div class="gw-label">😄 Dad joke while you wait</div><p style="font-weight:800;margin:6px 0 4px">${esc(r.joke.setup)}</p><p style="font-weight:900;color:var(--teal);margin:0">${esc(r.joke.punch)}</p></div>`;
     }
     return h;
   }

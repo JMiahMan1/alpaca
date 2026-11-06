@@ -1258,7 +1258,7 @@ def api_unpublish(slug):
     return jsonify({"success": True, "removed": slug})
 
 
-# --- Multiplayer Party Room API ("Use Your Good Word") + TV Cast View ---
+# --- Multiplayer Party Room API ("Parable Party") + TV Cast View ---
 
 
 def _public_base_url() -> str:
@@ -1280,7 +1280,7 @@ def _public_base_url() -> str:
 @app.route("/tv", methods=["GET"])
 @app.route("/tv/<code>", methods=["GET"])
 def party_tv_page(code: str = ""):
-    """Big-screen stage for Use Your Good Word: runs on the TV, needs no remote.
+    """Big-screen stage for Parable Party: runs on the TV, needs no remote.
 
     ``/tv/<CODE>`` follows one room; bare ``/tv`` follows whichever room is
     active, so a TV can simply be left on it.

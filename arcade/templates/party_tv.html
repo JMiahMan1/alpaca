@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Use Your Good Word: TV</title>
+<title>Parable Party: TV</title>
 <!--
   The TV stage. It runs on the TV itself (a Cast receiver, the LG or Samsung
   browser, any TV browser, or headless Chromium rendering a stream for a Roku),
@@ -97,12 +97,16 @@
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
   .fade { animation: fadein .45s ease-out; }
   @keyframes fadein { from { opacity: 0; transform: translateY(1.5vh); } to { opacity: 1; transform: none; } }
+  .joke { margin-top: 3vh; padding: 1.6vh 2vw; border-radius: 2vh; background: rgba(255, 200, 61, .12); border: .3vh solid rgba(255, 200, 61, .5); max-width: 52vw; }
+  .joke .jk { font-size: 1.8vh; font-weight: 900; letter-spacing: .15em; text-transform: uppercase; color: #ffc83d; }
+  .joke .js { font-size: 3vh; font-weight: 800; margin-top: .6vh; }
+  .joke .jp { font-size: 3vh; font-weight: 900; color: #2ed3b7; margin-top: .4vh; }
 </style>
 </head>
 <body>
 <div id="stage">
   <div class="top">
-    <div class="brand">📜 USE YOUR GOOD WORD<small id="sub-brand">Family Party on the Big Screen</small></div>
+    <div class="brand">📜 PARABLE PARTY<small id="sub-brand">Family Party on the Big Screen</small></div>
     <div id="top-right"></div>
   </div>
   <div class="main" id="main"><div class="center h2 pulse">Connecting…</div></div>
@@ -283,9 +287,13 @@
   function announce(r) {
     var key = r.match_id + ":" + r.round + ":" + r.phase;
     // The host's line for this phase comes from the room, so the TV and phones agree.
+    if (r.phase === "lobby" && r.joke && lastSpoken.indexOf("lobby:") === 0 && lastSpoken !== "lobby:" + r.code + ":" + r.joke.setup) {
+      if (!audio || audio.paused || audio.ended) speak(r.joke.setup + " ... " + r.joke.punch, "lobby:" + r.code + ":" + r.joke.setup);
+      return;
+    }
     if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key); return; }
     if (r.phase === "lobby") {
-      speak("Welcome to Use Your Good Word! Scan the code on the screen, or join room " + r.code.split("").join(" ") + " in Jarvis.", "lobby:" + r.code);
+      speak("Welcome to Parable Party! Scan the code on the screen, or join room " + r.code.split("").join(" ") + " in Jarvis.", "lobby:" + r.code);
     } else if (r.phase === "writing" && r.prompt) {
       speak(r.prompt.announcer || ("Round " + r.round + "! " + (r.prompt.prompt || "")), key);
     } else if (r.phase === "voting") {
@@ -349,7 +357,12 @@
         '<div class="h3" style="margin-top:3vh">That game has ended. Start a new room on a phone and it will appear here.</div></div>';
     }
     return '<div class="center fade"><div class="h1">Ready when you are!</div>' +
-      '<div class="h3" style="margin-top:3vh">On a phone, open <b>Jarvis → Family Games → Use Your Good Word</b><br>and start a party room. It will appear here automatically.</div></div>';
+      '<div class="h3" style="margin-top:3vh">On a phone, open <b>Jarvis → Family Games → Parable Party</b><br>and start a party room. It will appear here automatically.</div></div>';
+  }
+  function jokeHtml(r) {
+    if (!r.joke) return "";
+    return '<div class="joke"><div class="jk">😄 Dad joke of the moment</div><div class="js">' + esc(r.joke.setup) +
+      '</div><div class="jp">' + esc(r.joke.punch) + "</div></div>";
   }
   function viewLobby(r) {
     var origin = window.location.origin;
@@ -359,7 +372,7 @@
       '/join.svg" onerror="this.parentNode.style.display=\'none\'"></div><div><div class="h3">Scan to join, or enter room code</div>' +
       '<div class="huge">' + esc(r.code) + '</div><div class="h3">' + esc(joinUrl.replace(/^https?:\/\//, "")) + "</div>" +
       '<div class="h2" style="margin-top:3vh">' + (count ? count + (count === 1 ? " player is" : " players are") + " in. The host taps <b>Start</b> when everyone's ready."
-        : "Waiting for players…") + "</div></div></div>" + playersHtml(r, null);
+        : "Waiting for players…") + "</div>" + jokeHtml(r) + "</div></div>" + playersHtml(r, null);
   }
   function viewWriting(r) {
     var pr = r.prompt || {};
@@ -487,6 +500,20 @@
   }
 
   var lastPhaseKey = "";
+  var phaseStartLocal = 0;
+  var chatterDone = {};
+  // The host talks while players write and vote: each line once, never over another.
+  function runChatter() {
+    if (!room || !room.chatter || !room.chatter.length || STREAMED) return;
+    if (audio && !audio.paused && !audio.ended) return;
+    var age = (Date.now() - phaseStartLocal) / 1000;
+    for (var i = 0; i < room.chatter.length; i++) {
+      var c = room.chatter[i], k = lastPhaseKey + ":c" + i;
+      if (chatterDone[k] || age < c.at) continue;
+      chatterDone[k] = true;
+      if (age - c.at < 8) { speak(c.text, k); return; }
+    }
+  }
   var lastPlayerCount = -1;
   var lastRevealStep = -1;
   var lastTick = -1;
@@ -499,7 +526,7 @@
     }
     if (r && r.phase === "lobby" && lastPlayerCount >= 0 && humans(r).length > lastPlayerCount) playSfx("join");
     lastPlayerCount = r ? humans(r).length : -1;
-    if (phaseKey !== lastPhaseKey) lastRevealStep = -1;
+    if (phaseKey !== lastPhaseKey) { lastRevealStep = -1; phaseStartLocal = Date.now() - ((r && r.phase_age_s) || 0) * 1000; }
     lastPhaseKey = phaseKey;
     if (room && !r) hadRoom = true;
     if (r) hadRoom = false;
@@ -551,6 +578,7 @@
   }
 
   setInterval(function () {
+    runChatter();
     if (room && room.phase === "reveal") {
       var step = revealStep(room);
       if (step !== lastRevealStep) {

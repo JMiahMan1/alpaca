@@ -129,9 +129,59 @@ def test_the_host_has_patter_for_every_phase_and_everyone_hears_the_same_line():
     assert p.announce_line(room) in p.HOST_VOTING
     room["phase"], room["reveal"] = "reveal", {"round_winners": [], "events": [], "announcer": "x"}
     line = p.announce_line(room)
-    assert any(line.startswith(d) for d in p.HOST_DRUMROLL) and any(line.endswith(t) for t in p.HOST_TRAPPED)
+    assert any(line.startswith(d) for d in p.HOST_DRUMROLL) and any(t in line for t in p.HOST_TRAPPED)
     room["phase"] = "finished"
     finale = p.announce_line(room)
     assert any(finale == f.format(name="Ann", score=0) or finale == f.format(name="Ben", score=0) for f in p.HOST_FINALE)
     with p._lock:
         p._rooms.clear()
+
+
+def test_dad_jokes_fill_the_lobby_and_the_gaps_between_rounds():
+    from arcade import party as p
+    assert len(p.DAD_JOKES) >= 20 and all(s.endswith("?") and q for s, q in p.DAD_JOKES)
+    with p._lock:
+        p._rooms.clear()
+    p.create_or_join_room(code="JOKE", player_id="a", name="Ann")
+    joke = p.get_room_state("JOKE", "a")["joke"]
+    assert (joke["setup"], joke["punch"]) in p.DAD_JOKES
+    room = p._rooms["JOKE"]
+    room.update(phase="reveal", round=2, total_rounds=7, reveal={"round_winners": ["Ann"], "events": [], "announcer": "Ann wins!"})
+    line = p.announce_line(room)
+    assert "Ann wins!" in line and any(s in line and q in line for s, q in p.DAD_JOKES)
+    room.update(round=7)  # the last reveal goes straight to the finale
+    assert not any(s in p.announce_line(room) for s, _ in p.DAD_JOKES)
+    room["phase"] = "writing"
+    assert p.serialize_room(room)["joke"] is None
+    with p._lock:
+        p._rooms.clear()
+
+
+def test_the_host_chats_while_players_write_and_vote():
+    from arcade import party as p
+    with p._lock:
+        p._rooms.clear()
+    p.create_or_join_room(code="CHAT", player_id="a", name="Ann")
+    p.create_or_join_room(code="CHAT", player_id="b", name="Ben")
+    assert p.get_room_state("CHAT", "a")["chatter"] == []  # the lobby has the jokes instead
+    p.start_match("CHAT", player_id="a")
+    room = p._rooms["CHAT"]
+    lines = p.chatter_for(room)
+    length = room["phase_deadline"] - room["phase_started_at"]
+    times = [c["at"] for c in lines]
+    assert times == sorted(times) and times[0] >= 14  # never over the prompt being read
+    assert lines[-1]["text"] in p.HOST_HURRY and lines[-1]["at"] == pytest.approx(length - 10, abs=0.2)
+    assert any(s in c["text"] for c in lines for s, _ in p.DAD_JOKES)
+    assert p.get_room_state("CHAT", "b")["chatter"] == p.get_room_state("CHAT", stage=True)["chatter"]
+    room["phase"] = "voting"
+    assert any(c["text"] in p.HOST_CHATTER["voting"] for c in p.chatter_for(room))
+    with p._lock:
+        p._rooms.clear()
+
+
+def test_tv_and_phone_play_the_chatter():
+    import arcade.app as arcade_app
+    from arcade import family
+    tv = arcade_app.app.test_client().get("/tv").get_data(as_text=True)
+    assert "function runChatter" in tv and "room.chatter" in tv
+    assert "room.chatter" in family.build_html("good-word")
