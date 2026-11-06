@@ -4376,17 +4376,18 @@
     ctx.drawImage(lightCanvas, 0, 0, W, H);
   }
 
-  /* ---------------- on-screen buttons ---------------- */
-  let showPad = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+  /* ---------------- on-screen mobile controls ---------------- */
+  let showPad = true;
   const touches = new Map();     // pointerId -> button
   function buttons() {
-    const R = clamp(Math.min(W, H) * 0.085, 30, 52);
-    const by = H - safeBottom - R - 16;
+    const R = clamp(Math.min(W, H) * 0.088, 30, 50);
+    const padX = Math.max(16, Math.round(W * 0.024));
+    const by = H - safeBottom - R - 18;
     return [
-      { id: "left", x: 16 + R, y: by, r: R, icon: "◀" },
-      { id: "right", x: 16 + R * 3.3, y: by, r: R, icon: "▶" },
-      { id: "jump", x: W - 16 - R * 1.15, y: by - R * 0.15, r: R * 1.15, icon: "⤒" },
-      { id: "cord", x: W - 16 - R * 3.5, y: by + R * 0.1, r: R, icon: "🔌" },
+      { id: "left", x: padX + R, y: by, r: R, icon: "◀", label: "LEFT" },
+      { id: "right", x: padX + R * 3.25, y: by, r: R, icon: "▶", label: "RIGHT" },
+      { id: "cord", x: W - padX - R * 3.45, y: by + R * 0.06, r: R * 1.02, icon: "🔌", label: "CORD" },
+      { id: "jump", x: W - padX - R * 1.15, y: by - R * 0.2, r: R * 1.14, icon: "⤒", label: "JUMP" },
     ];
   }
   function buttonAt(x, y) {
@@ -4399,7 +4400,7 @@
         best = b;
       }
     }
-    return bestD < 2.4 ? best.id : null;
+    return bestD < 2.25 ? best.id : null;
   }
   function applyTouches() {
     const held = new Set(touches.values());
@@ -4413,39 +4414,125 @@
   }
 
   function drawButtons() {
-    if (!showPad || kit.state !== "playing") return;
+    if (!showPad || kit.state !== "playing" || bench.active) return;
     const held = new Set(touches.values());
     const w = world;
+    const p = w ? w.p : null;
+    const btns = buttons();
+    const bLeft = btns[0];
+    const bRight = btns[1];
+    // Left thumb rocker housing connecting ◀ and ▶
+    ctx.save();
+    const pillPad = bLeft.r * 0.22;
+    const pillX = bLeft.x - bLeft.r - pillPad;
+    const pillY = bLeft.y - bLeft.r - pillPad;
+    const pillW = (bRight.x + bRight.r) - (bLeft.x - bLeft.r) + pillPad * 2;
+    const pillH = bLeft.r * 2 + pillPad * 2;
+    ctx.fillStyle = "rgba(18, 22, 44, 0.46)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.34)";
+    ctx.lineWidth = 2;
+    roundRect(ctx, pillX, pillY, pillW, pillH, pillH * 0.5);
+    ctx.fill();
+    ctx.stroke();
+
+    // Context-aware Cord & Jump button states
+    const hasSocket = w && !w.rope && (nearSocket() || nearExit());
+    const hasHook = w && !w.rope && !hasSocket && bestHook();
+    const hasBaddie = w && !w.rope && !hasSocket && !hasHook && nearBaddie();
+    const ready = !!(hasSocket || hasHook || hasBaddie || (w && w.rope));
     let cordIcon = "🔌";
-    const ready = w && !w.rope && (nearSocket() || nearExit() || bestHook() || nearBaddie());
-    if (w && !w.rope && !nearSocket() && !nearExit() && bestHook()) cordIcon = "🪝";
-    else if (w && !w.rope && !nearSocket() && !nearExit() && nearBaddie()) cordIcon = "⚡";
-    for (const b of buttons()) {
+    let cordLabel = "CORD";
+    let cordAccent = "#5ac8ff";
+    if (w && w.rope) {
+      cordIcon = "🪝";
+      cordLabel = "SWING";
+      cordAccent = "#48f0ff";
+    } else if (hasSocket) {
+      cordIcon = "🔌";
+      cordLabel = "PLUG";
+      cordAccent = "#5cff9d";
+    } else if (hasHook) {
+      cordIcon = "🪝";
+      cordLabel = "HOOK";
+      cordAccent = "#ffe066";
+    } else if (hasBaddie) {
+      cordIcon = "⚡";
+      cordLabel = "ZAP";
+      cordAccent = "#ffbe3b";
+    }
+    const jumpLabel = w && w.rope ? "LEAP" : p && !p.ground && p.hover > 0 ? "HOVER" : "JUMP";
+
+    for (const b of btns) {
       const on = held.has(b.id);
-      const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.3, b.r * 0.1, b.x, b.y, b.r);
-      g.addColorStop(0, on ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.42)");
-      g.addColorStop(1, on ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.18)");
-      ctx.fillStyle = g;
-      ctx.strokeStyle = "rgba(255,255,255,0.75)";
-      ctx.lineWidth = 2;
+      const pressY = on ? 2.5 : 0;
+      const isCord = b.id === "cord";
+      const isJump = b.id === "jump";
+
+      // Pulsing outer action halo when Cord is in range of a hook/socket/baddie
+      if (isCord && ready) {
+        const pulse = 0.55 + 0.35 * Math.sin(w.t * 9);
+        ctx.strokeStyle = cordAccent;
+        ctx.globalAlpha = pulse;
+        ctx.lineWidth = 3.5;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r + 5 + Math.sin(w.t * 9) * 1.5, 0, TAU);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
+      // Drop shadow / 3D base rim
+      ctx.fillStyle = "rgba(12, 15, 32, 0.55)";
       ctx.beginPath();
-      ctx.arc(b.x, b.y + (on ? 2 : 0), b.r, 0, TAU);
+      ctx.arc(b.x, b.y + 3.5, b.r + 1, 0, TAU);
+      ctx.fill();
+
+      // Tactile button cap gradient
+      const g = ctx.createRadialGradient(b.x - b.r * 0.28, b.y + pressY - b.r * 0.32, b.r * 0.08, b.x, b.y + pressY, b.r);
+      if (isJump) {
+        g.addColorStop(0, on ? "rgba(255, 196, 110, 0.92)" : "rgba(255, 156, 68, 0.78)");
+        g.addColorStop(1, on ? "rgba(230, 108, 28, 0.88)" : "rgba(44, 32, 68, 0.72)");
+      } else if (isCord) {
+        g.addColorStop(0, on ? "rgba(140, 238, 255, 0.92)" : ready ? "rgba(95, 210, 255, 0.82)" : "rgba(110, 155, 245, 0.72)");
+        g.addColorStop(1, on ? "rgba(48, 132, 225, 0.88)" : "rgba(28, 38, 76, 0.74)");
+      } else {
+        g.addColorStop(0, on ? "rgba(255, 224, 130, 0.9)" : "rgba(72, 86, 132, 0.72)");
+        g.addColorStop(1, on ? "rgba(235, 138, 42, 0.84)" : "rgba(24, 30, 58, 0.74)");
+      }
+      ctx.fillStyle = g;
+      ctx.strokeStyle = on
+        ? "#ffe066"
+        : isCord && ready
+          ? cordAccent
+          : isJump
+            ? "rgba(255, 198, 128, 0.85)"
+            : "rgba(255, 255, 255, 0.72)";
+      ctx.lineWidth = on || (isCord && ready) ? 2.8 : 2.2;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y + pressY, b.r, 0, TAU);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "rgba(30,25,60,0.85)";
-      ctx.font = `bold ${Math.round(b.r * 0.85)}px system-ui, sans-serif`;
+
+      // Top glossy arc highlight
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y + pressY, b.r * 0.84, -Math.PI * 0.8, -Math.PI * 0.2);
+      ctx.stroke();
+
+      // Icon & sub-label
+      const hasSub = isCord || isJump;
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${Math.round(b.r * (hasSub ? 0.74 : 0.82))}px system-ui, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(b.id === "cord" ? cordIcon : b.icon, b.x, b.y + 1 + (on ? 2 : 0));
-      if (b.id === "cord" && ready) {
-        ctx.strokeStyle = `rgba(255,230,90,${0.6 + 0.3 * Math.sin(w.t * 8)})`;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r + 4, 0, TAU);
-        ctx.stroke();
+      ctx.fillText(isCord ? cordIcon : b.icon, b.x, b.y + pressY - (hasSub ? b.r * 0.14 : 0));
+      if (hasSub) {
+        ctx.fillStyle = isCord && ready ? "#fff4b8" : "rgba(255, 255, 255, 0.92)";
+        ctx.font = `800 ${Math.max(9, Math.round(b.r * 0.26))}px system-ui, sans-serif`;
+        ctx.fillText(isCord ? cordLabel : jumpLabel, b.x, b.y + pressY + b.r * 0.48);
       }
     }
-    ctx.textBaseline = "alphabetic";
+    ctx.restore();
   }
 
   let lastRender = 0;
@@ -4730,15 +4817,15 @@
     } catch (_) {
       /* synthetic pointer */
     }
-    if (e.pointerType !== "mouse") showPad = true;
-    if (!showPad) {
-      // A mouse with no on-screen pad: a click throws the cord (or plugs in).
-      touches.set(e.pointerId, "cord");
-    } else {
-      const at = local(e);
-      const b = buttonAt(at.x, at.y);
-      if (!b) return;
+    showPad = true;
+    const at = local(e);
+    const b = buttonAt(at.x, at.y);
+    if (b) {
       touches.set(e.pointerId, b);
+      kit.haptic(6);
+    } else {
+      // Tapping the play area above the thumb controls also throws/uses the cord.
+      touches.set(e.pointerId, "cord");
     }
     applyTouches();
   });
@@ -4746,11 +4833,22 @@
     if (!touches.has(e.pointerId) || !showPad) return;
     e.preventDefault();
     const at = local(e);
-    const b = buttonAt(at.x, at.y);
-    // Sliding a thumb between ◀ and ▶ changes direction; other buttons hold.
     const was = touches.get(e.pointerId);
-    if (b && (was === "left" || was === "right") && (b === "left" || b === "right") && b !== was) {
+    if (was === "left" || was === "right") {
+      const btns = buttons();
+      const midX = (btns[0].x + btns[1].x) * 0.5;
+      const next = at.x < midX - 5 ? "left" : at.x > midX + 5 ? "right" : was;
+      if (next !== was) {
+        touches.set(e.pointerId, next);
+        kit.haptic(4);
+        applyTouches();
+      }
+      return;
+    }
+    const b = buttonAt(at.x, at.y);
+    if (b && (was === "cord" || was === "jump") && (b === "cord" || b === "jump") && b !== was) {
       touches.set(e.pointerId, b);
+      kit.haptic(6);
       applyTouches();
     }
   });
