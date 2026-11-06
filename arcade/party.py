@@ -1,4 +1,4 @@
-"""Multiplayer Biblical Worldview party game engine ("Use Your Good Word").
+"""Multiplayer Biblical Worldview party game engine ("Parable Party").
 
 Implements a Jackbox / *Use Your Words* style room state machine for the
 Jarvis Family Hub and Alpaca Arcade:
@@ -1093,6 +1093,109 @@ HOST_FINALE = (
 )
 
 
+#: Clean dad jokes for all ages, Bible-flavoured: (setup, punchline).
+DAD_JOKES: tuple[tuple[str, str], ...] = (
+    ("Who was the greatest comedian in the Bible?", "Samson. He brought the house down!"),
+    ("What kind of car did the disciples drive?", "A Honda. They were all in one Accord!"),
+    ("Why didn't anyone play cards on the Ark?", "Because Noah was standing on the deck!"),
+    ("What did Adam say the day before Christmas?", "It's Christmas, Eve!"),
+    ("Where is the first math problem in the Bible?", "When God told Adam and Eve to go forth and multiply!"),
+    ("How does Moses make his coffee?", "Hebrews it!"),
+    ("Who was the fastest runner in history?", "Adam. He was first in the human race!"),
+    ("What kind of lights did Noah put on the Ark?", "Floodlights!"),
+    ("Why did the man get so excited reading his Bible?", "He thought he'd found a Job!"),
+    ("Who was the shortest man in the Bible?", "Nehemiah. Knee-high-miah!"),
+    ("How do we know Peter was a rich fisherman?", "By his net income!"),
+    ("Which animal could Noah never trust?", "The cheetah!"),
+    ("Why didn't Noah go fishing?", "He only had two worms!"),
+    ("Which Bible character had no parents?", "Joshua, son of Nun!"),
+    ("Why was Goliath so surprised when David's stone hit him?", "Because the thought had never entered his head before!"),
+    ("Where did Noah keep his bees?", "In the Ark hives!"),
+    ("How long did Cain hold a grudge against his brother?", "As long as he was Abel!"),
+    ("Who was the first tennis player in the Bible?", "Joseph. He served in Pharaoh's court!"),
+    ("What do you call a sheep with no legs?", "A cloud!"),
+    ("Why did Noah scold the chickens on the Ark?", "They were using fowl language!"),
+    ("What's the best way to study the Bible?", "Just Luke into it!"),
+    ("Why did the donkey get the best seat on Palm Sunday?", "Because he was the one carrying the King!"),
+    ("What did the whale say after swallowing Jonah?", "I can't stomach this guy!"),
+    ("Why did Noah make the woodpeckers sit still?", "So they wouldn't peck a hole in the Ark!"),
+    ("What do you call a lamb covered in chocolate?", "A candy baa!"),
+    ("What's a sheep's favourite part of the Sermon on the Mount?", "The Baa-atitudes!"),
+)
+
+
+def joke_for(room: dict[str, Any], salt: str) -> tuple[str, str]:
+    seed = f"{room.get('match_id', '') or room.get('code', '')}:{room.get('round', 0)}:{salt}"
+    return random.Random(seed).choice(DAD_JOKES)
+
+
+#: While players write and vote, the host keeps talking: a remark about the
+#: round, a joke or a nudge, the way a game-show host fills dead air.
+HOST_CHATTER: dict[str, tuple[str, ...]] = {
+    "blank_o_matic": (
+        "Fill in that blank! Funny beats right, but right and funny wins the day!",
+        "I've seen some answers in my time, folks. Surprise me!",
+        "Remember, somebody has to vote for it. Make it good!",
+    ),
+    "extra_extra": (
+        "Every great headline needs a pun. I'm just saying!",
+        "Short, punchy, front-page worthy. Think like a newsboy!",
+        "Read all about it... as soon as you write it!",
+    ),
+    "truth_or_bluff": (
+        "Here's the trick: make your fake sound more true than the truth!",
+        "One of these answers will be the real one from Scripture. Can you out-bluff it?",
+        "Bluffers, put on your best poker face!",
+    ),
+    "sub_the_scroll": (
+        "What are they saying? Only you know!",
+        "Put words in their mouths. Kind words, please!",
+        "I'd love to hear this conversation. Go on, write it!",
+    ),
+    "survey_says": (
+        "Double points, people! This is where champions are made!",
+        "Think like the crowd. What would most folks say?",
+        "Last round! Everything's on the line!",
+    ),
+    "voting": (
+        "Read them carefully. One of those is the Scribe's Trap!",
+        "No voting for yourself. I'm watching!",
+        "Go with your gut. Or your funny bone!",
+    ),
+}
+HOST_HURRY = ("Ten seconds left!", "Ten seconds! Finish that thought!", "Hurry, hurry! Ten seconds!")
+
+
+def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
+    """Lines to say during the current phase: ``[{"at": seconds into it, "text"}]``.
+
+    Spaced through the phase and kept clear of its first lines (the prompt is
+    still being read) and its last ten seconds (the hurry call).
+    """
+    phase = room.get("phase")
+    if phase not in ("writing", "voting"):
+        return []
+    kind = "voting" if phase == "voting" else str((room.get("current_prompt") or {}).get("kind") or "blank_o_matic")
+    pool = HOST_CHATTER.get(kind) or HOST_CHATTER["blank_o_matic"]
+    rng = random.Random(f"{room.get('match_id', '')}:{room.get('round', 0)}:{phase}:chatter")
+    lines = rng.sample(pool, k=min(2, len(pool)))
+    if phase == "writing":
+        setup, punch = joke_for(room, "writing")
+        lines.append(f"While you think... {setup} ... {punch}")
+    length = float(room.get("phase_deadline") or 0) - float(room.get("phase_started_at") or 0)
+    delay = _stage_delay(room)
+    start, end = 14.0 + delay, max(14.0 + delay, length - 14.0)
+    step = (end - start) / max(1, len(lines))
+    out = [{"at": round(start + i * step, 1), "text": t} for i, t in enumerate(lines) if start + i * step < end]
+    if length - delay > 20:
+        out.append({"at": round(length - 10.0, 1), "text": rng.choice(HOST_HURRY)})
+    return out
+
+
+#: In the lobby the TV tells a new joke this often while people join.
+LOBBY_JOKE_SECONDS = 45.0
+
+
 def _pick(room: dict[str, Any], pool: tuple[str, ...], salt: str) -> str:
     seed = f"{room.get('match_id', '')}:{room.get('round', 0)}:{salt}"
     return random.Random(seed).choice(pool)
@@ -1104,7 +1207,7 @@ def announce_line(room: dict[str, Any]) -> str:
     prompt = room.get("current_prompt") or {}
     if phase == "lobby":
         code = " ".join(str(room.get("code") or ""))
-        return f"Welcome to Use Your Good Word! Scan the code on the screen, or join room {code} in Jarvis."
+        return f"Welcome to Parable Party! Scan the code on the screen, or join room {code} in Jarvis."
     if phase == "writing":
         line = str(prompt.get("announcer") or "")
         if line.lower().startswith("extra"):
@@ -1118,7 +1221,11 @@ def announce_line(room: dict[str, Any]) -> str:
             result = str(reveal.get("announcer") or "")
         else:
             result = _pick(room, HOST_TRAPPED, "trap")
-        return f"{_pick(room, HOST_DRUMROLL, 'drum')} {result}".strip()
+        line = f"{_pick(room, HOST_DRUMROLL, 'drum')} {result}".strip()
+        if int(room.get("round") or 0) < int(room.get("total_rounds") or TOTAL_ROUNDS):
+            setup, punch = joke_for(room, "between")
+            line += f" And while we catch our breath... {setup} ... {punch}"
+        return line
     if phase == "finished":
         players = [p for p in (room.get("players") or {}).values() if not p.get("spectator")]
         if not players:
@@ -1285,6 +1392,10 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         # and the host phone speaks since a stream carries no announcer.
         "stage_delay_s": _stage_delay(room),
         "announce": announce_line(room),
+        "chatter": chatter_for(room),
+        # A dad joke for the lobby, a new one every LOBBY_JOKE_SECONDS while people join.
+        "joke": dict(zip(("setup", "punch"), joke_for(room, f"lobby{int(now // LOBBY_JOKE_SECONDS)}"), strict=True))
+        if phase == "lobby" else None,
         "music": bool(room.get("music", True)),
         "phase_age_s": round(max(0.0, now - float(room.get("phase_started_at") or now)), 2)
         if phase in ("writing", "voting", "reveal") else 0.0,

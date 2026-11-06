@@ -1,14 +1,17 @@
 {
-  "title": "Use Your Good Word",
-  "tagline": "Biblical worldview party game for phones + TV!",
-  "description": "A Christian edition of Use Your Words & Jackbox! Cast the stage to a TV or play right on your phones: write headlines for The Jerusalem Gazette, caption Bible scenes, bluff your family in Truth or Bluff, dodge the Scribe's Trap, and battle for 2x points in Survey Says — complete with a live Game-Show Announcer voice!",
+  "title": "Parable Party",
+  "tagline": "A Bible-story game show for phones and the TV!",
+  "description": "A family game show with the Bible at its heart. Put the stage on the TV, or play right on your phones: write headlines for The Jerusalem Gazette, caption Bible scenes, bluff your family in Truth or Bluff, dodge the Scribe's Trap and go all in on double points in Survey Says, with a live game-show announcer and music.",
   "emoji": "📜",
-  "art": { "from": "#3b1d7a", "to": "#d97706" },
+  "art": {
+    "from": "#3b1d7a",
+    "to": "#d97706"
+  },
   "genre": "party",
   "ages": "7+",
   "players": "1-8",
   "party": true,
-  "version": 1,
+  "version": 2,
   "metric": "points",
   "higher_is_better": true,
   "how_to": [

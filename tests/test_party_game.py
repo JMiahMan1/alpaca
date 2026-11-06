@@ -1,4 +1,4 @@
-"""Tests for the 'Use Your Good Word' Biblical Worldview multiplayer party engine."""
+"""Tests for the 'Parable Party' Biblical Worldview multiplayer party engine."""
 
 from __future__ import annotations
 
@@ -197,7 +197,7 @@ def test_alpaca_tts_decodes_audio_b64_and_supports_voice_clones(monkeypatch):
 
     monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
 
-    wav1 = party.synthesize_announcer_wav("Welcome to Use Your Good Word!", voice="am_fenrir,am_michael")
+    wav1 = party.synthesize_announcer_wav("Welcome to Parable Party!", voice="am_fenrir,am_michael")
     assert wav1 == fake_wav
     assert captured_payloads[-1]["voice"] == "am_fenrir,am_michael"
     assert "clone" not in captured_payloads[-1]
