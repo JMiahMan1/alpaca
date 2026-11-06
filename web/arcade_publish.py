@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from arcade.curation import load_curated, save_curated, set_curated
+    from arcade.curation import load_curated, set_curated
 except ImportError:  # container runs with the repo root on sys.path
-    from curation import load_curated, save_curated, set_curated
+    from curation import load_curated, set_curated  # type: ignore[no-redef]
 
 ARCADE_DIR = Path(os.getenv("ARCADE_DIR", "data/arcade"))
 GAMES_DIR = ARCADE_DIR / "games"

@@ -6,7 +6,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -959,7 +959,7 @@ def test_arcade_reaper_removes_only_old_stopped_sessions():
         return container
 
     def _stamp(seconds_ago):
-        return datetime.fromtimestamp(now - seconds_ago, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        return datetime.fromtimestamp(now - seconds_ago, tz=UTC).isoformat().replace("+00:00", "Z")
 
     running = _container("alpaca-arcade-running", "running")
     old_stopped = _container("alpaca-arcade-old", "exited", _stamp(400))

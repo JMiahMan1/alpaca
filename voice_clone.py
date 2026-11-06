@@ -25,6 +25,7 @@ it as synthetic.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import math
@@ -1408,7 +1409,7 @@ def narration_checks(audio, sr: int) -> dict:
         # showed up as the "largest shift" at the end of every narration.
         full = [w for w in _windows(speech, STEADY_WINDOW_S) if len(w) >= int(STEADY_WINDOW_S * SR)]
         ws = _embed_windows(full)
-        sims = [_cosine(a, b) for a, b in zip(ws, ws[1:])]
+        sims = [_cosine(a, b) for a, b in itertools.pairwise(ws)]
         if sims:
             i = int(np.argmin(sims))
             out["steadiness_min"] = round(float(sims[i]), 4)

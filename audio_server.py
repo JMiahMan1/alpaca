@@ -148,10 +148,7 @@ def _wav_bytes(samples_f32, sample_rate: int, peak_normalize: bool = True) -> by
 
     arr = np.asarray(samples_f32, dtype=np.float32)
     peak = float(np.max(np.abs(arr))) if arr.size else 1.0
-    if peak_normalize and peak > 0:
-        arr = arr / max(peak, 1e-6)
-    else:
-        arr = np.clip(arr, -1.0, 1.0)
+    arr = arr / max(peak, 1e-6) if peak_normalize and peak > 0 else np.clip(arr, -1.0, 1.0)
     pcm16 = (arr * 32767.0).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -682,7 +679,7 @@ async def api_tts(request: Request):
                     return voice_clone.convert(a, sr, src_se, tgt_se, clone_tau, clone_seed,
                                                clone_highband or None)
 
-            for p_idx, paragraph in enumerate(tts_text.paragraphs(text)):
+            for paragraph in tts_text.paragraphs(text):
                 units = (
                     tts_text.phrase_groups(paragraph, group_chars)
                     if group_chars
@@ -690,7 +687,7 @@ async def api_tts(request: Request):
                 )
                 whole = convert is not None and clone_unit == "paragraph"
                 spoken: list = []
-                for s_idx, sentence in enumerate(units):
+                for sentence in units:
                     for audio in await asyncio.to_thread(_synth, sentence):
                         if convert is not None and not whole:
                             audio = await asyncio.to_thread(convert, audio)
