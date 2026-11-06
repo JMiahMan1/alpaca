@@ -206,7 +206,10 @@ def tick(race: dict[str, Any], now: float, human_ids: list[str], delay: float, b
     # The clue closes. A scribe still thinking answers now (it was going to anyway).
     _apply_bots(race, now, force=True)
     if race["index"] + 1 < len(race["items"]):
-        race["flash_until"] = now + FLASH_SECONDS
+        # A streamed TV shows the answer `delay` late; the phones wait for it, then
+        # everyone gets the full flash.
+        race["flash_at"] = now
+        race["flash_until"] = now + FLASH_SECONDS + delay
         return False
     race["done"] = True
     return True
@@ -260,7 +263,8 @@ def correct_text(item: dict[str, Any]) -> str:
 
 
 def public_item(item: dict[str, Any], reveal: bool) -> dict[str, Any]:
-    out = {k: v for k, v in item.items() if k not in ("answer", "note")}
+    # No "id": the content ids name the answer ("qd_david_sling").
+    out = {k: v for k, v in item.items() if k not in ("answer", "note", "id")}
     if reveal:
         out["answer"] = item["answer"]
         out["note"] = item.get("note", "")

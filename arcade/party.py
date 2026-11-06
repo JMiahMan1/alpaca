@@ -727,7 +727,8 @@ def new_match_schedule() -> list[str]:
 
 
 #: Prompts used recently in any room: a new room should not replay last night's game.
-_recent_prompt_ids: collections.deque[str] = collections.deque(maxlen=400)
+# Long enough to remember every writing prompt and race clue there is, so nothing comes back early.
+_recent_prompt_ids: collections.deque[str] = collections.deque(maxlen=2000)
 
 
 _lock = threading.Lock()
@@ -977,10 +978,13 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
 
 
 RACE_INTROS = {
-    "quick_draw": "Quick Draw! Fingers on buttons! First right answer scores the most, and a wrong tap costs you!",
-    "lightning": "Lightning Round! True or false, as fast as you can! Here we go!",
-    "pair_up": "Pair Up! Match every pair on your phone. Perfect and fast wins big!",
-    "in_order": "In Order! Put them in the right order on your phone. Perfect and fast wins big!",
+    "quick_draw": ("Quick Draw! Fingers on buttons. The first right answer scores the most... "
+                   "and a wrong tap costs you. Choose your confidence carefully."),
+    "lightning": "Lightning Round! True or false, as fast as you can. Thinking is optional. Being right is not.",
+    "pair_up": ("Pair Up! Match every pair on your phone. Perfect and fast wins big. "
+                "Perfect and slow wins... a warm feeling."),
+    "in_order": ("In Order! Put them in the right order on your phone. Perfect and fast wins big. "
+                 "I believe in you. Mostly."),
 }
 RACE_REVEAL_SECONDS = 24.0
 
@@ -1012,7 +1016,7 @@ def _start_race_round_unlocked(room: dict[str, Any], round_num: int, kind: str, 
     room["phase_started_at"] = now
     room["phase_deadline"] = race["deadline"]
     room["current_prompt"] = {
-        "id": f"race:{kind}:{raws[0]['id'] if raws else ''}",
+        "id": f"race:{kind}:{round_num}",  # not a clue id: those name the answer
         "kind": kind,
         "title": meta["title"],
         "badge": meta["badge"],
@@ -1086,11 +1090,12 @@ def _score_race_unlocked(room: dict[str, Any]) -> None:
     ranked = sorted((p for p in players.values() if not p.get("spectator")), key=lambda p: -int(p.get("round_delta") or 0))
     top = ranked[0] if ranked and int(ranked[0].get("round_delta") or 0) > 0 else None
     if top is None:
-        line = "Tough round! Nobody cracked that one. The Scribe is laughing in the back!"
+        line = "Well... nobody cracked that one. The Scribe is laughing in the back. I'm trying very hard not to join him."
     elif race["kind"] in ("pair_up", "in_order") and any(e["type"] == "race_perfect" for e in raw_events):
-        line = f"{top['name']} takes the round! Fast hands and a sharp mind!"
+        line = f"{top['name']} takes the round! Fast hands, a sharp mind... and frankly, a little showing off."
     else:
-        line = f"{top['name']} wins the race with {int(top['round_delta']):,} points! Lightning fingers!"
+        line = (f"{top['name']} wins the race with {int(top['round_delta']):,} points! "
+                "Those thumbs deserve their own trophy.")
     room["reveal"] = {
         "events": events,
         "round_winners": [top["name"]] if top else [],
@@ -1401,11 +1406,11 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     if round_winner_names:
         winner_str = " and ".join(round_winner_names)
         verb = "take" if len(round_winner_names) > 1 else "takes"
-        announcer_reveal = f"The votes are in! {winner_str} {verb} the round bonus!"
+        announcer_reveal = f"The votes are in! {winner_str} {verb} the round bonus! A triumph of taste. Or at least, of votes."
     elif any(e["type"] == "truth_found" for e in events):
-        announcer_reveal = "The truth is revealed! Let's see who spotted the real Scripture!"
+        announcer_reveal = "The truth is revealed. Scripture wins, as it tends to do. Now, let's see who spotted it."
     else:
-        announcer_reveal = "The Scribe's Trap caught the room! Look at those scores!"
+        announcer_reveal = "The Scribe's Trap caught the room. Look at those scores. Actually... maybe don't."
 
     room["reveal"] = {
         "events": events,
@@ -1427,43 +1432,50 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
 # the same thing, and a replayed round does not repeat the last match's jokes.
 
 HOST_OPENERS = (
-    "Welcome back, word-slingers!",
-    "Phones up, scribes! Thumbs ready! Here we go!",
-    "Ooh! I like this one. I like this one a lot!",
-    "Ready? Of course you're ready. Look at you!",
-    "Settle in, saints. This one's a doozy!",
-    "Keep it clean, keep it clever, keep it quick!",
-    "Brace yourselves, family! Somebody is about to be hilarious!",
-    "My producers said don't get too excited. Too late! I'm excited!",
-    "Come on down! It's a brand new round!",
+    "Good evening, and welcome back. I'm told this is the fun part. Let's find out.",
+    "Ah. Another round. My favorite kind of round... the next one.",
+    "Thumbs ready, everyone. Try to impress me. I'm very easy to impress. I'm not.",
+    "Settle in, friends. History is about to be made. Small history. Living room history.",
+    "Welcome back, brilliant minds. And also the rest of you. Here we go.",
+    "The stakes have never been higher. That isn't true. But doesn't it sound wonderful?",
+    "Phones up. Snacks down. Well... snacks within reach. Here comes the next one.",
+    "I have a very good feeling about this round. I said that last round, too. I was wrong.",
+    "Ladies and gentlemen, and grown-ups who said they would only play one round... welcome back.",
+    "Let's raise the bar. Gently. We don't want anybody tripping over it.",
 )
 HOST_VOTING = (
-    "All the scrolls are in! Pick your favorite, and watch out for the Scribe's Trap!",
-    "Phones up! Vote for the best one. Not your own. I see you!",
-    "Read carefully! The sneaky Scribe slipped a trap in there, and he is feeling very smug tonight!",
-    "Voting time! One of these is the Scribe's Trap. Don't let it fool you!",
-    "The answers are in! Some of you should be proud. Some of you should be brave. Vote!",
+    "The answers are in. Some are brilliant. Some are... also answers. Vote for your favorite.",
+    "Time to vote. Not for your own. I can tell. I can always tell.",
+    "Read every one carefully. The Scribe hid a trap in there, and he is unbearably pleased with himself.",
+    "Voting is open! Choose wisely. Or choose quickly. Ideally, both.",
+    "Somewhere in that list is the Scribe's Trap. He worked on it all afternoon. Please don't reward him.",
+    "Behold... the answers. I've read them. I need a moment. You need to vote.",
+    "Pick the one that made you laugh. If none did, pick the one that tried the hardest.",
 )
 HOST_DRUMROLL = (
-    "Drumroll, please! No, a real one. Somebody slap the table!",
-    "And now... the moment of truth!",
-    "Let's see who fooled whom... and who fooled themselves!",
-    "The votes are counted. Hold on to something!",
-    "I've seen the results. I have feelings. Big feelings!",
+    "And now... the results. Try to act surprised.",
+    "The votes have been counted. Twice. The second time was out of disbelief.",
+    "Drumroll, please! A table works. A knee works. Somebody find a knee.",
+    "Let's see who fooled whom... and who fooled themselves.",
+    "I've seen the results. I won't say a word. My face, however, is saying several.",
+    "Brace yourselves. Some of you are about to be very proud. Some of you are about to be very quiet.",
 )
 HOST_TRAPPED = (
-    "Oh no! The Scribe's Trap got you! And now the Scribe is doing a little victory dance!",
-    "Gotcha! The Scribe's Trap caught a few of you! Look at those scores!",
-    "Ha! That one was the trap all along! Shake it off, and read slower!",
-    "The Scribe's Trap strikes again! That Scribe is going to be impossible to live with now!",
-    "Somebody fell for the trap! The Scribe would like to thank his fans!",
+    "Oh dear. The Scribe's Trap got you. And now he's taking a bow. Nobody asked him to.",
+    "And there it is. The Scribe's Trap, working exactly as designed. He would like that noted.",
+    "The Scribe's Trap strikes again! Somewhere, a very smug Scribe is writing this down.",
+    "That one was the trap all along. Shake it off... and maybe read the next one twice.",
+    "Well. That was the Scribe's Trap. He has asked me to thank his fans. I will not.",
+    "Caught by the Scribe's Trap. It happens to the best of us. Tonight, it happened to you.",
+    "The Scribe's Trap catches another one! He's already practicing his victory speech. It's very long.",
 )
 HOST_FINALE = (
-    "{name} wins the Golden Scroll with {score} points! Everyone else, great effort. Truly. Mostly!",
-    "Ladies and gentlemen, your champion! {name}, with {score} points! Somebody get them a crown!",
-    "And the Golden Scroll goes to... {name}! {score} points! Somebody frame that!",
-    "{name} takes the Golden Scroll with {score} points! Bragging rights are good until the next family dinner!",
-    "It's official! {name} wins with {score} points! And the sneaky Scribe goes home with nothing!",
+    "Ladies and gentlemen... your champion! {name}, with {score} points! Hold your applause. No, go ahead.",
+    "And the Golden Scroll goes to... {name}! {score} points! Everyone else, a truly respectable effort. Mostly.",
+    "{name} takes the Golden Scroll with {score} points! Bragging rights are valid until the next family dinner.",
+    "It's official. {name} wins with {score} points! And the sneaky Scribe goes home with nothing. As usual.",
+    "With {score} points, {name} is tonight's champion! I'd say I saw it coming. I did not see it coming.",
+    "The match is over. The scroll is golden. And {name} has {score} points to prove it. What a night!",
 )
 
 
@@ -1531,75 +1543,85 @@ def joke_for(room: dict[str, Any], salt: str) -> tuple[str, str]:
 #: round, a joke or a nudge, the way a game-show host fills dead air.
 HOST_CHATTER: dict[str, tuple[str, ...]] = {
     "blank_o_matic": (
-        "Fill in that blank! Funny beats right. But funny and right? That wins the whole day!",
-        "I've seen some answers in my time, folks. Somebody once just wrote 'potato'. Surprise me!",
-        "Remember, somebody in this room has to vote for it. Make it good!",
-        "Host tip! The weirder the detail, the bigger the laugh. Be specific!",
-        "The sneaky Scribe already set his trap. He's very proud of it. Go beat it!",
+        "Fill in that blank. Funny beats correct. Funny and correct? Now you're just showing off.",
+        "Somebody once answered one of these with the word potato. It won. Please aim higher.",
+        "Remember, somebody in this room has to vote for it. Write accordingly.",
+        "A little host advice. The oddly specific answer gets the laugh. The vague one gets a polite nod.",
+        "The Scribe has already set his trap. He's been humming about it all day. It's unsettling.",
+        "Take your time. Not too much time. I'm a patient host, but the clock is not.",
     ),
     "extra_extra": (
-        "Every great headline needs a pun. It's not a rule. Okay, it's a rule!",
-        "Short! Punchy! Front-page worthy! Think like a newsboy on a deadline!",
-        "Read all about it... as soon as somebody writes it!",
-        "The paper boy is waiting, and he has had way too much sugar!",
+        "Every great headline needs a pun. It's not a rule. Fine... it's a rule.",
+        "Short. Punchy. Front page. If it needs a second paragraph, it's not a headline. It's a book.",
+        "Read all about it... just as soon as somebody writes it.",
+        "The paper boy is waiting, and he has had far too much lemonade.",
+        "Big letters, small words. That's journalism. I think. I've never actually checked.",
     ),
     "truth_or_bluff": (
-        "Here's the trick! Make your fake sound more true than the truth!",
-        "One of these answers is the real one from Scripture. Can you out-bluff it?",
-        "Bluffers, put on your best poker face! Or your best 'I definitely read all of Leviticus' face!",
-        "The real answer is usually more surprising than anything you'd guess. Try to top it!",
-        "The Scribe is bluffing too, and he thinks he's really good at this. Prove him wrong!",
+        "Here's the trick. Make your fake sound truer than the truth. Easy. No, it isn't.",
+        "One of these answers is the real one from Scripture. Your job is to write something sneakier.",
+        "Bluffers, find your best poker face. Or your best... I definitely read all of Leviticus, face.",
+        "The real answer is usually stranger than anything you'd guess. That's what makes this fun.",
+        "The Scribe is bluffing too. He thinks he's very good at it. He's about average.",
     ),
     "sub_the_scroll": (
-        "What are they saying? Only you know!",
-        "Put words in their mouths! Kind words, please. Funny kind words!",
-        "I would love to hear this conversation. Go on, write it!",
-        "Look at that face on the screen. Now, what is that face saying? Type it!",
+        "What are they saying? Only you know. Well... now you do.",
+        "Put words in their mouths. Kind words, please. Funny, kind words.",
+        "I would love to hear this conversation. Go on. Write it down for me.",
+        "Look at that face on the screen. That is the face of someone with something to say.",
+        "Keep it short. Speech bubbles are small, and so is my patience.",
     ),
     "survey_says": (
-        "Double points, people! This is where champions are made and snacks are earned!",
-        "Think like the crowd! What would most folks say in the parking lot after church?",
-        "Last round! Everything is on the line! I may need to sit down!",
-        "Behind on points? Now's the time! Comebacks are very biblical. Just ask Jonah!",
+        "Double points, everyone. This is where champions are made... and snacks are earned.",
+        "Think like the crowd. What would most folks say in the church parking lot?",
+        "Final round. Everything is on the line. I may need to sit down for this.",
+        "Behind on points? Comebacks are very biblical. Just ask Jonah. He came all the way back.",
+        "Don't be clever this time. Be common. I know. It goes against everything you've done tonight.",
     ),
     "parable_remix": (
-        "Same story, brand new setting. Make it make sense... or don't!",
-        "Jesus told the best stories. No pressure!",
-        "Modern day, timeless truth! Let's hear it!",
-        "Imaginary bonus points if a minivan is involved!",
+        "Same story, brand new setting. Make it make sense... or at least make us laugh.",
+        "Jesus told the greatest stories ever told. So... no pressure.",
+        "Modern day, timeless truth. Let's hear it.",
+        "Imaginary bonus points if a minivan is involved. Double imaginary points for a drive-through.",
+        "Keep the heart of the story. Change everything else. That's the whole trick.",
     ),
     "bible_bios": (
-        "Keep it short and snappy! Nobody reads a long bio!",
-        "Imagine the profile picture. Now write the bio!",
-        "Hobbies, skills, and one strange fact. That's a winning bio!",
-        "Methuselah's bio would just say 'still here'. Beat that!",
+        "Keep it short and snappy. Nobody reads a long bio. Not even me, and I read everything.",
+        "Picture the profile picture. Now write the bio to go with it.",
+        "Hobbies, skills, and one strange fact. That's a winning bio.",
+        "Methuselah's bio would just say... still here. Try to beat that.",
+        "These are real people from Scripture. Funny is welcome. Kind is required.",
     ),
     "hymn_remix": (
-        "Feel free to hum while you write. I won't tell!",
-        "The best hymn titles practically sing themselves!",
-        "Somewhere, a church organist is already warming up!",
-        "Extra credit if it rhymes! There is no extra credit. Rhyme anyway!",
+        "Feel free to hum while you write. I won't tell anyone.",
+        "The best hymn titles practically sing themselves. The rest need a little help.",
+        "Somewhere, a church organist is already warming up. No pressure.",
+        "Extra credit if it rhymes. There is no extra credit. Rhyme anyway.",
+        "Make it something a choir could sing with a straight face. Or almost a straight face.",
     ),
     "church_bulletin": (
-        "Every church bulletin has one announcement nobody expected!",
-        "Potluck sign-ups? Choir tryouts? A lost and found full of casserole dishes? Go!",
-        "Keep it bulletin-sized! The deacons are watching!",
-        "Somewhere, a church secretary is proofreading this with a red pen. Make her laugh!",
+        "Every church bulletin has one announcement nobody expected. Write that one.",
+        "Potluck sign-ups? Choir tryouts? A lost and found full of casserole dishes? Go.",
+        "Keep it bulletin-sized. The deacons are watching. Lovingly.",
+        "Somewhere, a church secretary is proofreading this with a red pen. Make her smile.",
+        "It has to fit between the bake sale and the parking reminder. Choose your words wisely.",
     ),
     "voting": (
-        "Read them carefully! The Scribe's Trap is hiding in there, and the Scribe is feeling cocky tonight!",
-        "No voting for yourself! I'm watching. Lovingly. But watching!",
-        "Go with your gut! Or your funny bone!",
-        "If one made you laugh out loud, that's your vote! Don't overthink it!",
-        "Psst! The Scribe's Trap is wearing a fake mustache. Don't fall for it!",
+        "Read them carefully. The Scribe's Trap is hiding in there, and the Scribe is feeling very confident tonight.",
+        "No voting for yourself. I'm watching. Warmly. But watching.",
+        "Go with your gut. Or your funny bone. Whichever one is louder.",
+        "If one made you laugh out loud, that's your vote. Don't overthink it. That's my job.",
+        "A tip. The Scribe's Trap usually sounds a little too sure of itself. Much like the Scribe.",
+        "Take your time. Some of these deserve a second look. Some deserve a second chance.",
     ),
 }
 HOST_HURRY = (
-    "Ten seconds left!",
-    "Ten seconds! Finish that thought!",
-    "Hurry, hurry! Ten seconds!",
-    "Ten seconds! Type like the potluck line is closing!",
-    "Ten seconds, thumbs! Do your thing!",
+    "Ten seconds. No pressure. Some pressure.",
+    "Ten seconds! Finish that thought. Any thought.",
+    "Ten seconds left! Type like the potluck line is closing!",
+    "Ten seconds, thumbs. This is your moment.",
+    "Ten seconds. A brilliant answer would be lovely. Any answer would be fine.",
+    "Hurry, hurry! Ten seconds on the clock!",
 )
 
 
@@ -1633,7 +1655,9 @@ def up_next(room: dict[str, Any]) -> dict[str, Any] | None:
 
 def reveal_result_line(room: dict[str, Any]) -> str:
     reveal = room.get("reveal") or {}
-    if reveal.get("round_winners") or any(e.get("type") == "truth_found" for e in reveal.get("events") or []):
+    if reveal.get("race") is not None:
+        result = str(reveal.get("announcer") or "")  # a race has no trap to blame
+    elif reveal.get("round_winners") or any(e.get("type") == "truth_found" for e in reveal.get("events") or []):
         result = str(reveal.get("announcer") or "")
     else:
         result = _pick(room, HOST_TRAPPED, "trap")
@@ -1725,8 +1749,8 @@ def race_line(room: dict[str, Any]) -> str:
             answer = "True" if item["answer"] == 0 else "False"
         answer = answer.rstrip(".!? ") + "!"
         if not names:
-            return f"It's {answer} Nobody got that one!"
-        return f"It's {answer} {names[0]} was fastest!"
+            return f"It's {answer} Nobody? Really? Nobody."
+        return f"It's {answer} {names[0]} got it first. Naturally."
     if item["type"] == "pick":
         clue = f"{item['clue']} True or false?" if kind == "lightning" else item["clue"]
         lead = f"Question {idx + 1}!" if idx else str((room.get("current_prompt") or {}).get("announcer") or "")
@@ -1949,7 +1973,7 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
     # In a race the clock, and the phones' hold for a streamed TV, are per clue.
     started = float(room.get("phase_started_at") or now)
     if race:
-        started = (float(race["flash_until"]) - party_race.FLASH_SECONDS if race.get("flash_until")
+        started = (float(race.get("flash_at") or race["flash_until"]) if race.get("flash_until")
                    else float(race.get("started_at") or started))
     remaining = max(0, round(float(room.get("phase_deadline") or now) - now, 1)) if phase in timed else 0.0
 
@@ -2300,6 +2324,9 @@ def _take_late_answer_unlocked(room: dict[str, Any], pid: str, text: str) -> boo
         return False
     prompt = room["current_prompt"]
     if _matches_truth(text, prompt) or _normalize_compare(text) == _normalize_compare(prompt.get("decoy", "")):
+        return False
+    # The same words as an answer already on the ballot would be two identical options.
+    if any(_normalize_compare(o.get("text") or "") == _normalize_compare(text) for o in room.get("options") or []):
         return False
     room["submissions"][pid] = {"player_id": pid, "text": text, "is_decoy": False, "submitted_at": time.time(),
                                 "late": True}

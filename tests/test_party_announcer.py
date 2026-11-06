@@ -295,3 +295,11 @@ def test_shouted_words_are_read_not_spelled():
     assert unshout("I saw A dog") == "I saw A dog"  # single letters are words
     marked = pronounce("BARNABAS IS HERE")
     assert marked.startswith("[BARNABAS](/") and marked.endswith(" Is Here")
+
+
+def test_shouted_possessives_and_contractions_stay_one_word():
+    from arcade.announcer import unshout
+
+    assert unshout("THE MIDIAN SHEPHERD'S JOURNAL") == "The Midian Shepherd's Journal"
+    assert unshout("IT’S A BOY'S WORLD") == "It’s A Boy's World"
+    assert unshout("CEO DIY") == "CEO DIY"
