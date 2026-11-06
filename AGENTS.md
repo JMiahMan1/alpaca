@@ -491,9 +491,11 @@ other fails the build.
   and stored in `ARCADE_DIR/party_music/`. Missing cues are composed in a background thread at startup (a cue
   that is not ready is just silent); `POST /api/admin/party/music/regenerate` redoes them. It plays wherever the
   announcer plays, ducks under the announcer, and the host can turn it off per room.
-- **Two voices, one pipeline** (`arcade/announcer.py`, `party.synthesize_show_line`). Kokoro reads like an
-  audiobook, so the announcer's clip is processed into a broadcast voice (high-pass, presence lift, two-stage
-  compression, a short room) and the default voice is the deep `am_onyx,am_fenrir` blend. A line that opens with
+- **Two voices, one pipeline** (`arcade/announcer.py`, `party.synthesize_show_line`). The announcer is the
+  `bm_fable,bm_lewis,bm_george` blend at 1.15x with snappy per-sentence pauses, chosen by ear over three audition
+  rounds; its chain is deliberately clean (high-pass, presence, one compressor, no echo or drive), and everything but
+  an exclamation sits `SHOUT_LIFT_DB` under it so the shouts land. `depop()` fades out the ~2 ms burst Kokoro puts at
+  the start of a clip that opens on a vowel ("Ooh."), which was heard as a click after a pause. A line that opens with
   "Extra! Extra!" is split: a paper boy shouts "Extra! Extra! Read all about it!" first. No Kokoro voice is a boy
   (every male voice measured 88-166 Hz), so he is `am_eric,af_kore` (~170 Hz) resampled up 1.32x to ~235 Hz,
   band-limited, driven and given a street slap echo. Stdlib only, ~0.2 s a line, cached with the clips.
