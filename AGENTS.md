@@ -456,6 +456,30 @@ other fails the build.
   plays a game at iPhone 13 / SE / Pixel 7 / iPad sizes and fails on console errors, a missing
   bridge message or page overflow.
 
+### Party games on the TV (`arcade/party.py`, `/tv`, SharedLLM `tv_stage`)
+- **The TV runs the game's stage page; it is never sent audio or a picture of it.** `/tv/<CODE>`
+  (`arcade/templates/party_tv.html`) is a hands-free big-screen view: it polls the room as the stage
+  (`?stage=1`), shows the join QR (`/api/party/rooms/<code>/join.svg` → `/join/<code>`), and plays the
+  Alpaca TTS announcer on the TV's speakers. Bare `/tv` follows whichever room is active. It is ES5 + XHR
+  + flexbox on purpose: TV browsers are years behind phones.
+- **Phones stay quiet while a stage is live.** The room reports `stage_connected` (a stage polled in the
+  last `STAGE_PRESENCE_SECONDS`) and the phone game skips its own announcer, so there is no echo.
+- **No device is ever named in this repo.** Discovery and display belong to SharedLLM's execution service
+  (`services/execution/handlers/tv_stage.py`), which is on the host network with Home Assistant,
+  pychromecast and the LG/Samsung clients; the arcade's bridge network cannot do mDNS/SSDP. The arcade
+  relays `GET /api/party/tvs` → `/execute/stage/screens` and `POST /api/party/cast` → `/execute/stage/show`
+  (or `/stop`) through `EXECUTION_SVC_URL`. Unset, discovery reports itself unavailable instead of guessing.
+- **A caller picks the screen and the room, never the URL.** The cast route always sends this arcade's own
+  `/tv/<CODE>` at the address the phone used (`X-Forwarded-*` aware, `ARCADE_PUBLIC_URL` overrides).
+- How each screen shows it (SharedLLM): Google Cast (Chromecast, Google/Android TV, Cast built-in) → the
+  DashCast receiver navigated to the page; LG → its browser via `webostv.command`; Samsung → its browser via
+  `samsungtvws` (the TV asks once to allow "Jarvis"); Android TV without Cast → an app link via
+  `androidtv_remote`; **Roku has no web engine**, so the page is rendered in headless Chromium and sent as a
+  live HLS stream (`stage_stream.py`) to Media Assistant. Every result says which method worked and whether
+  the TV confirmed it.
+- **Room snapshots never carry credentials.** An earlier version stored the HA URL + token on the room and
+  serialized it to every phone; `test_room_snapshots_never_carry_tv_credentials` keeps it out.
+
 ### Error Types & Fixes
 | Symptom | Cause | Fix |
 |---------|-------|-----|

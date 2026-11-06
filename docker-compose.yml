@@ -199,6 +199,9 @@ services:
       ARCADE_PORT: "5001"
       AUDIO_SERVER_URL: "http://audio-server:8082"
       PROXY_URL: "http://host.docker.internal:11434"
+      # SharedLLM's execution service: discovers the household's TVs and puts the
+      # live /tv stage on them (it runs on the host network; this container cannot).
+      EXECUTION_SVC_URL: "${EXECUTION_SVC_URL:-http://host.docker.internal:8003}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

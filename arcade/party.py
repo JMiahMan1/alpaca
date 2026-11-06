@@ -32,6 +32,7 @@ Jarvis Family Hub and Alpaca Arcade:
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -39,13 +40,14 @@ import random
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
 
 AUDIO_SERVER_URL = os.getenv("AUDIO_SERVER_URL", "http://audio-server:8082").rstrip("/")
 PROXY_URL = os.getenv("PROXY_URL", "http://host.docker.internal:11434").rstrip("/")
-EXECUTION_SVC_URL = os.getenv("EXECUTION_SVC_URL", "http://host.docker.internal:8003").rstrip("/")
+EXECUTION_SVC_URL = os.getenv("EXECUTION_SVC_URL", "").rstrip("/")
 
 DEFAULT_ANNOUNCER_VOICE = "am_fenrir,am_michael"
 
@@ -92,50 +94,8 @@ CURATED_ANNOUNCER_VOICES: tuple[dict[str, str], ...] = (
     },
 )
 
-SUPPORTED_TV_PLATFORMS: tuple[dict[str, Any], ...] = (
-    {
-        "id": "roku",
-        "platform": "roku",
-        "name": "Roku TV / Roku Stick",
-        "icon": "🟣",
-        "methods": ["roku_ecp_782875", "ha_play_media", "airplay_miracast"],
-        "description": "Wakes Roku via ECP (:8060), launches Media Assistant (782875) + plays Alpaca TTS announcer on TV speakers, and supports AirPlay 2 / Screen Mirroring.",
-    },
-    {
-        "id": "webos",
-        "platform": "webos",
-        "name": "LG Smart TV (webOS)",
-        "icon": "🔴",
-        "methods": ["webos_browser_launch", "webos_toast", "ha_play_media", "airplay"],
-        "description": "Wakes LG TV, opens the fullscreen LG webOS Browser directly to /tv/<CODE>, shows an on-screen toast, and plays Alpaca TTS audio.",
-    },
-    {
-        "id": "samsung",
-        "platform": "samsung",
-        "name": "Samsung Smart TV (Tizen)",
-        "icon": "🔵",
-        "methods": ["tizen_browser_launch", "dlna_cast_companion", "ha_play_media", "smartview_airplay"],
-        "description": "Wakes Samsung TV via Wake-on-LAN, opens Tizen Internet Browser / DLNA / Cast companion to /tv/<CODE>, and plays Alpaca TTS audio.",
-    },
-    {
-        "id": "cast",
-        "platform": "cast",
-        "name": "Google Chrome / Chromecast",
-        "icon": "🟢",
-        "methods": ["chrome_presentation_api", "remote_playback_api", "ha_cast_play_media"],
-        "description": "Casts live /tv/<CODE> stage via Chrome Presentation API / Google Cast Receiver or Home Assistant Cast.",
-    },
-    {
-        "id": "android_tv",
-        "platform": "android_tv",
-        "name": "Android TV / Google TV",
-        "icon": "📺",
-        "methods": ["adb_intent_view", "cast_sibling", "ha_play_media", "chrome_cast"],
-        "description": "Wakes Android TV, launches /tv/<CODE> via Android VIEW intent or built-in Chromecast receiver, and plays Alpaca TTS audio.",
-    },
-)
-
 ROOM_TTL_SECONDS = 7200
+STAGE_PRESENCE_SECONDS = 8.0
 WRITE_SECONDS = 55
 VOTE_SECONDS = 35
 REVEAL_SECONDS = 14
@@ -215,7 +175,7 @@ ROUND_META: dict[str, dict[str, Any]] = {
     },
     "survey_says": {
         "title": "Survey Says! Double-Point Finale",
-        "badge": "⚡ 2× LIGHTNING ROUND",
+        "badge": "⚡ 2X LIGHTNING ROUND",
         "icon": "⚡",
         "multiplier": 2,
         "instructions": "DOUBLE POINTS! Every vote is worth 2,000 points - give your best crowd-pleasing family answer!",
@@ -679,7 +639,6 @@ PROMPT_BANK: dict[str, list[dict[str, Any]]] = {
 
 _lock = threading.Lock()
 _rooms: dict[str, dict[str, Any]] = {}
-_tts_cache: dict[str, bytes] = {}
 _tts_clips: dict[str, bytes] = {}
 
 
@@ -1170,7 +1129,8 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         "match_id": room.get("match_id", ""),
         "voice": room.get("voice") or DEFAULT_ANNOUNCER_VOICE,
         "announcer_voice": room.get("voice") or DEFAULT_ANNOUNCER_VOICE,
-        "cast_tv": room.get("cast_tv"),
+        # A TV stage polled recently: it speaks the announcer, so phones stay quiet.
+        "stage_connected": now - float(room.get("stage_seen_at") or 0) < STAGE_PRESENCE_SECONDS,
     }
 
 
@@ -1233,7 +1193,6 @@ def create_or_join_room(
                 "reveal": None,
                 "match_id": f"{room_code}-{int(now)}",
                 "voice": _clean_text(voice, 64) or DEFAULT_ANNOUNCER_VOICE,
-                "cast_tv": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -1283,7 +1242,8 @@ def set_room_voice(code: str, voice: str) -> dict[str, Any]:
         return serialize_room(room)
 
 
-def get_room_state(code: str, viewer_id: str | None = None) -> dict[str, Any]:
+def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = False) -> dict[str, Any]:
+    """A room snapshot. ``stage=True`` is the TV stage polling, which marks it live."""
     now = time.time()
     clean_code = _clean_code(code)
     with _lock:
@@ -1291,6 +1251,8 @@ def get_room_state(code: str, viewer_id: str | None = None) -> dict[str, Any]:
         room = _rooms.get(clean_code)
         if room is None:
             raise LookupError(f"Room '{clean_code}' not found.")
+        if stage:
+            room["stage_seen_at"] = now
         _check_auto_advance_unlocked(room)
         return serialize_room(room, viewer_id=viewer_id)
 
@@ -1483,16 +1445,9 @@ def _generate_ai_prompt(kind: str) -> dict[str, Any] | None:
 
 
 def _audio_server_urls() -> list[str]:
-    """Candidate Alpaca audio-server endpoints (Docker network, LAN GPU server, local)."""
-    candidates = [
-        AUDIO_SERVER_URL,
-        os.getenv("ALPACA_AUDIO_URL", "").rstrip("/"),
-        "http://audio-server:8082",
-        "http://192.168.2.43:8082",
-        "http://localhost:8082",
-    ]
+    """Alpaca audio-server endpoints, from configuration only."""
     out: list[str] = []
-    for u in candidates:
+    for u in (AUDIO_SERVER_URL, os.getenv("ALPACA_AUDIO_URL", "").rstrip("/")):
         if u and u not in out:
             out.append(u)
     return out
@@ -1568,14 +1523,14 @@ def _decode_tts_response(raw: bytes) -> bytes | None:
     return None
 
 
-def synthesize_announcer_wav(
-    text: str,
-    voice: str = DEFAULT_ANNOUNCER_VOICE,
-    *,
-    clone: str | None = None,
-    speed: float = 1.04,
-) -> bytes | None:
-    """Request neural announcer voice audio from Alpaca's Kokoro / OpenVoice audio-server."""
+def _tts_request(text: str, voice: str, clone: str | None, speed: float) -> tuple[str, dict[str, Any]] | None:
+    """The clip id and audio-server payload for one announcer line.
+
+    A ``clone:<id>`` voice is sent as ``clone`` with **no** ``voice``: the
+    audio server then pairs the Kokoro base voice that needs no pitch
+    correction for that speaker. Naming a fixed base voice instead forces a
+    phase vocoder over the whole line, which is what makes a clone sound sung.
+    """
     clean = _clean_text(text, 280)
     if not clean:
         return None
@@ -1583,45 +1538,15 @@ def synthesize_announcer_wav(
     clone_id = _clean_text(clone, 64) if clone else ""
     if clean_voice.startswith("clone:"):
         clone_id = clean_voice.split(":", 1)[1].strip()
-        clean_voice = "am_michael"
-
-    cache_key = f"{clean_voice}:{clone_id}:{round(float(speed), 2)}:{clean}"
-    clip_id = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
-    with _lock:
-        if cache_key in _tts_cache:
-            return _tts_cache[cache_key]
-
-    payload_dict: dict[str, Any] = {
-        "text": clean,
-        "voice": clean_voice,
-        "speed": max(0.7, min(1.5, float(speed))),
-    }
+        clean_voice = ""
+    rate = max(0.7, min(1.5, float(speed)))
+    payload: dict[str, Any] = {"text": clean, "speed": rate}
     if clone_id:
-        payload_dict["clone"] = clone_id
-    payload = json.dumps(payload_dict).encode("utf-8")
-
-    for base_url in _audio_server_urls():
-        req = urllib.request.Request(
-            f"{base_url}/api/tts",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30.0) as resp:
-                if resp.status == 200:
-                    wav = _decode_tts_response(resp.read())
-                    if wav and len(wav) >= 44:
-                        with _lock:
-                            if len(_tts_cache) >= 96:
-                                _tts_cache.pop(next(iter(_tts_cache)))
-                            _tts_cache[cache_key] = wav
-                            if len(_tts_clips) >= 96:
-                                _tts_clips.pop(next(iter(_tts_clips)))
-                            _tts_clips[clip_id] = wav
-                        return wav
-        except Exception:
-            continue
-    return None
+        payload["clone"] = clone_id
+    if clean_voice:
+        payload["voice"] = clean_voice
+    cache_key = f"{clean_voice}:{clone_id}:{round(rate, 2)}:{clean}"
+    return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16], payload
 
 
 def synthesize_announcer_clip(
@@ -1629,22 +1554,55 @@ def synthesize_announcer_clip(
     voice: str = DEFAULT_ANNOUNCER_VOICE,
     *,
     clone: str | None = None,
+    speed: float = 1.04,
 ) -> tuple[str, bytes] | None:
-    """Synthesize announcer WAV and return ``(clip_id, wav_bytes)`` so TVs can stream ``/api/party/tts/<clip_id>.wav``."""
-    wav = synthesize_announcer_wav(text, voice=voice, clone=clone)
-    if not wav:
+    """Announcer audio from Alpaca's Kokoro / OpenVoice audio-server as ``(clip_id, wav)``.
+
+    Clips are cached by id so a TV stage and every phone that asks for the same
+    line share one synthesis, and can stream it from ``/api/party/tts/<id>.wav``.
+    """
+    req_info = _tts_request(text, voice, clone, speed)
+    if req_info is None:
         return None
-    clean = _clean_text(text, 280)
-    clean_voice = _clean_text(voice, 64) or DEFAULT_ANNOUNCER_VOICE
-    clone_id = _clean_text(clone, 64) if clone else ""
-    if clean_voice.startswith("clone:"):
-        clone_id = clean_voice.split(":", 1)[1].strip()
-        clean_voice = "am_michael"
-    cache_key = f"{clean_voice}:{clone_id}:1.04:{clean}"
-    clip_id = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
+    clip_id, payload_dict = req_info
     with _lock:
-        _tts_clips[clip_id] = wav
-    return clip_id, wav
+        cached = _tts_clips.get(clip_id)
+    if cached:
+        return clip_id, cached
+    payload = json.dumps(payload_dict).encode("utf-8")
+    # A cloned voice's first line pairs a base voice, which converts every
+    # candidate once; give it the time it needs.
+    timeout = 90.0 if "clone" in payload_dict else 30.0
+    for base_url in _audio_server_urls():
+        req = urllib.request.Request(
+            f"{base_url}/api/tts", data=payload, headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status != 200:
+                    continue
+                wav = _decode_tts_response(resp.read())
+        except Exception:
+            continue
+        if wav and len(wav) >= 44:
+            with _lock:
+                while len(_tts_clips) >= 96:
+                    _tts_clips.pop(next(iter(_tts_clips)))
+                _tts_clips[clip_id] = wav
+            return clip_id, wav
+    return None
+
+
+def synthesize_announcer_wav(
+    text: str,
+    voice: str = DEFAULT_ANNOUNCER_VOICE,
+    *,
+    clone: str | None = None,
+    speed: float = 1.04,
+) -> bytes | None:
+    """Announcer WAV bytes (see ``synthesize_announcer_clip``), or None when the audio server is unavailable."""
+    clip = synthesize_announcer_clip(text, voice, clone=clone, speed=speed)
+    return clip[1] if clip else None
 
 
 def get_cached_tts_wav(clip_id: str) -> bytes | None:
@@ -1653,422 +1611,64 @@ def get_cached_tts_wav(clip_id: str) -> bytes | None:
         return _tts_clips.get(clean_id)
 
 
-# --- Multi-Platform TV Discovery & Casting (Roku, LG webOS, Samsung Tizen, Chrome/Cast, Android TV) ---
+# --- TV stage: discovered household screens (via SharedLLM's execution service) ---
+#
+# The arcade runs on a Docker bridge network, where mDNS and SSDP discovery
+# cannot work and no TV can be reached by name. SharedLLM's execution service
+# runs on the host network with Home Assistant, pychromecast, the LG/Samsung
+# clients and a headless renderer, so it owns discovery and display; the arcade
+# only names the page. Nothing here knows about any particular device.
 
 
-def _execution_urls() -> list[str]:
-    candidates = [
-        EXECUTION_SVC_URL,
-        "http://host.docker.internal:8003",
-        "http://192.168.2.43:8003",
-        "http://localhost:8003",
-    ]
-    out: list[str] = []
-    for u in candidates:
-        if u and u not in out:
-            out.append(u)
-    return out
+def _execution_url() -> str:
+    return EXECUTION_SVC_URL
 
 
-def discover_household_tvs() -> list[dict[str, Any]]:
-    """Discover household TVs across Roku, LG webOS, Samsung Tizen, Chromecast, and Android TV."""
-    tvs: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-
-    # 1. Query Jarvis Execution Service (/execute/timers/devices) if reachable
-    for base_url in _execution_urls():
-        try:
-            with urllib.request.urlopen(f"{base_url}/execute/timers/devices", timeout=2.5) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    for d in data.get("devices") or []:
-                        if not isinstance(d, dict):
-                            continue
-                        eid = str(d.get("entity_id") or d.get("id") or "").strip()
-                        platform = str(d.get("platform") or "").lower()
-                        kind = str(d.get("kind") or "").lower()
-                        if not eid or eid in seen_ids:
-                            continue
-                        if kind == "tv" or platform in ("roku", "webos", "samsung", "android_tv", "cast", "bravia", "dlna", "generic_tv"):
-                            seen_ids.add(eid)
-                            tvs.append(
-                                {
-                                    "id": eid,
-                                    "entity_id": eid,
-                                    "name": str(d.get("name") or eid),
-                                    "platform": platform or "generic_tv",
-                                    "os_version": str(d.get("os_version") or platform.upper()),
-                                    "state": str(d.get("state") or "unknown"),
-                                    "ip": str(d.get("ip") or ""),
-                                    "companions": d.get("companions") if isinstance(d.get("companions"), dict) else {},
-                                }
-                            )
-                    if tvs:
-                        return tvs
-        except Exception:
-            continue
-
-    # 2. Fallback: Direct Home Assistant REST API if HA_URL & HA_TOKEN are set
-    ha_url = os.getenv("HA_URL", "").rstrip("/")
-    ha_token = os.getenv("HA_TOKEN", "").strip()
-    if ha_url and ha_token:
-        req = urllib.request.Request(
-            f"{ha_url}/api/states",
-            headers={"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                if resp.status == 200:
-                    states = json.loads(resp.read().decode("utf-8"))
-                    state_list = states if isinstance(states, list) else []
-                    by_id = {str(s.get("entity_id") or ""): s for s in state_list if isinstance(s, dict)}
-                    for st in state_list:
-                        eid = str(st.get("entity_id") or "")
-                        if not eid.startswith("media_player.") or eid in seen_ids:
-                            continue
-                        st_state = str(st.get("state") or "unknown")
-                        if st_state == "unavailable":
-                            continue
-                        attrs = st.get("attributes") or {}
-                        # Skip secondary Music Assistant wrapper queues (_2, _3) when the base TV entity exists
-                        base_slug = re.sub(r"_(chrome|2|3|4)$", "", eid.split(".", 1)[1])
-                        if attrs.get("mass_player_type") and re.search(r"_(2|3|4)$", eid) and f"media_player.{base_slug}" in by_id:
-                            continue
-                        friendly = str(attrs.get("friendly_name") or eid)
-                        low = f"{eid} {friendly} {attrs.get('app_id', '')}".lower()
-                        rem_sib = (
-                            f"remote.{base_slug}_remote"
-                            if f"remote.{base_slug}_remote" in by_id
-                            else (f"remote.{base_slug}" if f"remote.{base_slug}" in by_id else "")
-                        )
-                        cast_sib = f"media_player.{base_slug}_chrome" if f"media_player.{base_slug}_chrome" in by_id else ""
-                        ma_sib = ""
-                        for suffix in ("_3", "_2"):
-                            cand = f"media_player.{base_slug}{suffix}"
-                            if cand in by_id and (by_id[cand].get("attributes") or {}).get("mass_player_type"):
-                                ma_sib = cand
-                                break
-                        rem_attrs = (by_id.get(rem_sib) or {}).get("attributes") or {}
-                        platform = ""
-                        if "roku" in low:
-                            platform = "roku"
-                        elif "webos" in low or "lg" in low or "sound_output" in attrs:
-                            platform = "webos"
-                        elif "samsung" in low or "tizen" in low:
-                            platform = "samsung"
-                        elif "android" in low or "current_activity" in rem_attrs:
-                            platform = "android_tv"
-                        elif "chrome" in low or "cast" in low:
-                            platform = "cast"
-                        elif attrs.get("device_class") == "tv" or "tv" in low:
-                            platform = "generic_tv"
-                        if platform:
-                            seen_ids.add(eid)
-                            tvs.append(
-                                {
-                                    "id": eid,
-                                    "entity_id": eid,
-                                    "name": friendly.replace(" Remote", ""),
-                                    "platform": platform,
-                                    "os_version": platform.replace("_", " ").title(),
-                                    "state": st_state,
-                                    "ip": "",
-                                    "companions": {
-                                        k: v
-                                        for k, v in {
-                                            "remote_sibling": rem_sib,
-                                            "cast_sibling": cast_sib,
-                                            "ma_sibling": ma_sib,
-                                        }.items()
-                                        if v
-                                    },
-                                }
-                            )
-        except Exception:
-            pass
-
-    return tvs
+def stage_url(base_url: str, code: str = "") -> str:
+    """The live TV stage page for a room, at ``base_url`` (the address phones use)."""
+    clean = _clean_code(code)
+    base = (base_url or "").rstrip("/")
+    return f"{base}/tv/{clean}" if clean else f"{base}/tv"
 
 
-def _ha_service_call(
-    ha_url: str,
-    ha_token: str,
-    domain: str,
-    service: str,
-    entity_id: str,
-    extra: dict[str, Any] | None = None,
-) -> bool:
-    if not ha_url or not ha_token or not entity_id:
-        return False
-    payload = {"entity_id": entity_id, **(extra or {})}
+def _execution_json(method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 20.0) -> dict[str, Any]:
+    base = _execution_url()
+    if not base:
+        raise ConnectionError("EXECUTION_SVC_URL is not set, so TV discovery is unavailable.")
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(
-        f"{ha_url.rstrip('/')}/api/services/{domain}/{service}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"},
+        f"{base}{path}", data=data, method=method, headers={"Content-Type": "application/json"},
     )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        parsed = json.loads(resp.read().decode("utf-8") or "{}")
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def discover_screens(*, refresh: bool = False) -> dict[str, Any]:
+    """Household screens that can show the stage, as discovered by the execution service."""
     try:
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            return 200 <= resp.status < 300
-    except Exception:
-        return False
+        data = _execution_json("GET", f"/execute/stage/screens?refresh={'true' if refresh else 'false'}")
+    except Exception as exc:
+        return {"success": False, "tvs": [], "error": f"Screen discovery is unavailable: {exc}"}
+    return {"success": True, "tvs": list(data.get("screens") or []), "home_assistant": bool(data.get("home_assistant"))}
 
 
-def cast_room_to_tv(
-    code: str,
-    *,
-    entity_id: str = "",
-    platform: str = "",
-    tv_url: str = "",
-    arcade_base_url: str = "",
-    voice: str = DEFAULT_ANNOUNCER_VOICE,
-    ha_url: str = "",
-    ha_token: str = "",
-    roku_ip: str = "",
-    companions: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Cast a party room's stage URL and Alpaca TTS announcer to Roku, LG webOS, Samsung Tizen, Chrome/Cast, or Android TV."""
-    clean_code = _clean_code(code) or "WORD"
-    plat = (platform or "").strip().lower()
-    eid = (entity_id or "").strip()
-    comps = companions or {}
-
-    if not plat and eid:
-        low = eid.lower()
-        if "roku" in low:
-            plat = "roku"
-        elif "webos" in low or "lg" in low:
-            plat = "webos"
-        elif "samsung" in low or "tizen" in low:
-            plat = "samsung"
-        elif "android" in low:
-            plat = "android_tv"
-        elif "chrome" in low or "cast" in low:
-            plat = "cast"
-        else:
-            plat = "generic_tv"
-
-    base = (arcade_base_url or "http://192.168.2.43:5001").rstrip("/")
-    stage_url = (tv_url or f"{base}/tv/{clean_code}").strip()
-
-    # Synthesize the Alpaca Kokoro / OpenVoice welcome announcement so the TV speaks!
-    welcome_line = (
-        f"Welcome to Use Your Good Word! Family party room {', '.join(list(clean_code))} is now live on your TV! "
-        f"Open Jarvis on your phones and join room {clean_code}!"
-    )
-    clip = synthesize_announcer_clip(welcome_line, voice=voice)
-    tts_wav_url = f"{base}/api/party/tts/{clip[0]}.wav" if clip else ""
-
-    # Record the paired TV on the room
-    with _lock:
-        room = _rooms.get(clean_code)
-        if room is not None:
-            room["voice"] = _clean_text(voice, 64) or DEFAULT_ANNOUNCER_VOICE
-            room["cast_tv"] = {
-                "entity_id": eid,
-                "platform": plat or "browser",
-                "tv_url": stage_url,
-                "roku_ip": roku_ip,
-                "cast_at": time.time(),
-            }
-
-    eff_ha_url = (ha_url or os.getenv("HA_URL") or "").rstrip("/")
-    eff_ha_token = (ha_token or os.getenv("HA_TOKEN") or "").strip()
-    actions_taken: list[str] = []
-
-    # 1. Roku TV / Roku Streaming Stick (ECP :8060 + Media Assistant 782875 + HA play_media)
-    if plat == "roku" or roku_ip:
-        if roku_ip:
-            for key in ("PowerOn", "Home"):
-                try:
-                    req = urllib.request.Request(f"http://{roku_ip}:8060/keypress/{key}", data=b"", method="POST")
-                    with urllib.request.urlopen(req, timeout=2.5):
-                        actions_taken.append(f"roku_ecp_keypress:{key}")
-                except Exception:
-                    pass
-            if tts_wav_url:
-                q = urllib.parse.urlencode(
-                    {
-                        "t": "a",
-                        "u": tts_wav_url,
-                        "songName": f"Use Your Good Word - Room {clean_code}",
-                        "artistName": f"TV Stage: {stage_url}",
-                        "songFormat": "wav",
-                        "autoplay": "true",
-                    }
-                )
-                try:
-                    req = urllib.request.Request(f"http://{roku_ip}:8060/launch/782875?{q}", data=b"", method="POST")
-                    with urllib.request.urlopen(req, timeout=4.0) as r:
-                        if r.status in (200, 204):
-                            actions_taken.append("roku_ecp_media_assistant_782875")
-                except Exception:
-                    pass
-        if eff_ha_url and eff_ha_token and eid:
-            _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid)
-            target_ma = comps.get("ma_sibling") or eid
-            if tts_wav_url and _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "media_player",
-                "play_media",
-                target_ma,
-                {"media_content_id": tts_wav_url, "media_content_type": "url"},
-            ):
-                actions_taken.append(f"ha_play_media:{target_ma}")
-
-    # 2. LG Smart TV (webOS) - Wake + Launch fullscreen LG webOS Browser directly to /tv/<CODE> + Toast + Audio
-    elif plat == "webos":
-        if eff_ha_url and eff_ha_token and eid:
-            _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid)
-            if _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "webostv",
-                "command",
-                eid,
-                {
-                    "command": "system.launcher/launch",
-                    "payload": {"id": "com.webos.app.browser", "params": {"target": stage_url}},
-                },
-            ):
-                actions_taken.append("webos_browser_launch")
-            _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "webostv",
-                "command",
-                eid,
-                {
-                    "command": "system.notifications/createToast",
-                    "payload": {"message": f"📜 Use Your Good Word - Room {clean_code} Live!"},
-                },
-            )
-            if tts_wav_url:
-                _ha_service_call(
-                    eff_ha_url,
-                    eff_ha_token,
-                    "media_player",
-                    "play_media",
-                    comps.get("ma_sibling") or eid,
-                    {"media_content_id": tts_wav_url, "media_content_type": "url"},
-                )
-                actions_taken.append("webos_tts_announce")
-
-    # 3. Samsung Smart TV (Tizen / Orsay) - Wake-on-LAN + Tizen Browser / Cast / DLNA sibling + Audio
-    elif plat == "samsung":
-        if eff_ha_url and eff_ha_token and eid:
-            _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid)
-            actions_taken.append("samsung_wol_turn_on")
-            if _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "media_player",
-                "play_media",
-                eid,
-                {"media_content_id": stage_url, "media_content_type": "url"},
-            ):
-                actions_taken.append("samsung_play_url")
-            cast_or_dlna = comps.get("cast_sibling") or comps.get("dlna_sibling") or comps.get("ma_sibling")
-            if cast_or_dlna and tts_wav_url:
-                _ha_service_call(
-                    eff_ha_url,
-                    eff_ha_token,
-                    "media_player",
-                    "play_media",
-                    cast_or_dlna,
-                    {"media_content_id": tts_wav_url, "media_content_type": "url"},
-                )
-                actions_taken.append(f"samsung_companion_audio:{cast_or_dlna}")
-
-    # 4. Android TV / Google TV - Wake + Android TV Remote activity deep-link / ADB VIEW intent for /tv/<CODE> + Cast sibling audio
-    elif plat == "android_tv":
-        if eff_ha_url and eff_ha_token and eid:
-            base_slug = re.sub(r"_(chrome|2|3|4)$", "", eid.split(".", 1)[1]) if "." in eid else eid
-            remote_sib = comps.get("remote_sibling") or f"remote.{base_slug}_remote"
-            cast_sib = comps.get("cast_sibling") or f"media_player.{base_slug}_chrome"
-            if _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid):
-                actions_taken.append(f"media_player_turn_on:{eid}")
-            if _ha_service_call(eff_ha_url, eff_ha_token, "remote", "turn_on", remote_sib):
-                actions_taken.append(f"remote_turn_on:{remote_sib}")
-            if _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "remote",
-                "turn_on",
-                remote_sib,
-                {"activity": stage_url},
-            ):
-                actions_taken.append(f"android_tv_remote_activity:{stage_url}")
-            if _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "androidtv",
-                "adb_command",
-                eid,
-                {"command": f"am start -a android.intent.action.VIEW -d '{stage_url}'"},
-            ):
-                actions_taken.append("android_tv_adb_view_intent")
-            _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", cast_sib)
-            if tts_wav_url and _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "media_player",
-                "play_media",
-                cast_sib,
-                {"media_content_id": tts_wav_url, "media_content_type": "audio/wav"},
-            ):
-                actions_taken.append(f"android_tv_cast_audio:{cast_sib}")
-
-    # 5. Google Chrome / Chromecast - HA Cast play_media + Chrome Presentation API URL
-    elif plat in ("cast", "generic_tv", "bravia", "dlna"):
-        if eff_ha_url and eff_ha_token and eid:
-            base_slug = re.sub(r"_(chrome|2|3|4)$", "", eid.split(".", 1)[1]) if "." in eid else eid
-            remote_sib = comps.get("remote_sibling") or f"remote.{base_slug}_remote"
-            _ha_service_call(eff_ha_url, eff_ha_token, "remote", "turn_on", remote_sib, {"activity": stage_url})
-            if _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid):
-                actions_taken.append(f"media_player_turn_on:{eid}")
-            if tts_wav_url and _ha_service_call(
-                eff_ha_url,
-                eff_ha_token,
-                "media_player",
-                "play_media",
-                eid,
-                {"media_content_id": tts_wav_url, "media_content_type": "audio/wav"},
-            ):
-                actions_taken.append(f"cast_play_media:{eid}")
-
-    # Also try Jarvis Execution /execute/announce if no direct HA token was in alpaca-arcade's env
-    if not actions_taken and eid:
-        for exec_url in _execution_urls():
-            req = urllib.request.Request(
-                f"{exec_url}/execute/announce",
-                data=json.dumps(
-                    {
-                        "entity_id": eid,
-                        "message": welcome_line,
-                        "tts_engine": "kokoro",
-                        "volume": 0.55,
-                        "user_context": {"user": "household", "is_admin": True, "ha_url": eff_ha_url, "ha_token": eff_ha_token},
-                    }
-                ).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=4.0) as resp:
-                    if resp.status == 200:
-                        actions_taken.append("jarvis_execution_announce")
-                        break
-            except Exception:
-                continue
-
-    return {
-        "success": True,
-        "room_code": clean_code,
-        "entity_id": eid,
-        "platform": plat or "browser",
-        "tv_url": stage_url,
-        "stage_url": stage_url,
-        "tts_wav_url": tts_wav_url,
-        "actions": actions_taken,
-        "supported_platforms": list(SUPPORTED_TV_PLATFORMS),
-    }
+def show_stage_on_screen(screen_id: str, url: str, *, method: str = "", stop: bool = False) -> dict[str, Any]:
+    """Put ``url`` (a ``/tv`` stage page) on a discovered screen, or take it off."""
+    sid = _clean_text(screen_id, 160)
+    if not sid:
+        return {"success": False, "error": "screen_id is required"}
+    action = "stop" if stop else "show"
+    try:
+        return _execution_json(
+            "POST", f"/execute/stage/{action}",
+            {"screen_id": sid, "url": url, "method": _clean_text(method, 32)},
+            timeout=90.0,
+        )
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        with contextlib.suppress(Exception):
+            detail = json.loads(exc.read().decode("utf-8")).get("detail") or ""
+        return {"success": False, "error": detail or f"TV service returned {exc.code}"}
+    except Exception as exc:
+        return {"success": False, "error": f"TV service unreachable: {exc}"}
