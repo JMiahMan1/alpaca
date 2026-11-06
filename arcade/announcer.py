@@ -34,7 +34,7 @@ PAPERBOY_SPEED = 1.08
 PAPERBOY_PITCH = 1.0
 PAPERBOY_CALL = "Extra! Extra! Read all about it!"
 #: Kokoro's own pace is the most natural; cadence varies it per sentence.
-ANNOUNCER_SPEED = 1.15  # chosen by ear (audition round three): quick, snappy, a host on their toes
+ANNOUNCER_SPEED = 1.08  # by ear: 1.15 (audition round three) was too fast in play
 #: Everything but an exclamation sits this far under it, so the shouts land (gain only: nothing added).
 SHOUT_LIFT_DB = 2.5
 
@@ -420,12 +420,12 @@ def cadence(sentence: str, base: float = ANNOUNCER_SPEED) -> tuple[float, float]
     s = sentence.rstrip()
     jitter = ((sum(map(ord, s)) % 9) - 4) * 0.008  # ±3.2 %, same every time for the same words
     if s.endswith(("...", "…")):
-        return base * 0.97 + jitter, 420.0
+        return base * 0.96 + jitter, 480.0
     if s.endswith("?"):
-        return base + jitter, 240.0
+        return base * 0.98 + jitter, 300.0
     if s.endswith("!"):
-        return base * 1.12 + jitter, 150.0
-    return base * 1.03 + jitter, 190.0
+        return base * 1.06 + jitter, 210.0
+    return base + jitter, 260.0
 
 _CALL = re.compile(r"^\s*((?:extra\b[!.,]?\s*){1,3})(read all about it[!.]?\s*)?", re.IGNORECASE)
 

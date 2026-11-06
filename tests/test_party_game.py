@@ -466,7 +466,8 @@ def test_reveal_lasts_longer_with_more_answers():
     assert room["phase"] == "reveal"
     expected = (party.REVEAL_SECONDS + party.REVEAL_PER_ANSWER_SECONDS * len(room["options"])
                 + party.REVEAL_LINGER_SECONDS)
-    assert abs(room["phase_seconds"] - expected) < 0.2
+    # At least that long; longer only while the result and its joke are still being said.
+    assert room["phase_seconds"] >= expected - 0.2
 
 
 def test_host_device_can_play_without_projecting_answers_to_tv_stage():
@@ -868,7 +869,10 @@ def test_the_reveal_ends_on_a_scoreboard_with_whats_next():
         party._score_round_unlocked(room)
         snap = party.serialize_room(room, "a")
     assert snap["scores_at_s"] > party.reveal_result_at(room)  # after the result is called
-    assert 6 <= snap["seconds_remaining"] - snap["scores_at_s"] <= 10  # up long enough to read, short enough to keep moving
+    # Up long enough to read, and no longer than the joke being told over it needs.
+    shown = snap["seconds_remaining"] - snap["scores_at_s"]
+    assert shown >= 6
+    assert shown <= max(10, party.SPEECH_START_SLACK_S + party.speech_seconds(party.reveal_result_line(room)) + 1.5)
     assert snap["up_next"]["round"] == 2 and snap["up_next"]["title"] == party.ROUND_META[party.round_kind(room, 2)]["title"]
     with party._lock:
         room["round"] = room["total_rounds"]
@@ -889,3 +893,77 @@ def test_a_late_answer_matching_one_already_on_the_ballot_is_not_added_twice():
         party.submit_answer("LAT3", player_id="a", text="a camel with OPINIONS!")
     texts = [party._normalize_compare(o["text"]) for o in party._rooms["LAT3"]["options"]]
     assert len(texts) == len(set(texts))
+
+
+def test_the_reveal_waits_for_the_joke_to_be_told():
+    """Reported: the next screen came before the joke's punchline."""
+    for pid, name in (("a", "Ann"), ("b", "Ben"), ("c", "Cy")):
+        party.create_or_join_room(code="JOKE", player_id=pid, name=name)
+    party.start_match("JOKE", player_id="a")
+    with party._lock:
+        room = party._rooms["JOKE"]
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+        line = party.reveal_result_line(room)
+        assert "..." in line  # a joke follows the result between rounds
+        said_by = room["phase_started_at"] + party.reveal_result_at(room) + party.speech_seconds(line)
+        assert room["phase_deadline"] >= said_by + party.SPEECH_START_SLACK_S
+    assert party.speech_seconds("one two three four five six seven eight nine ten eleven twelve thirteen") == pytest.approx(
+        13 / party.SPOKEN_WORDS_PER_SECOND)
+
+
+def _reveal_room(code):
+    for pid, name in (("a", "Ann"), ("b", "Ben"), ("c", "Cy")):
+        party.create_or_join_room(code=code, player_id=pid, name=name)
+    party.start_match(code, player_id="a")
+    with party._lock:
+        room = party._rooms[code]
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+    return room
+
+
+def test_the_reveal_is_fitted_to_the_measured_line():
+    room = _reveal_room("MEAS")
+    with party._lock:
+        start = room["phase_started_at"]
+        party._apply_measured_line_unlocked(room, 30.0)  # a long line, timed from its audio
+        assert room["phase_deadline"] == pytest.approx(
+            start + party.reveal_result_at(room) + party.MEASURED_START_SLACK_S + 30.0 + 1.0)
+        party._apply_measured_line_unlocked(room, 1.0)  # a short one never cuts the reveal or the scoreboard
+        assert room["phase_deadline"] >= room["reveal_base_deadline"]
+        assert room["phase_deadline"] >= start + party.scores_at(room) + 6.0
+
+
+def test_a_line_once_said_is_timed_from_its_audio():
+    from arcade import announcer
+    wav = announcer.write_wav([0.0] * (24000 * 7), 24000)  # 7 s
+    party._record_spoken_length("Seven seconds of wisdom.", "v", wav)
+    assert party.speech_seconds("Seven seconds of wisdom.", "v") == pytest.approx(7.0)
+    assert party.speech_seconds("Seven seconds of wisdom.", "other voice") != pytest.approx(7.0)  # estimated
+
+
+def test_jokes_are_random_never_repeated_in_a_room_and_freshest_first():
+    party._recent_jokes.clear()
+    a, b = {"code": "J1", "match_id": "m1", "round": 1}, {"code": "J2", "match_id": "m2", "round": 1}
+    first = party.joke_for(a, "writing")
+    assert party.joke_for(a, "writing") == first  # chosen once, then kept for that moment
+    told = {first}
+    for rnd in range(1, 8):
+        a["round"] = rnd
+        told |= {party.joke_for(a, "writing"), party.joke_for(a, "between")}
+    assert len(told) == 14  # no repeats within the room
+    # Another room tonight hears jokes the first did not tell, while any are left.
+    assert party.joke_for(b, "between") not in told
+
+
+def test_a_writing_joke_only_where_it_fits_before_the_hurry_call():
+    room = _reveal_room("FITS")
+    with party._lock:
+        party._advance_unlocked(room)  # to round 2 writing (or a race)
+        if room["phase"] != "writing":
+            return
+        lines = party.chatter_for(room)
+    joke = next(c for c in lines if c["text"].startswith("While you think"))
+    hurry_at = (room["phase_deadline"] - room["phase_started_at"]) - 10.0
+    assert joke["at"] + party.speech_seconds(joke["text"], room.get("voice")) <= hurry_at
