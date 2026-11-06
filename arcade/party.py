@@ -1056,6 +1056,78 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     room["updated_at"] = now
 
 
+# --- The host's patter: what makes it sound like a game show, not a narrator ---
+#
+# Lines are picked per match and round (seeded), so the TV and every phone say
+# the same thing, and a replayed round does not repeat the last match's jokes.
+
+HOST_OPENERS = (
+    "Welcome back, word-slingers!",
+    "Phones up, scribes! Here we go!",
+    "Oh, I like this one!",
+    "Ready? Of course you are!",
+    "Settle in, saints. This one's a doozy!",
+    "Keep it clean, keep it clever!",
+)
+HOST_VOTING = (
+    "All the scrolls are in! Pick your favorite, and watch out for the Scribe's Trap!",
+    "Pencils down! Well, phones down. Vote for the best one, but not your own!",
+    "The answers are in! One of these is a trap. Choose wisely!",
+    "Time to vote! Which one made you laugh the loudest?",
+)
+HOST_DRUMROLL = (
+    "Drumroll, please...",
+    "And now... the moment of truth!",
+    "Let's see who fooled whom...",
+    "The votes are counted. Brace yourselves...",
+)
+HOST_TRAPPED = (
+    "Oh no! The Scribe's Trap strikes again! Somebody wasn't reading carefully!",
+    "Gotcha! The Scribe's Trap caught a few of you! Look at those scores!",
+    "Ha! That one was the trap all along!",
+)
+HOST_FINALE = (
+    "{name} wins the Golden Scroll with {score} points! Well played, everyone!",
+    "Ladies and gentlemen, your champion: {name}, with {score} points! Give it up!",
+    "And the Golden Scroll goes to... {name}! {score} points! What a match!",
+)
+
+
+def _pick(room: dict[str, Any], pool: tuple[str, ...], salt: str) -> str:
+    seed = f"{room.get('match_id', '')}:{room.get('round', 0)}:{salt}"
+    return random.Random(seed).choice(pool)
+
+
+def announce_line(room: dict[str, Any]) -> str:
+    """What the announcer says as the room enters its current phase."""
+    phase = room.get("phase")
+    prompt = room.get("current_prompt") or {}
+    if phase == "lobby":
+        code = " ".join(str(room.get("code") or ""))
+        return f"Welcome to Use Your Good Word! Scan the code on the screen, or join room {code} in Jarvis."
+    if phase == "writing":
+        line = str(prompt.get("announcer") or "")
+        if line.lower().startswith("extra"):
+            return line  # the paper boy opens these
+        return f"{_pick(room, HOST_OPENERS, 'open')} {line}".strip()
+    if phase == "voting":
+        return _pick(room, HOST_VOTING, "vote")
+    if phase == "reveal":
+        reveal = room.get("reveal") or {}
+        if reveal.get("round_winners") or any(e.get("type") == "truth_found" for e in reveal.get("events") or []):
+            result = str(reveal.get("announcer") or "")
+        else:
+            result = _pick(room, HOST_TRAPPED, "trap")
+        return f"{_pick(room, HOST_DRUMROLL, 'drum')} {result}".strip()
+    if phase == "finished":
+        players = [p for p in (room.get("players") or {}).values() if not p.get("spectator")]
+        if not players:
+            return "What a match!"
+        best = max(players, key=lambda p: int(p.get("score") or 0))
+        return _pick(room, HOST_FINALE, "finale").format(name=best.get("name", "Our winner"), score=best.get("score", 0))
+    return ""
+
+
 def _stage_delay(room: dict[str, Any], now: float | None = None) -> float:
     """Seconds the room's TV picture lags: the stream delay while a streamed stage is live."""
     now = time.time() if now is None else now
@@ -1212,6 +1284,7 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         # each phase until it catches up (``phase_age_s`` avoids clock skew),
         # and the host phone speaks since a stream carries no announcer.
         "stage_delay_s": _stage_delay(room),
+        "announce": announce_line(room),
         "music": bool(room.get("music", True)),
         "phase_age_s": round(max(0.0, now - float(room.get("phase_started_at") or now)), 2)
         if phase in ("writing", "voting", "reveal") else 0.0,

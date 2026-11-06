@@ -400,6 +400,7 @@
 
   function announceFor(r) {
     const k = r.match_id + ":" + r.round + ":" + r.phase;
+    if (r.phase !== "lobby" && r.announce) { announce(r.announce, k); return; }
     if (r.phase === "writing" && r.prompt) announce(r.prompt.announcer || ("Round " + r.round + "! " + r.prompt.prompt), k);
     else if (r.phase === "voting") announce("All the scrolls are in! Vote for your favorite!", k);
     else if (r.phase === "reveal" && r.reveal) announce(r.reveal.announcer, k);

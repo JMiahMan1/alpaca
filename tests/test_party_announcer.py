@@ -106,3 +106,32 @@ def test_without_the_paper_boy_the_announcer_still_reads_the_line(monkeypatch):
         party._tts_clips.clear()
     monkeypatch.setattr(party, "synthesize_announcer_clip", fake_clip)
     assert party.synthesize_show_line("Extra! Extra! Big news!") is not None
+
+
+def test_the_host_has_patter_for_every_phase_and_everyone_hears_the_same_line():
+    from arcade import party as p
+    with p._lock:
+        p._rooms.clear()
+    p.create_or_join_room(code="HOST", player_id="a", name="Ann")
+    p.create_or_join_room(code="HOST", player_id="b", name="Ben")
+    lobby = p.get_room_state("HOST", "a")["announce"]
+    assert "H O S T" in lobby
+    p.start_match("HOST", player_id="a")
+    tv, phone = p.get_room_state("HOST", stage=True)["announce"], p.get_room_state("HOST", "b")["announce"]
+    assert tv == phone and tv  # one line, everywhere
+    room = p._rooms["HOST"]
+    prompt_line = room["current_prompt"]["announcer"]
+    if prompt_line.lower().startswith("extra"):
+        assert tv == prompt_line  # the paper boy opens it
+    else:
+        assert tv.endswith(prompt_line) and any(tv.startswith(o) for o in p.HOST_OPENERS)
+    room["phase"] = "voting"
+    assert p.announce_line(room) in p.HOST_VOTING
+    room["phase"], room["reveal"] = "reveal", {"round_winners": [], "events": [], "announcer": "x"}
+    line = p.announce_line(room)
+    assert any(line.startswith(d) for d in p.HOST_DRUMROLL) and any(line.endswith(t) for t in p.HOST_TRAPPED)
+    room["phase"] = "finished"
+    finale = p.announce_line(room)
+    assert any(finale == f.format(name="Ann", score=0) or finale == f.format(name="Ben", score=0) for f in p.HOST_FINALE)
+    with p._lock:
+        p._rooms.clear()
