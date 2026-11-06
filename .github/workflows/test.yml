@@ -12,6 +12,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install system tools
+        # The voice-clone tests decode audio through ffmpeg, as the audio image does.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
