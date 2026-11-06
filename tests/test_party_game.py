@@ -289,6 +289,22 @@ def test_screens_are_discovered_by_the_execution_service(client, monkeypatch):
     assert seen == [("GET", "http://exec:8003/execute/stage/screens?refresh=true")]
 
 
+def test_execution_relay_sends_the_internal_secret_when_configured(monkeypatch):
+    import json
+
+    headers = {}
+
+    def _fake_urlopen(req, timeout=8.0):
+        headers.update({k.lower(): v for k, v in req.header_items()})
+        return _JsonResp(json.dumps({"screens": []}).encode())
+
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    monkeypatch.setenv("EXECUTION_INTERNAL_SECRET", "s3cret")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
+    party.discover_screens()
+    assert headers["x-internal-secret"] == "s3cret"
+
+
 def test_screen_discovery_reports_when_unconfigured(client, monkeypatch):
     monkeypatch.setattr(party, "EXECUTION_SVC_URL", "")
     data = client.get("/api/party/tvs").get_json()
