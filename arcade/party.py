@@ -45,13 +45,23 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+try:
+    from arcade import announcer
+except ImportError:  # the arcade image runs with arcade/ on sys.path
+    import announcer  # type: ignore[no-redef]
+
 AUDIO_SERVER_URL = os.getenv("AUDIO_SERVER_URL", "http://audio-server:8082").rstrip("/")
 PROXY_URL = os.getenv("PROXY_URL", "http://host.docker.internal:11434").rstrip("/")
 EXECUTION_SVC_URL = os.getenv("EXECUTION_SVC_URL", "").rstrip("/")
 
-DEFAULT_ANNOUNCER_VOICE = "am_fenrir,am_michael"
+DEFAULT_ANNOUNCER_VOICE = "am_onyx,am_fenrir"
 
 CURATED_ANNOUNCER_VOICES: tuple[dict[str, str], ...] = (
+    {
+        "id": "am_onyx,am_fenrir",
+        "label": "📣 The Big Voice (Classic Game-Show Announcer)",
+        "kind": "kokoro",
+    },
     {
         "id": "am_fenrir,am_michael",
         "label": "🎙️ Brother Barnaby (Warm Game-Show Host)",
@@ -1785,6 +1795,46 @@ def synthesize_announcer_wav(
     """Announcer WAV bytes (see ``synthesize_announcer_clip``), or None when the audio server is unavailable."""
     clip = synthesize_announcer_clip(text, voice, clone=clone, speed=speed)
     return clip[1] if clip else None
+
+
+def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
+                         clone: str | None = None) -> tuple[str, bytes] | None:
+    """A line as the show delivers it: ``(clip_id, wav)``.
+
+    The announcer's part gets the broadcast treatment (``announcer.announcer_fx``);
+    an opening "Extra! Extra!" is shouted by the paper boy first. Each Kokoro
+    piece is cached on its own, and so is the finished line.
+    """
+    parts = announcer.split_show_line(text)
+    if not parts:
+        return None
+    pieces: list[tuple[str, str, bytes]] = []
+    for role, line in parts:
+        if role == "paperboy":
+            clip = synthesize_announcer_clip(line, announcer.PAPERBOY_VOICE, speed=announcer.PAPERBOY_SPEED)
+        else:
+            clip = synthesize_announcer_clip(line, voice, clone=clone, speed=announcer.ANNOUNCER_SPEED)
+        if clip is None:
+            if role == "paperboy":
+                continue  # no newsboy today: the announcer still reads the line
+            return None
+        pieces.append((role, clip[0], clip[1]))
+    if not pieces:
+        return None
+    show_id = hashlib.sha256(("show:v1:" + ":".join(f"{r}={c}" for r, c, _ in pieces)).encode()).hexdigest()[:16]
+    with _lock:
+        cached = _tts_clips.get(show_id)
+    if cached:
+        return show_id, cached
+    try:
+        wav = announcer.assemble([(r, w) for r, _, w in pieces])
+    except Exception:
+        wav = pieces[-1][2]  # an unreadable clip is still better spoken plainly
+    with _lock:
+        while len(_tts_clips) >= 96:
+            _tts_clips.pop(next(iter(_tts_clips)))
+        _tts_clips[show_id] = wav
+    return show_id, wav
 
 
 def get_cached_tts_wav(clip_id: str) -> bytes | None:
