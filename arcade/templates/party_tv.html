@@ -74,6 +74,11 @@
   .chip { padding: .7vh 1.2vw; margin: .5vh .5vw; border-radius: 99px; font-size: 2.3vh; font-weight: 800;
     background: rgba(255,255,255,.07); border: .2vh solid rgba(255,255,255,.12); }
   .chip.done { border-color: var(--mint); color: var(--mint); background: rgba(52,211,153,.12); }
+  .opt.wait { opacity: .45; }
+  .opt.wait .by, .opt.wait .votes, .opt.wait .pts { visibility: hidden; }
+  .opt.now { transform: scale(1.04); box-shadow: 0 0 0 .6vh rgba(251,191,36,.45), 0 1.2vh 3vh rgba(0,0,0,.4); }
+  .opt .votes span { display: inline-block; animation: popin .35s cubic-bezier(.2,1.6,.4,1) both; }
+  @keyframes popin { from { transform: scale(0); } to { transform: none; } }
   .note { text-align: center; font-size: 2.8vh; color: var(--gold2); margin-top: 2vh; font-style: italic; }
   .board { display: flex; flex-direction: column; align-items: stretch; width: 60vw; margin: 2vh auto 0; }
   .line { display: flex; align-items: center; justify-content: space-between; padding: 1.2vh 2vw; margin: .5vh 0; border-radius: 1.6vh; background: rgba(255,255,255,.06); }
@@ -140,6 +145,41 @@
     r.send(body ? JSON.stringify(body) : null);
   }
 
+  /* ---------- sound effects (synthesized; the TV is the only speaker) ---------- */
+  var actx = null;
+  function audio() {
+    if (actx) return actx;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try { actx = new AC(); } catch (e) { actx = null; }
+    return actx;
+  }
+  function tone(freq, dur, type, vol, delay, slide) {
+    var c = audio();
+    if (!c) return;
+    if (c.state === "suspended" && c.resume) c.resume();
+    var t0 = c.currentTime + (delay || 0);
+    var o = c.createOscillator(), g = c.createGain();
+    o.type = type || "sine";
+    o.frequency.setValueAtTime(freq, t0);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol || 0.18, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(c.destination);
+    o.start(t0); o.stop(t0 + dur + 0.05);
+  }
+  var sfx = {
+    round: function () { tone(523, 0.18, "triangle", 0.2, 0); tone(659, 0.18, "triangle", 0.2, 0.12); tone(784, 0.32, "triangle", 0.22, 0.24); },
+    vote: function () { tone(330, 0.25, "sawtooth", 0.08, 0, 660); tone(660, 0.3, "triangle", 0.16, 0.18); },
+    tick: function () { tone(1046, 0.06, "square", 0.06); },
+    pop: function () { tone(440, 0.12, "triangle", 0.2, 0, 880); },
+    trap: function () { tone(160, 0.45, "sawtooth", 0.14, 0, 70); },
+    win: function () { tone(523, 0.14, "triangle", 0.2, 0); tone(659, 0.14, "triangle", 0.2, 0.1); tone(784, 0.14, "triangle", 0.2, 0.2); tone(1046, 0.5, "triangle", 0.24, 0.3); },
+    join: function () { tone(880, 0.1, "sine", 0.14); tone(1318, 0.16, "sine", 0.12, 0.08); }
+  };
+  function playSfx(name) { try { sfx[name](); } catch (e) {} }
+
   /* ---------- announcer (Alpaca TTS, played on the TV's speakers) ---------- */
   function speak(text, key) {
     if (!text || key === lastSpoken) return;
@@ -164,6 +204,8 @@
     $("sound").className = blocked ? "on pulse" : "";
   }
   function unlock() {
+    var c = audio();
+    if (c && c.state === "suspended" && c.resume) c.resume();
     if (!soundBlocked) return;
     setSound(false);
     if (pendingLine) { var b = pendingLine; pendingLine = null; play(b); }
@@ -256,7 +298,7 @@
   function viewVoting(r) {
     var opts = r.options || [];
     var h = '<div class="fade">' + promptHead(r) + '<div class="sub" style="margin-top:0;font-size:3.2vh;color:#f8fafc;font-weight:800">' + esc((r.prompt || {}).prompt) + "</div>";
-    h += '<div class="options' + (opts.length > 6 ? " many" : "") + '">';
+    h += '<div class="options' + (opts.length > 4 ? " many" : "") + '">';
     for (var i = 0; i < opts.length; i++) {
       h += '<div class="opt"><div class="n">' + (i + 1) + '</div><div class="t">' + esc(opts[i].text) + "</div></div>";
     }
@@ -264,12 +306,31 @@
       '<div class="h2" style="font-size:3.2vh">🗳️ Vote on your phone!</div></div>';
     return h + chipsHtml(r, "voted", "✅") + "</div>";
   }
+  /* Use-Your-Words style reveal: answers are unveiled one at a time, fewest
+     votes first and the winner last; each shows who voted for it, then who
+     wrote it. The scores come after the last answer. */
+  function revealOrder(r) {
+    return (r.options || []).slice().sort(function (a, b) {
+      var d = (a.voters || []).length - (b.voters || []).length;
+      if (d) return d;
+      return (a.is_round_winner ? 1 : 0) - (b.is_round_winner ? 1 : 0);
+    });
+  }
+  function revealStep(r) {
+    var n = (r.options || []).length;
+    var per = r.reveal_step_seconds || 3.5;
+    var total = r.phase_seconds || (8 + per * n);
+    var elapsed = total - Math.max(0, (deadline - Date.now()) / 1000);
+    return Math.max(0, Math.min(n, Math.floor((elapsed - 1) / per) + 1));
+  }
   function viewReveal(r) {
-    var opts = (r.options || []).slice().sort(function (a, b) { return (b.voters || []).length - (a.voters || []).length; });
-    var h = '<div class="fade">' + promptHead(r) + '<div class="options' + (opts.length > 6 ? " many" : "") + '">';
+    var opts = revealOrder(r);
+    var step = revealStep(r);
+    var h = '<div>' + promptHead(r) + '<div class="options' + (opts.length > 4 ? " many" : "") + '">';
     for (var i = 0; i < opts.length; i++) {
       var o = opts[i];
-      var cls = o.kind === "decoy" ? " trap" : o.kind === "truth" ? " truth" : o.is_round_winner ? " win" : "";
+      var shown = i < step;
+      var cls = !shown ? " wait" : (o.kind === "decoy" ? " trap" : o.kind === "truth" ? " truth" : o.is_round_winner ? " win" : "") + (i === step - 1 ? " now" : "");
       var by = o.kind === "truth" ? "📖 The real answer" : o.kind === "decoy"
         ? "🪤 The Scribe's Trap" + ((o.author_names || []).length ? " (planted by " + esc(o.author_names.join(", ")) + ")" : "")
         : "✍️ " + esc((o.author_names || []).join(", "));
@@ -277,15 +338,16 @@
       for (var v = 0; v < (o.voters || []).length; v++) {
         var vt = o.voters[v];
         var p = typeof vt === "string" ? playerById(r, vt) : vt;
-        voters += p ? '<span title="' + esc(p.name) + '">' + esc(p.avatar || "⭐") + "</span> " : "";
+        voters += p ? '<span style="animation-delay:' + (v * 0.18) + 's" title="' + esc(p.name) + '">' + esc(p.avatar || "⭐") + "</span> " : "";
       }
-      h += '<div class="opt' + cls + '"><div class="t">' + (o.is_round_winner ? "🏆 " : "") + esc(o.text) + '<div class="by">' + by + "</div>" +
-        (voters ? '<div class="votes">' + voters + "</div>" : "") + "</div>" + (o.points_awarded ? '<div class="pts">+' + o.points_awarded + "</div>" : "") + "</div>";
+      h += '<div class="opt' + cls + '"><div class="t">' + (shown && o.is_round_winner ? "🏆 " : "") + esc(o.text) + '<div class="by">' + by + "</div>" +
+        '<div class="votes">' + (voters || (shown ? "No votes" : "")) + "</div></div>" + (o.points_awarded ? '<div class="pts">+' + o.points_awarded + "</div>" : "") + "</div>";
     }
     h += "</div>";
+    if (step < opts.length) return h + '<div class="center h3 pulse" style="margin-top:2vh">And the scrolls say…</div></div>';
     var note = (r.reveal && r.reveal.scripture_note) || (r.prompt && r.prompt.scripture_note);
-    if (note) h += '<div class="note">' + esc(note) + "</div>";
-    return h + (opts.length > 6 ? scoreChipsHtml(r) : boardHtml(r, 4)) + "</div>";
+    if (note) h += '<div class="note fade">' + esc(note) + "</div>";
+    return h + '<div class="fade">' + (opts.length > 4 ? scoreChipsHtml(r) : boardHtml(r, 4)) + "</div></div>";
   }
   function scoreChipsHtml(r) {
     var list = humans(r);
@@ -293,7 +355,7 @@
     for (var i = 0; i < list.length; i++) {
       var p = list[i];
       h += '<span class="chip' + (i === 0 ? " done" : "") + '">' + (i + 1) + ". " + esc(p.avatar || "") + " " + esc(p.name) + " " + p.score +
-        (p.round_delta ? ' <span style="color:#34d399">+' + p.round_delta + "</span>" : "") + "</span>";
+        (p.round_delta ? ' <span style="color:' + (p.round_delta > 0 ? "#34d399" : "#fb7185") + '">' + (p.round_delta > 0 ? "+" : "") + p.round_delta + "</span>" : "") + "</span>";
     }
     return h + "</div>";
   }
@@ -348,7 +410,21 @@
     return [r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(",")].join("|");
   }
 
+  var lastPhaseKey = "";
+  var lastPlayerCount = -1;
+  var lastRevealStep = -1;
+  var lastTick = -1;
   function apply(r) {
+    var phaseKey = r ? r.match_id + ":" + r.round + ":" + r.phase : "";
+    if (r && phaseKey !== lastPhaseKey && lastPhaseKey) {
+      if (r.phase === "writing") playSfx("round");
+      else if (r.phase === "voting") playSfx("vote");
+      else if (r.phase === "finished") playSfx("win");
+    }
+    if (r && r.phase === "lobby" && lastPlayerCount >= 0 && humans(r).length > lastPlayerCount) playSfx("join");
+    lastPlayerCount = r ? humans(r).length : -1;
+    if (phaseKey !== lastPhaseKey) lastRevealStep = -1;
+    lastPhaseKey = phaseKey;
     room = r;
     if (r && (r.phase === "writing" || r.phase === "voting" || r.phase === "reveal")) {
       deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
@@ -392,9 +468,22 @@
   }
 
   setInterval(function () {
+    if (room && room.phase === "reveal") {
+      var step = revealStep(room);
+      if (step !== lastRevealStep) {
+        if (lastRevealStep >= 0 && step > 0) {
+          var o = revealOrder(room)[step - 1];
+          playSfx(o && o.kind === "decoy" ? "trap" : o && (o.is_round_winner || o.kind === "truth") ? "win" : "pop");
+        }
+        lastRevealStep = step;
+        $("main").innerHTML = viewReveal(room);
+      }
+    }
     var c = document.getElementById("clock");
     if (!c || !deadline) return;
     var left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    if (left <= 5 && left > 0 && left !== lastTick && room && (room.phase === "writing" || room.phase === "voting")) playSfx("tick");
+    lastTick = left;
     c.textContent = left;
     c.className = "clock" + (c.getAttribute("data-size") === "sm" ? " sm" : "") + (left <= 10 ? " low" : "");
   }, 250);

@@ -1326,6 +1326,7 @@ def api_party_rooms():
         spectator=bool(body.get("spectator")),
         create_if_missing=body.get("create_if_missing") is not False,
         voice=body.get("voice"),
+        avatar=body.get("avatar"),
     )
     return jsonify({"success": True, **out})
 
@@ -1352,6 +1353,7 @@ def api_party_room_join(code: str):
             spectator=bool(body.get("spectator")),
             create_if_missing=bool(body.get("create_if_missing", True)),
             voice=body.get("voice"),
+            avatar=body.get("avatar"),
         )
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
@@ -1373,9 +1375,13 @@ def api_party_room_voice(code: str):
 def api_party_room_start(code: str):
     body = request.get_json(silent=True) or {}
     try:
-        room = party.start_match(code, use_ai_prompt=bool(body.get("use_ai_prompt")))
+        room = party.start_match(
+            code, use_ai_prompt=bool(body.get("use_ai_prompt")), player_id=body.get("player_id"),
+        )
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, "room": room})
 
 
@@ -1416,9 +1422,13 @@ def api_party_room_vote(code: str):
 def api_party_room_next(code: str):
     body = request.get_json(silent=True) or {}
     try:
-        room = party.advance_phase(code, use_ai_prompt=bool(body.get("use_ai_prompt")))
+        room = party.advance_phase(
+            code, use_ai_prompt=bool(body.get("use_ai_prompt")), player_id=body.get("player_id"),
+        )
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, "room": room})
 
 

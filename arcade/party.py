@@ -98,7 +98,10 @@ ROOM_TTL_SECONDS = 7200
 STAGE_PRESENCE_SECONDS = 8.0
 WRITE_SECONDS = 55
 VOTE_SECONDS = 35
-REVEAL_SECONDS = 14
+REVEAL_SECONDS = 8
+#: The TV reveals answers one at a time (fewest votes first, the winner last),
+#: so the reveal lasts longer when there are more answers to unveil.
+REVEAL_PER_ANSWER_SECONDS = 3.5
 TOTAL_ROUNDS = 7
 
 # Memorable 4-letter Biblical room codes for easy TV-to-phone entry.
@@ -131,7 +134,11 @@ AI_COMPANIONS = (
     {"id": "bot-apollos", "name": "Apollos", "initials": "APO", "avatar": "📜"},
 )
 
-PLAYER_AVATARS = ("👑", "🦁", "🕊️", "🌿", "🎺", "🏺", "⭐", "🛡️", "🐪", "🐟")
+PLAYER_AVATARS = ("👑", "🦁", "🕊️", "🐑", "🐪", "🐟", "🎺", "🏺", "⭐", "🛡️", "🌿", "🍇", "⛵", "🔥", "🌈", "🦉")
+#: A phone that has not polled for this long is shown as away, and a host who
+#: has been away this long hands the host controls to the next player.
+PLAYER_AWAY_SECONDS = 15.0
+HOST_HANDOFF_SECONDS = 45.0
 
 # 7-round match schedule covering all 5 requested modes.
 MATCH_ROUND_SCHEDULE = (
@@ -1006,7 +1013,7 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     }
     room["phase"] = "reveal"
     room["phase_started_at"] = now
-    room["phase_deadline"] = now + REVEAL_SECONDS
+    room["phase_deadline"] = now + REVEAL_SECONDS + REVEAL_PER_ANSWER_SECONDS * len(room.get("options") or [])
     room["updated_at"] = now
 
 
@@ -1052,6 +1059,8 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
             "spectator": bool(p.get("spectator")),
             "submitted": p["id"] in submissions,
             "voted": p["id"] in votes,
+            "is_host": p["id"] == room.get("host_id"),
+            "connected": bool(p.get("is_bot")) or now - float(p.get("last_seen") or 0) <= PLAYER_AWAY_SECONDS,
         }
         for p in players_list
     ]
@@ -1120,12 +1129,18 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         "round": int(room.get("round") or 0),
         "total_rounds": int(room.get("total_rounds") or TOTAL_ROUNDS),
         "seconds_remaining": remaining,
+        "phase_seconds": round(float(room.get("phase_deadline") or now) - float(room.get("phase_started_at") or now), 1)
+        if phase in ("writing", "voting", "reveal") else 0.0,
+        "reveal_step_seconds": REVEAL_PER_ANSWER_SECONDS,
         "players": public_players,
         "prompt": public_prompt,
         "options": public_options,
         "reveal": room.get("reveal") if phase in ("reveal", "finished") else None,
         "my_submission": {"text": my_sub["text"], "is_decoy": bool(my_sub.get("is_decoy"))} if my_sub else None,
         "my_vote": my_vote,
+        "you": viewer_id if viewer_id and viewer_id in room["players"] else None,
+        "you_are_host": bool(viewer_id) and viewer_id == room.get("host_id"),
+        "avatars": list(PLAYER_AVATARS),
         "match_id": room.get("match_id", ""),
         "voice": room.get("voice") or DEFAULT_ANNOUNCER_VOICE,
         "announcer_voice": room.get("voice") or DEFAULT_ANNOUNCER_VOICE,
@@ -1164,6 +1179,7 @@ def create_or_join_room(
     spectator: bool = False,
     create_if_missing: bool = True,
     voice: str | None = None,
+    avatar: str | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     clean_code = _clean_code(code)
@@ -1204,8 +1220,10 @@ def create_or_join_room(
         human_contestants = [p for p in players.values() if not p.get("is_bot") and not p.get("spectator")]
         is_spec = bool(spectator or (pid not in players and len(human_contestants) >= 8))
 
+        taken = {p.get("avatar") for p in players.values() if p["id"] != pid}
+        wanted = avatar if avatar in PLAYER_AVATARS and avatar not in taken else ""
         if pid not in players:
-            avatar = PLAYER_AVATARS[len(human_contestants) % len(PLAYER_AVATARS)]
+            avatar = wanted or next((a for a in PLAYER_AVATARS if a not in taken), PLAYER_AVATARS[0])
             players[pid] = {
                 "id": pid,
                 "name": clean_name,
@@ -1216,10 +1234,14 @@ def create_or_join_room(
                 "is_bot": False,
                 "spectator": is_spec,
                 "joined_at": now,
+                "last_seen": now,
             }
         else:
             players[pid]["name"] = clean_name
             players[pid]["initials"] = clean_init
+            players[pid]["last_seen"] = now
+            if wanted and not players[pid].get("spectator"):
+                players[pid]["avatar"] = wanted
             if not spectator and players[pid].get("spectator"):
                 players[pid]["spectator"] = False
                 if players[pid].get("avatar") == "👀":
@@ -1228,6 +1250,32 @@ def create_or_join_room(
         room["updated_at"] = now
         _check_auto_advance_unlocked(room)
         return {"player_id": pid, "room": serialize_room(room, viewer_id=pid)}
+
+
+def _touch_unlocked(room: dict[str, Any], viewer_id: str | None, now: float) -> None:
+    """Note that a phone is still here, and hand the host role on if the host left."""
+    players = room["players"]
+    if viewer_id and viewer_id in players:
+        players[viewer_id]["last_seen"] = now
+    host = players.get(room.get("host_id") or "")
+    host_gone = host is None or now - float(host.get("last_seen") or 0) > HOST_HANDOFF_SECONDS
+    if not host_gone:
+        return
+    here = [
+        p for p in players.values()
+        if not p.get("is_bot") and now - float(p.get("last_seen") or 0) <= PLAYER_AWAY_SECONDS
+    ]
+    if here:
+        heir = min(here, key=lambda p: float(p.get("joined_at") or 0))
+        room["host_id"] = heir["id"]
+        room["host_name"] = heir["name"]
+
+
+def _require_host_unlocked(room: dict[str, Any], player_id: str | None) -> None:
+    """Host-only controls. A call without a player id is the timer/automation."""
+    pid = _clean_text(player_id, 64)
+    if pid and pid != room.get("host_id"):
+        raise PermissionError("Only the host can do that.")
 
 
 def set_room_voice(code: str, voice: str) -> dict[str, Any]:
@@ -1253,12 +1301,18 @@ def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = Fal
             raise LookupError(f"Room '{clean_code}' not found.")
         if stage:
             room["stage_seen_at"] = now
+        _touch_unlocked(room, viewer_id, now)
         _check_auto_advance_unlocked(room)
         return serialize_room(room, viewer_id=viewer_id)
 
 
-def start_match(code: str, *, use_ai_prompt: bool = False) -> dict[str, Any]:
+def start_match(code: str, *, use_ai_prompt: bool = False, player_id: str | None = None) -> dict[str, Any]:
     clean_code = _clean_code(code)
+    with _lock:
+        room = _rooms.get(clean_code)
+        if room is None:
+            raise LookupError(f"Room '{clean_code}' not found.")
+        _require_host_unlocked(room, player_id)
     custom = _generate_ai_prompt("blank_o_matic") if use_ai_prompt else None
     with _lock:
         room = _rooms.get(clean_code)
@@ -1274,7 +1328,7 @@ def start_match(code: str, *, use_ai_prompt: bool = False) -> dict[str, Any]:
         _ensure_bots_unlocked(room)
         room["match_id"] = f"{clean_code}-{int(time.time())}"
         _start_round_unlocked(room, 1, custom_prompt=custom)
-        return serialize_room(room)
+        return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
 
 
 def submit_answer(
@@ -1350,13 +1404,14 @@ def submit_vote(code: str, *, player_id: str, option_id: str) -> dict[str, Any]:
         return serialize_room(room, viewer_id=pid)
 
 
-def advance_phase(code: str, *, use_ai_prompt: bool = False) -> dict[str, Any]:
+def advance_phase(code: str, *, use_ai_prompt: bool = False, player_id: str | None = None) -> dict[str, Any]:
     """Host or timer advances from writing -> voting -> reveal -> next round / finished."""
     clean_code = _clean_code(code)
     with _lock:
         room = _rooms.get(clean_code)
         if room is None:
             raise LookupError(f"Room '{clean_code}' not found.")
+        _require_host_unlocked(room, player_id)
         phase = room["phase"]
         if phase == "lobby":
             _ensure_bots_unlocked(room)
