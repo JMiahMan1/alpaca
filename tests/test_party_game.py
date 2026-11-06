@@ -21,6 +21,17 @@ def clear_party_state():
         party._tts_clips.clear()
 
 
+def _by_real_id(code, players):
+    """Snapshots carry public ids; map them back to the ids the test created."""
+    room = party._rooms[code]
+    real = {party.public_id(room, pid): pid for pid in room["players"]}
+    return {real[p["id"]]: p["score"] for p in players}
+
+
+def _pub(code, pid):
+    return party.public_id(party._rooms[code], pid)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     from arcade import family
@@ -54,14 +65,14 @@ def test_seven_round_schedule_covers_all_five_modes():
     party.create_or_join_room(code="NOAH", player_id="p3", name="Kate", initials="KAT")
 
     seen_kinds = []
-    state = party.start_match("NOAH")
+    state = party.start_match("NOAH", player_id="p1")
     seen_kinds.append(state["prompt"]["kind"])
 
     for _ in range(6):
         # Advance writing -> voting -> reveal -> next round
-        party.advance_phase("NOAH")
-        party.advance_phase("NOAH")
-        state = party.advance_phase("NOAH")
+        party.advance_phase("NOAH", player_id="p1")
+        party.advance_phase("NOAH", player_id="p1")
+        state = party.advance_phase("NOAH", player_id="p1")
         seen_kinds.append(state["prompt"]["kind"])
 
     assert set(seen_kinds) == {
@@ -78,7 +89,7 @@ def test_scoring_original_answer_decoy_bait_and_house_trap():
     party.create_or_join_room(code="DOVE", player_id="p1", name="Jeremiah", initials="JER")
     party.create_or_join_room(code="DOVE", player_id="p2", name="Michele", initials="MIC")
     party.create_or_join_room(code="DOVE", player_id="p3", name="Kate", initials="KAT")
-    party.start_match("DOVE")
+    party.start_match("DOVE", player_id="p1")
 
     # p1 writes an original answer; p2 plays Scribe's Decoy; p3 writes an original answer
     party.submit_answer("DOVE", player_id="p1", text="My custom wise punchline")
@@ -101,7 +112,7 @@ def test_scoring_original_answer_decoy_bait_and_house_trap():
     reveal_state = party.submit_vote("DOVE", player_id="p1", option_id=decoy_opt)
 
     assert reveal_state["phase"] == "reveal"
-    scores = {p["id"]: p["score"] for p in reveal_state["players"]}
+    scores = _by_real_id("DOVE", reveal_state["players"])
     assert scores["p1"] == 1000 + 1000 + 200 - 250  # 1950
     assert scores["p2"] == 500
     assert scores["p3"] == 0
@@ -111,7 +122,7 @@ def test_truth_or_bluff_blocks_real_truth_and_scores_truth_and_bluffs():
     party.create_or_join_room(code="LION", player_id="p1", name="Jeremiah", initials="JER")
     party.create_or_join_room(code="LION", player_id="p2", name="Michele", initials="MIC")
     party.create_or_join_room(code="LION", player_id="p3", name="Kate", initials="KAT")
-    party.start_match("LION")
+    party.start_match("LION", player_id="p1")
 
     # Jump to Round 3 (truth_or_bluff)
     with party._lock:
@@ -137,7 +148,7 @@ def test_truth_or_bluff_blocks_real_truth_and_scores_truth_and_bluffs():
     reveal = party.submit_vote("LION", player_id="p3", option_id=p1_bluff_opt)
 
     assert reveal["phase"] == "reveal"
-    scores = {p["id"]: p["score"] for p in reveal["players"]}
+    scores = _by_real_id("LION", reveal["players"])
     assert scores["p1"] == 1000 + 750 + 200
     assert scores["p2"] == 1000
     assert scores["p3"] == 0
@@ -156,7 +167,7 @@ def test_flask_party_and_tv_routes(client):
     assert payload["room"]["code"] == "GRACE"
     pid = payload["player_id"]
 
-    start_resp = client.post("/api/party/rooms/GRACE/start", json={})
+    start_resp = client.post("/api/party/rooms/GRACE/start", json={"player_id": pid})
     assert start_resp.status_code == 200
     room = start_resp.get_json()["room"]
     assert room["phase"] == "writing"
@@ -249,8 +260,8 @@ def test_party_voices_list_alpaca_kokoro_and_clones(client, monkeypatch):
     assert vdata["success"] is True
     assert any(v["id"] == "clone:jeremiah-new-e572bb" for v in vdata["voices"])
 
-    client.post("/api/party/rooms", json={"code": "CAST", "name": "Jeremiah", "initials": "JER"})
-    voice_set = client.post("/api/party/rooms/CAST/voice", json={"voice": "clone:jeremiah-new-e572bb"})
+    cast_host = client.post("/api/party/rooms", json={"code": "CAST", "name": "Jeremiah", "initials": "JER"}).get_json()["player_id"]
+    voice_set = client.post("/api/party/rooms/CAST/voice", json={"voice": "clone:jeremiah-new-e572bb", "player_id": cast_host})
     assert voice_set.get_json()["room"]["announcer_voice"] == "clone:jeremiah-new-e572bb"
 
 
@@ -409,12 +420,12 @@ def test_good_word_page_meets_the_mobile_contract():
 
 def test_players_pick_unique_avatars():
     a = party.create_or_join_room(code="AVTR", player_id="p1", name="Ann", avatar="🦉")
-    assert next(p for p in a["room"]["players"] if p["id"] == "p1")["avatar"] == "🦉"
+    assert next(p for p in a["room"]["players"] if p["id"] == _pub("AVTR", "p1"))["avatar"] == "🦉"
     b = party.create_or_join_room(code="AVTR", player_id="p2", name="Bo", avatar="🦉")
-    bo = next(p for p in b["room"]["players"] if p["id"] == "p2")
+    bo = next(p for p in b["room"]["players"] if p["id"] == _pub("AVTR", "p2"))
     assert bo["avatar"] != "🦉" and bo["avatar"] in party.PLAYER_AVATARS
     c = party.create_or_join_room(code="AVTR", player_id="p3", name="Cy", avatar="not-an-avatar")
-    assert next(p for p in c["room"]["players"] if p["id"] == "p3")["avatar"] in party.PLAYER_AVATARS
+    assert next(p for p in c["room"]["players"] if p["id"] == _pub("AVTR", "p3"))["avatar"] in party.PLAYER_AVATARS
 
 
 def test_only_the_host_starts_and_advances(client):
@@ -425,7 +436,8 @@ def test_only_the_host_starts_and_advances(client):
     assert ok.status_code == 200 and ok.get_json()["room"]["you_are_host"] is True
     assert client.post("/api/party/rooms/HOSTY/next", json={"player_id": "g"}).status_code == 403
     # The phase timer (no player id) may always advance.
-    assert client.post("/api/party/rooms/HOSTY/next", json={}).status_code == 200
+    # A request that names no player is nobody: it cannot act as the host.
+    assert client.post("/api/party/rooms/HOSTY/next", json={}).status_code == 403
 
 
 def test_host_role_passes_on_when_the_host_leaves(monkeypatch):
@@ -435,13 +447,13 @@ def test_host_role_passes_on_when_the_host_leaves(monkeypatch):
         party._rooms["HAND"]["players"]["h"]["last_seen"] -= party.HOST_HANDOFF_SECONDS + 5
     state = party.get_room_state("HAND", viewer_id="g")
     assert state["you_are_host"] is True
-    assert next(p for p in state["players"] if p["id"] == "h")["connected"] is False
+    assert next(p for p in state["players"] if p["id"] == _pub("HAND", "h"))["connected"] is False
 
 
 def test_reveal_lasts_longer_with_more_answers():
     for i in range(4):
         party.create_or_join_room(code="REVL", player_id=f"p{i}", name=f"P{i}")
-    party.start_match("REVL")
+    party.start_match("REVL", player_id="p0")
     for i in range(4):
         party.submit_answer("REVL", player_id=f"p{i}", text=f"answer number {i}")
     room = party.get_room_state("REVL", viewer_id="p0")
@@ -459,11 +471,11 @@ def test_host_device_can_play_without_projecting_answers_to_tv_stage():
     # Host device joins and creates room; TV stage joins as spectator
     party.create_or_join_room(code="HOST", player_id="p_host", name="Jeremiah", initials="JER", spectator=True)
     party.create_or_join_room(code="HOST", player_id="p_mic", name="Michele", initials="MIC")
-    party.start_match("HOST")
+    party.start_match("HOST", player_id="p_host")
 
     # Even if the Host Device initially opened TV stage mode, submitting an answer promotes Host to active player!
     host_state = party.submit_answer("HOST", player_id="p_host", text="My secret host punchline")
-    host_player = next(p for p in host_state["players"] if p["id"] == "p_host")
+    host_player = next(p for p in host_state["players"] if p["id"] == _pub("HOST", "p_host"))
     assert host_player["spectator"] is False
     assert host_player["submitted"] is True
 
@@ -531,7 +543,7 @@ def test_leaving_hands_off_host_and_the_last_human_closes_the_room(client):
 def test_a_leaver_mid_round_does_not_hold_up_the_round():
     for pid in ("a", "b", "c"):
         party.create_or_join_room(code="MID", player_id=pid, name=pid.upper())
-    party.start_match("MID")
+    party.start_match("MID", player_id="a")
     party.submit_answer("MID", player_id="a", text="one")
     party.submit_answer("MID", player_id="b", text="two")
     out = party.leave_room("MID", player_id="c")
@@ -708,3 +720,82 @@ def test_bots_finish_at_random_moments_not_all_at_once():
         for b in bots:
             room["bot_vote_at"][b["id"]] = 0
     assert all(p["voted"] for p in party.serialize_room(room)["players"] if p["is_bot"])
+
+
+def test_review_fixes_hold(client):
+    """Regression guard for the independent review's findings."""
+    # Anonymous requests are nobody: no host powers.
+    party.create_or_join_room(code="REV", player_id="h", name="Host")
+    party.create_or_join_room(code="REV", player_id="g", name="Guest")
+    with pytest.raises(PermissionError):
+        party.start_match("REV")
+    assert client.post("/api/party/rooms/REV/voice", json={"voice": "am_onyx", "player_id": "g"}).status_code == 403
+    # Nobody's private id is on anyone's screen.
+    snap = party.get_room_state("REV", "g")
+    assert "h" not in {p["id"] for p in snap["players"]} and snap["host_id"] != "h"
+    assert snap["you"] == party.public_id(party._rooms["REV"], "g")
+    # A stale Next (the timer already moved on) does nothing.
+    party.start_match("REV", player_id="h")
+    state = party.advance_phase("REV", player_id="h", expect={"phase": "reveal", "round": 1})
+    assert state["phase"] == "writing"
+    # start_match cannot restart a running match.
+    assert party.start_match("REV", player_id="h")["round"] == 1
+    # An AI scribe's seat can't be taken.
+    bot = next(p for p in party._rooms["REV"]["players"].values() if p.get("is_bot"))
+    with pytest.raises(PermissionError):
+        party.create_or_join_room(code="REV", player_id=bot["id"], name="Me")
+
+
+def test_no_points_for_a_seat_that_never_answered():
+    for pid in ("a", "b", "c"):
+        party.create_or_join_room(code="NOAN", player_id=pid, name=pid.upper())
+    party.start_match("NOAN", player_id="a")
+    party.submit_answer("NOAN", player_id="a", text="first")
+    party.submit_answer("NOAN", player_id="b", text="second")
+    with party._lock:
+        room = party._rooms["NOAN"]
+        party._build_voting_options_unlocked(room)
+    for pid in ("a", "b"):
+        party.submit_vote("NOAN", player_id=pid, option_id="opt_house_decoy")
+    with party._lock:
+        party._score_round_unlocked(party._rooms["NOAN"])
+    assert party._rooms["NOAN"]["players"]["c"]["score"] == 0
+
+
+def test_spectators_cannot_vote_and_the_room_cap_holds():
+    for i in range(8):
+        party.create_or_join_room(code="FULL", player_id=f"p{i}", name=f"P{i}")
+    late = party.create_or_join_room(code="FULL", player_id="late", name="Late")
+    assert party._rooms["FULL"]["players"]["late"]["spectator"] is True
+    party.create_or_join_room(code="FULL", player_id="late", name="Late")  # a refresh is not a seat
+    assert party._rooms["FULL"]["players"]["late"]["spectator"] is True
+    party.start_match("FULL", player_id="p0")
+    with pytest.raises(ValueError):
+        party.submit_answer("FULL", player_id="late", text="sneaky")
+    with party._lock:
+        party._build_voting_options_unlocked(party._rooms["FULL"])
+    with pytest.raises(ValueError):
+        party.submit_vote("FULL", player_id="late", option_id="opt_house_decoy")
+    assert late["room"]["players"]
+
+
+def test_whole_word_truth_check_lets_honest_bluffs_through():
+    prompt = {"kind": "truth_or_bluff", "truth": "Because it was full of the contents of the ark",
+              "truth_keywords": ["tents"]}
+    assert party._matches_truth("They forgot the tent pegs, so no tents", prompt)  # the keyword, as a word
+    assert party._matches_truth("because it was full of the contents of the ark", prompt)
+    assert not party._matches_truth("Their contents were mostly snacks", prompt)  # "tents" inside "contents"
+    assert not party._matches_truth("because it rained", prompt)
+
+
+def test_ending_a_cast_room_frees_its_tv(monkeypatch):
+    freed = []
+    monkeypatch.setattr(party, "show_stage_on_screen", lambda screen, url, **kw: freed.append((screen, kw)))
+    party.create_or_join_room(code="FREE", player_id="h", name="Host")
+    party.remember_screen("FREE", "ha:media_player.master_bedroom_tv")
+    party.end_room("FREE", player_id="h")
+    for _ in range(50):
+        if freed:
+            break
+        time.sleep(0.02)
+    assert freed and freed[0][0] == "ha:media_player.master_bedroom_tv" and freed[0][1]["stop"] is True
