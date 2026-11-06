@@ -70,6 +70,7 @@ SOURCE_FIELDS = (
     "genre",
     "ages",
     "players",
+    "party",
     "version",
     "metric",
     "higher_is_better",

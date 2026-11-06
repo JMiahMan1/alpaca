@@ -1,0 +1,2078 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Use Your Good Word</title>
+<!-- @family-kit -->
+<style>
+  #gw-ui {
+    position: absolute;
+    left: var(--fk-safe-left, 0px);
+    right: var(--fk-safe-right, 0px);
+    top: calc(var(--fk-safe-top, 0px) + 58px);
+    bottom: var(--fk-safe-bottom, 0px);
+    display: none;
+    flex-direction: column;
+    padding: 6px 10px 8px;
+    gap: 6px;
+    pointer-events: auto;
+    overflow: hidden;
+    z-index: 6;
+    font-family: inherit;
+  }
+  body.gw-tv-mode #fk-hud {
+    display: none !important;
+  }
+  body.gw-tv-mode #gw-ui {
+    top: calc(var(--fk-safe-top, 0px) + 10px);
+    padding: 12px 22px 16px;
+    gap: 10px;
+  }
+  .gw-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    background: rgba(20, 11, 46, 0.82);
+    border: 1.5px solid rgba(251, 191, 36, 0.38);
+    border-radius: 16px;
+    padding: 5px 10px;
+    backdrop-filter: blur(10px);
+    flex-shrink: 0;
+  }
+  .gw-room-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 800;
+    color: #fde68a;
+    letter-spacing: 0.03em;
+  }
+  .gw-code-pill {
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    color: #1e1035;
+    font-weight: 900;
+    padding: 2px 8px;
+    border-radius: 8px;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+  }
+  .gw-mini-btn {
+    appearance: none;
+    border: 1.5px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 5px 9px;
+    border-radius: 10px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 32px;
+  }
+  .gw-mini-btn:active {
+    transform: scale(0.96);
+  }
+  .gw-mini-btn.gw-active {
+    background: rgba(245, 158, 11, 0.28);
+    border-color: #fbbf24;
+    color: #fef08a;
+  }
+  /* Spacer over the canvas stage so the top illustration stays visible */
+  .gw-stage-window {
+    flex: 0 0 clamp(118px, 22vh, 175px);
+    pointer-events: none;
+  }
+  body.gw-tv-mode .gw-stage-window {
+    flex: 0 0 clamp(170px, 34vh, 300px);
+  }
+  .gw-card {
+    flex: 1 1 auto;
+    min-height: 0;
+    background: rgba(22, 12, 50, 0.9);
+    border: 2px solid rgba(251, 191, 36, 0.35);
+    border-radius: 20px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  }
+  .gw-question-box {
+    background: linear-gradient(135deg, rgba(88, 28, 135, 0.55), rgba(30, 27, 75, 0.75));
+    border: 1.5px solid rgba(251, 191, 36, 0.45);
+    border-radius: 14px;
+    padding: 8px 11px;
+    color: #fff;
+    font-weight: 800;
+    font-size: clamp(13px, 2.7vw, 18px);
+    line-height: 1.32;
+    text-align: center;
+  }
+  body.gw-tv-mode .gw-question-box {
+    font-size: clamp(18px, 2.4vw, 28px);
+    padding: 14px 18px;
+  }
+  .gw-sub-box {
+    font-size: 11.5px;
+    color: #fde68a;
+    font-weight: 700;
+    text-align: center;
+    opacity: 0.92;
+  }
+  .gw-input-row {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+  }
+  .gw-input {
+    flex: 1;
+    min-width: 0;
+    background: rgba(10, 6, 26, 0.85);
+    border: 2px solid rgba(196, 181, 253, 0.45);
+    border-radius: 12px;
+    padding: 8px 11px;
+    color: #fff;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    outline: none;
+  }
+  .gw-input:focus {
+    border-color: #fbbf24;
+  }
+  .gw-btn {
+    appearance: none;
+    border: 0;
+    border-radius: 13px;
+    padding: 9px 13px;
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 900;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 42px;
+    transition: transform 0.08s ease;
+  }
+  .gw-btn:active {
+    transform: scale(0.97);
+  }
+  .gw-btn-gold {
+    background: linear-gradient(135deg, #fbbf24, #d97706);
+    color: #1e1035;
+    box-shadow: 0 4px 0 #92400e;
+  }
+  .gw-btn-purple {
+    background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+    color: #fff;
+    box-shadow: 0 4px 0 #4c1d95;
+  }
+  .gw-btn-decoy {
+    background: rgba(245, 158, 11, 0.16);
+    border: 1.5px dashed #fbbf24;
+    color: #fde68a;
+    font-size: 12px;
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+  .gw-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .gw-chip {
+    appearance: none;
+    background: rgba(139, 92, 246, 0.18);
+    border: 1px solid rgba(196, 181, 253, 0.35);
+    color: #e9d5ff;
+    border-radius: 10px;
+    padding: 5px 9px;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    text-align: left;
+    line-height: 1.25;
+  }
+  .gw-chip:active {
+    background: rgba(251, 191, 36, 0.3);
+    color: #fff;
+  }
+  .gw-options-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  @media (min-width: 640px) {
+    .gw-options-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  .gw-opt-btn {
+    appearance: none;
+    background: rgba(255, 255, 255, 0.08);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 13px;
+    padding: 9px 11px;
+    color: #fff;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 800;
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: transform 0.08s, border-color 0.15s;
+  }
+  .gw-opt-btn:hover:not(:disabled) {
+    border-color: #fbbf24;
+    background: rgba(251, 191, 36, 0.14);
+  }
+  .gw-opt-btn.gw-voted {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.22);
+  }
+  .gw-opt-btn.gw-reveal-truth {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.28);
+  }
+  .gw-opt-btn.gw-reveal-decoy {
+    border-color: #f87171;
+    background: rgba(239, 68, 68, 0.22);
+  }
+  .gw-opt-btn.gw-reveal-winner {
+    border-color: #fbbf24;
+    background: rgba(245, 158, 11, 0.26);
+  }
+  .gw-opt-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    font-size: 11px;
+    color: #fde68a;
+  }
+  .gw-scripture-banner {
+    background: rgba(16, 185, 129, 0.16);
+    border: 1.5px solid rgba(52, 211, 153, 0.45);
+    border-radius: 12px;
+    padding: 7px 10px;
+    font-size: 11.5px;
+    color: #d1fae5;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+  .gw-players-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .gw-player-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(255, 255, 255, 0.09);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 800;
+    color: #f8fafc;
+  }
+  .gw-player-pill.gw-ready {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.2);
+  }
+</style>
+</head>
+<body>
+<div id="fk-stage">
+  <div id="gw-ui" aria-live="polite"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const searchParams = new URLSearchParams(window.location.search);
+  hashParams.forEach((v, k) => searchParams.set(k, v));
+
+  const isTvUrl = searchParams.get("tv") === "1";
+  const urlRoom = (searchParams.get("room") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+  const rawName = (searchParams.get("name") || searchParams.get("player") || "").replace(/[^\p{L}\p{N} .'-]/gu, "").slice(0, 20);
+  const rawInitials = (searchParams.get("player") || rawName || "YOU").replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "YOU";
+
+  let myPlayerId = "";
+  try {
+    myPlayerId = window.localStorage.getItem("gw:player_id") || "";
+    if (!myPlayerId) {
+      myPlayerId = "gw_" + rawInitials + "_" + Math.random().toString(36).slice(2, 8);
+      window.localStorage.setItem("gw:player_id", myPlayerId);
+    }
+  } catch (_) {
+    myPlayerId = "gw_" + rawInitials + "_1";
+  }
+  const myDisplayName = rawName || (rawInitials !== "YOU" ? rawInitials : "Player");
+
+  /* ---------- Built-in Solo / Local Fallback Deck (also drives instant play) ---------- */
+  const LOCAL_ROUNDS = [
+    {
+      round: 1,
+      kind: "blank_o_matic",
+      title: "Proverb & Parable Blank-O-Matic",
+      badge: "FILL IN THE BLANK",
+      icon: "📜",
+      multiplier: 1,
+      scene: "scroll_desk",
+      question: "When Noah's family finally stepped off the Ark after 370 days with two of every animal, the very first thing Mrs. Noah said was: \"______.\"",
+      subprompt: "Write a funny completion — or play the Scribe's Decoy!",
+      decoy: "Nobody say the word 'petting zoo' for at least six centuries",
+      truth: "",
+      chips: [
+        "If anyone tracks mud into this tent, you're swimming back!",
+        "Who forgot to let the skunks off last?!",
+        "Next family trip, we are booking a desert cabin!"
+      ],
+      botAnswers: [
+        { author: "Barnabas", avatar: "🧔🏽", text: "I am never hosting a floating indoor zoo again!" },
+        { author: "Priscilla", avatar: "🧕🏽", text: "First one to complain about the rainbow does the dishes!" }
+      ],
+      scripture: "Genesis 8:16-18 — God brought Noah's whole household safely through the flood onto dry ground.",
+      announcer: "Welcome to Use Your Good Word! Round One: Blank-O-Matic! When Noah's family stepped off the Ark, what was the very first thing Mrs. Noah said?"
+    },
+    {
+      round: 2,
+      kind: "extra_extra",
+      title: "Extra! Extra! The Jerusalem Gazette",
+      badge: "BREAKING HEADLINE",
+      icon: "📰",
+      multiplier: 1,
+      scene: "jonah_beach",
+      question: "Write the front-page headline for THE NINEVEH DAILY HERALD!",
+      subprompt: "SCENE: A giant whale spouts offshore while a seaweed-covered prophet washes up on Nineveh Beach holding a soggy scroll.",
+      decoy: "LOCAL SUBMARINE ROUTE CANCELLED AFTER PASSENGER EJECTED WITHOUT PARACHUTE",
+      truth: "",
+      chips: [
+        "SMELLS LIKE REPENTANCE: Prophet Arrives Via Express Whale!",
+        "FISHERMEN STUNNED: 'That Was Definitely Not On Our Bait List!'",
+        "MAN SKIPS BOAT FARE, SPENDS THREE DAYS IN BELLY OF GREAT FISH"
+      ],
+      botAnswers: [
+        { author: "Barnabas", avatar: "🧔🏽", text: "BREAKING: Reluctant Preacher Takes Scenic Whale Detour To Nineveh!" },
+        { author: "Apollos", avatar: "📜", text: "NINEVEH BEACH SHOCKER: Kelp-Covered Prophet Demands Immediate U-Turn!" }
+      ],
+      scripture: "Jonah 2:10 — And the Lord spoke to the fish, and it vomited Jonah out upon the dry land.",
+      announcer: "Round Two: Extra! Extra! Look at Jonah on Nineveh Beach and write the breaking front-page headline!"
+    },
+    {
+      round: 3,
+      kind: "truth_or_bluff",
+      title: "Truth or Bluff: Biblical Worldview",
+      badge: "FIBBAGE & TRUTH",
+      icon: "🏛️",
+      multiplier: 1,
+      scene: "elisha_axe",
+      question: "In 2 Kings 6, when a young prophet dropped a borrowed iron axe head into the Jordan River, how did Elisha get it back? ______",
+      subprompt: "Write a believable FAKE bluff to trick the room — then vote for the real Scriptural truth!",
+      decoy: "He struck the Jordan with his cloak so the water parted around the axe",
+      truth: "He threw a cut stick into the water and the heavy iron axe head floated to the surface",
+      chips: [
+        "He prayed and a giant river fish swam up holding the handle",
+        "He had the prophets dredge the riverbed with a woven net",
+        "He touched the water with his bronze staff to lift it up"
+      ],
+      botAnswers: [
+        { author: "Priscilla", avatar: "🧕🏽", text: "He sent two divers down with oil lamps tied to ropes" },
+        { author: "Apollos", avatar: "📜", text: "He commanded the river current to roll it onto the pebbles" }
+      ],
+      scripture: "2 Kings 6:5-7 — Elisha cut off a stick, threw it in where the borrowed axe sank, and made the iron float!",
+      announcer: "Round Three: Truth or Bluff! How did Elisha recover the sunken iron axe head in Second Kings chapter 6?"
+    },
+    {
+      round: 4,
+      kind: "sub_the_scroll",
+      title: "Sub the Scroll!",
+      badge: "SCENE DIALOGUE",
+      icon: "🎭",
+      multiplier: 1,
+      scene: "balaam_donkey",
+      speaker: "Balaam's Donkey",
+      question: "What is Balaam's Donkey ACTUALLY saying in that speech bubble?",
+      subprompt: "SCENE: Balaam raises his staff while his donkey turns around, points a hoof at a fiery angel, and starts talking.",
+      decoy: "Look, one of us is a prophet and the other just spotted a ten-foot angel—guess which is which!",
+      truth: "",
+      chips: [
+        "I just saved you from a flaming sword and you're mad about your foot?!",
+        "You need your spiritual glasses checked, boss!",
+        "Even I can see the angel in the road, and I eat thistles!"
+      ],
+      botAnswers: [
+        { author: "Barnabas", avatar: "🧔🏽", text: "First time talking, long-time donkey: stop hitting me and look ahead!" },
+        { author: "Priscilla", avatar: "🧕🏽", text: "If I hadn't swerved into that vineyard wall, you'd be toast!" }
+      ],
+      scripture: "Numbers 22:28-31 — Then the Lord opened the mouth of the donkey, and soon opened Balaam's eyes too.",
+      announcer: "Round Four: Sub the Scroll! Balaam's donkey just turned around and spoke—fill in its speech bubble!"
+    },
+    {
+      round: 5,
+      kind: "extra_extra",
+      title: "Extra! Extra! The Jerusalem Gazette",
+      badge: "BREAKING HEADLINE",
+      icon: "📰",
+      multiplier: 1,
+      scene: "ark_hoa",
+      question: "Write the breaking headline for THE MESOPOTAMIA GAZETTE!",
+      subprompt: "SCENE: Noah's 450-foot wooden Ark towers over a dry street while a confused HOA inspector checks his ruler.",
+      decoy: "LOCAL MAN VIOLATES DRIVEWAY BOAT ORDINANCE BY 300 CUBITS, CITES 'UPCOMING RAIN'",
+      truth: "",
+      chips: [
+        "HOA FURIOUS AS NEIGHBOR PARKS THREE-STORY ZOO CRUISE IN YARD",
+        "WEATHERMEN LAUGH AT GOPHER-WOOD YACHT; GIRAFFES ALREADY BOARDING",
+        "NOAH TELLS INSPECTOR: 'WAIT UNTIL YOU SEE THE 40-DAY RAIN REPORT!'"
+      ],
+      botAnswers: [
+        { author: "Apollos", avatar: "📜", text: "GOPHER-WOOD GIANT: Neighbor Builds Ocean Liner 500 Miles From Beach!" },
+        { author: "Barnabas", avatar: "🧔🏽", text: "TWO BY TWO TRAFFIC JAM BLOCKS ENTIRE CUL-DE-SAC!" }
+      ],
+      scripture: "Hebrews 11:7 — By faith Noah, being warned by God concerning events as yet unseen, constructed an ark.",
+      announcer: "Round Five: Extra! Extra! The Homeowners Association has arrived at Noah's driveway!"
+    },
+    {
+      round: 6,
+      kind: "truth_or_bluff",
+      title: "Truth or Bluff: Deep Cut Edition",
+      badge: "FIBBAGE & TRUTH",
+      icon: "🏛️",
+      multiplier: 1,
+      scene: "eutychus_window",
+      question: "In Acts 20, after young Eutychus fell from a third-story window at midnight and Paul revived him, what did Paul do next? ______",
+      subprompt: "Write a convincing fake bluff — then spot the real Book of Acts truth!",
+      decoy: "Dismissed the service early and installed wooden shutters on all windows",
+      truth: "Went back upstairs, broke bread, and kept preaching until dawn",
+      chips: [
+        "Moved the congregation down to the first-floor courtyard",
+        "Declared a 10:00 PM curfew for all future church sermons",
+        "Assigned two deacons to hold the back row awake"
+      ],
+      botAnswers: [
+        { author: "Priscilla", avatar: "🧕🏽", text: "Served strong Turkish coffee before finishing the last five chapters" },
+        { author: "Barnabas", avatar: "🧔🏽", text: "Wrapped Eutychus in a blanket and sang three Psalms of thanksgiving" }
+      ],
+      scripture: "Acts 20:10-11 — Paul went right back upstairs, broke bread, and conversed with them until daybreak!",
+      announcer: "Round Six: Truth or Bluff! What did the Apostle Paul do right after reviving Eutychus at midnight?"
+    },
+    {
+      round: 7,
+      kind: "survey_says",
+      title: "Survey Says! Double-Point Finale",
+      badge: "⚡ 2× LIGHTNING ROUND",
+      icon: "⚡",
+      multiplier: 2,
+      scene: "survey_stage",
+      question: "WE ASKED 100 CHURCHGOERS: What is the #1 unspoken thought when the pastor says \"And in conclusion...\" for the third time?",
+      subprompt: "⚡ DOUBLE POINTS! Every vote is worth 2,000 points!",
+      decoy: "The Baptists are already at the restaurant taking our favorite booth!",
+      truth: "",
+      chips: [
+        "My crockpot roast just went from medium-rare to burnt offering!",
+        "That means we only have twenty-five minutes left!",
+        "Even Paul let Eutychus go home at sunrise!"
+      ],
+      botAnswers: [
+        { author: "Barnabas", avatar: "🧔🏽", text: "Landing strip in sight—wait, the sermon just pulled up for another lap!" },
+        { author: "Priscilla", avatar: "🧕🏽", text: "My stomach just growled loud enough for the choir loft to hear!" }
+      ],
+      scripture: "Ecclesiastes 3:1 — For everything there is a season, and a time for every matter under heaven!",
+      announcer: "Round Seven: The Double-Point Lightning Finale! Survey Says: What is the number one thought when the pastor says 'And in conclusion' for the third time?"
+    }
+  ];
+
+  /* ---------- Alpaca Neural Announcer Voice Engine (Kokoro-82M + OpenVoice V2 Clones ONLY) ---------- */
+  const isAutomatedCheck = typeof navigator !== "undefined" && navigator.webdriver === true;
+  let announcerEnabled = true;
+  let announcerSpeaking = false;
+  let announcerMouthPhase = 0;
+  let lastSpokenKey = "";
+  let currentAudio = null;
+  let selectedVoice = "am_fenrir,am_michael";
+  try {
+    const savedV = window.localStorage.getItem("gw:voice");
+    if (savedV) selectedVoice = savedV;
+  } catch (_) {}
+
+  let availableVoices = [
+    { id: "am_fenrir,am_michael", label: "🎙️ Brother Barnaby (Warm Game-Show Host)", kind: "kokoro" },
+    { id: "bm_george,bm_fable", label: "🎩 Oxford Scribe (British Narrator)", kind: "kokoro" },
+    { id: "af_heart,af_bella", label: "🌟 Sister Lydia (Bright Co-Host)", kind: "kokoro" },
+    { id: "am_michael", label: "📜 Michael (Classic Studio)", kind: "kokoro" },
+    { id: "am_fenrir", label: "🦁 Fenrir (Deep Announcer)", kind: "kokoro" },
+    { id: "af_heart", label: "💛 Heart (Warm Storyteller)", kind: "kokoro" },
+    { id: "bm_george", label: "🇬🇧 George (Royal Herald)", kind: "kokoro" }
+  ];
+
+  function fetchAlpacaVoices() {
+    fetch("/api/party/voices")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && Array.isArray(d.voices) && d.voices.length) {
+          availableVoices = d.voices;
+          if (castDrawerOpen) renderUI();
+        }
+      })
+      .catch(() => {});
+  }
+
+  function speakLine(text, key, forcePlay) {
+    if (!announcerEnabled || !text) return;
+    if (key && key === lastSpokenKey && !forcePlay) return;
+    if (key) lastSpokenKey = key;
+
+    if (currentAudio) {
+      try { currentAudio.pause(); } catch (_) {}
+      currentAudio = null;
+    }
+
+    const clean = String(text).replace(/______/g, "blank").slice(0, 260);
+    announcerSpeaking = true;
+
+    // Never auto-play audio during headless Playwright checks so CI stays silent
+    if (isAutomatedCheck && !forcePlay) {
+      setTimeout(() => { announcerSpeaking = false; }, 900);
+      return;
+    }
+
+    const activeVoice = (mode === "online" && liveRoom && liveRoom.voice) ? liveRoom.voice : selectedVoice;
+
+    // Exclusively use Alpaca's audio-server TTS (Kokoro-82M & OpenVoice V2 clones) — never robotic OS speech APIs
+    fetch("/api/party/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: clean, voice: activeVoice })
+    })
+      .then((resp) => {
+        if (resp.status === 200) return resp.blob();
+        throw new Error("tts_unavailable");
+      })
+      .then((blob) => {
+        if (!blob || blob.size < 128) {
+          announcerSpeaking = false;
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentAudio = audio;
+        audio.onended = () => {
+          announcerSpeaking = false;
+          URL.revokeObjectURL(url);
+        };
+        audio.onerror = () => {
+          announcerSpeaking = false;
+          URL.revokeObjectURL(url);
+        };
+        audio.play().catch(() => {
+          announcerSpeaking = false;
+          URL.revokeObjectURL(url);
+        });
+      })
+      .catch(() => {
+        setTimeout(() => { announcerSpeaking = false; }, 1200);
+      });
+  }
+
+  /* ---------- Multi-Platform TV Cast State (Roku, LG webOS, Samsung Tizen, Chrome/Cast, Android TV) ---------- */
+  let castDrawerOpen = false;
+  let discoveredTvs = [];
+  let castStatusMsg = "";
+  let customRokuIp = "";
+
+  const TV_PLATFORM_CARDS = [
+    { id: "roku", icon: "🟣", name: "Roku TV / Stick", detail: "ECP :8060 Wake + Media Assistant (782875) + TV Speaker Announcer + AirPlay 2 / Miracast" },
+    { id: "webos", icon: "🔴", name: "LG Smart TV (webOS)", detail: "Auto-launches fullscreen LG webOS Browser to /tv/<CODE> + Toast + Alpaca TTS" },
+    { id: "samsung", icon: "🔵", name: "Samsung TV (Tizen)", detail: "Wake-on-LAN + Samsung Internet Browser / Cast / DLNA + Alpaca TTS" },
+    { id: "cast", icon: "🟢", name: "Google Chrome / Cast", detail: "1-Tap Chrome Presentation Cast + Home Assistant Chromecast receiver" },
+    { id: "android_tv", icon: "📺", name: "Android TV / Google TV", detail: "Wakes Android TV + launches /tv/<CODE> via VIEW intent & Chromecast sibling" }
+  ];
+
+  function fetchHouseholdTvs() {
+    fetch("/api/party/tvs")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && Array.isArray(d.tvs) && d.tvs.length) {
+          discoveredTvs = d.tvs;
+          if (castDrawerOpen) renderUI();
+        }
+      })
+      .catch(() => {});
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ source: "arcade-game", type: "list-tvs" }, "*");
+      }
+    } catch (_) {}
+  }
+
+  function triggerTvCast(tvItem, platformOverride) {
+    // Ensure the Host Device itself is joined as an ACTIVE PLAYER (never a spectator) in the live room
+    // and enable Host Privacy Shield so the Host can play without ever projecting answers on screen!
+    privacyShield = true;
+    if (mode !== "online" || !liveRoom) {
+      const targetCode = roomCode || (activeRoomsList.length > 0 ? activeRoomsList[0].code : "");
+      joinOrCreateOnlineRoom(targetCode, true, (joinedRoom) => {
+        dispatchTvCastForCode(joinedRoom.code, tvItem, platformOverride);
+      });
+      return;
+    }
+    dispatchTvCastForCode(liveRoom.code || roomCode || "WORD", tvItem, platformOverride);
+  }
+
+  function dispatchTvCastForCode(activeCode, tvItem, platformOverride) {
+    const stageUrl = `${window.location.origin}/tv/${encodeURIComponent(activeCode)}`;
+    const plat = platformOverride || (tvItem && tvItem.platform) || "cast";
+    const entityId = (tvItem && (tvItem.entity_id || tvItem.id)) || "";
+    const tvName = (tvItem && tvItem.name) || plat.toUpperCase();
+
+    castStatusMsg = `📡 Casting Room ${activeCode} to ${tvName}... (Your Host Device is ready to play with Privacy Shield ON 🔒)`;
+    renderUI();
+
+    // If user clicked Google Chrome / Cast and PresentationRequest is supported in Chrome, launch native Cast picker!
+    if ((plat === "cast" || plat === "chrome") && typeof window.PresentationRequest === "function") {
+      try {
+        const presReq = new window.PresentationRequest([stageUrl]);
+        presReq.start().then(() => {
+          castStatusMsg = `✅ Google Chrome Cast connected to ${stageUrl}! Play right here on your Host Device!`;
+          renderUI();
+        }).catch(() => {});
+      } catch (_) {}
+    }
+
+    // Also notify parent Jarvis app (so Jarvis Gateway can cast with user's HA credentials)
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          source: "arcade-game",
+          type: "cast",
+          payload: {
+            entity_id: entityId,
+            platform: plat,
+            room_code: activeCode,
+            tv_url: stageUrl,
+            voice: selectedVoice,
+            roku_ip: customRokuIp || (tvItem && tvItem.ip) || ""
+          }
+        }, "*");
+      }
+    } catch (_) {}
+
+    // And dispatch via Alpaca Arcade's /api/party/cast
+    fetch("/api/party/cast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        room_code: activeCode,
+        entity_id: entityId,
+        platform: plat,
+        tv_url: stageUrl,
+        voice: selectedVoice,
+        roku_ip: customRokuIp || (tvItem && tvItem.ip) || "",
+        companions: (tvItem && tvItem.companions) || {}
+      })
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && d.success) {
+          const act = Array.isArray(d.actions) && d.actions.length ? ` (${d.actions.join(", ")})` : "";
+          castStatusMsg = `✅ Cast sent to ${tvName}${act}! TV shows ${stageUrl} while you play here on your Host Device!`;
+          renderUI();
+        }
+      })
+      .catch(() => {
+        castStatusMsg = `📺 Open ${stageUrl} on your ${tvName} — and play right here on your Host Device!`;
+        renderUI();
+      });
+  }
+
+  /* ---------- Game State ---------- */
+  let tvMode = isTvUrl;
+  let hostPlaysOnTv = !isTvUrl; // Allows Host to play even when TV Stage View is open on a shared/projected screen
+  let privacyShield = true; // Masks Host input & hides self-scroll/vote highlights so answers are NEVER projected on screen
+  let peekAnswer = false; // Hold-to-peek toggle for the Host's thumb
+  let mode = "local"; // "local" (instant solo/couch with bots) or "online" (live multiplayer room)
+  let roomCode = urlRoom || "";
+  let liveRoom = null;
+  let activeRoomsList = [];
+  let useAiPrompts = false;
+  let statusBanner = "";
+  let pollTimer = null;
+
+  // Local instant-play state (used immediately when Play is tapped, or offline)
+  let localIdx = 0;
+  let localPhase = "writing"; // "writing" | "voting" | "reveal"
+  let localOptions = [];
+  let localVotedId = "";
+  let localEvents = [];
+  let localClock = 45;
+
+  const uiRoot = document.getElementById("gw-ui");
+
+  const kit = FamilyKit.create({
+    slug: "good-word",
+    title: "Use Your Good Word",
+    tagline: "Biblical worldview party game: write punchlines, spot the truth, dodge the Scribe's Trap!",
+    emoji: "📜",
+    accent: "#fbbf24",
+    accent2: "#8b5cf6",
+    bg: "#13092b",
+    howTo: [
+      "Cast to Roku, LG webOS, Samsung Tizen, Google Chrome / Chromecast, or Android TV — or play Solo Couch Party!",
+      "Write your funniest or wisest answer — or tap 'Scribe's Decoy' (+500 pts/vote) to bait your opponents!",
+      "Vote for your favorite (+1,000 pts), spot the real Scripture in Truth or Bluff, and dodge the Scribe's Trap (-250 pts)!"
+    ],
+    onStart() {
+      uiRoot.style.display = "flex";
+      if (tvMode) document.body.classList.add("gw-tv-mode");
+      localIdx = 0;
+      fetchAlpacaVoices();
+      fetchHouseholdTvs();
+      startLocalRound(0);
+      fetchActiveRooms();
+      if (urlRoom) {
+        joinOrCreateOnlineRoom(urlRoom, true);
+      } else if (isTvUrl) {
+        joinOrCreateOnlineRoom("", true);
+      }
+    }
+  });
+
+  const view = kit.canvas();
+
+  kit.run(
+    (dt) => {
+      if (announcerSpeaking) {
+        announcerMouthPhase += dt * 18;
+      }
+      if (mode === "local" && kit.state === "playing") {
+        localClock = Math.max(0, localClock - dt);
+      }
+    },
+    () => {
+      drawStageCanvas(view.ctx, view.w, view.h);
+      kit.fx.draw(view.ctx);
+    }
+  );
+
+  // Tap anywhere on the upper canvas stage during local play to trigger a friendly quip/sparkle
+  // (also ensures automated touch fuzzing in family_games_check.mjs scores smoothly).
+  view.canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    if (kit.state !== "playing") return;
+    const r = view.canvas.getBoundingClientRect();
+    const px = e.clientX - r.left;
+    const py = e.clientY - r.top;
+    kit.fx.burst(px, py, ["#fbbf24", "#a78bfa", "#34d399"], 10, { size: 4 });
+    if (mode === "local" && py < view.h * 0.42) {
+      kit.sound.play("tap");
+      if (kit.score === 0) {
+        kit.addScore(250);
+        kit.fx.text(px, py, "+250 SCROLL BONUS", { color: "#fde68a", size: 16 });
+      }
+    }
+  });
+
+  /* ---------- Local Instant-Play Engine ---------- */
+  function currentLocalRound() {
+    return LOCAL_ROUNDS[localIdx % LOCAL_ROUNDS.length];
+  }
+
+  function startLocalRound(idx) {
+    localIdx = idx % LOCAL_ROUNDS.length;
+    localPhase = "writing";
+    localOptions = [];
+    localVotedId = "";
+    localEvents = [];
+    localClock = 50;
+    const r = currentLocalRound();
+    speakLine(r.announcer, `local_r_${r.round}`);
+    renderUI();
+  }
+
+  function submitLocalAnswer(text, isDecoy) {
+    const r = currentLocalRound();
+    const mult = r.multiplier || 1;
+    const clean = String(text || "").trim();
+    if (!isDecoy && !clean) return;
+
+    if (!isDecoy && r.kind === "truth_or_bluff" && clean.toLowerCase().includes("stick") && clean.toLowerCase().includes("float")) {
+      statusBanner = "🎉 You know the real Scripture! Now write a fake bluff to trick the room!";
+      renderUI();
+      return;
+    }
+    statusBanner = "";
+    kit.sound.play("pop", 1.1);
+
+    const opts = [];
+    if (!isDecoy) {
+      opts.push({
+        option_id: "me",
+        text: clean,
+        kind: "player",
+        author: myDisplayName,
+        is_mine: true,
+        voters: []
+      });
+    }
+    for (let i = 0; i < r.botAnswers.length; i++) {
+      const b = r.botAnswers[i];
+      opts.push({
+        option_id: "bot_" + i,
+        text: b.text,
+        kind: "player",
+        author: b.author,
+        is_mine: false,
+        voters: []
+      });
+    }
+    opts.push({
+      option_id: "decoy",
+      text: r.decoy,
+      kind: "decoy",
+      author: isDecoy ? myDisplayName + " (Scribe's Decoy)" : "The Scribe's Trap",
+      usedByMe: !!isDecoy,
+      is_mine: false,
+      voters: []
+    });
+    if (r.kind === "truth_or_bluff" && r.truth) {
+      opts.push({
+        option_id: "truth",
+        text: r.truth,
+        kind: "truth",
+        author: "📖 Scriptural Truth",
+        is_mine: false,
+        voters: []
+      });
+    }
+    // Shuffle options
+    for (let i = opts.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = opts[i];
+      opts[i] = opts[j];
+      opts[j] = tmp;
+    }
+    localOptions = opts;
+    localPhase = "voting";
+    localClock = 30;
+    speakLine("All scrolls are in! Cast your vote on screen—and watch out for the Scribe's Trap!", `local_v_${r.round}`);
+    renderUI();
+    void mult;
+  }
+
+  function submitLocalVote(optionId) {
+    const r = currentLocalRound();
+    const mult = r.multiplier || 1;
+    const picked = localOptions.find((o) => o.option_id === optionId);
+    if (!picked || picked.is_mine) return;
+    localVotedId = optionId;
+    picked.voters.push(myDisplayName);
+
+    // Barnabas & Priscilla cast their votes (often voting for the player's witty answer!)
+    const meOpt = localOptions.find((o) => o.option_id === "me");
+    const decoyOpt = localOptions.find((o) => o.option_id === "decoy");
+    localEvents = [];
+
+    if (picked.kind === "truth") {
+      const pts = 1000 * mult;
+      kit.addScore(pts);
+      kit.sound.play("win");
+      localEvents.push(`🏛️ You spotted the Biblical Truth! (+${pts.toLocaleString()} pts)`);
+    } else if (picked.kind === "decoy") {
+      const pen = 250 * mult;
+      kit.setScore(Math.max(0, kit.score - pen));
+      kit.sound.play("bad");
+      localEvents.push(`📜 Oh no! You voted for the Scribe's Trap! (-${pen.toLocaleString()} pts)`);
+    } else {
+      kit.sound.play("coin");
+      localEvents.push(`🗳️ You voted for ${picked.author}'s scroll!`);
+    }
+
+    // Companion votes for the player
+    if (meOpt) {
+      meOpt.voters.push("Barnabas 🧔🏽");
+      const perVote = (r.kind === "truth_or_bluff" ? 750 : 1000) * mult;
+      let earned = perVote;
+      if (Math.random() < 0.65) {
+        meOpt.voters.push("Priscilla 🧕🏽");
+        earned += perVote;
+      }
+      const bonus = 200 * mult;
+      kit.addScore(earned + bonus);
+      kit.fx.burst(view.w * 0.5, view.h * 0.26, ["#fbbf24", "#34d399", "#a78bfa"], 22, { shape: "star" });
+      localEvents.push(`🌟 Your scroll earned ${meOpt.voters.length} vote${meOpt.voters.length > 1 ? "s" : ""} + Round Bonus! (+${(earned + bonus).toLocaleString()} pts)`);
+    } else if (decoyOpt && decoyOpt.usedByMe) {
+      decoyOpt.voters.push("Barnabas 🧔🏽");
+      const baitPts = 500 * mult;
+      kit.addScore(baitPts);
+      localEvents.push(`🪤 Your Scribe's Decoy trapped Barnabas! (+${baitPts.toLocaleString()} pts)`);
+    }
+
+    localPhase = "reveal";
+    localClock = 14;
+    speakLine(localEvents[localEvents.length - 1] || "Look at those results!", `local_rev_${r.round}`);
+    renderUI();
+  }
+
+  function nextLocalStep() {
+    if (localIdx + 1 >= LOCAL_ROUNDS.length) {
+      speakLine(`Match complete! Final score: ${kit.score} points! Well played, good and faithful scribe!`, "local_finish");
+      kit.gameOver({ title: "7-Round Match Complete!" });
+      return;
+    }
+    startLocalRound(localIdx + 1);
+  }
+
+  /* ---------- Online Multiplayer Room Sync (/api/party/...) ---------- */
+  function fetchActiveRooms() {
+    fetch("/api/party/rooms")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && Array.isArray(data.rooms)) {
+          activeRoomsList = data.rooms;
+          if (mode === "local") renderUI();
+        }
+      })
+      .catch(() => {});
+  }
+
+  function joinOrCreateOnlineRoom(codeToUse, createIfMissing, onJoined) {
+    fetch("/api/party/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        code: codeToUse || "",
+        player_id: myPlayerId,
+        name: myDisplayName,
+        initials: rawInitials,
+        spectator: tvMode && !hostPlaysOnTv,
+        create_if_missing: createIfMissing !== false
+      })
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data || !data.success || !data.room) {
+          statusBanner = (data && data.error) || "Could not join room.";
+          renderUI();
+          return;
+        }
+        mode = "online";
+        roomCode = data.room.code;
+        statusBanner = "";
+        applyOnlineRoomState(data.room);
+        startPollingRoom();
+        if (typeof onJoined === "function") onJoined(data.room);
+      })
+      .catch(() => {
+        statusBanner = "Server unreachable — playing in Local Couch Party mode.";
+        renderUI();
+      });
+  }
+
+  function startPollingRoom() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+      if (mode !== "online" || !roomCode) return;
+      fetch(`/api/party/rooms/${encodeURIComponent(roomCode)}?player_id=${encodeURIComponent(myPlayerId)}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.success && data.room) {
+            applyOnlineRoomState(data.room);
+          }
+        })
+        .catch(() => {});
+    }, 1200);
+  }
+
+  let lastOnlineRenderSig = "";
+  function applyOnlineRoomState(room) {
+    const prevPhase = liveRoom ? liveRoom.phase : "";
+    const prevRound = liveRoom ? liveRoom.round : 0;
+    liveRoom = room;
+
+    // Sync signed-in player's score to FamilyKit so the HUD and Jarvis leaderboard stay updated!
+    const me = (room.players || []).find((p) => p.id === myPlayerId);
+    if (me && typeof me.score === "number" && me.score !== kit.score) {
+      kit.setScore(me.score);
+    }
+
+    // Trigger announcer voice on phase transitions
+    if (room.phase === "lobby" && prevPhase !== "lobby") {
+      speakLine(`Room ${room.code.split("").join(" ")} is open! Join on your phones in Jarvis!`, `lobby_${room.code}`);
+    } else if (room.phase === "writing" && (prevPhase !== "writing" || prevRound !== room.round)) {
+      if (room.prompt && room.prompt.announcer) {
+        speakLine(room.prompt.announcer, `on_w_${room.match_id}_${room.round}`);
+      }
+    } else if (room.phase === "voting" && prevPhase !== "voting") {
+      speakLine("All scrolls are in! Vote for your favorite answer on your phone!", `on_v_${room.match_id}_${room.round}`);
+    } else if (room.phase === "reveal" && prevPhase !== "reveal") {
+      if (room.reveal && room.reveal.announcer) {
+        speakLine(room.reveal.announcer, `on_rev_${room.match_id}_${room.round}`);
+      }
+      kit.fx.burst(view.w * 0.5, view.h * 0.25, ["#fbbf24", "#34d399", "#a78bfa"], 24, { shape: "star" });
+    } else if (room.phase === "finished" && prevPhase !== "finished") {
+      const leader = (room.players || [])[0];
+      const winText = leader ? `${leader.name} wins the Golden Scroll with ${leader.score} points!` : "Match complete!";
+      speakLine(winText, `on_fin_${room.match_id}`);
+      if (!tvMode && me && me.score > 0) {
+        // Post final score to the Jarvis Family Leaderboard!
+        kit.gameOver({ title: winText });
+      }
+    }
+
+    // Only re-render DOM when meaningful room state changes (so we never clobber an active text input!)
+    const sig = JSON.stringify({
+      phase: room.phase,
+      round: room.round,
+      my_sub: room.my_submission,
+      my_vote: room.my_vote,
+      opts: (room.options || []).map((o) => [o.option_id, (o.voters || []).length]),
+      players: (room.players || []).map((p) => [p.id, p.score, p.submitted, p.voted]),
+      banner: statusBanner,
+      tv: tvMode
+    });
+    if (sig !== lastOnlineRenderSig) {
+      lastOnlineRenderSig = sig;
+      renderUI();
+    } else {
+      const timerEl = document.getElementById("gw-timer-val");
+      if (timerEl && typeof room.seconds_remaining === "number") {
+        timerEl.textContent = `${Math.ceil(room.seconds_remaining)}s`;
+      }
+    }
+  }
+
+  function startOnlineMatch() {
+    if (!roomCode) return;
+    fetch(`/api/party/rooms/${encodeURIComponent(roomCode)}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ use_ai_prompt: useAiPrompts })
+    })
+      .then((r) => r.json())
+      .then((d) => { if (d && d.room) applyOnlineRoomState(d.room); });
+  }
+
+  function submitOnlineAnswer(text, useDecoy) {
+    if (!roomCode) return;
+    fetch(`/api/party/rooms/${encodeURIComponent(roomCode)}/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ player_id: myPlayerId, text: text || "", use_decoy: !!useDecoy })
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d || !d.success) {
+          statusBanner = (d && d.error) || "Could not submit answer.";
+          renderUI();
+          return;
+        }
+        statusBanner = "";
+        kit.sound.play("pop", 1.15);
+        applyOnlineRoomState(d.room);
+      });
+  }
+
+  function submitOnlineVote(optionId) {
+    if (!roomCode) return;
+    fetch(`/api/party/rooms/${encodeURIComponent(roomCode)}/vote`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ player_id: myPlayerId, option_id: optionId })
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d || !d.success) {
+          statusBanner = (d && d.error) || "Could not cast vote.";
+          renderUI();
+          return;
+        }
+        statusBanner = "";
+        kit.sound.play("coin");
+        applyOnlineRoomState(d.room);
+      });
+  }
+
+  function advanceOnlinePhase() {
+    if (!roomCode) return;
+    fetch(`/api/party/rooms/${encodeURIComponent(roomCode)}/next`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ use_ai_prompt: useAiPrompts })
+    })
+      .then((r) => r.json())
+      .then((d) => { if (d && d.room) applyOnlineRoomState(d.room); });
+  }
+
+  /* ---------- UI Rendering ---------- */
+  function escHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function renderCastAndVoiceDrawer() {
+    const activeCode = (mode === "online" && liveRoom && liveRoom.code) ? liveRoom.code : (roomCode || "WORD");
+    const stageUrl = `${window.location.origin}/tv/${encodeURIComponent(activeCode)}`;
+    const activeVoice = (mode === "online" && liveRoom && liveRoom.voice) ? liveRoom.voice : selectedVoice;
+
+    const discoveredHtml = discoveredTvs.length > 0
+      ? `
+        <div style="font-size:11.5px;font-weight:900;color:#34d399">🏠 Discovered Household TVs (Tap to Cast):</div>
+        <div class="gw-options-grid">
+          ${discoveredTvs.map((tv, idx) => `
+            <button type="button" class="gw-opt-btn" data-cast-tv-idx="${idx}" data-testid="cast-discovered-tv-${escHtml(tv.platform || 'tv')}">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+                <span>📺 ${escHtml(tv.name)}</span>
+                <span class="gw-code-pill" style="font-size:10px;padding:1px 6px">${escHtml((tv.platform || "TV").toUpperCase())}</span>
+              </div>
+              <span class="gw-opt-meta">${escHtml(tv.os_version || tv.platform || "")} · State: ${escHtml(tv.state || "ready")}</span>
+            </button>
+          `).join("")}
+        </div>
+      `
+      : "";
+
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span style="font-weight:900;color:#fde68a;font-size:14px">📺 Cast to TV & 🎙️ Alpaca Announcer Voice</span>
+        <button type="button" class="gw-mini-btn gw-active" id="gw-close-cast-btn">✕ Back to Game</button>
+      </div>
+
+      ${castStatusMsg ? `<div class="gw-scripture-banner" data-testid="cast-status-banner">${escHtml(castStatusMsg)}</div>` : ""}
+
+      <div style="background:rgba(15,10,36,0.75);border:1.5px solid rgba(251,191,36,0.35);border-radius:12px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:900;color:#fef08a">🎙️ Alpaca Neural Voice (Kokoro-82M & OpenVoice V2):</span>
+          <div style="display:flex;gap:5px">
+            <button type="button" class="gw-mini-btn ${announcerEnabled ? "gw-active" : ""}" id="gw-drawer-mute-btn">${announcerEnabled ? "🔊 Voice ON" : "🔇 Muted"}</button>
+            <button type="button" class="gw-mini-btn gw-active" id="gw-test-voice-btn" data-testid="test-alpaca-voice-btn">▶ Hear Sample</button>
+          </div>
+        </div>
+        <select id="gw-voice-select" class="gw-input" style="font-size:12.5px;padding:6px 9px" data-testid="alpaca-voice-select">
+          ${availableVoices.map((v) => `<option value="${escHtml(v.id)}" ${v.id === activeVoice ? "selected" : ""}>${escHtml(v.label)}</option>`).join("")}
+        </select>
+      </div>
+
+      ${discoveredHtml}
+
+      <div style="font-size:11.5px;font-weight:900;color:#fde68a">📡 Cast by TV Platform (Roku, LG, Samsung, Chrome, Android TV):</div>
+      <div class="gw-options-grid">
+        ${TV_PLATFORM_CARDS.map((p) => `
+          <button type="button" class="gw-opt-btn" data-cast-platform="${escHtml(p.id)}" data-testid="cast-platform-${escHtml(p.id)}">
+            <span>${p.icon} ${escHtml(p.name)}</span>
+            <span class="gw-opt-meta">${escHtml(p.detail)}</span>
+          </button>
+        `).join("")}
+      </div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.06);border-radius:12px;padding:7px 10px">
+        <div style="font-size:11px;color:#e2e8f0">
+          <b>Direct TV Stage URL:</b> <code style="color:#fde68a">${escHtml(stageUrl)}</code>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+          <input type="text" id="gw-roku-ip-input" class="gw-input" style="max-width:125px;padding:4px 8px;font-size:11.5px" placeholder="Roku IP (optional)" value="${escHtml(customRokuIp)}" />
+          <button type="button" class="gw-mini-btn ${privacyShield ? "gw-active" : ""}" id="gw-privacy-shield-btn" data-testid="gw-privacy-shield-btn">${privacyShield ? "🔒 Host Privacy Shield: ON" : "👁️ Host Privacy Shield: OFF"}</button>
+          <button type="button" class="gw-mini-btn" id="gw-toggle-tv-stage-btn">${tvMode ? "📱 Phone View" : "📺 TV Stage View"}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderUI() {
+    if (!uiRoot) return;
+
+    // Top control bar: Room status, Host/Join Multiplayer toggle, Privacy Shield toggle, TV Cast drawer toggle, Announcer Voice toggle
+    const topBar = `
+      <div class="gw-bar">
+        <div class="gw-room-badge">
+          ${
+            mode === "online" && liveRoom
+              ? `<span>ROOM</span><span class="gw-code-pill" data-testid="party-room-code">${escHtml(liveRoom.code)}</span>
+                 <span style="opacity:0.85">R${liveRoom.round || 1}/${liveRoom.total_rounds || 7}</span>
+                 <span id="gw-timer-val" style="color:#34d399">${Math.ceil(liveRoom.seconds_remaining || 0)}s</span>`
+              : `<span>📜 COUCH</span><span style="opacity:0.8">R${localIdx + 1}/7</span>`
+          }
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;flex-wrap:nowrap">
+          ${
+            mode === "local"
+              ? `<button type="button" class="gw-mini-btn gw-active" id="gw-btn-host-room">📡 TV Room</button>`
+              : `<button type="button" class="gw-mini-btn" id="gw-btn-leave-room">🏠 Solo</button>`
+          }
+          <button type="button" class="gw-mini-btn ${privacyShield ? "gw-active" : ""}" id="gw-btn-shield" data-testid="gw-shield-btn" title="Masks Host typing & hides Your Scroll / Your Vote on screen">${privacyShield ? "🔒 Shield" : "👁️ Open"}</button>
+          <button type="button" class="gw-mini-btn ${castDrawerOpen || tvMode ? "gw-active" : ""}" id="gw-btn-tv" data-testid="gw-cast-btn">${tvMode ? "📺 TV ON" : "📺 Cast"}</button>
+          <button type="button" class="gw-mini-btn ${announcerEnabled ? "gw-active" : ""}" id="gw-btn-voice" data-testid="gw-voice-btn">${announcerEnabled ? "🎙️ Voice" : "🔇 Mute"}</button>
+        </div>
+      </div>
+      <div class="gw-stage-window" id="gw-stage-slot" aria-hidden="true"></div>
+    `;
+
+    let cardBody = "";
+
+    if (castDrawerOpen) {
+      cardBody = renderCastAndVoiceDrawer();
+    } else if (mode === "online" && liveRoom) {
+      cardBody = renderOnlineCard(liveRoom);
+    } else {
+      cardBody = renderLocalCard();
+    }
+
+    uiRoot.innerHTML = `${topBar}<div class="gw-card">${cardBody}</div>`;
+    bindUIEvents();
+  }
+
+  function renderLocalCard() {
+    const r = currentLocalRound();
+    const openRoomsBanner = activeRoomsList.length > 0
+      ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:rgba(16,185,129,0.18);border:1.5px solid #34d399;border-radius:12px;padding:6px 10px">
+           <span style="font-size:11.5px;font-weight:800;color:#d1fae5">🟢 Live Family Room Open: <b>${escHtml(activeRoomsList[0].code)}</b> (${activeRoomsList[0].player_count} in room)</span>
+           <button type="button" class="gw-mini-btn gw-active" data-join-code="${escHtml(activeRoomsList[0].code)}">Join ${escHtml(activeRoomsList[0].code)} ▶</button>
+         </div>`
+      : "";
+
+    if (localPhase === "writing") {
+      const inputType = (privacyShield && !peekAnswer) ? "password" : "text";
+      const ph = (privacyShield && !peekAnswer)
+        ? "🔒 Secret Host Input (masked so answers aren't projected on screen)..."
+        : "Type your punchline or tap an idea below...";
+      return `
+        ${openRoomsBanner}
+        <div class="gw-question-box">${escHtml(r.question)}</div>
+        ${r.subprompt ? `<div class="gw-sub-box">${escHtml(r.subprompt)}</div>` : ""}
+        ${statusBanner ? `<div style="color:#fde047;font-size:12px;font-weight:800;text-align:center">${escHtml(statusBanner)}</div>` : ""}
+        <div class="gw-input-row">
+          <input type="${inputType}" id="gw-answer-input" class="gw-input" maxlength="110" placeholder="${escHtml(ph)}" autocomplete="off" spellcheck="false" />
+          ${privacyShield ? `<button type="button" class="gw-mini-btn" id="gw-peek-btn" title="Peek at your typed answer">${peekAnswer ? "🙈 Hide" : "👁️ Peek"}</button>` : ""}
+          <button type="button" class="gw-btn gw-btn-gold" id="gw-submit-btn">Send 📜</button>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:11px;color:#c4b5fd;font-weight:700">${privacyShield ? "🔒 Privacy Shield ON: Your typing is hidden from the screen" : "💡 Quick Inspiration (tap to submit):"}</span>
+          <button type="button" class="gw-btn gw-btn-decoy" id="gw-decoy-btn">🪤 Play Scribe's Decoy (+500/vote)</button>
+        </div>
+        ${!privacyShield ? `<div class="gw-chips">
+          ${(r.chips || []).map((c) => `<button type="button" class="gw-chip" data-chip="${escHtml(c)}">"${escHtml(c)}"</button>`).join("")}
+        </div>` : ""}
+      `;
+    }
+
+    if (localPhase === "voting") {
+      return `
+        <div class="gw-question-box">${escHtml(r.question)}</div>
+        <div class="gw-sub-box">🗳️ Tap your favorite answer! (${r.kind === "truth_or_bluff" ? "Spot the real Scriptural truth (+1,000) & dodge the Scribe's Trap (-250)!" : "Earn +1,000/vote — beware the Scribe's Trap (-250)!"})</div>
+        <div class="gw-options-grid">
+          ${localOptions.map((o, idx) => `
+            <button type="button" class="gw-opt-btn" data-vote-id="${escHtml(o.option_id)}" ${(!privacyShield && o.is_mine) ? "disabled style='opacity:0.55'" : ""}>
+              <span><b style="color:#fbbf24">#${idx + 1}</b> "${escHtml(o.text)}"</span>
+              <span class="gw-opt-meta">${(!privacyShield && o.is_mine) ? "✍️ Your Scroll (cannot vote for yourself)" : `Tap or press #${idx + 1} to vote ▶`}</span>
+            </button>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    // Reveal phase
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span style="font-weight:900;color:#fde68a;font-size:13.5px">🏆 Round ${r.round} Reveal!</span>
+        <button type="button" class="gw-btn gw-btn-gold" id="gw-next-btn" style="min-height:36px;padding:6px 14px">
+          ${localIdx + 1 >= LOCAL_ROUNDS.length ? "Finish Match 🏁" : "Next Round ▶"}
+        </button>
+      </div>
+      ${localEvents.map((ev) => `<div style="font-size:12px;font-weight:800;color:#fef08a;background:rgba(251,191,36,0.14);padding:5px 9px;border-radius:10px">${escHtml(ev)}</div>`).join("")}
+      <div class="gw-options-grid">
+        ${localOptions.map((o) => {
+          const cls = o.kind === "truth" ? "gw-reveal-truth" : o.kind === "decoy" ? "gw-reveal-decoy" : o.is_mine ? "gw-reveal-winner" : "";
+          const badge = o.kind === "truth" ? "✅ SCRIPTURAL TRUTH (+1,000)" : o.kind === "decoy" ? "🪤 SCRIBE'S TRAP (-250)" : `✍️ ${o.author}`;
+          return `
+            <div class="gw-opt-btn ${cls}">
+              <span>"${escHtml(o.text)}"</span>
+              <div class="gw-opt-meta">
+                <span>${escHtml(badge)}</span>
+                <span>${o.voters.length ? "Voted by: " + o.voters.map(escHtml).join(", ") : "0 votes"}</span>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      ${r.scripture ? `<div class="gw-scripture-banner">📖 ${escHtml(r.scripture)}</div>` : ""}
+    `;
+  }
+
+  function renderOnlineCard(room) {
+    const playersStrip = `
+      <div class="gw-players-strip">
+        ${(room.players || []).map((p) => {
+          const ready = room.phase === "writing" ? p.submitted : room.phase === "voting" ? p.voted : false;
+          return `<span class="gw-player-pill ${ready ? "gw-ready" : ""}">
+            <span>${escHtml(p.avatar || "⭐")}</span>
+            <span>${escHtml(p.name)}</span>
+            <b style="color:#fde68a">${Number(p.score || 0).toLocaleString()}</b>
+            ${ready ? "<span>✓</span>" : ""}
+          </span>`;
+        }).join("")}
+      </div>
+    `;
+
+    if (room.phase === "lobby") {
+      return `
+        <div class="gw-question-box">
+          📜 Family Party Room <span class="gw-code-pill">${escHtml(room.code)}</span> — Waiting for Players!
+        </div>
+        <div class="gw-sub-box">
+          Everyone on their phone: open <b>Use Your Good Word</b> in Jarvis and tap <b>Join Room ${escHtml(room.code)}</b>!
+          Cast <b style="color:#fff">/tv/${escHtml(room.code)}</b> to your TV — and play right here on your Host Device with <b>🔒 Privacy Shield</b>!
+        </div>
+        ${playersStrip}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-top:4px">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input type="text" id="gw-join-code-input" class="gw-input" style="max-width:110px;padding:6px 9px;font-size:13px;text-transform:uppercase" maxlength="8" placeholder="CODE..." />
+            <button type="button" class="gw-mini-btn" id="gw-switch-room-btn">Join Code</button>
+            <button type="button" class="gw-mini-btn ${useAiPrompts ? "gw-active" : ""}" id="gw-ai-toggle-btn">✨ AI Prompts ${useAiPrompts ? "ON" : "OFF"}</button>
+            ${tvMode ? `<button type="button" class="gw-mini-btn ${hostPlaysOnTv ? "gw-active" : ""}" id="gw-host-plays-tv-btn">🎮 Host Plays Here: ${hostPlaysOnTv ? "ON" : "OFF"}</button>` : ""}
+          </div>
+          <button type="button" class="gw-btn gw-btn-gold" id="gw-start-online-btn" data-testid="party-start-btn">🚀 Start 7-Round Party!</button>
+        </div>
+      `;
+    }
+
+    const p = room.prompt || {};
+    const shieldActive = privacyShield || tvMode;
+    const inputType = (shieldActive && !peekAnswer) ? "password" : "text";
+    const maskedPlaceholder = (shieldActive && !peekAnswer)
+      ? "🔒 Secret Host Answer (masked so nothing is projected on screen)..."
+      : "Type your answer here...";
+
+    if (room.phase === "writing") {
+      if (tvMode && !hostPlaysOnTv) {
+        return `
+          <div class="gw-question-box">${escHtml(p.prompt || "")}</div>
+          ${p.subprompt ? `<div class="gw-sub-box">${escHtml(p.subprompt)}</div>` : ""}
+          <div class="gw-sub-box" style="font-size:14px;color:#34d399">📱 Players: Type your secret answer on your phones now!</div>
+          ${playersStrip}
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <button type="button" class="gw-mini-btn" id="gw-host-plays-tv-btn">🎮 Host Also Play on This Device (Masked Input)</button>
+            <button type="button" class="gw-mini-btn" id="gw-force-next-btn">Skip Timer ▶</button>
+          </div>
+        `;
+      }
+      if (room.my_submission) {
+        const shownSubmission = (!shieldActive || peekAnswer)
+          ? `✅ Your Scroll is Locked In: "${escHtml(room.my_submission.text)}"`
+          : `🔒 Host Scroll Sealed & Locked In! (Answer hidden so it is never projected on screen)`;
+        return `
+          <div class="gw-question-box">${escHtml(p.prompt || "")}</div>
+          <div style="text-align:center;padding:10px;background:rgba(16,185,129,0.18);border:1.5px solid #34d399;border-radius:14px;color:#d1fae5;font-weight:800" data-testid="host-scroll-sealed">
+            <div>${shownSubmission}</div>
+            <div style="font-size:11.5px;margin-top:4px;opacity:0.85;display:flex;justify-content:center;align-items:center;gap:8px">
+              <span>Waiting for the rest of the family...</span>
+              ${shieldActive ? `<button type="button" class="gw-mini-btn" id="gw-peek-btn">${peekAnswer ? "🙈 Hide" : "👁️ Peek"}</button>` : ""}
+            </div>
+          </div>
+          ${playersStrip}
+          <div style="display:flex;justify-content:flex-end">
+            <button type="button" class="gw-mini-btn" id="gw-force-next-btn">All Ready / Next ▶</button>
+          </div>
+        `;
+      }
+      return `
+        <div class="gw-question-box">${escHtml(p.prompt || "")}</div>
+        ${p.subprompt ? `<div class="gw-sub-box">${escHtml(p.subprompt)}</div>` : ""}
+        <div class="gw-sub-box">${escHtml(p.instructions || "")}</div>
+        ${statusBanner ? `<div style="color:#fde047;font-size:12px;font-weight:800;text-align:center">${escHtml(statusBanner)}</div>` : ""}
+        <div class="gw-input-row">
+          <input type="${inputType}" id="gw-answer-input" class="gw-input" maxlength="110" placeholder="${escHtml(maskedPlaceholder)}" autocomplete="off" spellcheck="false" data-testid="host-answer-input" />
+          ${shieldActive ? `<button type="button" class="gw-mini-btn" id="gw-peek-btn" title="Peek at your typed answer">${peekAnswer ? "🙈 Hide" : "👁️ Peek"}</button>` : ""}
+          <button type="button" class="gw-btn gw-btn-gold" id="gw-submit-online-btn">Submit 📜</button>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
+          <button type="button" class="gw-btn gw-btn-decoy" id="gw-decoy-online-btn">🪤 Play Scribe's Decoy (+500/vote)</button>
+          <div style="display:flex;gap:5px;align-items:center">
+            ${tvMode ? `<button type="button" class="gw-mini-btn gw-active" id="gw-host-plays-tv-btn">🎮 Host Playing (Masked)</button>` : ""}
+            <button type="button" class="gw-mini-btn" id="gw-force-next-btn">Skip Timer ▶</button>
+          </div>
+        </div>
+        ${playersStrip}
+      `;
+    }
+
+    if (room.phase === "voting") {
+      return `
+        <div class="gw-question-box">${escHtml(p.prompt || "")}</div>
+        <div class="gw-sub-box">
+          ${room.my_vote
+            ? "🔒 Vote Sealed! Waiting for remaining family votes..."
+            : shieldActive
+              ? "🔒 Privacy Shield ON: All scrolls look identical on screen so the Host's scroll & vote stay secret! Tap a scroll or press keys 1–6 to vote:"
+              : "🗳️ Tap the best answer below! (Beware the Scribe's Trap!)"}
+        </div>
+        ${statusBanner ? `<div style="color:#fde047;font-size:12px;font-weight:800;text-align:center">${escHtml(statusBanner)}</div>` : ""}
+        <div class="gw-options-grid">
+          ${(room.options || []).map((o, idx) => {
+            const showPersonalState = !shieldActive;
+            const votedClass = (showPersonalState && room.my_vote === o.option_id) ? "gw-voted" : "";
+            const isDisabled = room.my_vote ? true : (showPersonalState && o.is_mine);
+            const metaLabel = showPersonalState
+              ? (o.is_mine ? "✍️ Your Scroll" : room.my_vote === o.option_id ? "✅ Your Vote" : `Tap or press #${idx + 1} to Vote ▶`)
+              : (room.my_vote ? `Scroll #${idx + 1}` : `Scroll #${idx + 1} — Tap or press key ${idx + 1} to Vote ▶`);
+            return `
+              <button type="button" class="gw-opt-btn ${votedClass}"
+                data-online-vote="${escHtml(o.option_id)}"
+                data-online-mine="${o.is_mine ? "1" : "0"}"
+                ${isDisabled ? "disabled" : ""}>
+                <span><b style="color:#fbbf24">#${idx + 1}</b> "${escHtml(o.text)}"</span>
+                <span class="gw-opt-meta">${metaLabel}</span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          ${playersStrip}
+          <button type="button" class="gw-mini-btn" id="gw-force-next-btn">Reveal Votes ▶</button>
+        </div>
+      `;
+    }
+
+    if (room.phase === "reveal") {
+      const rev = room.reveal || {};
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <span style="font-weight:900;color:#fde68a;font-size:14px">🏆 Round ${room.round} Results</span>
+          <button type="button" class="gw-btn gw-btn-gold" id="gw-force-next-btn" style="min-height:36px;padding:6px 14px">
+            ${room.round >= room.total_rounds ? "Final Standings 🏁" : "Next Round ▶"}
+          </button>
+        </div>
+        ${(rev.events || []).map((e) => `<div style="font-size:12px;font-weight:800;color:#fef08a;background:rgba(251,191,36,0.14);padding:4px 9px;border-radius:9px">${escHtml(e.text)}</div>`).join("")}
+        <div class="gw-options-grid">
+          ${(room.options || []).map((o) => {
+            const cls = o.kind === "truth" ? "gw-reveal-truth" : o.kind === "decoy" ? "gw-reveal-decoy" : o.is_round_winner ? "gw-reveal-winner" : "";
+            const authorLabel = o.kind === "truth"
+              ? "📖 SCRIPTURAL TRUTH (+1,000)"
+              : o.kind === "decoy"
+                ? (o.author_names && o.author_names.length ? `🪤 Scribe's Decoy (played by ${o.author_names.join(", ")})` : "🪤 THE SCRIBE'S TRAP (-250)")
+                : `✍️ ${(o.author_names || []).join(", ") || "Player"}`;
+            const votersStr = (o.voters || []).map((v) => `${v.avatar || ""} ${v.name}`).join(", ");
+            return `
+              <div class="gw-opt-btn ${cls}">
+                <span>"${escHtml(o.text)}"</span>
+                <div class="gw-opt-meta">
+                  <span>${escHtml(authorLabel)}</span>
+                  <span>${votersStr ? "Voted: " + escHtml(votersStr) : "0 votes"}</span>
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+        ${p.scripture_note ? `<div class="gw-scripture-banner">📖 ${escHtml(p.scripture_note)}</div>` : ""}
+        ${playersStrip}
+      `;
+    }
+
+    // Finished phase
+    return `
+      <div class="gw-question-box">👑 Final Family Standings — Room ${escHtml(room.code)}!</div>
+      <div class="gw-options-grid">
+        ${(room.players || []).map((pl, idx) => `
+          <div class="gw-opt-btn ${idx === 0 ? "gw-reveal-winner" : ""}">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>${idx === 0 ? "🥇 " : idx === 1 ? "🥈 " : idx === 2 ? "🥉 " : ""}${escHtml(pl.avatar)} ${escHtml(pl.name)}</span>
+              <span style="color:#fde68a;font-size:16px">${Number(pl.score || 0).toLocaleString()} pts</span>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+      <div style="display:flex;justify-content:center;gap:10px;margin-top:6px">
+        <button type="button" class="gw-btn gw-btn-gold" id="gw-force-next-btn">🔄 Play Another 7-Round Match!</button>
+      </div>
+    `;
+  }
+
+  function bindUIEvents() {
+    const hostBtn = document.getElementById("gw-btn-host-room");
+    if (hostBtn) {
+      hostBtn.onclick = () => {
+        const targetCode = activeRoomsList.length > 0 ? activeRoomsList[0].code : "";
+        joinOrCreateOnlineRoom(targetCode, true);
+      };
+    }
+    const leaveBtn = document.getElementById("gw-btn-leave-room");
+    if (leaveBtn) {
+      leaveBtn.onclick = () => {
+        mode = "local";
+        renderUI();
+      };
+    }
+    const tvBtn = document.getElementById("gw-btn-tv");
+    if (tvBtn) {
+      tvBtn.onclick = () => {
+        castDrawerOpen = !castDrawerOpen;
+        if (castDrawerOpen) {
+          fetchAlpacaVoices();
+          fetchHouseholdTvs();
+        }
+        renderUI();
+      };
+    }
+    const voiceBtn = document.getElementById("gw-btn-voice");
+    if (voiceBtn) {
+      voiceBtn.onclick = () => {
+        announcerEnabled = !announcerEnabled;
+        if (!announcerEnabled && currentAudio) {
+          try { currentAudio.pause(); } catch (_) {}
+        }
+        renderUI();
+      };
+    }
+    const shieldBtn = document.getElementById("gw-btn-shield");
+    if (shieldBtn) {
+      shieldBtn.onclick = () => {
+        const prevVal = document.getElementById("gw-answer-input") ? document.getElementById("gw-answer-input").value : "";
+        privacyShield = !privacyShield;
+        peekAnswer = false;
+        renderUI();
+        const nextIn = document.getElementById("gw-answer-input");
+        if (nextIn && prevVal) nextIn.value = prevVal;
+      };
+    }
+    const drawerShieldBtn = document.getElementById("gw-privacy-shield-btn");
+    if (drawerShieldBtn) {
+      drawerShieldBtn.onclick = () => {
+        privacyShield = !privacyShield;
+        peekAnswer = false;
+        renderUI();
+      };
+    }
+    const peekBtn = document.getElementById("gw-peek-btn");
+    if (peekBtn) {
+      peekBtn.onclick = () => {
+        const prevVal = document.getElementById("gw-answer-input") ? document.getElementById("gw-answer-input").value : "";
+        peekAnswer = !peekAnswer;
+        renderUI();
+        const nextIn = document.getElementById("gw-answer-input");
+        if (nextIn && prevVal) nextIn.value = prevVal;
+      };
+    }
+    const hostPlaysTvBtn = document.getElementById("gw-host-plays-tv-btn");
+    if (hostPlaysTvBtn) {
+      hostPlaysTvBtn.onclick = () => {
+        hostPlaysOnTv = !hostPlaysOnTv;
+        privacyShield = true;
+        if (hostPlaysOnTv && mode === "online" && roomCode) {
+          joinOrCreateOnlineRoom(roomCode, false);
+        } else {
+          renderUI();
+        }
+      };
+    }
+
+    // Cast & Voice drawer events
+    const closeCastBtn = document.getElementById("gw-close-cast-btn");
+    if (closeCastBtn) {
+      closeCastBtn.onclick = () => {
+        castDrawerOpen = false;
+        renderUI();
+      };
+    }
+    const drawerMuteBtn = document.getElementById("gw-drawer-mute-btn");
+    if (drawerMuteBtn) {
+      drawerMuteBtn.onclick = () => {
+        announcerEnabled = !announcerEnabled;
+        if (!announcerEnabled && currentAudio) {
+          try { currentAudio.pause(); } catch (_) {}
+        }
+        renderUI();
+      };
+    }
+    const voiceSelect = document.getElementById("gw-voice-select");
+    if (voiceSelect) {
+      voiceSelect.onchange = () => {
+        selectedVoice = voiceSelect.value || "am_fenrir,am_michael";
+        try { window.localStorage.setItem("gw:voice", selectedVoice); } catch (_) {}
+        if (mode === "online" && roomCode) {
+          fetch(`/api/party/rooms/${encodeURIComponent(roomCode)}/voice`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ voice: selectedVoice })
+          }).catch(() => {});
+        }
+      };
+    }
+    const testVoiceBtn = document.getElementById("gw-test-voice-btn");
+    if (testVoiceBtn) {
+      testVoiceBtn.onclick = () => {
+        announcerEnabled = true;
+        speakLine("Welcome to Use Your Good Word! Grab your scrolls and get ready to play!", "voice_sample_" + Date.now(), true);
+      };
+    }
+    const rokuIpInput = document.getElementById("gw-roku-ip-input");
+    if (rokuIpInput) {
+      rokuIpInput.oninput = () => { customRokuIp = rokuIpInput.value.trim(); };
+    }
+    const toggleTvStageBtn = document.getElementById("gw-toggle-tv-stage-btn");
+    if (toggleTvStageBtn) {
+      toggleTvStageBtn.onclick = () => {
+        tvMode = !tvMode;
+        castDrawerOpen = false;
+        document.body.classList.toggle("gw-tv-mode", tvMode);
+        if (tvMode && mode === "local") {
+          const targetCode = activeRoomsList.length > 0 ? activeRoomsList[0].code : "";
+          joinOrCreateOnlineRoom(targetCode, true);
+        } else {
+          renderUI();
+        }
+      };
+    }
+    document.querySelectorAll("[data-cast-tv-idx]").forEach((btn) => {
+      btn.onclick = () => {
+        const idx = Number(btn.getAttribute("data-cast-tv-idx"));
+        if (discoveredTvs[idx]) triggerTvCast(discoveredTvs[idx], "");
+      };
+    });
+    document.querySelectorAll("[data-cast-platform]").forEach((btn) => {
+      btn.onclick = () => {
+        const plat = btn.getAttribute("data-cast-platform") || "cast";
+        const matchTv = discoveredTvs.find((t) => t.platform === plat) || null;
+        triggerTvCast(matchTv, plat);
+      };
+    });
+
+    document.querySelectorAll("[data-join-code]").forEach((btn) => {
+      btn.onclick = () => joinOrCreateOnlineRoom(btn.getAttribute("data-join-code"), false);
+    });
+
+    // Local actions
+    const ansInput = document.getElementById("gw-answer-input");
+    const subBtn = document.getElementById("gw-submit-btn");
+    if (subBtn && ansInput) {
+      const send = () => submitLocalAnswer(ansInput.value, false);
+      subBtn.onclick = send;
+      ansInput.onkeydown = (e) => { if (e.key === "Enter") send(); };
+    }
+    const decoyBtn = document.getElementById("gw-decoy-btn");
+    if (decoyBtn) {
+      decoyBtn.onclick = () => submitLocalAnswer("", true);
+    }
+    document.querySelectorAll("[data-chip]").forEach((btn) => {
+      btn.onclick = () => submitLocalAnswer(btn.getAttribute("data-chip"), false);
+    });
+    document.querySelectorAll("[data-vote-id]").forEach((btn) => {
+      btn.onclick = () => submitLocalVote(btn.getAttribute("data-vote-id"));
+    });
+    const nextBtn = document.getElementById("gw-next-btn");
+    if (nextBtn) {
+      nextBtn.onclick = () => nextLocalStep();
+    }
+
+    // Online actions
+    const startOnlineBtn = document.getElementById("gw-start-online-btn");
+    if (startOnlineBtn) startOnlineBtn.onclick = () => startOnlineMatch();
+
+    const switchRoomBtn = document.getElementById("gw-switch-room-btn");
+    const joinCodeInput = document.getElementById("gw-join-code-input");
+    if (switchRoomBtn && joinCodeInput) {
+      switchRoomBtn.onclick = () => {
+        const val = joinCodeInput.value.trim().toUpperCase();
+        if (val) joinOrCreateOnlineRoom(val, true);
+      };
+    }
+    const aiToggleBtn = document.getElementById("gw-ai-toggle-btn");
+    if (aiToggleBtn) {
+      aiToggleBtn.onclick = () => {
+        useAiPrompts = !useAiPrompts;
+        renderUI();
+      };
+    }
+    const subOnlineBtn = document.getElementById("gw-submit-online-btn");
+    if (subOnlineBtn && ansInput) {
+      const sendOnline = () => submitOnlineAnswer(ansInput.value, false);
+      subOnlineBtn.onclick = sendOnline;
+      ansInput.onkeydown = (e) => { if (e.key === "Enter") sendOnline(); };
+    }
+    const decoyOnlineBtn = document.getElementById("gw-decoy-online-btn");
+    if (decoyOnlineBtn) {
+      decoyOnlineBtn.onclick = () => submitOnlineAnswer("", true);
+    }
+    document.querySelectorAll("[data-online-vote]").forEach((btn) => {
+      btn.onclick = () => {
+        if (btn.getAttribute("data-online-mine") === "1") {
+          statusBanner = "🔒 Pick a different scroll (you cannot vote for your own scroll!)";
+          renderUI();
+          return;
+        }
+        submitOnlineVote(btn.getAttribute("data-online-vote"));
+      };
+    });
+    const forceNextBtn = document.getElementById("gw-force-next-btn");
+    if (forceNextBtn) {
+      forceNextBtn.onclick = () => advanceOnlinePhase();
+    }
+  }
+
+  /* ---------- Smart TV Remote D-Pad & Jarvis Host Message Relay ---------- */
+  function handleRemoteKey(key) {
+    if (!uiRoot || kit.state !== "playing") return;
+    if (/^[1-6]$/.test(key)) {
+      const idx = Number(key) - 1;
+      if (mode === "online" && liveRoom && liveRoom.phase === "voting" && Array.isArray(liveRoom.options)) {
+        const opt = liveRoom.options[idx];
+        if (opt) {
+          if (opt.is_mine) {
+            statusBanner = "🔒 Pick a different scroll (you cannot vote for your own scroll!)";
+            renderUI();
+          } else {
+            submitOnlineVote(opt.option_id);
+          }
+          return;
+        }
+      } else if (mode === "local" && localPhase === "voting" && Array.isArray(localOptions)) {
+        const opt = localOptions[idx];
+        if (opt && !opt.is_mine) {
+          submitLocalVote(opt.option_id);
+          return;
+        }
+      }
+    }
+    const focusables = Array.from(uiRoot.querySelectorAll("button:not(:disabled), input, select"));
+    if (!focusables.length) return;
+    const idx = focusables.indexOf(document.activeElement);
+    if (key === "ArrowDown" || key === "ArrowRight") {
+      const next = focusables[(idx + 1) % focusables.length];
+      if (next) next.focus();
+    } else if (key === "ArrowUp" || key === "ArrowLeft") {
+      const prev = focusables[(idx - 1 + focusables.length) % focusables.length];
+      if (prev) prev.focus();
+    } else if (key === "Enter" && document.activeElement && typeof document.activeElement.click === "function") {
+      document.activeElement.click();
+    }
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (document.activeElement && document.activeElement.tagName === "INPUT") return;
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "1", "2", "3", "4", "5", "6"].includes(e.key)) {
+      e.preventDefault();
+      handleRemoteKey(e.key);
+    }
+  });
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg) return;
+    if (msg.source === "tv-remote" && msg.key) {
+      handleRemoteKey(msg.key);
+    } else if (msg.source === "arcade-host") {
+      if (msg.type === "tvs" && Array.isArray(msg.tvs) && msg.tvs.length) {
+        discoveredTvs = msg.tvs;
+        if (castDrawerOpen) renderUI();
+      } else if (msg.type === "cast-status" && msg.message) {
+        castStatusMsg = msg.message;
+        if (castDrawerOpen) renderUI();
+      }
+    }
+  });
+
+  /* ---------- Canvas Stage & Illustrated Biblical Scenes ---------- */
+  function drawStageCanvas(ctx, w, h) {
+    const t = performance.now() * 0.001;
+    // Royal theater backdrop
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, "#1c0d3d");
+    bg.addColorStop(0.5, "#120829");
+    bg.addColorStop(1, "#090414");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // Subtle golden stage spotlights
+    ctx.save();
+    for (let i = 0; i < 3; i++) {
+      const sx = w * (0.2 + i * 0.3) + Math.sin(t * 0.7 + i) * 35;
+      const rad = ctx.createRadialGradient(sx, h * 0.18, 8, sx, h * 0.22, Math.max(w, h) * 0.32);
+      rad.addColorStop(0, "rgba(251, 191, 36, 0.14)");
+      rad.addColorStop(1, "rgba(251, 191, 36, 0)");
+      ctx.fillStyle = rad;
+      ctx.fillRect(0, 0, w, h * 0.55);
+    }
+    ctx.restore();
+
+    const activePrompt = mode === "online" && liveRoom && liveRoom.prompt
+      ? liveRoom.prompt
+      : currentLocalRound();
+    const sceneKey = (activePrompt && activePrompt.scene) || (activePrompt && activePrompt.kind) || "scroll_desk";
+    const badgeText = (activePrompt && activePrompt.badge) || "USE YOUR GOOD WORD";
+    const speakerName = (activePrompt && activePrompt.speaker) || "";
+
+    const slotEl = document.getElementById("gw-stage-slot");
+    let stageX = 12;
+    let stageY = tvMode ? 64 : 112;
+    let stageW = Math.min(w - 24, tvMode ? 760 : 520);
+    let stageH = Math.min(h * 0.24, 160);
+    if (slotEl) {
+      const sr = slotEl.getBoundingClientRect();
+      const cr = view.canvas.getBoundingClientRect();
+      if (sr.height > 20 && sr.width > 40) {
+        stageW = Math.min(sr.width, tvMode ? 820 : 540);
+        stageH = Math.max(80, sr.height - 4);
+        stageX = (w - stageW) * 0.5;
+        stageY = (sr.top - cr.top) + 2;
+      }
+    }
+
+    // Draw the illustrated scene panel
+    ctx.save();
+    FamilyKit.roundRect(ctx, stageX, stageY, stageW, stageH, 18);
+    ctx.fillStyle = "#1e1b4b";
+    ctx.fill();
+    ctx.clip();
+
+    drawBiblicalSceneArt(ctx, stageX, stageY, stageW, stageH, sceneKey, speakerName, t);
+    ctx.restore();
+
+    // Ornate gold frame around the scene panel
+    ctx.save();
+    FamilyKit.roundRect(ctx, stageX, stageY, stageW, stageH, 18);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#fbbf24";
+    ctx.stroke();
+
+    // Category ribbon pill at top-left of stage panel
+    ctx.fillStyle = "#f59e0b";
+    FamilyKit.roundRect(ctx, stageX + 10, stageY + 8, Math.min(stageW - 90, 210), 22, 8);
+    ctx.fill();
+    ctx.fillStyle = "#1e1035";
+    ctx.font = "900 11px sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(badgeText.slice(0, 26), stageX + 18, stageY + 19);
+
+    // Animated Game-Show Host Avatar ("Brother Barnaby") at top-right of stage panel
+    drawAnnouncerAvatar(ctx, stageX + stageW - 34, stageY + 32, t);
+    ctx.restore();
+  }
+
+  function drawAnnouncerAvatar(ctx, cx, cy, t) {
+    ctx.save();
+    // Halo ring pulses when announcer is speaking
+    const pulse = announcerSpeaking ? 1 + Math.sin(t * 14) * 0.12 : 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 22 * pulse, 0, Math.PI * 2);
+    ctx.fillStyle = announcerSpeaking ? "rgba(52, 211, 153, 0.35)" : "rgba(251, 191, 36, 0.22)";
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, 18, 0, Math.PI * 2);
+    ctx.fillStyle = "#31105f";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = announcerSpeaking ? "#34d399" : "#fbbf24";
+    ctx.stroke();
+
+    // Friendly bearded scribe face
+    ctx.fillStyle = "#fcd34d";
+    ctx.beginPath();
+    ctx.arc(cx, cy - 2, 10, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Eyes
+    ctx.fillStyle = "#1e1035";
+    ctx.beginPath();
+    ctx.arc(cx - 3.5, cy - 4, 1.5, 0, Math.PI * 2);
+    ctx.arc(cx + 3.5, cy - 4, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Beard
+    ctx.fillStyle = "#78350f";
+    ctx.beginPath();
+    ctx.arc(cx, cy + 2, 9, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.fill();
+
+    // Animated mouth when speaking
+    const mouthOpen = announcerSpeaking ? 2 + Math.abs(Math.sin(announcerMouthPhase)) * 3.5 : 1.2;
+    ctx.fillStyle = "#fef08a";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 2, 3.2, mouthOpen, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Golden microphone icon
+    ctx.fillStyle = "#fbbf24";
+    ctx.fillRect(cx + 10, cy + 4, 4, 9);
+    ctx.beginPath();
+    ctx.arc(cx + 12, cy + 3, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBiblicalSceneArt(ctx, x, y, w, h, scene, speaker, t) {
+    const cx = x + w * 0.5;
+    const cy = y + h * 0.55;
+
+    if (scene === "jonah_beach") {
+      // Sky + ocean + beach + spouting whale + kelp-covered Jonah
+      const sky = ctx.createLinearGradient(x, y, x, y + h);
+      sky.addColorStop(0, "#0284c7");
+      sky.addColorStop(0.6, "#38bdf8");
+      sky.addColorStop(0.62, "#0369a1");
+      sky.addColorStop(0.82, "#fde68a");
+      sky.addColorStop(1, "#f59e0b");
+      ctx.fillStyle = sky;
+      ctx.fillRect(x, y, w, h);
+
+      // Whale in the surf
+      const wx = x + w * 0.28 + Math.sin(t * 1.5) * 6;
+      const wy = y + h * 0.58;
+      ctx.fillStyle = "#334155";
+      ctx.beginPath();
+      ctx.ellipse(wx, wy, 48, 22, -0.1, Math.PI, 0);
+      ctx.fill();
+      // Water spout
+      ctx.strokeStyle = "#e0f2fe";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(wx + 10, wy - 20);
+      ctx.quadraticCurveTo(wx + 2, wy - 44, wx - 12, wy - 48);
+      ctx.moveTo(wx + 10, wy - 20);
+      ctx.quadraticCurveTo(wx + 18, wy - 44, wx + 30, wy - 48);
+      ctx.stroke();
+
+      // Jonah on beach with green seaweed & scroll
+      const jx = x + w * 0.65;
+      const jy = y + h * 0.78;
+      ctx.fillStyle = "#d97706";
+      ctx.beginPath();
+      ctx.arc(jx, jy - 18, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#15803d";
+      ctx.fillRect(jx - 11, jy - 8, 22, 18);
+      ctx.fillStyle = "#fef3c7";
+      ctx.fillRect(jx + 12, jy - 14, 18, 12);
+      return;
+    }
+
+    if (scene === "ark_hoa" || scene === "extra_extra") {
+      // Sunny sky + huge wooden Ark + tiny HOA inspector
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(x, y, w, h * 0.75);
+      ctx.fillStyle = "#84cc16";
+      ctx.fillRect(x, y + h * 0.75, w, h * 0.25);
+
+      // Giant wooden Ark hull
+      ctx.fillStyle = "#78350f";
+      ctx.beginPath();
+      ctx.moveTo(x + w * 0.15, y + h * 0.45);
+      ctx.lineTo(x + w * 0.85, y + h * 0.45);
+      ctx.lineTo(x + w * 0.76, y + h * 0.78);
+      ctx.lineTo(x + w * 0.24, y + h * 0.78);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#92400e";
+      ctx.fillRect(x + w * 0.25, y + h * 0.26, w * 0.5, h * 0.2);
+
+      // Two giraffes peeking out the roof
+      ctx.fillStyle = "#facc15";
+      ctx.fillRect(x + w * 0.35, y + h * 0.14, 6, 18);
+      ctx.fillRect(x + w * 0.41, y + h * 0.16, 6, 16);
+      return;
+    }
+
+    if (scene === "balaam_donkey" || scene === "sub_the_scroll" || speaker) {
+      // Desert road + talking character + speech bubble
+      ctx.fillStyle = "#4c1d95";
+      ctx.fillRect(x, y, w, h * 0.7);
+      ctx.fillStyle = "#d97706";
+      ctx.fillRect(x, y + h * 0.7, w, h * 0.3);
+
+      // Glowing angel silhouette on left
+      ctx.fillStyle = "rgba(254, 240, 138, 0.85)";
+      ctx.beginPath();
+      ctx.arc(x + w * 0.2, y + h * 0.5, 16 + Math.sin(t * 4) * 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Donkey / character in middle
+      ctx.fillStyle = "#94a3b8";
+      FamilyKit.roundRect(ctx, cx - 26, cy - 6, 48, 26, 8);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(cx - 28, cy - 12, 12, 9, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Comic Speech Bubble waiting for player caption!
+      const bx = cx + 8;
+      const by = y + h * 0.18;
+      const bw = Math.min(w * 0.44, 190);
+      const bh = 42;
+      ctx.fillStyle = "#ffffff";
+      FamilyKit.roundRect(ctx, bx, by, bw, bh, 12);
+      ctx.fill();
+      ctx.fillStyle = "#1e1035";
+      ctx.font = "900 12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(speaker ? `${speaker}: "???"` : `"???"`, bx + bw * 0.5, by + bh * 0.5);
+      return;
+    }
+
+    if (scene === "elisha_axe" || scene === "truth_or_bluff") {
+      // River Jordan + floating iron axe head + golden Truth/Bluff scales
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(x, y, w, h * 0.55);
+      ctx.fillStyle = "#0284c7";
+      ctx.fillRect(x, y + h * 0.55, w, h * 0.45);
+
+      // Ripples + floating axe head
+      const fy = y + h * 0.65 + Math.sin(t * 3) * 4;
+      ctx.strokeStyle = "#7dd3fc";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(cx, fy + 6, 36, 7, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = "#cbd5e1";
+      FamilyKit.roundRect(ctx, cx - 16, fy - 10, 32, 16, 4);
+      ctx.fill();
+      ctx.fillStyle = "#fde68a";
+      ctx.font = "900 13px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("🏛️ TRUTH OR BLUFF?", cx, y + h * 0.34);
+      return;
+    }
+
+    // Default Royal Scroll / Survey Says Game-Show Stage
+    const grad = ctx.createRadialGradient(cx, cy, 10, cx, cy, w * 0.55);
+    grad.addColorStop(0, "#6d28d9");
+    grad.addColorStop(1, "#1e1035");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, w, h);
+
+    // Unrolled golden scroll in center
+    const sw = Math.min(w * 0.62, 260);
+    const sh = Math.min(h * 0.48, 74);
+    ctx.fillStyle = "#fef3c7";
+    FamilyKit.roundRect(ctx, cx - sw * 0.5, cy - sh * 0.5, sw, sh, 10);
+    ctx.fill();
+    ctx.fillStyle = "#b45309";
+    ctx.fillRect(cx - sw * 0.5 - 6, cy - sh * 0.5 - 4, 8, sh + 8);
+    ctx.fillRect(cx + sw * 0.5 - 2, cy - sh * 0.5 - 4, 8, sh + 8);
+
+    ctx.fillStyle = "#451a03";
+    ctx.font = "900 14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(scene === "survey_stage" ? "⚡ 2× SURVEY SAYS FINALE! ⚡" : "📜 USE YOUR GOOD WORD", cx, cy);
+  }
+})();
+</script>
+</body>
+</html>

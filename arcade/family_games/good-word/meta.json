@@ -1,0 +1,20 @@
+{
+  "title": "Use Your Good Word",
+  "tagline": "Biblical worldview party game for phones + TV!",
+  "description": "A Christian edition of Use Your Words & Jackbox! Cast the stage to a TV or play right on your phones: write headlines for The Jerusalem Gazette, caption Bible scenes, bluff your family in Truth or Bluff, dodge the Scribe's Trap, and battle for 2x points in Survey Says — complete with a live Game-Show Announcer voice!",
+  "emoji": "📜",
+  "art": { "from": "#3b1d7a", "to": "#d97706" },
+  "genre": "party",
+  "ages": "7+",
+  "players": "1-8",
+  "party": true,
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Open on your phone in Jarvis (or cast /tv to a big screen) and join the 4-letter Family Room Code!",
+    "Write your funniest or wisest answer for Blank-O-Matic, The Jerusalem Gazette, and Sub the Scroll — or play the Scribe's Decoy (+500 pts/vote).",
+    "In Truth or Bluff, write a believable fake answer to fool the room (+750 pts) and vote for the real Scriptural truth (+1,000 pts).",
+    "Beware the Scribe's Trap (-250 pts), and go all-in during Round 7's Double-Point Survey Says Finale!"
+  ]
+}

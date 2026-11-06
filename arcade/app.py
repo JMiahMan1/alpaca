@@ -36,11 +36,12 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
     import family
+    import party
     from achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from curation import is_curated, load_curated
     from mobile import assess_html, prepare_playable_html
 except ImportError:  # tests import `arcade.app` as a package from the repo root
-    from arcade import family
+    from arcade import family, party
     from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from arcade.curation import is_curated, load_curated
     from arcade.mobile import assess_html, prepare_playable_html
@@ -436,6 +437,9 @@ def _game_card(slug: str) -> dict | None:
                 "art": meta.get("art") if isinstance(meta.get("art"), dict) else None,
                 "genre": meta.get("genre", ""),
                 "ages": meta.get("ages", ""),
+                "players": meta.get("players", ""),
+                "party": bool(meta.get("party")),
+                "tv_path": "/tv" if meta.get("party") else None,
                 "how_to": meta.get("how_to") if isinstance(meta.get("how_to"), list) else [],
                 "version": meta.get("version"),
                 "mobile_ready": True if meta.get("mobile_native") else card["mobile_ready"],
@@ -1251,6 +1255,208 @@ def api_unpublish(slug):
 
     shutil.rmtree(d, ignore_errors=True)
     return jsonify({"success": True, "removed": slug})
+
+
+# --- Multiplayer Party Room API ("Use Your Good Word") + TV Cast View ---
+
+
+@app.route("/tv", methods=["GET"])
+@app.route("/tv/<code>", methods=["GET"])
+def party_tv_page(code: str = ""):
+    """Big-screen / TV cast stage for Use Your Good Word (Roku, LG webOS, Samsung Tizen, Chrome/Cast, Android TV)."""
+    family.ensure_synced()
+    clean_code = re.sub(r"[^A-Za-z0-9]", "", code or "").upper()[:8]
+    frag = f"tv=1&room={clean_code}" if clean_code else "tv=1"
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Use Your Good Word — TV Stage</title>
+<style>
+  html, body {{ margin: 0; width: 100%; height: 100%; background: #0f0a24; overflow: hidden; }}
+  iframe {{ display: block; width: 100%; height: 100%; border: 0; }}
+</style>
+</head>
+<body>
+<iframe id="tv-frame" src="/game/family-good-word/index.html#{frag}" title="Use Your Good Word TV Stage" allow="autoplay; fullscreen"></iframe>
+<script>
+  // Keep focus inside the stage iframe so LG webOS, Samsung Tizen, Android TV, and Chrome TV remotes work natively.
+  var f = document.getElementById("tv-frame");
+  window.addEventListener("load", function () {{ if (f && f.contentWindow) f.contentWindow.focus(); }});
+  window.addEventListener("keydown", function (e) {{
+    if (f && f.contentWindow) {{
+      f.contentWindow.postMessage({{ source: "tv-remote", key: e.key, keyCode: e.keyCode }}, "*");
+    }}
+  }});
+</script>
+</body>
+</html>"""
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/api/party/rooms", methods=["GET", "POST"])
+def api_party_rooms():
+    if request.method == "GET":
+        return jsonify({"success": True, "rooms": party.list_active_rooms()})
+    body = request.get_json(silent=True) or {}
+    out = party.create_or_join_room(
+        code=body.get("code"),
+        player_id=body.get("player_id"),
+        name=body.get("name"),
+        initials=body.get("initials"),
+        spectator=bool(body.get("spectator")),
+        create_if_missing=body.get("create_if_missing") is not False,
+        voice=body.get("voice"),
+    )
+    return jsonify({"success": True, **out})
+
+
+@app.route("/api/party/rooms/<code>", methods=["GET"])
+def api_party_room_state(code: str):
+    viewer_id = (request.args.get("player_id") or "").strip()[:64] or None
+    try:
+        room = party.get_room_state(code, viewer_id=viewer_id)
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/party/rooms/<code>/join", methods=["POST"])
+def api_party_room_join(code: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        out = party.create_or_join_room(
+            code=code,
+            player_id=body.get("player_id"),
+            name=body.get("name"),
+            initials=body.get("initials"),
+            spectator=bool(body.get("spectator")),
+            create_if_missing=bool(body.get("create_if_missing", True)),
+            voice=body.get("voice"),
+        )
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, **out})
+
+
+@app.route("/api/party/rooms/<code>/voice", methods=["POST"])
+def api_party_room_voice(code: str):
+    body = request.get_json(silent=True) or {}
+    voice = str(body.get("voice") or party.DEFAULT_ANNOUNCER_VOICE).strip()
+    try:
+        room = party.set_room_voice(code, voice)
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/party/rooms/<code>/start", methods=["POST"])
+def api_party_room_start(code: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        room = party.start_match(code, use_ai_prompt=bool(body.get("use_ai_prompt")))
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/party/rooms/<code>/submit", methods=["POST"])
+def api_party_room_submit(code: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        room = party.submit_answer(
+            code,
+            player_id=str(body.get("player_id") or ""),
+            text=str(body.get("text") or ""),
+            use_decoy=bool(body.get("use_decoy")),
+        )
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/party/rooms/<code>/vote", methods=["POST"])
+def api_party_room_vote(code: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        room = party.submit_vote(
+            code,
+            player_id=str(body.get("player_id") or ""),
+            option_id=str(body.get("option_id") or ""),
+        )
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/party/rooms/<code>/next", methods=["POST"])
+def api_party_room_next(code: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        room = party.advance_phase(code, use_ai_prompt=bool(body.get("use_ai_prompt")))
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/party/voices", methods=["GET"])
+def api_party_voices():
+    return jsonify({"success": True, **party.list_tts_voices()})
+
+
+@app.route("/api/party/tts", methods=["POST"])
+def api_party_tts():
+    body = request.get_json(silent=True) or {}
+    text = str(body.get("text") or "").strip()
+    voice = str(body.get("voice") or party.DEFAULT_ANNOUNCER_VOICE).strip()
+    clone = str(body.get("clone") or "").strip() or None
+    wav = party.synthesize_announcer_wav(text, voice=voice, clone=clone)
+    if not wav:
+        return Response(status=204)
+    return Response(wav, mimetype="audio/wav", headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.route("/api/party/tts/<clip_id>.wav", methods=["GET"])
+def api_party_tts_clip(clip_id: str):
+    wav = party.get_cached_tts_wav(clip_id)
+    if not wav:
+        return Response(status=404)
+    return Response(wav, mimetype="audio/wav", headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.route("/api/party/tvs", methods=["GET"])
+def api_party_tvs():
+    return jsonify(
+        {
+            "success": True,
+            "tvs": party.discover_household_tvs(),
+            "platforms": list(party.SUPPORTED_TV_PLATFORMS),
+        }
+    )
+
+
+@app.route("/api/party/cast", methods=["POST"])
+def api_party_cast():
+    body = request.get_json(silent=True) or {}
+    base_url = request.host_url.rstrip("/")
+    res = party.cast_room_to_tv(
+        str(body.get("room_code") or body.get("code") or "WORD"),
+        entity_id=str(body.get("entity_id") or ""),
+        platform=str(body.get("platform") or ""),
+        tv_url=str(body.get("tv_url") or ""),
+        arcade_base_url=str(body.get("arcade_base_url") or base_url),
+        voice=str(body.get("voice") or party.DEFAULT_ANNOUNCER_VOICE),
+        ha_url=str(body.get("ha_url") or ""),
+        ha_token=str(body.get("ha_token") or ""),
+        roku_ip=str(body.get("roku_ip") or ""),
+        companions=body.get("companions") if isinstance(body.get("companions"), dict) else None,
+    )
+    return jsonify(res)
 
 
 if __name__ == "__main__":

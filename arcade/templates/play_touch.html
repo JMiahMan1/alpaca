@@ -27,9 +27,9 @@
     var msg = event.data;
     if (event.source === frame.contentWindow) {
       if (!msg || msg.source !== "arcade-game") return;
-      if (msg.type === "ready" || msg.type === "exit" || msg.type === "haptic") {
+      if (msg.type === "ready" || msg.type === "exit" || msg.type === "haptic" || msg.type === "cast" || msg.type === "list-tvs") {
         var ms = Math.max(1, Math.min(400, Number(msg.ms) || 12));
-        window.parent.postMessage({ source: "arcade-relay", slug: slug, type: msg.type, ms: ms }, "*");
+        window.parent.postMessage({ source: "arcade-relay", slug: slug, type: msg.type, ms: ms, payload: msg.payload || null }, "*");
         return;
       }
       if (msg.type !== "score") return;
