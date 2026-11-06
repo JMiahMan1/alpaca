@@ -150,6 +150,10 @@
   .gw-picks.tf .c0 { background: var(--teal); } .gw-picks.tf .c1 { background: var(--coral); color: #fff; }
   .gw-pick.right { outline: 5px solid #fff; background: #4ade80 !important; color: var(--ink); }
   .gw-pick.dim { opacity: .4; }
+  /* Closed while the TV reads the clue out. */
+  .gw-picks.closed .gw-pick, .gw-board2.closed .gw-cell { filter: grayscale(1); opacity: .45; box-shadow: none; }
+  .gw-listen { text-align: center; font: 900 18px var(--font); color: #fff3c4; animation: gw-pulse 1.2s ease-in-out infinite; }
+  @keyframes gw-pulse { 50% { opacity: .5; } }
   .gw-board2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .gw-cell { font: 800 16px/1.2 var(--font); color: var(--ink); background: var(--paper); border: 3px solid var(--ink); border-radius: 14px;
     padding: 10px 8px; min-height: 52px; box-shadow: 0 4px 0 var(--ink); cursor: pointer; text-align: center; overflow-wrap: anywhere; }
@@ -579,6 +583,13 @@
     const me = meOf(r);
     if (me && typeof me.score === "number" && me.score !== kit.score) kit.setScore(me.score, { quiet: true });
     const moved = !prev || prev.phase !== r.phase || prev.round !== r.round || prev.match_id !== r.match_id;
+    if (r.phase === "racing" && r.race && !r.race.flash) {
+      const opensIn = Number(r.race.opens_in || 0);
+      const at = opensIn > 0 ? Date.now() + opensIn * 1000 : 0;
+      if (!raceOpenAt || Math.abs(at - raceOpenAt) > 600 || !at) raceOpenAt = at;
+      clearTimeout(setRoom.openTimer);
+      if (at) setRoom.openTimer = setTimeout(() => { raceOpenAt = 0; tap(); lastSig = ""; render(); }, opensIn * 1000 + 30);
+    }
     if (r.phase === "racing" && (!prev || stepKey(prev) !== stepKey(r))) {
       if (!r.race || !r.race.flash) raceUi = { key: stepKey(r), sel: -1, map: {}, order: [] };
       else if (r.race.mine) {
@@ -615,7 +626,7 @@
       || (r.phase === "racing" && r.race && !r.race.mine && !r.race.flash);
     const people = choosing ? [] : (r.players || []).map((p) => [p.id, p.score, p.submitted, p.voted, p.connected, p.avatar, p.is_host]);
     const lobbyPeople = r.phase === "lobby" ? (r.players || []).map((p) => [p.id, p.avatar, p.connected, p.is_host, p.name]) : [];
-    return JSON.stringify([r.step || "", r.race && r.race.mine ? 1 : 0, r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
+    return JSON.stringify([r.step || "", r.race && r.race.mine ? 1 : 0, raceClosed(), r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
       people, lobbyPeople, choosing ? [] : (r.options || []).map((o) => [o.option_id, (o.voters || []).length]),
       (r.options || []).map((o) => o.option_id).join(","), activeScreen && activeScreen.id]);
   }
@@ -785,6 +796,8 @@
 
   /* ---------- race rounds ---------- */
   let raceUi = { key: "", sel: -1, map: {}, order: [] };
+  let raceOpenAt = 0;  // local time when the current clue takes answers
+  function raceClosed() { return raceOpenAt > Date.now(); }
   function raceSend(choice) {
     if (busy || !room || !room.race) return;
     busy = true;
@@ -816,20 +829,22 @@
       return h + qn + clue + `<div class="gw-hero gw-enter"><div class="big">🔒</div><h1>Locked in!</h1>
         <p>${waiting ? "Waiting on " + waiting + " more…" : "Everyone's in!"}</p></div>`;
     }
+    const closed = raceClosed();
+    const listen = closed ? `<div class="gw-listen">🎧 Listen to the question…</div>` : "";
     if (item.type === "pick") {
       const tf = (item.options || []).length === 2;
-      return h + qn + clue + `<div class="gw-picks${tf ? " tf" : ""}">` + (item.options || []).map((o, i) =>
-        `<button type="button" class="gw-pick c${i}" data-pick="${i}" ${busy ? "disabled" : ""}>${tf ? "" : `<span class="l">${"ABCD"[i]}</span>`}${esc(o)}</button>`).join("") + "</div>";
+      return h + qn + clue + listen + `<div class="gw-picks${tf ? " tf" : ""}${closed ? " closed" : ""}">` + (item.options || []).map((o, i) =>
+        `<button type="button" class="gw-pick c${i}" data-pick="${i}" ${busy || closed ? "disabled" : ""}>${tf ? "" : `<span class="l">${"ABCD"[i]}</span>`}${esc(o)}</button>`).join("") + "</div>";
     }
     if (item.type === "pairs") {
       const leftOf = {}; Object.keys(raceUi.map).forEach((l) => { leftOf[raceUi.map[l]] = Number(l); });
       const done = Object.keys(raceUi.map).length === (item.left || []).length;
-      let g = `<div class="gw-board2"><div class="gw-colhead">${esc(item.left_label || "")}</div><div class="gw-colhead">${esc(item.right_label || "")}</div>`;
+      let g = listen + `<div class="gw-board2${closed ? " closed" : ""}"><div class="gw-colhead">${esc(item.left_label || "")}</div><div class="gw-colhead">${esc(item.right_label || "")}</div>`;
       for (let i = 0; i < (item.left || []).length; i++) {
         const lm = raceUi.map[i] !== undefined ? " m" + i : raceUi.sel === i ? " sel" : "";
         const rl = leftOf[i];
-        g += `<button type="button" class="gw-cell${lm}" data-left="${i}">${esc(item.left[i])}</button>`;
-        g += `<button type="button" class="gw-cell${rl !== undefined ? " m" + rl : ""}" data-right="${i}">${esc(item.right[i])}</button>`;
+        g += `<button type="button" class="gw-cell${lm}" data-left="${i}" ${closed ? "disabled" : ""}>${esc(item.left[i])}</button>`;
+        g += `<button type="button" class="gw-cell${rl !== undefined ? " m" + rl : ""}" data-right="${i}" ${closed ? "disabled" : ""}>${esc(item.right[i])}</button>`;
       }
       return h + qn + clue + g + `</div><div class="gw-row" style="gap:8px"><button type="button" class="gw-btn ghost" id="gw-race-reset">Start over</button>
         <button type="button" class="gw-btn coral" id="gw-race-lock" ${done && !busy ? "" : "disabled"}>Lock it in!</button></div>`;
@@ -838,9 +853,9 @@
     const done = raceUi.order.length === items.length;
     let g = `<div class="gw-card" style="padding:12px"><div class="gw-label">Your order (${esc(item.order_label || "first → last")})</div>` +
       (raceUi.order.length ? raceUi.order.map((idx, n) => `<div style="font-weight:900;margin:4px 0">${n + 1}. ${esc(items[idx])}</div>`).join("") : `<div class="gw-note" style="color:#5b4a8a">Tap below to start</div>`) + "</div>";
-    g += `<div class="gw-board2" style="grid-template-columns:1fr">` + items.map((t, i) => {
+    g += listen + `<div class="gw-board2${closed ? " closed" : ""}" style="grid-template-columns:1fr">` + items.map((t, i) => {
       const pos = raceUi.order.indexOf(i);
-      return `<button type="button" class="gw-cell${pos >= 0 ? " used" : ""}" data-ord="${i}" ${pos >= 0 ? "disabled" : ""}>${esc(t)}</button>`;
+      return `<button type="button" class="gw-cell${pos >= 0 ? " used" : ""}" data-ord="${i}" ${pos >= 0 || closed ? "disabled" : ""}>${esc(t)}</button>`;
     }).join("") + "</div>";
     return h + qn + clue + g + `<div class="gw-row" style="gap:8px"><button type="button" class="gw-btn ghost" id="gw-race-reset">Start over</button>
       <button type="button" class="gw-btn coral" id="gw-race-lock" ${done && !busy ? "" : "disabled"}>Lock it in!</button></div>`;

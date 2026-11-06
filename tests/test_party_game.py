@@ -647,6 +647,9 @@ def test_reveal_moves_on_by_itself_and_never_waits_on_the_ai(monkeypatch):
         return None
 
     monkeypatch.setattr(party, "_generate_ai_prompt", slow_model)
+    # "Is the lock held?" cannot tell whose thread holds it: keep the line-making helpers out of this one.
+    monkeypatch.setattr(party, "_measure_reveal_line_async", lambda *a, **k: None)
+    monkeypatch.setattr(party, "_premake_race_lines_async", lambda *a, **k: None)
     with party._lock:
         room = party._rooms["FLOW"]
         room["round"] = 4
@@ -967,3 +970,29 @@ def test_a_writing_joke_only_where_it_fits_before_the_hurry_call():
     joke = next(c for c in lines if c["text"].startswith("While you think"))
     hurry_at = (room["phase_deadline"] - room["phase_started_at"]) - 10.0
     assert joke["at"] + party.speech_seconds(joke["text"], room.get("voice")) <= hurry_at
+
+
+def test_the_host_never_repeats_a_line_in_a_room_until_the_list_runs_out():
+    """Reported: the announcer was way too repetitive."""
+    room = {"code": "SAY1", "match_id": "m", "round": 1, "players": {}}
+    said = []
+    for rnd in range(1, 8):
+        room["round"] = rnd
+        said.append(party._pick(room, party._pool(party.HOST_VOTING, party.MORE_VOTING), "vote"))
+    assert len(said) == len(set(said))
+    assert party._pick({**room}, ("only",), "x") == "only"
+    # Chosen once per moment: the TV and phones asking again get the same line.
+    assert party._pick(room, party._pool(party.HOST_VOTING, party.MORE_VOTING), "vote") == said[-1]
+
+
+def test_standings_talk_about_the_scoreboard():
+    players = {"a": {"name": "Ann", "score": 3000, "round_delta": 0}, "b": {"name": "Ben", "score": 2900, "round_delta": 0},
+               "c": {"name": "Cy", "score": 100, "round_delta": 0}}
+    room = {"code": "STD1", "match_id": "m", "round": 3, "total_rounds": 7, "players": players}
+    line = party.standings_line(room)
+    if party.STANDINGS.get("close"):
+        assert "Ann" in line and "Ben" in line
+    players["b"]["score"] = 3000
+    room["round"] = 4
+    if party.STANDINGS.get("tied"):
+        assert "Ann" in party.standings_line(room) or "Ben" in party.standings_line(room)
