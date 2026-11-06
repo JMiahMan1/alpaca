@@ -357,6 +357,33 @@
   }
 
   var hadRoom = false;
+  var endedAt = 0;
+  var closedOut = false; // a pinned TV whose game is over: nothing left to poll or draw
+  var THANKS_MS = 15000;
+  // The game is over: every sound stops at once (announcer, music, chatter, queued lines).
+  function silenceAll() {
+    try { if (audio) { audio.pause(); audio = null; } } catch (e) {}
+    pendingLine = null;
+    lastSpoken = "";
+    setBed("");
+    setSound(false);
+  }
+  setInterval(function () {
+    if (!hadRoom || !endedAt || Date.now() - endedAt < THANKS_MS) return;
+    endedAt = 0;
+    if (PINNED) {
+      // This TV was opened for that one game: close the page; if a TV browser
+      // won't let it, leave a quiet, empty screen rather than a stale message.
+      try { window.close(); } catch (e) {}
+      closedOut = true;
+      document.body.innerHTML = "";
+      document.body.style.background = "#000";
+    } else {
+      hadRoom = false;
+      lastSig = "";
+      render();
+    }
+  }, 1000);
   function viewWaiting() {
     if (hadRoom) {
       return '<div class="center fade"><div class="h1">🙏 Thanks for playing!</div>' +
@@ -520,7 +547,7 @@
   var chatterDone = {};
   // The host talks while players write and vote: each line once, never over another.
   function runChatter() {
-    if (!room || !room.chatter || !room.chatter.length || STREAMED) return;
+    if (closedOut || !room || !room.chatter || !room.chatter.length || STREAMED) return;
     if (audio && !audio.paused && !audio.ended) return;
     var age = (Date.now() - phaseStartLocal) / 1000;
     for (var i = 0; i < room.chatter.length; i++) {
@@ -544,7 +571,7 @@
     lastPlayerCount = r ? humans(r).length : -1;
     if (phaseKey !== lastPhaseKey) { lastRevealStep = -1; phaseStartLocal = Date.now() - ((r && r.phase_age_s) || 0) * 1000; }
     lastPhaseKey = phaseKey;
-    if (room && !r) hadRoom = true;
+    if (room && !r) { hadRoom = true; endedAt = Date.now(); silenceAll(); }
     if (r) hadRoom = false;
     room = r;
     musicFor(r, false);
@@ -564,6 +591,7 @@
   }
 
   function poll() {
+    if (closedOut) return;
     if (!code) return findRoom();
     xhr("GET", "/api/party/rooms/" + encodeURIComponent(code) + "?stage=1" + (STREAMED ? "&video=1" : ""), null, function (d, status) {
       if (d && d.success && d.room) {

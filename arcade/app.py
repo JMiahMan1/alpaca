@@ -1319,16 +1319,19 @@ def api_party_rooms():
     if request.method == "GET":
         return jsonify({"success": True, "rooms": party.list_active_rooms()})
     body = request.get_json(silent=True) or {}
-    out = party.create_or_join_room(
-        code=body.get("code"),
-        player_id=body.get("player_id"),
-        name=body.get("name"),
-        initials=body.get("initials"),
-        spectator=bool(body.get("spectator")),
-        create_if_missing=body.get("create_if_missing") is not False,
-        voice=body.get("voice"),
-        avatar=body.get("avatar"),
-    )
+    try:
+        out = party.create_or_join_room(
+            code=body.get("code"),
+            player_id=body.get("player_id"),
+            name=body.get("name"),
+            initials=body.get("initials"),
+            spectator=bool(body.get("spectator")),
+            create_if_missing=body.get("create_if_missing") is not False,
+            voice=body.get("voice"),
+            avatar=body.get("avatar"),
+        )
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, **out})
 
 
@@ -1359,6 +1362,8 @@ def api_party_room_join(code: str):
         )
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, **out})
 
 
@@ -1367,9 +1372,11 @@ def api_party_room_voice(code: str):
     body = request.get_json(silent=True) or {}
     voice = str(body.get("voice") or party.DEFAULT_ANNOUNCER_VOICE).strip()
     try:
-        room = party.set_room_voice(code, voice)
+        room = party.set_room_voice(code, voice, player_id=body.get("player_id"))
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, "room": room})
 
 
@@ -1437,8 +1444,9 @@ def api_party_room_vote(code: str):
 def api_party_room_next(code: str):
     body = request.get_json(silent=True) or {}
     try:
+        expect = body.get("expect") if isinstance(body.get("expect"), dict) else None
         room = party.advance_phase(
-            code, use_ai_prompt=bool(body.get("use_ai_prompt")), player_id=body.get("player_id"),
+            code, use_ai_prompt=bool(body.get("use_ai_prompt")), player_id=body.get("player_id"), expect=expect,
         )
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
@@ -1518,7 +1526,7 @@ def api_party_voices():
 @app.route("/api/party/tts", methods=["POST"])
 def api_party_tts():
     body = request.get_json(silent=True) or {}
-    text = str(body.get("text") or "").strip()
+    text = str(body.get("text") or "").strip()[: party.TTS_MAX_CHARS]
     voice = str(body.get("voice") or party.DEFAULT_ANNOUNCER_VOICE).strip()
     clone = str(body.get("clone") or "").strip() or None
     clip = party.synthesize_show_line(text, voice=voice, clone=clone)
@@ -1560,6 +1568,8 @@ def api_party_cast():
         stop=bool(body.get("stop")),
     )
     res.setdefault("url", url)
+    if code and res.get("success"):
+        party.remember_screen(code, None if body.get("stop") else str(body.get("screen_id") or body.get("entity_id") or ""))
     return jsonify(res), (200 if res.get("success") or res.get("error") != "screen_id is required" else 400)
 
 

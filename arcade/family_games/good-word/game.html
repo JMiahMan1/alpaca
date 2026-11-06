@@ -451,7 +451,7 @@
     }).then((d) => {
       busy = false;
       code = d.room.code; store.set("room", code);
-      const me = (d.room.players || []).find((p) => p.id === myId);
+      const me = (d.room.players || []).find((p) => p.id === d.room.you);
       if (me) { myAvatar = me.avatar; store.set("avatar", myAvatar); }
       tap();
       view = "room";
@@ -470,11 +470,20 @@
   }
   function endForEveryone() {
     if (!code) return;
+    // Take the game off the TV too, so it doesn't sit on a "thanks" page.
+    if (activeScreen) { try { sendCast(activeScreen, true); } catch (_) {} }
     api(`/api/party/rooms/${encodeURIComponent(code)}/end`, { player_id: myId })
       .then(() => { toast("Game ended for everyone."); closeLocally(); })
       .catch((e) => toast(e.message || "Could not end the game."));
   }
+  function silence() {
+    // A game that is over makes no more sound: no announcer, no music, no chatter.
+    try { if (currentAudio) { currentAudio.pause(); currentAudio = null; } } catch (_) {}
+    try { music.stop(); } catch (_) {}
+    holdUntil = 0;
+  }
   function closeLocally() {
+    silence();
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null; room = null; code = ""; store.set("room", ""); view = "join"; lastSig = "";
     try { history.replaceState(null, "", location.pathname + location.search); } catch (_) {}
@@ -543,7 +552,9 @@
   function hostAction(path, extra) {
     if (busy) return;
     busy = true; render();
-    api(`/api/party/rooms/${encodeURIComponent(code)}/${path}`, Object.assign({ player_id: myId }, extra || {}))
+    // Say which screen the tap was on: if the timer already moved the room on, the server ignores it.
+    const expect = room ? { phase: room.phase, round: room.round, match_id: room.match_id } : undefined;
+    api(`/api/party/rooms/${encodeURIComponent(code)}/${path}`, Object.assign({ player_id: myId, expect }, extra || {}))
       .then((d) => { busy = false; if (d.room) setRoom(d.room); lastSig = ""; render(true); })
       .catch((e) => { busy = false; render(); toast(e.message || "That didn't work."); });
   }
@@ -567,7 +578,8 @@
   /* ================= screens ================= */
   function seatsOf(r) { return (r.players || []).filter((p) => !p.spectator); }
   function humansOf(r) { return seatsOf(r).filter((p) => !p.is_bot); }
-  function meOf(r) { return (r.players || []).find((p) => p.id === myId); }
+  // Screens carry public ids; the room tells each phone which one is "you".
+  function meOf(r) { return (r.players || []).find((p) => p.id === r.you); }
   function ordinal(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
 
   function logo() {
@@ -577,10 +589,10 @@
     const seats = seatsOf(r);
     let h = '<div class="gw-players">';
     seats.forEach((p) => {
-      const cls = ["gw-p", p.id === myId ? "me" : "", p.connected === false ? "away" : ""].join(" ");
+      const cls = ["gw-p", p.id === r.you ? "me" : "", p.connected === false ? "away" : ""].join(" ");
       const tick = flag && p[flag] ? '<span class="tick">✓</span>' : "";
       h += `<div class="${cls}"><div class="face">${esc(p.avatar)}</div>${p.is_host ? '<span class="crown">👑</span>' : ""}${tick}` +
-        `<div class="nm">${esc(p.id === myId ? "You" : p.name)}${p.is_bot ? " 🤖" : ""}</div></div>`;
+        `<div class="nm">${esc(p.id === r.you ? "You" : p.name)}${p.is_bot ? " 🤖" : ""}</div></div>`;
     });
     if (!flag) for (let i = seats.length; i < 8; i++) h += '<div class="gw-p empty"><div class="face">+</div><div class="nm">&nbsp;</div></div>';
     return h + "</div>";
@@ -702,6 +714,9 @@
   function viewVoting(r) {
     const isBluff = r.prompt && r.prompt.kind === "truth_or_bluff";
     let h = header(r);
+    if ((meOf(r) || {}).spectator) {
+      return h + promptCard(r, true) + `<div class="gw-hero"><div class="big">👀</div><h1>You're watching this round</h1><p>The room is full. You'll get a seat when one opens.</p></div>`;
+    }
     if (r.my_vote) {
       const mine = (r.options || []).find((o) => o.option_id === r.my_vote);
       return h + `<div class="gw-hero gw-enter"><div class="big">🗳️</div><h1>Vote locked!</h1>
@@ -731,12 +746,12 @@
   }
   function boardHtml(r) {
     return '<div class="gw-board">' + seatsOf(r).map((p, i) =>
-      `<div class="gw-line ${p.id === myId ? "me" : ""}"><span class="r">${i + 1}</span><span class="a">${esc(p.avatar)}</span><span class="n">${esc(p.id === myId ? "You" : p.name)}</span>` +
+      `<div class="gw-line ${p.id === r.you ? "me" : ""}"><span class="r">${i + 1}</span><span class="a">${esc(p.avatar)}</span><span class="n">${esc(p.id === r.you ? "You" : p.name)}</span>` +
       `${p.round_delta ? `<span class="d">${p.round_delta > 0 ? "+" : ""}${p.round_delta}</span>` : ""}<span>${p.score}</span></div>`).join("") + "</div>";
   }
   function viewReveal(r) {
     const me = meOf(r) || { round_delta: 0, score: 0 };
-    const rank = seatsOf(r).findIndex((p) => p.id === myId) + 1;
+    const rank = seatsOf(r).findIndex((p) => p.id === r.you) + 1;
     const d = me.round_delta || 0;
     let h = `<div class="gw-hero gw-enter"><div class="big">${d > 0 ? "🎉" : d < 0 ? "🪤" : "👀"}</div>
       <h1>${r.stage_connected ? "Look at the TV!" : "Round " + r.round + " results"}</h1>
@@ -751,7 +766,7 @@
   }
   function viewFinished(r) {
     const seats = seatsOf(r);
-    const rank = seats.findIndex((p) => p.id === myId) + 1;
+    const rank = seats.findIndex((p) => p.id === r.you) + 1;
     const winner = seats[0];
     let h = `<div class="gw-hero gw-enter"><div class="big">${rank === 1 ? "🏆" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : "📜"}</div>
       <h1>${rank === 1 ? "You won the Golden Scroll!" : winner ? esc(winner.name) + " wins!" : "Match complete!"}</h1>
@@ -1010,7 +1025,7 @@
   else if (!code && remembered && myName) {
     // Back after a reload or a locked screen: rejoin if the room still has us.
     fetch(`/api/party/rooms/${encodeURIComponent(remembered)}?player_id=${encodeURIComponent(myId)}`).then((r) => r.json()).then((d) => {
-      if (d && d.success && d.room && (d.room.players || []).some((p) => p.id === myId)) join(remembered, false);
+      if (d && d.success && d.room && d.room.you) join(remembered, false);  // "you" is set only if we're still in it
       else loadOpenRooms();
     }).catch(loadOpenRooms);
   } else loadOpenRooms();
