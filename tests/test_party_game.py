@@ -102,7 +102,7 @@ def test_scoring_original_answer_decoy_bait_and_house_trap():
     # Find option IDs from internal room
     raw_room = party._rooms["DOVE"]
     p1_opt = next(o["option_id"] for o in raw_room["options"] if "p1" in o["authors"])
-    decoy_opt = next(o["option_id"] for o in raw_room["options"] if o["kind"] == "decoy")
+    decoy_opt = "opt_house_decoy"
 
     # p2 votes for p1's original answer (+1000 to p1)
     # p3 votes for p1's original answer (+1000 to p1, plus +200 round winner bonus to p1 = 2200)
@@ -694,7 +694,7 @@ def test_an_answer_just_after_voting_opened_replaces_the_house_answer():
     snap = party.submit_answer("LAT2", player_id="a", text="Forty days of leftovers")
     texts = [o["text"] for o in snap["options"]]
     assert "Forty days of leftovers" in texts
-    decoy = next(o for o in party._rooms["LAT2"]["options"] if o["kind"] == "decoy")
+    decoy = next(o for o in party._rooms["LAT2"]["options"] if o["option_id"] == "opt_house_decoy")
     assert "a" not in decoy["authors"]
     # Once anyone has voted, the round's options are settled.
     with party._lock:

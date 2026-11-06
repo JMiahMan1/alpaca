@@ -33,48 +33,352 @@ PAPERBOY_SPEED = 1.08
 PAPERBOY_PITCH = 1.0
 PAPERBOY_CALL = "Extra! Extra! Read all about it!"
 #: Kokoro's own pace is the most natural; cadence varies it per sentence.
-ANNOUNCER_SPEED = 1.0
+ANNOUNCER_SPEED = 1.07  # a game-show host is up on their toes, not reading an audiobook
 
-#: Bible names Kokoro guesses wrong from their spelling, as misaki inline IPA
-#: ("[word](/ipa/)"), which the audio server passes through to the phonemizer.
+# --------------------------------------------------------------------------- Bible names
+#
+# Kokoro's phonemizer (misaki, American) guesses a name it has never seen from
+# its spelling, and for Bible names it is wrong often enough to be noticed:
+# "Barnabas" came out bar-NAH-bus, "Job" as the word "job", "Gethsemane" as
+# GETH-sim-ain. Each entry below was measured: run through the audio server's
+# own ``KPipeline(lang_code="a").g2p`` without an override, compared with the
+# standard American church pronunciation, and kept only when misaki got it
+# wrong. Names misaki already says right are listed in ``SAID_RIGHT`` instead.
+#
+# The IPA is misaki's own inventory, because the override is passed to Kokoro
+# verbatim: ``A`` = eɪ, ``I`` = aɪ, ``O`` = oʊ, ``W`` = aʊ, ``Y`` = ɔɪ, ``ʤ`` /
+# ``ʧ`` (one symbol each), ``ᵻ`` a reduced ɪ, ``ᵊ`` a syllabic schwa, and the
+# stress mark sits right before the stressed vowel. Writing "oʊ" or "dʒ"
+# instead still parses, but reaches the model as two symbols it was not
+# trained on together.
+
+#: Bible names and terms misaki mispronounces, as misaki IPA. ``pronounce()``
+#: emits them as misaki inline markup, ``[word](/ipa/)``, which the audio
+#: server's text normaliser leaves alone and the phonemizer honours exactly.
 PRONUNCIATIONS: dict[str, str] = {
-    "Barnabas": "bˈɑɹnəbəs",
-    "Priscilla": "pɹɪsˈɪlə",
-    "Apollos": "əpˈɑləs",
-    "Eutychus": "jˈutɪkəs",
-    "Zacchaeus": "zækˈiəs",
-    "Nineveh": "nˈɪnɪvə",
-    "Tarshish": "tˈɑɹʃɪʃ",
-    "Balaam": "bˈeɪləm",
-    "Elah": "ˈilə",
-    "Cana": "kˈeɪnə",
-    "Troas": "tɹˈoʊæs",
-    "Cherith": "kˈɪɹɪθ",
-    "Nehemiah": "nˌiəmˈaɪə",
-    "Pharaoh": "fˈɛɹoʊ",
+    # ---- books (the rest of the 66 are said right; see SAID_RIGHT)
+    "Job": "ʤˈOb",  # never the word "job": see _not_the_man_job
+    "Haggai": "hˈæɡI",
     "Habakkuk": "həbˈækək",
-    "Philemon": "faɪlˈimən",
-    "Boaz": "bˈoʊæz",
-    "Naomi": "neɪˈoʊmi",
-    "Jericho": "dʒˈɛɹɪkoʊ",
-    "Gideon": "ɡˈɪdiən",
-    "Nicodemus": "nˌɪkədˈiməs",
-    "Bathsheba": "bæθʃˈibə",
-    "Methuselah": "məθˈuzələ",
-    "Lazarus": "lˈæzəɹəs",
-    "Elisha": "ɪlˈaɪʃə",
-    "Hosea": "hoʊzˈeɪə",
-    "Laban": "lˈeɪbən",
+    "Colossians": "kəlˈɑʃənz",
+    "Philemon": "fIlˈimən",
+    # ---- Genesis to Ruth
+    "Lamech": "lˈAmək",
+    "Terah": "tˈɪɹə",
+    "Keturah": "kətˈʊɹə",
+    "Leah": "lˈiə",
+    "Laban": "lˈAbən",
+    "Tamar": "tˈAmɑɹ",
+    "Ephraim": "ˈifɹiəm",
+    "Moses": "mˈOzᵻz",
+    "Zipporah": "zɪpˈɔɹə",
+    "Jochebed": "ʤˈɑkəbˌɛd",
+    "Gershom": "ɡˈɜɹʃəm",
+    "Eleazar": "ˌɛliˈAzəɹ",
+    "Phinehas": "fˈɪniəs",
+    "Abihu": "əbˈIhu",
+    "Balaam": "bˈAləm",
+    "Balak": "bˈAlæk",
+    "Caleb": "kˈAləb",
+    "Rahab": "ɹˈAhæb",
+    "Achan": "ˈAkæn",
+    "Othniel": "ˈɑθniəl",
+    "Ehud": "ˈihəd",
+    "Barak": "bˈɛɹæk",
+    "Sisera": "sˈɪsəɹə",
+    "Jael": "ʤˈAəl",
+    "Abimelech": "əbˈɪməlˌɛk",
+    "Jephthah": "ʤˈɛfθə",
+    "Manoah": "mənˈOə",
+    "Boaz": "bˈOæz",
+    "Obed": "ˈObɛd",
+    "Gera": "ɡˈɪɹə",
+    "Bezalel": "bˈɛzəlˌɛl",
+    # ---- Samuel to Esther
+    "Elkanah": "ɛlkˈAnə",
+    "Peninnah": "pᵻnˈɪnə",
+    "Michal": "mˈIkᵊl",
+    "Abner": "ˈæbnəɹ",
+    "Absalom": "ˈæbsələm",
+    "Ahithophel": "əhˈɪθəfˌɛl",
+    "Hushai": "hˈuʃI",
+    "Shimei": "ʃˈɪmiˌI",
+    "Mephibosheth": "məfˈɪbəʃˌɛθ",
+    "Adonijah": "ˌædənˈIʤə",
+    "Asa": "ˈAsə",
+    "Jehoshaphat": "ʤəhˈɑʃəfˌæt",
+    "Jehu": "ʤˈihju",
+    "Naboth": "nˈAbɑθ",
+    "Naaman": "nˈAəmən",
+    "Gehazi": "ɡəhˈAzI",
+    "Elisha": "ɪlˈIʃə",
+    "Ahaz": "ˈAhæz",
+    "Jehoiakim": "ʤəhˈYəkɪm",
+    "Jehoiachin": "ʤəhˈYəkɪn",
+    "Zerubbabel": "zəɹˈʌbəbᵊl",
+    "Sanballat": "sænbˈælət",
+    "Artaxerxes": "ˌɑɹtəzˈɜɹksiz",
+    "Darius": "dəɹˈIəs",
+    "Xerxes": "zˈɜɹksiz",
+    "Ahasuerus": "əhˌæzjuˈɛɹəs",
+    "Haman": "hˈAmən",
+    "Belshazzar": "bɛlʃˈæzəɹ",
     "Shadrach": "ʃˈædɹæk",
     "Meshach": "mˈiʃæk",
-    "Abednego": "əbˈɛdnɪɡoʊ",
+    "Abednego": "əbˈɛdnᵻɡˌO",
+    "Hananiah": "hˌænənˈIə",
+    "Mishael": "mˈɪʃAəl",
+    "Azariah": "ˌæzəɹˈIə",
+    "Ishbosheth": "ɪʃbˈOʃɛθ",
+    "Asahel": "ˈæsəhˌɛl",
+    "Benaiah": "bᵻnˈAə",
+    "Shunammite": "ʃˈunəmˌIt",
+    "Shulammite": "ʃˈuləmˌIt",
+    "Athaliah": "ˌæθəlˈIə",
+    "Joash": "ʤˈOæʃ",
+    "Amaziah": "ˌæməzˈIə",
+    "Pekah": "pˈikə",
+    "Hoshea": "hOʃˈiə",
+    "Rabshakeh": "ɹˈæbʃəkə",
+    # ---- the gospels and Acts
+    "Zacharias": "zˌækəɹˈIəs",
+    "Herodias": "həɹˈOdiəs",
+    "Archelaus": "ˌɑɹkəlˈAəs",
+    "Antipas": "ˈæntɪpəs",
+    "Salome": "səlˈOmi",
+    "Pilate": "pˈIlət",
+    "Pontius": "pˈɑnʃəs",
+    "Caiaphas": "kˈAəfəs",
+    "Annas": "ˈænəs",
+    "Barabbas": "bəɹˈæbəs",
+    "Arimathea": "ˌɛɹəməθˈiə",
+    "Nathanael": "nəθˈænjəl",
+    "Alphaeus": "ælfˈiəs",
+    "Cleopas": "klˈiəpəs",
+    "Bartimaeus": "bˌɑɹtɪmˈiəs",
+    "Jairus": "ʤˈIɹəs",
+    "Magdalene": "mˈæɡdəlˌin",
+    "Lazarus": "lˈæzəɹəs",
+    "Zacchaeus": "zækˈiəs",
+    "Sapphira": "səfˈIɹə",
+    "Dorcas": "dˈɔɹkəs",
+    "Tabitha": "tˈæbɪθə",
+    "Barnabas": "bˈɑɹnəbəs",
+    "Silas": "sˈIləs",
+    "Apollos": "əpˈɑləs",
+    "Eutychus": "jˈutɪkəs",
+    "Agrippa": "əɡɹˈɪpə",
+    "Bernice": "bəɹnˈis",
+    "Gamaliel": "ɡəmˈAliəl",
+    "Agabus": "ˈæɡəbəs",
+    "Damaris": "dˈæməɹɪs",
+    "Theophilus": "θiˈɑfələs",
+    # ---- the letters
+    "Onesimus": "Onˈɛsɪməs",
+    "Epaphras": "ˈɛpəfɹəs",
+    "Epaphroditus": "ɪpˌæfɹədˈItəs",
+    "Tychicus": "tˈɪkɪkəs",
+    "Demas": "dˈiməs",
+    "Sosthenes": "sˈɑsθəniz",
+    "Andronicus": "ˌændɹənˈIkəs",
+    "Tertius": "tˈɜɹʃəs",
+    "Syntyche": "sˈɪntɪki",
+    "Archippus": "ɑɹkˈɪpəs",
+    "Diotrephes": "dIˈɑtɹəfˌiz",
+    "Immanuel": "ɪmˈænjuəl",
+    # ---- places
+    "Goshen": "ɡˈOʃən",
+    "Carmel": "kˈɑɹməl",
+    "Bashan": "bˈAʃən",
+    "Jezreel": "ʤˈɛzɹiəl",
+    "Gibeon": "ɡˈɪbiən",
+    "Elah": "ˈilə",
+    "Cherith": "kˈɪɹɪθ",
+    "Zarephath": "zˈɛɹəfˌæθ",
+    "Shinar": "ʃˈInɑɹ",
+    "Endor": "ˈɛndɔɹ",
+    "Cush": "kˈʌʃ",
+    "Ninevite": "nˈɪnəvˌIt",
+    "Ninevites": "nˈɪnəvˌIts",
+    "Midianite": "mˈɪdiənˌIt",
+    "Midianites": "mˈɪdiənˌIts",
+    "Amalekite": "ˈæməlɛkˌIt",
+    "Amalekites": "ˈæməlɛkˌIts",
+    "Judea": "ʤudˈiə",
+    "Sychar": "sˈIkɑɹ",
+    "Siloam": "sIlˈOəm",
+    "Capernaum": "kəpˈɜɹniəm",
+    "Gethsemane": "ɡɛθsˈɛməni",
+    "Gennesaret": "ɡənˈɛsəɹˌɛt",
+    "Tiberias": "tIbˈɪɹiəs",
+    "Gerasenes": "ɡˈɛɹəsˌinz",
+    "Bethphage": "bˈɛθfəʤi",
+    "Chorazin": "kɔɹˈAzɪn",
+    "Emmaus": "ɛmˈAəs",
+    "Philippi": "fˈɪləpˌI",
+    "Derbe": "dˈɜɹbi",
+    "Smyrna": "smˈɜɹnə",
+    "Laodicea": "lˌAɑdəsˈiə",
+    "Cenchreae": "sˈɛŋkɹiˌi",
+    "Achaia": "əkˈAə",
+    "Troas": "tɹˈOæs",
+    # ---- terms
+    "Nazarite": "nˈæzəɹˌIt",
+    "Nazarites": "nˈæzəɹˌIts",
+    "ephod": "ˈifɑd",
+    "Rabboni": "ɹæbˈOnI",
+    "Sheol": "ʃˈiOl",
+    "Urim": "jˈʊɹɪm",
+    "denarii": "dənˈɛɹiˌI",
+    "Elul": "ɛlˈul",
+    "Nisan": "nisˈɑn",
+    "Ephphatha": "ˈɛfəθə",
+    "Talitha": "tˈælɪθə",
+    "Eloi": "ilˈOI",
+    "Sabachthani": "sˌɑbɑkθˈɑni",
+    "Mene": "mˈini",
+    "Upharsin": "jufˈɑɹsɪn",
 }
-_NAMES = re.compile(r"(?<![\[\w])(" + "|".join(sorted(PRONUNCIATIONS, key=len, reverse=True)) + r")(?![\w\]])")
+
+#: Bible words misaki already says right in mixed case, measured the same way.
+#: They need no IPA, but a shouted one does: misaki spells an all-caps word
+#: out letter by letter ("NOAH" is N-O-A-H), so ``pronounce()`` gives these
+#: their ordinary capitalisation when they arrive in capitals.
+_SAID_RIGHT_WORDS = """
+    Genesis Exodus Leviticus Numbers Deuteronomy Joshua Judges Ruth Samuel Kings Chronicles Ezra
+    Nehemiah Esther Psalms Psalm Proverbs Ecclesiastes Solomon Isaiah Jeremiah Lamentations Ezekiel
+    Daniel Hosea Joel Amos Obadiah Jonah Micah Nahum Zephaniah Zechariah Malachi Matthew Mark Luke
+    John Acts Romans Corinthians Galatians Ephesians Philippians Thessalonians Timothy Titus Hebrews
+    James Peter Jude Revelation
+    Adam Eve Cain Abel Seth Enoch Methuselah Noah Shem Japheth Nimrod Babel Abram Abraham Sarai
+    Sarah Hagar Ishmael Ishmaelites Lot Melchizedek Isaac Rebekah Esau Jacob Rachel Bilhah Zilpah
+    Reuben Simeon Levi Judah Naphtali Asher Issachar Zebulun Joseph Benjamin Benjamite Dinah
+    Potiphar Manasseh Aaron Miriam Jethro Nadab Korah Eglon Shamgar Deborah Gideon Samson Delilah
+    Naomi Orpah Jesse David Goliath Eli Hannah Saul Kish Jonathan Joab Nathan Abigail Nabal
+    Bathsheba Uriah Amnon Ziba Rehoboam Jeroboam Ahab Jezebel Elijah Josiah Hezekiah Uzziah
+    Zedekiah Tobiah Cyrus Vashti Mordecai Nebuchadnezzar Gomer Dagon Baal Beelzebub Lucifer Gabriel
+    Raphael Mammon Belial
+    Mary Elizabeth Herod Simon Andrew Philip Bartholomew Thomas Didymus Thaddaeus Thaddeus Judas
+    Iscariot Matthias Zebedee Martha Nicodemus Stephen Ananias Cornelius Barnaby Lydia Priscilla
+    Aquila Felix Festus Drusilla Publius Trophimus Erastus Gaius Crispus Phoebe Junia Rhoda Aeneas
+    Lois Eunice Euodia Chloe Jesus Christ Emmanuel Yahweh Jehovah Elohim Caesar Augustus Tiberius
+    Eden Canaan Horeb Sinai Kadesh Moriah Zion Tabor Hermon Gilead Megiddo Armageddon Samaria Tyre
+    Sidon Decapolis Gadarenes Bethany Bethsaida Cana Nain Jericho Jordan Caesarea Antioch Iconium
+    Lystra Tarsus Ephesus Pergamum Thyatira Sardis Patmos Areopagus Berea Thessalonica Corinth Crete
+    Cyprus Malta Macedonia Galatia Cappadocia Bithynia Cilicia Phoenicia Ethiopia Nineveh Tarshish
+    Joppa Babylon Babylonian Assyria Chaldeans Persia Moab Moabites Midian Edom Edomites Ammonites
+    Hittites Jebusites Canaanites Philistine Philistines Israel Israelites Jerusalem Bethlehem
+    Nazareth Galilee Golgotha Calvary Shiloh Hebron Bethel Beersheba Sodom Gomorrah Gilgal Shechem
+    Ararat Damascus Gaza Sheba Euphrates Kidron Jabbok Mizpah Ziklag
+    Pharisee Pharisees Sadducee Sadducees Levite Levites Samaritan Samaritans Gentile Gentiles
+    Nazarene Nazirite Hebrew Israelite Sanhedrin Magi Pentecost Passover Messiah Hosanna Hallelujah
+    Alleluia Amen Rabbi Abba Selah Shalom Hades Leviathan Behemoth Nephilim Thummim Torah Sabbath
+    Herodians Maranatha Ebenezer Ichabod Corban Tekel Jubilee
+    Zealots Hosannas Corinthian Philippian Ephesian Galilean Nazarenes Levitical Pharaohs Psalmist
+    Pharaoh Rizpah Hophni Tirzah Huldah Sennacherib Ittai Zadok Abiathar Abishai Bezaleel Lamb
+"""
+SAID_RIGHT: frozenset[str] = frozenset(_SAID_RIGHT_WORDS.split()) - frozenset(PRONUNCIATIONS)
+
+# Words the override list must take only exactly as written. "Job" in capitals
+# could be an acronym, and the plain word "job" is the common one.
+_EXACT_ONLY = frozenset({"Job"})
+
+_POSSESSIVE = r"(?P<poss>['’][sS](?!\w)|(?<=[sSzZ])['’](?=\s+[a-z]))?"
+
+
+def _forms(word: str) -> set[str]:
+    if word in _EXACT_ONLY:
+        return {word}
+    return {word, word[:1].upper() + word[1:], word.upper()}
+
+
+_IPA_FOR = {form: PRONUNCIATIONS[w] for w in PRONUNCIATIONS for form in _forms(w)}
+_CAPS = {w.upper(): w for w in SAID_RIGHT if len(w) > 1}
+_ALL = sorted(set(_IPA_FOR) | set(_CAPS), key=len, reverse=True)
+_NAMES = re.compile(
+    r"(?P<link>\[[^\]\n]*\]\(/[^)\n]*/\))"  # an existing misaki mark: leave it be
+    r"|(?<![\w\[])(?P<word>" + "|".join(map(re.escape, _ALL)) + r")" + _POSSESSIVE + r"(?![\w\]])"
+)
+
+# "Job" is the man in a Bible game, except in the phrases where it is the word.
+_JOB_IS_A_TASK_AFTER = re.compile(
+    r"\b(?:a|an|good|great|nice|fine|odd|inside|side|dream|new|top|big|whole|blow|hatchet|desk|day|bad|hard|"
+    r"tough|real|first|full-time|part-time|easy|dirty|paint)\W*$",
+    re.IGNORECASE,
+)
+_JOB_IS_A_TASK_BEFORE = re.compile(
+    r"^(?:-|\s+(?:well|done|one|offer|interview|title|hunt\w*|market|search|application|description|"
+    r"site|security|fair|board|seeker\w*|posting|listing|opening|opportunit\w*|done)\b)",
+    re.IGNORECASE,
+)
+
+
+def _not_the_man_job(text: str, start: int, end: int, poss: str) -> bool:
+    """True where "Job" is the word, not the man: "Job well done!", "Good Job!", "found a Job", "Job's done".
+
+    Capitalised and in a Bible game, "Job" is the man; these are the phrases
+    where it is still the ordinary word (including the dad joke that rides
+    on both). Lower-case "job" and all-caps "JOB" never match at all.
+    """
+    if _JOB_IS_A_TASK_AFTER.search(text[:start]):
+        return True
+    after = text[end:]
+    if poss and poss[1:].lower() == "s" and re.match(r"\s+done\b", after, re.IGNORECASE):
+        return True  # "Job's done" is "the job is done"
+    return bool(_JOB_IS_A_TASK_BEFORE.match(after))
+
+
+def _with_possessive(ipa: str, poss: str) -> str:
+    """The possessive ending as English says it after that sound: Moses's -ᵻz, Ahab's -z, Job's -z."""
+    if not poss or len(poss) == 1:  # "Moses' staff": a bare apostrophe adds no sound
+        return ipa
+    last = ipa.rstrip("ˈˌː")[-1:]
+    if last in ("s", "z", "ʃ", "ʒ", "ʧ", "ʤ"):
+        return ipa + "ᵻz"
+    if last in ("p", "t", "T", "k", "f", "θ"):
+        return ipa + "s"
+    return ipa + "z"
 
 
 def pronounce(text: str) -> str:
-    """Mark the names Kokoro would say wrong with how they are actually said."""
-    return _NAMES.sub(lambda m: f"[{m.group(1)}](/{PRONUNCIATIONS[m.group(1)]}/)", text or "")
+    """Mark the Bible names Kokoro would say wrong with how they are actually said.
+
+    A listed name becomes misaki inline IPA, ``[Habakkuk](/həbˈækək/)``, and so
+    does its possessive (``[Moses's](/mˈOzᵻzᵻz/)``) and its shouted form
+    (``HABAKKUK``). A name misaki already says right is only rescued from
+    capitals ("NOAH" -> "Noah"), which misaki would otherwise spell out.
+    Existing marks are left alone, and only whole words match.
+    """
+    text = text or ""
+
+    def mark(m: re.Match[str]) -> str:
+        if m.group("link"):
+            return m.group("link")
+        word, poss = m.group("word"), m.group("poss") or ""
+        if word in _IPA_FOR:
+            if word == "Job" and _not_the_man_job(text, m.start(), m.end(), poss):
+                return m.group(0)
+            return f"[{word}{poss}](/{_with_possessive(_IPA_FOR[word], poss)}/)"
+        return _CAPS[word] + (poss.lower() if poss else "")
+
+    return unshout(_NAMES.sub(mark, text))
+
+
+#: Capitals that really are letters said one by one.
+ACRONYMS = frozenset({"TV", "AI", "OK", "USA", "HOA", "GPS", "ID", "VIP", "NIV", "KJV", "ESV", "NKJV", "DVD", "ATM",
+                      "AM", "PM", "BC", "AD", "II", "III", "IV", "VI", "VII", "VIII", "IX", "XL", "UK", "MVP", "PB"})
+_SHOUT = re.compile(r"(?P<link>\[[^\]]*\]\(/[^)]*/\))|\b(?P<word>[A-Z][A-Z]+)\b")
+
+
+def unshout(text: str) -> str:
+    """Headlines and "WE ASKED 100 PARENTS" in lower case: misaki spells a word in capitals letter by letter."""
+    def fix(m: re.Match[str]) -> str:
+        if m.group("link"):
+            return m.group("link")
+        word = m.group("word")
+        return word if word in ACRONYMS else word.capitalize()
+
+    return _SHOUT.sub(fix, text or "")
 
 
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+(?=\S)")
@@ -112,12 +416,12 @@ def cadence(sentence: str, base: float = ANNOUNCER_SPEED) -> tuple[float, float]
     s = sentence.rstrip()
     jitter = ((sum(map(ord, s)) % 9) - 4) * 0.006  # ±2.4 %, same every time for the same words
     if s.endswith(("...", "…")):
-        return base * 0.96 + jitter, 650.0
+        return base * 0.97 + jitter, 600.0
     if s.endswith("?"):
-        return base * 0.95 + jitter, 420.0
+        return base * 0.97 + jitter, 360.0
     if s.endswith("!"):
-        return base * 1.05 + jitter, 300.0
-    return base + jitter, 340.0
+        return base * 1.08 + jitter, 230.0
+    return base + jitter, 280.0
 
 _CALL = re.compile(r"^\s*((?:extra\b[!.,]?\s*){1,3})(read all about it[!.]?\s*)?", re.IGNORECASE)
 
@@ -257,7 +561,7 @@ def announcer_fx(x: list[float], rate: int) -> list[float]:
     # Gentle on purpose: heavy compression and a big room are what made it
     # sound synthetic. A light leveller, a little presence, a hint of studio.
     y = highpass(normalize(x, 0.9), rate, 80.0)
-    y = presence(y, rate, 2600.0, 0.45)
+    y = presence(y, rate, 2600.0, 0.6)  # bright and forward: an excited host, not a narrator
     y = compress(y, rate, -24.0, 2.5, attack_ms=6.0, release_ms=180.0)
     y = echoes(normalize(y, 0.9), rate, [(38.0, 0.06), (61.0, 0.035)], 3200.0)
     return normalize(y, 0.89)

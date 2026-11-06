@@ -218,9 +218,63 @@ def test_every_headline_round_opens_with_the_paper_boy():
 
 def test_bible_names_are_said_right():
     out = announcer.pronounce("Barnabas and Priscilla wrote about Nineveh")
-    assert "[Barnabas](/bˈɑɹnəbəs/)" in out and "[Priscilla](/" in out and "[Nineveh](/" in out
+    # Priscilla and Nineveh misaki already says right (measured), so they are left as written.
+    assert out == "[Barnabas](/bˈɑɹnəbəs/) and Priscilla wrote about Nineveh"
     assert announcer.pronounce("[Barnabas](/x/)") == "[Barnabas](/x/)"  # an existing mark is left alone
     assert announcer.pronounce("Barnabasy") == "Barnabasy"  # whole names only
+
+
+@pytest.mark.parametrize("word, ipa", [
+    ("Habakkuk", "həbˈækək"), ("Gethsemane", "ɡɛθsˈɛməni"), ("Capernaum", "kəpˈɜɹniəm"),
+    ("Abednego", "əbˈɛdnᵻɡˌO"), ("Colossians", "kəlˈɑʃənz"), ("Haggai", "hˈæɡI"), ("Pilate", "pˈIlət"),
+    ("Silas", "sˈIləs"), ("Onesimus", "Onˈɛsɪməs"), ("Mephibosheth", "məfˈɪbəʃˌɛθ"), ("ephod", "ˈifɑd"),
+])
+def test_a_sampling_of_names_misaki_gets_wrong(word, ipa):
+    assert announcer.pronounce(f"Then {word} spoke.") == f"Then [{word}](/{ipa}/) spoke."
+
+
+def test_the_lexicon_is_in_misakis_own_symbols():
+    # Kokoro gets the override verbatim: "oʊ" or "dʒ" would reach it as two symbols it never saw together.
+    for word, ipa in announcer.PRONUNCIATIONS.items():
+        assert not any(s in ipa for s in ("oʊ", "eɪ", "aɪ", "aʊ", "ɔɪ", "dʒ", "tʃ", "g")), word
+        assert "ˈ" in ipa, f"{word} has no primary stress"
+    assert not set(announcer.PRONUNCIATIONS) & announcer.SAID_RIGHT
+
+
+@pytest.mark.parametrize("line, marked", [
+    ("Job lost everything.", "[Job](/ʤˈOb/) lost everything."),
+    ("The Book of Job.", "The Book of [Job](/ʤˈOb/)."),
+    ("Job's friends came.", "[Job's](/ʤˈObz/) friends came."),
+    ("Job, well done!", "[Job](/ʤˈOb/), well done!"),
+])
+def test_job_the_man_is_johb(line, marked):
+    assert announcer.pronounce(line) == marked
+
+
+@pytest.mark.parametrize("line", [
+    "Job well done!", "Good Job, everyone!", "He thought he'd found a Job!", "Job's done!", "Nice job.", "job", "Job-hunting season",
+])
+def test_job_the_word_is_left_alone(line):
+    assert announcer.pronounce(line) == line
+
+
+def test_possessives_take_the_ending_english_gives_that_sound():
+    assert announcer.pronounce("Habakkuk's watch") == "[Habakkuk's](/həbˈækəks/) watch"
+    assert announcer.pronounce("Moses's rod") == "[Moses's](/mˈOzᵻzᵻz/) rod"
+    assert announcer.pronounce("Moses' staff") == "[Moses'](/mˈOzᵻz/) staff"  # bare apostrophe: no extra sound
+    assert announcer.pronounce("Jephthah’s vow") == "[Jephthah’s](/ʤˈɛfθəz/) vow"  # curly apostrophe too
+    assert announcer.pronounce("'Moses'!") == "'[Moses](/mˈOzᵻz/)'!"  # a closing quote is not a possessive
+
+
+def test_plurals_are_their_own_entries_so_pilates_stays_exercise():
+    assert announcer.pronounce("the Midianites") == "the [Midianites](/mˈɪdiənˌIts/)"
+    assert announcer.pronounce("Pilates with Pilate") == "Pilates with [Pilate](/pˈIlət/)"
+
+
+def test_a_shouted_name_is_not_spelled_out():
+    # misaki reads an all-caps word letter by letter: "NOAH" would be N-O-A-H.
+    assert announcer.pronounce("NOAH'S ARK and HABAKKUK!") == "Noah's Ark and [HABAKKUK](/həbˈækək/)!"
+    assert announcer.pronounce("Noah and Bethlehem") == "Noah and Bethlehem"  # said right already: untouched
 
 
 def test_a_beat_before_a_punchline_is_not_a_sentence_of_its_own():
@@ -229,3 +283,15 @@ def test_a_beat_before_a_punchline_is_not_a_sentence_of_its_own():
     assert announcer.sentences("When Mrs. Noah stepped off the Ark, what did she say?") == [
         "When Mrs. Noah stepped off the Ark, what did she say?"]
     assert announcer.split_show_line("Extraordinary news today!") == [("announcer", "Extraordinary news today!")]
+
+
+def test_shouted_words_are_read_not_spelled():
+    from arcade.announcer import pronounce, unshout
+
+    assert unshout("LOCAL MAN BUILDS BOAT") == "Local Man Builds Boat"
+    assert unshout("WE ASKED 100 PARENTS") == "We Asked 100 Parents"
+    assert pronounce("JOB") == "Job"  # shouted: lower-cased, and not marked as the man
+    assert unshout("the TV, the HOA and Psalm II") == "the TV, the HOA and Psalm II"
+    assert unshout("I saw A dog") == "I saw A dog"  # single letters are words
+    marked = pronounce("BARNABAS IS HERE")
+    assert marked.startswith("[BARNABAS](/") and marked.endswith(" Is Here")

@@ -40,36 +40,52 @@ GENERATE_TIMEOUT_S = 600.0
 #: sounds like the same show.
 CUES: dict[str, dict[str, Any]] = {
     "theme": {
-        "prompt": "bright upbeat television game show theme, brass fanfare, funky bass, snare rolls, "
-                  "big band, exciting opening sting, major key",
-        "duration_s": 12, "seed": 7101, "loop": False, "volume": 0.55,
+        "prompt": "big bright 1970s television game show theme, blaring brass fanfare, funky slap bass, "
+                  "snare rolls, hand claps, glittering synth, huge excited opening sting, major key, 128 bpm",
+        "duration_s": 12, "seed": 7201, "loop": False, "volume": 0.62,
     },
     "lobby": {
-        "prompt": "light playful game show lobby music, bouncy bass, soft electric piano, finger snaps, "
-                  "cheerful waiting music, steady tempo, no vocals",
-        "duration_s": 30, "seed": 7102, "loop": True, "volume": 0.32,
+        "prompt": "fun bouncy game show lobby music, funky bass groove, hand claps, bright brass stabs, "
+                  "cheesy organ, happy upbeat waiting music, 118 bpm, no vocals",
+        "duration_s": 30, "seed": 7202, "loop": True, "volume": 0.4,
     },
     "think": {
-        "prompt": "game show thinking music, ticking clock percussion, pizzicato strings, playful suspense, "
-                  "quiet and steady, background bed, no vocals",
-        "duration_s": 30, "seed": 7103, "loop": True, "volume": 0.26,
+        "prompt": "playful game show thinking music, ticking clock, pizzicato strings, bouncy bassoon, "
+                  "cartoon woodblock, quirky and light, steady tempo, background bed, no vocals",
+        "duration_s": 30, "seed": 7203, "loop": True, "volume": 0.32,
     },
     "vote": {
-        "prompt": "quirky upbeat game show voting music, marimba, light drums, walking bass, "
-                  "curious and fun, background bed, no vocals",
-        "duration_s": 30, "seed": 7104, "loop": True, "volume": 0.26,
+        "prompt": "quirky upbeat game show voting music, marimba, xylophone, funky drums, walking bass, "
+                  "cheeky brass hits, fun and silly, background bed, no vocals",
+        "duration_s": 30, "seed": 7204, "loop": True, "volume": 0.32,
     },
     "reveal": {
-        "prompt": "game show reveal suspense bed, low drum roll building, sustained strings, "
-                  "dramatic tension, cinematic, no vocals",
-        "duration_s": 30, "seed": 7105, "loop": True, "volume": 0.24,
+        "prompt": "exciting game show reveal music, snare drum roll building, brass swells, timpani, "
+                  "dramatic but fun tension, television studio, no vocals",
+        "duration_s": 30, "seed": 7205, "loop": True, "volume": 0.3,
     },
     "finale": {
-        "prompt": "triumphant game show winner fanfare, brass, cymbal crashes, celebration, "
-                  "applause energy, big finish, major key",
-        "duration_s": 14, "seed": 7106, "loop": False, "volume": 0.6,
+        "prompt": "triumphant game show grand prize winner fanfare, blazing brass, cymbal crashes, "
+                  "hand claps, big band celebration, confetti energy, huge finish, major key",
+        "duration_s": 14, "seed": 7206, "loop": False, "volume": 0.66,
     },
 }
+
+
+def _recipe(cue: dict[str, Any]) -> dict[str, Any]:
+    return {"prompt": cue["prompt"], "duration_s": cue["duration_s"], "seed": cue["seed"], "loop": bool(cue["loop"])}
+
+
+def is_current(name: str) -> bool:
+    """The cue's file was composed from the recipe in ``CUES`` now (a changed prompt recomposes it)."""
+    path = cue_path(name)
+    if not path.is_file():
+        return False
+    try:
+        return json.loads(path.with_suffix(".json").read_text()) == _recipe(CUES[name])
+    except (OSError, ValueError):
+        return False
+
 
 _state: dict[str, Any] = {"thread": None, "last_attempt": 0.0, "errors": {}}
 _lock = threading.Lock()
@@ -221,7 +237,7 @@ def generate_missing(names: list[str] | None = None) -> dict[str, str]:
         if cue is None:
             continue
         path = cue_path(name)
-        if names is None and path.is_file():
+        if names is None and is_current(name):
             continue
         t0 = time.time()
         try:
@@ -229,6 +245,7 @@ def generate_missing(names: list[str] | None = None) -> dict[str, str]:
             tmp = path.with_suffix(".tmp")
             tmp.write_bytes(wav)
             os.replace(tmp, path)
+            path.with_suffix(".json").write_text(json.dumps(_recipe(cue)))
             _state["errors"].pop(name, None)
             results[name] = f"composed in {time.time() - t0:.0f}s"
             log.info("[party_music] %s composed in %.0fs", name, time.time() - t0)
@@ -246,7 +263,7 @@ def ensure_background(names: list[str] | None = None, *, force: bool = False) ->
         if t and t.is_alive():
             return False
         if not force and names is None:
-            if all(cue_path(n).is_file() for n in CUES):
+            if all(is_current(n) for n in CUES):
                 return False
             if time.time() - float(_state["last_attempt"]) < RETRY_AFTER_S:
                 return False
