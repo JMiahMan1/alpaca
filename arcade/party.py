@@ -1113,6 +1113,7 @@ def _score_race_unlocked(room: dict[str, Any]) -> None:
     room["phase"] = "reveal"
     room["phase_started_at"] = now
     room["phase_deadline"] = now + RACE_REVEAL_SECONDS + _stage_delay(room)
+    _hold_reveal_for_the_line_unlocked(room)
     room["updated_at"] = now
     _prefetch_next_prompt_unlocked(room)
 
@@ -1428,6 +1429,7 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     room["phase_deadline"] = (now + REVEAL_SECONDS + REVEAL_PER_ANSWER_SECONDS * len(room.get("options") or [])
                               + REVEAL_LINGER_SECONDS + _stage_delay(room))
     room["updated_at"] = now
+    _hold_reveal_for_the_line_unlocked(room)
     _prefetch_next_prompt_unlocked(room)
 
 
@@ -1532,16 +1534,34 @@ DAD_JOKES: tuple[tuple[str, str], ...] = (
 _JOKE_SLOTS = {"writing": 0, "between": 1}
 
 
-def joke_for(room: dict[str, Any], salt: str) -> tuple[str, str]:
-    """The next joke from a deck shuffled once per match, so none is told twice in a match."""
-    if salt in _JOKE_SLOTS:
-        deck_seed, idx = room.get("match_id", "") or room.get("code", ""), int(room.get("round") or 0) * 2 + _JOKE_SLOTS[salt]
-    else:  # lobby rotation: its own deck, stepped by time bucket
-        deck_seed = f"{room.get('code', '')}:lobby"
-        idx = int(re.sub(r"\D", "", salt) or 0)
-    deck = list(DAD_JOKES)
-    random.Random(deck_seed).shuffle(deck)
-    return deck[idx % len(deck)]
+#: Jokes told recently in any room, oldest first: a family playing again tonight
+#: hears the ones it has not heard yet.
+_recent_jokes: collections.deque[str] = collections.deque(maxlen=200)
+
+
+def joke_for(room: dict[str, Any], salt: str,
+             fits: Any = None) -> tuple[str, str]:
+    """A dad joke for one moment of the show, chosen once and then kept.
+
+    Random, but the least recently told anywhere comes first, and never one this
+    room has heard already (until it has heard them all). ``fits`` (joke ->
+    bool) keeps to jokes that can be finished in the time there is.
+    """
+    told = room.setdefault("jokes_told", {})
+    key = (f"{room.get('match_id', '')}:{int(room.get('round') or 0)}:{salt}"
+           if salt in _JOKE_SLOTS else f"lobby:{salt}")
+    if key in told:
+        return tuple(told[key])  # type: ignore[return-value]
+    heard = {str(v[0]) for v in told.values()}
+    pool = [j for j in DAD_JOKES if j[0] not in heard] or list(DAD_JOKES)
+    if fits is not None:
+        pool = [j for j in pool if fits(j)] or pool
+    last = {setup: i for i, setup in enumerate(_recent_jokes)}
+    rng = random.Random(secrets.randbits(64))
+    pick = min(pool, key=lambda j: (last.get(j[0], -1), rng.random()))
+    told[key] = list(pick)
+    _recent_jokes.append(pick[0])
+    return pick
 
 
 #: While players write and vote, the host keeps talking: a remark about the
@@ -1658,6 +1678,79 @@ def up_next(room: dict[str, Any]) -> dict[str, Any] | None:
             "badge": meta.get("badge", ""), "multiplier": int(meta.get("multiplier") or 1)}
 
 
+#: The announcer's pace at 1.08x, words per second with pauses: only for a line not yet made (made lines are timed).
+SPOKEN_WORDS_PER_SECOND = 2.4
+#: Time for the TV to fetch a freshly made line before it starts speaking.
+SPEECH_START_SLACK_S = 2.5
+
+
+#: (voice, line) -> seconds, measured from the rendered audio. Every line the
+#: announcer has said is timed exactly; the estimate is only for a line not made yet.
+_spoken_seconds: dict[tuple[str, str], float] = {}
+
+
+def speech_seconds(text: str, voice: str | None = None) -> float:
+    """How long the announcer takes to say ``text``: measured if it has been made, else estimated."""
+    measured = _spoken_seconds.get((voice or DEFAULT_ANNOUNCER_VOICE, text or ""))
+    if measured is not None:
+        return measured
+    words = len(re.findall(r"[A-Za-z0-9'\u2019]+", text or ""))
+    beats = (text or "").count("...") + (text or "").count("\u2026")
+    return words / SPOKEN_WORDS_PER_SECOND + beats * 0.4
+
+
+def _hold_reveal_for_the_line_unlocked(room: dict[str, Any]) -> None:
+    """Keep the reveal up until the result (and the joke after it) has been said.
+
+    The host's "next" and the timer both end a reveal; the timer must never
+    cut the punchline off. The scoreboard also gets at least a few seconds.
+    """
+    started = float(room.get("phase_started_at") or time.time())
+    base = float(room.get("phase_deadline") or 0)
+    room["reveal_base_deadline"] = base
+    voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+    line = reveal_result_line(room)
+    said = started + reveal_result_at(room) + SPEECH_START_SLACK_S + speech_seconds(line, voice) + 1.0
+    board = started + scores_at(room) + 6.0
+    room["phase_deadline"] = max(base, said, board)
+    _measure_reveal_line_async(room, line, voice)
+
+
+def _apply_measured_line_unlocked(room: dict[str, Any], seconds: float) -> None:
+    """The result line has been made and timed: hold the reveal exactly that long (plus a breath)."""
+    started = float(room.get("phase_started_at") or 0)
+    said = started + reveal_result_at(room) + MEASURED_START_SLACK_S + seconds + 1.0
+    board = started + scores_at(room) + 6.0
+    room["phase_deadline"] = max(float(room.get("reveal_base_deadline") or 0), said, board)
+    room["updated_at"] = time.time()
+
+
+#: A line made ahead of time is already in the clip cache: the TV starts it at once.
+MEASURED_START_SLACK_S = 0.8
+
+
+def _measure_reveal_line_async(room: dict[str, Any], line: str, voice: str) -> None:
+    """Make the result line now (off the lock), time it, and fit the reveal to it."""
+    code, rnd, started = room.get("code"), room.get("round"), room.get("phase_started_at")
+    if not line:
+        return
+
+    def work() -> None:
+        try:
+            synthesize_show_line(line, voice=voice)  # records its length in _spoken_seconds
+        except Exception:
+            return
+        seconds = _spoken_seconds.get((voice, line))
+        if not seconds:
+            return
+        with _lock:
+            r = _rooms.get(str(code))
+            if r and r.get("phase") == "reveal" and r.get("round") == rnd and r.get("phase_started_at") == started:
+                _apply_measured_line_unlocked(r, seconds)
+
+    threading.Thread(target=work, name=f"party-line-{code}", daemon=True).start()
+
+
 def reveal_result_line(room: dict[str, Any]) -> str:
     reveal = room.get("reveal") or {}
     if reveal.get("race") is not None:
@@ -1687,12 +1780,17 @@ def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
     pool = HOST_CHATTER.get(kind) or HOST_CHATTER["blank_o_matic"]
     rng = random.Random(f"{room.get('match_id', '')}:{room.get('round', 0)}:{phase}:chatter")
     lines = rng.sample(pool, k=min(2, len(pool)))
-    if phase == "writing":
-        setup, punch = joke_for(room, "writing")
-        lines.append(f"While you think... {setup} ... {punch}")
     length = float(room.get("phase_deadline") or 0) - float(room.get("phase_started_at") or 0)
     delay = _stage_delay(room)
     start, end = 14.0 + delay, max(14.0 + delay, length - 14.0)
+    if phase == "writing":
+        # The joke is the last remark: it must be over before the ten-second call.
+        joke_at = start + (end - start) * len(lines) / (len(lines) + 1)
+        room_for_it = (length - 10.0) - joke_at - 1.0
+        voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+        setup, punch = joke_for(room, "writing", fits=lambda j: speech_seconds(
+            f"While you think... {j[0]} ... {j[1]}", voice) <= room_for_it)
+        lines.append(f"While you think... {setup} ... {punch}")
     step = (end - start) / max(1, len(lines))
     out = [{"at": round(start + i * step, 1), "text": t} for i, t in enumerate(lines) if start + i * step < end]
     if length - delay > 20:
@@ -2730,17 +2828,26 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
             pieces.append((role, clip[0], clip[1], gap))
     if not pieces:
         return None
-    show_id = hashlib.sha256(("show:v7:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
+    show_id = hashlib.sha256(("show:v8:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
     with _lock:
         cached = _tts_clips.get(show_id)
     if cached:
+        _record_spoken_length(text, voice, cached)
         return show_id, cached
     try:
         wav = announcer.assemble([(r, w, g) for r, _, w, g in pieces])
     except Exception:
         wav = pieces[-1][2]  # an unreadable clip is still better spoken plainly
     _cache_clip(show_id, wav)
+    _record_spoken_length(text, voice, wav)
     return show_id, wav
+
+
+def _record_spoken_length(text: str, voice: str, wav: bytes) -> None:
+    with contextlib.suppress(Exception):
+        samples, rate = announcer.read_wav(wav)
+        if rate and len(_spoken_seconds) < 5000:
+            _spoken_seconds[(voice or DEFAULT_ANNOUNCER_VOICE, text or "")] = len(samples) / rate
 
 
 def get_cached_tts_wav(clip_id: str) -> bytes | None:

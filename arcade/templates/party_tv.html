@@ -174,6 +174,8 @@
   .upnext { margin: 2.4vh auto 0; display: table; padding: 1.4vh 3vw; border-radius: 99px; background: #2ed3b7; color: var(--cardink);
     border: .45vh solid var(--cardink); box-shadow: 0 .8vh 0 var(--cardink); font-size: 4vh; font-weight: 900; }
   @keyframes slidein { from { opacity: 0; transform: translateX(-6vw); } to { opacity: 1; transform: none; } }
+  /* Emoji as images on TV browsers with no emoji font (a 2020 LG drew empty boxes). */
+  img.emo { width: 1.05em; height: 1.05em; vertical-align: -0.15em; margin: 0 .04em; }
 </style>
 </head>
 <body>
@@ -466,6 +468,61 @@
     return h + "</div>";
   }
   // A race moves through clues inside one phase: each clue and answer flash is its own moment.
+  /* ---------- emoji fallback ----------
+     Some TV browsers (webOS 5, older Tizen) have no colour emoji font and draw a
+     box. Measure once: if a smiley comes out without colour, every emoji the
+     stage shows is swapped for its image in /static/twemoji. */
+  var EMOJI_IMAGES = (function () {
+    if (/[?&]emoji=img/.test(location.search)) return true;
+    if (/[?&]emoji=font/.test(location.search)) return false;
+    try {
+      var c = document.createElement("canvas");
+      c.width = c.height = 24;
+      var x = c.getContext("2d");
+      if (!x || !x.getImageData) return false;
+      x.textBaseline = "top";
+      x.font = "20px sans-serif";
+      x.fillText("\ud83d\ude00", 0, 0);
+      var d = x.getImageData(0, 0, 24, 24).data;
+      for (var i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 40 && (Math.abs(d[i] - d[i + 1]) > 40 || Math.abs(d[i + 1] - d[i + 2]) > 40)) return false;
+      }
+      return true;
+    } catch (e) { return false; }
+  })();
+  var EMOJI_RE = /(?:\ud83c[\udde6-\uddff]){2}|(?:[\u2300-\u23ff\u2460-\u27bf\u2b00-\u2bff]|[\ud83c-\ud83e][\udc00-\udfff])\ufe0f?(?:\u200d(?:[\u2600-\u27bf]|[\ud83c-\ud83e][\udc00-\udfff])\ufe0f?)*(?:\ud83c[\udffb-\udfff])?/g;
+  function emojiFile(seq) {
+    var cps = [], zwj = false;
+    for (var i = 0; i < seq.length; i++) {
+      var c = seq.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff && i + 1 < seq.length) {
+        c = (c - 0xd800) * 0x400 + (seq.charCodeAt(i + 1) - 0xdc00) + 0x10000;
+        i++;
+      }
+      if (c === 0x200d) zwj = true;
+      cps.push(c.toString(16));
+    }
+    if (!zwj) { var out = []; for (var j = 0; j < cps.length; j++) if (cps[j] !== "fe0f") out.push(cps[j]); cps = out; }
+    return cps.join("-");
+  }
+  function emojify(html) {
+    if (!EMOJI_IMAGES || !html) return html;
+    var parts = String(html).split(/(<[^>]*>)/);
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].charAt(0) === "<") continue;  // only text, never inside a tag
+      parts[i] = parts[i].replace(EMOJI_RE, function (m) {
+        return '<img class="emo" alt="" src="/static/twemoji/' + emojiFile(m) + '.svg" onerror="this.style.display=\'none\'">';
+      });
+    }
+    return parts.join("");
+  }
+  function setHtml(el, html) { if (el) el.innerHTML = emojify(html); }
+  // The fixed header and footer carry emoji too.
+  (function () {
+    var fixed = [document.querySelector(".brand"), document.getElementById("sound")];
+    for (var i = 0; i < fixed.length; i++) if (fixed[i]) setHtml(fixed[i], fixed[i].innerHTML);
+  })();
+
   function stepKey(r) { return r.match_id + ":" + r.round + ":" + r.phase + (r.step ? ":" + r.step : ""); }
   function viewRacing(r) {
     var race = r.race || {}, item = race.item || {};
@@ -704,7 +761,7 @@
     if (!r) {
       $("top-right").innerHTML = "";
       $("foot-left").innerHTML = "";
-      main.innerHTML = viewWaiting();
+      setHtml(main, viewWaiting());
       return;
     }
     $("top-right").innerHTML = '<span class="pill">ROOM ' + esc(r.code) + "</span>" +
@@ -716,7 +773,7 @@
     var k = stepKey(r);
     if (k === lastRenderedKey) html = html.replace(/class="fade"/g, 'class=""').replace(/ fade"/g, '"').replace(/class="fade /g, 'class="');
     lastRenderedKey = k;
-    main.innerHTML = html;
+    setHtml(main, html);
   }
 
   function signature(r) {
@@ -817,7 +874,7 @@
       var sc = scoresShown(room);
       if (sc !== lastScoresShown) {
         lastScoresShown = sc;
-        if (sc) { playSfx("round"); $("main").innerHTML = viewReveal(room); }
+        if (sc) { playSfx("round"); setHtml($("main"), viewReveal(room)); }
       }
       var step = sc ? lastRevealStep : revealStep(room);
       if (step !== lastRevealStep) {
@@ -826,7 +883,7 @@
           playSfx(o && o.kind === "decoy" ? "trap" : o && (o.is_round_winner || o.kind === "truth") ? "win" : "pop");
         }
         lastRevealStep = step;
-        $("main").innerHTML = viewReveal(room);
+        setHtml($("main"), viewReveal(room));
       }
     }
     var ni = document.getElementById("next-in");

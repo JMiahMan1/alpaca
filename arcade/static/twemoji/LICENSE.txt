@@ -1,0 +1,3 @@
+Emoji graphics: Twemoji (jdecked/twemoji 15.1.0), Copyright 2019 Twitter, Inc and other contributors,
+licensed under CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+Only the emoji Parable Party's TV stage shows are included; they stand in for missing emoji fonts on TV browsers.

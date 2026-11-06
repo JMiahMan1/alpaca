@@ -492,7 +492,7 @@ other fails the build.
   that is not ready is just silent); `POST /api/admin/party/music/regenerate` redoes them. It plays wherever the
   announcer plays, ducks under the announcer, and the host can turn it off per room.
 - **Two voices, one pipeline** (`arcade/announcer.py`, `party.synthesize_show_line`). The announcer is the
-  `bm_fable,bm_lewis,bm_george` blend at 1.15x with snappy per-sentence pauses, chosen by ear over three audition
+  `bm_fable,bm_lewis,bm_george` blend at 1.08x (1.15 was too fast in play) with per-sentence pauses, chosen by ear over three audition
   rounds; its chain is deliberately clean (high-pass, presence, one compressor, no echo or drive), and everything but
   an exclamation sits `SHOUT_LIFT_DB` under it so the shouts land. `depop()` fades out the ~2 ms burst Kokoro puts at
   the start of a clip that opens on a vowel ("Ooh."), which was heard as a click after a pause. A line that opens with
@@ -526,6 +526,12 @@ other fails the build.
 - **The announcer's chain must never add a click.** `compress()` smooths its gain and looks ahead 5 ms (it used to
   clamp down inside a hard vowel onset after a pause, which was heard as a click), fades are S-curves, and
   `test_the_chain_adds_no_clicks` holds it. The remaining sharp edges in a line are Kokoro's own plosives.
+- **Lines are timed, jokes fitted.** Every line the announcer says is measured from its audio (`_spoken_seconds`);
+  a reveal's result-and-joke line is made in the background as the reveal starts, and the reveal is held exactly that
+  long (the clip is then cached, so the TV speaks at once). Jokes are chosen at random, least recently told in any
+  room first and never twice in a room, and a writing-phase joke is only one that ends before the ten-second call.
+- **Emoji on TVs without an emoji font** (a 2020 LG drew boxes): the stage measures a smiley on a canvas and, if it
+  has no colour, swaps every emoji for its Twemoji image in `arcade/static/twemoji/` (CC-BY 4.0; `?emoji=img` forces it).
 - **Ids on screens are public.** A player's own id authorises their actions, so snapshots carry
   `public_id(room, pid)` only and tell each phone which one is `you`. Host actions must name the host; `/next`
   carries the screen it was tapped on (`expect`) and is ignored if the room has already moved on.
