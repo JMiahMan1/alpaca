@@ -329,3 +329,13 @@ def test_shouts_land_over_the_rest_without_adding_anything():
     g = 10 ** (-announcer.SHOUT_LIFT_DB / 20)
     assert len(a) == len(b) and all(abs(y - x * g) < 2e-4 for x, y in zip(a, b, strict=True))  # a plain gain
     assert announcer.quieter(raw, 0) == raw
+
+
+def test_the_longest_between_round_line_is_never_cut_short():
+    from arcade import party as p
+    board = max((line for v in p.STANDINGS.values() for line in v), key=len)
+    joke = max(p.DAD_JOKES, key=lambda j: len(j[0]) + len(j[1]))
+    result = max(p._pool(p.HOST_TRAPPED, p.MORE_TRAPPED), key=len)
+    line = (f"{result} {board.format(leader='Jeremiah', second='Michele', climber='Benjamin')} "
+            f"And while we catch our breath... {joke[0]} ... {joke[1]}")
+    assert len(line) + 60 <= p.TTS_MAX_CHARS  # with room for long names

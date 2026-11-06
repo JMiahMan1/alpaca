@@ -234,3 +234,13 @@ def test_a_clue_is_closed_until_it_has_been_read_out():
     race["open_at"] = 0  # read out
     snap = party.race_answer("RACE", "p0", 0, race["items"][0]["answer"])
     assert snap["race"]["mine"] is not None
+
+
+def test_a_race_result_waits_for_the_drumroll_to_finish():
+    """Reported in review: the result queued behind the drumroll and lost its punchline."""
+    room = _room_in_race("pair_up", humans=1)
+    with party._lock:
+        party._score_race_unlocked(room)
+        drum = party.announce_line(room)  # the drumroll that opens the reveal
+        assert drum
+        assert party.reveal_result_at(room) >= party.speech_seconds(drum, room.get("voice")) + party.SPEECH_START_SLACK_S
