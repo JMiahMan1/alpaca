@@ -282,6 +282,8 @@
 
   function announce(r) {
     var key = r.match_id + ":" + r.round + ":" + r.phase;
+    // The host's line for this phase comes from the room, so the TV and phones agree.
+    if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key); return; }
     if (r.phase === "lobby") {
       speak("Welcome to Use Your Good Word! Scan the code on the screen, or join room " + r.code.split("").join(" ") + " in Jarvis.", "lobby:" + r.code);
     } else if (r.phase === "writing" && r.prompt) {
