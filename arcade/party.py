@@ -95,6 +95,9 @@ CURATED_ANNOUNCER_VOICES: tuple[dict[str, str], ...] = (
 )
 
 ROOM_TTL_SECONDS = 7200
+#: A room nobody's phone has checked in on for this long is closed.
+ROOM_IDLE_SECONDS = 600
+ROOM_EMPTY_GRACE_SECONDS = 120
 STAGE_PRESENCE_SECONDS = 8.0
 WRITE_SECONDS = 55
 VOTE_SECONDS = 35
@@ -683,8 +686,27 @@ def _matches_truth(text: str, prompt_item: dict[str, Any]) -> bool:
     return False
 
 
+def _humans_unlocked(room: dict[str, Any]) -> list[dict[str, Any]]:
+    """Human contestants (not AI scribes, not spectators)."""
+    return [p for p in room["players"].values() if not p.get("is_bot") and not p.get("spectator")]
+
+
+def _abandoned(room: dict[str, Any], now: float) -> bool:
+    """No human contestant left, or none has checked in for ROOM_IDLE_SECONDS."""
+    humans = _humans_unlocked(room)
+    if not humans:
+        # A room someone just opened (say, from a TV or as a spectator) gets a
+        # moment for its first contestant to arrive.
+        return now - float(room.get("created_at") or now) > ROOM_EMPTY_GRACE_SECONDS
+    last = max(float(p.get("last_seen") or p.get("joined_at") or 0) for p in humans)
+    return now - last > ROOM_IDLE_SECONDS
+
+
 def _prune_expired_unlocked(now: float) -> None:
-    stale = [code for code, r in _rooms.items() if now - float(r.get("updated_at") or 0) > ROOM_TTL_SECONDS]
+    stale = [
+        code for code, r in _rooms.items()
+        if now - float(r.get("updated_at") or 0) > ROOM_TTL_SECONDS or _abandoned(r, now)
+    ]
     for code in stale:
         _rooms.pop(code, None)
 
@@ -1165,6 +1187,8 @@ def list_active_rooms() -> list[dict[str, Any]]:
                     "total_rounds": r.get("total_rounds", TOTAL_ROUNDS),
                     "player_count": len(humans),
                     "players": [p["name"] for p in humans[:6]],
+                    "stage_connected": now - float(r.get("stage_seen_at") or 0) < STAGE_PRESENCE_SECONDS,
+                    "created_at": r.get("created_at"),
                 }
             )
         return out
@@ -1269,6 +1293,56 @@ def _touch_unlocked(room: dict[str, Any], viewer_id: str | None, now: float) -> 
         heir = min(here, key=lambda p: float(p.get("joined_at") or 0))
         room["host_id"] = heir["id"]
         room["host_name"] = heir["name"]
+
+
+def _hand_off_host_unlocked(room: dict[str, Any]) -> None:
+    humans = sorted(_humans_unlocked(room), key=lambda p: float(p.get("joined_at") or 0))
+    if humans:
+        room["host_id"] = humans[0]["id"]
+        room["host_name"] = humans[0]["name"]
+
+
+def leave_room(code: str, *, player_id: str) -> dict[str, Any]:
+    """A player leaves. The room closes when no human contestant is left.
+
+    Their unscored answer and vote go with them, so a round never waits on, or
+    credits, someone who is gone; the host role passes to the next player.
+    """
+    clean_code = _clean_code(code)
+    pid = _clean_text(player_id, 64)
+    with _lock:
+        room = _rooms.get(clean_code)
+        if room is None:
+            raise LookupError(f"Room '{clean_code}' not found.")
+        if pid not in room["players"]:
+            return {"closed": False, "room": serialize_room(room)}
+        room["players"].pop(pid, None)
+        if room.get("phase") == "writing":
+            (room.get("submissions") or {}).pop(pid, None)
+        if room.get("phase") == "voting":
+            (room.get("votes") or {}).pop(pid, None)
+        if not _humans_unlocked(room):
+            _rooms.pop(clean_code, None)
+            return {"closed": True, "room": None}
+        if room.get("host_id") == pid:
+            _hand_off_host_unlocked(room)
+        room["updated_at"] = time.time()
+        _check_auto_advance_unlocked(room)
+        return {"closed": False, "room": serialize_room(room)}
+
+
+def end_room(code: str, *, player_id: str | None = None, admin: bool = False) -> None:
+    """Close a room for everyone: its host, or an arcade admin."""
+    clean_code = _clean_code(code)
+    with _lock:
+        room = _rooms.get(clean_code)
+        if room is None:
+            raise LookupError(f"Room '{clean_code}' not found.")
+        if not admin:
+            pid = _clean_text(player_id, 64)
+            if not pid or pid != room.get("host_id"):
+                raise PermissionError("Only the host or an admin can end the game.")
+        _rooms.pop(clean_code, None)
 
 
 def _require_host_unlocked(room: dict[str, Any], player_id: str | None) -> None:
