@@ -197,6 +197,10 @@ services:
     environment:
       ARCADE_DIR: /app/data/arcade
       ARCADE_PORT: "5001"
+      AUDIO_SERVER_URL: "http://audio-server:8082"
+      PROXY_URL: "http://host.docker.internal:11434"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   alpaca-telemetry:
     build:
