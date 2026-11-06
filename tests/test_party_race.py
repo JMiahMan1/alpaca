@@ -148,7 +148,7 @@ def test_room_plays_a_quick_draw_round_end_to_end():
     assert snap["race"]["flash"] and snap["step"] == "0f"
     assert snap["race"]["item"]["answer"] == item["answer"]
     assert snap["race"]["right"] == ["P0", "P1"] and snap["race"]["mine"]["correct"] is False
-    assert snap["announce"].endswith("! P0 was fastest!")
+    assert snap["announce"].endswith("! P0 got it first. Naturally.")
     # Run the clock out on the rest.
     with party._lock:
         for _ in range(40):
@@ -190,3 +190,29 @@ def test_every_match_has_a_race_round():
         races = [k for k in sched if party_race.is_race(k)]
         assert 1 <= len(races) <= 2 and len(set(races)) == len(races)
         assert sched[0] == party.MATCH_OPENER and sched[-1] == party.MATCH_FINALE and "truth_or_bluff" in sched
+
+
+def test_snapshots_never_carry_clue_ids_that_name_the_answer():
+    room = _room_in_race("quick_draw")
+    snap = party.serialize_room(room, "p0")
+    assert "id" not in snap["race"]["item"]
+    for it in room["race"]["items"]:
+        assert it["id"] not in str(snap)
+
+
+def test_a_streamed_tv_gets_the_whole_answer_flash():
+    race, rng = _race("quick_draw")
+    party_race.tick(race, race["deadline"] + 5, ["p"], 8.0, [], rng)
+    assert race["flash_until"] - race["flash_at"] == party_race.FLASH_SECONDS + 8.0
+
+
+def test_a_race_nobody_scores_in_is_not_blamed_on_the_trap():
+    room = _room_in_race("lightning")
+    with party._lock:
+        for _ in range(40):
+            if room["phase"] != "racing":
+                break
+            race = room["race"]
+            party._tick_race_unlocked(room, (race["flash_until"] or race["deadline"] + 2) + 0.01)
+        line = party.reveal_result_line(room)
+    assert "Trap" not in line.split("...")[0] and line.startswith(room["reveal"]["announcer"])

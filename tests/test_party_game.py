@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 
 import pytest
@@ -872,3 +873,19 @@ def test_the_reveal_ends_on_a_scoreboard_with_whats_next():
     with party._lock:
         room["round"] = room["total_rounds"]
         assert party.serialize_room(room, "a")["up_next"] is None
+
+
+def test_a_late_answer_matching_one_already_on_the_ballot_is_not_added_twice():
+    party.create_or_join_room(code="LAT3", player_id="a", name="Ann")
+    party.create_or_join_room(code="LAT3", player_id="b", name="Ben")
+    party.start_match("LAT3", player_id="a")
+    party.submit_answer("LAT3", player_id="b", text="A camel with opinions")
+    with party._lock:
+        room = party._rooms["LAT3"]
+        room["phase_deadline"] = time.time() - party.SUBMIT_GRACE_SECONDS - 1
+        party._check_auto_advance_unlocked(room)
+        assert room["phase"] == "voting"
+    with contextlib.suppress(ValueError):  # too late, and not a new answer: refused
+        party.submit_answer("LAT3", player_id="a", text="a camel with OPINIONS!")
+    texts = [party._normalize_compare(o["text"]) for o in party._rooms["LAT3"]["options"]]
+    assert len(texts) == len(set(texts))

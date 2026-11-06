@@ -581,7 +581,12 @@
     const moved = !prev || prev.phase !== r.phase || prev.round !== r.round || prev.match_id !== r.match_id;
     if (r.phase === "racing" && (!prev || stepKey(prev) !== stepKey(r))) {
       if (!r.race || !r.race.flash) raceUi = { key: stepKey(r), sel: -1, map: {}, order: [] };
-      else if (r.race.mine) sfx(r.race.mine.correct ? "win" : "lose");
+      else if (r.race.mine) {
+        // Not before a streamed TV shows the answer.
+        const ding = r.race.mine.correct ? "win" : "lose";
+        const wait = holdUntil - Date.now();
+        if (wait > 0) setTimeout(() => sfx(ding), wait); else sfx(ding);
+      }
       if (prev && !moved) tap();
     }
     if (prev && prev.match_id !== r.match_id && kit.state === "over") kit.start();

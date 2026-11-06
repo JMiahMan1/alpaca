@@ -366,8 +366,9 @@ def pronounce(text: str) -> str:
 
 #: Capitals that really are letters said one by one.
 ACRONYMS = frozenset({"TV", "AI", "OK", "USA", "HOA", "GPS", "ID", "VIP", "NIV", "KJV", "ESV", "NKJV", "DVD", "ATM",
-                      "AM", "PM", "BC", "AD", "II", "III", "IV", "VI", "VII", "VIII", "IX", "XL", "UK", "MVP", "PB"})
-_SHOUT = re.compile(r"(?P<link>\[[^\]]*\]\(/[^)]*/\))|\b(?P<word>[A-Z][A-Z]+)\b")
+                      "AM", "PM", "BC", "AD", "II", "III", "IV", "VI", "VII", "VIII", "IX", "XL", "UK", "MVP", "PB",
+                      "CEO", "DIY", "FAQ", "RSVP", "VBS", "PTA"})
+_SHOUT = re.compile(r"(?P<link>\[[^\]]*\]\(/[^)]*/\))|\b(?P<word>[A-Z][A-Z]+(?:['’][A-Z]+)?)\b")
 
 
 def unshout(text: str) -> str:
@@ -376,7 +377,7 @@ def unshout(text: str) -> str:
         if m.group("link"):
             return m.group("link")
         word = m.group("word")
-        return word if word in ACRONYMS else word.capitalize()
+        return word if word in ACRONYMS else word[0] + word[1:].lower()
 
     return _SHOUT.sub(fix, text or "")
 

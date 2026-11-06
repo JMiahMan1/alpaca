@@ -276,6 +276,8 @@
     // Ding-ding-ding! and the audience goes wild.
     win: function () { tone(1318, 0.25, "sine", 0.2, 0); tone(1318, 0.25, "sine", 0.2, 0.16); tone(1568, 0.6, "sine", 0.22, 0.32); applause(2.2, 0.3); },
     finale: function () { tone(523, 0.14, "square", 0.12, 0); tone(659, 0.14, "square", 0.12, 0.12); tone(784, 0.14, "square", 0.12, 0.24); tone(1046, 0.8, "triangle", 0.26, 0.36); applause(4.5, 0.4); },
+    // A right answer in a race: ding-ding, no applause (Lightning has eight of them).
+    ding: function () { tone(1318, 0.18, "sine", 0.2, 0); tone(1568, 0.4, "sine", 0.22, 0.14); },
     join: function () { tone(880, 0.1, "sine", 0.14); tone(1318, 0.16, "sine", 0.12, 0.08); applause(0.9, 0.18); }
   };
   function playSfx(name) { try { sfx[name](); } catch (e) {} }
@@ -625,7 +627,9 @@
     return '<div class="next-in">Next round in <span id="next-in">' + Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</span>s</div>";
   }
   function scoresShown(r) {
-    return !!(r && r.phase === "reveal" && r.scores_at_s && (Date.now() - phaseStartLocal) / 1000 >= r.scores_at_s);
+    // A streamed picture reaches the room r.stage_delay_s late, and scores_at_s already allows for that.
+    var at = (r && r.scores_at_s || 0) - (STREAMED ? (r && r.stage_delay_s || 0) : 0);
+    return !!(r && r.phase === "reveal" && r.scores_at_s && (Date.now() - phaseStartLocal) / 1000 >= at);
   }
   // The reveal ends on its own page: the standings, then what's coming next.
   function viewScores(r) {
@@ -721,7 +725,12 @@
       (r.round ? ' <span class="pill">ROUND ' + r.round + " / " + r.total_rounds + "</span>" : "");
     $("foot-left").innerHTML = "Join: " + esc(window.location.host) + "/join/" + esc(r.code);
     var views = { lobby: viewLobby, writing: viewWriting, voting: viewVoting, reveal: viewReveal, racing: viewRacing, finished: viewFinished };
-    main.innerHTML = (views[r.phase] || viewLobby)(r);
+    var html = (views[r.phase] || viewLobby)(r);
+    // The same screen redrawn (someone answered, a score changed) must not replay its entrance.
+    var k = stepKey(r);
+    if (k === lastRenderedKey) html = html.replace(/class="fade"/g, 'class=""').replace(/ fade"/g, '"').replace(/class="fade /g, 'class="');
+    lastRenderedKey = k;
+    main.innerHTML = html;
   }
 
   function signature(r) {
@@ -752,6 +761,7 @@
   var lastPlayerCount = -1;
   var lastRevealStep = -1;
   var lastScoresShown = false;
+  var lastRenderedKey = "";
   var lastTick = -1;
   function apply(r) {
     var phaseKey = r ? stepKey(r) : "";
@@ -759,7 +769,7 @@
       if (r.phase === "writing") playSfx("round");
       else if (r.phase === "voting") playSfx("vote");
       else if (r.phase === "finished") playSfx("finale");
-      else if (r.phase === "racing" && r.race) playSfx(!r.race.flash ? "vote" : (r.race.right || []).length ? "win" : "trap");
+      else if (r.phase === "racing" && r.race) playSfx(!r.race.flash ? "vote" : (r.race.right || []).length ? "ding" : "trap");
     }
     if (r && r.phase === "lobby" && lastPlayerCount >= 0 && humans(r).length > lastPlayerCount) playSfx("join");
     lastPlayerCount = r ? humans(r).length : -1;
