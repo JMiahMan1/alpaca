@@ -855,9 +855,10 @@ def split_for_tts(text: str, max_chars: int = 3800) -> list[str]:
         return [text]
     try:
         from tts_text import sentences
+
+        units = list(sentences(text))
     except Exception:  # pragma: no cover - only if tts_text is unavailable
-        sentences = None
-    units = list(sentences(text)) if sentences else re.split(r"(?<=[.!?])\s+", text)
+        units = re.split(r"(?<=[.!?])\s+", text)
 
     chunks: list[str] = []
     cur = ""
@@ -1090,10 +1091,10 @@ def mix_podcast(
     )
 
 
-def host_roster(pair_id: str, voice_profiles: dict[str, dict[str, Any]] | None = None) -> list[HostSpec]:
+def host_roster(pair_id: str, voice_profiles: dict[str, str] | None = None) -> list[HostSpec]:
     """Build the two :class:`HostSpec` for a curated pair, wiring in clones.
 
-    ``voice_profiles`` maps a saved voice-profile id to its metadata. A
+    ``voice_profiles`` maps ``host_clone_<pair>_<slot>`` to a saved voice-profile id. A
     profile is only attached to a host when the ``host_clone_<pair>_<slot>``
     key asks for it -- attaching every available clone by default would
     silently replace a curated voice with a stranger's.

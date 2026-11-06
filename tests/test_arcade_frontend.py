@@ -7,7 +7,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "arcade/static/arcade.js").read_text()
-LIFECYCLE = JS[JS.index("  let scorePollToken = 0;") : JS.index("  // Score auto-capture:")]
+# The live-session lifecycle runs from the score poll state to the star ratings.
+LIFECYCLE = JS[JS.index("  let scorePollToken = 0;") : JS.index("  // Star ratings.")]
 BOARD = JS[JS.index("  function watchBoard(") : JS.index("  // Remember the player's callsign")]
 CONTROLS = JS[JS.index('  const controlsBtn = $("btn-controls");') : JS.index("  function isFull()")]
 
@@ -27,6 +28,8 @@ const $ = id => {
 };
 const window = { __arcadeCid: 'old', location: { pathname: '/player/ABC' },
   addEventListener: (event, fn) => { listeners[event] = fn; } };
+// A top-level arcade page (not embedded in the family arcade): the parent is itself.
+window.parent = window;
 const document = { hidden: false,
   addEventListener: (event, fn) => { docListeners[event] = fn; },
   querySelector: () => null, querySelectorAll: () => [] };
@@ -80,18 +83,19 @@ fetch = async (url, options) => {
 startScorePoll($('live-status'));
 await flush();
 await advance();
-assert.equal($('score-value').value, 10);
+assert.match($('score-msg').textContent, /Auto-captured: 10 points/);
+assert.equal($('score-initials').value, 'ABC');
 assert.equal(celebrated, 1);
-$('score-value').value = 99;
+$('score-msg').textContent = 'unchanged';
 await advance();
-assert.equal($('score-value').value, 99);
+assert.equal($('score-msg').textContent, 'unchanged');
 assert.equal(celebrated, 1);
 assert.equal(refreshed, 1);
 await advance();
 assert.match($('live-status').textContent, /temporary/);
 await advance();
 await advance();
-assert.equal($('score-value').value, 20);
+assert.match($('score-msg').textContent, /Auto-captured: 20 points/);
 await advance();
 assert.equal(calls, 7);
 assert.equal(celebrated, 3);
@@ -119,7 +123,8 @@ assert.equal(timers.size, 0);
 fetch = async () => ({json: async () => score(200)});
 startScorePoll($('live-status'));
 await flush();
-assert.equal($('score-value').value, 200);
+assert.match($('score-msg').textContent, /Auto-captured: 200 points/);
+assert.equal(refreshed, 1);
 assert.equal(timers.size, 1);
 """
     )
@@ -149,7 +154,7 @@ finishSync();
 await pending;
 assert.deepEqual(calls, ['/api/games/game/sync_score', '/api/games/game/stop']);
 assert.equal(window.__arcadeCid, null);
-assert.equal($('score-value').value, 30);
+assert.match($('score-msg').textContent, /Auto-captured: 30 points/);
 assert.equal(timers.size, 0);
 """
     )
@@ -364,7 +369,7 @@ await flush();
 assert.equal(window.__arcadeCid, 'old');
 assert.equal($('btn-stop-live').disabled, false);
 assert.equal($('btn-play-live').disabled, false);
-assert.equal($('score-value').value, 20);
+assert.match($('score-msg').textContent, /Auto-captured: 20 points/);
 assert.equal(timers.size, 1);
 assert.match($('live-status').textContent, /busy/);
 """
@@ -372,7 +377,7 @@ assert.match($('live-status').textContent, /busy/);
 
 
 def test_play_board_reloads_concurrent_scores_without_caching():
-    refresh = JS[JS.index("  async function refreshScores()") : JS.index('  $("btn-submit-score").addEventListener')]
+    refresh = JS[JS.index("  async function refreshScores()") : JS.index("  // Scores are captured automatically.")]
     run_node(
         """
 const slug = 'game';
@@ -412,11 +417,13 @@ def test_templates_wire_refresh_and_preserve_mobile_controls():
     assert ".screen.show-controls #play-overlay-bar { display: flex;" in play
     assert "@media (pointer: fine) { .screen:not(.show-controls) #play-keys { display: none; } }" in play
     assert 'id="play-keys" role="group"' in play
-    # Every arcade page carries the Players + My player card navigation.
+    # Every arcade page carries the Players + My player card navigation. The
+    # player and directory pages keep ?collection=family on it (29b7ec4).
     for name in ("index", "player", "players", "play"):
         html = (templates / f"{name}.html").read_text()
-        assert 'href="/players"' in html
-        assert "data-my-card" in html
+        nav = 'href="/players{{ qs }}"' if name in ("player", "players") else 'href="/players"'
+        assert nav in html
+        assert f"<a {nav} data-my-card>My player card</a>" in html
 
 
 def test_player_directory_template_wires_standings_and_unverified_copy():
@@ -424,7 +431,8 @@ def test_player_directory_template_wires_standings_and_unverified_copy():
     assert 'id="players-search"' in players
     assert 'data-player-initials' in players
     assert "unverified" in players
-    assert 'href="/player/{{ p.initials }}"' in players
+    assert 'href="/player/{{ p.initials }}{{ qs }}"' in players
+    assert "{% set qs = '?collection=family' if collection == 'family' else '' %}" in players
 
 
 def test_dpad_hold_release_and_cancel_unchanged():
@@ -475,6 +483,10 @@ function run() {
   assert.equal(link.attrs.href, '/player/JQX');
   rememberCallsign('');
   assert.equal(link.textContent, 'My player card · JQX');
+  // On a family page the card stays on the family board, and nothing else rides along.
+  link.search = '?collection=family&name=Ann';
+  paintMyCardLinks();
+  assert.equal(link.attrs.href, '/player/JQX?collection=family');
 }
 run();
 """

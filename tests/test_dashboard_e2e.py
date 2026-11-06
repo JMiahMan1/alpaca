@@ -1,9 +1,12 @@
 import os
 
 import pytest
-from playwright.sync_api import sync_playwright
 
 pytestmark = pytest.mark.live
+
+# Live browser suite: skip cleanly (rather than fail collection) where the
+# playwright package is not installed; see conftest.missing_facilities().
+sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
 
 DASHBOARD_URL = os.environ.get("ALPACA_BASE_URL", "http://localhost:5000").rstrip("/")
 

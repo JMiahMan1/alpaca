@@ -580,7 +580,6 @@ def test_narration_checks_hear_an_echo_and_a_seam(monkeypatch):
     lag = int(0.12 * sr)
     wet[lag:] += 0.6 * dry[:-lag]
     # Timbre: one embedding per window, the third one different.
-    calls = {"n": 0}
 
     def fake_embed(windows):
         out = []
@@ -632,7 +631,7 @@ def test_band_blend_takes_the_high_band_from_the_source_and_realigns_it():
     t = np.arange(sr, dtype=np.float32) / sr
     low_tone = np.sin(2 * np.pi * 300 * t).astype(np.float32)
     hiss = (np.random.default_rng(2).standard_normal(sr) * 0.2).astype(np.float32)
-    from scipy.signal import firwin, fftconvolve
+    from scipy.signal import fftconvolve, firwin
 
     hp = -firwin(511, 5000, fs=sr)
     hp[255] += 1

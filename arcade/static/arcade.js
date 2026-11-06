@@ -16,7 +16,10 @@
   function paintMyCardLinks() {
     const callsign = (localStorage.getItem(CALLSIGN_KEY) || "").toUpperCase();
     document.querySelectorAll("[data-my-card]").forEach((link) => {
-      if (callsign) link.setAttribute("href", "/player/" + callsign);
+      // Keep the board the page is on (?collection=family): the card is per collection.
+      const query = link.search || (typeof location !== "undefined" ? location.search : "") || "";
+      const collection = new URLSearchParams(query).get("collection");
+      if (callsign) link.setAttribute("href", "/player/" + callsign + (collection ? "?collection=" + encodeURIComponent(collection) : ""));
       link.textContent = callsign ? "My player card · " + callsign : "My player card";
     });
   }

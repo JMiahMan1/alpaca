@@ -214,12 +214,6 @@ def test_arcade_index_and_play(arcade_client):
     res = arcade_client.get("/")
     assert res.status_code == 200
     assert b"demo-model_demo-breakout" in res.data
-
-
-def test_arcade_index_and_play(arcade_client):
-    res = arcade_client.get("/")
-    assert res.status_code == 200
-    assert b"demo-model_demo-breakout" in res.data
     # Benchmark date renders on the index card (regression: run_date/benchmark_date key mismatch).
     assert b"2026-09-11" in res.data
 

@@ -29,7 +29,7 @@ import textwrap
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 SANDBOX_IMAGE = "alpaca-sandbox:latest"
 
@@ -146,10 +146,11 @@ def _frame_ink_coverage(png_bytes: bytes) -> float | None:
         with io.BytesIO(png_bytes) as buf:
             img = _PILImage.open(buf).convert("RGB")
             img = img.resize((max(1, img.width // 4), max(1, img.height // 4)))
+        pixels: list[tuple[int, int, int]]
         try:
-            pixels = list(img.get_flattened_data())
+            pixels = cast("list[tuple[int, int, int]]", list(img.get_flattened_data()))
         except AttributeError:  # Pillow < 14
-            pixels = list(img.getdata())
+            pixels = cast("list[tuple[int, int, int]]", list(img.getdata()))
         if not pixels:
             return None
         counts: dict[tuple[int, int, int], int] = {}
@@ -188,10 +189,11 @@ def _screenshot_has_content(png_bytes: bytes) -> bool:
         with io.BytesIO(png_bytes) as buf:
             img = _PILImage.open(buf).convert("RGB")
             img = img.resize((max(1, img.width // 4), max(1, img.height // 4)))
+        pixels: list[tuple[int, int, int]]
         try:
-            pixels = list(img.get_flattened_data())
+            pixels = cast("list[tuple[int, int, int]]", list(img.get_flattened_data()))
         except AttributeError:  # Pillow < 14
-            pixels = list(img.getdata())
+            pixels = cast("list[tuple[int, int, int]]", list(img.getdata()))
         if not pixels:
             return False
         luma = [0.2126 * r + 0.7152 * g + 0.0722 * b for r, g, b in pixels]
@@ -1721,7 +1723,7 @@ def _container_age_s(stamp: str, now: float | None = None) -> float | None:
     if not stamp or stamp.startswith("0001-"):
         return None
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
         return (now if now is not None else time.time()) - parsed.timestamp()
@@ -1768,7 +1770,7 @@ def reap_arcade_sessions(
                 state.get("StartedAt"),
                 attrs.get("Created"),
             ):
-                age = _container_age_s(stamp, now)
+                age = _container_age_s(str(stamp or ""), now)
                 if age is not None:
                     break
             if age is None or age < grace_s:

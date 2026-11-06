@@ -14,8 +14,8 @@ generation itself is passed in as a callable.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 #: What each section is asked to sound like, appended to the user's prompt.
 SECTION_HINTS = {

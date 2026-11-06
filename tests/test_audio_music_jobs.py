@@ -10,8 +10,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import audio_server as audio
 from fastapi.testclient import TestClient
+
+import audio_server as audio
 
 SR = 1000
 

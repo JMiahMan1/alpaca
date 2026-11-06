@@ -14,11 +14,9 @@ import json
 import os
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 from web.arcade_publish import (
-    GAME_CATEGORIES,
     ARCADE_DIR,
     iter_eligible_game_results,
     load_curated,
@@ -44,7 +42,7 @@ def _candidate_rows() -> list[dict[str, Any]]:
     try:
         from arcade.mobile import assess_html
     except ImportError:
-        from mobile import assess_html
+        from mobile import assess_html  # type: ignore[no-redef]
 
     curated = set(load_curated())
     published = published_slugs()
