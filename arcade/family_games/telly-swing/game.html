@@ -102,7 +102,7 @@
   function builder() {
     const L = {
       solids: [], ledges: [], water: [], hooks: [], sparks: [], cells: [], pads: [], springs: [], crates: [],
-      sparkers: [], sockets: [], doors: [], lifts: [], fans: [], bridges: [], plates: [], start: { x: 2, y: 11 }, exit: null,
+      baddies: [], sparkers: [], sockets: [], doors: [], lifts: [], fans: [], bridges: [], plates: [], start: { x: 2, y: 11 }, exit: null,
     };
     const b = {
       L,
@@ -122,6 +122,10 @@
       hook: (x, y, o) => L.hooks.push({ bx: x, by: y, ax: (o && o.ax) || 0, ay: (o && o.ay) || 0, sp: (o && o.sp) || 1, ph: (o && o.ph) || 0 }),
       spring: (x, y) => L.springs.push({ x, y, squash: 0 }),
       crate: (x, y) => L.crates.push({ hx: x, hy: y }),
+      baddie: (x, y, x0, x1, kind) => L.baddies.push({
+        x, y, hx: x, hy: y, x0, x1, kind: kind || "bug", dir: 1, vx: 0, vy: 0,
+        w: 0.84, h: kind === "roller" ? 0.96 : 0.74, walk: 0, pause: 0, squash: 0, dead: false, deadT: 0, spin: 0,
+      }),
       sparker: (x, y, phase) => L.sparkers.push({ x, y, h: 2.7, phase: phase || 0 }),
       socket: (x, y, time) => {
         const s = { kind: "socket", x, y, time: time || 0, left: 0, latched: false };
@@ -152,10 +156,12 @@
         b.ground(30, 36, 11);
         b.water(36, 39, 11);
         b.ground(39, 48, 11); b.pad(41, 11);
+        b.baddie(44.8, 11, 42.4, 47.2, "bug");
         b.ground(48, 52, 10); b.ground(52, 56, 9);
         b.sparks([[53, 8], [54, 8], [55, 8]]);
         b.cell(57.5, 7.4);
         b.ground(59, 82, 9);
+        b.baddie(63, 9, 60.2, 65.5, "bug");
         b.spring(67, 9); b.ledge(68, 73, 4);
         b.sparks([[69, 3.2], [72, 3.2]]); b.cell(70.5, 3);
         b.exit(78, 9);
@@ -170,11 +176,14 @@
         b.ground(17, 25, 11); b.pad(19, 11);
         b.hook(28.5, 5); b.hook(32.5, 5); b.cell(30.5, 7.6);
         b.ground(36, 44, 11);
+        b.baddie(40, 11, 37.2, 42.8, "bug");
         b.hook(48.5, 4.5, { ax: 1.4, sp: 0.9 });
         b.ground(53, 62, 10); b.pad(55, 10); b.ledge(56, 60, 8); b.cell(58, 7);
         b.hook(65.5, 4); b.hook(69, 4.5); b.hook(72.5, 4); b.cell(69, 0.4);
         b.sparks([[65.5, 8.8], [69, 9.3], [72.5, 8.8]]);
-        b.ground(76, 92, 11); b.exit(88, 11);
+        b.ground(76, 92, 11);
+        b.baddie(82, 11, 78, 85.5, "roller");
+        b.exit(88, 11);
       },
     },
     {
@@ -188,12 +197,15 @@
         const lift = b.socket(18, 11, 6);
         b.lift(21, 24, 10.55, 6, lift);
         b.ground(24, 34, 6); b.cell(22.5, 3.4);
+        b.baddie(29, 6, 25.5, 32.5, "bug");
         b.sparks([[27, 5.3], [29, 5.3], [31, 5.3]]);
         b.ground(34, 48, 11); b.pad(36, 11);
         const c = b.socket(39, 11, 3.5);
         b.cell(41.5, 8);
         b.block(44, 47, 0, 6); b.door(45, 6, 11, c);
-        b.ground(48, 62, 11); b.exit(58, 11);
+        b.ground(48, 62, 11);
+        b.baddie(53, 11, 49.5, 56, "roller");
+        b.exit(58, 11);
       },
     },
     {
@@ -202,6 +214,7 @@
         b.ground(0, 20, 11); b.start(2, 11);
         b.crate(8, 11);
         b.ground(20, 32, 7); b.cell(26, 5.4);
+        b.baddie(26, 7, 21.5, 30.5, "bug");
         b.sparks([[23, 6.3], [24, 6.3], [28, 6.3], [29, 6.3]]);
         b.ground(32, 52, 11); b.pad(34, 11);
         b.crate(38, 11);
@@ -210,7 +223,9 @@
         b.block(48, 51, 0, 6); b.door(49, 6, 11, plate);
         b.ground(52, 58, 11);
         b.hook(61.5, 5); b.cell(61.5, 9.6);
-        b.ground(65, 78, 11); b.exit(74, 11);
+        b.ground(65, 78, 11);
+        b.baddie(70, 11, 66.5, 72.5, "bug");
+        b.exit(74, 11);
       },
     },
     {
@@ -221,6 +236,7 @@
         b.fan(14.1, 11, 8, a); b.cell(14.1, 5);
         b.sparks([[14.1, 8], [14.1, 6.5]]);
         b.ground(15, 26, 4);
+        b.baddie(20.5, 4, 16.5, 24.5, "roller");
         b.sparks([[18, 3.3], [20, 3.3], [22, 3.3]]);
         b.hook(29, -1); b.cell(29, 3.9);
         b.ground(32, 40, 6); b.cell(36, 3.2);
@@ -228,7 +244,9 @@
         const c = b.socket(45, 11, 0);
         b.fan(50.1, 11, 9, c);
         b.sparks([[50.1, 7], [50.1, 5]]);
-        b.ground(51, 64, 3); b.exit(60, 3);
+        b.ground(51, 64, 3);
+        b.baddie(56, 3, 52.5, 58.2, "bug");
+        b.exit(60, 3);
       },
     },
     {
@@ -247,6 +265,7 @@
         b.hook(49, 0); b.hook(53, 0); b.cell(51, 4);
         b.sparks([[49, 4], [53, 4]]);
         b.ground(56, 80, 7); b.pad(58, 7);
+        b.baddie(62, 7, 59.5, 64.5, "roller");
         b.cell(62, 4.1);
         b.sparker(66, 7, 0.9);
         b.exit(76, 7);
@@ -269,6 +288,7 @@
         b.ground(50, 70, 4); b.cell(52, 1.2);
         const c = b.socket(53, 4, 3);
         b.door(56, -3, 4, c);
+        b.baddie(61, 4, 57.5, 64, "roller");
         b.exit(66, 4);
       },
     },
@@ -279,6 +299,7 @@
         b.hook(11, 3); b.hook(15, 3.5, { ay: 0.8 }); b.hook(19, 3);
         b.sparks([[11, 7.6], [15, 8.2], [19, 7.6]]);
         b.ground(22, 30, 9); b.cell(24, 7.4);
+        b.baddie(25.5, 9, 23.2, 26.8, "bug");
         b.spring(28, 9);
         b.ground(31, 52, 4);
         b.sparker(35, 4, 0); b.cell(35, 0.6);
@@ -286,7 +307,9 @@
         const a = b.socket(39, 4, 4);
         b.door(44, -3, 4, a);
         b.hook(55, -1.5, { ax: 1, sp: 0.8 }); b.hook(59.5, -1, { ax: 1, sp: 0.8, ph: Math.PI }); b.cell(57, 3);
-        b.ground(64, 80, 6); b.exit(76, 6);
+        b.ground(64, 80, 6);
+        b.baddie(70, 6, 65.5, 74, "roller");
+        b.exit(76, 6);
       },
     },
   ];
@@ -326,7 +349,7 @@
   let world = null;
   let mode = "demo";        // demo | play | bench
   let auto = false;
-  const stats = { sparks: 0, cells: 0, wraps: 0, rooms: 0, stars: 0 };
+  const stats = { sparks: 0, cells: 0, wraps: 0, rooms: 0, stars: 0, baddies: 0 };
   let batteries = BATTERIES;
   let roomTime = 0;
   const input = { left: false, right: false, jump: false, cord: false, jumpPressed: false, cordPressed: false, cordReleased: false };
@@ -344,12 +367,16 @@
       t: 0,
       acc: 0,
       p: {
-        x: L.start.x, y: L.start.y, px: L.start.x, py: L.start.y, w: PW, h: PH, vx: 0, vy: 0, ground: true, on: null, dir: 1,
-        coyote: 0, buffer: 0, sy: 1, syV: 0, tilt: 0, walk: 0, face: "happy", worried: false, pushing: false, flung: false,
+        x: L.start.x, y: L.start.y, px: L.start.x, py: L.start.y, w: PW, h: PH, vx: 0, vy: 0, ground: true, on: null, dir: 1, faceDir: 1,
+        coyote: 0, buffer: 0, sy: 1, syV: 0, tilt: 0, walk: 0, face: "happy", worried: false, pushing: false, pulling: null, flung: false,
+        hover: 0.45, hovering: false, ropeBlend: 0, spin: 0,
         ant: [0, 0], antV: [0, 0], blink: 2,
       },
       rope: null,
       plug: null,
+      plugAngle: 0,
+      plugAV: 0,
+      unplug: null,
       finishing: 0,
       zap: 0,
       invuln: 0,
@@ -584,11 +611,18 @@
     const w = world;
     const L = w.L;
     for (const s of L.sockets) {
+      if (s.jolt > 0) s.jolt = Math.max(0, s.jolt - dt * 6);
+      if (s.surge > 0) s.surge = Math.max(0, s.surge - dt * 1.8);
       if (s.left > 0) {
         const before = s.left;
         s.left = Math.max(0, s.left - dt);
         if (mode === "play" && s.left > 0 && s.left < 1.6 && Math.floor(before * 3) !== Math.floor(s.left * 3)) kit.sound.play("tap");
       }
+    }
+    if (L.exit.jolt > 0) L.exit.jolt = Math.max(0, L.exit.jolt - dt * 6);
+    if (L.exit.surge > 0) L.exit.surge = Math.max(0, L.exit.surge - dt * 1.6);
+    for (const h of L.hooks) {
+      if (h.jolt > 0) h.jolt = Math.max(0, h.jolt - dt * 5);
     }
     const bodies = [w.p, ...L.crates];
     for (const pl of L.plates) {
@@ -624,12 +658,75 @@
       f.a += f.spin * dt * 22;
     }
     for (const c of L.crates) stepCrate(c, dt);
+    for (const bd of L.baddies) stepBaddie(bd, dt);
     for (const sp of L.sparkers) {
       const t = (w.t + sp.phase) % 2.6;
       const was = sp.active;
       sp.active = t < 1.1;
       sp.warn = t > 2.15;
       if (sp.active && !was) emit("spark", sp.x + 0.5, sp.y - 0.6, 10, { speed: 5, color: "#bfefff" });
+    }
+  }
+
+  function defeatBaddie(bd, causeX) {
+    if (bd.dead) return;
+    bd.dead = true;
+    bd.deadT = 0;
+    const pushDir = bd.x >= causeX ? 1 : -1;
+    bd.vx = pushDir * 3.8;
+    bd.vy = -6.8;
+    bd.squash = 0.6;
+    stats.baddies += 1;
+    if (mode === "play") kit.addScore(25);
+    emit("spark", bd.x, bd.y - bd.h * 0.5, 14, { speed: 5.5, color: "#7fe0ff" });
+    emit("star", bd.x, bd.y - bd.h * 0.5, 10, { speed: 4.5, color: "#ffe066" });
+    emit("ring", bd.x, bd.y - bd.h * 0.5, 1, { color: "#ff6b8a" });
+    kit.sound.play("pop", 1.15);
+    kit.sound.tone(240, 0.09, { type: "sawtooth", slide: 680, vol: 0.2 });
+    kit.haptic(14);
+  }
+
+  function stepBaddie(bd, dt) {
+    if (bd.dead) {
+      if (bd.deadT < 0.55) {
+        bd.deadT += dt;
+        bd.x += bd.vx * dt;
+        bd.y += bd.vy * dt;
+        bd.vy += 28 * dt;
+        bd.spin += bd.vx * 3.2 * dt;
+        if (Math.random() < dt * 25) emit("smoke", bd.x, bd.y - 0.3, 1, { speed: 1.2 });
+      }
+      return;
+    }
+    if (bd.squash > 0) bd.squash = Math.max(0, bd.squash - dt * 3.5);
+    if (bd.pause > 0) {
+      bd.pause -= dt;
+      bd.vx = 0;
+      return;
+    }
+    const spd = bd.kind === "roller" ? 2.6 : 1.9;
+    bd.vx = bd.dir * spd;
+    bd.x += bd.vx * dt;
+    bd.walk += Math.abs(bd.vx) * dt * 3.4;
+    if ((bd.dir > 0 && bd.x >= bd.x1) || (bd.dir < 0 && bd.x <= bd.x0)) {
+      bd.x = clamp(bd.x, bd.x0, bd.x1);
+      bd.dir = -bd.dir;
+      bd.pause = 0.16;
+      bd.squash = 0.25;
+    }
+    for (const cr of world.L.crates) {
+      if (Math.abs(cr.y - bd.y) < 0.6 && Math.abs(cr.x - bd.x) < (cr.w + bd.w) * 0.5) {
+        if (Math.abs(cr.vx) > 0.4) {
+          defeatBaddie(bd, cr.x);
+          return;
+        }
+        bd.dir = bd.x < cr.x ? -1 : 1;
+        bd.x += bd.dir * 0.08;
+        bd.pause = 0.12;
+      }
+    }
+    if (Math.random() < dt * 3.5) {
+      emit("spark", bd.x, bd.y - bd.h - 0.08, 1, { speed: 1.8, color: bd.kind === "roller" ? "#7fe0ff" : "#ff6b8a" });
     }
   }
 
@@ -693,15 +790,31 @@
 
   function nearSocket() {
     const p = world.p;
-    if (!p.ground) return null;
-    for (const s of world.L.sockets) if (Math.abs(s.x - p.x) < 1.3 && Math.abs(s.y - p.y) < 0.6) return s;
+    if (!p.ground && (p.vy < -2 || floorBelow(p.x, p.y, 0.6) === null)) return null;
+    for (const s of world.L.sockets) if (Math.abs(s.x - p.x) < 1.5 && Math.abs(s.y - p.y) < 0.75) return s;
     return null;
   }
 
   function nearExit() {
     const p = world.p;
     const e = world.L.exit;
-    return p.ground && Math.abs(e.x - p.x) < 1.6 && Math.abs(e.y - p.y) < 0.6;
+    return (p.ground || (p.vy >= -2 && floorBelow(p.x, p.y, 0.6) !== null)) && Math.abs(e.x - p.x) < 1.75 && Math.abs(e.y - p.y) < 0.75;
+  }
+
+  function nearBaddie() {
+    const p = world.p;
+    let best = null;
+    let bestD = Infinity;
+    for (const bd of world.L.baddies) {
+      if (bd.dead) continue;
+      const dx = Math.abs(bd.x - p.x);
+      const dy = Math.abs(bd.y - p.y);
+      if (dx < 3.8 && dy < 1.45 && dx < bestD) {
+        bestD = dx;
+        best = bd;
+      }
+    }
+    return best;
   }
 
   // Where the cord pulls from: the last corner it wrapped, or the hook.
@@ -716,23 +829,31 @@
     const hp = hookPos(h, w.t);
     const d = Math.hypot(hp.x - c.x, hp.y - c.y);
     const angle = Math.atan2(c.x - hp.x, c.y - hp.y);
-    const len = clamp(d, LMIN, LMAX);
-    w.rope = { hook: h, L: len, pivots: [], angle, wraps: 0, accum: 0, shoot: 0.08, still: 0 };
+    const targetL = clamp(d, LMIN, LMAX);
+    // Start at the live distance so grabbing from afar reels Telly in smoothly
+    // rather than teleporting on the first frame.
+    w.rope = {
+      hook: h, L: Math.max(LMIN, d), targetL, pivots: [], angle, wraps: 0, accum: 0,
+      shoot: 0.11, twang: 0, twangV: 0, latched: false, still: 0,
+    };
     p.ground = false;
+    p.hover = 0.45;
     p.dir = hp.x >= c.x ? 1 : -1;
     // The throw yanks Telly forward, enough to swing well past the hook.
     if (angle * p.dir < SWING_TO) {
       const tx = Math.cos(angle) * p.dir;
       const ty = -Math.sin(angle) * p.dir;
       const vt = p.vx * tx + p.vy * ty;
-      const need = Math.sqrt(Math.max(0, 2 * G_UP * len * (Math.cos(Math.abs(angle)) - Math.cos(SWING_TO))));
+      const need = Math.sqrt(Math.max(0, 2 * G_UP * targetL * (Math.cos(Math.abs(angle)) - Math.cos(SWING_TO))));
       if (vt < need) {
         p.vx += (need - vt) * tx;
         p.vy += (need - vt) * ty;
       }
     }
+    p.syV += 3.2;
     emit("spark", hp.x, hp.y, 8, { speed: 4, color: "#ffe066" });
     kit.sound.play("whoosh");
+    kit.sound.tone(360, 0.09, { type: "sine", slide: 880, vol: 0.2 });
     kit.haptic(10);
   }
 
@@ -740,16 +861,57 @@
     const w = world;
     if (!w.rope) return;
     const p = w.p;
+    const hp = ropeAnchor(w.rope);
     p.vx *= 1.06;
     p.vy *= 1.06;
     if (boost) {
       p.vy = Math.min(p.vy, 0) - 5;
       p.vx += p.dir * 1;
+      p.syV += 4.2;
       emit("ring", p.x, p.y - 0.4, 1, { color: "#ffffff" });
     }
+    emit("spark", hp.x, hp.y, 6, { speed: 3.5, color: "#7fe0ff" });
+    // Whip the plug back along the cord toward Telly.
+    const pts = w.cord;
+    if (pts && pts.length) {
+      const a = cordAnchor(p.x, p.y, p.faceDir, p.tilt, p.sy, 0);
+      for (let i = 1; i < pts.length; i++) {
+        const f = i / (pts.length - 1);
+        const rx = (a.x - pts[i].x) * 0.09 * f;
+        const ry = (a.y - pts[i].y) * 0.09 * f - 0.04 * f;
+        pts[i].px = pts[i].x - rx;
+        pts[i].py = pts[i].y - ry;
+      }
+    }
     p.flung = true;
+    p.hover = 0.45;
     if (w.rope.wraps > 0) kit.sound.play("pop", 1.2);
+    else kit.sound.tone(620, 0.07, { type: "sine", slide: 340, vol: 0.16 });
     w.rope = null;
+  }
+
+  function plugReceptacle(s, exit, side) {
+    if (exit) return { x: s.x - 0.09 + side * 0.18, y: s.y - 1.42 };
+    return { x: s.x - 0.05 + side * 0.16, y: s.y - 0.74 };
+  }
+
+  function startPlug(target, exit) {
+    const w = world;
+    const p = w.p;
+    const pts = w.cord;
+    const end = pts[pts.length - 1];
+    const side = p.x <= target.x + 0.2 ? -1 : 1;
+    const standX = target.x + side * (exit ? 1.56 : 1.38);
+    p.dir = -side;
+    w.unplug = null;
+    w.plug = {
+      target, t: 0, seatT: exit ? 0.18 : 0.15, dur: exit ? 0.6 : 0.45, exit,
+      side, standX, startX: end.x, startY: end.y, startAngle: w.plugAngle || 0,
+      seated: false, done: false,
+    };
+    p.syV += 3.2;
+    kit.sound.play(exit ? "start" : "pop", 0.85);
+    kit.sound.tone(300, 0.1, { type: "sine", slide: 680, vol: 0.2 });
   }
 
   function cordPress() {
@@ -758,18 +920,28 @@
     if (w.rope) return;
     const s = nearSocket();
     if (s) {
-      w.plug = { target: s, t: 0, dur: 0.45, exit: false };
-      kit.sound.play("pop", 0.8);
+      startPlug(s, false);
       return;
     }
     if (nearExit()) {
-      w.plug = { target: w.L.exit, t: 0, dur: 0.6, exit: true };
-      kit.sound.play("start");
+      startPlug(w.L.exit, true);
       return;
     }
     const h = bestHook();
     if (h) attach(h);
-    else w.flick = 0.3;
+    else {
+      const bd = nearBaddie();
+      world.p.ropeBlend = 0.85;
+      if (bd) {
+        world.p.dir = bd.x >= world.p.x ? 1 : -1;
+        w.flickBaddie = bd;
+        kit.sound.tone(520, 0.09, { type: "sawtooth", slide: 860, vol: 0.18 });
+      } else {
+        w.flickBaddie = null;
+        kit.sound.tone(420, 0.08, { type: "triangle", slide: 260, vol: 0.15 });
+      }
+      w.flick = 0.32;
+    }
   }
 
   function hop(v) {
@@ -779,6 +951,7 @@
     p.ground = false;
     p.coyote = 0;
     p.buffer = 0;
+    p.hover = 0.45;
     p.syV += 4.5;   // stretch up off the ground
     emit("dust", p.x, p.y, 5, { speed: 2 });
     kit.sound.play("bounce", 1.2);
@@ -793,13 +966,20 @@
     p.py = p.y;
     if (w.invuln > 0) w.invuln -= dt;
     if (w.flick > 0) w.flick -= dt;
+    if (w.unplug) {
+      w.unplug.t += dt;
+      if (w.unplug.t >= w.unplug.dur) w.unplug = null;
+    }
     updateMachines(dt);
     stepParticles(dt);
     stepBody(dt);
     if (w.finishing > 0) {
       w.finishing -= dt;
       p.face = "love";
-      if (Math.random() < dt * 20) emit("star", L.exit.x - 0.1 + (Math.random() - 0.5), L.exit.y - 1.5, 1, { speed: 2, color: "#ffe066" });
+      // Celebratory happy hop rhythm while powering the gold exit!
+      if (p.ground && Math.sin(w.t * 14) > 0.92) p.syV += 1.4;
+      if (Math.random() < dt * 24) emit("star", L.exit.x - 0.1 + (Math.random() - 0.5), L.exit.y - 1.5, 1, { speed: 2.5, color: "#ffe066" });
+      if (Math.random() < dt * 18) emit("spark", L.exit.x - 0.1, L.exit.y - 1.4, 1, { speed: 3.5, color: "#7fe0ff" });
       if (w.finishing <= 0) roomDone();
       stepCord(dt);
       return;
@@ -821,12 +1001,36 @@
     p.buffer = Math.max(0, p.buffer - dt);
     p.coyote = p.ground ? COYOTE : Math.max(0, p.coyote - dt);
 
+    const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+
     if (w.plug) {
       w.plug.t += dt;
       p.vx = 0;
+      const s = w.plug.target;
+      const rc = plugReceptacle(s, w.plug.exit, w.plug.side);
+      // Slide Telly cleanly beside the socket so both Telly and the plug are visible.
+      if (!w.plug.done && Math.abs(p.x - s.x) < (w.plug.exit ? 1.52 : 1.34)) {
+        const nextX = lerp(p.x, w.plug.standX, Math.min(1, dt * 18));
+        if (boxFree(p, nextX, p.y)) p.x = nextX;
+      }
+      if (w.plug.t >= w.plug.seatT && !w.plug.seated) {
+        w.plug.seated = true;
+        s.jolt = 1;
+        p.syV -= 3.2;
+        emit("spark", rc.x, rc.y, 10, { speed: 4.5, color: "#ffe066" });
+        emit("ring", rc.x, rc.y, 1, { color: "#7fe0ff" });
+        kit.sound.tone(170, 0.06, { type: "triangle", slide: 95, vol: 0.25 });
+        kit.sound.tone(640, 0.1, { type: "sine", slide: 980, vol: 0.2, delay: 0.03 });
+        kit.haptic(12);
+      }
+      if (w.plug.seated && !w.plug.done && Math.random() < dt * 35) {
+        emit("spark", rc.x, rc.y, 1, { speed: 3, color: "#7fe0ff" });
+      }
       if (w.plug.t >= w.plug.dur && !w.plug.done) {
         w.plug.done = true;
-        const s = w.plug.target;
+        s.surge = 1;
+        s.jolt = 0.7;
+        p.syV += 3.8;
         if (w.plug.exit) {
           w.finishing = 1.3;
           kit.sound.play("win");
@@ -838,20 +1042,48 @@
           else s.latched = true;
           kit.sound.play("coin");
           kit.haptic(15);
-          emit("spark", s.x - 0.3, s.y - 0.7, 16, { speed: 6, color: "#bfefff" });
-          emit("ring", s.x - 0.05, s.y - 0.6, 1, { color: "#7dffb0" });
+          emit("spark", rc.x, rc.y, 18, { speed: 6, color: "#bfefff" });
+          emit("ring", rc.x, rc.y, 1, { color: "#7dffb0" });
         }
       }
-      if (w.plug.t >= w.plug.dur + (w.plug.exit ? 9 : 0.3)) w.plug = null;
+      // Once charged, let the player move right away and pop the plug back out.
+      const endWait = w.plug.exit ? 9 : dir || p.buffer > 0 ? 0.04 : 0.22;
+      if (w.plug.t >= w.plug.dur + endWait) {
+        if (!w.plug.exit) {
+          w.unplug = { x: rc.x, y: rc.y, side: w.plug.side, t: 0, dur: 0.2 };
+          const pts = w.cord;
+          if (pts && pts.length) {
+            const last = pts[pts.length - 1];
+            last.px = last.x - w.plug.side * 0.14;
+            last.py = last.y + 0.09;
+          }
+          emit("spark", rc.x, rc.y, 5, { speed: 2.8, color: "#ffe066" });
+          kit.sound.tone(720, 0.06, { type: "sine", slide: 380, vol: 0.14 });
+        }
+        w.plug = null;
+      }
     }
 
-    const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     const prevGround = p.ground;
     const fallSpeed = p.vy;
     p.pushing = false;
-    if (!w.rope && !w.plug) {
+    p.pulling = null;
+    p.hovering = false;
+    if (!w.rope && (!w.plug || w.plug.done)) {
       if (dir) p.dir = dir;
-      const top = p.wasPushing ? PUSH_RUN : RUN;
+      // Cordy-style crate pulling: hold 🔌 beside a crate while backing away.
+      if (p.ground && input.cord && dir) {
+        for (const cr of L.crates) {
+          const gapX = Math.abs(p.x - cr.x) - (p.w / 2 + cr.w / 2);
+          if (cr.ground && gapX > -0.05 && gapX < 0.42 && Math.abs(p.y - cr.y) < 0.25 && Math.sign(cr.x - p.x) === -dir) {
+            p.pulling = cr;
+            p.pushing = true;
+            p.dir = Math.sign(cr.x - p.x) || p.dir;
+            break;
+          }
+        }
+      }
+      const top = p.wasPushing || p.pulling ? PUSH_RUN : RUN;
       if (dir) {
         const acc = p.ground ? ACC_GROUND : ACC_AIR;
         // Turning round is snappy, and kicks up a little dust.
@@ -879,16 +1111,31 @@
     let g = w.rope ? G_UP : p.vy < 0 && holdUp ? G_UP : G_DOWN;
     if (holdUp && Math.abs(p.vy) < 2.5 && !p.ground) g *= APEX;
     p.vy = Math.min(MAX_FALL, p.vy + g * dt);
+    // Cordy's electric hover jets: holding Jump while falling cushions descent.
+    if (mode === "play" && !auto && !p.ground && !w.rope && !w.plug && input.jump && p.vy > 1.4 && p.hover > 0) {
+      p.hover = Math.max(0, p.hover - dt);
+      p.hovering = true;
+      p.vy = Math.min(p.vy, 2.6);
+      if (Math.random() < dt * 45) {
+        emit("spark", p.x + (Math.random() - 0.5) * 0.35, p.y + 0.02, 1, { speed: 1.8, vy: 3.5, color: "#7fe0ff" });
+      }
+    }
     const fan = !w.rope ? inWind(p) : null;
     if (fan) {
       p.vy = Math.max(-WIND_MAX, p.vy - WIND * fan.spin * dt);
+      p.hover = 0.45;
       if (Math.random() < 0.15) emit("dust", p.x + (Math.random() - 0.5) * 0.6, p.y, 1, { speed: 1, vy: -4 });
     }
 
     if (w.rope) pumpRope(dir, dt);
 
     const c0 = center(p);
+    const prevX = p.x;
     moveX(p, p.vx * dt);
+    if (p.pulling && p.x !== prevX) {
+      moveX(p.pulling, p.x - prevX);
+      p.pulling.tilt = clamp(p.pulling.tilt + (p.x - prevX) * 0.6, -0.06, 0.06);
+    }
     p.wasPushing = p.pushing;
     moveY(p, p.vy * dt);
     if (w.rope) constrainRope(c0);
@@ -896,6 +1143,7 @@
     const on = standingOn(p);
     p.ground = !!on && p.vy >= -0.01;
     p.on = on;
+    if (p.ground) p.hover = 0.45;
     if (p.ground && !prevGround) {
       if (w.rope) release(false);
       const hard = clamp(fallSpeed / MAX_FALL, 0, 1);
@@ -909,7 +1157,7 @@
       p.walk += Math.abs(p.vx) * dt * 3.2;
       if (Math.abs(p.vx) > 4 && Math.random() < dt * 10) emit("dust", p.x - p.dir * 0.3, p.y, 1, { speed: 1, vx: -p.dir * 1.5 });
     }
-    p.worried = p.ground && !dir && !w.rope && floorBelow(p.x + p.dir * 0.7, p.y, 3) === null;
+    p.worried = p.ground && !dir && !w.rope && !w.plug && floorBelow(p.x + p.dir * 0.7, p.y, 3) === null;
 
     // Springs, pads, pickups and hazards.
     for (const s of L.springs) {
@@ -957,6 +1205,43 @@
         kit.haptic(20);
       }
     }
+    stepCord(dt);
+    for (const bd of L.baddies) {
+      if (bd.dead) continue;
+      // Cord whip / plug zap attack strikes as the whip reaches peak extension!
+      if (w.flick > 0 && w.flick <= 0.22 && w.cord && w.cord.length >= 3) {
+        const tip = w.cord[w.cord.length - 1];
+        const neck = w.cord[w.cord.length - 2];
+        const by = bd.y - bd.h * 0.5;
+        if (
+          w.flickBaddie === bd ||
+          Math.hypot(tip.x - bd.x, tip.y - by) < 0.95 ||
+          Math.hypot(neck.x - bd.x, neck.y - by) < 0.85
+        ) {
+          defeatBaddie(bd, p.x);
+          continue;
+        }
+      }
+      const dx = Math.abs(p.x - bd.x);
+      const overlapX = dx < (p.w + bd.w) * 0.44;
+      const overlapY = p.y > bd.y - bd.h - 0.05 && p.y - p.h < bd.y;
+      if (overlapX && overlapY) {
+        const stomp = p.vy >= -0.5 && (p.py <= bd.y - bd.h * 0.42 || p.y <= bd.y - bd.h * 0.52);
+        const swingSmash = !!(w.rope && Math.hypot(p.vx, p.vy) > 8.2);
+        if (stomp || swingSmash) {
+          defeatBaddie(bd, p.x);
+          if (!w.rope) {
+            p.vy = input.jump ? JUMP_V * 1.02 : -10.5;
+            p.ground = false;
+            p.hover = 0.45;
+            p.syV += 4.5;
+          }
+        } else if (w.invuln <= 0 && w.flick <= 0) {
+          bd.squash = 0.35;
+          zap("Bzzt! Zapped by a Spark-Bot.");
+        }
+      }
+    }
     if (w.invuln <= 0) {
       for (const wtr of L.water) {
         if (p.x > wtr.x0 + 0.1 && p.x < wtr.x1 - 0.1 && p.y > wtr.y + 0.3) zap("Splash! Telly fizzed.", true);
@@ -969,26 +1254,48 @@
     if (mode === "bench" && w.trail.length < 2000) w.trail.push({ x: c.x, y: c.y });
     // Afterimages when Telly really flies.
     if (Math.hypot(p.vx, p.vy) > 10 && Math.random() < dt * 40) w.ghosts.push({ x: p.x, y: p.y, tilt: p.tilt, dir: p.dir, life: 0.25 });
-    stepCord(dt);
+  }
+
+  // Shortest signed angular difference from a to b.
+  function angleDiff(a, b) {
+    let d = (b - a) % TAU;
+    if (d > Math.PI) d -= TAU;
+    if (d < -Math.PI) d += TAU;
+    return d;
   }
 
   // Telly's springy body: squash and stretch, lean, antennae.
   function stepBody(dt) {
-    const p = world.p;
+    const w = world;
+    const p = w.p;
     const target = p.ground ? 1 : 1 + clamp(Math.abs(p.vy) * 0.007, 0, 0.12);
     p.syV += (-(p.sy - target) * 260 - p.syV * 14) * dt;
     p.sy = clamp(p.sy + p.syV * dt, 0.62, 1.3);
-    const r = world.rope;
+    p.faceDir = lerp(p.faceDir === undefined ? p.dir : p.faceDir, p.dir, Math.min(1, dt * 16));
+    p.ropeBlend = lerp(p.ropeBlend || 0, w.rope ? 1 : w.plug || w.flick > 0 ? 0.85 : 0, Math.min(1, dt * 18));
+    const r = w.rope;
     let lean;
     if (r) {
       const a = ropeAnchor(r);
-      lean = clamp(-(center(p).x - a.x) * 0.2, -0.7, 0.7);
+      const c = center(p);
+      const ropeAng = Math.atan2(c.x - a.x, c.y - a.y);
+      // Align with the pendulum radial, and follow all the way round on a loop.
+      const loopBlend = clamp((Math.abs(ropeAng) - 1.1) / 0.8, 0, 1);
+      const baseTilt = lerp(clamp(-ropeAng * 0.65, -0.85, 0.85), -ropeAng, loopBlend);
+      const tangKick = clamp((p.vx * Math.cos(ropeAng) - p.vy * Math.sin(ropeAng)) * 0.012, -0.18, 0.18);
+      lean = baseTilt + tangKick;
+      p.tilt += angleDiff(p.tilt, lean) * Math.min(1, dt * 14);
+    } else if (w.plug && w.plug.seated && !w.plug.done) {
+      lean = p.dir * 0.08 + Math.sin(w.t * 38) * 0.03;
+      p.tilt += angleDiff(p.tilt, lean) * Math.min(1, dt * 14);
     } else {
-      lean = clamp(p.vx * 0.022, -0.14, 0.14) + (p.ground ? 0 : clamp(p.vy * 0.01, -0.08, 0.08) * p.dir);
+      lean = (p.pushing ? p.dir * (p.pulling ? -0.12 : 0.14) : clamp(p.vx * 0.022, -0.14, 0.14)) +
+        (p.ground ? 0 : clamp(p.vy * 0.01, -0.08, 0.08) * p.dir);
+      p.tilt += angleDiff(p.tilt, lean) * Math.min(1, dt * 12);
     }
-    p.tilt = lerp(p.tilt, lean, Math.min(1, dt * 12));
     for (let i = 0; i < 2; i++) {
-      const force = -p.ant[i] * 160 - p.antV[i] * 9 - (p.vx - (p.lastVx || 0)) * (i ? 3 : 2.4) - (p.vy - (p.lastVy || 0)) * 0.6 * p.dir;
+      const buzz = w.plug && w.plug.seated ? Math.sin(w.t * 55 + i * 3) * 8 : 0;
+      const force = -p.ant[i] * 160 - p.antV[i] * 9 - (p.vx - (p.lastVx || 0)) * (i ? 3 : 2.4) - (p.vy - (p.lastVy || 0)) * 0.6 * p.dir + buzz;
       p.antV[i] += force * dt;
       p.ant[i] = clamp(p.ant[i] + p.antV[i] * dt, -0.7, 0.7);
     }
@@ -996,9 +1303,9 @@
     p.lastVy = p.vy;
     p.blink -= dt;
     if (p.blink < -0.12) p.blink = 2 + Math.random() * 3;
-    for (let i = world.ghosts.length - 1; i >= 0; i--) {
-      world.ghosts[i].life -= dt;
-      if (world.ghosts[i].life <= 0) world.ghosts.splice(i, 1);
+    for (let i = w.ghosts.length - 1; i >= 0; i--) {
+      w.ghosts[i].life -= dt;
+      if (w.ghosts[i].life <= 0) w.ghosts.splice(i, 1);
     }
   }
 
@@ -1011,6 +1318,10 @@
     const angle = Math.atan2(c.x - a.x, c.y - a.y);
     const tx = Math.cos(angle);
     const ty = -Math.sin(angle);
+    // Smoothly reel into the swing radius when grappling from far away.
+    if (!r.pivots.length && r.targetL !== undefined && r.L > r.targetL) {
+      r.L = Math.max(r.targetL, r.L - 18 * dt);
+    }
     if (dir) {
       // ◀ ▶ push along the swing, the way a kid pumps a swing.
       p.vx += tx * PUMP * dt * dir;
@@ -1025,7 +1336,20 @@
     // A little air drag, so swings settle rather than run forever.
     p.vx *= 1 - dt * 0.05;
     p.vy *= 1 - dt * 0.05;
-    if (r.shoot > 0) r.shoot -= dt;
+    if (r.shoot > 0) {
+      r.shoot = Math.max(0, r.shoot - dt);
+      if (r.shoot === 0 && !r.latched) {
+        r.latched = true;
+        r.hook.jolt = 1;
+        r.twangV = 7.5;
+        const hp = hookPos(r.hook, w.t);
+        emit("ring", hp.x, hp.y, 1, { color: "#ffe066" });
+        kit.sound.tone(920, 0.06, { type: "triangle", slide: 1240, vol: 0.16 });
+      }
+    }
+    // Damped guitar-string twang along the taut cord after latching.
+    r.twangV += (-r.twang * 240 - r.twangV * 14) * dt;
+    r.twang += r.twangV * dt;
   }
 
   /* The cord wraps round the corners of blocks it swings past, and unwraps
@@ -1105,6 +1429,7 @@
       r.L -= k.seg;
       r.accum = 0;
       r.angle = Math.atan2(c.x - k.x, c.y - k.y);
+      r.twangV += 4;
       emit("spark", k.x, k.y, 6, { speed: 3, color: "#ffe066" });
       kit.sound.play("tap");
     }
@@ -1139,9 +1464,11 @@
       stats.wraps += 1;
       const before = r.L;
       r.L = Math.max(LMIN, r.L * 0.82);
+      if (r.targetL !== undefined) r.targetL = Math.min(r.targetL, r.L);
       const kk = Math.min(1.25, before / r.L);
       p.vx *= kk;
       p.vy *= kk;
+      r.hook.jolt = 1;
       if (mode === "play") kit.addScore(25);
       const hp = hookPos(r.hook, w.t);
       emit("star", hp.x, hp.y, 12, { speed: 5, color: "#ffe066" });
@@ -1158,6 +1485,7 @@
     if (w.zap > 0) return;
     w.rope = null;
     w.plug = null;
+    w.unplug = null;
     w.zap = 0.9;
     w.p.face = "zap";
     const c = center(w.p);
@@ -1187,6 +1515,7 @@
     p.y = p.py = w.checkpoint.y;
     p.vx = p.vy = 0;
     p.ground = true;
+    p.hover = 0.45;
     p.face = "happy";
     w.invuln = 1.2;
     w.cord = makeCord();
@@ -1247,7 +1576,8 @@
       input.cord = true;
       if (mode === "bench" && w.rope.wraps < 1 && w.L.hooks.indexOf(w.rope.hook) % 3 === 0) return;
       const landing = floorBelow(c.x + 1, p.y, 6) !== null;
-      if ((c.x - hp.x > w.rope.L * 0.5 && p.vy < 1.5) || c.x - hp.x > w.rope.L * 0.85 || w.rope.still > 1.5 || (landing && c.x > hp.x + 0.5 && p.vy < 0)) {
+      const effL = Math.min(w.rope.L, w.rope.targetL || w.rope.L);
+      if ((c.x - hp.x > effL * 0.5 && p.vy < 1.5) || c.x - hp.x > effL * 0.85 || w.rope.still > 1.5 || (landing && c.x > hp.x + 0.5 && p.vy < 0)) {
         input.cord = false;
         input.cordReleased = true;
       }
@@ -1267,6 +1597,29 @@
     const h = bestHook();
     const hp = h ? hookPos(h, w.t) : null;
     if (p.ground) {
+      // Wait on a rising lift until it reaches the top ledge.
+      if (p.on && p.on.yUp !== undefined && powered(p.on.by) && p.on.y > p.on.yUp + 0.2) {
+        input.right = false;
+        return;
+      }
+      // Pause before an active or about-to-fire sparker, then dash through.
+      for (const sp of w.L.sparkers) {
+        const dx = sp.x + 0.5 - p.x;
+        if (dx > 0.35 && dx < 1.55 && Math.abs(sp.y - p.y) < 0.6 && (sp.active || sp.warn)) {
+          input.right = false;
+          return;
+        }
+      }
+      // Whip or stomp any patrolling baddie ahead.
+      for (const bd of w.L.baddies) {
+        if (bd.dead) continue;
+        const dx = bd.x - p.x;
+        if (dx > -0.2 && dx < 2.2 && Math.abs(bd.y - p.y) < 1.1) {
+          if (w.flick <= 0 && dx > 0.5) input.cordPressed = true;
+          if (dx < 1.35) input.jumpPressed = true;
+          break;
+        }
+      }
       const ahead = p.x + 0.9;
       const gap = floorBelow(ahead, p.y, 4) === null || w.L.water.some((q) => ahead > q.x0 && ahead < q.x1 && Math.abs(q.y - p.y) < 0.1);
       const wall = solidAt(p.x + 0.6, p.y - 0.5) || solidAt(p.x + 0.6, p.y - 1.4);
@@ -1298,16 +1651,46 @@
   }
 
   /* ---------------- the power cord: a little chain of points ---------------- */
-  const CORD_N = 16;
+  const CORD_N = 18;
   function makeCord() {
     const pts = [];
     const p = world ? world.p : { x: 2, y: 11, dir: 1 };
-    for (let i = 0; i < CORD_N; i++) pts.push({ x: p.x - p.dir * (0.4 + i * 0.1), y: p.y - 0.25, px: p.x - p.dir * (0.4 + i * 0.1), py: p.y - 0.25 });
+    const a = cordAnchor(p.x, p.y, p.dir, 0, 1, 0);
+    for (let i = 0; i < CORD_N; i++) {
+      pts.push({
+        x: a.x - p.dir * i * 0.095,
+        y: a.y + Math.min(0.18, i * 0.025),
+        px: a.x - p.dir * i * 0.095,
+        py: a.y + Math.min(0.18, i * 0.025),
+      });
+    }
+    if (world) world.plugAngle = p.dir > 0 ? Math.PI : 0;
     return pts;
   }
 
-  function cordAnchor(x, y, dir) {
-    return { x: x - dir * 0.4, y: y - 0.3 };
+  // Exact world position and outward tangent of Telly's rubber cord grommet,
+  // rotating with Telly's tilt/squash and blending to the top grip during a swing.
+  function cordAnchor(x, y, faceDir, tilt, sy, ropeBlend) {
+    const p = world ? world.p : null;
+    const rawDir = faceDir !== undefined ? faceDir : p ? (p.faceDir !== undefined ? p.faceDir : p.dir) : 1;
+    const fDir = (rawDir >= 0 ? 1 : -1) * (0.78 + 0.22 * Math.min(1, Math.abs(rawDir)));
+    const tl = tilt !== undefined ? tilt : p ? p.tilt : 0;
+    const stretchY = sy !== undefined ? sy : p ? p.sy : 1;
+    const rb = ropeBlend !== undefined ? ropeBlend : p ? p.ropeBlend || 0 : 0;
+    const s = 1.05;
+    const sx = 1 + (1 - stretchY) * 0.9;
+    // Blend from the rear grommet (-0.54, 0.14) to the top swing clasp (0, -0.46).
+    const lx = lerp(-0.54, 0, rb) * sx * fDir;
+    const ly = (lerp(0.14, -0.46, rb) - s * 0.46) * stretchY;
+    const cos = Math.cos(tl);
+    const sin = Math.sin(tl);
+    const wx = x + lx * cos - ly * sin;
+    const wy = y + lx * sin + ly * cos;
+    const tnx = lerp(-fDir, 0, rb);
+    const tny = lerp(0.08, -1, rb);
+    const nx = tnx * cos - tny * sin;
+    const ny = tnx * sin + tny * cos;
+    return { x: wx, y: wy, nx, ny };
   }
 
   // The cord's path while it is on a hook: Telly, each wrapped corner, the hook.
@@ -1316,12 +1699,17 @@
     const hp = hookPos(r.hook, world.t);
     const path = [{ x: ax, y: ay }];
     for (let i = r.pivots.length - 1; i >= 0; i--) path.push(r.pivots[i]);
-    path.push(hp);
+    const prev = path[path.length - 1];
+    const ang = Math.atan2(hp.y - prev.y, hp.x - prev.x);
+    // Stop at the hook's outer clasp ring so the plug clamps onto the rim.
+    const clasp = { x: hp.x - Math.cos(ang) * 0.18, y: hp.y - Math.sin(ang) * 0.18 };
+    path.push(clasp);
     if (r.shoot > 0) {
       // The plug flies out to the hook.
-      const k = 1 - r.shoot / 0.08;
+      const k = 1 - r.shoot / 0.11;
+      const e = 1 - Math.pow(1 - k, 2.5);
       const last = path.length - 1;
-      path[last] = { x: lerp(path[last - 1].x, hp.x, k), y: lerp(path[last - 1].y, hp.y, k) };
+      path[last] = { x: lerp(path[last - 1].x, clasp.x, e), y: lerp(path[last - 1].y, clasp.y, e) };
     }
     return path;
   }
@@ -1330,9 +1718,11 @@
     const w = world;
     const pts = w.cord;
     const p = w.p;
-    const a = cordAnchor(p.x, p.y, p.dir);
+    const a = cordAnchor(p.x, p.y, p.faceDir, p.tilt, p.sy, p.ropeBlend);
     if (w.rope) {
-      // Lay the chain along the taut path so letting go starts from there.
+      // Lay the chain along the rope (with throw whip, slack bow and pluck twang)
+      // so letting go starts smoothly from its live shape.
+      const r = w.rope;
       const path = ropePath(a.x, a.y);
       const lens = [];
       let total = 0;
@@ -1341,6 +1731,15 @@
         lens.push(l);
         total += l;
       }
+      const lastA = path[Math.max(0, path.length - 2)];
+      const lastB = path[path.length - 1];
+      const segDx = lastB.x - lastA.x;
+      const segDy = lastB.y - lastA.y;
+      const segLen = Math.hypot(segDx, segDy) || 1;
+      const px = -segDy / segLen;
+      const py = segDx / segLen;
+      const shootK = r.shoot > 0 ? r.shoot / 0.11 : 0;
+      const slack = Math.max(0, (r.L - segLen) * 0.28);
       for (let i = 0; i < CORD_N; i++) {
         let d = (total * i) / (CORD_N - 1);
         let k = 0;
@@ -1349,47 +1748,125 @@
           k += 1;
         }
         const f = lens[k] ? clamp(d / lens[k], 0, 1) : 0;
+        let x = lerp(path[k].x, path[k + 1].x, f);
+        let y = lerp(path[k].y, path[k + 1].y, f);
+        if (k === lens.length - 1) {
+          const arch = Math.sin(f * Math.PI);
+          // Whip wave during throw, twang on latch, and natural bow when slack.
+          const whip = shootK > 0 ? Math.sin(f * Math.PI * 2.5 - (1 - shootK) * 14) * shootK * 0.26 * arch : 0;
+          const twang = r.twang * 0.08 * arch;
+          const bow = slack * arch * (segDx >= 0 ? 1 : -1);
+          x += px * (whip + twang) + bow * 0.25;
+          y += py * (whip + twang) + slack * arch * 0.7;
+        }
         const q = pts[i];
         q.px = q.x;
         q.py = q.y;
-        q.x = lerp(path[k].x, path[k + 1].x, f);
-        q.y = lerp(path[k].y, path[k + 1].y, f);
+        q.x = x;
+        q.y = y;
       }
+      w.plugAngle = Math.atan2(segDy, segDx);
       return;
     }
     let endPin = null;
-    let seg = 0.11;
+    let neckPin = null;
+    let seg = 0.095;
+    let targetPlugAngle = null;
     if (w.plug) {
       const s = w.plug.target;
-      const k = clamp(w.plug.t / (w.plug.dur * 0.8), 0, 1);
-      const sx = s.x + (w.plug.exit ? -0.45 : -0.32);
-      const sy = s.y - (w.plug.exit ? 1.25 : 0.72);
-      endPin = { x: lerp(pts[CORD_N - 1].x, sx, k), y: lerp(pts[CORD_N - 1].y, sy, k) };
-      seg = Math.max(0.11, (Math.hypot(sx - a.x, sy - a.y) * 1.15) / (CORD_N - 1));
+      const side = w.plug.side;
+      const rc = plugReceptacle(s, w.plug.exit, side);
+      const u = clamp(w.plug.t / w.plug.seatT, 0, 1);
+      const e = 1 - Math.pow(1 - u, 3);
+      const destX = rc.x;
+      const destY = rc.y;
+      const arc = Math.sin(u * Math.PI) * 0.85;
+      endPin = {
+        x: lerp(w.plug.startX, destX, e),
+        y: lerp(w.plug.startY, destY, e) - arc,
+      };
+      const goalAngle = side < 0 ? 0 : Math.PI;
+      targetPlugAngle = w.plug.startAngle + angleDiff(w.plug.startAngle, goalAngle) * e;
+      if (u > 0.45) {
+        const k = (u - 0.45) / 0.55;
+        neckPin = {
+          x: endPin.x + side * 0.24 * k,
+          y: endPin.y + 0.05 * k,
+        };
+      }
+      seg = Math.max(0.085, (Math.hypot(endPin.x - a.x, endPin.y - a.y) * 1.18) / (CORD_N - 1));
     } else if (w.flick > 0) {
-      const k = Math.sin((1 - w.flick / 0.3) * Math.PI);
-      endPin = { x: a.x + p.dir * 2.6 * k, y: a.y - 1.6 * k };
-      seg = 0.2;
+      const u = clamp(1 - w.flick / 0.32, 0, 1);
+      const ext = u <= 0.36 ? 1 - Math.pow(1 - u / 0.36, 3) : 1 - (u - 0.36) / 0.64;
+      let tx = a.x + p.dir * 2.55;
+      let ty = a.y - 1.15;
+      if (w.flickBaddie) {
+        tx = w.flickBaddie.x;
+        ty = w.flickBaddie.y - w.flickBaddie.h * 0.55;
+      }
+      endPin = {
+        x: lerp(a.x, tx, ext),
+        y: lerp(a.y, ty, ext) - Math.sin(ext * Math.PI) * 0.38,
+      };
+      const dx = endPin.x - a.x;
+      const dy = endPin.y - a.y;
+      for (let i = 0; i < CORD_N; i++) {
+        const f = i / (CORD_N - 1);
+        const arch = Math.sin(f * Math.PI);
+        const whipWave = Math.sin(f * Math.PI * 2.2 - u * 11) * 0.18 * arch;
+        const x = a.x + dx * f;
+        const y = a.y + dy * f - arch * 0.32 * ext + whipWave;
+        const q = pts[i];
+        q.px = q.x;
+        q.py = q.y;
+        q.x = x;
+        q.y = y;
+      }
+      w.plugAngle = Math.atan2(ty - a.y, tx - a.x);
+      return;
     }
     const g = 30 * dt * dt;
     const fan = inWind({ x: a.x, y: a.y + 0.3, h: 0.6 });
+    const perkTarget = !w.plug && !w.unplug ? nearSocket() || (nearExit() ? w.L.exit : null) || nearBaddie() : null;
+    const hookTarget = !w.plug && !w.unplug && !perkTarget ? bestHook() : null;
     for (let i = 1; i < CORD_N; i++) {
       const q = pts[i];
-      const vx = (q.x - q.px) * 0.96;
-      const vy = (q.y - q.py) * 0.96;
+      const isPlug = i === CORD_N - 1;
+      const damp = isPlug ? 0.94 : 0.955;
+      const vx = (q.x - q.px) * damp;
+      const vy = (q.y - q.py) * damp;
       q.px = q.x;
       q.py = q.y;
       q.x += vx;
       // In a fan's wind the cord flutters instead of hanging.
       q.x += fan ? Math.sin(w.t * 20 + i) * 0.004 : 0;
-      q.y += vy + (fan ? -g * 0.4 : g);
+      q.y += vy + (fan ? -g * 0.4 : g * (isPlug ? 1.15 : 1));
     }
-    for (let it = 0; it < 6; it++) {
+    // Cordy's alive plug tail: perks up and points toward a nearby socket or hook!
+    if ((perkTarget || hookTarget) && !endPin) {
+      const last = pts[CORD_N - 1];
+      const tx = perkTarget ? perkTarget.x : hookPos(hookTarget, w.t).x;
+      const ty = perkTarget ? perkTarget.y - 0.8 : hookPos(hookTarget, w.t).y;
+      const pull = perkTarget ? 0.014 : 0.008;
+      last.x += clamp(tx - last.x, -1.5, 1.5) * pull;
+      last.y -= 0.018 + Math.sin(w.t * 8) * 0.005;
+      targetPlugAngle = Math.atan2(ty - last.y, tx - last.x);
+    }
+    for (let it = 0; it < 7; it++) {
       pts[0].x = a.x;
       pts[0].y = a.y;
+      // Strain-relief stiffness right where the cord leaves Telly's chassis.
+      if (!w.plug && w.flick <= 0) {
+        pts[1].x = lerp(pts[1].x, a.x + a.nx * seg * 1.05, 0.32);
+        pts[1].y = lerp(pts[1].y, a.y + a.ny * seg * 1.05, 0.32);
+      }
       if (endPin) {
         pts[CORD_N - 1].x = endPin.x;
         pts[CORD_N - 1].y = endPin.y;
+      }
+      if (neckPin) {
+        pts[CORD_N - 2].x = lerp(pts[CORD_N - 2].x, neckPin.x, 0.55);
+        pts[CORD_N - 2].y = lerp(pts[CORD_N - 2].y, neckPin.y, 0.55);
       }
       for (let i = 0; i < CORD_N - 1; i++) {
         const q = pts[i];
@@ -1399,23 +1876,29 @@
         const d = Math.hypot(dx, dy) || 0.0001;
         const diff = (d - seg) / d;
         const wq = i === 0 ? 0 : 0.5;
-        const wr = i + 1 === CORD_N - 1 && endPin ? 0 : 0.5;
+        const wr = i + 1 === CORD_N - 1 && endPin ? 0 : i + 1 === CORD_N - 1 ? 0.35 : 0.5;
         const sum = wq + wr || 1;
         q.x += dx * diff * (wq / sum);
         q.y += dy * diff * (wq / sum);
         r.x -= dx * diff * (wr / sum);
         r.y -= dy * diff * (wr / sum);
       }
-      // The trailing cord lies on the floor rather than through it.
+      // The trailing cord and heavy plug rest on top of the floor rather than clipping it.
       for (let i = 1; i < CORD_N; i++) {
         const q = pts[i];
-        const v = w.L.tile(Math.floor(q.x), Math.floor(q.y));
+        const clearance = i === CORD_N - 1 ? 0.13 : i === CORD_N - 2 ? 0.08 : 0.04;
+        const v = w.L.tile(Math.floor(q.x), Math.floor(q.y + clearance));
         if (v === 1) {
-          q.y = Math.floor(q.y) - 0.03;
-          q.px = lerp(q.px, q.x, 0.5);
+          q.y = Math.floor(q.y + clearance) - clearance;
+          q.px = lerp(q.px, q.x, i === CORD_N - 1 ? 0.35 : 0.45);
         }
       }
     }
+    const end = pts[CORD_N - 1];
+    const prev = pts[CORD_N - 3];
+    const naturalAngle = Math.atan2(end.y - prev.y, end.x - prev.x);
+    const goal = targetPlugAngle !== null ? targetPlugAngle : naturalAngle;
+    w.plugAngle = (w.plugAngle || 0) + angleDiff(w.plugAngle || 0, goal) * Math.min(1, dt * (w.plug ? 28 : 14));
   }
 
   /* ---------------- particles, in world units ---------------- */
@@ -2387,32 +2870,51 @@
       const from = m.by.kind === "plate" ? { x: (m.by.x0 + m.by.x1) / 2, y: m.by.y } : { x: m.by.x, y: m.by.y - 0.5 };
       const to = machineAnchor(m);
       const on = powered(m.by);
+      const surge = m.by.surge || 0;
       const midX = (from.x + to.x) / 2;
       const sag = Math.min(2.5, Math.abs(to.x - from.x) * 0.15) + 0.3;
       const cy = Math.max(from.y, to.y) + sag - 1.2;
       ctx.lineCap = "round";
-      ctx.strokeStyle = "rgba(30,25,50,0.6)";
-      ctx.lineWidth = 0.13;
+      ctx.strokeStyle = "rgba(30,25,50,0.65)";
+      ctx.lineWidth = 0.14;
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
       ctx.quadraticCurveTo(midX, cy, to.x, to.y);
       ctx.stroke();
-      ctx.strokeStyle = "rgba(255,255,255,0.12)";
-      ctx.lineWidth = 0.04;
+      ctx.strokeStyle = on ? "rgba(125,255,176,0.35)" : "rgba(255,255,255,0.12)";
+      ctx.lineWidth = 0.045;
       ctx.stroke();
       if (on) {
-        ctx.strokeStyle = "#ffe066";
-        ctx.lineWidth = 0.08;
-        ctx.setLineDash([0.2, 0.5]);
-        ctx.lineDashOffset = -world.t * 3;
+        ctx.strokeStyle = surge > 0 ? "#7fe0ff" : "#ffe066";
+        ctx.lineWidth = surge > 0 ? 0.11 : 0.08;
+        ctx.setLineDash([0.22, 0.44]);
+        ctx.lineDashOffset = -world.t * (surge > 0 ? 7 : 3.2);
         ctx.stroke();
         ctx.setLineDash([]);
-        // A spark of current running along it.
-        const k = (world.t * 0.8) % 1;
-        const x = (1 - k) * (1 - k) * from.x + 2 * (1 - k) * k * midX + k * k * to.x;
-        const y = (1 - k) * (1 - k) * from.y + 2 * (1 - k) * k * cy + k * k * to.y;
-        worldGlow(x, y, 0.5, "#ffe066", 0.8);
-        light(x, y, 1.5, 0.6);
+        // Two sparks of current running along the powered cable.
+        for (const off of [0, 0.5]) {
+          const k = (world.t * 0.85 + off) % 1;
+          const x = (1 - k) * (1 - k) * from.x + 2 * (1 - k) * k * midX + k * k * to.x;
+          const y = (1 - k) * (1 - k) * from.y + 2 * (1 - k) * k * cy + k * k * to.y;
+          worldGlow(x, y, 0.48, "#ffe066", 0.78);
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(x, y, 0.055, 0, TAU);
+          ctx.fill();
+          if (off === 0) light(x, y, 1.5, 0.6);
+        }
+      }
+      if (surge > 0) {
+        // High-voltage surge wave racing from socket to machine right on plug-in.
+        const sk = clamp(1 - surge, 0, 1);
+        const sx = (1 - sk) * (1 - sk) * from.x + 2 * (1 - sk) * sk * midX + sk * sk * to.x;
+        const sy = (1 - sk) * (1 - sk) * from.y + 2 * (1 - sk) * sk * cy + sk * sk * to.y;
+        worldGlow(sx, sy, 1.1, "#7fe0ff", 0.95);
+        light(sx, sy, 2.4, 0.9);
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(sx, sy, 0.11, 0, TAU);
+        ctx.fill();
       }
     }
   }
@@ -2424,42 +2926,61 @@
 
   function drawSocket(s) {
     const on = powered(s);
-    const x = s.x;
+    const plugging = !!(world.plug && !world.plug.exit && world.plug.s === s && world.plug.seated);
+    const jx = (s.jolt || 0) * Math.sin(world.t * 55) * 0.06;
+    const x = s.x + jx;
     const y = s.y;
-    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    const near = !on && nearSocket() === s && !world.plug;
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
     ctx.beginPath();
-    ctx.ellipse(x, y, 0.55, 0.1, 0, 0, TAU);
+    ctx.ellipse(s.x, y, 0.58, 0.11, 0, 0, TAU);
     ctx.fill();
-    // A little charging post, a box with depth.
+    // Base pedestal & 3D side housing.
+    ctx.fillStyle = "#2b2e44";
+    roundRect(ctx, x - 0.48, y - 0.14, 0.92, 0.14, 0.06);
+    ctx.fill();
     ctx.fillStyle = "#353954";
-    roundRect(ctx, x - 0.32, y - 1.25, 0.84, 1.25, 0.14);
+    roundRect(ctx, x - 0.32, y - 1.26, 0.84, 1.24, 0.14);
     ctx.fill();
     const bg = ctx.createLinearGradient(x - 0.42, 0, x + 0.42, 0);
-    bg.addColorStop(0, "#727aa3");
+    bg.addColorStop(0, on || plugging ? "#8292bf" : "#727aa3");
     bg.addColorStop(1, "#4b5175");
     ctx.fillStyle = bg;
-    roundRect(ctx, x - 0.42, y - 1.15, 0.78, 1.15, 0.14);
+    roundRect(ctx, x - 0.42, y - 1.16, 0.78, 1.14, 0.14);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.25)";
-    roundRect(ctx, x - 0.36, y - 1.1, 0.66, 0.08, 0.04);
+    ctx.fillStyle = "rgba(255,255,255,0.28)";
+    roundRect(ctx, x - 0.36, y - 1.11, 0.66, 0.08, 0.04);
     ctx.fill();
-    ctx.fillStyle = "#f4f2ff";
+    // Side/front receptacle rim & bright faceplate.
+    ctx.fillStyle = on || plugging ? "#7fe0ff" : near ? "#ffe066" : "#2b2e44";
+    roundRect(ctx, x - 0.33, y - 1.03, 0.56, 0.61, 0.12);
+    ctx.fill();
+    ctx.fillStyle = on || plugging ? "#f4fffb" : "#f4f2ff";
     roundRect(ctx, x - 0.3, y - 1.0, 0.5, 0.55, 0.1);
     ctx.fill();
-    ctx.fillStyle = "#3d3756";
-    ctx.fillRect(x - 0.17, y - 0.86, 0.06, 0.18);
-    ctx.fillRect(x + 0.02, y - 0.86, 0.06, 0.18);
+    // Prong slots and ground hole (glowing when energized).
+    ctx.fillStyle = on || plugging ? "#1d8a56" : "#3d3756";
+    ctx.fillRect(x - 0.17, y - 0.86, 0.065, 0.18);
+    ctx.fillRect(x + 0.02, y - 0.86, 0.065, 0.18);
     ctx.beginPath();
-    ctx.arc(x - 0.05, y - 0.58, 0.04, 0, TAU);
+    ctx.arc(x - 0.045, y - 0.58, 0.042, 0, TAU);
     ctx.fill();
-    ctx.fillStyle = on ? "#5dff9a" : "#ff6b6b";
+    if (on || plugging) {
+      worldGlow(x - 0.05, y - 0.77, 0.65, "#7fe0ff", 0.55);
+    }
+    // Status lamp & charge bar.
+    ctx.fillStyle = on || plugging ? "#5dff9a" : "#ff6b6b";
     ctx.beginPath();
-    ctx.arc(x - 0.05, y - 0.27, 0.09, 0, TAU);
+    ctx.arc(x - 0.05, y - 0.27, 0.095, 0, TAU);
     ctx.fill();
-    worldGlow(x - 0.05, y - 0.27, on ? 0.7 : 0.35, on ? "#5dff9a" : "#ff6b6b", on ? 0.6 : 0.3);
-    light(x - 0.05, y - 0.5, on ? 2.4 : 1.2, on ? 0.9 : 0.4);
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(x - 0.075, y - 0.295, 0.03, 0, TAU);
+    ctx.fill();
+    worldGlow(x - 0.05, y - 0.27, on ? 0.78 : 0.35, on ? "#5dff9a" : "#ff6b6b", on ? 0.68 : 0.3);
+    light(x - 0.05, y - 0.5, on ? 2.5 : 1.2, on ? 0.95 : 0.4);
     if (s.left > 0 && s.time > 0) {
-      ctx.strokeStyle = "rgba(0,0,0,0.25)";
+      ctx.strokeStyle = "rgba(0,0,0,0.28)";
       ctx.lineWidth = 0.1;
       ctx.beginPath();
       ctx.arc(x - 0.05, y - 1.6, 0.26, 0, TAU);
@@ -2483,46 +3004,81 @@
       ctx.fillText(`${Math.round(s.time)}s`, (x - 0.05) * Z, (y - 1.4) * Z);
       ctx.restore();
     }
-    if (!on && nearSocket() === s && !world.plug) worldGlow(x - 0.05, y - 0.7, 1.2, "#fff3a0", 0.35 + 0.15 * Math.sin(world.t * 6));
+    if (near) {
+      const bob = Math.sin(world.t * 7) * 0.07;
+      worldGlow(x - 0.05, y - 0.75, 1.3, "#fff3a0", 0.38 + 0.15 * Math.sin(world.t * 6));
+      // Floating Cordy-style plug prompt pill above the socket.
+      const py = (s.time > 0 ? y - 1.95 : y - 1.58) + bob;
+      ctx.fillStyle = "rgba(28,24,54,0.88)";
+      roundRect(ctx, x - 0.31, py - 0.22, 0.52, 0.36, 0.12);
+      ctx.fill();
+      ctx.strokeStyle = "#ffe066";
+      ctx.lineWidth = 0.035;
+      ctx.stroke();
+      ctx.fillStyle = "#ffe066";
+      bolt(x - 0.05, py - 0.04, 0.24);
+      ctx.fill();
+    }
   }
 
   function drawExit(e) {
-    const x = e.x;
+    const jx = (e.jolt || 0) * Math.sin(world.t * 55) * 0.07;
+    const x = e.x + jx;
     const y = e.y;
-    const pulse = 0.5 + 0.5 * Math.sin(world.t * 3);
-    worldGlow(x - 0.1, y - 1.3, 2.4 + pulse * 0.3, "#ffe58a", 0.45);
-    light(x, y - 1.3, 5, 1);
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    const active = world.finishing > 0 || !!(world.plug && world.plug.exit && world.plug.seated);
+    const near = nearExit() && !world.plug && world.finishing <= 0;
+    const pulse = 0.5 + 0.5 * Math.sin(world.t * (active ? 10 : 3));
+    worldGlow(x - 0.1, y - 1.3, (active ? 3.2 : 2.4) + pulse * 0.35, active ? "#7fe0ff" : "#ffe58a", active ? 0.72 : 0.45);
+    light(x, y - 1.3, active ? 6.2 : 5, 1);
+    ctx.fillStyle = "rgba(0,0,0,0.24)";
     ctx.beginPath();
-    ctx.ellipse(x, y, 0.85, 0.14, 0, 0, TAU);
+    ctx.ellipse(e.x, y, 0.9, 0.15, 0, 0, TAU);
+    ctx.fill();
+    // Base pedestal step.
+    ctx.fillStyle = "#7a5306";
+    roundRect(ctx, x - 0.68, y - 0.18, 1.48, 0.18, 0.08);
     ctx.fill();
     ctx.fillStyle = "#a8780a";
-    roundRect(ctx, x - 0.5, y - 2.4, 1.24, 2.4, 0.22);
+    roundRect(ctx, x - 0.5, y - 2.42, 1.24, 2.4, 0.22);
     ctx.fill();
     const g = ctx.createLinearGradient(x - 0.6, 0, x + 0.5, 0);
     g.addColorStop(0, "#fff0a0");
     g.addColorStop(0.5, "#ffd24a");
     g.addColorStop(1, "#e9a21c");
     ctx.fillStyle = g;
-    roundRect(ctx, x - 0.62, y - 2.3, 1.06, 2.3, 0.2);
+    roundRect(ctx, x - 0.62, y - 2.32, 1.06, 2.3, 0.2);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.fillStyle = "rgba(255,255,255,0.52)";
     roundRect(ctx, x - 0.55, y - 2.24, 0.12, 2.1, 0.06);
     ctx.fill();
-    ctx.fillStyle = "#fffaf0";
+    //Three crown bulbs along the top of the gold exit post.
+    for (let i = -1; i <= 1; i++) {
+      const bx = x - 0.09 + i * 0.28;
+      const by = y - 2.38 + Math.abs(i) * 0.04;
+      ctx.fillStyle = active ? "#7dffb0" : "#fff4b8";
+      ctx.beginPath();
+      ctx.arc(bx, by, 0.085, 0, TAU);
+      ctx.fill();
+      if (active) worldGlow(bx, by, 0.45, "#7dffb0", 0.7);
+    }
+    // Receptacle collar & cream outlet faceplate.
+    ctx.fillStyle = active ? "#5dff9a" : near ? "#ffffff" : "#b88214";
+    roundRect(ctx, x - 0.46, y - 1.79, 0.74, 0.93, 0.14);
+    ctx.fill();
+    ctx.fillStyle = active ? "#f2fff8" : "#fffaf0";
     roundRect(ctx, x - 0.42, y - 1.75, 0.66, 0.85, 0.12);
     ctx.fill();
-    ctx.fillStyle = "#5b4a1a";
-    ctx.fillRect(x - 0.25, y - 1.55, 0.07, 0.22);
-    ctx.fillRect(x + 0.0, y - 1.55, 0.07, 0.22);
+    ctx.fillStyle = active ? "#1d8a56" : "#5b4a1a";
+    ctx.fillRect(x - 0.25, y - 1.55, 0.075, 0.22);
+    ctx.fillRect(x + 0.0, y - 1.55, 0.075, 0.22);
     ctx.beginPath();
-    ctx.arc(x - 0.09, y - 1.17, 0.05, 0, TAU);
+    ctx.arc(x - 0.09, y - 1.17, 0.055, 0, TAU);
     ctx.fill();
     ctx.save();
     ctx.translate(x - 0.09, y - 2.02);
-    ctx.rotate(world.t * 0.8);
-    ctx.fillStyle = "#fff";
-    FK.starPath(ctx, 0, 0, 0.17 + pulse * 0.03, 0.08, 5);
+    ctx.rotate(world.t * (active ? 4.5 : 0.8));
+    ctx.fillStyle = active ? "#7dffb0" : "#ffffff";
+    FK.starPath(ctx, 0, 0, 0.18 + pulse * 0.04, 0.085, 5);
     ctx.fill();
     ctx.restore();
   }
@@ -2763,6 +3319,196 @@
     ctx.restore();
   }
 
+  function drawBaddie(bd) {
+    if (bd.dead && bd.deadT >= 0.55) return;
+    if (!bd.dead) drawShadowAt(bd.x, bd.y, 0.46);
+    const sy = 1 - bd.squash * 0.32;
+    const sx = 1 + bd.squash * 0.28;
+    const target = nearBaddie() === bd && !world.rope && !world.plug;
+    if (!bd.dead) {
+      worldGlow(bd.x, bd.y - bd.h * 0.55, target ? 0.95 : 0.6, bd.kind === "roller" ? "#7fe0ff" : "#ff6b8a", target ? 0.55 : 0.32);
+      light(bd.x, bd.y - bd.h * 0.5, 1.5, 0.55);
+    }
+    ctx.save();
+    if (bd.dead) ctx.globalAlpha = clamp(1 - bd.deadT / 0.55, 0, 1);
+    ctx.translate(bd.x, bd.y);
+    if (bd.dead) {
+      ctx.translate(0, -bd.h * 0.5);
+      ctx.rotate(bd.spin);
+      ctx.translate(0, bd.h * 0.5);
+    } else if (bd.kind === "roller") {
+      ctx.rotate(clamp(bd.vx * 0.04, -0.14, 0.14));
+    }
+    ctx.scale(sx * bd.dir, sy);
+    if (bd.kind === "roller") {
+      // Boogaloo's Volt-Bot: a grumpy unicycle zapper with a glowing cyan wheel & top coil.
+      const ph = bd.walk * 2.2;
+      // Unicycle wheel.
+      ctx.fillStyle = "#1c1f30";
+      ctx.beginPath();
+      ctx.arc(0, -0.2, 0.2, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = "#7fe0ff";
+      ctx.lineWidth = 0.04;
+      ctx.beginPath();
+      ctx.arc(0, -0.2, 0.11, 0, TAU);
+      ctx.moveTo(Math.cos(ph) * 0.11, -0.2 + Math.sin(ph) * 0.11);
+      ctx.lineTo(-Math.cos(ph) * 0.11, -0.2 - Math.sin(ph) * 0.11);
+      ctx.stroke();
+      // Wheel fork.
+      ctx.strokeStyle = "#485078";
+      ctx.lineWidth = 0.06;
+      ctx.beginPath();
+      ctx.moveTo(0, -0.2);
+      ctx.lineTo(0, -0.4);
+      ctx.stroke();
+      // Side shock-studs.
+      ctx.fillStyle = "#ffd24a";
+      roundRect(ctx, -0.44, -0.68, 0.88, 0.12, 0.05);
+      ctx.fill();
+      // Cylindrical dark-indigo torso.
+      const bg = ctx.createLinearGradient(-0.34, -0.92, 0.34, -0.34);
+      bg.addColorStop(0, "#63599e");
+      bg.addColorStop(0.5, "#3e376e");
+      bg.addColorStop(1, "#252047");
+      ctx.fillStyle = bg;
+      roundRect(ctx, -0.34, -0.92, 0.68, 0.58, 0.22);
+      ctx.fill();
+      ctx.strokeStyle = "#191533";
+      ctx.lineWidth = 0.035;
+      ctx.stroke();
+      // Top tesla coil dish & glowing orb.
+      ctx.strokeStyle = "#252047";
+      ctx.lineWidth = 0.05;
+      ctx.beginPath();
+      ctx.moveTo(0, -0.92);
+      ctx.lineTo(0, -1.1);
+      ctx.stroke();
+      ctx.fillStyle = "#7fe0ff";
+      ctx.beginPath();
+      ctx.arc(0, -1.12, 0.075, 0, TAU);
+      ctx.fill();
+      // Cyclops visor.
+      ctx.fillStyle = "#141126";
+      roundRect(ctx, -0.18, -0.78, 0.44, 0.24, 0.1);
+      ctx.fill();
+      if (bd.dead) {
+        ctx.strokeStyle = "#ff6b8a";
+        ctx.lineWidth = 0.035;
+        ctx.beginPath();
+        ctx.moveTo(0.02, -0.71); ctx.lineTo(0.14, -0.61);
+        ctx.moveTo(0.14, -0.71); ctx.lineTo(0.02, -0.61);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = "#ff5c8a";
+        ctx.beginPath();
+        ctx.arc(0.09, -0.66, 0.075, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(0.11, -0.68, 0.026, 0, TAU);
+        ctx.fill();
+        // Angry brow plate.
+        ctx.strokeStyle = "#ffd24a";
+        ctx.lineWidth = 0.035;
+        ctx.beginPath();
+        ctx.moveTo(-0.12, -0.77);
+        ctx.lineTo(0.22, -0.71);
+        ctx.stroke();
+      }
+    } else {
+      // Static Bug: a grumpy wind-up crimson robot beetle with scuttling legs.
+      const ph = bd.walk * 2.5;
+      // Wind-up key on its back.
+      const kw = 0.35 + 0.65 * Math.abs(Math.cos(ph * 0.7));
+      ctx.strokeStyle = "#ffd24a";
+      ctx.lineWidth = 0.045;
+      ctx.beginPath();
+      ctx.moveTo(-0.18, -0.62);
+      ctx.lineTo(-0.26, -0.82);
+      ctx.stroke();
+      ctx.save();
+      ctx.translate(-0.27, -0.86);
+      ctx.scale(kw, 1);
+      ctx.beginPath();
+      ctx.arc(-0.05, 0, 0.06, 0, TAU);
+      ctx.arc(0.05, 0, 0.06, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+      // Scuttling mechanical legs.
+      ctx.strokeStyle = "#23263a";
+      ctx.lineWidth = 0.075;
+      ctx.lineCap = "round";
+      for (const [lx, off] of [[-0.22, 0], [-0.06, Math.PI], [0.1, 0.6], [0.24, Math.PI + 0.6]]) {
+        const lift = bd.dead ? 0 : Math.max(0, Math.sin(ph + off)) * 0.08;
+        const stepX = bd.dead ? 0 : Math.cos(ph + off) * 0.07;
+        ctx.beginPath();
+        ctx.moveTo(lx, -0.18);
+        ctx.lineTo(lx + stepX, -0.02 - lift);
+        ctx.stroke();
+      }
+      // Dark slate underbelly.
+      ctx.fillStyle = "#23263a";
+      roundRect(ctx, -0.38, -0.28, 0.76, 0.2, 0.09);
+      ctx.fill();
+      // Domed metallic crimson carapace.
+      const cg = ctx.createRadialGradient(-0.08, -0.52, 0.04, 0, -0.36, 0.46);
+      cg.addColorStop(0, "#ff8fa8");
+      cg.addColorStop(0.45, "#f03e65");
+      cg.addColorStop(1, "#9e193a");
+      ctx.fillStyle = cg;
+      ctx.beginPath();
+      ctx.arc(0, -0.24, 0.4, Math.PI, TAU);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "#6e0f27";
+      ctx.lineWidth = 0.035;
+      ctx.stroke();
+      // Specular shell highlight.
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.beginPath();
+      ctx.ellipse(-0.1, -0.5, 0.15, 0.055, -0.25, 0, TAU);
+      ctx.fill();
+      // Front static antenna.
+      ctx.strokeStyle = "#23263a";
+      ctx.lineWidth = 0.04;
+      ctx.beginPath();
+      ctx.moveTo(0.18, -0.56);
+      ctx.lineTo(0.3, -0.78);
+      ctx.stroke();
+      ctx.fillStyle = "#ffe066";
+      ctx.beginPath();
+      ctx.arc(0.3, -0.78, 0.065, 0, TAU);
+      ctx.fill();
+      // Angry visor & eyes.
+      ctx.fillStyle = "#1b1d2e";
+      roundRect(ctx, 0.02, -0.46, 0.34, 0.2, 0.08);
+      ctx.fill();
+      if (bd.dead) {
+        ctx.strokeStyle = "#ffe066";
+        ctx.lineWidth = 0.03;
+        ctx.beginPath();
+        ctx.moveTo(0.14, -0.4); ctx.lineTo(0.24, -0.32);
+        ctx.moveTo(0.24, -0.4); ctx.lineTo(0.14, -0.32);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = "#ffe066";
+        ctx.beginPath();
+        ctx.arc(0.14, -0.35, 0.048, 0, TAU);
+        ctx.arc(0.28, -0.35, 0.048, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = "#ff4d6d";
+        ctx.lineWidth = 0.032;
+        ctx.beginPath();
+        ctx.moveTo(0.08, -0.43);
+        ctx.lineTo(0.21, -0.38);
+        ctx.lineTo(0.33, -0.43);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   function drawSparker(sp) {
     const x = sp.x + 0.5;
     const y = sp.y;
@@ -2852,7 +3598,10 @@
   }
 
   function drawHook(h, target) {
-    const hp = hookPos(h, world.t);
+    const raw = hookPos(h, world.t);
+    const jy = (h.jolt || 0) * Math.sin(world.t * 45) * 0.08;
+    const hp = { x: raw.x, y: raw.y + jy };
+    const latched = !!(world.rope && world.rope.hook === h);
     if (h.ax || h.ay) {
       ctx.strokeStyle = "rgba(255,255,255,0.3)";
       ctx.setLineDash([0.12, 0.12]);
@@ -2864,38 +3613,59 @@
       ctx.setLineDash([]);
     }
     // A short chain up to a ceiling we cannot see.
-    ctx.strokeStyle = "rgba(60,64,90,0.7)";
-    ctx.lineWidth = 0.05;
+    ctx.strokeStyle = "rgba(60,64,90,0.75)";
+    ctx.lineWidth = 0.055;
     for (let k = 0; k < 5; k++) {
       ctx.beginPath();
-      ctx.ellipse(hp.x, hp.y - 0.32 - k * 0.2, 0.04, 0.09, 0, 0, TAU);
+      ctx.ellipse(hp.x, hp.y - 0.34 - k * 0.2, 0.045, 0.09, 0, 0, TAU);
       ctx.stroke();
     }
-    if (target) {
-      worldGlow(hp.x, hp.y, 1, "#ffe066", 0.6);
-      ctx.strokeStyle = "rgba(255,230,90,0.9)";
-      ctx.lineWidth = 0.07;
-      ctx.setLineDash([0.18, 0.12]);
-      ctx.lineDashOffset = -world.t * 2;
+    if (target && world.cord && world.cord.length) {
+      // Faint Cordy-style aiming guide from Telly's plug to the targeted hook.
+      const plugPt = world.cord[world.cord.length - 1];
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,230,102,0.32)";
+      ctx.lineWidth = 0.035;
+      ctx.setLineDash([0.14, 0.16]);
+      ctx.lineDashOffset = -world.t * 3.5;
       ctx.beginPath();
-      ctx.arc(hp.x, hp.y, 0.5 + 0.06 * Math.sin(world.t * 8), 0, TAU);
+      ctx.moveTo(plugPt.x, plugPt.y);
+      ctx.lineTo(hp.x, hp.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (target || latched) {
+      worldGlow(hp.x, hp.y, latched ? 1.15 : 1.0, latched ? "#7fe0ff" : "#ffe066", latched ? 0.7 : 0.6);
+      ctx.strokeStyle = latched ? "rgba(127,224,255,0.9)" : "rgba(255,230,90,0.9)";
+      ctx.lineWidth = 0.065;
+      ctx.setLineDash([0.18, 0.12]);
+      ctx.lineDashOffset = -world.t * (latched ? 4 : 2);
+      ctx.beginPath();
+      ctx.arc(hp.x, hp.y, (latched ? 0.44 : 0.5) + 0.05 * Math.sin(world.t * 8), 0, TAU);
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    light(hp.x, hp.y, target ? 1.6 : 0.8, target ? 0.8 : 0.3);
-    const g = ctx.createRadialGradient(hp.x - 0.08, hp.y - 0.08, 0.02, hp.x, hp.y, 0.26);
+    light(hp.x, hp.y, target || latched ? 1.8 : 0.9, target || latched ? 0.85 : 0.35);
+    // Outer metal grapple ring + copper contact jaws.
+    const g = ctx.createRadialGradient(hp.x - 0.08, hp.y - 0.08, 0.02, hp.x, hp.y, 0.28);
     g.addColorStop(0, "#ffffff");
-    g.addColorStop(1, "#b8c0d8");
+    g.addColorStop(1, latched ? "#9ee8ff" : "#b8c0d8");
     ctx.fillStyle = g;
-    ctx.strokeStyle = "#4c5670";
+    ctx.strokeStyle = "#3f4863";
     ctx.lineWidth = 0.08;
     ctx.beginPath();
-    ctx.arc(hp.x, hp.y, 0.23, 0, TAU);
+    ctx.arc(hp.x, hp.y, 0.25, 0, TAU);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "#4c5670";
+    // Copper/gold conductive inner socket ring.
+    ctx.strokeStyle = latched ? "#5dff9a" : target ? "#ffd24a" : "#d99b38";
+    ctx.lineWidth = 0.05;
     ctx.beginPath();
-    ctx.arc(hp.x, hp.y, 0.08, 0, TAU);
+    ctx.arc(hp.x, hp.y, 0.14, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = latched ? "#e9fdff" : "#3b425c";
+    ctx.beginPath();
+    ctx.arc(hp.x, hp.y, 0.085, 0, TAU);
     ctx.fill();
   }
 
@@ -2958,19 +3728,78 @@
     ctx.restore();
   }
 
-  function drawPlug(x, y, angle) {
+  function drawPlug(x, y, angle, insertDepth = 0, energized = false) {
+    const depth = clamp(insertDepth, 0, 0.95);
+    const prongLen = 0.165 * (1 - depth);
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(angle);
-    ctx.fillStyle = "#23263a";
-    roundRect(ctx, -0.2, -0.13, 0.32, 0.26, 0.07);
+    if (energized) {
+      worldGlow(0.04, 0, 0.48, "#7fe0ff", 0.5);
+    }
+    // Two beveled brass prongs (retract into the outlet slots as insertDepth -> 1).
+    if (prongLen > 0.015) {
+      const pg = ctx.createLinearGradient(0.11, -0.1, 0.11 + prongLen, 0.1);
+      pg.addColorStop(0, "#fff4bd");
+      pg.addColorStop(0.5, "#e8c45c");
+      pg.addColorStop(1, "#c49228");
+      ctx.fillStyle = pg;
+      for (const py of [-0.095, 0.04]) {
+        roundRect(ctx, 0.11, py, prongLen, 0.055, 0.02);
+        ctx.fill();
+        if (prongLen > 0.09) {
+          ctx.fillStyle = "#4a3810";
+          ctx.beginPath();
+          ctx.arc(0.11 + prongLen * 0.68, py + 0.0275, 0.013, 0, TAU);
+          ctx.fill();
+          ctx.fillStyle = pg;
+        }
+      }
+    }
+    // Ribbed rubber strain-relief neck joining the cord to the plug body.
+    ctx.fillStyle = "#171a28";
+    for (let i = 0; i < 3; i++) {
+      const rx = -0.31 + i * 0.042;
+      const rh = 0.15 + i * 0.022;
+      roundRect(ctx, rx, -rh / 2, 0.034, rh, 0.015);
+      ctx.fill();
+    }
+    // Contoured dark rubber grip housing.
+    const bg = ctx.createLinearGradient(0, -0.15, 0, 0.15);
+    bg.addColorStop(0, "#383e5e");
+    bg.addColorStop(0.5, "#252940");
+    bg.addColorStop(1, "#181a2b");
+    ctx.fillStyle = bg;
+    roundRect(ctx, -0.21, -0.14, 0.31, 0.28, 0.08);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.2)";
-    roundRect(ctx, -0.17, -0.11, 0.26, 0.06, 0.03);
+    ctx.strokeStyle = "#10121f";
+    ctx.lineWidth = 0.022;
+    ctx.stroke();
+    // Front safety flange that seats flush against socket faceplates.
+    ctx.fillStyle = "#323856";
+    roundRect(ctx, 0.06, -0.165, 0.065, 0.33, 0.03);
     ctx.fill();
-    ctx.fillStyle = "#e3c56a";
-    ctx.fillRect(0.12, -0.09, 0.14, 0.05);
-    ctx.fillRect(0.12, 0.04, 0.14, 0.05);
+    // Top specular highlight & side grip ribs.
+    ctx.fillStyle = "rgba(255,255,255,0.24)";
+    roundRect(ctx, -0.18, -0.115, 0.23, 0.05, 0.025);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.16)";
+    ctx.lineWidth = 0.018;
+    for (const gx of [-0.12, -0.06, 0.0]) {
+      ctx.beginPath();
+      ctx.moveTo(gx, -0.05);
+      ctx.lineTo(gx, 0.05);
+      ctx.stroke();
+    }
+    // Power status LED on the side of the plug.
+    ctx.fillStyle = energized ? "#5dff9a" : "#ffcf3f";
+    ctx.beginPath();
+    ctx.arc(-0.06, 0, 0.038, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(-0.07, -0.01, 0.014, 0, TAU);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -2991,61 +3820,89 @@
 
   function drawCord(px, py) {
     const w = world;
-    const a = cordAnchor(px, py, w.p.dir);
-    let pts;
-    let straight = false;
-    if (w.rope) {
-      pts = ropePath(a.x, a.y);
-      straight = true;
-    } else {
-      pts = w.cord.slice();
-      pts[0] = a;
-    }
+    const p = w.p;
+    const a = cordAnchor(px, py, p.faceDir, p.tilt, p.sy, p.ropeBlend);
+    const pts = w.cord.slice();
+    pts[0] = a;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    const taut = w.rope ? 1 : 0;
-    const draw = straight
-      ? (ox, oy) => {
-          ctx.beginPath();
-          ctx.moveTo(pts[0].x + ox, pts[0].y + oy);
-          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x + ox, pts[i].y + oy);
-        }
-      : (ox, oy) => strokePath(pts, ox, oy);
-    ctx.strokeStyle = "rgba(10,5,25,0.25)";
-    ctx.lineWidth = 0.16;
+    const r = w.rope;
+    const surging = !!(w.plug && w.plug.seated) || w.finishing > 0 || w.flick > 0;
+    const taut = !!r || surging;
+    const draw = (ox, oy) => strokePath(pts, ox, oy);
+    // Drop shadow.
+    ctx.strokeStyle = "rgba(10,5,25,0.28)";
+    ctx.lineWidth = 0.17;
     draw(0.05, 0.07);
     ctx.stroke();
-    ctx.strokeStyle = "#1a1d2c";
-    ctx.lineWidth = 0.14;
+    // Outer dark rubber jacket.
+    ctx.strokeStyle = "#171a29";
+    ctx.lineWidth = 0.15;
     draw(0, 0);
     ctx.stroke();
-    ctx.strokeStyle = taut ? "#5a6188" : "#41476a";
-    ctx.lineWidth = 0.07;
+    // Inner insulated core sheath.
+    ctx.strokeStyle = surging ? "#3b789c" : taut ? "#5e6794" : "#444b70";
+    ctx.lineWidth = 0.085;
     draw(0, 0);
     ctx.stroke();
-    ctx.strokeStyle = "rgba(255,255,255,0.28)";
-    ctx.lineWidth = 0.025;
+    // Specular highlight along the top edge of the cord.
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.lineWidth = 0.026;
     draw(-0.025, -0.025);
     ctx.stroke();
-    const r = w.rope;
+    // Animated electricity pulses racing through the cord when surging or swinging!
+    if (surging || r) {
+      ctx.save();
+      ctx.strokeStyle = surging ? "#7fe0ff" : "#ffe066";
+      ctx.lineWidth = surging ? 0.065 : 0.045;
+      ctx.setLineDash(surging ? [0.16, 0.26] : [0.12, 0.38]);
+      ctx.lineDashOffset = -w.t * (surging ? 6.5 : 3.6);
+      draw(0, 0);
+      ctx.stroke();
+      ctx.restore();
+      const pulses = surging ? 2 : 1;
+      for (let k = 0; k < pulses; k++) {
+        const u = ((w.t * (surging ? 2.4 : 1.5)) + k * 0.5) % 1;
+        const idx = u * (pts.length - 1);
+        const i0 = Math.floor(idx);
+        const i1 = Math.min(pts.length - 1, i0 + 1);
+        const f = idx - i0;
+        const sx = lerp(pts[i0].x, pts[i1].x, f);
+        const sy = lerp(pts[i0].y, pts[i1].y, f);
+        worldGlow(sx, sy, surging ? 0.48 : 0.34, surging ? "#7fe0ff" : "#ffe066", surging ? 0.75 : 0.5);
+        if (surging) {
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(sx, sy, 0.048, 0, TAU);
+          ctx.fill();
+        }
+      }
+    }
     if (r) {
       const hp = hookPos(r.hook, w.t);
-      ctx.strokeStyle = "#1a1d2c";
-      ctx.lineWidth = 0.08;
+      ctx.strokeStyle = "#171a29";
+      ctx.lineWidth = 0.085;
       for (let i = 0; i < Math.min(r.wraps, 5); i++) {
         ctx.beginPath();
         ctx.arc(hp.x, hp.y, 0.27 + i * 0.07, 0, TAU);
         ctx.stroke();
       }
-      for (const k of r.pivots) worldGlow(k.x, k.y, 0.35, "#ffe066", 0.35);
+      for (const k of r.pivots) worldGlow(k.x, k.y, 0.38, "#ffe066", 0.42);
       const last = pts[pts.length - 1];
       const prev = pts[pts.length - 2];
-      drawPlug(last.x, last.y, Math.atan2(last.y - prev.y, last.x - prev.x));
+      const ang = w.plugAngle !== undefined ? w.plugAngle : Math.atan2(last.y - prev.y, last.x - prev.x);
+      drawPlug(last.x, last.y, ang, r.shoot > 0 ? 0 : 0.58, true);
       return;
     }
     const end = pts[pts.length - 1];
     const prev = pts[pts.length - 3];
-    drawPlug(end.x, end.y, Math.atan2(end.y - prev.y, end.x - prev.x));
+    const ang = w.plugAngle !== undefined ? w.plugAngle : Math.atan2(end.y - prev.y, end.x - prev.x);
+    let depth = 0;
+    if (w.plug) {
+      depth = w.plug.seated ? 0.92 : clamp((w.plug.t - 0.14) / 0.12, 0, 0.85);
+    }
+    const ready = !!(surging || nearSocket() || nearExit() || bestHook() || nearBaddie());
+    drawPlug(end.x, end.y, ang, depth, ready);
   }
 
   function drawShadowAt(x, y, size) {
@@ -3060,16 +3917,48 @@
     ctx.fill();
   }
 
+  function drawRobotArm(sx, sy, hx, hy, color) {
+    const mx = (sx + hx) * 0.5 - (hy - sy) * 0.18;
+    const my = (sy + hy) * 0.5 + Math.abs(hx - sx) * 0.16;
+    ctx.strokeStyle = "#2b2e44";
+    ctx.lineWidth = 0.095;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.quadraticCurveTo(mx, my, hx, hy);
+    ctx.stroke();
+    ctx.strokeStyle = "#52587a";
+    ctx.lineWidth = 0.045;
+    ctx.stroke();
+    // Cute Cordy-style round clamp/mitten hand.
+    const ang = Math.atan2(hy - my, hx - mx);
+    ctx.save();
+    ctx.translate(hx, hy);
+    ctx.rotate(ang);
+    ctx.fillStyle = color || "#ff9a3c";
+    ctx.strokeStyle = "#2b2e44";
+    ctx.lineWidth = 0.03;
+    ctx.beginPath();
+    ctx.arc(0, 0, 0.075, 0.22 * Math.PI, 1.78 * Math.PI);
+    ctx.lineTo(0.03, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function drawTellyAt(x, y, tilt, dir, sy, ghost) {
     const w = world;
     const p = w.p;
     const s = 1.05;
+    const rawDir = dir !== undefined ? dir : p.faceDir !== undefined ? p.faceDir : p.dir;
+    const fDir = (rawDir >= 0 ? 1 : -1) * (0.78 + 0.22 * Math.min(1, Math.abs(rawDir)));
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(tilt);
     const sx = 1 + (1 - sy) * 0.9;
     ctx.translate(0, -s * 0.46 * sy);
-    ctx.scale(sx * dir, sy);
+    ctx.scale(sx * fDir, sy);
     if (ghost) {
       ctx.fillStyle = "#ffd7a8";
       roundRect(ctx, -0.55, -0.42, 1.1, 0.84, 0.2);
@@ -3077,45 +3966,106 @@
       ctx.restore();
       return;
     }
-    // Little legs, stepping as Telly rolls.
+    const glowing = w.finishing > 0 || !!(w.plug && (w.plug.seated || w.plug.done));
     const moving = p.ground && Math.abs(p.vx) > 0.3;
     const ph = p.walk * 2.2;
+    // Arm pose targets (back arm drawn behind chassis, front arm in front).
+    let backHand = { x: -0.18, y: 0.22 };
+    let frontHand = { x: 0.18, y: 0.24 };
+    if (w.rope) {
+      backHand = { x: -0.08, y: -0.52 };
+      frontHand = { x: 0.1, y: -0.52 };
+    } else if (p.pushing || p.pulling) {
+      backHand = { x: 0.56, y: -0.02 };
+      frontHand = { x: 0.6, y: 0.14 };
+    } else if (glowing) {
+      const wave = Math.sin(w.t * 16) * 0.06;
+      backHand = { x: -0.42, y: -0.42 + wave };
+      frontHand = { x: 0.48, y: -0.42 - wave };
+    } else if (!p.ground) {
+      backHand = { x: -0.36, y: -0.18 };
+      frontHand = { x: 0.36, y: -0.14 };
+    } else if (moving) {
+      backHand = { x: -0.12 - Math.cos(ph) * 0.22, y: 0.22 - Math.abs(Math.sin(ph)) * 0.06 };
+      frontHand = { x: 0.08 + Math.cos(ph) * 0.24, y: 0.24 - Math.abs(Math.sin(ph)) * 0.06 };
+    }
+    drawRobotArm(-0.22, 0.08, backHand.x, backHand.y, "#e8701a");
+    // Rear & top rubber cord strain-relief grommet where the cord exits Telly's body.
+    const rb = p.ropeBlend || 0;
+    const gx = lerp(-0.54, 0, rb);
+    const gy = lerp(0.14, -0.46, rb);
+    ctx.fillStyle = "#1c1f30";
+    ctx.beginPath();
+    ctx.arc(gx, gy, 0.11, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = "#485078";
+    ctx.lineWidth = 0.03;
+    ctx.stroke();
+    // Little legs and boots, with electric hover-jet flames when cushioning a fall!
     for (const [lx, o] of [[-0.2, 0], [0.2, Math.PI]]) {
-      const lift = moving ? Math.max(0, Math.sin(ph + o)) * 0.1 : 0;
-      const swing = moving ? Math.cos(ph + o) * 0.12 : !p.ground ? 0.08 * Math.sin(w.t * 12 + o) : 0;
+      const lift = moving ? Math.max(0, Math.sin(ph + o)) * 0.11 : 0;
+      const swing = moving ? Math.cos(ph + o) * 0.14 : !p.ground ? 0.08 * Math.sin(w.t * 12 + o) : 0;
+      const fx = lx + swing;
+      const fy = 0.45 - lift;
+      if (p.hovering) {
+        const flick = 0.18 + 0.08 * Math.sin(w.t * 42 + o);
+        const jg = ctx.createLinearGradient(fx, fy + 0.04, fx, fy + 0.06 + flick);
+        jg.addColorStop(0, "#ffffff");
+        jg.addColorStop(0.45, "#7fe0ff");
+        jg.addColorStop(1, "rgba(127,224,255,0)");
+        ctx.fillStyle = jg;
+        ctx.beginPath();
+        ctx.moveTo(fx - 0.07, fy + 0.04);
+        ctx.lineTo(fx + 0.15, fy + 0.04);
+        ctx.lineTo(fx + 0.04, fy + 0.08 + flick);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.strokeStyle = "#2b2e44";
       ctx.lineWidth = 0.1;
       ctx.lineCap = "round";
       ctx.beginPath();
       ctx.moveTo(lx, 0.34);
-      ctx.lineTo(lx + swing, 0.45 - lift);
+      ctx.lineTo(fx, fy);
       ctx.stroke();
       ctx.fillStyle = "#2b2e44";
       ctx.beginPath();
-      ctx.ellipse(lx + swing + 0.05, 0.47 - lift, 0.13, 0.065, 0, 0, TAU);
+      ctx.ellipse(fx + 0.05, fy + 0.02, 0.135, 0.068, 0, 0, TAU);
       ctx.fill();
-      ctx.fillStyle = "#ff6b8a";
-      ctx.fillRect(lx + swing - 0.07, 0.49 - lift, 0.24, 0.03);
+      ctx.fillStyle = p.hovering ? "#7fe0ff" : "#ff6b8a";
+      ctx.fillRect(fx - 0.07, fy + 0.04, 0.24, 0.032);
     }
-    // Antennae on springs, with shiny balls.
+    // Antennae on springs, with shiny balls and electric arcs when charging!
     ctx.strokeStyle = "#2b2e44";
     ctx.lineWidth = 0.045;
     const tips = [[-0.1, -0.4, -0.3, -0.8, p.ant[0], "#ff6b8a"], [0.1, -0.4, 0.33, -0.78, p.ant[1], "#ffd93d"]];
+    const tipCoords = [];
     for (const [bx, by, tx, ty, a, col] of tips) {
       const ex = bx + (tx - bx) * Math.cos(a) - (ty - by) * Math.sin(a);
       const ey = by + (tx - bx) * Math.sin(a) + (ty - by) * Math.cos(a);
+      tipCoords.push({ x: ex, y: ey });
       ctx.beginPath();
       ctx.moveTo(bx, by);
       ctx.quadraticCurveTo((bx + ex) / 2 - a * 0.12, (by + ey) / 2, ex, ey);
       ctx.stroke();
-      const bg = ctx.createRadialGradient(ex - 0.02, ey - 0.02, 0.005, ex, ey, 0.075);
+      const bg = ctx.createRadialGradient(ex - 0.02, ey - 0.02, 0.005, ex, ey, 0.08);
       bg.addColorStop(0, "#ffffff");
-      bg.addColorStop(0.4, col);
-      bg.addColorStop(1, col);
+      bg.addColorStop(0.4, glowing ? "#7fe0ff" : col);
+      bg.addColorStop(1, glowing ? "#5dff9a" : col);
       ctx.fillStyle = bg;
       ctx.beginPath();
-      ctx.arc(ex, ey, 0.075, 0, TAU);
+      ctx.arc(ex, ey, 0.08, 0, TAU);
       ctx.fill();
+    }
+    if (glowing && tipCoords.length === 2) {
+      ctx.strokeStyle = "#e9fdff";
+      ctx.lineWidth = 0.032;
+      ctx.beginPath();
+      ctx.moveTo(tipCoords[0].x, tipCoords[0].y);
+      const mx = (tipCoords[0].x + tipCoords[1].x) * 0.5;
+      const my = (tipCoords[0].y + tipCoords[1].y) * 0.5 - 0.08 + Math.sin(w.t * 48) * 0.05;
+      ctx.quadraticCurveTo(mx, my, tipCoords[1].x, tipCoords[1].y);
+      ctx.stroke();
     }
     // Body: the side panel for depth, then the front.
     ctx.fillStyle = "#b5520c";
@@ -3163,7 +4113,6 @@
       }
     }
     // The screen: an inset bezel, then glass with scanlines and a glare.
-    const glowing = w.finishing > 0 || (w.plug && w.plug.done);
     ctx.fillStyle = "#3a2410";
     roundRect(ctx, -0.47, -0.34, 0.76, 0.68, 0.16);
     ctx.fill();
@@ -3176,7 +4125,7 @@
     ctx.save();
     roundRect(ctx, -0.44, -0.31, 0.7, 0.62, 0.14);
     ctx.clip();
-    ctx.fillStyle = glowing ? "rgba(255,255,255,0.12)" : "rgba(140,190,255,0.09)";
+    ctx.fillStyle = glowing ? "rgba(255,255,255,0.14)" : "rgba(140,190,255,0.09)";
     const scroll = (w.t * 0.4) % 0.07;
     for (let yy = -0.31 + scroll; yy < 0.31; yy += 0.07) ctx.fillRect(-0.44, yy, 0.7, 0.025);
     drawFace(glowing);
@@ -3192,6 +4141,8 @@
     ctx.ellipse(0.12, -0.22, 0.09, 0.035, -0.3, 0, TAU);
     ctx.fill();
     ctx.restore();
+    // Front articulated arm (drawn over the side of the body).
+    drawRobotArm(0.28, 0.12, frontHand.x, frontHand.y, "#ffb25c");
     ctx.restore();
   }
 
@@ -3205,11 +4156,11 @@
       drawTellyAt(g.x, g.y, g.tilt, g.dir, 1, true);
     }
     ctx.globalAlpha = 1;
-    drawTellyAt(px, py, p.tilt, p.dir, p.sy, false);
-    const glowing = w.finishing > 0 || (w.plug && w.plug.done);
+    drawTellyAt(px, py, p.tilt, p.faceDir, p.sy, false);
+    const glowing = w.finishing > 0 || !!(w.plug && (w.plug.seated || w.plug.done));
     const c = { x: px - p.dir * 0.09, y: py - 0.46 };
-    worldGlow(c.x, c.y, glowing ? 1.6 : 0.9, glowing ? "#7fe0ff" : "#6f9bff", glowing ? 0.6 : 0.22);
-    light(c.x, c.y, glowing ? 5 : 3.6, 1);
+    worldGlow(c.x, c.y, glowing ? 1.7 : 0.95, glowing ? "#7fe0ff" : "#6f9bff", glowing ? 0.65 : 0.24);
+    light(c.x, c.y, glowing ? 5.2 : 3.6, 1);
   }
 
   function drawFace(glowing) {
@@ -3221,10 +4172,12 @@
     const ink = glowing ? "#1c2640" : "#ffffff";
     const speed = Math.hypot(p.vx, p.vy);
     let face = p.face;
-    if (face !== "zap" && face !== "love") {
-      if (p.worried) face = "worried";
+    if (face !== "zap" && face !== "love" && face !== "surge") {
+      if (w.plug && w.plug.seated) face = "surge";
+      else if (p.worried) face = "worried";
       else if (w.rope && speed > 9) face = "whee";
-      else if (p.pushing) face = "push";
+      else if (p.pushing || p.pulling) face = "push";
+      else if (p.hovering) face = "whee";
       else if (!p.ground && p.vy > 8) face = "oh";
       else face = "happy";
     }
@@ -3245,6 +4198,21 @@
       ctx.moveTo(fx - s * 0.08, fy + s * 0.12);
       for (let i = 1; i <= 4; i++) ctx.lineTo(fx - s * 0.08 + i * s * 0.04, fy + s * (i % 2 ? 0.08 : 0.12));
       ctx.stroke();
+      return;
+    }
+    if (face === "surge") {
+      // Excited electric star-eyes while Telly pumps power into a socket!
+      for (const ex of [-0.12, 0.12]) {
+        const sx = fx + s * ex + 0.02;
+        const sy = fy - s * 0.07;
+        ctx.fillStyle = glowing ? "#1c2640" : "#ffe066";
+        FK.starPath(ctx, sx, sy, s * 0.072, s * 0.032, 4);
+        ctx.fill();
+      }
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      ctx.arc(fx, fy + s * 0.05, s * 0.095, 0, Math.PI);
+      ctx.fill();
       return;
     }
     if (face === "love") {
@@ -3280,7 +4248,7 @@
       for (const ex of [-0.12, 0.12]) {
         ctx.fillStyle = ink;
         ctx.beginPath();
-        const tall = face === "push" ? 0.035 : face === "oh" || face === "whee" ? 0.078 : 0.066;
+        const tall = face === "push" ? 0.038 : face === "oh" || face === "whee" ? 0.078 : 0.066;
         ctx.ellipse(fx + s * ex + 0.02, fy - s * 0.07, s * 0.056, s * tall, 0, 0, TAU);
         ctx.fill();
         ctx.fillStyle = glowing ? "#ffffff" : "#1b2440";
@@ -3292,13 +4260,18 @@
         ctx.arc(fx + s * ex + 0.045 + lookX, fy - s * 0.09 + lookY, s * 0.01, 0, TAU);
         ctx.fill();
       }
-      if (face === "worried") {
+      if (face === "worried" || face === "push") {
         ctx.strokeStyle = ink;
         ctx.lineWidth = 0.03;
         for (const ex of [-0.12, 0.12]) {
           ctx.beginPath();
-          ctx.moveTo(fx + s * (ex - 0.05), fy - s * (ex < 0 ? 0.15 : 0.18));
-          ctx.lineTo(fx + s * (ex + 0.05), fy - s * (ex < 0 ? 0.18 : 0.15));
+          if (face === "push") {
+            ctx.moveTo(fx + s * (ex - 0.05), fy - s * (ex < 0 ? 0.17 : 0.13));
+            ctx.lineTo(fx + s * (ex + 0.05), fy - s * (ex < 0 ? 0.13 : 0.17));
+          } else {
+            ctx.moveTo(fx + s * (ex - 0.05), fy - s * (ex < 0 ? 0.15 : 0.18));
+            ctx.lineTo(fx + s * (ex + 0.05), fy - s * (ex < 0 ? 0.18 : 0.15));
+          }
           ctx.stroke();
         }
       }
@@ -3444,8 +4417,9 @@
     const held = new Set(touches.values());
     const w = world;
     let cordIcon = "🔌";
-    const ready = w && !w.rope && (nearSocket() || nearExit() || bestHook());
+    const ready = w && !w.rope && (nearSocket() || nearExit() || bestHook() || nearBaddie());
     if (w && !w.rope && !nearSocket() && !nearExit() && bestHook()) cordIcon = "🪝";
+    else if (w && !w.rope && !nearSocket() && !nearExit() && nearBaddie()) cordIcon = "⚡";
     for (const b of buttons()) {
       const on = held.has(b.id);
       const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.3, b.r * 0.1, b.x, b.y, b.r);
@@ -3534,6 +4508,7 @@
     for (const s of L.sparks) drawSpark(s);
     for (const c of L.cells) drawCell(c);
     for (const c of L.crates) drawCrate(c);
+    for (const bd of L.baddies) drawBaddie(bd);
     if (bench.active && w.trail.length > 1) {
       ctx.strokeStyle = "rgba(255,230,120,0.35)";
       ctx.lineWidth = 0.08;
@@ -3545,8 +4520,13 @@
       }
       ctx.stroke();
     }
-    drawCord(ix, iy);
-    drawTelly(ix, iy);
+    if (w.plug || w.flick > 0) {
+      drawTelly(ix, iy);
+      drawCord(ix, iy);
+    } else {
+      drawCord(ix, iy);
+      drawTelly(ix, iy);
+    }
     drawParticles();
     ctx.restore();
     drawLighting(theme);
@@ -3818,7 +4798,7 @@
     bench: () => bench.begin(),
     level: (n) => {
       const L = buildRoom(n);
-      return { name: L.def.name, cells: L.cells.length, sparks: L.sparks.length, hooks: L.hooks.length, sockets: L.sockets.length, exit: L.exit, width: L.w };
+      return { name: L.def.name, cells: L.cells.length, sparks: L.sparks.length, hooks: L.hooks.length, sockets: L.sockets.length, baddies: L.baddies.length, exit: L.exit, width: L.w };
     },
     goto(n) {
       if (mode !== "play") return;
@@ -3830,6 +4810,8 @@
       p.x = p.px = x;
       p.y = p.py = y;
       p.vx = p.vy = 0;
+      world.cam.x = x;
+      world.cam.y = y - 1.5;
       world.rope = null;
       world.cord = makeCord();
     },
@@ -3861,7 +4843,9 @@
         plugged: !!w.plug, zap: w.zap > 0, finishing: w.finishing > 0,
         doors: w.L.doors.map((d) => d.open), lifts: w.L.lifts.map((l) => l.y), fans: w.L.fans.map((f) => f.spin),
         bridges: w.L.bridges.map((b) => b.ext), plates: w.L.plates.map((pl) => pl.pressed),
-        crates: w.L.crates.map((c) => ({ x: c.x, y: c.y })), cells: w.L.cells.filter((c) => c.got).length, skips: w.skips,
+        crates: w.L.crates.map((c) => ({ x: c.x, y: c.y })),
+        baddies: w.L.baddies.map((b) => ({ x: b.x, y: b.y, kind: b.kind, dead: b.dead })),
+        cells: w.L.cells.filter((c) => c.got).length, skips: w.skips,
       };
     },
   };

@@ -10,13 +10,13 @@
   "genre": "action",
   "ages": "5+",
   "players": "1",
-  "version": 2,
+  "version": 4,
   "metric": "points",
   "higher_is_better": true,
   "how_to": [
-    "◀ ▶ roll Telly along and ⤒ jumps (on a keyboard: the arrows and Space).",
-    "🔌 near a glowing hook throws the cord: hold to swing, let go to fly. Swing right round to wrap it for speed.",
-    "🔌 beside a socket plugs in and powers a door, lift, fan or bridge, often only for a while, so hurry. Crates on plates work too.",
-    "Grab ⚡ and the three 🔋 in each room, then plug into the gold outlet. Mind water and sparks!"
+    "◀ ▶ roll Telly along and ⤒ jumps; hold ⤒ while falling to fire Telly's hover jets.",
+    "🔌 near a glowing hook throws the cord: hold to swing, pump ◀ ▶ for momentum, or swing right round to wrap it for extra speed.",
+    "🔌 beside a socket plugs in to power doors, lifts, fans and bridges. Push crates onto plates—or hold 🔌 beside a crate to pull it back.",
+    "Stomp or whip 🔌 at patrolling Static Bugs and Volt-Bots, grab ⚡ and the three 🔋 in each room, then plug into the gold outlet!"
   ]
 }
