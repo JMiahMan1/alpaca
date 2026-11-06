@@ -132,7 +132,7 @@ LATE_ANSWER_SECONDS = 10.0
 #: The announcer reads the prompt (and a quip) as writing starts; that time is not the players'.
 PROMPT_READ_SECONDS = 8
 #: After the last answer is revealed, how long the scores stay up before the next round starts on its own.
-REVEAL_LINGER_SECONDS = 12
+REVEAL_LINGER_SECONDS = 16
 VOTE_SECONDS = 35
 REVEAL_SECONDS = 8
 #: The TV reveals answers one at a time (fewest votes first, the winner last),
@@ -982,7 +982,7 @@ RACE_INTROS = {
     "pair_up": "Pair Up! Match every pair on your phone. Perfect and fast wins big!",
     "in_order": "In Order! Put them in the right order on your phone. Perfect and fast wins big!",
 }
-RACE_REVEAL_SECONDS = 16.0
+RACE_REVEAL_SECONDS = 24.0
 
 
 def _race_bots(room: dict[str, Any]) -> list[str]:
@@ -1609,6 +1609,28 @@ def reveal_result_at(room: dict[str, Any]) -> float:
     return round(1.0 + max(0, n - 1) * REVEAL_PER_ANSWER_SECONDS + 1.5 + _stage_delay(room), 1)
 
 
+#: The scoreboard takes over the screen this long after the result is called.
+SCOREBOARD_AFTER_RESULT_SECONDS = 5.0
+RACE_SCOREBOARD_AT_SECONDS = 8.0
+
+
+def scores_at(room: dict[str, Any]) -> float:
+    """Seconds into the reveal when screens switch from the answers to the scoreboard."""
+    if (room.get("reveal") or {}).get("race") is not None:
+        return round(RACE_SCOREBOARD_AT_SECONDS + _stage_delay(room), 1)
+    return round(reveal_result_at(room) + SCOREBOARD_AFTER_RESULT_SECONDS, 1)
+
+
+def up_next(room: dict[str, Any]) -> dict[str, Any] | None:
+    """The round after this one, for the scoreboard's "Up next"."""
+    nxt = _next_kind(room)
+    if nxt is None:
+        return None
+    meta = ROUND_META.get(nxt[1]) or {}
+    return {"round": nxt[0], "title": meta.get("title", ""), "icon": meta.get("icon", ""),
+            "badge": meta.get("badge", ""), "multiplier": int(meta.get("multiplier") or 1)}
+
+
 def reveal_result_line(room: dict[str, Any]) -> str:
     reveal = room.get("reveal") or {}
     if reveal.get("round_winners") or any(e.get("type") == "truth_found" for e in reveal.get("events") or []):
@@ -1949,6 +1971,9 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         "prompt": public_prompt,
         "options": public_options,
         "reveal": _public_reveal(room) if phase in ("reveal", "finished") else None,
+        # The reveal ends on a full-screen scoreboard that leads into the next round.
+        "scores_at_s": scores_at(room) if phase == "reveal" else 0.0,
+        "up_next": up_next(room) if phase == "reveal" else None,
         "my_submission": {"text": my_sub["text"], "is_decoy": bool(my_sub.get("is_decoy"))} if my_sub else None,
         "my_vote": my_vote,
         "you": public_id(room, viewer_id) if viewer_id and viewer_id in room["players"] else None,

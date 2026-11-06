@@ -884,7 +884,26 @@
       `<div class="gw-line ${p.id === r.you ? "me" : ""}"><span class="r">${i + 1}</span><span class="a">${esc(p.avatar)}</span><span class="n">${esc(p.id === r.you ? "You" : p.name)}</span>` +
       `${p.round_delta ? `<span class="d">${p.round_delta > 0 ? "+" : ""}${p.round_delta}</span>` : ""}<span>${p.score}</span></div>`).join("") + "</div>";
   }
+  function scoresShown(r) {
+    return !!(r && r.phase === "reveal" && r.scores_at_s && (Date.now() - phaseStartLocal) / 1000 >= r.scores_at_s);
+  }
+  // The reveal ends on its own page: the standings and what's coming next, at the top where they can be seen.
+  function viewScores(r) {
+    const mine = meOf(r);
+    const rank = mine ? 1 + seatsOf(r).filter((p) => p.score > mine.score).length : 0;  // ties share a place
+    const last = r.round >= r.total_rounds;
+    const nx = r.up_next;
+    let h = `<div class="gw-hero gw-enter"><div class="big">${rank === 1 && mine.score > 0 ? "👑" : "📊"}</div>
+      <h1>${last ? "Final standings!" : "Scoreboard"}</h1><p>${rank ? "You're in " + ordinal(rank) + " place" : ""}</p></div>` + boardHtml(r);
+    if (nx) h += `<div class="gw-card" style="text-align:center;padding:12px"><div class="gw-label">Up next</div>
+      <div style="font-size:22px;font-weight:900">${esc(nx.icon || "")} ${esc(nx.title || "")}${nx.multiplier > 1 ? " · " + nx.multiplier + "X" : ""}</div>
+      <div class="gw-note" style="color:#5b4a8a">Starts in <b id="gw-next-in">${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}</b>s</div></div>`;
+    else h += `<div class="gw-tag" style="margin-top:8px">Final scores in <b id="gw-next-in">${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}</b>s</div>`;
+    if (r.you_are_host) h += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>${last ? "Final scores now ▶" : "Start next round now ▶"}</button>`;
+    return h;
+  }
   function viewReveal(r) {
+    if (scoresShown(r)) return viewScores(r);
     const me = meOf(r) || { round_delta: 0, score: 0 };
     const rank = seatsOf(r).findIndex((p) => p.id === r.you) + 1;
     const d = me.round_delta || 0;
@@ -1044,6 +1063,11 @@
   }
 
   // the countdown ring ticks between polls without re-rendering the screen
+  let scoresWasShown = false;
+  setInterval(() => {
+    const sc = scoresShown(room);
+    if (sc !== scoresWasShown) { scoresWasShown = sc; if (sc && view === "room") { lastSig = ""; render(true); } }
+  }, 250);
   setInterval(() => {
     const ni = $("gw-next-in");
     if (ni && deadline) ni.textContent = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));

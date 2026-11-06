@@ -855,3 +855,20 @@ def test_prompts_rotate_least_recently_used_across_rooms():
         seen.append(party._select_prompt_unlocked(room, "blank_o_matic")["id"])
     n = len(party.PROMPT_BANK["blank_o_matic"])
     assert len(set(seen[:n])) == n  # every prompt once before any repeats
+
+
+def test_the_reveal_ends_on_a_scoreboard_with_whats_next():
+    for pid, name in (("a", "Ann"), ("b", "Ben"), ("c", "Cy")):
+        party.create_or_join_room(code="SCOR", player_id=pid, name=name)
+    party.start_match("SCOR", player_id="a")
+    with party._lock:
+        room = party._rooms["SCOR"]
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+        snap = party.serialize_room(room, "a")
+    assert snap["scores_at_s"] > party.reveal_result_at(room)  # after the result is called
+    assert snap["seconds_remaining"] - snap["scores_at_s"] >= 10  # and up long enough to read
+    assert snap["up_next"]["round"] == 2 and snap["up_next"]["title"] == party.ROUND_META[party.round_kind(room, 2)]["title"]
+    with party._lock:
+        room["round"] = room["total_rounds"]
+        assert party.serialize_room(room, "a")["up_next"] is None
