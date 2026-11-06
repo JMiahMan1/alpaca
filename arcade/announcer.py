@@ -33,7 +33,9 @@ PAPERBOY_SPEED = 1.08
 PAPERBOY_PITCH = 1.0
 PAPERBOY_CALL = "Extra! Extra! Read all about it!"
 #: Kokoro's own pace is the most natural; cadence varies it per sentence.
-ANNOUNCER_SPEED = 1.07  # a game-show host is up on their toes, not reading an audiobook
+ANNOUNCER_SPEED = 1.15  # chosen by ear (audition round three): quick, snappy, a host on their toes
+#: Everything but an exclamation sits this far under it, so the shouts land (gain only: nothing added).
+SHOUT_LIFT_DB = 2.5
 
 # --------------------------------------------------------------------------- Bible names
 #
@@ -415,14 +417,14 @@ def cadence(sentence: str, base: float = ANNOUNCER_SPEED) -> tuple[float, float]
     (fixed per sentence) keeps a run of sentences from sounding metronomic.
     """
     s = sentence.rstrip()
-    jitter = ((sum(map(ord, s)) % 9) - 4) * 0.006  # ±2.4 %, same every time for the same words
+    jitter = ((sum(map(ord, s)) % 9) - 4) * 0.008  # ±3.2 %, same every time for the same words
     if s.endswith(("...", "…")):
-        return base * 0.97 + jitter, 600.0
+        return base * 0.97 + jitter, 420.0
     if s.endswith("?"):
-        return base * 0.97 + jitter, 360.0
+        return base + jitter, 240.0
     if s.endswith("!"):
-        return base * 1.08 + jitter, 230.0
-    return base + jitter, 280.0
+        return base * 1.12 + jitter, 150.0
+    return base * 1.03 + jitter, 190.0
 
 _CALL = re.compile(r"^\s*((?:extra\b[!.,]?\s*){1,3})(read all about it[!.]?\s*)?", re.IGNORECASE)
 
@@ -559,13 +561,21 @@ def silence(rate: int, ms: float) -> list[float]:
 # --------------------------------------------------------------------------- the two voices
 
 def announcer_fx(x: list[float], rate: int) -> list[float]:
-    # Gentle on purpose: heavy compression and a big room are what made it
-    # sound synthetic. A light leveller, a little presence, a hint of studio.
-    y = highpass(normalize(x, 0.9), rate, 80.0)
-    y = presence(y, rate, 2600.0, 0.6)  # bright and forward: an excited host, not a narrator
-    y = compress(y, rate, -24.0, 2.5, attack_ms=6.0, release_ms=180.0)
-    y = echoes(normalize(y, 0.9), rate, [(38.0, 0.06), (61.0, 0.035)], 3200.0)
-    return normalize(y, 0.89)
+    # Clean on purpose (chosen by ear): no room echo, no drive, nothing that adds
+    # noise. A leveller and a little presence.
+    y = highpass(normalize(x, 0.9), rate, 85.0)
+    y = presence(y, rate, 2600.0, 0.6)
+    y = compress(y, rate, -26.0, 3.0, attack_ms=5.0, release_ms=150.0)
+    return normalize(y, 0.9)
+
+
+def quieter(wav: bytes, db: float) -> bytes:
+    """The clip ``db`` quieter: a plain gain, so nothing is added to the sound."""
+    if not db:
+        return wav
+    x, rate = read_wav(wav)
+    g = 10 ** (-db / 20.0)
+    return write_wav([v * g for v in x], rate)
 
 
 def paperboy_fx(x: list[float], rate: int) -> list[float]:
@@ -596,6 +606,36 @@ def _trim(x: list[float], rate: int, keep_ms: float = 70.0) -> list[float]:
         y[i] *= i / fin
     for i in range(fout):
         y[len(y) - 1 - i] *= i / fout
+    return y
+
+
+def depop(x: list[float], rate: int) -> list[float]:
+    """Take out the pop Kokoro can put at the very start of a clip that opens on a vowel.
+
+    Measured on "Ooh.": a ~2 ms burst, a dip, then the vowel; heard alone after
+    a pause it is a click. A burst that is much louder than the sound right after
+    it is that pop and is faded in. A real consonant ("B" in "Bold") is followed
+    by a louder vowel, so it never qualifies and is left alone.
+    """
+    peak = max((abs(v) for v in x), default=0.0)
+    if not peak:
+        return x
+    floor = 0.03 * peak
+    on = next((i for i, v in enumerate(x) if abs(v) > floor), None)
+    if on is None:
+        return x
+    head = int(rate * 0.006)  # where a pop lives
+    after = int(rate * 0.010)  # what follows it
+    burst = max((abs(v) for v in x[on:on + head]), default=0.0)
+    follow = x[on + head:on + head + after]
+    level = (sum(abs(v) for v in follow) / len(follow)) if follow else 0.0
+    if not level or burst < 2.5 * level:
+        return x
+    y = list(x)
+    ramp = head + after
+    for i in range(ramp):
+        if on + i < len(y):
+            y[on + i] *= 0.5 - 0.5 * math.cos(math.pi * i / ramp)  # raised cosine: no new edge
     return y
 
 
@@ -635,6 +675,8 @@ def assemble(parts: list[tuple[str, bytes]] | list[tuple[str, bytes, float]]) ->
             samples = resample(samples, r / rate)
         rate = rate or r
         samples = _trim(samples, rate)
+        if role == "announcer":
+            samples = depop(samples, rate)
         if groups and groups[-1][0] == role:
             _, prev, prev_gap = groups[-1]
             groups[-1] = (role, prev + silence(rate, prev_gap) + samples, gap)

@@ -46,8 +46,8 @@ def test_the_announcer_is_compressed_and_loud_without_clipping():
     raw = _speech_wav()
     out = announcer.assemble([("announcer", raw)])
     peak, n, rate = _peak_and_len(out)
-    assert rate == 24000 and 0.85 <= peak <= 0.9
-    assert n > 1.5 * rate  # the room echo adds a short tail
+    assert rate == 24000 and 0.85 <= peak <= 0.901
+    assert n >= 1.0 * rate  # trimmed of dead air, never of speech; no echo tail (the chain adds nothing)
 
 
 def test_the_paper_boy_is_quicker_and_higher():
@@ -303,3 +303,29 @@ def test_shouted_possessives_and_contractions_stay_one_word():
     assert unshout("THE MIDIAN SHEPHERD'S JOURNAL") == "The Midian Shepherd's Journal"
     assert unshout("IT’S A BOY'S WORLD") == "It’s A Boy's World"
     assert unshout("CEO DIY") == "CEO DIY"
+
+
+def test_a_pop_at_the_start_of_a_clip_is_removed_but_a_consonant_is_not():
+    rate = 24000
+    silence = [0.0] * 480
+    pop = [0.5, -0.45, 0.4, -0.3] * 12            # a 2 ms burst
+    dip = [0.02, -0.02] * 60                       # then nearly nothing
+    vowel = [0.3 * math.sin(i / 6) for i in range(2400)]
+    clip = silence + pop + dip + vowel
+    out = announcer.depop(clip, rate)
+    assert max(abs(v) for v in out[480:528]) < 0.2   # the pop is faded down
+    assert out[-100:] == clip[-100:]                 # the vowel is untouched
+    # A plosive followed by its louder vowel is speech, not a pop.
+    plosive = silence + [0.3, -0.3] * 24 + [0.6 * math.sin(i / 6) for i in range(2400)]
+    assert announcer.depop(plosive, rate) == plosive
+
+
+
+def test_shouts_land_over_the_rest_without_adding_anything():
+    raw = _speech_wav()
+    softer = announcer.quieter(raw, announcer.SHOUT_LIFT_DB)
+    a, _ = announcer.read_wav(raw)
+    b, _ = announcer.read_wav(softer)
+    g = 10 ** (-announcer.SHOUT_LIFT_DB / 20)
+    assert len(a) == len(b) and all(abs(y - x * g) < 2e-4 for x, y in zip(a, b, strict=True))  # a plain gain
+    assert announcer.quieter(raw, 0) == raw

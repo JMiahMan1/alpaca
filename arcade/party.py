@@ -56,9 +56,14 @@ AUDIO_SERVER_URL = os.getenv("AUDIO_SERVER_URL", "http://audio-server:8082").rst
 PROXY_URL = os.getenv("PROXY_URL", "http://host.docker.internal:11434").rstrip("/")
 EXECUTION_SVC_URL = os.getenv("EXECUTION_SVC_URL", "").rstrip("/")
 
-DEFAULT_ANNOUNCER_VOICE = "am_onyx,am_fenrir"
+DEFAULT_ANNOUNCER_VOICE = "bm_fable,bm_lewis,bm_george"  # chosen by ear, audition round three
 
 CURATED_ANNOUNCER_VOICES: tuple[dict[str, str], ...] = (
+    {
+        "id": "bm_fable,bm_lewis,bm_george",
+        "label": "🎩 The Sassy Brit (Game-Show Host)",
+        "kind": "kokoro",
+    },
     {
         "id": "am_onyx,am_fenrir",
         "label": "📣 The Big Voice (Classic Game-Show Announcer)",
@@ -2715,6 +2720,9 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
             else:
                 speed, gap = announcer.cadence(sentence)
                 clip = synthesize_announcer_clip(announcer.pronounce(sentence), voice, clone=clone, speed=speed)
+                if clip is not None and not sentence.rstrip().endswith("!"):
+                    # The shouts land: everything else sits a little under them.
+                    clip = (clip[0] + "q", announcer.quieter(clip[1], announcer.SHOUT_LIFT_DB))
             if clip is None:
                 if role == "paperboy":
                     continue  # no newsboy today: the announcer still reads the line
@@ -2722,7 +2730,7 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
             pieces.append((role, clip[0], clip[1], gap))
     if not pieces:
         return None
-    show_id = hashlib.sha256(("show:v4:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
+    show_id = hashlib.sha256(("show:v6:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
     with _lock:
         cached = _tts_clips.get(show_id)
     if cached:
