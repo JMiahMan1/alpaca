@@ -163,6 +163,17 @@
   .lobby + .players { margin-top: 1.4vh; }
   .lobby .joke { margin-top: 1.4vh; padding: 1.2vh 1.6vw; }
   .lobby .howto { margin-top: 1.4vh; }
+  .sb { width: 72vw; margin: 1vh auto 0; }
+  .sb .line { padding: 1.3vh 2.4vw; margin: .9vh 0; animation: slidein .5s cubic-bezier(.2,1.3,.4,1) both; }
+  .sb .line .who, .sb .line .sc { font-size: 4.2vh; }
+  .sb .line .d { font-size: 3.4vh; background: #10b981; color: #fff; border-radius: 1vh; padding: .2vh .8vw; }
+  .sb .line .d.neg { background: #e11d48; }
+  .sb .line.lead { background: #ffe58a; transform: scale(1.03); }
+  .sb .rk { display: inline-block; width: 5vh; height: 5vh; line-height: 5vh; text-align: center; border-radius: 50%;
+    background: var(--cardink); color: #ffc83d; font-size: 3vh; margin-right: 1.2vw; }
+  .upnext { margin: 2.4vh auto 0; display: table; padding: 1.4vh 3vw; border-radius: 99px; background: #2ed3b7; color: var(--cardink);
+    border: .45vh solid var(--cardink); box-shadow: 0 .8vh 0 var(--cardink); font-size: 4vh; font-weight: 900; }
+  @keyframes slidein { from { opacity: 0; transform: translateX(-6vw); } to { opacity: 1; transform: none; } }
 </style>
 </head>
 <body>
@@ -613,7 +624,29 @@
     if (r.round >= r.total_rounds) return "";
     return '<div class="next-in">Next round in <span id="next-in">' + Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</span>s</div>";
   }
+  function scoresShown(r) {
+    return !!(r && r.phase === "reveal" && r.scores_at_s && (Date.now() - phaseStartLocal) / 1000 >= r.scores_at_s);
+  }
+  // The reveal ends on its own page: the standings, then what's coming next.
+  function viewScores(r) {
+    var list = humans(r);
+    var h = '<div class="fade center"><div class="h1">' + (r.round >= r.total_rounds ? "Final standings!" : "Scoreboard after Round " + r.round) + '</div><div class="sb">';
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i], d = p.round_delta || 0, place = 1;
+      for (var j = 0; j < list.length; j++) if (list[j].score > p.score) place++;  // ties share a place
+      var lead = place === 1 && p.score > 0;
+      h += '<div class="line' + (lead ? " lead" : "") + '" style="animation-delay:' + (i * 0.12) + 's"><span class="who"><span class="rk">' + place + "</span>" +
+        esc(p.avatar || "") + " " + esc(p.name) + '</span><span><span class="sc">' + p.score + "</span>" +
+        (d ? '<span class="d' + (d < 0 ? " neg" : "") + '">' + (d > 0 ? "+" : "") + d + "</span>" : "") + "</span></div>";
+    }
+    h += "</div>";
+    var nx = r.up_next;
+    if (nx) h += '<div class="upnext">Up next: ' + esc(nx.icon || "") + " " + esc(nx.title || "") + (nx.multiplier > 1 ? " · " + nx.multiplier + "X POINTS" : "") +
+      ' · <span id="next-in">' + Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</span>s</div>";
+    return h + "</div>";
+  }
   function viewReveal(r) {
+    if (scoresShown(r)) return viewScores(r);
     if (r.reveal && r.reveal.race) return viewRaceReveal(r);
     var opts = revealOrder(r);
     var step = revealStep(r);
@@ -718,6 +751,7 @@
   }
   var lastPlayerCount = -1;
   var lastRevealStep = -1;
+  var lastScoresShown = false;
   var lastTick = -1;
   function apply(r) {
     var phaseKey = r ? stepKey(r) : "";
@@ -784,7 +818,12 @@
   setInterval(function () {
     runChatter();
     if (room && room.phase === "reveal") {
-      var step = revealStep(room);
+      var sc = scoresShown(room);
+      if (sc !== lastScoresShown) {
+        lastScoresShown = sc;
+        if (sc) { playSfx("round"); $("main").innerHTML = viewReveal(room); }
+      }
+      var step = sc ? lastRevealStep : revealStep(room);
       if (step !== lastRevealStep) {
         if (lastRevealStep >= 0 && step > 0) {
           var o = revealOrder(room)[step - 1];
