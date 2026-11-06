@@ -23,16 +23,40 @@ import os
 import re
 import wave
 
-#: The newsboy. No Kokoro voice is a boy: every male voice measured 88-166 Hz.
-#: A young-sounding male/female blend (~170 Hz) pitched up by resampling lands
-#: in a shouting boy's 220-250 Hz.
-PAPERBOY_VOICE = os.getenv("PARTY_PAPERBOY_VOICE", "am_eric,af_kore")
-PAPERBOY_SPEED = 1.0
-#: Resample factor: >1 is higher and quicker (1.32 ~ five semitones).
-PAPERBOY_PITCH = 1.32
+#: The newsboy. No Kokoro voice is a boy (every male voice measured 88-166 Hz),
+#: and pitching a man up by a third sounded like a machine. A bright young
+#: voice (~185 Hz) lifted only a little (~2.4 semitones) stays human.
+PAPERBOY_VOICE = os.getenv("PARTY_PAPERBOY_VOICE", "af_kore")
+PAPERBOY_SPEED = 1.05
+PAPERBOY_PITCH = 1.15
 PAPERBOY_CALL = "Extra! Extra! Read all about it!"
-#: The announcer reads a little quicker than Kokoro's narrator default.
-ANNOUNCER_SPEED = 1.1
+#: Kokoro's own pace is the most natural; cadence varies it per sentence.
+ANNOUNCER_SPEED = 1.0
+
+_SENTENCE = re.compile(r"(?<=[.!?…])\s+(?=\S)")
+
+
+def sentences(text: str) -> list[str]:
+    """A line as a host breathes it: one sentence at a time."""
+    return [s.strip() for s in _SENTENCE.split((text or "").strip()) if s.strip()]
+
+
+def cadence(sentence: str, base: float = ANNOUNCER_SPEED) -> tuple[float, float]:
+    """``(speed, pause after in ms)`` for one sentence, the way a person reads it.
+
+    Questions slow down and leave room for the answer, exclamations push
+    forward, a trailing "..." hangs before the punchline. A little variation
+    (fixed per sentence) keeps a run of sentences from sounding metronomic.
+    """
+    s = sentence.rstrip()
+    jitter = ((sum(map(ord, s)) % 9) - 4) * 0.006  # ±2.4 %, same every time for the same words
+    if s.endswith(("...", "…")):
+        return base * 0.96 + jitter, 650.0
+    if s.endswith("?"):
+        return base * 0.95 + jitter, 420.0
+    if s.endswith("!"):
+        return base * 1.05 + jitter, 300.0
+    return base + jitter, 340.0
 
 _CALL = re.compile(r"^\s*((?:extra[!.,]?\s*){1,3})(read all about it[!.]?\s*)?", re.IGNORECASE)
 
@@ -169,12 +193,12 @@ def silence(rate: int, ms: float) -> list[float]:
 # --------------------------------------------------------------------------- the two voices
 
 def announcer_fx(x: list[float], rate: int) -> list[float]:
+    # Gentle on purpose: heavy compression and a big room are what made it
+    # sound synthetic. A light leveller, a little presence, a hint of studio.
     y = highpass(normalize(x, 0.9), rate, 80.0)
-    y = presence(y, rate, 2500.0, 0.7)
-    # Two stages, as broadcast chains do: a firm leveller, then a fast catch on the peaks.
-    y = compress(y, rate, -30.0, 4.0, attack_ms=3.0, release_ms=120.0)
-    y = compress(normalize(y, 0.9), rate, -12.0, 8.0, attack_ms=1.0, release_ms=60.0)
-    y = echoes(normalize(y, 0.9), rate, [(41.0, 0.12), (67.0, 0.08), (97.0, 0.05)], 2800.0)
+    y = presence(y, rate, 2600.0, 0.45)
+    y = compress(y, rate, -24.0, 2.5, attack_ms=6.0, release_ms=180.0)
+    y = echoes(normalize(y, 0.9), rate, [(38.0, 0.06), (61.0, 0.035)], 3200.0)
     return normalize(y, 0.89)
 
 
@@ -182,23 +206,45 @@ def paperboy_fx(x: list[float], rate: int) -> list[float]:
     y = resample(x, PAPERBOY_PITCH)
     y = highpass(y, rate, 260.0)
     y = lowpass(y, rate, 4200.0)
-    y = compress(normalize(y, 0.9), rate, -24.0, 4.0, attack_ms=2.0, release_ms=90.0)
-    y = drive(normalize(y, 0.95), 2.2)
+    y = compress(normalize(y, 0.9), rate, -22.0, 3.0, attack_ms=3.0, release_ms=110.0)
+    y = drive(normalize(y, 0.95), 1.5)
     y = echoes(y, rate, [(135.0, 0.24), (270.0, 0.11), (420.0, 0.05)], 2400.0)
     return normalize(y, 0.93)
 
 
-def assemble(parts: list[tuple[str, bytes]]) -> bytes:
-    """``[(role, kokoro wav), ...]`` -> one processed show line."""
-    out: list[float] = []
+def _trim(x: list[float], rate: int, floor: float = 0.012, keep_ms: float = 40.0) -> list[float]:
+    """Drop the dead air Kokoro leaves around a clip, so the pauses are ours."""
+    keep = int(rate * keep_ms / 1000.0)
+    idx = [i for i, v in enumerate(x) if abs(v) > floor]
+    if not idx:
+        return x
+    return x[max(0, idx[0] - keep): min(len(x), idx[-1] + keep)]
+
+
+def assemble(parts: list[tuple[str, bytes]] | list[tuple[str, bytes, float]]) -> bytes:
+    """``[(role, kokoro wav[, pause after ms]), ...]`` -> one processed show line.
+
+    Each role's sentences are joined with their own pauses first and then
+    processed together, so the voice's character stays even across them.
+    """
     rate = 0
-    for role, wav in parts:
+    groups: list[tuple[str, list[float], float]] = []
+    for part in parts:
+        role, wav = part[0], part[1]
+        gap = float(part[2]) if len(part) > 2 else 260.0  # type: ignore[misc]
         samples, r = read_wav(wav)
         if rate and r != rate:
             samples = resample(samples, r / rate)
         rate = rate or r
-        shaped = paperboy_fx(samples, rate) if role == "paperboy" else announcer_fx(samples, rate)
-        if out:
-            out += silence(rate, 220.0)
-        out += shaped
+        samples = _trim(samples, rate)
+        if groups and groups[-1][0] == role:
+            _, prev, prev_gap = groups[-1]
+            groups[-1] = (role, prev + silence(rate, prev_gap) + samples, gap)
+        else:
+            groups.append((role, samples, gap))
+    out: list[float] = []
+    for i, (role, samples, gap) in enumerate(groups):
+        out += paperboy_fx(samples, rate) if role == "paperboy" else announcer_fx(samples, rate)
+        if i < len(groups) - 1:
+            out += silence(rate, max(gap, 380.0))
     return write_wav(out, rate or 24000)

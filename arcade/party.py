@@ -116,6 +116,13 @@ STAGE_PRESENCE_SECONDS = 8.0
 #: gets the same extra time.
 STREAM_STAGE_DELAY_S = float(os.getenv("PARTY_STREAM_DELAY_S", "8"))
 WRITE_SECONDS = 55
+#: A phone's clock and the network lag the server's by a second or two, so an
+#: answer or vote sent as a phone shows 0 still counts: the phase stays open
+#: this much longer than the deadline everyone sees (unless everyone is in).
+SUBMIT_GRACE_SECONDS = 4.0
+#: An answer that still arrives after voting opened replaces the house answer
+#: it was given, as long as nobody has voted yet and voting is this fresh.
+LATE_ANSWER_SECONDS = 10.0
 #: The announcer reads the prompt (and a quip) as writing starts; that time is not the players'.
 PROMPT_READ_SECONDS = 8
 #: After the last answer is revealed, how long the scores stay up before the next round starts on its own.
@@ -806,7 +813,8 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
             "player_id": bot["id"],
             "text": text,
             "is_decoy": False,
-            "submitted_at": now + 0.5,
+            # Like a person: done at some point while everyone writes, not the instant it starts.
+            "submitted_at": now + PROMPT_READ_SECONDS + random.uniform(6.0, WRITE_SECONDS * 0.8),
         }
 
     room["round"] = round_num
@@ -914,6 +922,8 @@ def _build_voting_options_unlocked(room: dict[str, Any]) -> None:
             pick_pool = non_decoy if (non_decoy and rng.random() < 0.82) else valid
             chosen = rng.choice(pick_pool)
             votes[bot["id"]] = chosen["option_id"]
+            # Cast now (so the round never waits on a bot) but shown when a person might vote.
+            room.setdefault("bot_vote_at", {})[bot["id"]] = now + random.uniform(4.0, VOTE_SECONDS * 0.7)
 
     room["options"] = options
     room["votes"] = votes
@@ -1215,8 +1225,10 @@ def announce_line(room: dict[str, Any]) -> str:
         return f"Welcome to Parable Party! Scan the code on the screen, or join room {code} in Jarvis."
     if phase == "writing":
         line = str(prompt.get("announcer") or "")
+        if prompt.get("kind") == "extra_extra" and not line.lower().startswith("extra"):
+            line = f"Extra! Extra! {line}"  # every headline round opens with the paper boy
         if line.lower().startswith("extra"):
-            return line  # the paper boy opens these
+            return line
         return f"{_pick(room, HOST_OPENERS, 'open')} {line}".strip()
     if phase == "voting":
         return _pick(room, HOST_VOTING, "vote")
@@ -1272,12 +1284,12 @@ def _check_auto_advance_unlocked(room: dict[str, Any]) -> None:
         contestants = _active_contestants_unlocked(room)
         humans = [p for p in contestants if not p.get("is_bot")]
         all_submitted = bool(humans) and all(p["id"] in room["submissions"] for p in humans)
-        if all_submitted or (deadline and now >= deadline):
+        if all_submitted or (deadline and now >= deadline + SUBMIT_GRACE_SECONDS):
             _build_voting_options_unlocked(room)
     elif phase == "voting":
         humans = [p for p in _active_contestants_unlocked(room) if not p.get("is_bot")]
         all_voted = bool(humans) and all(p["id"] in room["votes"] for p in humans)
-        if all_voted or (deadline and now >= deadline):
+        if all_voted or (deadline and now >= deadline + SUBMIT_GRACE_SECONDS):
             _score_round_unlocked(room)
     elif phase == "reveal" and deadline and now >= deadline:
         # The scores have been up long enough: the show goes on without waiting for the host.
@@ -1368,8 +1380,10 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
             "round_delta": int(p.get("round_delta") or 0),
             "is_bot": bool(p.get("is_bot")),
             "spectator": bool(p.get("spectator")),
-            "submitted": p["id"] in submissions,
-            "voted": p["id"] in votes,
+            "submitted": p["id"] in submissions
+            and (not p.get("is_bot") or now >= float(submissions[p["id"]].get("submitted_at") or 0)),
+            "voted": p["id"] in votes
+            and (not p.get("is_bot") or now >= float((room.get("bot_vote_at") or {}).get(p["id"]) or 0)),
             "is_host": p["id"] == room.get("host_id"),
             "connected": bool(p.get("is_bot")) or now - float(p.get("last_seen") or 0) <= PLAYER_AWAY_SECONDS,
         }
@@ -1724,6 +1738,32 @@ def start_match(code: str, *, use_ai_prompt: bool = False, player_id: str | None
         return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
 
 
+def _take_late_answer_unlocked(room: dict[str, Any], pid: str, text: str) -> bool:
+    """Swap a just-too-late answer in for the house answer its writer was given."""
+    sub = (room.get("submissions") or {}).get(pid) or {}
+    fresh = time.time() - float(room.get("phase_started_at") or 0) <= LATE_ANSWER_SECONDS
+    # AI companions vote the moment voting opens; only a human's vote settles the options.
+    players = room.get("players") or {}
+    human_voted = any(not (players.get(v) or {}).get("is_bot") for v in (room.get("votes") or {}))
+    if not (text and sub.get("auto_filled") and fresh and not human_voted):
+        return False
+    prompt = room["current_prompt"]
+    if _matches_truth(text, prompt) or _normalize_compare(text) == _normalize_compare(prompt.get("decoy", "")):
+        return False
+    room["submissions"][pid] = {"player_id": pid, "text": text, "is_decoy": False, "submitted_at": time.time(),
+                                "late": True}
+    options = room.get("options") or []
+    for o in options:
+        if o.get("kind") == "decoy" and pid in (o.get("authors") or []):
+            o["authors"] = [a for a in o["authors"] if a != pid]
+    opt_hash = hashlib.sha1(f"{pid}:{text}".encode()).hexdigest()[:8]
+    options.insert(random.randint(0, len(options)), {"option_id": f"opt_{opt_hash}", "text": text, "kind": "player",
+                                                     "authors": [pid], "voters": []})
+    room["options"] = options
+    room["updated_at"] = time.time()
+    return True
+
+
 def submit_answer(
     code: str,
     *,
@@ -1739,6 +1779,8 @@ def submit_answer(
         if room is None:
             raise LookupError(f"Room '{clean_code}' not found.")
         _check_auto_advance_unlocked(room)
+        if room["phase"] == "voting" and not use_decoy and _take_late_answer_unlocked(room, pid, clean_ans):
+            return serialize_room(room, viewer_id=pid)
         if room["phase"] != "writing":
             raise ValueError("This round's writing phase has already closed.")
         if pid not in room["players"]:
@@ -2055,26 +2097,30 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
     parts = announcer.split_show_line(text)
     if not parts:
         return None
-    pieces: list[tuple[str, str, bytes]] = []
+    pieces: list[tuple[str, str, bytes, float]] = []
     for role, line in parts:
-        if role == "paperboy":
-            clip = synthesize_announcer_clip(line, announcer.PAPERBOY_VOICE, speed=announcer.PAPERBOY_SPEED)
-        else:
-            clip = synthesize_announcer_clip(line, voice, clone=clone, speed=announcer.ANNOUNCER_SPEED)
-        if clip is None:
+        # Sentence by sentence, each at its own pace with a breath after it.
+        for sentence in announcer.sentences(line):
             if role == "paperboy":
-                continue  # no newsboy today: the announcer still reads the line
-            return None
-        pieces.append((role, clip[0], clip[1]))
+                speed, gap = announcer.PAPERBOY_SPEED, 180.0
+                clip = synthesize_announcer_clip(sentence, announcer.PAPERBOY_VOICE, speed=speed)
+            else:
+                speed, gap = announcer.cadence(sentence)
+                clip = synthesize_announcer_clip(sentence, voice, clone=clone, speed=speed)
+            if clip is None:
+                if role == "paperboy":
+                    continue  # no newsboy today: the announcer still reads the line
+                return None
+            pieces.append((role, clip[0], clip[1], gap))
     if not pieces:
         return None
-    show_id = hashlib.sha256(("show:v1:" + ":".join(f"{r}={c}" for r, c, _ in pieces)).encode()).hexdigest()[:16]
+    show_id = hashlib.sha256(("show:v2:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
     with _lock:
         cached = _tts_clips.get(show_id)
     if cached:
         return show_id, cached
     try:
-        wav = announcer.assemble([(r, w) for r, _, w in pieces])
+        wav = announcer.assemble([(r, w, g) for r, _, w, g in pieces])
     except Exception:
         wav = pieces[-1][2]  # an unreadable clip is still better spoken plainly
     with _lock:

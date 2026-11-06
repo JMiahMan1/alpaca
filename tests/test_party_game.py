@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 import arcade.app as arcade_app
@@ -650,3 +652,59 @@ def test_a_prefetched_ai_prompt_is_used_for_the_next_round():
                                                       "bot_answers": ["snacks"]}}
     party.advance_phase("PREF", player_id="h")
     assert party._rooms["PREF"]["current_prompt"]["prompt"] == "Noah forgot to pack ______."
+
+
+def test_a_last_second_answer_is_not_replaced_by_the_house_answer():
+    """Reported: an answer typed in the final seconds was swapped for the house answer."""
+    party.create_or_join_room(code="LATE", player_id="a", name="Ann")
+    party.create_or_join_room(code="LATE", player_id="b", name="Ben")
+    party.start_match("LATE", player_id="a")
+    party.submit_answer("LATE", player_id="b", text="A camel with opinions")
+    with party._lock:
+        party._rooms["LATE"]["phase_deadline"] = time.time() - 1.0  # the phone showed 0 a second ago
+    room = party.submit_answer("LATE", player_id="a", text="Forty days of leftovers")
+    assert room["my_submission"]["text"] == "Forty days of leftovers"
+
+
+def test_an_answer_just_after_voting_opened_replaces_the_house_answer():
+    party.create_or_join_room(code="LAT2", player_id="a", name="Ann")
+    party.create_or_join_room(code="LAT2", player_id="b", name="Ben")
+    party.start_match("LAT2", player_id="a")
+    party.submit_answer("LAT2", player_id="b", text="A camel with opinions")
+    with party._lock:
+        room = party._rooms["LAT2"]
+        room["phase_deadline"] = time.time() - party.SUBMIT_GRACE_SECONDS - 1
+        party._check_auto_advance_unlocked(room)
+        assert room["phase"] == "voting" and room["submissions"]["a"].get("auto_filled")
+    snap = party.submit_answer("LAT2", player_id="a", text="Forty days of leftovers")
+    texts = [o["text"] for o in snap["options"]]
+    assert "Forty days of leftovers" in texts
+    decoy = next(o for o in party._rooms["LAT2"]["options"] if o["kind"] == "decoy")
+    assert "a" not in decoy["authors"]
+    # Once anyone has voted, the round's options are settled.
+    with party._lock:
+        room = party._rooms["LAT2"]
+        room["votes"] = {"b": "opt_house_decoy"}
+        room["submissions"]["a"]["auto_filled"] = True
+    with pytest.raises(ValueError):
+        party.submit_answer("LAT2", player_id="a", text="Another try")
+
+
+def test_bots_finish_at_random_moments_not_all_at_once():
+    party.create_or_join_room(code="BOTS", player_id="a", name="Ann")
+    party.start_match("BOTS", player_id="a")
+    room = party._rooms["BOTS"]
+    bots = [p for p in room["players"].values() if p.get("is_bot")]
+    assert bots
+    times = [room["submissions"][b["id"]]["submitted_at"] - room["phase_started_at"] for b in bots]
+    assert all(party.PROMPT_READ_SECONDS + 6 <= t <= party.PROMPT_READ_SECONDS + party.WRITE_SECONDS for t in times)
+    snap = party.serialize_room(room)
+    assert not any(p["submitted"] for p in snap["players"] if p["is_bot"])  # nobody is "Sealed" at 0 s
+    with party._lock:
+        party._build_voting_options_unlocked(room)
+    assert all(b["id"] in room["votes"] for b in bots)  # cast already, so the round never waits on them
+    assert not any(p["voted"] for p in party.serialize_room(room)["players"] if p["is_bot"])
+    with party._lock:
+        for b in bots:
+            room["bot_vote_at"][b["id"]] = 0
+    assert all(p["voted"] for p in party.serialize_room(room)["players"] if p["is_bot"])

@@ -84,9 +84,13 @@ def test_show_line_asks_kokoro_for_the_paper_boy_then_the_announcer(monkeypatch)
         party._tts_clips.clear()
     monkeypatch.setattr(party.urllib.request, "urlopen", urlopen)
     clip_id, wav = party.synthesize_show_line("Extra! Extra! Noah's neighbors called the inspector!", voice="am_onyx")
-    assert [p.get("voice") for p in sent] == [announcer.PAPERBOY_VOICE, "am_onyx"]
-    assert sent[0]["text"] == announcer.PAPERBOY_CALL and sent[1]["text"].startswith("Noah's")
-    assert sent[1]["speed"] == pytest.approx(announcer.ANNOUNCER_SPEED)
+    voices = [p.get("voice") for p in sent]
+    boy = [p["text"] for p in sent if p.get("voice") == announcer.PAPERBOY_VOICE]
+    # The newsboy shouts first, a sentence at a time ("Extra!" twice is one synthesis), then the host.
+    assert voices[: len(boy)] == [announcer.PAPERBOY_VOICE] * len(boy) and voices[len(boy):] == ["am_onyx"]
+    assert boy == ["Extra!", "Read all about it!"]
+    assert sent[-1]["text"].startswith("Noah's")
+    assert sent[-1]["speed"] == pytest.approx(announcer.cadence(sent[-1]["text"])[0])
     with wave.open(io.BytesIO(wav)) as w:
         assert w.getnchannels() == 1 and w.getnframes() > 0
     assert party.get_cached_tts_wav(clip_id) == wav
@@ -185,3 +189,20 @@ def test_tv_and_phone_play_the_chatter():
     tv = arcade_app.app.test_client().get("/tv").get_data(as_text=True)
     assert "function runChatter" in tv and "room.chatter" in tv
     assert "room.chatter" in family.build_html("good-word")
+
+
+def test_cadence_breathes_like_a_person():
+    q_speed, q_gap = announcer.cadence("What did Mrs. Noah say?")
+    x_speed, x_gap = announcer.cadence("Round time!")
+    _, t_gap = announcer.cadence("And now...")
+    assert q_speed < x_speed and q_gap > x_gap and t_gap > q_gap
+    assert announcer.sentences("Round time! What did she say? And now... the truth.") == [
+        "Round time!", "What did she say?", "And now...", "the truth."]
+
+
+def test_every_headline_round_opens_with_the_paper_boy():
+    from arcade import party as p
+    room = {"phase": "writing", "match_id": "m", "round": 2,
+            "current_prompt": {"kind": "extra_extra", "announcer": "Live from the Valley of Elah! Write the headline!"}}
+    assert p.announce_line(room).startswith("Extra! Extra! Live from the Valley of Elah!")
+    assert announcer.split_show_line(p.announce_line(room))[0][0] == "paperboy"
