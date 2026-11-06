@@ -1521,7 +1521,8 @@ def api_party_tts():
     text = str(body.get("text") or "").strip()
     voice = str(body.get("voice") or party.DEFAULT_ANNOUNCER_VOICE).strip()
     clone = str(body.get("clone") or "").strip() or None
-    wav = party.synthesize_announcer_wav(text, voice=voice, clone=clone)
+    clip = party.synthesize_show_line(text, voice=voice, clone=clone)
+    wav = clip[1] if clip else None
     if not wav:
         return Response(status=204)
     return Response(wav, mimetype="audio/wav", headers={"Cache-Control": "public, max-age=3600"})

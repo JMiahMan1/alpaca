@@ -491,6 +491,12 @@ other fails the build.
   and stored in `ARCADE_DIR/party_music/`. Missing cues are composed in a background thread at startup (a cue
   that is not ready is just silent); `POST /api/admin/party/music/regenerate` redoes them. It plays wherever the
   announcer plays, ducks under the announcer, and the host can turn it off per room.
+- **Two voices, one pipeline** (`arcade/announcer.py`, `party.synthesize_show_line`). Kokoro reads like an
+  audiobook, so the announcer's clip is processed into a broadcast voice (high-pass, presence lift, two-stage
+  compression, a short room) and the default voice is the deep `am_onyx,am_fenrir` blend. A line that opens with
+  "Extra! Extra!" is split: a paper boy shouts "Extra! Extra! Read all about it!" first. No Kokoro voice is a boy
+  (every male voice measured 88-166 Hz), so he is `am_eric,af_kore` (~170 Hz) resampled up 1.32x to ~235 Hz,
+  band-limited, driven and given a street slap echo. Stdlib only, ~0.2 s a line, cached with the clips.
 - **Room snapshots never carry credentials.** An earlier version stored the HA URL + token on the room and
   serialized it to every phone; `test_room_snapshots_never_carry_tv_credentials` keeps it out.
 
