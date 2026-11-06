@@ -1121,8 +1121,9 @@ def player_page(initials):
     clean = _clean_initials(initials)
     if not clean:
         return render_template("index.html", games=list_games(), error="Pick a 3-letter callsign."), 404
-    stats = player_stats(clean)
-    return render_template("player.html", stats=stats)
+    collection = _collection(request.args.get("collection"))
+    stats = player_stats(clean, collection=collection)
+    return render_template("player.html", stats=stats, collection=collection)
 
 
 @app.route("/api/players/<initials>", methods=["GET"])
@@ -1137,7 +1138,8 @@ def api_player(initials):
 
 @app.route("/players", methods=["GET"])
 def players_page():
-    return render_template("players.html", players=list_players())
+    collection = _collection(request.args.get("collection"))
+    return render_template("players.html", players=list_players(collection), collection=collection)
 
 
 @app.route("/api/players", methods=["GET"])
