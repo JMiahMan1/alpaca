@@ -198,6 +198,33 @@ def test_family_scoreboard_counts_only_published_family_games(env):
     assert player["total_games"] == 1 and player["best_score"] == 120
 
 
+def test_player_and_directory_pages_scope_to_the_family_collection(env):
+    """The family player card lists the family games a member played with their
+    high score in each; the default card stays on the benchmark arcade."""
+    env["family"].sync()
+    client = env["client"]
+    client.post(
+        "/api/games/family-cloud-hop/scores",
+        json={"initials": "JER", "score": 120, "player_id": "jeremiah", "capture_id": "family-cloud-hop:run1"},
+    )
+    _set(client, "family-cloud-hop", "published")
+
+    family_page = client.get("/player/JER?collection=family")
+    assert family_page.status_code == 200
+    assert b"Family Game Record" in family_page.data
+    assert b"Cloud Hop" in family_page.data
+    assert b"120" in family_page.data
+
+    directory = client.get("/players?collection=family")
+    assert directory.status_code == 200
+    assert b"Family Standings" in directory.data
+    assert b"/player/JER?collection=family" in directory.data
+
+    # The default (benchmark arcade) board never shows family games.
+    arcade_page = client.get("/player/JER")
+    assert b"Cloud Hop" not in arcade_page.data
+
+
 def test_a_bridged_run_is_saved_once(env):
     env["family"].sync()
     client = env["client"]

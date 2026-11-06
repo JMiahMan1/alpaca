@@ -7,11 +7,13 @@
 <link rel="stylesheet" href="/static/arcade.css">
 </head>
 <body>
+{% set qs = '?collection=family' if collection == 'family' else '' %}
+{% set is_family = collection == 'family' %}
 <header class="arcade-header slim">
   <a href="/">&larr; Arcade</a>
-  <a href="/players">🏆 Players</a>
-  <a href="/players" data-my-card>My player card</a>
-  <h1>Player Card</h1>
+  <a href="/players{{ qs }}">🏆 Players</a>
+  <a href="/players{{ qs }}" data-my-card>My player card</a>
+  <h1>{{ 'Family Player Card' if is_family else 'Player Card' }}</h1>
 </header>
 <main class="player-wrap">
   <section class="player-hero">
@@ -57,10 +59,10 @@
   </section>
 
   <section class="player-games">
-    <h2>🎰 Machine Record</h2>
+    <h2>{{ '🎮 Family Game Record' if is_family else '🎰 Machine Record' }}</h2>
     <div class="record-scroll">
     <table class="record-table">
-      <thead><tr><th>Machine</th><th>My best</th><th>Rank</th><th>Plays</th><th>Machine top</th></tr></thead>
+      <thead><tr><th>{{ 'Game' if is_family else 'Machine' }}</th><th>My best</th><th>Rank</th><th>Plays</th><th>{{ 'Game top' if is_family else 'Machine top' }}</th></tr></thead>
       <tbody>
       {% for r in stats.per_game %}
         <tr>
@@ -71,7 +73,7 @@
           <td>{% if r.top_score is not none %}{{ r.top_initials }} - {{ r.top_score }}{% else %}-{% endif %}</td>
         </tr>
       {% else %}
-        <tr><td colspan="5" class="muted">No machines yet.</td></tr>
+        <tr><td colspan="5" class="muted">No {{ 'family games' if is_family else 'machines' }} yet.</td></tr>
       {% endfor %}
       </tbody>
     </table>
