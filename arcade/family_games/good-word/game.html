@@ -329,24 +329,40 @@
   function holding() { return holdUntil > Date.now(); }
   function sfx(name) { if (phoneMaySpeak()) kit.sound.play(name); }
   let currentAudio = null;
+  let latestLine = "";  // the newest line asked for: a slower, older clip never plays over it
+  let lineInFlight = false;
+  function stopLine() {
+    try { if (currentAudio) { currentAudio.pause(); URL.revokeObjectURL(currentAudio.__url); } } catch (_) {}
+    currentAudio = null;
+  }
   function announce(text, key) {
     if (!text || spoken[key]) return;
     spoken[key] = true;
     if (!phoneMaySpeak() || isAutomatedCheck) return;
+    latestLine = key;
+    lineInFlight = true;
     fetch("/api/party/tts", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: String(text).replace(/_{3,}/g, "blank").slice(0, 260), voice: room.voice || "" })
+      body: JSON.stringify({ text: String(text).replace(/_{3,}/g, "blank").slice(0, 320), voice: room.voice || "" })
     }).then((r) => (r.status === 200 ? r.blob() : null)).then((blob) => {
-      if (!blob || blob.size < 128 || !phoneMaySpeak()) return;
+      if (latestLine === key) lineInFlight = false;
+      if (!blob || blob.size < 128 || latestLine !== key || !room || !phoneMaySpeak()) return;
       // In step with the TV picture: wait out whatever is left of the hold.
       setTimeout(() => {
-        try { if (currentAudio) currentAudio.pause(); } catch (_) {}
-        currentAudio = new Audio(URL.createObjectURL(blob));
+        if (latestLine !== key || !room || !phoneMaySpeak()) return; // the game moved on, or ended
+        stopLine();
+        const url = URL.createObjectURL(blob);
+        const el = currentAudio = new Audio(url);
+        el.__url = url;
         music.duck(true);
-        currentAudio.onended = currentAudio.onerror = () => music.duck(false);
-        currentAudio.play().catch(() => music.duck(false));
+        el.onended = el.onerror = () => {
+          music.duck(false);
+          try { URL.revokeObjectURL(url); } catch (_) {}
+          if (currentAudio === el) currentAudio = null;
+        };
+        el.play().catch(() => music.duck(false));
       }, Math.max(0, holdUntil - Date.now()));
-    }).catch(() => {});
+    }).catch(() => { if (latestLine === key) lineInFlight = false; });
   }
   /* ================= game-show music (only where the announcer plays) ================= */
   const music = (() => {
@@ -354,8 +370,9 @@
     const ready = (n) => cues && cues[n] && cues[n].ready;
     const level = () => ((cues && cues[bedName]) ? cues[bedName].volume : 0.3) * (ducked ? 0.35 : 1);
     function fade(el, to, ms, done) {
+      if (el.__fade) clearInterval(el.__fade); // one fade per element, or duck and fade-in fight
       const from = el.volume, t0 = Date.now();
-      const iv = setInterval(() => {
+      const iv = el.__fade = setInterval(() => {
         const k = Math.min(1, (Date.now() - t0) / ms);
         try { el.volume = Math.max(0, Math.min(1, from + (to - from) * k)); } catch (_) {}
         if (k >= 1) { clearInterval(iv); if (done) done(); }
@@ -382,10 +399,12 @@
       if (!ready(name)) return;
       const el = new Audio(cues[name].url);
       el.volume = cues[name].volume;
+      stings.add(el);
       duck(true);
-      el.onended = el.onerror = () => duck(false);
+      el.onended = el.onerror = () => { duck(false); stings.delete(el); };
       el.play().catch(() => duck(false));
     }
+    const stings = new Set();
     function duck(on) { ducked = on; if (bed) fade(bed, level(), 300); }
     const BEDS = { lobby: "lobby", writing: "think", voting: "vote", reveal: "reveal" };
     function apply(r, quiet) {
@@ -405,7 +424,14 @@
       const wait = Math.max(0, holdUntil - Date.now());
       if (wait > 0 && key !== lastKey) timer = setTimeout(go, wait); else go();
     }
-    return { apply, duck, stop: () => setBed("") };
+    function stop() {
+      // The game is over: nothing queued, nothing looping, no fanfare left playing.
+      clearTimeout(timer);
+      stings.forEach((el) => { try { el.pause(); } catch (_) {} });
+      stings.clear();
+      setBed("");
+    }
+    return { apply, duck, stop };
   })();
 
   // The host's chatter while players write and vote, where the phone is the speaker.
@@ -413,7 +439,7 @@
   const chatterDone = {};
   setInterval(() => {
     if (!room || !room.chatter || !room.chatter.length || !phoneMaySpeak() || isAutomatedCheck) return;
-    if (currentAudio && !currentAudio.paused && !currentAudio.ended) return;
+    if (lineInFlight || (currentAudio && !currentAudio.paused && !currentAudio.ended)) return;
     const age = (Date.now() - phaseStartLocal) / 1000;
     room.chatter.forEach((c, i) => {
       const k = chatterKey + ":c" + i;
@@ -478,7 +504,8 @@
   }
   function silence() {
     // A game that is over makes no more sound: no announcer, no music, no chatter.
-    try { if (currentAudio) { currentAudio.pause(); currentAudio = null; } } catch (_) {}
+    latestLine = "";
+    stopLine();
     try { music.stop(); } catch (_) {}
     holdUntil = 0;
   }

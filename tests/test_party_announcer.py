@@ -132,8 +132,10 @@ def test_the_host_has_patter_for_every_phase_and_everyone_hears_the_same_line():
     room["phase"] = "voting"
     assert p.announce_line(room) in p.HOST_VOTING
     room["phase"], room["reveal"] = "reveal", {"round_winners": [], "events": [], "announcer": "x"}
-    line = p.announce_line(room)
-    assert any(line.startswith(d) for d in p.HOST_DRUMROLL) and any(t in line for t in p.HOST_TRAPPED)
+    # The drumroll opens the reveal; the result waits until the TV has shown the last answer.
+    assert p.announce_line(room) in p.HOST_DRUMROLL
+    result = p.chatter_for(room)[0]
+    assert any(t in result["text"] for t in p.HOST_TRAPPED) and result["at"] == p.reveal_result_at(room)
     room["phase"] = "finished"
     finale = p.announce_line(room)
     assert any(finale == f.format(name="Ann", score=0) or finale == f.format(name="Ben", score=0) for f in p.HOST_FINALE)
@@ -151,10 +153,16 @@ def test_dad_jokes_fill_the_lobby_and_the_gaps_between_rounds():
     assert (joke["setup"], joke["punch"]) in p.DAD_JOKES
     room = p._rooms["JOKE"]
     room.update(phase="reveal", round=2, total_rounds=7, reveal={"round_winners": ["Ann"], "events": [], "announcer": "Ann wins!"})
-    line = p.announce_line(room)
+    line = p.reveal_result_line(room)
     assert "Ann wins!" in line and any(s in line and q in line for s, q in p.DAD_JOKES)
     room.update(round=7)  # the last reveal goes straight to the finale
-    assert not any(s in p.announce_line(room) for s, _ in p.DAD_JOKES)
+    assert not any(s in p.reveal_result_line(room) for s, _ in p.DAD_JOKES)
+    # No joke twice in a match: two slots a round, seven rounds, one deck.
+    told = []
+    for rnd in range(1, 8):
+        room["round"] = rnd
+        told += [p.joke_for(room, "writing"), p.joke_for(room, "between")]
+    assert len(told) == len(set(told))
     room["phase"] = "writing"
     assert p.serialize_room(room)["joke"] is None
     with p._lock:
@@ -213,3 +221,11 @@ def test_bible_names_are_said_right():
     assert "[Barnabas](/bˈɑɹnəbəs/)" in out and "[Priscilla](/" in out and "[Nineveh](/" in out
     assert announcer.pronounce("[Barnabas](/x/)") == "[Barnabas](/x/)"  # an existing mark is left alone
     assert announcer.pronounce("Barnabasy") == "Barnabasy"  # whole names only
+
+
+def test_a_beat_before_a_punchline_is_not_a_sentence_of_its_own():
+    assert announcer.sentences("How does Moses make his tea? ... Hebrews it!") == [
+        "How does Moses make his tea? ...", "Hebrews it!"]
+    assert announcer.sentences("When Mrs. Noah stepped off the Ark, what did she say?") == [
+        "When Mrs. Noah stepped off the Ark, what did she say?"]
+    assert announcer.split_show_line("Extraordinary news today!") == [("announcer", "Extraordinary news today!")]

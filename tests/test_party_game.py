@@ -802,3 +802,54 @@ def test_ending_a_cast_room_frees_its_tv(monkeypatch):
             break
         time.sleep(0.02)
     assert freed and freed[0][0] == "ha:media_player.master_bedroom_tv" and freed[0][1]["stop"] is True
+
+
+def test_second_review_fixes_hold(client):
+    # A wrong room code is a 404, not a crash.
+    resp = client.post("/api/party/rooms", json={"code": "NOPE", "player_id": "x", "name": "X", "create_if_missing": False})
+    assert resp.status_code == 404
+    # Nobody can act as an AI scribe.
+    party.create_or_join_room(code="SCRB", player_id="h", name="Host")
+    party.start_match("SCRB", player_id="h")
+    bot = next(p for p in party._rooms["SCRB"]["players"].values() if p.get("is_bot"))
+    with pytest.raises(PermissionError):
+        party.submit_answer("SCRB", player_id=bot["id"], text="I control you")
+    with pytest.raises(PermissionError):
+        party.leave_room("SCRB", player_id=bot["id"])
+    assert client.post("/api/party/rooms/SCRB/submit", json={"player_id": bot["id"], "text": "x"}).status_code == 403
+    # Joining doesn't change the host's announcer voice.
+    before = party._rooms["SCRB"]["voice"]
+    party.create_or_join_room(code="SCRB", player_id="g", name="G", voice="am_puck")
+    assert party._rooms["SCRB"]["voice"] == before
+    # A garbled "expect" is just a stale tap.
+    assert party.advance_phase("SCRB", player_id="h", expect={"round": "two"})["phase"] == "writing"
+
+
+def test_a_seat_that_never_answered_can_still_fall_for_the_trap():
+    for pid in ("a", "b", "c"):
+        party.create_or_join_room(code="TRAP", player_id=pid, name=pid.upper())
+    party.start_match("TRAP", player_id="a")
+    party.submit_answer("TRAP", player_id="a", text="first")
+    party.submit_answer("TRAP", player_id="b", text="second")
+    with party._lock:
+        party._build_voting_options_unlocked(party._rooms["TRAP"])
+    decoy = next(o for o in party.get_room_state("TRAP", "c")["options"] if o["option_id"] == "opt_house_decoy")
+    assert decoy["is_mine"] is False
+
+
+def test_one_room_per_tv():
+    party.create_or_join_room(code="TVA", player_id="a", name="A")
+    party.create_or_join_room(code="TVB", player_id="b", name="B")
+    party.remember_screen("TVA", "cast:den")
+    party.remember_screen("TVB", "cast:den")
+    assert party._rooms["TVA"].get("cast_screen") is None and party._rooms["TVB"]["cast_screen"] == "cast:den"
+
+
+def test_prompts_rotate_least_recently_used_across_rooms():
+    party._recent_prompt_ids.clear()
+    seen = []
+    for i in range(len(party.PROMPT_BANK["blank_o_matic"]) * 2):
+        room = {"code": f"R{i}", "used_prompt_ids": []}
+        seen.append(party._select_prompt_unlocked(room, "blank_o_matic")["id"])
+    n = len(party.PROMPT_BANK["blank_o_matic"])
+    assert len(set(seen[:n])) == n  # every prompt once before any repeats

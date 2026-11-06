@@ -1330,6 +1330,8 @@ def api_party_rooms():
             voice=body.get("voice"),
             avatar=body.get("avatar"),
         )
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
     except PermissionError as exc:
         return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, **out})
@@ -1419,6 +1421,8 @@ def api_party_room_submit(code: str):
         )
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     return jsonify({"success": True, "room": room})
@@ -1435,6 +1439,8 @@ def api_party_room_vote(code: str):
         )
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     return jsonify({"success": True, "room": room})
@@ -1462,6 +1468,8 @@ def api_party_room_leave(code: str):
         out = party.leave_room(code, player_id=str(body.get("player_id") or ""))
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, **out})
 
 

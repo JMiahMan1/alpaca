@@ -128,6 +128,7 @@
   var deadline = 0;
   var lastSig = "";
   var lastSpoken = "";   // the line being voiced now (a newer line wins)
+  var inflightKey = "";  // a line whose audio is still being made
   var spokenKeys = {};   // every line already said: a re-render never says one twice
   var audio = null;
   var pendingLine = null;
@@ -196,18 +197,32 @@
     if (!text || spokenKeys[key]) return;
     spokenKeys[key] = true;
     lastSpoken = key;
+    inflightKey = key; // being voiced: chatter and lobby jokes wait for it
     var voice = (room && room.voice) || "";
-    xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 260), voice: voice }, function (blob) {
-      if (!blob || blob.size < 128 || key !== lastSpoken) return;
+    xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 320), voice: voice }, function (blob) {
+      if (inflightKey === key) inflightKey = "";
+      if (!blob || blob.size < 128 || key !== lastSpoken || closedOut) return;
       play(blob);
     }, true);
   }
+  var U = window.URL || window.webkitURL;
+  function dropAudio() {
+    // Stop the current line and hand its clip's memory back (a TV runs for days).
+    try { if (audio) { audio.pause(); if (audio.__url) U.revokeObjectURL(audio.__url); } } catch (e) {}
+    audio = null;
+  }
   function play(blob) {
-    try { if (audio) audio.pause(); } catch (e) {}
-    var url = (window.URL || window.webkitURL).createObjectURL(blob);
+    dropAudio();
+    var url = U.createObjectURL(blob);
     audio = new Audio(url);
+    audio.__url = url;
     duck(true);
-    audio.onended = audio.onerror = function () { duck(false); };
+    var mine = audio;
+    audio.onended = audio.onerror = function () {
+      duck(false);
+      try { U.revokeObjectURL(url); } catch (e) {}
+      if (audio === mine) audio = null;
+    };
     var p = audio.play();
     if (p && p.then) {
       p.then(function () { setSound(false); }, function () { pendingLine = blob; setSound(true); });
@@ -227,7 +242,7 @@
   }
 
   /* ---------- game-show music (composed once by Alpaca's MusicGen) ---------- */
-  var music = { cues: null, loadedAt: 0, bed: null, bedName: "", ducked: false, fades: [] };
+  var music = { cues: null, loadedAt: 0, bed: null, bedName: "", ducked: false, fades: [], stings: [] };
   window.__stageMusic = music; // read by the browser checks
   function loadMusic() {
     if (music.loadedAt && Date.now() - music.loadedAt < 60000) return;
@@ -238,8 +253,10 @@
   }
   function cueReady(name) { return music.cues && music.cues[name] && music.cues[name].ready; }
   function fadeTo(el, target, ms, done) {
+    // One fade per element: a duck and a fade-in racing left the bed at the wrong level.
+    if (el.__fade) clearInterval(el.__fade);
     var start = el.volume, t0 = Date.now();
-    var iv = setInterval(function () {
+    var iv = el.__fade = setInterval(function () {
       var k = Math.min(1, (Date.now() - t0) / ms);
       try { el.volume = Math.max(0, Math.min(1, start + (target - start) * k)); } catch (e) {}
       if (k >= 1) { clearInterval(iv); if (done) done(); }
@@ -266,8 +283,12 @@
     if (!cueReady(name)) return;
     var el = new Audio(music.cues[name].url);
     el.volume = music.cues[name].volume;
+    music.stings.push(el);
     duck(true);
-    el.onended = el.onerror = function () { duck(false); };
+    el.onended = el.onerror = function () {
+      duck(false);
+      for (var i = music.stings.length - 1; i >= 0; i--) if (music.stings[i] === el) music.stings.splice(i, 1);
+    };
     var p = el.play();
     if (p && p["catch"]) p["catch"](function () { duck(false); });
   }
@@ -298,7 +319,7 @@
     if (r.phase === "lobby" && r.joke && spokenKeys["lobby:" + r.code]) {
       // After the welcome, each new lobby joke once, never over another line.
       var jk = "lobby:" + r.code + ":" + r.joke.setup;
-      if (!spokenKeys[jk] && (!audio || audio.paused || audio.ended)) speak(r.joke.setup + " ... " + r.joke.punch, jk);
+      if (!spokenKeys[jk] && !inflightKey && (!audio || audio.paused || audio.ended)) speak(r.joke.setup + " ... " + r.joke.punch, jk);
       return;
     }
     if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key); return; }
@@ -366,7 +387,10 @@
   var THANKS_MS = 15000;
   // The game is over: every sound stops at once (announcer, music, chatter, queued lines).
   function silenceAll() {
-    try { if (audio) { audio.pause(); audio = null; } } catch (e) {}
+    dropAudio();
+    inflightKey = "";
+    for (var i = 0; i < music.stings.length; i++) { try { music.stings[i].pause(); } catch (e) {} }
+    music.stings = [];
     pendingLine = null;
     lastSpoken = "";
     spokenKeys = {};
@@ -544,7 +568,7 @@
       var x = r.players[i];
       p.push(x.id + ":" + x.score + ":" + (x.submitted ? 1 : 0) + (x.voted ? 1 : 0));
     }
-    return [r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(",")].join("|");
+    return [r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(","), r.joke ? r.joke.setup : ""].join("|");
   }
 
   var lastPhaseKey = "";
@@ -553,7 +577,7 @@
   // The host talks while players write and vote: each line once, never over another.
   function runChatter() {
     if (closedOut || !room || !room.chatter || !room.chatter.length || STREAMED) return;
-    if (audio && !audio.paused && !audio.ended) return;
+    if (inflightKey || (audio && !audio.paused && !audio.ended)) return;
     var age = (Date.now() - phaseStartLocal) / 1000;
     for (var i = 0; i < room.chatter.length; i++) {
       var c = room.chatter[i], k = lastPhaseKey + ":c" + i;
