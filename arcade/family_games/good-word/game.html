@@ -230,7 +230,8 @@
   let pollTimer = null;
   let lastSig = "";
   let deadline = 0;
-  let holdUntil = 0; // streamed TV: the picture is behind, so each phase waits for it
+  let holdUntil = 0;
+  let autoSentFor = ""; // the round whose unsent draft was sent when time ran out // streamed TV: the picture is behind, so each phase waits for it
   let stageEverSeen = false; // a TV played for this room: phones stay silent from then on
   const spoken = {};
   let voices = [];
@@ -876,6 +877,11 @@
     const total = Number(clock.getAttribute("data-total")) || 55;
     n.textContent = left;
     arc.setAttribute("stroke-dashoffset", (106.8 * (1 - Math.min(1, left / total))).toFixed(1));
+    // Time's up with words in the box: send them rather than lose them to a house answer.
+    if (room && room.phase === "writing" && !room.my_submission && (draft || "").trim() && left <= 1) {
+      const k = room.match_id + ":" + room.round;
+      if (autoSentFor !== k) { autoSentFor = k; submitAnswer(false); }
+    }
     clock.classList.toggle("low", left <= 10);
   }, 250);
 
