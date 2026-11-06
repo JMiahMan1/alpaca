@@ -128,7 +128,7 @@ WRITE_SECONDS = 55
 #: this much longer than the deadline everyone sees (unless everyone is in).
 SUBMIT_GRACE_SECONDS = 4.0
 #: The longest announcer line the TTS route will voice (the longest real line is ~260).
-TTS_MAX_CHARS = 320
+TTS_MAX_CHARS = 700  # a result + standings + joke reaches ~350; at 320 the punchline was cut off
 #: The announcer clip cache is bounded by size as well as count.
 TTS_CACHE_MAX_BYTES = 48 * 1024 * 1024
 #: An answer that still arrives after voting opened replaces the house answer
@@ -1724,9 +1724,19 @@ HOST_HURRY = (
 
 
 def reveal_result_at(room: dict[str, Any]) -> float:
-    """Seconds into the reveal when the TV has unveiled its last answer (its revealStep pacing)."""
+    """Seconds into the reveal when the result is called.
+
+    After the TV has unveiled its last answer (its revealStep pacing), and never
+    before the drumroll that opens the reveal has finished: a race reveal has no
+    answers to unveil, so its result used to queue behind the drumroll, start
+    late, and lose its punchline to the next round.
+    """
     n = len(room.get("options") or [])
-    return round(1.0 + max(0, n - 1) * REVEAL_PER_ANSWER_SECONDS + 1.5 + _stage_delay(room), 1)
+    unveiled = 1.0 + max(0, n - 1) * REVEAL_PER_ANSWER_SECONDS + 1.5
+    voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+    drum = _pick(room, _pool(HOST_DRUMROLL, MORE_DRUMROLL), "drum") if room.get("phase") == "reveal" else ""
+    drummed = (SPEECH_START_SLACK_S + speech_seconds(drum, voice) + 0.8) if drum else 0.0
+    return round(max(unveiled, drummed) + _stage_delay(room), 1)
 
 
 #: The scoreboard takes over the screen this long after the result is called.
@@ -1759,7 +1769,9 @@ SPEECH_START_SLACK_S = 2.5
 
 #: (voice, line) -> seconds, measured from the rendered audio. Every line the
 #: announcer has said is timed exactly; the estimate is only for a line not made yet.
-_spoken_seconds: dict[tuple[str, str], float] = {}
+_spoken_seconds: collections.OrderedDict[tuple[str, str], float] = collections.OrderedDict()
+#: Most lines are said once (names, standings, a joke), so the oldest timings make room.
+SPOKEN_SECONDS_MAX = 5000
 
 
 def speech_seconds(text: str, voice: str | None = None) -> float:
@@ -1867,9 +1879,12 @@ def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
         joke_at = start + (end - start) * len(lines) / (len(lines) + 1)
         room_for_it = (length - 10.0) - joke_at - 1.0
         voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
-        setup, punch = joke_for(room, "writing", fits=lambda j: speech_seconds(
-            f"While you think... {j[0]} ... {j[1]}", voice) <= room_for_it)
-        lines.append(f"While you think... {setup} ... {punch}")
+        def fits(j: tuple[str, str]) -> bool:
+            return speech_seconds(f"While you think... {j[0]} ... {j[1]}", voice) <= room_for_it
+
+        if any(fits(j) for j in DAD_JOKES):  # no joke at all rather than one cut off by the hurry call
+            setup, punch = joke_for(room, "writing", fits=fits)
+            lines.append(f"While you think... {setup} ... {punch}")
     step = (end - start) / max(1, len(lines))
     out = [{"at": round(start + i * step, 1), "text": t} for i, t in enumerate(lines) if start + i * step < end]
     if length - delay > 20:
@@ -2994,8 +3009,12 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
 def _record_spoken_length(text: str, voice: str, wav: bytes) -> None:
     with contextlib.suppress(Exception):
         samples, rate = announcer.read_wav(wav)
-        if rate and len(_spoken_seconds) < 5000:
-            _spoken_seconds[(voice or DEFAULT_ANNOUNCER_VOICE, text or "")] = len(samples) / rate
+        if rate:
+            key = (voice or DEFAULT_ANNOUNCER_VOICE, text or "")
+            _spoken_seconds[key] = len(samples) / rate
+            _spoken_seconds.move_to_end(key)
+            while len(_spoken_seconds) > SPOKEN_SECONDS_MAX:
+                _spoken_seconds.popitem(last=False)
 
 
 def get_cached_tts_wav(clip_id: str) -> bytes | None:

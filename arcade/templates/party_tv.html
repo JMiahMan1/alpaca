@@ -291,7 +291,7 @@
     lastSpoken = key;
     inflightKey = key; // being voiced: chatter and lobby jokes wait for it
     var voice = (room && room.voice) || "";
-    xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 320), voice: voice }, function (blob) {
+    xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 700), voice: voice }, function (blob) {
       if (inflightKey === key) inflightKey = "";
       if (!blob || blob.size < 128 || key !== lastSpoken || closedOut) return;
       play(blob);

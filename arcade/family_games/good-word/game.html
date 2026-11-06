@@ -378,7 +378,7 @@
     lineInFlight = true;
     fetch("/api/party/tts", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: String(text).replace(/_{3,}/g, "blank").slice(0, 320), voice: room.voice || "" })
+      body: JSON.stringify({ text: String(text).replace(/_{3,}/g, "blank").slice(0, 700), voice: room.voice || "" })
     }).then((r) => (r.status === 200 ? r.blob() : null)).then((blob) => {
       if (latestLine === key) lineInFlight = false;
       if (!blob || blob.size < 128 || latestLine !== key || !room || !phoneMaySpeak()) return;

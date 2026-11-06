@@ -996,3 +996,25 @@ def test_standings_talk_about_the_scoreboard():
     room["round"] = 4
     if party.STANDINGS.get("tied"):
         assert "Ann" in party.standings_line(room) or "Ben" in party.standings_line(room)
+
+
+def test_line_timings_make_room_for_new_ones():
+    from arcade import announcer
+    wav = announcer.write_wav([0.0] * 2400, 24000)
+    old_max = party.SPOKEN_SECONDS_MAX
+    try:
+        party.SPOKEN_SECONDS_MAX = 3
+        party._spoken_seconds.clear()
+        for i in range(5):
+            party._record_spoken_length(f"line {i}", "v", wav)
+        assert list(k[1] for k in party._spoken_seconds) == ["line 2", "line 3", "line 4"]  # newest kept
+    finally:
+        party.SPOKEN_SECONDS_MAX = old_max
+        party._spoken_seconds.clear()
+
+
+def test_screens_ask_for_the_whole_line():
+    import pathlib
+    for f in ("arcade/templates/party_tv.html", "arcade/family_games/good-word/game.html"):
+        src = pathlib.Path(f).read_text()
+        assert ".slice(0, 320)" not in src and f".slice(0, {party.TTS_MAX_CHARS})" in src, f
