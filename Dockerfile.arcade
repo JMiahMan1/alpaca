@@ -5,8 +5,8 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-# Arcade is stdlib + Flask only.
-RUN pip install --no-cache-dir flask
+# Arcade is stdlib + Flask, plus segno (pure Python, no deps) for the TV stage's join QR code.
+RUN pip install --no-cache-dir flask segno
 
 # Copy the standalone service
 COPY arcade/ /app/arcade/

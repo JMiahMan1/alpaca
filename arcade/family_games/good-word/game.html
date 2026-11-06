@@ -539,6 +539,9 @@
     if (!announcerEnabled || !text) return;
     if (key && key === lastSpokenKey && !forcePlay) return;
     if (key) lastSpokenKey = key;
+    // A TV stage is showing this room and speaks the announcer itself; a phone
+    // joining in would only echo it a beat late.
+    if (!forcePlay && !tvMode && mode === "online" && liveRoom && liveRoom.stage_connected) return;
 
     if (currentAudio) {
       try { currentAudio.pause(); } catch (_) {}
@@ -592,115 +595,149 @@
       });
   }
 
-  /* ---------- Multi-Platform TV Cast State (Roku, LG webOS, Samsung Tizen, Chrome/Cast, Android TV) ---------- */
+  /* ---------- TV Stage: discovered household screens ----------
+     Screens are discovered by Jarvis (SharedLLM's execution service) from Home
+     Assistant and Google Cast; nothing here names a device. Casting puts the
+     live /tv/<CODE> page on the TV (or, on a Roku, a live video of it). Inside
+     Jarvis the request goes through the app, which knows who is asking;
+     otherwise straight to the arcade, which relays it the same way. */
   let castDrawerOpen = false;
   let discoveredTvs = [];
-  let castStatusMsg = "";
-  let customRokuIp = "";
+  let screensLoading = false;
+  let screensError = "";
+  let castStatus = null; // { kind: "pending" | "ok" | "error", text }
+  let castingScreenId = "";
+  let activeCastScreen = null;
+  let jarvisRelay = false;
+  let castReplyTimer = null;
+  let pendingCastIsStop = false;
 
-  const TV_PLATFORM_CARDS = [
-    { id: "roku", icon: "🟣", name: "Roku TV / Stick", detail: "ECP :8060 Wake + Media Assistant (782875) + TV Speaker Announcer + AirPlay 2 / Miracast" },
-    { id: "webos", icon: "🔴", name: "LG Smart TV (webOS)", detail: "Auto-launches fullscreen LG webOS Browser to /tv/<CODE> + Toast + Alpaca TTS" },
-    { id: "samsung", icon: "🔵", name: "Samsung TV (Tizen)", detail: "Wake-on-LAN + Samsung Internet Browser / Cast / DLNA + Alpaca TTS" },
-    { id: "cast", icon: "🟢", name: "Google Chrome / Cast", detail: "1-Tap Chrome Presentation Cast + Home Assistant Chromecast receiver" },
-    { id: "android_tv", icon: "📺", name: "Android TV / Google TV", detail: "Wakes Android TV + launches /tv/<CODE> via VIEW intent & Chromecast sibling" }
-  ];
+  function postToParent(message) {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ source: "arcade-game", ...message }, "*");
+      }
+    } catch (_) {}
+  }
 
-  function fetchHouseholdTvs() {
-    fetch("/api/party/tvs")
+  function mergeScreens(list) {
+    const byId = new Map(discoveredTvs.map((t) => [t.id, t]));
+    (list || []).forEach((t) => { if (t && t.id) byId.set(t.id, t); });
+    discoveredTvs = Array.from(byId.values());
+  }
+
+  function fetchHouseholdTvs(refresh) {
+    screensLoading = true;
+    screensError = "";
+    if (castDrawerOpen) renderUI();
+    fetch("/api/party/tvs" + (refresh ? "?refresh=1" : ""))
       .then((r) => r.json())
       .then((d) => {
-        if (d && Array.isArray(d.tvs) && d.tvs.length) {
-          discoveredTvs = d.tvs;
-          if (castDrawerOpen) renderUI();
-        }
+        if (d && Array.isArray(d.tvs)) mergeScreens(d.tvs);
+        if (d && d.success === false && !discoveredTvs.length && !jarvisRelay) screensError = d.error || "";
       })
-      .catch(() => {});
-    try {
-      if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ source: "arcade-game", type: "list-tvs" }, "*");
-      }
-    } catch (_) {}
+      .catch(() => {})
+      .finally(() => {
+        screensLoading = false;
+        if (castDrawerOpen) renderUI();
+      });
+    postToParent({ type: "list-tvs", payload: { refresh: !!refresh } });
   }
 
-  function triggerTvCast(tvItem, platformOverride) {
-    // Ensure the Host Device itself is joined as an ACTIVE PLAYER (never a spectator) in the live room
-    // and enable Host Privacy Shield so the Host can play without ever projecting answers on screen!
-    privacyShield = true;
-    if (mode !== "online" || !liveRoom) {
-      const targetCode = roomCode || (activeRoomsList.length > 0 ? activeRoomsList[0].code : "");
-      joinOrCreateOnlineRoom(targetCode, true, (joinedRoom) => {
-        dispatchTvCastForCode(joinedRoom.code, tvItem, platformOverride);
-      });
+  function stageUrlFor(code) {
+    return `${window.location.origin}/tv/${encodeURIComponent(code || "")}`;
+  }
+
+  function describeCast(res) {
+    const name = (res.screen && res.screen.name) || "the TV";
+    if (res.display === "video") {
+      return `✅ ${name} is showing a live video of the game (no web browser on that TV, so it runs a few seconds behind).`;
+    }
+    const how = res.method_label ? ` via ${res.method_label}` : "";
+    return res.verified
+      ? `✅ ${name} is showing the live game${how}. Play right here!`
+      : `📺 Sent the live game to ${name}${how}. If it doesn't appear in a few seconds, wake the TV and try again.`;
+  }
+
+  function handleCastResult(res, wasStop) {
+    if (castReplyTimer) { clearTimeout(castReplyTimer); castReplyTimer = null; }
+    castingScreenId = "";
+    if (res && res.success) {
+      if (wasStop) {
+        activeCastScreen = null;
+        castStatus = { kind: "ok", text: "The TV is free again." };
+      } else {
+        activeCastScreen = res.screen || activeCastScreen;
+        castStatus = { kind: "ok", text: describeCast(res) };
+      }
+    } else {
+      const attempts = (res && Array.isArray(res.attempts)) ? res.attempts.filter((a) => a && a.detail).map((a) => a.detail) : [];
+      const why = (res && res.error) || attempts[attempts.length - 1] || "The TV did not respond.";
+      castStatus = { kind: "error", text: `⚠️ ${why}` };
+    }
+    renderUI();
+  }
+
+  function sendCast(screen, code, stop) {
+    const payload = { screen_id: screen.id, room_code: code, stop: !!stop };
+    pendingCastIsStop = !!stop;
+    if (jarvisRelay) {
+      postToParent({ type: "cast", payload });
+      if (castReplyTimer) clearTimeout(castReplyTimer);
+      castReplyTimer = setTimeout(() => handleCastResult({ success: false, error: "Jarvis did not answer. Try again." }, stop), 100000);
       return;
     }
-    dispatchTvCastForCode(liveRoom.code || roomCode || "WORD", tvItem, platformOverride);
-  }
-
-  function dispatchTvCastForCode(activeCode, tvItem, platformOverride) {
-    const stageUrl = `${window.location.origin}/tv/${encodeURIComponent(activeCode)}`;
-    const plat = platformOverride || (tvItem && tvItem.platform) || "cast";
-    const entityId = (tvItem && (tvItem.entity_id || tvItem.id)) || "";
-    const tvName = (tvItem && tvItem.name) || plat.toUpperCase();
-
-    castStatusMsg = `📡 Casting Room ${activeCode} to ${tvName}... (Your Host Device is ready to play with Privacy Shield ON 🔒)`;
-    renderUI();
-
-    // If user clicked Google Chrome / Cast and PresentationRequest is supported in Chrome, launch native Cast picker!
-    if ((plat === "cast" || plat === "chrome") && typeof window.PresentationRequest === "function") {
-      try {
-        const presReq = new window.PresentationRequest([stageUrl]);
-        presReq.start().then(() => {
-          castStatusMsg = `✅ Google Chrome Cast connected to ${stageUrl}! Play right here on your Host Device!`;
-          renderUI();
-        }).catch(() => {});
-      } catch (_) {}
-    }
-
-    // Also notify parent Jarvis app (so Jarvis Gateway can cast with user's HA credentials)
-    try {
-      if (window.parent && window.parent !== window) {
-        window.parent.postMessage({
-          source: "arcade-game",
-          type: "cast",
-          payload: {
-            entity_id: entityId,
-            platform: plat,
-            room_code: activeCode,
-            tv_url: stageUrl,
-            voice: selectedVoice,
-            roku_ip: customRokuIp || (tvItem && tvItem.ip) || ""
-          }
-        }, "*");
-      }
-    } catch (_) {}
-
-    // And dispatch via Alpaca Arcade's /api/party/cast
     fetch("/api/party/cast", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        room_code: activeCode,
-        entity_id: entityId,
-        platform: plat,
-        tv_url: stageUrl,
-        voice: selectedVoice,
-        roku_ip: customRokuIp || (tvItem && tvItem.ip) || "",
-        companions: (tvItem && tvItem.companions) || {}
-      })
+      body: JSON.stringify(payload)
     })
       .then((r) => r.json())
-      .then((d) => {
-        if (d && d.success) {
-          const act = Array.isArray(d.actions) && d.actions.length ? ` (${d.actions.join(", ")})` : "";
-          castStatusMsg = `✅ Cast sent to ${tvName}${act}! TV shows ${stageUrl} while you play here on your Host Device!`;
-          renderUI();
-        }
-      })
-      .catch(() => {
-        castStatusMsg = `📺 Open ${stageUrl} on your ${tvName} — and play right here on your Host Device!`;
+      .then((d) => handleCastResult(d, stop))
+      .catch(() => handleCastResult({ success: false, error: "The arcade could not reach the TV service." }, stop));
+  }
+
+  function withOnlineRoom(fn) {
+    // The host plays as a contestant (never a spectator) with the Privacy Shield
+    // on, so nothing they type is ever mirrored onto the TV.
+    privacyShield = true;
+    if (mode === "online" && liveRoom) return fn(liveRoom.code);
+    const targetCode = roomCode || "";
+    joinOrCreateOnlineRoom(targetCode, true, (joinedRoom) => fn(joinedRoom.code));
+  }
+
+  function triggerTvCast(screen) {
+    if (!screen || castingScreenId) return;
+    withOnlineRoom((code) => {
+      castingScreenId = screen.id;
+      castStatus = { kind: "pending", text: `📡 Opening Room ${code} on ${screen.name}…` };
+      renderUI();
+      sendCast(screen, code, false);
+    });
+  }
+
+  function stopTvCast() {
+    if (!activeCastScreen || castingScreenId) return;
+    const code = (liveRoom && liveRoom.code) || roomCode;
+    castingScreenId = activeCastScreen.id;
+    castStatus = { kind: "pending", text: `Taking the game off ${activeCastScreen.name}…` };
+    renderUI();
+    sendCast(activeCastScreen, code, true);
+  }
+
+  function castFromThisBrowser() {
+    // Chrome's own Cast picker: Chrome discovers the devices itself.
+    withOnlineRoom((code) => {
+      try {
+        const req = new window.PresentationRequest([stageUrlFor(code)]);
+        req.start()
+          .then(() => { castStatus = { kind: "ok", text: "✅ Chrome is casting the live game. Keep this tab open." }; renderUI(); })
+          .catch(() => {});
+      } catch (_) {
+        castStatus = { kind: "error", text: "⚠️ This browser cannot cast. Pick a TV above instead." };
         renderUI();
-      });
+      }
+    });
   }
 
   /* ---------- Game State ---------- */
@@ -735,7 +772,7 @@
     accent2: "#8b5cf6",
     bg: "#13092b",
     howTo: [
-      "Cast to Roku, LG webOS, Samsung Tizen, Google Chrome / Chromecast, or Android TV — or play Solo Couch Party!",
+      "Tap 📺 Cast to put the game on any TV in your home (everyone answers on their phone), or play Solo Couch Party!",
       "Write your funniest or wisest answer — or tap 'Scribe's Decoy' (+500 pts/vote) to bait your opponents!",
       "Vote for your favorite (+1,000 pts), spot the real Scripture in Truth or Bluff, and dodge the Scribe's Trap (-250 pts)!"
     ],
@@ -1126,39 +1163,69 @@
     return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function renderCastAndVoiceDrawer() {
-    const activeCode = (mode === "online" && liveRoom && liveRoom.code) ? liveRoom.code : (roomCode || "WORD");
-    const stageUrl = `${window.location.origin}/tv/${encodeURIComponent(activeCode)}`;
-    const activeVoice = (mode === "online" && liveRoom && liveRoom.voice) ? liveRoom.voice : selectedVoice;
+  function screenBadge(tv) {
+    if (tv.display === "web") return "LIVE PAGE";
+    if (tv.display === "video") return "LIVE VIDEO";
+    return "";
+  }
 
-    const discoveredHtml = discoveredTvs.length > 0
-      ? `
-        <div style="font-size:11.5px;font-weight:900;color:#34d399">🏠 Discovered Household TVs (Tap to Cast):</div>
+  function renderCastAndVoiceDrawer() {
+    const activeCode = (mode === "online" && liveRoom && liveRoom.code) ? liveRoom.code : (roomCode || "");
+    const stageUrl = stageUrlFor(activeCode);
+    const activeVoice = (mode === "online" && liveRoom && liveRoom.voice) ? liveRoom.voice : selectedVoice;
+    const statusColor = castStatus ? ({ pending: "#fde68a", ok: "#34d399", error: "#fca5a5" }[castStatus.kind] || "#fde68a") : "";
+    const usable = discoveredTvs.filter((tv) => tv.display !== "none");
+
+    let screensHtml;
+    if (usable.length) {
+      screensHtml = `
         <div class="gw-options-grid">
-          ${discoveredTvs.map((tv, idx) => `
-            <button type="button" class="gw-opt-btn" data-cast-tv-idx="${idx}" data-testid="cast-discovered-tv-${escHtml(tv.platform || 'tv')}">
+          ${usable.map((tv) => {
+            const busy = castingScreenId === tv.id;
+            const live = activeCastScreen && activeCastScreen.id === tv.id;
+            return `
+            <button type="button" class="gw-opt-btn ${live ? "gw-active" : ""}" data-cast-screen="${escHtml(tv.id)}" data-testid="cast-screen" ${castingScreenId ? "disabled" : ""}>
               <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-                <span>📺 ${escHtml(tv.name)}</span>
-                <span class="gw-code-pill" style="font-size:10px;padding:1px 6px">${escHtml((tv.platform || "TV").toUpperCase())}</span>
+                <span>${busy ? "⏳" : live ? "📡" : "📺"} ${escHtml(tv.name)}</span>
+                <span class="gw-code-pill" style="font-size:10px;padding:1px 6px">${escHtml(screenBadge(tv))}</span>
               </div>
-              <span class="gw-opt-meta">${escHtml(tv.os_version || tv.platform || "")} · State: ${escHtml(tv.state || "ready")}</span>
-            </button>
-          `).join("")}
-        </div>
-      `
-      : "";
+              <span class="gw-opt-meta">${escHtml((tv.method_labels || [])[0] || tv.platform || "")}${tv.state === "off" ? " · TV is off, will wake it" : ""}</span>
+            </button>`;
+          }).join("")}
+        </div>`;
+    } else if (screensLoading) {
+      screensHtml = `<div class="gw-opt-meta" data-testid="cast-searching">🔎 Looking for TVs in your home…</div>`;
+    } else {
+      screensHtml = `<div class="gw-opt-meta" data-testid="cast-none">No TVs found${screensError ? ` (${escHtml(screensError)})` : ""}. You can still open the link below on any TV's web browser.</div>`;
+    }
 
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <span style="font-weight:900;color:#fde68a;font-size:14px">📺 Cast to TV & 🎙️ Alpaca Announcer Voice</span>
+        <span style="font-weight:900;color:#fde68a;font-size:14px">📺 Show the Game on a TV</span>
         <button type="button" class="gw-mini-btn gw-active" id="gw-close-cast-btn">✕ Back to Game</button>
       </div>
 
-      ${castStatusMsg ? `<div class="gw-scripture-banner" data-testid="cast-status-banner">${escHtml(castStatusMsg)}</div>` : ""}
+      ${castStatus ? `<div class="gw-scripture-banner" style="color:${statusColor}" data-testid="cast-status-banner">${escHtml(castStatus.text)}</div>` : ""}
+
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+        <div style="font-size:11.5px;font-weight:900;color:#34d399">🏠 TVs in your home: tap one to put the game on it</div>
+        <button type="button" class="gw-mini-btn" id="gw-rescan-tvs-btn" ${screensLoading ? "disabled" : ""}>${screensLoading ? "Searching…" : "↻ Search again"}</button>
+      </div>
+      ${screensHtml}
+      ${activeCastScreen ? `<button type="button" class="gw-mini-btn" id="gw-stop-cast-btn" data-testid="cast-stop-btn">⏹ Take the game off ${escHtml(activeCastScreen.name)}</button>` : ""}
+
+      <div style="background:rgba(255,255,255,0.06);border-radius:12px;padding:7px 10px;display:flex;flex-direction:column;gap:5px">
+        <div style="font-size:11px;color:#e2e8f0"><b>Any other screen:</b> open <code style="color:#fde68a" data-testid="stage-url">${escHtml(stageUrl)}</code> in its web browser.</div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          ${typeof window.PresentationRequest === "function" ? `<button type="button" class="gw-mini-btn" id="gw-browser-cast-btn">🟢 Cast from this browser</button>` : ""}
+          <button type="button" class="gw-mini-btn ${privacyShield ? "gw-active" : ""}" id="gw-privacy-shield-btn" data-testid="gw-privacy-shield-btn">${privacyShield ? "🔒 Host Privacy Shield: ON" : "👁️ Host Privacy Shield: OFF"}</button>
+          <button type="button" class="gw-mini-btn" id="gw-toggle-tv-stage-btn">${tvMode ? "📱 Phone View" : "📺 Use this screen as the TV"}</button>
+        </div>
+      </div>
 
       <div style="background:rgba(15,10,36,0.75);border:1.5px solid rgba(251,191,36,0.35);border-radius:12px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
-          <span style="font-size:12px;font-weight:900;color:#fef08a">🎙️ Alpaca Neural Voice (Kokoro-82M & OpenVoice V2):</span>
+          <span style="font-size:12px;font-weight:900;color:#fef08a">🎙️ Announcer voice (plays on the TV)</span>
           <div style="display:flex;gap:5px">
             <button type="button" class="gw-mini-btn ${announcerEnabled ? "gw-active" : ""}" id="gw-drawer-mute-btn">${announcerEnabled ? "🔊 Voice ON" : "🔇 Muted"}</button>
             <button type="button" class="gw-mini-btn gw-active" id="gw-test-voice-btn" data-testid="test-alpaca-voice-btn">▶ Hear Sample</button>
@@ -1167,29 +1234,6 @@
         <select id="gw-voice-select" class="gw-input" style="font-size:12.5px;padding:6px 9px" data-testid="alpaca-voice-select">
           ${availableVoices.map((v) => `<option value="${escHtml(v.id)}" ${v.id === activeVoice ? "selected" : ""}>${escHtml(v.label)}</option>`).join("")}
         </select>
-      </div>
-
-      ${discoveredHtml}
-
-      <div style="font-size:11.5px;font-weight:900;color:#fde68a">📡 Cast by TV Platform (Roku, LG, Samsung, Chrome, Android TV):</div>
-      <div class="gw-options-grid">
-        ${TV_PLATFORM_CARDS.map((p) => `
-          <button type="button" class="gw-opt-btn" data-cast-platform="${escHtml(p.id)}" data-testid="cast-platform-${escHtml(p.id)}">
-            <span>${p.icon} ${escHtml(p.name)}</span>
-            <span class="gw-opt-meta">${escHtml(p.detail)}</span>
-          </button>
-        `).join("")}
-      </div>
-
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.06);border-radius:12px;padding:7px 10px">
-        <div style="font-size:11px;color:#e2e8f0">
-          <b>Direct TV Stage URL:</b> <code style="color:#fde68a">${escHtml(stageUrl)}</code>
-        </div>
-        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
-          <input type="text" id="gw-roku-ip-input" class="gw-input" style="max-width:125px;padding:4px 8px;font-size:11.5px" placeholder="Roku IP (optional)" value="${escHtml(customRokuIp)}" />
-          <button type="button" class="gw-mini-btn ${privacyShield ? "gw-active" : ""}" id="gw-privacy-shield-btn" data-testid="gw-privacy-shield-btn">${privacyShield ? "🔒 Host Privacy Shield: ON" : "👁️ Host Privacy Shield: OFF"}</button>
-          <button type="button" class="gw-mini-btn" id="gw-toggle-tv-stage-btn">${tvMode ? "📱 Phone View" : "📺 TV Stage View"}</button>
-        </div>
       </div>
     `;
   }
@@ -1619,10 +1663,12 @@
         speakLine("Welcome to Use Your Good Word! Grab your scrolls and get ready to play!", "voice_sample_" + Date.now(), true);
       };
     }
-    const rokuIpInput = document.getElementById("gw-roku-ip-input");
-    if (rokuIpInput) {
-      rokuIpInput.oninput = () => { customRokuIp = rokuIpInput.value.trim(); };
-    }
+    const rescanBtn = document.getElementById("gw-rescan-tvs-btn");
+    if (rescanBtn) rescanBtn.onclick = () => fetchHouseholdTvs(true);
+    const stopCastBtn = document.getElementById("gw-stop-cast-btn");
+    if (stopCastBtn) stopCastBtn.onclick = () => stopTvCast();
+    const browserCastBtn = document.getElementById("gw-browser-cast-btn");
+    if (browserCastBtn) browserCastBtn.onclick = () => castFromThisBrowser();
     const toggleTvStageBtn = document.getElementById("gw-toggle-tv-stage-btn");
     if (toggleTvStageBtn) {
       toggleTvStageBtn.onclick = () => {
@@ -1637,17 +1683,11 @@
         }
       };
     }
-    document.querySelectorAll("[data-cast-tv-idx]").forEach((btn) => {
+    document.querySelectorAll("[data-cast-screen]").forEach((btn) => {
       btn.onclick = () => {
-        const idx = Number(btn.getAttribute("data-cast-tv-idx"));
-        if (discoveredTvs[idx]) triggerTvCast(discoveredTvs[idx], "");
-      };
-    });
-    document.querySelectorAll("[data-cast-platform]").forEach((btn) => {
-      btn.onclick = () => {
-        const plat = btn.getAttribute("data-cast-platform") || "cast";
-        const matchTv = discoveredTvs.find((t) => t.platform === plat) || null;
-        triggerTvCast(matchTv, plat);
+        const id = btn.getAttribute("data-cast-screen");
+        const screen = discoveredTvs.find((t) => t.id === id);
+        if (screen) triggerTvCast(screen);
       };
     });
 
@@ -1775,12 +1815,13 @@
     if (msg.source === "tv-remote" && msg.key) {
       handleRemoteKey(msg.key);
     } else if (msg.source === "arcade-host") {
-      if (msg.type === "tvs" && Array.isArray(msg.tvs) && msg.tvs.length) {
-        discoveredTvs = msg.tvs;
+      if (msg.type === "tvs" && Array.isArray(msg.tvs)) {
+        // Jarvis answered, so it is the one to ask: it knows who is casting.
+        if (msg.available !== false) jarvisRelay = true;
+        mergeScreens(msg.tvs);
         if (castDrawerOpen) renderUI();
-      } else if (msg.type === "cast-status" && msg.message) {
-        castStatusMsg = msg.message;
-        if (castDrawerOpen) renderUI();
+      } else if (msg.type === "cast-status" && msg.result) {
+        handleCastResult(msg.result, pendingCastIsStop);
       }
     }
   });

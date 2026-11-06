@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Use Your Good Word: TV</title>
+<!--
+  The TV stage. It runs on the TV itself (a Cast receiver, the LG or Samsung
+  browser, any TV browser, or headless Chromium rendering a stream for a Roku),
+  so it needs no input, follows the room on its own, and is written in ES5 with
+  XHR and flexbox: TV browsers are often years behind phones.
+  Nothing a player is still typing is ever shown here; the room snapshot it
+  reads has no answers until voting, and no authors until the reveal.
+-->
+<style>
+  :root { --gold: #fbbf24; --gold2: #fde68a; --violet: #8b5cf6; --mint: #34d399; --rose: #fb7185; --ink: #f8fafc; --dim: #c4b5fd; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0d0720; color: var(--ink); overflow: hidden;
+    font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  body { background: radial-gradient(ellipse at 50% 0%, #2a1460 0%, #140a33 45%, #08041a 100%); }
+  #stage { position: absolute; top: 4.5vh; bottom: 4.5vh; left: 4.5vw; right: 4.5vw; display: flex; flex-direction: column; }
+  .top { display: flex; align-items: center; justify-content: space-between; height: 9vh; flex: 0 0 auto; }
+  .brand { font-size: 3.4vh; font-weight: 900; color: var(--gold); letter-spacing: .05em; }
+  .brand small { color: var(--dim); font-weight: 700; font-size: 2.2vh; margin-left: 1.2vw; letter-spacing: 0; }
+  .pill { display: inline-block; padding: .6vh 1.4vw; border-radius: 99px; background: rgba(251,191,36,.16); border: .25vh solid rgba(251,191,36,.5);
+    color: var(--gold2); font-weight: 900; font-size: 2.6vh; }
+  .main { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  /* Safe centering: when a screen is tall it grows downward, never up into the header. */
+  .main > * { margin-top: auto; margin-bottom: auto; }
+  .center { text-align: center; }
+  .huge { font-size: 13vh; font-weight: 900; letter-spacing: .12em; color: var(--gold); text-shadow: 0 .6vh 2.4vh rgba(251,191,36,.35); }
+  .h1 { font-size: 6vh; font-weight: 900; line-height: 1.15; }
+  .h2 { font-size: 4vh; font-weight: 800; line-height: 1.2; }
+  .h3 { font-size: 3vh; font-weight: 700; color: var(--dim); }
+  .row { display: flex; align-items: center; }
+  .wrap { flex-wrap: wrap; }
+  .gap { margin-right: 2vw; }
+  .players { display: flex; flex-wrap: wrap; justify-content: center; margin-top: 3vh; }
+  .player { display: flex; flex-direction: column; align-items: center; width: 11vw; margin: 1vh .8vw; padding: 1.4vh .5vw; border-radius: 2vh;
+    background: rgba(255,255,255,.06); border: .25vh solid rgba(255,255,255,.08); }
+  .player .av { font-size: 6vh; line-height: 1.1; }
+  .player .nm { font-size: 2.4vh; font-weight: 800; margin-top: .6vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 10vw; }
+  .player .st { font-size: 2vh; margin-top: .4vh; color: var(--dim); }
+  .player.done { border-color: var(--mint); background: rgba(52,211,153,.12); }
+  .player.done .st { color: var(--mint); }
+  .lobby { display: flex; align-items: center; justify-content: center; }
+  .qr { width: 34vh; height: 34vh; background: #fff; border-radius: 2.4vh; padding: 1.4vh; margin-right: 4vw; flex: 0 0 auto; }
+  .qr img { width: 100%; height: 100%; display: block; }
+  .prompt { font-size: 6.2vh; font-weight: 900; line-height: 1.18; text-align: center; max-width: 82vw; margin: 0 auto; }
+  .sub { font-size: 3.2vh; color: var(--dim); text-align: center; margin-top: 2vh; }
+  .badge { font-size: 3vh; font-weight: 900; color: var(--gold2); text-align: center; margin-bottom: 2.4vh; }
+  .clock { width: 13vh; height: 13vh; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 5.4vh; font-weight: 900;
+    border: .9vh solid var(--gold); color: var(--gold2); background: rgba(0,0,0,.25); }
+  .clock.low { border-color: var(--rose); color: var(--rose); }
+  .clock.sm { width: 9vh; height: 9vh; font-size: 3.8vh; border-width: .6vh; margin-right: 1.4vw; flex: 0 0 auto; }
+  .options { display: flex; flex-wrap: wrap; justify-content: center; margin-top: 2vh; }
+  .opt { width: 40vw; margin: 1.1vh 1vw; padding: 2vh 1.6vw; border-radius: 2.2vh; background: rgba(255,255,255,.07); border: .3vh solid rgba(255,255,255,.12);
+    display: flex; align-items: flex-start; }
+  .opt .n { font-size: 4vh; font-weight: 900; color: var(--gold); margin-right: 1.4vw; min-width: 3vw; }
+  .opt .t { font-size: 3.4vh; font-weight: 800; line-height: 1.22; flex: 1 1 auto; }
+  .opt .by { font-size: 2.3vh; color: var(--dim); margin-top: .8vh; font-weight: 700; }
+  .opt .votes { font-size: 2.8vh; margin-top: .6vh; }
+  .opt .pts { font-size: 3vh; font-weight: 900; color: var(--mint); margin-left: 1vw; white-space: nowrap; }
+  .opt.win { border-color: var(--gold); background: rgba(251,191,36,.14); }
+  .opt.trap { border-color: var(--rose); background: rgba(251,113,133,.12); }
+  .opt.truth { border-color: var(--mint); background: rgba(52,211,153,.14); }
+  .options.many .opt { width: 28vw; margin: .5vh .6vw; padding: 1vh 1vw; border-radius: 1.6vh; }
+  .options.many .opt .t { font-size: 2.6vh; }
+  .options.many .opt .n { font-size: 3vh; }
+  .options.many .opt .by { font-size: 1.9vh; margin-top: .3vh; }
+  .options.many .opt .votes { font-size: 2.2vh; margin-top: .2vh; }
+  .options.many .opt .pts { font-size: 2.4vh; }
+  .chips { display: flex; flex-wrap: wrap; justify-content: center; margin-top: 1.6vh; }
+  .chip { padding: .7vh 1.2vw; margin: .5vh .5vw; border-radius: 99px; font-size: 2.3vh; font-weight: 800;
+    background: rgba(255,255,255,.07); border: .2vh solid rgba(255,255,255,.12); }
+  .chip.done { border-color: var(--mint); color: var(--mint); background: rgba(52,211,153,.12); }
+  .note { text-align: center; font-size: 2.8vh; color: var(--gold2); margin-top: 2vh; font-style: italic; }
+  .board { display: flex; flex-direction: column; align-items: stretch; width: 60vw; margin: 2vh auto 0; }
+  .line { display: flex; align-items: center; justify-content: space-between; padding: 1.2vh 2vw; margin: .5vh 0; border-radius: 1.6vh; background: rgba(255,255,255,.06); }
+  .line .who { font-size: 3.4vh; font-weight: 800; }
+  .line .sc { font-size: 3.4vh; font-weight: 900; color: var(--gold2); }
+  .line .d { font-size: 2.6vh; color: var(--mint); margin-left: 1.4vw; font-weight: 800; }
+  .podium { display: flex; align-items: flex-end; justify-content: center; margin-top: 3vh; }
+  .step { width: 18vw; margin: 0 1vw; text-align: center; border-radius: 2vh 2vh 0 0; background: rgba(251,191,36,.16); border: .3vh solid rgba(251,191,36,.45); padding-top: 2vh; }
+  .step .av { font-size: 8vh; }
+  .step .nm { font-size: 3.4vh; font-weight: 900; }
+  .step .sc { font-size: 3vh; color: var(--gold2); font-weight: 800; margin-bottom: 1.6vh; }
+  .foot { height: 6vh; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; font-size: 2.3vh; color: var(--dim); }
+  #sound { display: none; padding: .8vh 1.4vw; border-radius: 99px; background: rgba(251,113,133,.18); border: .25vh solid var(--rose); color: #fecdd3; font-weight: 800; }
+  #sound.on { display: inline-block; }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+  .fade { animation: fadein .45s ease-out; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(1.5vh); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="top">
+    <div class="brand">📜 USE YOUR GOOD WORD<small id="sub-brand">Family Party on the Big Screen</small></div>
+    <div id="top-right"></div>
+  </div>
+  <div class="main" id="main"><div class="center h2 pulse">Connecting…</div></div>
+  <div class="foot"><span id="foot-left"></span><span id="sound">🔊 Press OK to turn on the announcer</span></div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var PINNED = "__ROOM_CODE__";
+  var POLL_MS = 1000;
+  var code = PINNED;
+  var room = null;
+  var deadline = 0;
+  var lastSig = "";
+  var lastSpoken = "";
+  var audio = null;
+  var pendingLine = null;
+  var soundBlocked = false;
+  var failures = 0;
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function xhr(method, url, body, cb, binary) {
+    var r = new XMLHttpRequest();
+    r.open(method, url, true);
+    if (binary) r.responseType = "blob";
+    if (body) r.setRequestHeader("Content-Type", "application/json");
+    r.timeout = binary ? 60000 : 8000;
+    r.onload = function () {
+      if (binary) return cb(r.status === 200 ? r.response : null);
+      var d = null;
+      try { d = JSON.parse(r.responseText); } catch (e) {}
+      cb(r.status >= 200 && r.status < 300 ? d : null, r.status);
+    };
+    r.onerror = r.ontimeout = function () { cb(null, 0); };
+    r.send(body ? JSON.stringify(body) : null);
+  }
+
+  /* ---------- announcer (Alpaca TTS, played on the TV's speakers) ---------- */
+  function speak(text, key) {
+    if (!text || key === lastSpoken) return;
+    lastSpoken = key;
+    var voice = (room && room.voice) || "";
+    xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 260), voice: voice }, function (blob) {
+      if (!blob || blob.size < 128 || key !== lastSpoken) return;
+      play(blob);
+    }, true);
+  }
+  function play(blob) {
+    try { if (audio) audio.pause(); } catch (e) {}
+    var url = (window.URL || window.webkitURL).createObjectURL(blob);
+    audio = new Audio(url);
+    var p = audio.play();
+    if (p && p.then) {
+      p.then(function () { setSound(false); }, function () { pendingLine = blob; setSound(true); });
+    }
+  }
+  function setSound(blocked) {
+    soundBlocked = blocked;
+    $("sound").className = blocked ? "on pulse" : "";
+  }
+  function unlock() {
+    if (!soundBlocked) return;
+    setSound(false);
+    if (pendingLine) { var b = pendingLine; pendingLine = null; play(b); }
+  }
+  document.addEventListener("keydown", unlock);
+  document.addEventListener("click", unlock);
+  document.addEventListener("touchstart", unlock);
+
+  function announce(r) {
+    var key = r.match_id + ":" + r.round + ":" + r.phase;
+    if (r.phase === "lobby") {
+      speak("Welcome to Use Your Good Word! Scan the code on the screen, or join room " + r.code.split("").join(" ") + " in Jarvis.", "lobby:" + r.code);
+    } else if (r.phase === "writing" && r.prompt) {
+      speak(r.prompt.announcer || ("Round " + r.round + "! " + (r.prompt.prompt || "")), key);
+    } else if (r.phase === "voting") {
+      speak("All the scrolls are in! Vote for your favorite on your phone, and watch out for the Scribe's Trap!", key);
+    } else if (r.phase === "reveal" && r.reveal) {
+      speak(r.reveal.announcer || ("Here are the results for round " + r.round + "!"), key);
+    } else if (r.phase === "finished") {
+      var w = humans(r)[0];
+      speak(w ? (w.name + " wins the Golden Scroll with " + w.score + " points! Well played, everyone!") : "What a match!", key);
+    }
+  }
+
+  /* ---------- rendering ---------- */
+  function humans(r) {
+    var out = [];
+    for (var i = 0; i < (r.players || []).length; i++) {
+      var p = r.players[i];
+      if (!p.spectator) out.push(p);
+    }
+    return out;
+  }
+  function playerById(r, id) {
+    for (var i = 0; i < (r.players || []).length; i++) if (r.players[i].id === id) return r.players[i];
+    return null;
+  }
+  function clockHtml(small) {
+    return '<div class="clock' + (small ? " sm" : "") + '" id="clock" data-size="' + (small ? "sm" : "") + '">' +
+      Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</div>";
+  }
+  function playersHtml(r, flag, doneText, waitText) {
+    var list = humans(r);
+    var h = '<div class="players">';
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      var done = flag ? !!p[flag] : false;
+      h += '<div class="player' + (done ? " done" : "") + '"><div class="av">' + esc(p.avatar || "⭐") + '</div><div class="nm">' +
+        esc(p.name) + (p.is_bot ? " 🤖" : "") + '</div><div class="st">' + (flag ? (done ? doneText : waitText) : esc(p.score + " pts")) + "</div></div>";
+    }
+    return h + "</div>";
+  }
+  function chipsHtml(r, flag, doneMark) {
+    var list = humans(r);
+    var h = '<div class="chips">';
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      var done = !!p[flag];
+      h += '<span class="chip' + (done ? " done" : "") + '">' + esc(p.avatar || "⭐") + " " + esc(p.name) + (done ? " " + doneMark : " …") + "</span>";
+    }
+    return h + "</div>";
+  }
+  function promptHead(r) {
+    var pr = r.prompt || {};
+    var mult = pr.multiplier > 1 ? ' · <span style="color:#fb7185">' + pr.multiplier + "X POINTS</span>" : "";
+    return '<div class="badge">' + esc(pr.icon || "📜") + " " + esc(pr.title || "") + mult + "</div>";
+  }
+
+  function viewWaiting() {
+    return '<div class="center fade"><div class="h1">Ready when you are!</div>' +
+      '<div class="h3" style="margin-top:3vh">On a phone, open <b>Jarvis → Family Games → Use Your Good Word</b><br>and start a party room. It will appear here automatically.</div></div>';
+  }
+  function viewLobby(r) {
+    var origin = window.location.origin;
+    var joinUrl = origin + "/join/" + r.code;
+    var count = humans(r).filter(function (p) { return !p.is_bot; }).length;
+    return '<div class="lobby fade"><div class="qr"><img alt="Join QR code" src="/api/party/rooms/' + encodeURIComponent(r.code) +
+      '/join.svg" onerror="this.parentNode.style.display=\'none\'"></div><div><div class="h3">Scan to join, or enter room code</div>' +
+      '<div class="huge">' + esc(r.code) + '</div><div class="h3">' + esc(joinUrl.replace(/^https?:\/\//, "")) + "</div>" +
+      '<div class="h2" style="margin-top:3vh">' + (count ? count + (count === 1 ? " player is" : " players are") + " in. The host taps <b>Start</b> when everyone's ready."
+        : "Waiting for players…") + "</div></div></div>" + playersHtml(r, null);
+  }
+  function viewWriting(r) {
+    var pr = r.prompt || {};
+    return '<div class="fade">' + promptHead(r) + '<div class="prompt">' + esc(pr.prompt) + "</div>" +
+      (pr.subprompt || pr.scene ? '<div class="sub">' + esc(pr.subprompt || pr.scene) + "</div>" : "") +
+      '<div class="row" style="justify-content:center;margin-top:3vh"><div class="gap h2">✍️ Write your answer on your phone</div>' + clockHtml() + "</div>" +
+      playersHtml(r, "submitted", "✅ Sealed", "✍️ Writing…") + "</div>";
+  }
+  function viewVoting(r) {
+    var opts = r.options || [];
+    var h = '<div class="fade">' + promptHead(r) + '<div class="sub" style="margin-top:0;font-size:3.2vh;color:#f8fafc;font-weight:800">' + esc((r.prompt || {}).prompt) + "</div>";
+    h += '<div class="options' + (opts.length > 6 ? " many" : "") + '">';
+    for (var i = 0; i < opts.length; i++) {
+      h += '<div class="opt"><div class="n">' + (i + 1) + '</div><div class="t">' + esc(opts[i].text) + "</div></div>";
+    }
+    h += '</div><div class="row" style="justify-content:center;margin-top:1.2vh">' + clockHtml(true) +
+      '<div class="h2" style="font-size:3.2vh">🗳️ Vote on your phone!</div></div>';
+    return h + chipsHtml(r, "voted", "✅") + "</div>";
+  }
+  function viewReveal(r) {
+    var opts = (r.options || []).slice().sort(function (a, b) { return (b.voters || []).length - (a.voters || []).length; });
+    var h = '<div class="fade">' + promptHead(r) + '<div class="options' + (opts.length > 6 ? " many" : "") + '">';
+    for (var i = 0; i < opts.length; i++) {
+      var o = opts[i];
+      var cls = o.kind === "decoy" ? " trap" : o.kind === "truth" ? " truth" : o.is_round_winner ? " win" : "";
+      var by = o.kind === "truth" ? "📖 The real answer" : o.kind === "decoy"
+        ? "🪤 The Scribe's Trap" + ((o.author_names || []).length ? " (planted by " + esc(o.author_names.join(", ")) + ")" : "")
+        : "✍️ " + esc((o.author_names || []).join(", "));
+      var voters = "";
+      for (var v = 0; v < (o.voters || []).length; v++) {
+        var vt = o.voters[v];
+        var p = typeof vt === "string" ? playerById(r, vt) : vt;
+        voters += p ? '<span title="' + esc(p.name) + '">' + esc(p.avatar || "⭐") + "</span> " : "";
+      }
+      h += '<div class="opt' + cls + '"><div class="t">' + (o.is_round_winner ? "🏆 " : "") + esc(o.text) + '<div class="by">' + by + "</div>" +
+        (voters ? '<div class="votes">' + voters + "</div>" : "") + "</div>" + (o.points_awarded ? '<div class="pts">+' + o.points_awarded + "</div>" : "") + "</div>";
+    }
+    h += "</div>";
+    var note = (r.reveal && r.reveal.scripture_note) || (r.prompt && r.prompt.scripture_note);
+    if (note) h += '<div class="note">' + esc(note) + "</div>";
+    return h + (opts.length > 6 ? scoreChipsHtml(r) : boardHtml(r, 4)) + "</div>";
+  }
+  function scoreChipsHtml(r) {
+    var list = humans(r);
+    var h = '<div class="chips">';
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      h += '<span class="chip' + (i === 0 ? " done" : "") + '">' + (i + 1) + ". " + esc(p.avatar || "") + " " + esc(p.name) + " " + p.score +
+        (p.round_delta ? ' <span style="color:#34d399">+' + p.round_delta + "</span>" : "") + "</span>";
+    }
+    return h + "</div>";
+  }
+  function boardHtml(r, max) {
+    var list = humans(r).slice(0, max || 8);
+    var h = '<div class="board">';
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      h += '<div class="line"><span class="who">' + (i + 1) + ". " + esc(p.avatar || "") + " " + esc(p.name) + '</span><span><span class="sc">' +
+        p.score + "</span>" + (p.round_delta ? '<span class="d">' + (p.round_delta > 0 ? "+" : "") + p.round_delta + "</span>" : "") + "</span></div>";
+    }
+    return h + "</div>";
+  }
+  function viewFinished(r) {
+    var list = humans(r);
+    var order = [1, 0, 2];
+    var heights = ["24vh", "32vh", "18vh"];
+    var h = '<div class="fade center"><div class="h1">🏆 ' + (list[0] ? esc(list[0].name) + " wins the Golden Scroll!" : "Match complete!") + '</div><div class="podium">';
+    for (var i = 0; i < order.length; i++) {
+      var p = list[order[i]];
+      if (!p) continue;
+      h += '<div class="step" style="min-height:' + heights[i] + '"><div class="av">' + esc(p.avatar || "⭐") + '</div><div class="nm">' + esc(p.name) +
+        '</div><div class="sc">' + p.score + " pts</div></div>";
+    }
+    return h + "</div>" + (list.length > 3 ? boardHtml({ players: list.slice(3) }, 5) : "") +
+      '<div class="h3" style="margin-top:2vh">The host can start a new match from their phone.</div></div>';
+  }
+
+  function render() {
+    var r = room;
+    var main = $("main");
+    if (!r) {
+      $("top-right").innerHTML = "";
+      $("foot-left").innerHTML = "";
+      main.innerHTML = viewWaiting();
+      return;
+    }
+    $("top-right").innerHTML = '<span class="pill">ROOM ' + esc(r.code) + "</span>" +
+      (r.round ? ' <span class="pill">ROUND ' + r.round + " / " + r.total_rounds + "</span>" : "");
+    $("foot-left").innerHTML = "Join: " + esc(window.location.host) + "/join/" + esc(r.code);
+    var views = { lobby: viewLobby, writing: viewWriting, voting: viewVoting, reveal: viewReveal, finished: viewFinished };
+    main.innerHTML = (views[r.phase] || viewLobby)(r);
+  }
+
+  function signature(r) {
+    if (!r) return "none";
+    var p = [];
+    for (var i = 0; i < (r.players || []).length; i++) {
+      var x = r.players[i];
+      p.push(x.id + ":" + x.score + ":" + (x.submitted ? 1 : 0) + (x.voted ? 1 : 0));
+    }
+    return [r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(",")].join("|");
+  }
+
+  function apply(r) {
+    room = r;
+    if (r && (r.phase === "writing" || r.phase === "voting" || r.phase === "reveal")) {
+      deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
+    }
+    var sig = signature(r);
+    if (sig !== lastSig) {
+      lastSig = sig;
+      render();
+      if (r) announce(r);
+    }
+  }
+
+  function poll() {
+    if (!code) return findRoom();
+    xhr("GET", "/api/party/rooms/" + encodeURIComponent(code) + "?stage=1", null, function (d, status) {
+      if (d && d.success && d.room) {
+        failures = 0;
+        apply(d.room);
+      } else if (status === 404) {
+        // The room ended. A pinned TV waits for its code; an unpinned one moves on.
+        apply(null);
+        if (!PINNED) code = "";
+      } else {
+        failures++;
+        if (failures === 5) $("main").innerHTML = '<div class="center h2 pulse">Reconnecting…</div>';
+      }
+      setTimeout(poll, POLL_MS);
+    });
+  }
+
+  function findRoom() {
+    xhr("GET", "/api/party/rooms", null, function (d) {
+      var rooms = (d && d.rooms) || [];
+      if (rooms.length) {
+        code = rooms[0].code;
+        return poll();
+      }
+      apply(null);
+      setTimeout(poll, 3000);
+    });
+  }
+
+  setInterval(function () {
+    var c = document.getElementById("clock");
+    if (!c || !deadline) return;
+    var left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    c.textContent = left;
+    c.className = "clock" + (c.getAttribute("data-size") === "sm" ? " sm" : "") + (left <= 10 ? " low" : "");
+  }, 250);
+
+  if (PINNED.indexOf("__") === 0) { PINNED = ""; code = ""; }
+
+  // An unpinned TV follows the household: when someone starts a newer room,
+  // move to it rather than sitting on the old one until it expires.
+  setInterval(function () {
+    if (PINNED || !code) return;
+    xhr("GET", "/api/party/rooms", null, function (d) {
+      var rooms = (d && d.rooms) || [];
+      if (rooms.length && rooms[0].code !== code) { code = rooms[0].code; lastSig = ""; }
+    });
+  }, 10000);
+
+  poll();
+})();
+</script>
+</body>
+</html>

@@ -12,12 +12,10 @@ from arcade import party
 def clear_party_state():
     with party._lock:
         party._rooms.clear()
-        party._tts_cache.clear()
         party._tts_clips.clear()
     yield
     with party._lock:
         party._rooms.clear()
-        party._tts_cache.clear()
         party._tts_clips.clear()
 
 
@@ -146,8 +144,8 @@ def test_truth_or_bluff_blocks_real_truth_and_scores_truth_and_bluffs():
 def test_flask_party_and_tv_routes(client):
     tv_resp = client.get("/tv/GRACE")
     assert tv_resp.status_code == 200
-    assert b"family-good-word" in tv_resp.data
-    assert b"tv=1&room=GRACE" in tv_resp.data
+    assert b'var PINNED = "GRACE"' in tv_resp.data
+    assert tv_resp.headers["Cache-Control"] == "no-store"
 
     create_resp = client.post("/api/party/rooms", json={"code": "GRACE", "name": "Jeremiah", "initials": "JER"})
     assert create_resp.status_code == 200
@@ -208,88 +206,166 @@ def test_alpaca_tts_decodes_audio_b64_and_supports_voice_clones(monkeypatch):
     assert wav2 == fake_wav
     assert party.get_cached_tts_wav(clip_id) == fake_wav
     assert captured_payloads[-1]["clone"] == "jeremiah-new-e572bb"
+    # No base voice is named for a clone, so the audio server pairs the one that
+    # needs no pitch correction (a forced default is what makes a clone sound sung).
+    assert "voice" not in captured_payloads[-1]
+
+    # The same line is served from the clip cache, not synthesized twice.
+    calls_before = len(captured_payloads)
+    assert party.synthesize_announcer_clip("Jeremiah clone line", voice="clone:jeremiah-new-e572bb")[0] == clip_id
+    assert len(captured_payloads) == calls_before
 
 
-def test_party_voices_and_tv_cast_across_roku_lg_samsung_chrome_and_android_tv(client, monkeypatch):
-    import base64
+class _JsonResp:
+    def __init__(self, body: bytes, status: int = 200):
+        self._body = body
+        self.status = status
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_party_voices_list_alpaca_kokoro_and_clones(client, monkeypatch):
     import json
-
-    fake_wav = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 32
-    calls = []
-
-    class _FakeResp:
-        def __init__(self, body: bytes):
-            self._body = body
-            self.status = 200
-
-        def read(self):
-            return self._body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
 
     def _fake_urlopen(req, timeout=8.0):
         url = req.full_url if hasattr(req, "full_url") else str(req)
-        method = req.get_method() if hasattr(req, "get_method") else "GET"
-        raw_data = req.data.decode("utf-8") if getattr(req, "data", None) else ""
-        calls.append((method, url, raw_data))
-        if url.endswith("/api/tts"):
-            return _FakeResp(
-                json.dumps({"audio_b64": base64.b64encode(fake_wav).decode("ascii"), "mime": "audio/wav"}).encode(
-                    "utf-8"
-                )
-            )
         if url.endswith("/api/voices"):
-            return _FakeResp(
-                json.dumps(
-                    {
-                        "voices": [{"id": "am_fenrir", "label": "Fenrir"}],
-                        "clones": [{"id": "jeremiah-new-e572bb", "name": "Jeremiah"}],
-                    }
-                ).encode("utf-8")
-            )
+            return _JsonResp(json.dumps({"clones": [{"id": "jeremiah-new-e572bb", "name": "Jeremiah"}]}).encode())
         if url.endswith("/health"):
-            return _FakeResp(json.dumps({"tts_loaded": True, "openvoice_available": True}).encode("utf-8"))
-        return _FakeResp(b"{}")
+            return _JsonResp(json.dumps({"tts": {"voices": ["am_fenrir", "af_heart"]}}).encode())
+        return _JsonResp(b"{}")
 
     monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
-
-    voices_resp = client.get("/api/party/voices")
-    assert voices_resp.status_code == 200
-    vdata = voices_resp.get_json()
+    vdata = client.get("/api/party/voices").get_json()
     assert vdata["success"] is True
     assert any(v["id"] == "clone:jeremiah-new-e572bb" for v in vdata["voices"])
 
     client.post("/api/party/rooms", json={"code": "CAST", "name": "Jeremiah", "initials": "JER"})
     voice_set = client.post("/api/party/rooms/CAST/voice", json={"voice": "clone:jeremiah-new-e572bb"})
-    assert voice_set.status_code == 200
     assert voice_set.get_json()["room"]["announcer_voice"] == "clone:jeremiah-new-e572bb"
 
-    tvs_resp = client.get("/api/party/tvs")
-    assert tvs_resp.status_code == 200
-    platforms = {p["id"] for p in tvs_resp.get_json()["platforms"]}
-    assert platforms == {"roku", "webos", "samsung", "cast", "android_tv"}
 
-    for platform in ("roku", "webos", "samsung", "cast", "android_tv"):
-        cast_resp = client.post(
-            "/api/party/cast",
-            json={
-                "room_code": "CAST",
-                "platform": platform,
-                "entity_id": f"media_player.{platform}_tv",
-                "roku_ip": "192.168.2.156" if platform == "roku" else "",
-                "ha_url": "http://ha.local:8123",
-                "ha_token": "secret-token",
-            },
-        )
-        assert cast_resp.status_code == 200
-        cdata = cast_resp.get_json()
-        assert cdata["success"] is True
-        assert cdata["platform"] == platform
-        assert "/tv/CAST" in cdata["stage_url"]
+def test_no_device_or_address_is_hardcoded_in_the_party_engine():
+    from pathlib import Path
+
+    src = Path("arcade/party.py").read_text(encoding="utf-8")
+    assert "192.168." not in src
+    assert "_chrome" not in src
+    assert "SUPPORTED_TV_PLATFORMS" not in src
+
+
+def test_room_snapshots_never_carry_tv_credentials():
+    party.create_or_join_room(code="SAFE", player_id="p1", name="Ann")
+    state = party.get_room_state("SAFE", viewer_id="p1")
+    assert "cast_tv" not in state
+    assert "token" not in str(state).lower()
+
+
+def test_screens_are_discovered_by_the_execution_service(client, monkeypatch):
+    import json
+
+    seen = []
+
+    def _fake_urlopen(req, timeout=8.0):
+        seen.append((req.get_method(), req.full_url))
+        return _JsonResp(json.dumps({
+            "status": "SUCCESS",
+            "home_assistant": True,
+            "screens": [{"id": "ha:media_player.den", "name": "Den TV", "platform": "android_tv",
+                         "state": "on", "display": "web", "methods": ["cast_web"], "method_labels": ["Google Cast"]}],
+        }).encode())
+
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
+    data = client.get("/api/party/tvs?refresh=1").get_json()
+    assert data["success"] is True and data["tvs"][0]["name"] == "Den TV"
+    assert seen == [("GET", "http://exec:8003/execute/stage/screens?refresh=true")]
+
+
+def test_screen_discovery_reports_when_unconfigured(client, monkeypatch):
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "")
+    data = client.get("/api/party/tvs").get_json()
+    assert data["success"] is False and data["tvs"] == []
+    assert "EXECUTION_SVC_URL" in data["error"]
+
+
+def test_cast_sends_only_the_arcades_own_stage_page(client, monkeypatch):
+    import json
+
+    sent = []
+
+    def _fake_urlopen(req, timeout=8.0):
+        body = json.loads(req.data.decode())
+        sent.append((req.full_url, body))
+        return _JsonResp(json.dumps({"success": True, "method": "cast_web", "display": "web", "verified": True}).encode())
+
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
+    resp = client.post(
+        "/api/party/cast",
+        json={"screen_id": "ha:media_player.den", "room_code": "zion!", "url": "http://evil.example/x"},
+        headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "games.example.org"},
+    )
+    assert resp.status_code == 200 and resp.get_json()["success"] is True
+    url, body = sent[0]
+    assert url == "http://exec:8003/execute/stage/show"
+    assert body["url"] == "https://games.example.org/tv/ZION"
+    assert body["screen_id"] == "ha:media_player.den"
+
+    client.post("/api/party/cast", json={"screen_id": "ha:media_player.den", "room_code": "ZION", "stop": True})
+    assert sent[-1][0] == "http://exec:8003/execute/stage/stop"
+
+
+def test_cast_without_a_screen_is_a_bad_request(client):
+    resp = client.post("/api/party/cast", json={"room_code": "ZION"})
+    assert resp.status_code == 400
+
+
+def test_cast_reports_execution_errors_instead_of_claiming_success(client, monkeypatch):
+    def _boom(req, timeout=8.0):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _boom)
+    data = client.post("/api/party/cast", json={"screen_id": "ha:x", "room_code": "ZION"}).get_json()
+    assert data["success"] is False and "unreachable" in data["error"]
+
+
+def test_join_link_and_qr_code(client):
+    client.post("/api/party/rooms", json={"code": "ZION", "name": "Ann"})
+    resp = client.get("/join/zion")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/game/family-good-word/index.html#room=ZION")
+    qr = client.get("/api/party/rooms/ZION/join.svg")
+    if qr.status_code == 404:
+        pytest.skip("segno is not installed")
+    assert qr.status_code == 200 and qr.mimetype == "image/svg+xml"
+    assert b"<svg" in qr.data
+
+
+def test_tv_stage_polling_marks_the_room_so_phones_stay_quiet(client):
+    client.post("/api/party/rooms", json={"code": "LIVE", "player_id": "p1", "name": "Ann"})
+    assert client.get("/api/party/rooms/LIVE?player_id=p1").get_json()["room"]["stage_connected"] is False
+    client.get("/api/party/rooms/LIVE?stage=1")
+    assert client.get("/api/party/rooms/LIVE?player_id=p1").get_json()["room"]["stage_connected"] is True
+
+
+def test_tv_stage_page_is_hands_free_and_never_shows_draft_answers(client):
+    html = client.get("/tv").get_data(as_text=True)
+    assert 'var PINNED = ""' in html
+    # Polls as the stage (marks presence) and follows the active room on its own.
+    assert "?stage=1" in html and "/api/party/rooms" in html
+    # Uses Alpaca TTS on the TV's speakers, never the browser's robotic voices.
+    assert "/api/party/tts" in html and "speechSynthesis" not in html
+    # It reads no viewer-specific state, so a player's draft can never reach it.
+    assert "player_id" not in html and "my_submission" not in html
 
 
 def test_good_word_game_never_uses_browser_speech_synthesis():

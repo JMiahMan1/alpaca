@@ -20,8 +20,10 @@ explicitly removed (DELETE /api/admin/games/<slug> with ARCADE_ADMIN_TOKEN,
 or the Unpublish button in the Alpaca dashboard).
 """
 
+import contextlib
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -32,7 +34,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file
 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
     import family
@@ -396,10 +398,8 @@ def _game_card(slug: str) -> dict | None:
     html_file = d / "game.html"
     mobile = {"score": 0, "ready": False, "reasons": []}
     if html_file.is_file():
-        try:
+        with contextlib.suppress(OSError):
             mobile = assess_html(html_file.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            pass
     card = {
         "slug": slug,
         "title": meta.get("title") or slug,
@@ -1260,39 +1260,57 @@ def api_unpublish(slug):
 # --- Multiplayer Party Room API ("Use Your Good Word") + TV Cast View ---
 
 
+def _public_base_url() -> str:
+    """The arcade's address as the caller reached it (honouring a TLS proxy).
+
+    TVs are sent the stage at this address, so it must be one a device on the
+    LAN can open; ``ARCADE_PUBLIC_URL`` overrides it when the arcade sits behind
+    a name the request does not carry.
+    """
+    configured = (os.getenv("ARCADE_PUBLIC_URL") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    proto = (request.headers.get("X-Forwarded-Proto", "") or "").split(",")[0].strip().lower()
+    host = (request.headers.get("X-Forwarded-Host", "") or "").split(",")[0].strip() or request.host
+    scheme = proto if proto in ("http", "https") else request.scheme
+    return f"{scheme}://{host}".rstrip("/")
+
+
 @app.route("/tv", methods=["GET"])
 @app.route("/tv/<code>", methods=["GET"])
 def party_tv_page(code: str = ""):
-    """Big-screen / TV cast stage for Use Your Good Word (Roku, LG webOS, Samsung Tizen, Chrome/Cast, Android TV)."""
-    family.ensure_synced()
-    clean_code = re.sub(r"[^A-Za-z0-9]", "", code or "").upper()[:8]
-    frag = f"tv=1&room={clean_code}" if clean_code else "tv=1"
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Use Your Good Word — TV Stage</title>
-<style>
-  html, body {{ margin: 0; width: 100%; height: 100%; background: #0f0a24; overflow: hidden; }}
-  iframe {{ display: block; width: 100%; height: 100%; border: 0; }}
-</style>
-</head>
-<body>
-<iframe id="tv-frame" src="/game/family-good-word/index.html#{frag}" title="Use Your Good Word TV Stage" allow="autoplay; fullscreen"></iframe>
-<script>
-  // Keep focus inside the stage iframe so LG webOS, Samsung Tizen, Android TV, and Chrome TV remotes work natively.
-  var f = document.getElementById("tv-frame");
-  window.addEventListener("load", function () {{ if (f && f.contentWindow) f.contentWindow.focus(); }});
-  window.addEventListener("keydown", function (e) {{
-    if (f && f.contentWindow) {{
-      f.contentWindow.postMessage({{ source: "tv-remote", key: e.key, keyCode: e.keyCode }}, "*");
-    }}
-  }});
-</script>
-</body>
-</html>"""
-    return Response(html, mimetype="text/html")
+    """Big-screen stage for Use Your Good Word: runs on the TV, needs no remote.
+
+    ``/tv/<CODE>`` follows one room; bare ``/tv`` follows whichever room is
+    active, so a TV can simply be left on it.
+    """
+    clean_code = party._clean_code(code)
+    html = (Path(__file__).parent / "templates" / "party_tv.html").read_text(encoding="utf-8")
+    html = html.replace("__ROOM_CODE__", clean_code)
+    return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
+
+
+@app.route("/join/<code>", methods=["GET"])
+def party_join_page(code: str):
+    """Where the TV's QR code points: straight into the room on a phone."""
+    clean_code = party._clean_code(code)
+    return redirect(f"/game/family-good-word/index.html#room={clean_code}", code=302)
+
+
+@app.route("/api/party/rooms/<code>/join.svg", methods=["GET"])
+def api_party_room_join_qr(code: str):
+    """QR code for joining a room from a phone camera (rendered on the TV stage)."""
+    clean_code = party._clean_code(code)
+    if not clean_code:
+        return Response(status=404)
+    try:
+        import segno
+    except ImportError:
+        return Response(status=404)
+    url = f"{_public_base_url()}/join/{clean_code}"
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="svg", scale=10, border=2, dark="#120a26", light="#ffffff", xmldecl=False)
+    return Response(buf.getvalue(), mimetype="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
 @app.route("/api/party/rooms", methods=["GET", "POST"])
@@ -1316,7 +1334,7 @@ def api_party_rooms():
 def api_party_room_state(code: str):
     viewer_id = (request.args.get("player_id") or "").strip()[:64] or None
     try:
-        room = party.get_room_state(code, viewer_id=viewer_id)
+        room = party.get_room_state(code, viewer_id=viewer_id, stage=request.args.get("stage") == "1")
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     return jsonify({"success": True, "room": room})
@@ -1431,32 +1449,28 @@ def api_party_tts_clip(clip_id: str):
 
 @app.route("/api/party/tvs", methods=["GET"])
 def api_party_tvs():
-    return jsonify(
-        {
-            "success": True,
-            "tvs": party.discover_household_tvs(),
-            "platforms": list(party.SUPPORTED_TV_PLATFORMS),
-        }
-    )
+    """Household screens that can show the stage (discovered by SharedLLM's execution service)."""
+    return jsonify(party.discover_screens(refresh=request.args.get("refresh") in ("1", "true")))
 
 
 @app.route("/api/party/cast", methods=["POST"])
 def api_party_cast():
+    """Put a room's live stage on a discovered screen (``{"screen_id", "room_code", "stop"?}``).
+
+    The page is always this arcade's own ``/tv/<CODE>``: a caller chooses the
+    screen and the room, never the URL a household TV is sent to.
+    """
     body = request.get_json(silent=True) or {}
-    base_url = request.host_url.rstrip("/")
-    res = party.cast_room_to_tv(
-        str(body.get("room_code") or body.get("code") or "WORD"),
-        entity_id=str(body.get("entity_id") or ""),
-        platform=str(body.get("platform") or ""),
-        tv_url=str(body.get("tv_url") or ""),
-        arcade_base_url=str(body.get("arcade_base_url") or base_url),
-        voice=str(body.get("voice") or party.DEFAULT_ANNOUNCER_VOICE),
-        ha_url=str(body.get("ha_url") or ""),
-        ha_token=str(body.get("ha_token") or ""),
-        roku_ip=str(body.get("roku_ip") or ""),
-        companions=body.get("companions") if isinstance(body.get("companions"), dict) else None,
+    code = party._clean_code(body.get("room_code") or body.get("code"))
+    url = party.stage_url(_public_base_url(), code)
+    res = party.show_stage_on_screen(
+        str(body.get("screen_id") or body.get("entity_id") or ""),
+        url,
+        method=str(body.get("method") or ""),
+        stop=bool(body.get("stop")),
     )
-    return jsonify(res)
+    res.setdefault("url", url)
+    return jsonify(res), (200 if res.get("success") or res.get("error") != "screen_id is required" else 400)
 
 
 if __name__ == "__main__":
