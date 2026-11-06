@@ -299,7 +299,7 @@ def test_execution_relay_sends_the_internal_secret_when_configured(monkeypatch):
         return _JsonResp(json.dumps({"screens": []}).encode())
 
     monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
-    monkeypatch.setenv("EXECUTION_INTERNAL_SECRET", "s3cret")
+    monkeypatch.setenv("JARVIS_INTERNAL_SECRET", "s3cret")
     monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
     party.discover_screens()
     assert headers["x-internal-secret"] == "s3cret"
@@ -309,7 +309,7 @@ def test_screen_discovery_reports_when_unconfigured(client, monkeypatch):
     monkeypatch.setattr(party, "EXECUTION_SVC_URL", "")
     data = client.get("/api/party/tvs").get_json()
     assert data["success"] is False and data["tvs"] == []
-    assert "EXECUTION_SVC_URL" in data["error"]
+    assert "JARVIS_GATEWAY_URL" in data["error"]
 
 
 def test_cast_sends_only_the_arcades_own_stage_page(client, monkeypatch):
@@ -414,3 +414,44 @@ def test_host_device_can_play_without_projecting_answers_to_tv_stage():
     assert "My secret host punchline" not in str(tv_stage_state)
 
 
+
+
+def test_standalone_arcade_relays_through_the_jarvis_gateway(client, monkeypatch):
+    import json
+
+    seen = []
+
+    def _fake_urlopen(req, timeout=8.0):
+        body = json.loads(req.data.decode()) if req.data else None
+        seen.append((req.get_method(), req.full_url, body, dict(req.header_items())))
+        if req.full_url.endswith("/api/arcade/cast"):
+            return _JsonResp(json.dumps({"success": True, "method": "cast_web", "display": "web"}).encode())
+        return _JsonResp(json.dumps({"success": True, "tvs": [{"id": "ha:media_player.den", "name": "Den"}]}).encode())
+
+    monkeypatch.setattr(party, "JARVIS_GATEWAY_URL", "http://jarvis:11435")
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    monkeypatch.setenv("JARVIS_INTERNAL_SECRET", "s3cret")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
+
+    tvs = client.get("/api/party/tvs").get_json()
+    assert tvs["success"] is True and tvs["tvs"][0]["name"] == "Den"
+    assert seen[0][1] == "http://jarvis:11435/api/arcade/tvs?refresh=false"
+    assert seen[0][3]["X-internal-secret"] == "s3cret"
+
+    out = client.post("/api/party/cast", json={"screen_id": "ha:media_player.den", "room_code": "zion"}).get_json()
+    assert out["success"] is True
+    assert seen[1][1] == "http://jarvis:11435/api/arcade/cast"
+    assert seen[1][2] == {"screen_id": "ha:media_player.den", "room_code": "ZION", "method": "", "stop": False}
+
+
+def test_a_refused_relay_explains_what_to_configure(client, monkeypatch):
+    import io
+    import urllib.error
+
+    def _refuse(req, timeout=8.0):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(party, "JARVIS_GATEWAY_URL", "http://jarvis:11435")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _refuse)
+    data = client.get("/api/party/tvs").get_json()
+    assert data["success"] is False and "JARVIS_INTERNAL_SECRET" in data["error"]

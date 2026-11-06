@@ -1611,17 +1611,28 @@ def get_cached_tts_wav(clip_id: str) -> bytes | None:
         return _tts_clips.get(clean_id)
 
 
-# --- TV stage: discovered household screens (via SharedLLM's execution service) ---
+# --- TV stage: discovered household screens (via Jarvis / SharedLLM) ---
 #
 # The arcade runs on a Docker bridge network, where mDNS and SSDP discovery
 # cannot work and no TV can be reached by name. SharedLLM's execution service
 # runs on the host network with Home Assistant, pychromecast, the LG/Samsung
 # clients and a headless renderer, so it owns discovery and display; the arcade
-# only names the page. Nothing here knows about any particular device.
+# only names the room. Nothing here knows about any particular device.
+#
+# Two ways to reach it, preferred first:
+#   1. JARVIS_GATEWAY_URL: the Jarvis gateway's /api/arcade/{tvs,cast}, the
+#      same routes the Jarvis app uses. The gateway is the public front door, so
+#      it is reachable wherever Jarvis is, and it builds the stage URL itself.
+#   2. EXECUTION_SVC_URL: the execution service directly (same host only; it
+#      is normally not exposed to the network).
+# Both accept internal callers with JARVIS_INTERNAL_SECRET, which acts as the
+# household, never as an administrator.
+
+JARVIS_GATEWAY_URL = os.getenv("JARVIS_GATEWAY_URL", "").rstrip("/")
 
 
-def _execution_url() -> str:
-    return EXECUTION_SVC_URL
+def _internal_secret() -> str:
+    return (os.getenv("JARVIS_INTERNAL_SECRET") or os.getenv("EXECUTION_INTERNAL_SECRET") or "").strip()
 
 
 def stage_url(base_url: str, code: str = "") -> str:
@@ -1631,52 +1642,77 @@ def stage_url(base_url: str, code: str = "") -> str:
     return f"{base}/tv/{clean}" if clean else f"{base}/tv"
 
 
-def _execution_json(method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 20.0) -> dict[str, Any]:
-    base = _execution_url()
-    if not base:
-        raise ConnectionError("EXECUTION_SVC_URL is not set, so TV discovery is unavailable.")
+def _relay_target() -> tuple[str, str]:
+    """``(kind, base_url)`` of the service that discovers and drives TVs."""
+    if JARVIS_GATEWAY_URL:
+        return "gateway", JARVIS_GATEWAY_URL
+    if EXECUTION_SVC_URL:
+        return "execution", EXECUTION_SVC_URL
+    raise ConnectionError("Neither JARVIS_GATEWAY_URL nor EXECUTION_SVC_URL is set, so TV discovery is unavailable.")
+
+
+def _relay_json(method: str, url: str, payload: dict[str, Any] | None = None, timeout: float = 20.0) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"Content-Type": "application/json"}
-    # The execution service accepts only internal callers. Inside Jarvis the
-    # app relays through its gateway instead, so this is needed only when the
-    # arcade is played on its own.
-    secret = os.getenv("EXECUTION_INTERNAL_SECRET", "").strip()
+    secret = _internal_secret()
     if secret:
         headers["X-Internal-Secret"] = secret
-    req = urllib.request.Request(f"{base}{path}", data=data, method=method, headers=headers)
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         parsed = json.loads(resp.read().decode("utf-8") or "{}")
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    detail = ""
+    with contextlib.suppress(Exception):
+        detail = str(json.loads(exc.read().decode("utf-8")).get("detail") or "")
+    if exc.code in (401, 403):
+        return f"the TV service refused the arcade (HTTP {exc.code}); set JARVIS_INTERNAL_SECRET, or play inside Jarvis"
+    return detail or f"the TV service returned HTTP {exc.code}"
+
+
 def discover_screens(*, refresh: bool = False) -> dict[str, Any]:
-    """Household screens that can show the stage, as discovered by the execution service."""
+    """Household screens that can show the stage, as discovered by Jarvis."""
+    flag = "true" if refresh else "false"
     try:
-        data = _execution_json("GET", f"/execute/stage/screens?refresh={'true' if refresh else 'false'}")
+        kind, base = _relay_target()
+        if kind == "gateway":
+            data = _relay_json("GET", f"{base}/api/arcade/tvs?refresh={flag}", timeout=30.0)
+            screens = data.get("tvs")
+        else:
+            data = _relay_json("GET", f"{base}/execute/stage/screens?refresh={flag}", timeout=30.0)
+            screens = data.get("screens")
     except urllib.error.HTTPError as exc:
-        hint = " (set EXECUTION_INTERNAL_SECRET, or play inside Jarvis)" if exc.code == 403 else ""
-        return {"success": False, "tvs": [], "error": f"Screen discovery was refused: HTTP {exc.code}{hint}"}
+        return {"success": False, "tvs": [], "error": f"Screen discovery failed: {_http_error_detail(exc)}"}
     except Exception as exc:
         return {"success": False, "tvs": [], "error": f"Screen discovery is unavailable: {exc}"}
-    return {"success": True, "tvs": list(data.get("screens") or []), "home_assistant": bool(data.get("home_assistant"))}
+    if data.get("success") is False and not screens:
+        return {"success": False, "tvs": [], "error": str(data.get("error") or "Screen discovery failed")}
+    return {"success": True, "tvs": list(screens or []), "home_assistant": bool(data.get("home_assistant"))}
 
 
-def show_stage_on_screen(screen_id: str, url: str, *, method: str = "", stop: bool = False) -> dict[str, Any]:
-    """Put ``url`` (a ``/tv`` stage page) on a discovered screen, or take it off."""
+def show_stage_on_screen(screen_id: str, url: str, *, room_code: str = "", method: str = "", stop: bool = False) -> dict[str, Any]:
+    """Put a room's ``/tv`` stage page on a discovered screen, or take it off."""
     sid = _clean_text(screen_id, 160)
     if not sid:
         return {"success": False, "error": "screen_id is required"}
-    action = "stop" if stop else "show"
     try:
-        return _execution_json(
-            "POST", f"/execute/stage/{action}",
+        kind, base = _relay_target()
+        if kind == "gateway":
+            # The gateway builds the stage URL from the arcade's public address.
+            return _relay_json(
+                "POST", f"{base}/api/arcade/cast",
+                {"screen_id": sid, "room_code": _clean_code(room_code), "method": _clean_text(method, 32), "stop": stop},
+                timeout=100.0,
+            )
+        action = "stop" if stop else "show"
+        return _relay_json(
+            "POST", f"{base}/execute/stage/{action}",
             {"screen_id": sid, "url": url, "method": _clean_text(method, 32)},
-            timeout=90.0,
+            timeout=100.0,
         )
     except urllib.error.HTTPError as exc:
-        detail = ""
-        with contextlib.suppress(Exception):
-            detail = json.loads(exc.read().decode("utf-8")).get("detail") or ""
-        return {"success": False, "error": detail or f"TV service returned {exc.code}"}
+        return {"success": False, "error": _http_error_detail(exc)}
     except Exception as exc:
         return {"success": False, "error": f"TV service unreachable: {exc}"}

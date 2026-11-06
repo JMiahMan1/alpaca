@@ -201,10 +201,13 @@ services:
       PROXY_URL: "http://host.docker.internal:11434"
       # SharedLLM's execution service: discovers the household's TVs and puts the
       # live /tv stage on them (it runs on the host network; this container cannot).
-      EXECUTION_SVC_URL: "${EXECUTION_SVC_URL:-http://host.docker.internal:8003}"
-      # Execution accepts internal callers only. Needed only for the arcade on its
-      # own; inside Jarvis, casting goes through the Jarvis gateway.
-      EXECUTION_INTERNAL_SECRET: "${EXECUTION_INTERNAL_SECRET:-}"
+      # TV discovery/casting for the arcade played on its own (inside the Jarvis app
+      # the app relays through its gateway). Prefer the Jarvis gateway: it is the
+      # reachable front door. Set both in .env; the secret is SharedLLM's
+      # INTERNAL_SECRET and acts as the household, not an administrator.
+      JARVIS_GATEWAY_URL: "${JARVIS_GATEWAY_URL:-}"
+      JARVIS_INTERNAL_SECRET: "${JARVIS_INTERNAL_SECRET:-}"
+      EXECUTION_SVC_URL: "${EXECUTION_SVC_URL:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
