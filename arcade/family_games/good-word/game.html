@@ -399,7 +399,7 @@
   const music = (() => {
     let cues = null, loadedAt = 0, bed = null, bedName = "", ducked = false, lastKey = "", timer = 0;
     const ready = (n) => cues && cues[n] && cues[n].ready;
-    const level = () => ((cues && cues[bedName]) ? cues[bedName].volume : 0.3) * (ducked ? 0.35 : 1);
+    const level = () => ((cues && cues[bedName]) ? cues[bedName].volume : 0.3) * (ducked ? 0.22 : 1);
     function fade(el, to, ms, done) {
       if (el.__fade) clearInterval(el.__fade); // one fade per element, or duck and fade-in fight
       const from = el.volume, t0 = Date.now();
@@ -918,9 +918,8 @@
       <div class="gw-delta ${d > 0 ? "" : d < 0 ? "neg" : "zero"}">${d > 0 ? "+" : ""}${d} pts</div></div>`;
     if (!r.stage_connected && r.reveal && r.reveal.race) h += `<div class="gw-opts">${raceSummaryHtml(r)}</div>`;
     else if (!r.stage_connected) h += resultsHtml(r) + (r.prompt && r.prompt.scripture_note ? `<div class="gw-tag">${esc(r.prompt.scripture_note)}</div>` : "");
-    h += boardHtml(r);
+    // The standings get their own page next (viewScores); here it is only the answers.
     const last = r.round >= r.total_rounds;
-    h += `<div class="gw-tag" style="margin-top:8px">${last ? "Final scores in" : "Next round starts in"} <b id="gw-next-in">${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}</b>s</div>`;
     if (r.you_are_host) h += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>${last ? "Final scores now ▶" : "Start next round now ▶"}</button>`;
     return h;
   }

@@ -36,38 +36,39 @@ OUT_RATE = 22050
 RETRY_AFTER_S = 600.0
 GENERATE_TIMEOUT_S = 600.0
 
-#: name -> how it is composed and used. Seeds pin each cue so a regeneration
+#: name -> how it is composed and used. Volumes keep the music well under the announcer
+#: (MusicGen beds are dense; the voice must always be the loudest thing in the room). Seeds pin each cue so a regeneration
 #: sounds like the same show.
 CUES: dict[str, dict[str, Any]] = {
     "theme": {
         "prompt": "big bright 1970s television game show theme, blaring brass fanfare, funky slap bass, "
                   "snare rolls, hand claps, glittering synth, huge excited opening sting, major key, 128 bpm",
-        "duration_s": 12, "seed": 7201, "loop": False, "volume": 0.62,
+        "duration_s": 12, "seed": 7201, "loop": False, "volume": 0.45,
     },
     "lobby": {
         "prompt": "fun bouncy game show lobby music, funky bass groove, hand claps, bright brass stabs, "
                   "cheesy organ, happy upbeat waiting music, 118 bpm, no vocals",
-        "duration_s": 30, "seed": 7202, "loop": True, "volume": 0.4,
+        "duration_s": 30, "seed": 7202, "loop": True, "volume": 0.2,
     },
     "think": {
         "prompt": "playful game show thinking music, ticking clock, pizzicato strings, bouncy bassoon, "
                   "cartoon woodblock, quirky and light, steady tempo, background bed, no vocals",
-        "duration_s": 30, "seed": 7203, "loop": True, "volume": 0.32,
+        "duration_s": 30, "seed": 7203, "loop": True, "volume": 0.16,
     },
     "vote": {
         "prompt": "quirky upbeat game show voting music, marimba, xylophone, funky drums, walking bass, "
                   "cheeky brass hits, fun and silly, background bed, no vocals",
-        "duration_s": 30, "seed": 7204, "loop": True, "volume": 0.32,
+        "duration_s": 30, "seed": 7204, "loop": True, "volume": 0.16,
     },
     "reveal": {
         "prompt": "exciting game show reveal music, snare drum roll building, brass swells, timpani, "
                   "dramatic but fun tension, television studio, no vocals",
-        "duration_s": 30, "seed": 7205, "loop": True, "volume": 0.3,
+        "duration_s": 30, "seed": 7205, "loop": True, "volume": 0.15,
     },
     "finale": {
         "prompt": "triumphant game show grand prize winner fanfare, blazing brass, cymbal crashes, "
                   "hand claps, big band celebration, confetti energy, huge finish, major key",
-        "duration_s": 14, "seed": 7206, "loop": False, "volume": 0.66,
+        "duration_s": 14, "seed": 7206, "loop": False, "volume": 0.48,
     },
 }
 

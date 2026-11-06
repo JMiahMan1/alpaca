@@ -352,7 +352,7 @@
       if (k >= 1) { clearInterval(iv); if (done) done(); }
     }, 50);
   }
-  function bedLevel() { var c = music.cues && music.cues[music.bedName]; return (c ? c.volume : 0.3) * (music.ducked ? 0.35 : 1); }
+  function bedLevel() { var c = music.cues && music.cues[music.bedName]; return (c ? c.volume : 0.3) * (music.ducked ? 0.22 : 1); }
   function setBed(name) {
     if (!cueReady(name)) name = "";
     if (name === music.bedName) return;
@@ -515,7 +515,7 @@
         ((it.right || []).length ? '<div class="votes">⚡ ' + esc(it.right[0]) + "</div>" : "") + "</div></div>";
     }
     h += "</div>";
-    return h + (humans(r).length > 4 ? scoreChipsHtml(r) : boardHtml(r, 4)) + nextInHtml(r) + "</div>";
+    return h + "</div>";  // the scores have their own page next
   }
   function promptHead(r) {
     var pr = r.prompt || {};
@@ -622,10 +622,6 @@
     var elapsed = total - Math.max(0, (deadline - Date.now()) / 1000);
     return Math.max(0, Math.min(n, Math.floor((elapsed - 1) / per) + 1));
   }
-  function nextInHtml(r) {
-    if (r.round >= r.total_rounds) return "";
-    return '<div class="next-in">Next round in <span id="next-in">' + Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</span>s</div>";
-  }
   function scoresShown(r) {
     // A streamed picture reaches the room r.stage_delay_s late, and scores_at_s already allows for that.
     var at = (r && r.scores_at_s || 0) - (STREAMED ? (r && r.stage_delay_s || 0) : 0);
@@ -675,17 +671,7 @@
     if (step < opts.length) return h + '<div class="center h3 pulse" style="margin-top:2vh">And the scrolls say…</div></div>';
     var note = (r.reveal && r.reveal.scripture_note) || (r.prompt && r.prompt.scripture_note);
     if (note) h += '<div class="note fade">' + esc(note) + "</div>";
-    return h + '<div class="fade">' + (opts.length > 4 ? scoreChipsHtml(r) : boardHtml(r, 4)) + nextInHtml(r) + "</div></div>";
-  }
-  function scoreChipsHtml(r) {
-    var list = humans(r);
-    var h = '<div class="chips">';
-    for (var i = 0; i < list.length; i++) {
-      var p = list[i];
-      h += '<span class="chip' + (i === 0 ? " done" : "") + '">' + (i + 1) + ". " + esc(p.avatar || "") + " " + esc(p.name) + " " + p.score +
-        (p.round_delta ? ' <span style="color:' + (p.round_delta > 0 ? "#a7f3d0" : "#ffd0d0") + '">' + (p.round_delta > 0 ? "+" : "") + p.round_delta + "</span>" : "") + "</span>";
-    }
-    return h + "</div>";
+    return h + "</div>";  // the scores have their own page next (viewScores), not a strip under the answers
   }
   function boardHtml(r, max) {
     var list = humans(r).slice(0, max || 8);

@@ -305,21 +305,21 @@ def test_shouted_possessives_and_contractions_stay_one_word():
     assert unshout("CEO DIY") == "CEO DIY"
 
 
-def test_a_pop_at_the_start_of_a_clip_is_removed_but_a_consonant_is_not():
+def test_the_chain_adds_no_clicks():
+    """The user's rule: our processing must never add artifact noise.
+
+    Measured on real lines, every sub-millisecond spike in a pause was already in
+    Kokoro's raw clip (the burst of a P, B or T) and none came from the trim,
+    the joins, the effects or the gate. This holds that: clips that start and end
+    abruptly, joined with pauses, come out without a step anywhere.
+    """
     rate = 24000
-    silence = [0.0] * 480
-    pop = [0.5, -0.45, 0.4, -0.3] * 12            # a 2 ms burst
-    dip = [0.02, -0.02] * 60                       # then nearly nothing
-    vowel = [0.3 * math.sin(i / 6) for i in range(2400)]
-    clip = silence + pop + dip + vowel
-    out = announcer.depop(clip, rate)
-    assert max(abs(v) for v in out[480:528]) < 0.2   # the pop is faded down
-    assert out[-100:] == clip[-100:]                 # the vowel is untouched
-    # A plosive followed by its louder vowel is speech, not a pop.
-    plosive = silence + [0.3, -0.3] * 24 + [0.6 * math.sin(i / 6) for i in range(2400)]
-    assert announcer.depop(plosive, rate) == plosive
-
-
+    tone = [0.6 * math.sin(2 * math.pi * 220 * i / rate) for i in range(rate // 2)]  # starts and stops mid-wave
+    wav = announcer.write_wav(tone, rate)
+    out, _ = announcer.read_wav(announcer.assemble([("announcer", wav, 420.0), ("announcer", wav, 150.0)]))
+    worst = max(abs(out[i + 1] - 2 * out[i] + out[i - 1]) for i in range(1, len(out) - 1))
+    smooth = max(abs(tone[i + 1] - 2 * tone[i] + tone[i - 1]) for i in range(1, len(tone) - 1))
+    assert worst < 2 * smooth  # no edge sharper than the tone itself has
 
 def test_shouts_land_over_the_rest_without_adding_anything():
     raw = _speech_wav()
