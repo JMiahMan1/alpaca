@@ -1700,7 +1700,8 @@ def race_line(room: dict[str, Any]) -> str:
         names = [players[pid]["name"] for pid in res["right"] if pid in players]
         answer = party_race.correct_text(item)
         if kind == "lightning":
-            answer = "True!" if item["answer"] == 0 else "False!"
+            answer = "True" if item["answer"] == 0 else "False"
+        answer = answer.rstrip(".!? ") + "!"
         if not names:
             return f"It's {answer} Nobody got that one!"
         return f"It's {answer} {names[0]} was fastest!"
