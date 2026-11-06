@@ -202,6 +202,9 @@ services:
       # SharedLLM's execution service: discovers the household's TVs and puts the
       # live /tv stage on them (it runs on the host network; this container cannot).
       EXECUTION_SVC_URL: "${EXECUTION_SVC_URL:-http://host.docker.internal:8003}"
+      # Execution accepts internal callers only. Needed only for the arcade on its
+      # own; inside Jarvis, casting goes through the Jarvis gateway.
+      EXECUTION_INTERNAL_SECRET: "${EXECUTION_INTERNAL_SECRET:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

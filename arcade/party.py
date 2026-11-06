@@ -1636,9 +1636,14 @@ def _execution_json(method: str, path: str, payload: dict[str, Any] | None = Non
     if not base:
         raise ConnectionError("EXECUTION_SVC_URL is not set, so TV discovery is unavailable.")
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(
-        f"{base}{path}", data=data, method=method, headers={"Content-Type": "application/json"},
-    )
+    headers = {"Content-Type": "application/json"}
+    # The execution service accepts only internal callers. Inside Jarvis the
+    # app relays through its gateway instead, so this is needed only when the
+    # arcade is played on its own.
+    secret = os.getenv("EXECUTION_INTERNAL_SECRET", "").strip()
+    if secret:
+        headers["X-Internal-Secret"] = secret
+    req = urllib.request.Request(f"{base}{path}", data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         parsed = json.loads(resp.read().decode("utf-8") or "{}")
     return parsed if isinstance(parsed, dict) else {}
@@ -1648,6 +1653,9 @@ def discover_screens(*, refresh: bool = False) -> dict[str, Any]:
     """Household screens that can show the stage, as discovered by the execution service."""
     try:
         data = _execution_json("GET", f"/execute/stage/screens?refresh={'true' if refresh else 'false'}")
+    except urllib.error.HTTPError as exc:
+        hint = " (set EXECUTION_INTERNAL_SECRET, or play inside Jarvis)" if exc.code == 403 else ""
+        return {"success": False, "tvs": [], "error": f"Screen discovery was refused: HTTP {exc.code}{hint}"}
     except Exception as exc:
         return {"success": False, "tvs": [], "error": f"Screen discovery is unavailable: {exc}"}
     return {"success": True, "tvs": list(data.get("screens") or []), "home_assistant": bool(data.get("home_assistant"))}
