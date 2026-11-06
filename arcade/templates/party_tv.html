@@ -373,12 +373,12 @@
     music.ducked = on;
     if (music.bed) fadeTo(music.bed, bedLevel(), 300);
   }
-  var BEDS = { lobby: "lobby", writing: "think", voting: "vote", reveal: "reveal" };
+  var BEDS = { lobby: "lobby", writing: "think", voting: "vote", reveal: "reveal", racing: "vote" };
   function musicFor(r, quiet) {
     // A streamed stage has no sound of its own (the host's phone plays it).
     if (!r || STREAMED || r.music === false) { setBed(""); return; }
     loadMusic();
-    var key = r.match_id + ":" + r.round + ":" + r.phase;
+    var key = stepKey(r);
     if (!quiet && key !== music.lastKey) {
       if (r.phase === "writing" && r.round === 1) sting("theme");
       if (r.phase === "finished") sting("finale");
@@ -391,7 +391,7 @@
   document.addEventListener("touchstart", unlock);
 
   function announce(r) {
-    var key = r.match_id + ":" + r.round + ":" + r.phase;
+    var key = stepKey(r);
     // The host's line for this phase comes from the room, so the TV and phones agree.
     if (r.phase === "lobby" && r.joke && spokenKeys["lobby:" + r.code]) {
       // After the welcome, each new lobby joke once, never over another line.
@@ -451,6 +451,58 @@
       h += '<span class="chip' + (done ? " done" : "") + '">' + esc(p.avatar || "⭐") + " " + esc(p.name) + (done ? " " + doneMark : " …") + "</span>";
     }
     return h + "</div>";
+  }
+  // A race moves through clues inside one phase: each clue and answer flash is its own moment.
+  function stepKey(r) { return r.match_id + ":" + r.round + ":" + r.phase + (r.step ? ":" + r.step : ""); }
+  function viewRacing(r) {
+    var race = r.race || {}, item = race.item || {};
+    var h = '<div class="fade">' + promptHead(r);
+    if (race.count > 1) h += '<div class="center h3" style="margin:-1vh 0 1.4vh">Question ' + (race.index + 1) + " of " + race.count + "</div>";
+    h += '<div class="prompt" style="font-size:' + (item.type === "pick" ? "5.4vh" : "4.4vh") + '">' + esc(item.clue || "") + "</div>";
+    if (item.type === "pick") {
+      var tf = (item.options || []).length === 2;
+      h += '<div class="options">';
+      for (var i = 0; i < item.options.length; i++) {
+        var cls = race.flash ? (i === item.answer ? " truth now" : " wait") : "";
+        h += '<div class="opt' + cls + '"' + (tf ? ' style="width:30vw;justify-content:center"' : "") + '>' +
+          (tf ? "" : '<div class="n">' + "ABCD".charAt(i) + "</div>") + '<div class="t"' + (tf ? ' style="font-size:6vh;text-align:center"' : "") + ">" + esc(item.options[i]) + "</div></div>";
+      }
+      h += "</div>";
+    } else if (item.type === "pairs") {
+      h += '<div class="row" style="justify-content:center;margin-top:2vh"><div style="margin-right:3vw">' +
+        '<div class="h3 center">' + esc(item.left_label || "") + "</div>";
+      for (var a = 0; a < (item.left || []).length; a++) h += '<div class="chip" style="display:block;font-size:3vh;margin:.6vh 0">' + esc(item.left[a]) + "</div>";
+      h += '</div><div><div class="h3 center">' + esc(item.right_label || "") + "</div>";
+      for (var b = 0; b < (item.right || []).length; b++) h += '<div class="chip" style="display:block;font-size:3vh;margin:.6vh 0">' + esc(item.right[b]) + "</div>";
+      h += "</div></div>";
+    } else if (item.type === "order") {
+      h += '<div class="center h3" style="margin-top:1.4vh">' + esc(item.order_label || "First → Last") + '</div><div class="chips">';
+      for (var c = 0; c < (item.items || []).length; c++) h += '<span class="chip" style="font-size:3.2vh">' + esc(item.items[c]) + "</span>";
+      h += "</div>";
+    }
+    if (race.flash) {
+      var right = race.right || [];
+      h += '<div class="center h2" style="margin-top:2vh">' + (right.length ? "⚡ " + esc(right[0]) + " was fastest!" +
+        (right.length > 1 ? ' <span class="h3">Also right: ' + esc(right.slice(1).join(", ")) + "</span>" : "") : "Nobody got that one!") + "</div>";
+      return h + "</div>";
+    }
+    h += '<div class="row" style="justify-content:center;margin-top:1.6vh">' + clockHtml(true) +
+      '<div class="h2" style="font-size:3.4vh">⚡ Answer on your phone. Fastest right answer wins!</div></div>';
+    return h + chipsHtml(r, "submitted", "🔒") + "</div>";
+  }
+  function viewRaceReveal(r) {
+    var list = r.reveal.race || [];
+    var h = '<div class="fade">' + promptHead(r) + '<div class="options' + (list.length > 4 ? " many" : "") + '">';
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      var ans = esc(it.answer_text || "");
+      if (it.type === "pairs") ans = esc(it.answer_text || "").split("; ").join("<br>✅ ");
+      h += '<div class="opt truth"' + (list.length === 1 ? ' style="width:80vw"' : "") + '><div class="t">' + (list.length > 1 ? (i + 1) + ". " : "") + esc(it.clue) +
+        '<div class="by" style="color:#0f5132;font-size:3vh">✅ ' + ans + "</div>" +
+        ((it.right || []).length ? '<div class="votes">⚡ ' + esc(it.right[0]) + "</div>" : "") + "</div></div>";
+    }
+    h += "</div>";
+    return h + (humans(r).length > 4 ? scoreChipsHtml(r) : boardHtml(r, 4)) + nextInHtml(r) + "</div>";
   }
   function promptHead(r) {
     var pr = r.prompt || {};
@@ -562,6 +614,7 @@
     return '<div class="next-in">Next round in <span id="next-in">' + Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</span>s</div>";
   }
   function viewReveal(r) {
+    if (r.reveal && r.reveal.race) return viewRaceReveal(r);
     var opts = revealOrder(r);
     var step = revealStep(r);
     var h = '<div>' + promptHead(r) + '<div class="options' + (opts.length > 4 ? " many" : "") + '">';
@@ -634,7 +687,7 @@
     $("top-right").innerHTML = '<span class="pill">ROOM ' + esc(r.code) + "</span>" +
       (r.round ? ' <span class="pill">ROUND ' + r.round + " / " + r.total_rounds + "</span>" : "");
     $("foot-left").innerHTML = "Join: " + esc(window.location.host) + "/join/" + esc(r.code);
-    var views = { lobby: viewLobby, writing: viewWriting, voting: viewVoting, reveal: viewReveal, finished: viewFinished };
+    var views = { lobby: viewLobby, writing: viewWriting, voting: viewVoting, reveal: viewReveal, racing: viewRacing, finished: viewFinished };
     main.innerHTML = (views[r.phase] || viewLobby)(r);
   }
 
@@ -645,7 +698,7 @@
       var x = r.players[i];
       p.push(x.id + ":" + x.score + ":" + (x.submitted ? 1 : 0) + (x.voted ? 1 : 0));
     }
-    return [r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(","), r.joke ? r.joke.setup : ""].join("|");
+    return [r.step || "", r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(","), r.joke ? r.joke.setup : ""].join("|");
   }
 
   var lastPhaseKey = "";
@@ -667,11 +720,12 @@
   var lastRevealStep = -1;
   var lastTick = -1;
   function apply(r) {
-    var phaseKey = r ? r.match_id + ":" + r.round + ":" + r.phase : "";
+    var phaseKey = r ? stepKey(r) : "";
     if (r && phaseKey !== lastPhaseKey && lastPhaseKey) {
       if (r.phase === "writing") playSfx("round");
       else if (r.phase === "voting") playSfx("vote");
       else if (r.phase === "finished") playSfx("finale");
+      else if (r.phase === "racing" && r.race) playSfx(!r.race.flash ? "vote" : (r.race.right || []).length ? "win" : "trap");
     }
     if (r && r.phase === "lobby" && lastPlayerCount >= 0 && humans(r).length > lastPlayerCount) playSfx("join");
     lastPlayerCount = r ? humans(r).length : -1;
@@ -681,7 +735,7 @@
     if (r) hadRoom = false;
     room = r;
     musicFor(r, false);
-    if (r && (r.phase === "writing" || r.phase === "voting" || r.phase === "reveal")) {
+    if (r && (r.phase === "writing" || r.phase === "voting" || r.phase === "reveal" || r.phase === "racing")) {
       // Viewers see a streamed stage r.stage_delay_s later, so its clock runs
       // that far ahead and reaches 0 when the round really ends. The reveal
       // keeps its own pacing.
@@ -745,7 +799,7 @@
     var c = document.getElementById("clock");
     if (!c || !deadline) return;
     var left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-    if (left <= 5 && left > 0 && left !== lastTick && room && (room.phase === "writing" || room.phase === "voting")) playSfx("tick");
+    if (left <= 5 && left > 0 && left !== lastTick && room && (room.phase === "writing" || room.phase === "voting" || (room.phase === "racing" && room.race && !room.race.flash))) playSfx("tick");
     lastTick = left;
     c.textContent = left;
     c.className = "clock" + (c.getAttribute("data-size") === "sm" ? " sm" : "") + (left <= 10 ? " low" : "");

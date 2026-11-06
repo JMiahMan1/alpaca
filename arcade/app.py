@@ -1446,6 +1446,21 @@ def api_party_room_vote(code: str):
     return jsonify({"success": True, "room": room})
 
 
+@app.route("/api/party/rooms/<code>/race", methods=["POST"])
+def api_party_room_race(code: str):
+    """A tap in a race round: ``{player_id, item, choice}`` (an index, or a list for a board)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        room = party.race_answer(code, str(body.get("player_id") or ""), body.get("item"), body.get("choice"))
+    except LookupError:
+        return jsonify({"success": False, "error": "No such room or player."}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, "room": room})
+
+
 @app.route("/api/party/rooms/<code>/next", methods=["POST"])
 def api_party_room_next(code: str):
     body = request.get_json(silent=True) or {}

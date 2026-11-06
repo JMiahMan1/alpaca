@@ -81,7 +81,7 @@ def test_seven_round_schedule_covers_all_five_modes():
     assert "truth_or_bluff" in seen_kinds and len(set(seen_kinds)) >= 5
     assert all(k in party.ROUND_META for k in seen_kinds)
     ids = party._rooms["NOAH"]["used_prompt_ids"]
-    assert len(ids) == len(set(ids)) == 7  # no prompt twice in a match
+    assert len(ids) == len(set(ids)) >= 7  # no prompt twice in a match (a race round uses several clues)
     assert seen_kinds[-1] == "survey_says"
 
 
@@ -628,6 +628,8 @@ def test_reveal_moves_on_by_itself_and_never_waits_on_the_ai(monkeypatch):
     party.start_match("FLOW", player_id="h")
     with party._lock:
         room = party._rooms["FLOW"]
+        room["schedule"] = [party.MATCH_OPENER, "sub_the_scroll", "extra_extra", "truth_or_bluff", "bible_bios",
+                            "hymn_remix", party.MATCH_FINALE]  # writing rounds only: this is about the reveal
         party._build_voting_options_unlocked(room)
         party._score_round_unlocked(room)
         assert room["phase"] == "reveal"

@@ -46,6 +46,8 @@ def _check(code: str, snap: dict, viewer: str | None) -> None:
     assert len(ids) == len(set(ids))
     if snap["phase"] == "voting":
         assert snap["options"]
+    if snap["phase"] == "racing":
+        assert snap["race"] and ("answer" in snap["race"]["item"]) == snap["race"]["flash"]  # never early
     if viewer and viewer in room["players"]:
         assert snap["you"] is not None
     if room["phase"] in ("writing", "voting", "reveal") and room.get("schedule"):
@@ -81,7 +83,13 @@ def test_the_engine_survives_chaos(fake_clock, seed):
                 elif act < 0.67:
                     snap = P.get_room_state(code, who)
                     opts = [o for o in snap["options"] if not o.get("is_mine")]
-                    if opts:
+                    race = snap.get("race")
+                    if race:
+                        item = race["item"]
+                        n = len(item.get("options") or item.get("left") or item.get("items") or [])
+                        guess = rng.randrange(n) if item["type"] == "pick" else rng.sample(range(n), n)
+                        P.race_answer(code, who, race["index"] - (rng.random() < 0.1), guess)
+                    elif opts:
                         P.submit_vote(code, player_id=who, option_id=rng.choice(opts)["option_id"])
                 elif act < 0.72:
                     P.leave_room(code, player_id=who)
