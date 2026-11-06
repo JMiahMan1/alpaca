@@ -24,7 +24,7 @@
     --coral: #ff6b6b;
     --teal: #2ed3b7;
     --violet: #7c5cff;
-    --dim: #cbbdf5;
+    --dim: #fff0b8;
     --font: ui-rounded, "SF Pro Rounded", "Nunito", "Segoe UI Rounded", "Segoe UI", system-ui, sans-serif;
   }
   #fk-overlay { display: none !important; }
@@ -48,13 +48,13 @@
   .gw-logo .a { background: var(--gold); font-size: 22px; transform: rotate(-3deg); }
   .gw-logo .b { background: var(--coral); color: #fff; font-size: 34px; transform: rotate(2deg); margin-top: -4px; }
   .gw-logo .c { background: var(--teal); font-size: 18px; transform: rotate(-1.5deg); margin-top: -2px; }
-  .gw-tag { text-align: center; color: var(--dim); font-weight: 700; font-size: 14px; margin: 2px 8px 0; }
+  .gw-tag { text-align: center; color: var(--dim); font-weight: 700; font-size: 15px; margin: 2px 8px 0; }
 
   /* --- sticker card + inputs + buttons --- */
   .gw-card { background: var(--paper); color: var(--ink); border: 3px solid var(--ink); border-radius: 20px;
     box-shadow: 0 6px 0 var(--ink); padding: 16px; }
   .gw-card h2 { margin: 0 0 10px; font-size: 20px; font-weight: 900; }
-  .gw-label { display: block; font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em;
+  .gw-label { display: block; font-size: 15px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em;
     color: #5b4a8a; margin: 2px 0 6px; }
   /* 16px+ keeps iOS from zooming on focus; dark ink on white so the writer always sees their words. */
   .gw-field { width: 100%; font: 800 20px var(--font); color: var(--ink); -webkit-text-fill-color: var(--ink); background: #fff;
@@ -63,7 +63,7 @@
   .gw-field:focus { box-shadow: 0 0 0 4px rgba(124, 92, 255, .35); }
   .gw-code-field { text-transform: uppercase; letter-spacing: .4em; text-align: center; font-size: 30px; padding: 10px; }
   textarea.gw-field { min-height: 112px; resize: none; line-height: 1.3; font-size: 19px; }
-  .gw-count { text-align: right; font-size: 12px; font-weight: 800; color: #7b6aa8; margin-top: 4px; }
+  .gw-count { text-align: right; font-size: 14px; font-weight: 800; color: #7b6aa8; margin-top: 4px; }
   .gw-btn { display: block; width: 100%; font: 900 20px var(--font); color: var(--ink); background: var(--gold);
     border: 3px solid var(--ink); border-radius: 16px; padding: 14px 16px; box-shadow: 0 6px 0 var(--ink);
     text-transform: uppercase; letter-spacing: .03em; cursor: pointer; transition: transform .06s, box-shadow .06s; }
@@ -77,7 +77,7 @@
   .gw-btn.small { font-size: 15px; padding: 10px 12px; box-shadow: 0 4px 0 var(--ink); }
   .gw-row { display: flex; gap: 10px; align-items: center; }
   .gw-row > * { flex: 1; min-width: 0; }
-  .gw-or { text-align: center; color: var(--dim); font-weight: 900; font-size: 13px; letter-spacing: .2em; }
+  .gw-or { text-align: center; color: var(--dim); font-weight: 900; font-size: 15px; letter-spacing: .2em; }
 
   /* --- avatars + players --- */
   .gw-avatars { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
@@ -88,17 +88,17 @@
   .gw-p { text-align: center; position: relative; min-width: 0; }
   .gw-p .face { width: 100%; aspect-ratio: 1; border-radius: 50%; border: 3px solid var(--ink); background: var(--paper);
     display: flex; align-items: center; justify-content: center; font-size: 30px; box-shadow: 0 4px 0 var(--ink); }
-  .gw-p .nm { font-size: 13px; font-weight: 900; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gw-p .nm { font-size: 15px; font-weight: 900; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .gw-p.me .face { background: var(--gold); }
   .gw-p.away { opacity: .4; }
   .gw-p.empty .face { background: transparent; border-style: dashed; border-color: rgba(255,255,255,.35); box-shadow: none; color: rgba(255,255,255,.35); font-size: 22px; }
   .gw-p .crown { position: absolute; top: -10px; right: 2px; font-size: 18px; transform: rotate(18deg); }
   .gw-p .tick { position: absolute; bottom: 18px; right: 0; background: var(--teal); color: var(--ink); border: 2px solid var(--ink);
-    width: 22px; height: 22px; border-radius: 50%; font-size: 13px; font-weight: 900; display: flex; align-items: center; justify-content: center; }
+    width: 22px; height: 22px; border-radius: 50%; font-size: 15px; font-weight: 900; display: flex; align-items: center; justify-content: center; }
 
   /* --- lobby --- */
   .gw-roomcode { text-align: center; }
-  .gw-roomcode .k { font-size: 13px; font-weight: 900; letter-spacing: .2em; color: var(--dim); }
+  .gw-roomcode .k { font-size: 15px; font-weight: 900; letter-spacing: .2em; color: var(--dim); }
   .gw-roomcode .v { display: inline-block; font-size: 52px; font-weight: 900; letter-spacing: .14em; color: var(--ink);
     background: var(--gold); border: 3px solid var(--ink); border-radius: 18px; padding: 2px 18px 2px 26px;
     box-shadow: 0 6px 0 var(--ink); transform: rotate(-2deg); margin-top: 6px; max-width: 100%; }
@@ -106,17 +106,17 @@
   .gw-dots span { display: inline-block; animation: gw-bob 1s infinite; }
   .gw-dots span:nth-child(2) { animation-delay: .15s; } .gw-dots span:nth-child(3) { animation-delay: .3s; }
   @keyframes gw-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
-  .gw-chip { display: inline-block; font-size: 13px; font-weight: 900; padding: 5px 10px; border-radius: 999px;
+  .gw-chip { display: inline-block; font-size: 15px; font-weight: 900; padding: 5px 10px; border-radius: 999px;
     border: 2px solid var(--ink); background: var(--teal); color: var(--ink); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .gw-chip.off { background: #ece4ff; }
-  .gw-note { font-size: 13px; font-weight: 700; color: #5b4a8a; margin-top: 8px; overflow-wrap: anywhere; }
+  .gw-note { font-size: 15px; font-weight: 700; color: #5b4a8a; margin-top: 8px; overflow-wrap: anywhere; }
   .gw-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 800; font-size: 15px; margin-top: 12px; }
   .gw-switch input { width: 24px; height: 24px; accent-color: var(--violet); flex: 0 0 auto; }
   select.gw-field { font-size: 16px; padding: 10px; }
 
   /* --- round header + prompt --- */
   .gw-head { display: flex; align-items: center; gap: 10px; }
-  .gw-badge { flex: 1; min-width: 0; font-size: 12px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase;
+  .gw-badge { flex: 1; min-width: 0; font-size: 14px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase;
     background: var(--violet); border: 2.5px solid var(--ink); border-radius: 12px; padding: 8px 10px; box-shadow: 0 4px 0 var(--ink);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .gw-badge b { color: var(--gold); }
@@ -125,8 +125,8 @@
   .gw-clock .n { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 18px; }
   .gw-clock.low .n { color: var(--coral); }
   .gw-prompt { font-size: 22px; font-weight: 900; line-height: 1.22; overflow-wrap: anywhere; }
-  .gw-scene { font-size: 14px; font-weight: 700; color: #5b4a8a; background: #f1e7ff; border-radius: 12px; padding: 9px 11px; margin-bottom: 10px; }
-  .gw-instr { font-size: 13px; font-weight: 800; color: #6b5a99; margin-top: 10px; }
+  .gw-scene { font-size: 15px; font-weight: 700; color: #5b4a8a; background: #f1e7ff; border-radius: 12px; padding: 9px 11px; margin-bottom: 10px; }
+  .gw-instr { font-size: 15px; font-weight: 800; color: #6b5a99; margin-top: 10px; }
 
   /* --- answers --- */
   .gw-opts { display: flex; flex-direction: column; gap: 12px; }
@@ -137,7 +137,7 @@
   .gw-opt:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
   .gw-opt.mine { background: #e9e2fb; color: #6b5a99; box-shadow: none; border-style: dashed; }
   .gw-opt.picked { background: var(--gold); }
-  .gw-opt .meta { display: block; font-size: 13px; font-weight: 900; color: #6b5a99; margin-top: 6px; }
+  .gw-opt .meta { display: block; font-size: 15px; font-weight: 900; color: #6b5a99; margin-top: 6px; }
   .gw-opt.win { background: #fff1b8; } .gw-opt.trap { background: #ffd9d9; } .gw-opt.truth { background: #c9f7ec; }
   .gw-opt .pts { float: right; color: #138a6f; font-weight: 900; margin-left: 8px; }
 
@@ -156,7 +156,7 @@
   .gw-line.me { background: var(--gold); color: var(--ink); border-color: var(--ink); }
   .gw-line .r { width: 26px; text-align: center; } .gw-line .a { font-size: 22px; }
   .gw-line .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gw-line .d { font-size: 13px; color: var(--teal); } .gw-line.me .d { color: #0d6e58; }
+  .gw-line .d { font-size: 15px; color: var(--teal); } .gw-line.me .d { color: #0d6e58; }
 
   /* --- sheet + toast --- */
   #gw-sheet { position: absolute; inset: 0; z-index: 30; background: rgba(10, 5, 30, .6); display: none; align-items: flex-end; }
@@ -170,9 +170,9 @@
   .gw-tv { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: #fff; color: var(--ink);
     border: 3px solid var(--ink); border-radius: 16px; padding: 12px; margin-top: 10px; font: 800 16px var(--font); box-shadow: 0 4px 0 var(--ink); }
   .gw-tv .ic { font-size: 28px; flex: 0 0 auto; } .gw-tv .tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-  .gw-tv small { display: block; color: #6b5a99; font-size: 12px; font-weight: 800; }
+  .gw-tv small { display: block; color: #6b5a99; font-size: 14px; font-weight: 800; }
   .gw-tv.live { background: #c9f7ec; }
-  .gw-status { margin-top: 12px; font-weight: 800; font-size: 14px; border-radius: 12px; padding: 10px 12px; background: #f1e7ff; overflow-wrap: anywhere; }
+  .gw-status { margin-top: 12px; font-weight: 800; font-size: 15px; border-radius: 12px; padding: 10px 12px; background: #f1e7ff; overflow-wrap: anywhere; }
   .gw-status.ok { background: #c9f7ec; } .gw-status.err { background: #ffd9d9; }
   #gw-toast { position: absolute; left: 16px; right: 16px; bottom: calc(18px + var(--fk-safe-bottom)); z-index: 40;
     background: var(--ink); color: #fff; border: 2px solid var(--gold); border-radius: 14px; padding: 12px 14px; font: 800 15px var(--font);
@@ -185,7 +185,7 @@
   /* Short phones: a smaller header so both ways in stay above the fold. */
   @media (max-height: 760px) {
     .gw-tall-only { display: none; }
-    .gw-logo .a { font-size: 16px; } .gw-logo .b { font-size: 26px; } .gw-logo .c { font-size: 13px; }
+    .gw-logo .a { font-size: 16px; } .gw-logo .b { font-size: 26px; } .gw-logo .c { font-size: 15px; }
   }
   @media (prefers-reduced-motion: reduce) { .gw-enter, .gw-dots span, .gw-sheet-body { animation: none; } }
 </style>
@@ -269,27 +269,37 @@
   const stage = kit.canvas();
   const motes = [];
   for (let i = 0; i < 46; i++) {
-    motes.push({ x: Math.random(), y: Math.random(), r: 0.6 + Math.random() * 2.2, s: 0.004 + Math.random() * 0.012, p: Math.random() * 6.28 });
+    motes.push({ x: Math.random(), y: Math.random(), r: 1.5 + Math.random() * 2.5, s: 0.004 + Math.random() * 0.012, p: Math.random() * 6.28 });
   }
   kit.run(
     () => {},
     () => {
       const ctx = stage.ctx, w = stage.w, h = stage.h, t = performance.now() / 1000;
       const g = ctx.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, "#2a1260"); g.addColorStop(0.55, "#170b3b"); g.addColorStop(1, "#0b0620");
+      // A bright studio set: violet into magenta, spinning spotlight rays, falling confetti.
+      g.addColorStop(0, "#6d28d9"); g.addColorStop(0.5, "#a21caf"); g.addColorStop(1, "#4c1d95");
       ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
       ctx.save();
-      ctx.translate(w / 2, -h * 0.15);
-      for (let i = 0; i < 9; i++) {
-        ctx.rotate(Math.PI / 9 + Math.sin(t * 0.07) * 0.01);
-        ctx.fillStyle = i % 2 ? "rgba(255,200,61,0.035)" : "rgba(124,92,255,0.045)";
-        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-w * 0.12, h * 1.4); ctx.lineTo(w * 0.12, h * 1.4); ctx.fill();
+      ctx.translate(w / 2, h * 0.32);
+      ctx.rotate(t * 0.05);
+      const ray = Math.max(w, h) * 1.3;
+      for (let i = 0; i < 16; i++) {
+        ctx.rotate(Math.PI / 8);
+        ctx.fillStyle = i % 2 ? "rgba(255,200,61,0.13)" : "rgba(255,255,255,0.07)";
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-ray * 0.2, ray); ctx.lineTo(ray * 0.2, ray); ctx.fill();
       }
       ctx.restore();
-      for (const m of motes) {
-        m.y -= m.s * 0.016; if (m.y < -0.02) { m.y = 1.02; m.x = Math.random(); }
-        ctx.fillStyle = `rgba(255,214,120,${0.35 + 0.35 * Math.sin(t * 1.6 + m.p)})`;
-        ctx.beginPath(); ctx.arc(m.x * w + Math.sin(t * 0.5 + m.p) * 8, m.y * h, m.r, 0, 6.283); ctx.fill();
+      const confetti = ["#ffc83d", "#2ed3b7", "#ff6b6b", "#ffffff", "#7dd3fc"];
+      for (let i = 0; i < motes.length; i++) {
+        const m = motes[i];
+        m.y += m.s * 0.03; if (m.y > 1.02) { m.y = -0.02; m.x = Math.random(); }
+        ctx.save();
+        ctx.translate(m.x * w + Math.sin(t * 0.8 + m.p) * 10, m.y * h);
+        ctx.rotate(t * 2 + m.p);
+        ctx.fillStyle = confetti[i % confetti.length];
+        ctx.globalAlpha = 0.75;
+        ctx.fillRect(-m.r * 1.6, -m.r * 0.7, m.r * 3.2, m.r * 1.4);
+        ctx.restore();
       }
       kit.fx.draw(ctx);
     }
@@ -654,7 +664,7 @@
         <li>A Bible-story prompt shows on the TV (and here).</li>
         <li>Write a funny or wise answer. Stuck? Play the Scribe's Decoy.</li>
         <li>Vote for your favourite, not your own. Every vote you get is points!</li>
-        <li>Careful: one answer is the Scribe's Trap. Voting for it costs points.</li></ol></div>`;
+        <li>Careful: the Scribe's Trap is hiding in the answers (sometimes two!). Voting for one costs points.</li></ol></div>`;
   }
   function viewLobby(r) {
     const humans = humansOf(r).length;

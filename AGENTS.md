@@ -501,6 +501,16 @@ other fails the build.
   `tests/test_party_prompts.py`, including that every Truth or Bluff truth trips `_matches_truth` and its bluffs do
   not). A match is an easy Blank-O-Matic opener, five different round types drawn per match (always one Truth or
   Bluff), and the double-points Survey Says finale. Prompts are chosen least-recently-used across all rooms.
+- **AI players only at a small table, and the trap is always there.** Scribes sit in only while 2 or fewer people play
+  (to make three seats). With no AI players at all, the house plays a second Scribe's Trap drawn from the prompt's
+  `bot_answers` (`opt_house_extra`, `_house_extra_answer`); both cost 250 x multiplier, like the first.
+- **Pronunciation is measured, not guessed.** `announcer.PRONUNCIATIONS` holds misaki IPA (misaki's own symbols:
+  `O A I ʤ`, never `oʊ eɪ aɪ dʒ`) for every Bible word misaki says wrong, checked in the audio-server container with
+  `KPipeline(lang_code="a", model=False).g2p`; `SAID_RIGHT` lists the ones it already gets right. Possessives go
+  inside the mark, "Job" is the man unless the words around it make it a task, and `unshout()` lower-cases words in
+  capitals (headlines, "WE ASKED 100 PARENTS"), which misaki would otherwise spell letter by letter.
+- **A changed music recipe recomposes itself.** Each cue's file has a `.json` sidecar with the prompt, seed and length
+  it was made from; `party_music.is_current()` treats a mismatch like a missing file.
 - **Ids on screens are public.** A player's own id authorises their actions, so snapshots carry
   `public_id(room, pid)` only and tell each phone which one is `you`. Host actions must name the host; `/next`
   carries the screen it was tapped on (`expect`) and is ignored if the room has already moved on.

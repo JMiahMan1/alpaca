@@ -20,7 +20,7 @@ NEW_ROUND_META: dict[str, dict[str, Any]] = {
         "icon": "🔄",
         "multiplier": 1,
         "instructions": (
-            "Retell or retitle this Bible story as if it happened today, in your funniest everyday setting!"
+            "Drag this Bible story into today: minivans, group chats, potlucks and all. Funniest retelling wins!"
         ),
     },
     "bible_bios": {
@@ -28,21 +28,23 @@ NEW_ROUND_META: dict[str, dict[str, Any]] = {
         "badge": "PROFILE PAGE",
         "icon": "📱",
         "multiplier": 1,
-        "instructions": "Write a short bio, headline, or job-listing line for this Bible character!",
+        "instructions": "Give this Bible hero a bio, headline or job listing. Be specific. Be kind. Be hilarious!",
     },
     "hymn_remix": {
         "title": "Hymn Remix",
         "badge": "SING IT OUT",
         "icon": "🎵",
         "multiplier": 1,
-        "instructions": "Write a brand-new hymn title or one singable line for this everyday family moment!",
+        "instructions": (
+            "Turn this everyday family chaos into a hymn title or one line you could sing with a straight face!"
+        ),
     },
     "church_bulletin": {
         "title": "Church Bulletin",
         "badge": "SUNDAY ANNOUNCEMENTS",
         "icon": "📋",
         "multiplier": 1,
-        "instructions": "Write the church bulletin announcement nobody expected to read this Sunday!",
+        "instructions": "Write the bulletin announcement that makes the whole pew stop doodling and start whispering!",
     },
 }
 
@@ -55,26 +57,26 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "When God brought every animal to Adam to be named, the one name Adam secretly regretted was "
                 "\"______.\""
             ),
-            "decoy": "Sir Hops-a-Lot, for the kangaroo, in front of everybody",
+            "decoy": "Hippopotamus. Way too many syllables for an emergency",
             "bot_answers": [
                 "Long Neck Larry, which the giraffe still brings up",
-                "Mr. Stripes, before he noticed the zebra AND the tiger",
+                "Platypus. It was almost lunch and he was out of ideas",
                 "Bob. He named the first forty animals Bob",
             ],
             "scripture_note": (
                 "Genesis 2:19-20 - God brought the animals to Adam to see what he would call them, and whatever he "
                 "called them, that was their name."
             ),
-            "announcer": "Fill in the blank! Adam had to name every animal on Earth. Which name did he regret?",
+            "announcer": "Fill in the blank! Adam named every animal on Earth, and he did NOT nail all of them. Which name did he regret?",
         },
         {
             "id": "bom_joshua_sun",
             "prompt": "When the sun stood still for Joshua, the people in the next town over all said: \"______!\"",
-            "decoy": "This is the longest Tuesday of my entire life",
+            "decoy": "Kids, it is STILL not bedtime, stop asking",
             "bot_answers": [
-                "Great, now my bread is extra overbaked",
-                "Somebody please tell the rooster to wait",
-                "Finally, enough daylight to finish the laundry",
+                "This is the longest Tuesday of my entire life",
+                "The rooster has crowed nine times and he is out of ideas",
+                "Perfect. Now my sundial is just a stick",
             ],
             "scripture_note": (
                 "Joshua 10:13 - The sun stood still in the midst of heaven and did not hurry to go down for about a "
@@ -88,10 +90,10 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "After forty years of manna for breakfast, lunch, and dinner, the Israelites' new favorite recipe was "
                 "______."
             ),
-            "decoy": "manna with a side of manna, garnished with a little more manna",
+            "decoy": "Manna-cotti, which is just manna rolled up and hopeful",
             "bot_answers": [
-                "Manna-cotti, which is just manna rolled up and hopeful",
-                "manna pancakes with quail syrup",
+                "manna with a side of manna and a manna-based dipping sauce",
+                "manna-and-cheese, hold the cheese, there is no cheese",
                 "Grandma's famous 'surprise, it's manna' casserole",
             ],
             "scripture_note": (
@@ -106,9 +108,9 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ),
             "decoy": "Next time I'm packing a real pillow, this rock was NOT memory foam",
             "bot_answers": [
-                "I need one of those for the attic",
-                "Surely the Lord is in this place, and also my neck hurts",
-                "Were the angels taking the stairs or the elevator?",
+                "Great dream. Terrible pillow. Five stars, one star",
+                "I am never telling Esau about this. He'll want a ladder too",
+                "Were the angels taking the stairs because the elevator was out?",
             ],
             "scripture_note": (
                 "Genesis 28:12,16 - Jacob dreamed of a ladder with angels going up and down, and woke saying, 'Surely "
@@ -121,9 +123,9 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Joseph's coat of many colors came with a care tag that read: \"Wash separately, ______.\"",
             "decoy": "and do not, under any circumstances, wear it in front of your brothers",
             "bot_answers": [
-                "or it turns all your other robes rainbow",
+                "do not wear while describing your dreams at breakfast",
                 "tumble dry low, avoid deep pits",
-                "hand-stitched with love by Dad, sorry to the other eleven sons",
+                "colors may run, and so may your jealous brothers",
             ],
             "scripture_note": (
                 "Genesis 37:3 - Israel loved Joseph more than all his children and made him a coat of many colors."
@@ -135,7 +137,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Samson's neighborhood barber shop had a sign on the door that read: \"______.\"",
             "decoy": "Trims available. Strength not included.",
             "bot_answers": [
-                "Absolutely NO walk-ins named Delilah",
+                "Absolutely NO appointments booked by Delilah",
                 "We are not responsible for collapsing pillars",
                 "Please stop asking for 'just a little off the top'",
             ],
@@ -147,11 +149,11 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
         {
             "id": "bom_ruth_gleaning",
             "prompt": "Ruth's number one tip for anyone gleaning in a barley field all day is ______.",
-            "decoy": "always pick the field owned by the kind man who drops extra barley on purpose",
+            "decoy": "pick the field owned by the kind man who keeps 'accidentally' dropping barley",
             "bot_answers": [
-                "wear comfy sandals and bring your mother-in-law snacks",
-                "stay humble, stay hydrated, stay near the reapers",
-                "never argue with Naomi about where to go next",
+                "bring snacks for your mother-in-law, because she WILL ask",
+                "stretch first. Gleaning is mostly bending over and saying 'ow'",
+                "never argue with Naomi. She has a plan, and the plan has a plan",
             ],
             "scripture_note": (
                 "Ruth 2:3 - Ruth went out to glean and happened to come to the part of the field belonging to Boaz."
@@ -163,8 +165,8 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "On Mount Carmel, Elijah teased the prophets of Baal that maybe their god was ______.",
             "decoy": "stuck in traffic somewhere on the Damascus Road",
             "bot_answers": [
-                "on hold with customer service",
-                "taking a really long nap after lunch",
+                "on hold with customer service. You are caller number 450",
+                "napping, so maybe try yelling a little louder",
                 "still looking for the matches",
             ],
             "scripture_note": (
@@ -181,8 +183,8 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "number 7,000 and one very distracting shooting star",
             "bot_answers": [
                 "eleventy-twelve, which he's pretty sure is a real number",
-                "the Big Dipper, twice",
-                "forty-three, then he started counting sheep instead",
+                "the Big Dipper, twice, then he started counting sheep instead",
+                "forty-three, then he lost his place and started over. Nine times",
             ],
             "scripture_note": (
                 "Genesis 15:5 - God took Abraham outside and said, 'Look toward heaven and count the stars... so "
@@ -196,8 +198,8 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "nobody stopped for a coffee break or a committee meeting",
             "bot_answers": [
                 "the neighbors kept heckling and that's very motivating",
-                "they held a trowel in one hand and a sandwich in the other",
-                "Nehemiah promised pizza when they finished",
+                "they held a trowel in one hand and a 'Do Not Disturb' sign in the other",
+                "Nehemiah said whoever finished first didn't have to build the next wall",
             ],
             "scripture_note": (
                 "Nehemiah 6:15 - The wall was finished in fifty-two days, because the people had a mind to work."
@@ -207,11 +209,11 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
         {
             "id": "bom_esther_reminder",
             "prompt": "Queen Esther's phone reminder the night before she visited the king said: \"______.\"",
-            "decoy": "Pick the outfit. Practice the bow. For such a time as this!",
+            "decoy": "Pick the outfit. Practice the bow. Do NOT trip on the throne room steps.",
             "bot_answers": [
-                "Make enough banquet food, Haman's staying for two",
-                "Do NOT trip on the throne room steps",
-                "Three days of fasting done. Don't eat ALL the banquet snacks",
+                "Banquet for three. Haman does NOT get the good chair",
+                "Remind Mordecai to stop sitting at the gate looking dramatic",
+                "Day 3 of fasting. Do not eat the banquet snacks before the banquet",
             ],
             "scripture_note": (
                 "Esther 4:14 - 'Who knows whether you have come to the kingdom for such a time as this?'"
@@ -223,9 +225,9 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "When the shepherd finally found his one lost sheep, the sheep's excuse was: \"______.\"",
             "decoy": "I wasn't lost, I was taking the scenic route",
             "bot_answers": [
-                "The grass really WAS greener over here",
+                "The grass really WAS greener over here. I checked. Twice.",
                 "I followed a butterfly and then another butterfly",
-                "I thought we were playing hide and seek",
+                "I left you a voicemail. It just said 'baa'",
             ],
             "scripture_note": (
                 "Luke 15:4-6 - The shepherd leaves the ninety-nine, finds the lost sheep, and carries it home on his "
@@ -239,8 +241,8 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Clean rooms, kind staff, and they'll put the rest on my tab",
             "bot_answers": [
                 "Two denarii well spent, would rescue again",
-                "Great place to recover from a really bad trip to Jericho",
-                "Innkeeper takes excellent care of guests, highly recommend",
+                "Four stars. Lost one star because the road here has robbers",
+                "Staff didn't even blink when I showed up carrying a stranger",
             ],
             "scripture_note": (
                 "Luke 10:34-35 - The Samaritan brought the hurt man to an inn, paid two denarii, and promised to "
@@ -255,7 +257,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Somebody is getting the burnt pita tonight",
                 "If anyone needs me, I'll be loudly stacking dishes",
-                "Lord, do You SEE how many dishes there are?",
+                "Mary, the hummus is not going to dip itself!",
             ],
             "scripture_note": (
                 "Luke 10:40-42 - Martha was distracted with much serving, but Jesus said Mary had chosen the good "
@@ -271,8 +273,8 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ),
             "decoy": "had a gorgeous ocean view and a beach volleyball net",
             "bot_answers": [
-                "was half price and came with a free bucket",
-                "was closer to the snack shack",
+                "was half price and came with a free bucket and shovel",
+                "had five stars from the realtor, who was also a crab",
                 "looked very solid at low tide",
             ],
             "scripture_note": (
@@ -287,7 +289,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "explaining to his boss why he missed four days of work",
             "bot_answers": [
                 "unwrapping all those linen strips before breakfast",
-                "everybody wanting to eat dinner with him",
+                "his friends asking 'so, what was it like?' at every single meal",
                 "his sisters hugging him every five minutes",
             ],
             "scripture_note": (
@@ -304,7 +306,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "a sandwich, a llama, and a very confused look",
             "bot_answers": [
                 "a pickle and a polite bow",
-                "a song in a language nobody had heard",
+                "a hug. He did not want a hug.",
                 "a brick, a nod, and a very long speech",
             ],
             "scripture_note": (
@@ -319,9 +321,9 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ),
             "decoy": "asking for a sign and then asking for the sign's receipt",
             "bot_answers": [
-                "checking the weather app three times",
-                "flipping a coin in two different rooms",
-                "texting the angel 'r u sure?'",
+                "checking the weather app, then a different app, then the first one again",
+                "flipping a coin best of three, then best of five, then best of nine",
+                "texting the angel 'r u sure?' and then 'r u SURE sure?'",
             ],
             "scripture_note": (
                 "Judges 6:37-40 - Gideon asked for dew on the fleece only, then dew everywhere but the fleece, and "
@@ -334,7 +336,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "The disciples' fishing boat had a bumper sticker that said: \"______.\"",
             "decoy": "I'd rather be fishing for people",
             "bot_answers": [
-                "Honk if you've walked on water (Peter only)",
+                "Honk if you've walked on water (Peter only, briefly)",
                 "Caution: may stop suddenly for storms",
                 "My other boat is full of 153 fish",
             ],
@@ -351,7 +353,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "stand firm and stay cool",
                 "never bow to a giant gold statue, even if the band is great",
-                "pack sunscreen, just in case",
+                "if the king says 'seven times hotter,' do NOT ask 'than what?'",
             ],
             "scripture_note": (
                 "Daniel 3:25,27 - Four men were seen walking in the fire, and not even the smell of smoke was on "
@@ -368,9 +370,9 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ),
             "decoy": "the snack lady who gave out double cookies on Thursday",
             "bot_answers": [
-                "the song with hand motions that never leaves your brain",
+                "the hand-motion song that is still stuck in your head at age forty",
                 "the youth pastor getting soaked in the water balloon finale",
-                "the craft still glued to Grandma's fridge",
+                "the popsicle-stick craft Grandma still refuses to throw away",
             ],
             "scripture_note": "Psalm 78:4 - We will tell the coming generation the glorious deeds of the Lord.",
             "announcer": "Vacation Bible School memories! Why does every kid remember it forever?",
@@ -381,8 +383,8 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "sings the loudest during the one song they don't know",
             "bot_answers": [
                 "holds the last note three seconds after everyone else",
-                "brings cough drops for the whole alto section",
-                "starts swaying and accidentally leads the whole row",
+                "unwraps a cough drop during the quietest verse, very, very slowly",
+                "sways so hard the whole row starts swaying with them",
             ],
             "scripture_note": "Psalm 98:4 - Make a joyful noise unto the Lord, all the earth!",
             "announcer": "Every choir has one! Fill in the blank about that special choir member!",
@@ -392,7 +394,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Family devotions at our house always end exactly the same way: ______.",
             "decoy": "with the dog howling all the way through the closing prayer",
             "bot_answers": [
-                "everyone arguing over who gets to blow out the candle",
+                "Dad saying 'just one more verse' and meaning eleven",
                 "the toddler asking if dinosaurs were on the Ark",
                 "the youngest praying for every single stuffed animal by name",
             ],
@@ -408,8 +410,8 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "finding the matching tiny shoe in under four minutes",
             "bot_answers": [
                 "singing 'Jesus Loves Me' forty times in a row",
-                "settling a goldfish cracker dispute with total wisdom",
-                "returning every baby to the right parent",
+                "settling a Goldfish cracker dispute with the wisdom of Solomon",
+                "returning every baby to the right parent, mostly on the first try",
             ],
             "scripture_note": "Mark 10:14 - 'Let the little children come to me, and do not hinder them.'",
             "announcer": "Let's hear it for the nursery volunteers! What do they deserve a medal for?",
@@ -421,7 +423,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "We are going to need a bigger kitchen",
                 "Can it pour chocolate milk next?",
-                "I'll go knock on every door on the street!",
+                "Mrs. Levi wants to know when she gets her pickle jar back",
             ],
             "scripture_note": (
                 "2 Kings 4:3-6 - Elisha told the widow to borrow many empty jars, and the oil kept flowing until "
@@ -436,7 +438,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "added 'snakebite' to his very long list of travel stories",
                 "wrote it into his next letter as a P.S.",
-                "asked the islanders to please stop staring",
+                "asked the islanders to please stop waiting for him to fall over",
             ],
             "scripture_note": "Acts 28:5 - Paul shook the creature off into the fire and suffered no harm.",
             "announcer": "Shipwrecked on Malta and now a snake! What did Paul do? Fill in the blank!",
@@ -450,7 +452,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "showing off their new skin to their moms",
                 "planning a big party and forgot to invite the guest of honor",
-                "stuck in a really long line at the temple",
+                "still arguing about who got healed first",
             ],
             "scripture_note": (
                 "Luke 17:15-17 - One returned, praising God with a loud voice, and Jesus asked, 'Where are the nine?'"
@@ -464,7 +466,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "free hay with every stay",
                 "the shepherds say the view of the angels is amazing",
-                "donkey parking is free",
+                "donkey parking is free, and it's valet",
             ],
             "scripture_note": (
                 "Luke 2:7 - Mary laid her baby in a manger, because there was no room for them in the inn."
@@ -476,7 +478,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "The holiest, most sought-after spot in the whole church parking lot is ______.",
             "decoy": "the space closest to the door that nobody ever leaves",
             "bot_answers": [
-                "the shady spot under the big oak tree",
+                "the shady spot under the oak tree, claimed by the same family since 1987",
                 "the 'Visitor' space the greeters guard with love",
                 "the spot right next to the donut table door",
             ],
@@ -493,7 +495,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "a fact-checker and a second opinion from his twin",
                 "a selfie with a timestamp",
-                "his mom to call and confirm it",
+                "a signed note from the other ten disciples. Notarized.",
             ],
             "scripture_note": (
                 "John 20:27-29 - Jesus said to Thomas, 'Blessed are those who have not seen and yet have believed.'"
@@ -513,7 +515,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "COMMUTE TIMES IMPROVE AS NEW SEABED EXPRESSWAY OPENS WITH ZERO TOLL BOOTHS",
             "bot_answers": [
                 "FISH REPORT UNUSUAL FOOT TRAFFIC IN THEIR LIVING ROOM",
-                "MOSES RAISES STAFF; SEA TAKES THE DAY OFF",
+                "LOCAL GOAT REFUSES TO CROSS UNTIL SEA 'PROMISES NOT TO MOVE'",
                 "MILLIONS CROSS SEA, NOT ONE WET SANDAL REPORTED",
             ],
             "scripture_note": (
@@ -534,7 +536,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the breakfast-time headline for THE WILDERNESS MORNING POST!",
             "decoy": "BREAKFAST FALLS FROM SKY; LOCAL MOMS DECLARE 'NO COOKING TODAY'",
             "bot_answers": [
-                "MYSTERY FLAKES TASTE LIKE HONEY WAFERS; CROWD NAMES THEM 'WHAT IS IT?'",
+                "KIDS ASK 'WHAT IS IT?' FOR FORTY STRAIGHT YEARS; MOMS STILL ANSWERING",
                 "DESERT GROCERY STORES REPORT ZERO SALES FOR FORTIETH STRAIGHT YEAR",
                 "FORECAST: 100% CHANCE OF BREAD SHOWERS",
             ],
@@ -557,7 +559,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "SKYSCRAPER PROJECT HALTED AFTER FOREMAN ORDERS 'BRICKS' AND RECEIVES 'BANANAS'",
             "bot_answers": [
                 "TOWER CREW REPORTS 'COMMUNICATION ISSUES' IN DOZENS OF LANGUAGES",
-                "TRANSLATORS SUDDENLY IN VERY HIGH DEMAND",
+                "TOWER CREW GROUP CHAT NOW JUST QUESTION MARKS",
                 "WORLD'S FIRST GROUP PROJECT ENDS EXACTLY LIKE ALL THE OTHERS",
             ],
             "scripture_note": (
@@ -579,7 +581,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "LOCAL SHRUB ON FIRE FOR HOURS, STILL HAS ALL ITS LEAVES; FIRE DEPARTMENT BAFFLED",
             "bot_answers": [
                 "SHEPHERD TAKES OFF SANDALS, RECEIVES MAJOR CAREER CHANGE",
-                "BUSH SETS WORLD RECORD FOR LONGEST BURN WITH ZERO DAMAGE",
+                "LOCAL SHRUB'S LEAVES 'FEELING GREAT, THANKS FOR ASKING'",
                 "SHEEP REPORT OWNER 'TALKING TO PLANTS' AGAIN",
             ],
             "scripture_note": (
@@ -603,7 +605,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "NEIGHBORHOOD DIY PROJECT ACTUALLY FINISHED ON TIME, EXPERTS STUNNED",
                 "MOCKERS SPEECHLESS AS WALL GOES UP ANYWAY",
-                "NEHEMIAH: 'THE PEOPLE HAD A MIND TO WORK'",
+                "HECKLERS RUN OUT OF INSULTS BEFORE BUILDERS RUN OUT OF STONES",
             ],
             "scripture_note": "Nehemiah 4:6 - So we built the wall, for the people had a mind to work.",
             "announcer": (
@@ -623,7 +625,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "WHIRLWIND TRAFFIC ADVISORY: FLAMING CHARIOT SPOTTED NEAR THE JORDAN",
                 "ELISHA INHERITS CLOAK AND DOUBLE PORTION, ASKS ABOUT THE CHARIOT NEXT",
-                "WITNESS SAYS 'MY FATHER, MY FATHER!'",
+                "PROPHETS SEARCH HILLS FOR THREE DAYS; ELISHA: 'I TOLD YOU SO'",
             ],
             "scripture_note": (
                 "2 Kings 2:11-13 - Chariots and horses of fire appeared, Elijah went up by a whirlwind into heaven, "
@@ -643,7 +645,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the headline for THE BABYLON TIMES!",
             "decoy": "KING'S PARTY CRASHED BY MYSTERY GRAFFITI ARTIST; NOBODY SAW THE REST OF HIM",
             "bot_answers": [
-                "WRITING ON THE WALL: ROYAL BANQUET ENDS EARLY",
+                "KING'S KNEES KNOCK SO LOUD THE BAND STOPS PLAYING",
                 "PALACE PAINTERS DENY ANY INVOLVEMENT",
                 "ONLY ONE MAN CAN READ IT, AND HE WASN'T EVEN INVITED",
             ],
@@ -664,10 +666,10 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "stare open-mouthed at Jesus, just up from a nap on a cushion."
             ),
             "prompt": "Write the headline for THE GALILEE MARINE WEATHER REPORT!",
-            "decoy": "STORM CANCELLED BY PASSENGER WHO WAS ASLEEP FOR MOST OF IT",
+            "decoy": "FISHERMEN PANIC FOR AN HOUR; STORM ENDS IN ONE SENTENCE",
             "bot_answers": [
                 "FORECAST UPDATE: WIND AND WAVES OBEY ONE MAN; WEATHERMEN SPEECHLESS",
-                "FISHERMEN ASK: 'WHO IS THIS?'",
+                "SOAKED CREW STILL BAILING WATER OUT OF A PERFECTLY CALM BOAT",
                 "SEA GOES FROM HURRICANE TO BATHTUB IN ONE SENTENCE",
             ],
             "scripture_note": (
@@ -688,7 +690,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the front-page headline for THE JERUSALEM DAILY!",
             "decoy": "DONKEY GETS RED-CARPET WELCOME; HORSES DEMAND EQUAL TREATMENT",
             "bot_answers": [
-                "PALM BRANCH SALES SKYROCKET AS HOSANNA PARADE FILLS CITY",
+                "LOCAL PALM TREES REPORT FEELING 'A LITTLE BREEZY' TODAY",
                 "COATS ON THE ROAD: CITY LAUNDRY DAY POSTPONED",
                 "LOCAL DONKEY HAS BEST DAY OF ITS LIFE",
             ],
@@ -736,7 +738,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "3,000 JOIN IN ONE DAY; CHURCH NEEDS A MUCH BIGGER POTLUCK",
                 "FLAMES ON HEADS, NOT ONE HAIR SINGED",
-                "VISITORS FROM EVERY NATION HEAR SERMON IN THEIR OWN LANGUAGE",
+                "CROWD BLAMES TOO MUCH COFFEE; PETER: 'IT'S ONLY NINE IN THE MORNING'",
             ],
             "scripture_note": (
                 "Acts 2:3-6 - Tongues as of fire rested on each of them, and every visitor heard them speaking in his "
@@ -757,7 +759,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the headline for THE DAMASCUS DISPATCH!",
             "decoy": "LOCAL MAN DELIVERED LIKE A LOAF OF BREAD; ESCAPES CITY IN STYLE",
             "bot_answers": [
-                "BASKET WEAVERS REPORT RECORD WEIGHT TEST",
+                "BASKET WEAVERS ADD NEW LABEL: 'HOLDS ONE APOSTLE'",
                 "NEW BELIEVER TAKES THE 'SCENIC ROUTE' OUT OF TOWN",
                 "GATE GUARDS WATCH FRONT DOOR ALL NIGHT; MISS THE WALL",
             ],
@@ -782,7 +784,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "IRON GATE OPENS ALL BY ITSELF; LOCKSMITHS BAFFLED",
                 "GUARDS SLEEP THROUGH THE WHOLE THING",
-                "PRAYER MEETING ANSWERED BEFORE IT EVEN ENDS",
+                "PRAYER ANSWERED AT THE GATE; PRAYER MEETING FORGETS TO OPEN IT",
             ],
             "scripture_note": (
                 "Acts 12:7,10 - An angel woke Peter, the chains fell off his hands, and the iron gate opened for them "
@@ -803,7 +805,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the headline for THE ARARAT MOUNTAIN NEWS!",
             "decoy": "ARK DOCKS ON MOUNTAINTOP; THOUSANDS OF ANIMALS SPRINT FOR THE NEAREST BUSH",
             "bot_answers": [
-                "SKY GETS A NEW ACCESSORY: GOD'S PROMISE IN SEVEN COLORS",
+                "ARK GETS FIVE STARS FOR SAFETY, ONE STAR FOR SMELL",
                 "FAMILY OF EIGHT ENDS YEAR-LONG CRUISE, NEEDS A BATH",
                 "NO MORE WORLDWIDE FLOODS, SAYS RAINBOW; UMBRELLA SALES DROP",
             ],
@@ -826,7 +828,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the entertainment headline for THE GIBEAH COURT CIRCULAR!",
             "decoy": "SHEPHERD BOY'S PLAYLIST CALMS ROYAL MOOD; PALACE BAND ASKS FOR TIPS",
             "bot_answers": [
-                "PALACE HIRES TEEN HARPIST; KING FEELS 'REFRESHED AND WELL'",
+                "KING'S MOOD IMPROVES; COURTIERS FINALLY STOP TIPTOEING",
                 "LOCAL SHEEP UPSET TO MISS THE CONCERT",
                 "SHEPHERD'S HARP TOPS PALACE CHARTS FOR TWELVE STRAIGHT WEEKS",
             ],
@@ -843,7 +845,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the headline for THE NILE RIVER REPORT!",
             "decoy": "PRINCESS FINDS BABY IN BASKET; DECIDES TO KEEP THE BABY, NOT THE BASKET",
             "bot_answers": [
-                "WATERPROOF BASKET PASSES FIRST RIVER TEST",
+                "BASKET MAKER'S NEW AD: 'TAR-SEALED, BABY-TESTED, PRINCESS-APPROVED'",
                 "BIG SISTER FINDS PERFECT BABYSITTER: IT'S MOM",
                 "ROYAL BATH TIME INTERRUPTED BY SMALLEST BOAT ON THE NILE",
             ],
@@ -868,7 +870,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "NETS BREAK UNDER RECORD CATCH; SIMON CALLS FOR BACKUP",
                 "ALL-NIGHT SHIFT CATCHES NOTHING, ONE MORNING CAST CATCHES EVERYTHING",
-                "LOCAL FISH MARKET OVERWHELMED",
+                "FISH HOLD EMERGENCY MEETING: 'WHO TOLD THEM ABOUT THE DEEP WATER?'",
             ],
             "scripture_note": (
                 "Luke 5:5-7 - 'We toiled all night and took nothing! But at your word I will let down the nets.' The "
@@ -891,7 +893,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "KIDS SKIP THE LINE; TEACHER SAYS 'LET THEM COME'",
                 "BIGGEST GROUP HUG IN JUDEAN HISTORY",
-                "DISCIPLES' CALENDAR CLEARED FOR STORY TIME",
+                "DISCIPLES' 'SCHEDULE FULL' SIGN NOW COVERED IN CRAYON",
             ],
             "scripture_note": (
                 "Mark 10:14 - 'Let the little children come to me; do not hinder them, for to such belongs the "
@@ -911,7 +913,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the headline for THE MEMPHIS MORNING NEWS!",
             "decoy": "PALACE DECLARES ITSELF A POND; PHARAOH ASKS FOR 'ONE MORE NIGHT WITH THE FROGS'",
             "bot_answers": [
-                "FROGS FOUND IN KING'S BED, OVENS AND KNEADING BOWLS",
+                "ROYAL SLIPPERS NOW SOLD WITH 'CHECK FOR FROGS' WARNING",
                 "EGYPT'S FROG POPULATION UP TEN THOUSAND PERCENT",
                 "ROYAL CHEF FINDS UNEXPECTED GUEST IN BREAD DOUGH",
             ],
@@ -934,7 +936,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the headline for THE BETHLEHEM HILLS HERALD!",
             "decoy": "NIGHT SHIFT INTERRUPTED BY CHOIR OF THOUSANDS; SHEEP DEMAND ENCORE",
             "bot_answers": [
-                "SHEPHERDS LEAVE FLOCK TO VISIT NEWBORN IN A MANGER",
+                "SHEEP LEFT IN CHARGE OF FIELD; SHEEP UNSURE WHAT THAT MEANS",
                 "GLORY TO GOD IN THE HIGHEST: SKY LIGHTS UP OVER FIELDS",
                 "LOCAL SHEPHERDS TELL EVERYONE; NOBODY BELIEVES HOW BRIGHT IT WAS",
             ],
@@ -980,7 +982,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write the headline for THE JERUSALEM HOME AND GARDEN!",
             "decoy": "WORLD'S QUIETEST CONSTRUCTION SITE: NOT ONE HAMMER HEARD",
             "bot_answers": [
-                "GOLD EVERYWHERE: TEMPLE INTERIOR DESIGN REACHES NEW HEIGHTS",
+                "KIDS TOLD TO BE QUIET POINT TO TEMPLE AS PROOF IT'S IMPOSSIBLE",
                 "CEDARS OF LEBANON ARRIVE; SOME ASSEMBLY REQUIRED",
                 "NEIGHBORS THANKFUL FOR 'PRE-CUT STONE' BUILDING POLICY",
             ],
@@ -1076,7 +1078,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Two of each, please! Rabbits, I SEE you trying to sneak in a third!",
                 "Elephants on the bottom deck, and nobody sits next to the porcupines",
-                "Welcome aboard! Today's forecast: forty days of rain",
+                "Woodpeckers, we have talked about this. NOT on this boat",
             ],
             "scripture_note": (
                 "Genesis 7:8-9 - Two and two, male and female, went into the ark with Noah, as God had commanded."
@@ -1137,7 +1139,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "You had ONE job, and it was 'don't let his snake eat your snakes'",
             "bot_answers": [
                 "Can we just order new staffs from the catalog?",
-                "I'm taking those out of your paychecks",
+                "Quick, everybody act like that was part of the show",
                 "Okay, but can YOUR snake do that?",
             ],
             "scripture_note": (
@@ -1157,7 +1159,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Next time you're spying, maybe don't ask the front desk for directions",
             "bot_answers": [
                 "Hide in the flax! Yes, it's itchy. No, you can't complain",
-                "Remember me and my red rope when you come back, okay?",
+                "Remember: red rope, MY window. Not the red rope at the bakery",
                 "Head for the hills and wait three days. Trust me, I know this town",
             ],
             "scripture_note": (
@@ -1177,7 +1179,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "What is Gideon saying to the angel?",
             "decoy": "Mighty warrior? Me? I'm hiding in a grape tub!",
             "bot_answers": [
-                "I think you have the wrong address",
+                "I think you want the OTHER Gideon. The brave one",
                 "Can I get that in writing? Maybe on a fleece?",
                 "Shh! I'm threshing wheat undercover!",
             ],
@@ -1199,7 +1201,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Okay, if it's not you calling me, then WHO is?",
             "bot_answers": [
                 "You called? No? Okay, I'll just stand here until you do",
-                "Eli, I promise I'm not making this up",
+                "Should I just sleep on your floor? It would save us both a lot of walking",
                 "Third time's the charm! Are you SURE you didn't say my name?",
             ],
             "scripture_note": (
@@ -1262,7 +1264,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Queen Esther! Come in, come in. Is this about the banquet menu?",
             "bot_answers": [
                 "Ask for anything, up to half my kingdom. Except my snack drawer",
-                "You look radiant! Also, how did you get past security?",
+                "Hold on, where's my scepter? It's always in the last place I look",
                 "Whatever it is, the answer is yes. Probably.",
             ],
             "scripture_note": (
@@ -1283,7 +1285,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Ten-day challenge: veggies and water. Check back with us, cake-eaters!",
             "bot_answers": [
                 "Pass the carrots! The king's pastries can wait",
-                "We look healthier already. Must be the broccoli",
+                "Day ten and we're glowing. You guys look like you need a nap",
                 "Salad for breakfast, salad for lunch, salad for victory",
             ],
             "scripture_note": (
@@ -1429,7 +1431,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Sing to the Lord! And somebody find the drummer",
                 "Big finish, everybody! Five, six, seven, eight!",
-                "Dry ground deserves a dance party",
+                "Guys, stop wringing out your robes. You walked on DRY ground!",
             ],
             "scripture_note": (
                 "Exodus 15:20-21 - Miriam took a tambourine, and all the women went out after her with tambourines "
@@ -1507,7 +1509,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "What is the man saying as he sees for the first time?",
             "decoy": "Whoa! So THAT'S what my neighbors look like!",
             "bot_answers": [
-                "Is the sky always this blue?",
+                "Wait, THAT is what mud looks like? I've been sitting next to it for years",
                 "I can see! And I can see I need a haircut",
                 "Who wants to hear what happened? It's a long story with mud in it",
             ],
@@ -1550,7 +1552,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "And that's a perfect introduction to today's sermon on Daniel!",
             "bot_answers": [
                 "Looks like the Lion of Judah sent a representative",
-                "Let's give our youngest choir member a hand",
+                "Sir, you're supposed to be on the OTHER side of the Daniel story",
                 "I'll take that as an amen",
             ],
             "scripture_note": "Psalm 8:2 - Out of the mouths of babies and infants, you have established strength.",
@@ -1568,7 +1570,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "We are going to be on time for church, even if one of us goes barefoot",
             "bot_answers": [
                 "Lord, grant me patience, and also that shoe",
-                "Whoever finds the shoe gets to pick lunch",
+                "I'm counting to three. I've been at two and a half for ten minutes",
                 "Remember, everyone, we are joyful. We are JOYFUL.",
             ],
             "scripture_note": "James 1:19 - Let every person be quick to hear, slow to speak, slow to anger.",
@@ -1591,9 +1593,9 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ],
             "decoy": "930 years (and he looked great for his age)",
             "bot_answers": [
-                "912 years",
-                "1,001 years",
-                "777 years",
+                "950 years, same as Noah",
+                "1,000 years minus one week",
+                "777 years, a very holy number",
             ],
             "scripture_note": (
                 "Genesis 5:27 - All the days of Methuselah were 969 years, the longest life recorded in Scripture."
@@ -1618,7 +1620,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Lydia",
                 "Junia",
-                "Chloe",
+                "Damaris",
             ],
             "scripture_note": (
                 "Acts 9:36 - In Joppa there was a disciple named Tabitha, which translated means Dorcas, who was full "
@@ -1640,10 +1642,10 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "lentil soup",
                 "pottage of lentils",
             ],
-            "decoy": "A roasted goat and a new hunting bow",
+            "decoy": "Two roasted quail and a jar of wild honey",
             "bot_answers": [
                 "Three sheep and a silver cup",
-                "A jar of honey and some figs",
+                "A shiny new hunting bow and one fig",
                 "His brother's best pair of sandals",
             ],
             "scripture_note": (
@@ -1668,7 +1670,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ],
             "decoy": "Thirty pieces of silver",
             "bot_answers": [
-                "Ten gold coins",
+                "Ten gold coins and a used camel saddle",
                 "Two camels and a donkey",
                 "Fifty shekels of bronze",
             ],
@@ -1695,7 +1697,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ],
             "decoy": "Three years of shepherding",
             "bot_answers": [
-                "One full harvest season",
+                "Ten years, not counting weekends",
                 "Forty days and forty nights",
                 "Twelve months, one for each tribe",
             ],
@@ -1721,7 +1723,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ],
             "decoy": "A dove landed on his pillow holding a fig leaf",
             "bot_answers": [
-                "The palace lamps relit themselves at midnight",
+                "A dead fig tree in the courtyard bloomed overnight",
                 "Rain fell on only the palace roof",
                 "The temple bells rang three times on their own",
             ],
@@ -1877,7 +1879,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ],
             "decoy": "Swarms of locusts covered the fields",
             "bot_answers": [
-                "All the cows turned spotted overnight",
+                "Frogs covered the land, starting with Pharaoh's bed",
                 "Every bread oven went cold",
                 "Hail fell only on the palace",
             ],
@@ -1949,7 +1951,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "the donkeys",
                 "looking for donkeys",
             ],
-            "decoy": "A runaway lamb for the family sacrifice",
+            "decoy": "His father's lost goats",
             "bot_answers": [
                 "A good spot to dig a new well",
                 "His older brother who went hunting",
@@ -2074,7 +2076,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ],
             "decoy": "Through a booming thunderclap",
             "bot_answers": [
-                "Through a raven that could talk",
+                "Through a raven, the same one that delivered his lunch",
                 "Through writing in the sand",
                 "Through a dream about a ladder",
             ],
@@ -2235,7 +2237,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "One of Elijah's ravens: it brings breakfast!",
                 "The big fish, if you have a REALLY big bathtub",
-                "A lamb, as long as it doesn't wander off",
+                "A lamb, until it follows you to school and gets you in trouble",
             ],
             "scripture_note": (
                 "Genesis 1:25 - God made every creature that creeps on the ground, and God saw that it was good."
@@ -2263,7 +2265,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Can we stop at the next bathroom?",
                 "Who touched my snacks?",
-                "Can I pick the music now?",
+                "Why is HE allowed to breathe on MY side?",
             ],
             "scripture_note": (
                 "Psalm 121:8 - The Lord will keep your going out and your coming in from this time forth and "
@@ -2279,7 +2281,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             ),
             "decoy": "Boaz, because he always leaves a little extra on purpose",
             "bot_answers": [
-                "Peter, for the fish stories",
+                "Peter, for the fish stories that get bigger every year",
                 "Solomon, to settle who gets the last slice of pie",
                 "Martha, because she'd bring the whole kitchen",
             ],
@@ -2299,7 +2301,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "The organist starts tiptoeing toward the bench",
                 "Even the stained-glass saints look hungry",
-                "Someone's watch alarm goes off for lunch",
+                "Someone's stomach growls in perfect harmony with the organ",
             ],
             "scripture_note": "Acts 20:7 - Paul talked with them and prolonged his speech until midnight.",
             "announcer": "Double-Point Finale! Survey Says: What is the surest sign the sermon is running long?",
@@ -2310,7 +2312,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Finding your note after the pianist changes key without warning",
             "bot_answers": [
                 "Not giggling when the soloist's voice cracks",
-                "Standing up for all seven verses",
+                "Standing for all seven verses while the tenor beside you sings an eighth",
                 "Remembering whether this is a 'repeat the chorus' week",
             ],
             "scripture_note": (
@@ -2358,7 +2360,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "WE ASKED 100 CHURCH COOKS: What dish ALWAYS shows up at the church potluck?",
             "decoy": "Seventeen different kinds of potato salad",
             "bot_answers": [
-                "Green bean casserole with crispy onions",
+                "A Jell-O salad with something mysterious floating in it",
                 "Mystery meatballs in a slow cooker",
                 "Deviled eggs that vanish in four minutes",
             ],
@@ -2389,7 +2391,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "The Sea of Galilee for boating, life jackets required",
                 "Mount Ararat, for the view and the boat museum",
-                "Bethlehem at Christmas, for the star",
+                "Jonah's fish, for the all-you-can-eat seafood buffet",
             ],
             "scripture_note": (
                 "Genesis 2:8-9 - God planted a garden in Eden and made every tree that is pleasant to the sight and "
@@ -2404,7 +2406,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Grandma's house, for the pot roast",
                 "The restaurant where we see half the congregation",
-                "Home, for leftovers and a nap",
+                "Home, for leftovers and Dad's 'just resting my eyes' nap",
             ],
             "scripture_note": "Psalm 34:8 - Oh, taste and see that the Lord is good!",
             "announcer": "Double Points on the line! Survey Says: Where does your family go for lunch after church?",
@@ -2414,7 +2416,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "WE ASKED 100 YOUTH PASTORS: What is the most popular youth group game of all time?",
             "decoy": "Anything involving a giant parachute and lots of screaming",
             "bot_answers": [
-                "Dodgeball, with very good sportsmanship",
+                "Sardines, with forty kids crammed in the janitor's closet",
                 "Capture the flag in the dark parking lot",
                 "Four square at the church gym",
             ],
@@ -2430,9 +2432,9 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "WE ASKED 100 PARENTS: What goes wrong most often in the Christmas pageant?",
             "decoy": "A shepherd waves to Grandma right in the middle of the angel's big line",
             "bot_answers": [
-                "Baby Jesus is a doll that keeps falling out of the manger",
+                "The donkey costume splits right down the middle",
                 "A sheep costume loses its tail mid-scene",
-                "The star of Bethlehem is held by a kid who gets bored",
+                "The star of Bethlehem gets bored and wanders off to find Grandma",
             ],
             "scripture_note": (
                 "Luke 2:10-11 - 'Behold, I bring you good news of great joy that will be for all the people.'"
@@ -2514,7 +2516,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "She knows every hymn without opening the book",
                 "She introduces you to every single person",
-                "Lunch afterward is always her treat",
+                "She lets you draw on the bulletin and calls it 'taking notes'",
             ],
             "scripture_note": (
                 "2 Timothy 1:5 - I am reminded of your sincere faith, a faith that dwelt first in your grandmother "
@@ -2529,7 +2531,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "WE ASKED 100 BIBLE READERS: Which job from Bible times would you most like to have had?",
             "decoy": "Royal cupbearer at the palace, for the snacks",
             "bot_answers": [
-                "Fisherman on the Sea of Galilee",
+                "Official manna taste-tester (great hours, same menu)",
                 "Shepherd, because the sheep don't talk back",
                 "Carpenter's apprentice in Nazareth",
             ],
@@ -2543,7 +2545,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Campfire songs and burnt marshmallows",
                 "The cabin that pranked the counselors",
-                "Canoe races on the lake",
+                "The canoe race where everybody ended up IN the lake",
             ],
             "scripture_note": "Mark 6:31 - 'Come away by yourselves to a desolate place and rest a while.'",
             "announcer": (
@@ -2568,7 +2570,7 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Aaron, Moses' official spokesman and backup staff carrier",
             "bot_answers": [
                 "Jonathan, David's loyal best friend",
-                "Elisha, who asked for a double portion",
+                "Elisha, who asked for a double portion, like at every potluck",
                 "Silas, the best duet partner in a jail cell",
             ],
             "scripture_note": "Proverbs 17:17 - A friend loves at all times, and a brother is born for adversity.",
@@ -2578,52 +2580,57 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
     "parable_remix": [
         {
             "id": "pr_lost_sheep_mall",
-            "prompt": "Retell the Parable of the Lost Sheep as if it happened at a giant shopping mall.",
-            "decoy": (
-                "Mall security leaves ninety-nine shoppers at the food court to find one kid in the massage chairs"
-            ),
+            "prompt": "Retell the Parable of the Lost Sheep at a giant shopping mall on the Saturday before Christmas.",
+            "decoy": "Dad leaves 99 shoppers at the pretzel stand to find Kevin asleep in a massage chair",
             "bot_answers": [
-                "Dad leaves the whole family at the pretzel stand to find Timmy in the toy store",
-                "Security radios: 'One sheep spotted at the fountain, repeat, one sheep'",
-                "Ninety-nine shoppers wait while Mom checks every single shoe store",
+                "Over the loudspeaker: 'Will the parent of one small sheep please come to the food court'",
+                "Mom checks forty-two shoe stores and finds him in the forty-third, eating free samples",
+                "When he's found, the whole family hugs him at the top of the escalator. Traffic stops",
             ],
             "scripture_note": (
                 "Luke 15:4-7 - There is more joy in heaven over one sinner who repents than over ninety-nine who need "
                 "no repentance."
             ),
-            "announcer": "Parable Remix! The Lost Sheep goes to the shopping mall! How does the story go now?",
+            "announcer": (
+                "Parable Remix! One little lamb wandered off at the mall, and Mom is checking every single store! How "
+                "does it go?"
+            ),
         },
         {
             "id": "pr_sower_garden_show",
             "prompt": "Retitle the Parable of the Sower as an episode of a backyard gardening TV show.",
-            "decoy": "Extreme Makeover: Soil Edition",
+            "decoy": "Rocky Soil, Hungry Birds, and Other Reasons Grandma Is Yelling at the Garden",
             "bot_answers": [
-                "Seeds Gone Wild: The Thorny Truth",
-                "Why Your Tomatoes Need Good Ground (and So Do You)",
-                "Bird-Proofing Your Heart in Four Easy Steps",
+                "Thorn Wars: When Your Weeds Have Weeds",
+                "Season 4, Episode 13: The Birds Ate It Again, Gary",
+                "Good Dirt: The One Episode Where Something Actually Grew",
             ],
             "scripture_note": (
                 "Matthew 13:23 - The seed on good soil is the one who hears the word and understands it, and bears "
                 "fruit."
             ),
             "announcer": (
-                "Parable Remix! The Parable of the Sower is now a gardening show! What's the episode called?"
+                "Parable Remix! The Parable of the Sower got its own gardening show, and the birds are not cooperating!"
+                " Name the episode!"
             ),
         },
         {
             "id": "pr_samaritan_flat_tire",
             "prompt": "Retell the Good Samaritan on a modern highway with a flat tire. Who finally stops to help?",
-            "decoy": "A grandma in a minivan with jumper cables, snacks, and a spare tire",
+            "decoy": "A kid from the rival school who knows how to change a tire and brought granola bars",
             "bot_answers": [
-                "A fan of the rival football team, wearing the other team's jersey",
-                "A tow-truck driver who pays for the motel himself",
-                "A kid on a bike who calls their mom, who calls everybody",
+                "Two drivers zoom past pretending to be on very important phone calls",
+                "A grandma in a minivan with jumper cables, a spare tire, and a casserole for some reason",
+                "A fan of the other football team, still in face paint, who pays for the tow truck",
             ],
             "scripture_note": (
                 "Luke 10:36-37 - 'Which of these proved to be a neighbor?' 'The one who showed him mercy.' 'You go, "
                 "and do likewise.'"
             ),
-            "announcer": "Parable Remix! The Good Samaritan meets a flat tire on the highway! Who stops to help?",
+            "announcer": (
+                "Parable Remix! Flat tire on the highway, and everybody is suddenly very busy! Who finally pulls over "
+                "to help?"
+            ),
         },
         {
             "id": "pr_prodigal_arcade",
@@ -2631,77 +2638,87 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "Retell the Prodigal Son as a kid who spent all his allowance at the arcade. What does Dad do when he "
                 "comes home?"
             ),
-            "decoy": "Throws a pizza party and gives him the good controller",
+            "decoy": "Runs down the driveway in his bathrobe and orders the party-size pizza with extra everything",
             "bot_answers": [
-                "Runs to the end of the driveway in his slippers",
-                "Hugs him before he finishes his apology speech",
-                "Orders the biggest cake at the grocery store",
+                "Hugs him so hard all his arcade tickets fall out of his pockets",
+                "Throws a party while big brother sulks in the garage with a calculator",
+                "Gives him the good controller. The GOOD one. Big brother gasps out loud",
             ],
             "scripture_note": (
                 "Luke 15:20 - While he was still a long way off, his father saw him and felt compassion, and ran and "
                 "embraced him."
             ),
-            "announcer": "Parable Remix! The Prodigal Son blew his allowance at the arcade! What does Dad do?",
+            "announcer": (
+                "Parable Remix! He spent every last quarter at the arcade and came home with a plastic spider ring! "
+                "What does Dad do?"
+            ),
         },
         {
             "id": "pr_bridesmaids_chargers",
             "prompt": "Retell the Parable of the Ten Bridesmaids and their lamps, but with phones and chargers.",
-            "decoy": "Five packed chargers; five were stuck at one percent when the groom arrived",
+            "decoy": "Five brought chargers; five spent the whole wedding asking 'Does anyone have a cord?'",
             "bot_answers": [
-                "Five brought power banks, five asked 'Can I borrow yours?'",
-                "The wedding started while half of them hunted for an outlet",
-                "Moral: keep your battery full and your heart ready",
+                "Half of them are at one percent, crawling behind the cake table looking for an outlet",
+                "The five wise ones packed power banks, extension cords, and a backup power bank",
+                "'Can I borrow your charger?' 'No, then we'd both be at fifty percent.'",
             ],
             "scripture_note": (
                 "Matthew 25:4,13 - The wise took oil in flasks with their lamps. Watch therefore, for you know "
                 "neither the day nor the hour."
             ),
-            "announcer": "Parable Remix! The Ten Bridesmaids now have phones and chargers! How does it go?",
+            "announcer": "Parable Remix! Ten bridesmaids, ten phones, and only five chargers! How does the wedding go?",
         },
         {
             "id": "pr_mustard_seed_story",
             "prompt": "Retitle the Parable of the Mustard Seed as a modern small-start success story.",
-            "decoy": "From Tiny Seed to Bird Hotel: A Backyard Startup Story",
+            "decoy": "Tiny Seed Grows Up, Now Runs the Biggest Bird Hotel on the Block",
             "bot_answers": [
-                "Small Beginnings, Giant Branches",
-                "The Smallest Seed That Became the Neighborhood's Favorite Tree",
-                "Don't Judge a Seed by Its Size",
+                "Startup Began in a Garage. Literally. In a Flowerpot. In the Garage.",
+                "They Laughed at My Size. Now Forty Birds Live in My Branches",
+                "From Smallest Seed to Town Landmark: Please Stop Parking Under Me",
             ],
             "scripture_note": (
                 "Matthew 13:31-32 - The mustard seed is the smallest of all seeds, but it grows into a tree so that "
                 "birds make nests in its branches."
             ),
-            "announcer": "Parable Remix! The Mustard Seed gets a modern success-story title! What is it?",
+            "announcer": (
+                "Parable Remix! The tiniest seed in the packet just became a huge success story! What's the headline?"
+            ),
         },
         {
             "id": "pr_lost_remote",
             "prompt": "Retell the Parable of the Lost Coin, but it's the family's lost TV remote.",
-            "decoy": "Mom sweeps the whole house, finds it in the couch, and throws a neighborhood party",
+            "decoy": "Dad flips every cushion, empties the dryer, and finds it in the freezer next to the peas",
             "bot_answers": [
-                "Everyone flips every cushion; Dad finds it in the fridge",
-                "When it's found, the family cheers louder than at the big game",
-                "She turns on every lamp and finally checks the dog's bed",
+                "When it's found, Mom calls the neighbors over for a remote-found party",
+                "Little sister had it the whole time. She was using it as a phone",
+                "The whole family searches with flashlights like it's a detective show",
             ],
             "scripture_note": (
                 "Luke 15:8-9 - She lights a lamp, sweeps the house, and seeks diligently until she finds it, then "
                 "calls her friends to rejoice."
             ),
-            "announcer": "Parable Remix! The Lost Coin is now the lost TV remote! How does the story go?",
+            "announcer": (
+                "Parable Remix! The TV remote is gone, and the whole house is being turned upside down! How does it go?"
+            ),
         },
         {
             "id": "pr_talents_lemonade",
             "prompt": "Retell the Parable of the Talents as three kids given money to start lemonade stands.",
-            "decoy": "One sells lemonade, one sells cookies too, and one buries his dollar in the sandbox",
+            "decoy": "Kid three buries his dollar in the sandbox 'for safety' and sells zero lemonade",
             "bot_answers": [
-                "Kid three kept the money under his pillow 'for safety'",
-                "Two doubled their money; one was too scared to squeeze a lemon",
-                "The boss says 'Well done!' to the kids who actually opened shop",
+                "Kid one adds cookies, kid two adds a drive-thru, kid three takes a nap",
+                "Kid two charges a dollar extra for 'the good ice' and doubles his money",
+                "One kid opens stands on three driveways. One kid is still reading the instructions",
             ],
             "scripture_note": (
                 "Matthew 25:21 - 'Well done, good and faithful servant. You have been faithful over a little; I will "
                 "set you over much.'"
             ),
-            "announcer": "Parable Remix! The Parable of the Talents goes to the lemonade stand! How does it end?",
+            "announcer": (
+                "Parable Remix! Three kids, three lemonade stands, and one kid who is very nervous about lemons! How "
+                "does it end?"
+            ),
         },
         {
             "id": "pr_vineyard_ice_cream",
@@ -2709,49 +2726,58 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "Retell the Workers in the Vineyard as a family yard-work day where the late helpers get the same ice "
                 "cream."
             ),
-            "decoy": "Little brother helps for five minutes and gets the same sundae; the older kids are speechless",
+            "decoy": (
+                "Little brother rakes one leaf at 4:59, gets the same triple scoop, and big sister files a complaint"
+            ),
             "bot_answers": [
-                "Everyone gets a double scoop, no matter when they started raking",
-                "Dad says, 'It's my ice cream, I can be generous with it'",
-                "The last helper carried one leaf and still got sprinkles",
+                "Dad says, 'It's my ice cream, and I'm allowed to be generous with it'",
+                "The all-day rakers start a protest with signs made from leaf bags",
+                "Cousin shows up at the very end, holds a rake for one photo, and gets sprinkles",
             ],
             "scripture_note": (
                 "Matthew 20:14-15 - 'I choose to give to this last worker as I give to you. Do you begrudge my "
                 "generosity?'"
             ),
             "announcer": (
-                "Parable Remix! The Workers in the Vineyard are now raking leaves for ice cream! What happens?"
+                "Parable Remix! Some kids raked all day, one kid raked for five minutes, and everybody gets the same "
+                "ice cream! What happens?"
             ),
         },
         {
             "id": "pr_two_sons_rooms",
             "prompt": "Retell the Parable of the Two Sons as two kids asked to clean their rooms.",
-            "decoy": "One says 'No way!' then cleans it; the other says 'Sure!' and plays video games",
+            "decoy": "Kid one yells 'Never!' then cleans so hard he finds a sandwich from last spring",
             "bot_answers": [
-                "Kid one grumbles, then organizes the closet by color",
-                "Kid two says 'On it!' and is never seen again",
-                "Mom asks who did what she asked, and everyone points at the grumbler",
+                "Kid two says 'On it!' and shoves everything under the bed, including the laundry basket",
+                "Kid one grumbles for an hour, then alphabetizes the sock drawer",
+                "Kid two says 'Yes ma'am!' with a huge smile and is found three hours later playing video games",
             ],
             "scripture_note": (
                 "Matthew 21:28-31 - One son said 'I will not' but afterward went; the other said 'I go, sir' but did "
                 "not go."
             ),
-            "announcer": "Parable Remix! The Two Sons have been told to clean their rooms! How does it go?",
+            "announcer": (
+                "Parable Remix! Two kids are told to clean their rooms. One says no, one says yes, and only one does "
+                "it! How does it go?"
+            ),
         },
         {
             "id": "pr_pearl_collectors",
             "prompt": "Retitle the Parable of the Pearl of Great Price as a modern collectors' TV show.",
-            "decoy": "The Man Who Sold Everything for One Pearl, Tonight at Eight",
+            "decoy": "Man Sells His House, Car, and Comic Books for One Pearl. Family Says 'Explain.'",
             "bot_answers": [
-                "Treasure Hunters: The Priceless Edition",
-                "Extreme Bargain Hunters: Worth Every Penny",
-                "Collector Sells Comic Books, Buys Kingdom",
+                "Extreme Collectors: One Pearl, Zero Furniture",
+                "Ask the Appraiser: 'It's Worth More Than Everything You Own.' Him: 'I know. I sold it.'",
+                "Pearl Hunters: The Man Who Sold Everything and Has Never Been Happier",
             ],
             "scripture_note": (
                 "Matthew 13:45-46 - A merchant found one pearl of great value, went and sold all that he had, and "
                 "bought it."
             ),
-            "announcer": "Parable Remix! The Pearl of Great Price is a TV show now! What's it called?",
+            "announcer": (
+                "Parable Remix! A merchant sold everything he owned for one perfect pearl, and now it's a TV show! "
+                "What's it called?"
+            ),
         },
         {
             "id": "pr_banquet_birthday",
@@ -2759,461 +2785,540 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
                 "Retell the Parable of the Great Banquet as a birthday party. What excuses do the invited guests "
                 "give?"
             ),
-            "decoy": "Sorry, I just bought a new fantasy football team and need to go check on it",
+            "decoy": "Can't come, my goldfish has a dentist appointment",
             "bot_answers": [
-                "Can't come, my goldfish has a dentist appointment",
-                "I just got new shoes and have to break them in",
-                "I'm busy reorganizing my sock drawer that night",
+                "Sorry, I just bought a new lawnmower and need to go look at it",
+                "I'd love to, but I'm alphabetizing my spice rack that afternoon",
+                "My cat is having a big day and needs my emotional support",
             ],
             "scripture_note": (
                 "Luke 14:18-21 - They all began to make excuses, so the master said, 'Go out quickly and bring in the "
                 "poor, the crippled, the blind and the lame.'"
             ),
             "announcer": (
-                "Parable Remix! The Great Banquet is now a birthday party! What excuses are the guests giving?"
+                "Parable Remix! The birthday party is ready, the cake is lit, and nobody is coming! What excuses are "
+                "the guests giving?"
             ),
         },
         {
             "id": "pr_spelling_bee_giant",
             "prompt": "Retell David and Goliath as a school spelling bee.",
-            "decoy": "A tiny first-grader faces the eighth-grade champion and spells 'Philistine' perfectly",
+            "decoy": "A tiny first-grader spells 'Philistine' while the eighth-grade champion is still flexing",
             "bot_answers": [
-                "The giant word was 'onomatopoeia'; the small kid had faith and phonics",
-                "Everyone said to borrow her brother's big glasses; she wore her own",
-                "Five smooth flashcards were all she needed",
+                "Everyone offered her a giant dictionary; she said 'No thanks, I brought five flashcards'",
+                "The champion yells 'Come at me, little speller!' and then misspells 'champion'",
+                "The giant word was 'onomatopoeia.' She spelled it, then spelled it backwards",
             ],
             "scripture_note": (
                 "1 Samuel 17:45 - 'You come to me with a sword and a spear, but I come to you in the name of the Lord "
                 "of hosts.'"
             ),
-            "announcer": "Parable Remix! David and Goliath face off at the school spelling bee! How does it go?",
+            "announcer": (
+                "Parable Remix! The smallest kid in school versus the undefeated spelling champion! How does the "
+                "spelling bee go?"
+            ),
         },
         {
             "id": "pr_ruth_moving_day",
             "prompt": "Retell the story of Ruth and Naomi as a family moving to a brand new town.",
-            "decoy": "Ruth refuses to let her mother-in-law move alone and packs the moving truck herself",
+            "decoy": "'Where you go I will go, and I'm bringing the snacks and the good tape gun'",
             "bot_answers": [
-                "'Where you go, I go, and I'm driving'",
-                "New town, new neighbors, and a kind farmer with extra groceries",
-                "Ruth gets a job at the farmers market and meets the owner",
+                "Ruth packs the truck, Naomi labels every box 'MISC,' and they move anyway",
+                "New town, new job at the farmers market, and the nicest farmer keeps leaving extra produce",
+                "Naomi says 'Go home.' Ruth says 'Too late, I already changed my address'",
             ],
             "scripture_note": (
                 "Ruth 1:16 - 'Where you go I will go, and where you lodge I will lodge. Your people shall be my "
                 "people, and your God my God.'"
             ),
-            "announcer": "Parable Remix! Ruth and Naomi are moving to a new town! How does the story go today?",
+            "announcer": (
+                "Parable Remix! Ruth refuses to let Naomi move alone, and she has already rented the truck! How does it"
+                " go today?"
+            ),
         },
         {
             "id": "pr_joseph_intern",
             "prompt": "Retell the story of Joseph as an office intern who ends up running the company.",
-            "decoy": "Intern with a fancy jacket ends up as boss and feeds the whole town",
+            "decoy": (
+                "Intern in a very loud jacket ends up running the company and stocks the break room for seven years"
+            ),
             "bot_answers": [
-                "His brothers send him to a rival firm; he becomes CEO anyway",
-                "He explains the boss's weird dreams and gets promoted to manager",
-                "Years later, his brothers apply for jobs at his company",
+                "His brothers kick him out of the group chat; years later they apply for jobs at his company",
+                "He explains the CEO's weird dream about seven skinny cows and gets promoted on the spot",
+                "Gets blamed for the missing stapler, still ends up in the corner office",
             ],
             "scripture_note": (
                 "Genesis 50:20 - 'You meant evil against me, but God meant it for good, to bring it about that many "
                 "people should be kept alive.'"
             ),
-            "announcer": "Parable Remix! Joseph is an office intern now! How does his story go?",
+            "announcer": (
+                "Parable Remix! Joseph started as the intern with the flashiest jacket in the office! How does his "
+                "story go now?"
+            ),
         },
         {
             "id": "pr_unforgiving_library",
             "prompt": "Retell the Parable of the Unforgiving Servant with library late fees.",
-            "decoy": (
-                "The librarian erases his ten-thousand-dollar fine; he then charges his sister a nickel for a pencil"
-            ),
+            "decoy": "The librarian erases his ten-thousand-dollar fine; he charges his sister a nickel for a pencil",
             "bot_answers": [
-                "His whole fine was erased, then he billed his friend for borrowing a crayon",
-                "Forgiven big, forgives small: that's the whole point, Kevin",
-                "The librarian hears about it and is NOT impressed",
+                "Fine erased forever. Ten minutes later he bills his friend for borrowing a crayon",
+                "He makes his little brother sign a contract over one borrowed bookmark",
+                "The librarian hears about it, lowers her glasses, and says 'Excuse me?'",
             ],
             "scripture_note": (
                 "Matthew 18:33 - 'Should not you have had mercy on your fellow servant, as I had mercy on you?'"
             ),
-            "announcer": "Parable Remix! The Unforgiving Servant owes the library! How does it go?",
+            "announcer": (
+                "Parable Remix! His giant library fine was forgiven, but he's still mad about a borrowed pencil! How "
+                "does it go?"
+            ),
         },
         {
             "id": "pr_rich_fool_storage",
             "prompt": "Retitle the Parable of the Rich Fool as a reality TV show about building bigger barns.",
-            "decoy": "Bigger Barns: The Storage Unit Wars",
+            "decoy": "Bigger Barns: He Built Three, Filled Them, and Forgot What Was in Any of Them",
             "bot_answers": [
-                "Extreme Collectors: Grain Silo Special",
-                "Tiny House? No Thanks, I Need Three Barns",
+                "Storage Wars: Grain Edition, Sponsored by Even More Barns",
                 "My Stuff, My Barns, My Big Oops",
+                "Barn Again: One Man's Endless Quest for Shelf Space",
             ],
             "scripture_note": (
                 "Luke 12:15 - 'Be on your guard against all covetousness, for one's life does not consist in the "
                 "abundance of his possessions.'"
             ),
-            "announcer": "Parable Remix! The Rich Fool gets his own reality show! What's it called?",
+            "announcer": (
+                "Parable Remix! One man keeps building bigger barns for his stuff, and now he has a reality show! "
+                "What's it called?"
+            ),
         },
         {
             "id": "pr_widow_puppy",
             "prompt": "Retell the Parable of the Persistent Widow as a kid asking for a puppy.",
-            "decoy": "She asks every single day until Dad says yes just to get some sleep",
+            "decoy": "She asks every morning, every night, and once through the car window at a stoplight",
             "bot_answers": [
-                "Puppy drawings taped to every door in the house",
-                "Sticky notes on the coffee maker: 'Puppy? Please?'",
-                "Day 47: Judge Dad finally rules in her favor",
+                "Day 47: Judge Dad finally rules in her favor just to get some sleep",
+                "Puppy drawings taped inside the fridge, the cereal box, and Dad's baseball cap",
+                "She makes a slideshow with charts. Dad cannot argue with charts",
             ],
             "scripture_note": (
                 "Luke 18:1,5 - Jesus told them a parable to show that they ought always to pray and not lose heart."
             ),
-            "announcer": "Parable Remix! The Persistent Widow wants a puppy! How does the story go?",
+            "announcer": (
+                "Parable Remix! One kid, one dream, and one very tired dad! How does the Persistent Widow go with a "
+                "puppy?"
+            ),
         },
         {
             "id": "pr_lamp_camping",
             "prompt": "Retell 'Don't hide your lamp under a basket' as a family camping trip.",
-            "decoy": "One kid hides the only flashlight in the tent, and the whole family trips over the cooler",
+            "decoy": "Someone hides the only flashlight in a sleeping bag, and Dad pitches the tent on an anthill",
             "bot_answers": [
-                "Grandpa sets the lantern on a stump and finally everyone can find the s'mores",
-                "Shine it bright, because Dad's trying to read the map",
-                "Lantern under the sleeping bag? That's how you meet a raccoon",
+                "Grandpa puts the lantern on a stump, and suddenly everyone can find the marshmallows",
+                "Lantern under a bucket? That's how you meet a raccoon at midnight",
+                "Little brother shines his flashlight straight into everyone's eyes. Wrong direction, buddy",
             ],
             "scripture_note": (
                 "Matthew 5:15-16 - No one lights a lamp and puts it under a basket, but on a stand. Let your light "
                 "shine before others."
             ),
-            "announcer": "Parable Remix! Don't hide your light, especially on a camping trip! How does it go?",
+            "announcer": (
+                "Parable Remix! Don't hide your light, especially when you're camping and nobody can find the s'mores! "
+                "How does it go?"
+            ),
         },
         {
             "id": "pr_treasure_yard_sale",
             "prompt": (
                 "Retell the Parable of the Hidden Treasure with a kid who finds something amazing at a yard sale."
             ),
-            "decoy": "He sells his whole trading-card collection to buy a box with a treasure map inside",
+            "decoy": "He sells his bike, his trading cards, and his lemonade stand to buy one dusty box",
             "bot_answers": [
-                "He buys the whole yard sale just to get the one thing",
-                "Joyfully trades everything he owns for one dusty old chest",
+                "He buys the entire yard sale, including a lamp shaped like a duck, just to get one thing",
+                "He tries to act casual but keeps squealing 'HOW MUCH FOR THE BOX'",
                 "Mom asks why there are thirty lamps in the garage now",
             ],
             "scripture_note": (
                 "Matthew 13:44 - A man found treasure hidden in a field, and in his joy he went and sold all that he "
                 "had and bought that field."
             ),
-            "announcer": "Parable Remix! The Hidden Treasure turns up at a yard sale! How does it go?",
+            "announcer": (
+                "Parable Remix! A kid spots treasure at a yard sale and is trying very hard to act cool about it! How "
+                "does it go?"
+            ),
         },
     ],
     "bible_bios": [
         {
             "id": "bb_noah_bio",
             "prompt": "Write Noah's social-media bio.",
-            "decoy": "Boat builder. Zookeeper. Weather enthusiast. 600 years young.",
+            "decoy": "Boat builder. Zookeeper. 600 years young. Yes, the smell is exactly what you think.",
             "bot_answers": [
-                "Big boats, bigger faith. DM me for rainbow photos",
-                "Two of everything. One of me. Forty days of rain",
-                "Not a sailor, just really good at following instructions",
+                "Two of everything. One very small mop.",
+                "Built a giant boat in my front yard. My HOA has questions",
+                "Weather enthusiast. Rainbow photographer. Do NOT ask about the woodpeckers on board",
             ],
             "scripture_note": (
                 "Genesis 7:6 - Noah was six hundred years old when the flood of waters came upon the earth."
             ),
-            "announcer": "Bible Bios! Noah just joined social media! Write his profile bio!",
+            "announcer": (
+                "Bible Bios! Noah just joined social media, and the comments are mostly about the smell! Write his "
+                "profile bio!"
+            ),
         },
         {
             "id": "bb_moses_successor",
             "prompt": "Write the job listing for Moses' replacement as leader of Israel.",
-            "decoy": "Must handle a million complaints a day and part seas on request. Bring your own staff.",
+            "decoy": "Must hear complaints about manna 24/7. Sea-parting experience preferred, not required.",
             "bot_answers": [
-                "Requirements: forty years of wilderness experience and mountain hiking",
-                "Ideal candidate is humble, patient, and okay with manna",
-                "Remote work not available; this position is in the desert",
+                "Seeking a calm leader. Must remain calm. Must remain SO calm. Please.",
+                "Benefits: free bread daily. Drawbacks: two million people asking 'Are we there yet?'",
+                "Mountain hiking required. Stone tablets provided. Please try not to drop them",
             ],
             "scripture_note": (
                 "Joshua 1:9 - 'Be strong and courageous. Do not be frightened, for the Lord your God is with you "
                 "wherever you go.'"
             ),
-            "announcer": "Bible Bios! Israel is hiring a new leader to follow Moses! Write the job listing!",
+            "announcer": (
+                "Bible Bios! Israel is hiring a new leader to follow Moses, and every applicant asks about the snacks! "
+                "Write the job listing!"
+            ),
         },
         {
             "id": "bb_goliath_gym",
             "prompt": "Write Goliath's gym-membership profile.",
-            "decoy": "Six cubits tall. Loves heavy lifting. Do NOT bring a slingshot to the gym.",
+            "decoy": "Six cubits tall. Lifts armor for fun. Do NOT bring a slingshot to the gym.",
             "bot_answers": [
-                "Personal record: a 125-pound coat of armor",
-                "Looking for a worthy opponent. Shepherds need not apply",
-                "Favorite exercise: shouting across valleys",
+                "Personal record: 125 pounds of armor. Personal weakness: small rocks",
+                "Favorite exercise: shouting across valleys for forty days straight",
+                "Looking for a spotter. Shepherds need not apply. Seriously. Please.",
             ],
             "scripture_note": (
                 "1 Samuel 17:4-5 - Goliath was six cubits and a span tall, and his coat of mail weighed five thousand "
                 "shekels of bronze."
             ),
-            "announcer": "Bible Bios! Goliath signed up at the gym! Write his member profile!",
+            "announcer": (
+                "Bible Bios! Goliath signed up at the gym and already rearranged all the weights! Write his member "
+                "profile!"
+            ),
         },
         {
             "id": "bb_martha_bio",
             "prompt": "Write Martha of Bethany's social-media bio.",
-            "decoy": "Host. Chef. Professional worrier. Ask me about my thirteen-course dinner.",
+            "decoy": "Host. Chef. Will feed you whether you're hungry or not. Sister currently NOT helping.",
             "bot_answers": [
-                "Busy, busy, busy. My sister? Not so much",
-                "Hospitality is my love language",
-                "I will feed you whether you're hungry or not",
+                "My love language is washing dishes very, very loudly",
+                "Currently: making dinner for thirteen. Mary: currently sitting.",
+                "Professional worrier. Ask me how I'm doing. Go on. Ask.",
             ],
             "scripture_note": (
                 "Luke 10:41-42 - 'Martha, Martha, you are anxious and troubled about many things, but one thing is "
                 "necessary.'"
             ),
-            "announcer": "Bible Bios! Martha needs a profile bio! What does it say?",
+            "announcer": (
+                "Bible Bios! Martha needs a profile bio, but she's very busy and someone isn't helping! What does it "
+                "say?"
+            ),
         },
         {
             "id": "bb_john_baptist_helper",
             "prompt": "Write the job listing for John the Baptist's assistant.",
-            "decoy": "Must love camel hair, river work and locust lunches. Waders optional.",
+            "decoy": "Must love camel hair, river work, and crunchy lunches. Waders not provided.",
             "bot_answers": [
-                "Duties include calling 'Prepare the way!' across the desert",
-                "Benefits include unlimited wild honey",
-                "Must be comfortable standing waist-deep in the Jordan all day",
+                "Benefits: unlimited wild honey. Lunch: you don't want to know",
+                "Must be comfortable yelling 'Prepare the way!' at strangers in the desert",
+                "Dress code: camel hair. Yes, it itches. No, there's no other option",
             ],
             "scripture_note": (
                 "Matthew 3:4-6 - John wore camel's hair, ate locusts and wild honey, and baptized people in the river "
                 "Jordan."
             ),
-            "announcer": "Bible Bios! John the Baptist is hiring an assistant! Write the job listing!",
+            "announcer": (
+                "Bible Bios! John the Baptist is hiring an assistant, and lunch is locusts! Write the job listing!"
+            ),
         },
         {
             "id": "bb_solomon_headline",
             "prompt": "Write King Solomon's professional profile headline.",
-            "decoy": "Wisest Man Alive | Temple Builder | 3,000 Proverbs and 1,005 Songs",
+            "decoy": "Wisest Man Alive | 3,000 Proverbs | Yes, I Have a Proverb for That",
             "bot_answers": [
-                "Chief Wisdom Officer of the Kingdom of Israel",
                 "Consultant in Wisdom, Gold, and Very Large Building Projects",
-                "Ask me anything. Seriously. Anything.",
+                "Will settle your sibling argument in thirty seconds. Bring both siblings.",
+                "Ask me anything. Seriously. Anything. Please stop asking about the weather.",
             ],
             "scripture_note": (
                 "1 Kings 4:29,32 - God gave Solomon wisdom and understanding; he spoke 3,000 proverbs, and his songs "
                 "were 1,005."
             ),
-            "announcer": "Bible Bios! King Solomon is updating his professional profile! Write his headline!",
+            "announcer": (
+                "Bible Bios! King Solomon is updating his professional profile, and he has a proverb about it! Write "
+                "his headline!"
+            ),
         },
         {
             "id": "bb_young_david_resume",
             "prompt": "Write young David's résumé headline from before he became king.",
-            "decoy": "Shepherd | Harpist | Giant-Defeater | Youngest of Eight",
+            "decoy": "Shepherd | Harpist | Lion and Bear Removal | Youngest of Eight, Still Doing the Chores",
             "bot_answers": [
-                "Experienced in lion and bear removal",
-                "Part-time musician, full-time sheep guy",
-                "Delivers cheese to the front lines",
+                "Special skills: harp, sling, and delivering cheese to the front lines",
+                "References available. The sheep will vouch for me",
+                "Brothers say I'm 'just the little one.' See attached: one giant.",
             ],
             "scripture_note": (
                 "1 Samuel 17:34-35 - 'When there came a lion, or a bear, and took a lamb from the flock, I went after "
                 "him and rescued it.'"
             ),
-            "announcer": "Bible Bios! Young David is writing his résumé! What is his headline?",
+            "announcer": (
+                "Bible Bios! Young David is writing his résumé, and his big brothers are NOT impressed! What's his "
+                "headline?"
+            ),
         },
         {
             "id": "bb_paul_travel",
             "prompt": "Write the Apostle Paul's travel-blogger bio.",
-            "decoy": "Three missionary journeys, three shipwrecks before Malta. Will travel for Jesus.",
+            "decoy": "Three missionary journeys. Three shipwrecks before Malta. One-star review for every boat.",
             "bot_answers": [
-                "Frequent sailor, occasional snake-shaker",
-                "Tentmaker by trade, letter-writer by calling",
-                "I've been to Rome, Corinth, and over a wall in a basket",
+                "Frequent sailor, occasional snake-shaker, permanent letter-writer",
+                "Once left a city in a basket over the wall. Ten out of ten, would basket again",
+                "Travel tip: when Paul says 'Don't sail,' don't sail",
             ],
             "scripture_note": (
                 "2 Corinthians 11:25-26 - 'Three times I was shipwrecked; a night and a day I was adrift at sea; on "
                 "frequent journeys.'"
             ),
-            "announcer": "Bible Bios! The Apostle Paul started a travel blog! Write his bio!",
+            "announcer": (
+                "Bible Bios! The Apostle Paul started a travel blog, and every boat review is one star! Write his bio!"
+            ),
         },
         {
             "id": "bb_samson_fitness",
             "prompt": "Write Samson's fitness-influencer bio.",
-            "decoy": "Strongest man alive. Never had a haircut. Please don't ask why.",
+            "decoy": "Strongest man alive. Never had a haircut. My barber has never met me.",
             "bot_answers": [
-                "Lifts city gates for fun",
-                "Lion wrestler. Riddle lover. Nazirite since birth",
-                "Learning to trust the right people. Working on it.",
+                "Leg day? I carried the city gates up a hill. Every day is leg day",
+                "Lion wrestler. Riddle lover. Terrible at keeping secrets",
+                "My strength comes from God, not from shampoo",
             ],
             "scripture_note": (
                 "Judges 13:5 - 'No razor shall come upon his head, for the child shall be a Nazirite to God from the "
                 "womb.'"
             ),
-            "announcer": "Bible Bios! Samson is now a fitness influencer! Write his profile bio!",
+            "announcer": (
+                "Bible Bios! Samson is now a fitness influencer, and his hair has its own fan club! Write his profile "
+                "bio!"
+            ),
         },
         {
             "id": "bb_peter_fishing",
             "prompt": "Write Simon Peter's fishing-guide business listing.",
-            "decoy": "Fishing trips daily. Nets may break from overfilling. Water-walking lessons extra.",
+            "decoy": "Daily trips. Nets may break from overfilling. Walking-on-water lessons: results may vary.",
             "bot_answers": [
-                "Caught 153 fish in one cast. Ask me how",
-                "Former fisherman, now fishing for people",
-                "Boat available, temper improving",
+                "153 fish in one cast. Ask me how. Actually, ask Jesus how",
+                "Former fisherman, now fishing for people. Boat still available. Still smells like fish",
+                "Fast talker. Quick swimmer. Will jump out of the boat before it docks",
             ],
             "scripture_note": (
                 "Luke 5:10 - Jesus said to Simon, 'Do not be afraid; from now on you will be catching men.'"
             ),
-            "announcer": "Bible Bios! Simon Peter runs a fishing-guide business! Write his listing!",
+            "announcer": (
+                "Bible Bios! Simon Peter runs a fishing-guide business, and he talks the whole trip! Write his listing!"
+            ),
         },
         {
             "id": "bb_nehemiah_builders",
             "prompt": "Write the slogan for Nehemiah's construction company.",
-            "decoy": "Walls in 52 Days or Your Money Back",
+            "decoy": "Walls in 52 Days. Mockers Ignored Free of Charge.",
             "bot_answers": [
-                "We Build With a Mind to Work",
-                "Ignoring Mockers Since Day One",
+                "One Hand on the Trowel, One Hand on the Clipboard",
+                "We Don't Come Down for Meetings. Sorry, Sanballat.",
                 "Rebuild, Rejoice, Repeat",
             ],
             "scripture_note": (
                 "Nehemiah 6:15 - The wall was finished on the twenty-fifth day of the month Elul, in fifty-two days."
             ),
-            "announcer": "Bible Bios! Nehemiah is starting a construction company! Write the slogan!",
+            "announcer": (
+                "Bible Bios! Nehemiah is starting a construction company, and they actually finish early! Write the "
+                "slogan!"
+            ),
         },
         {
             "id": "bb_deborah_headline",
             "prompt": "Write Deborah's professional profile headline.",
-            "decoy": "Judge of Israel | Prophetess | Office Hours Under the Palm Tree",
+            "decoy": "Judge of Israel | Prophetess | Office Hours Under the Palm Tree, Bring Your Own Shade",
             "bot_answers": [
-                "Leading armies and settling disputes, palm tree optional",
-                "Mother in Israel and excellent at giving directions",
-                "Wise counsel available Monday through always",
+                "Settling disputes since forever. Yes, the palm tree is my office",
+                "Leading armies, giving directions, and gently reminding Barak I said so",
+                "Wise counsel available Monday through always. Line forms at the tree",
             ],
             "scripture_note": (
                 "Judges 4:4-5 - Deborah, a prophetess, was judging Israel, and she sat under the palm of Deborah "
                 "where the people came to her for judgment."
             ),
-            "announcer": "Bible Bios! Deborah needs a professional headline! What does it say?",
+            "announcer": (
+                "Bible Bios! Deborah needs a professional headline, and her office is a tree! What does it say?"
+            ),
         },
         {
             "id": "bb_luke_bio",
             "prompt": "Write Luke's author bio for the back cover of his Gospel.",
-            "decoy": "Physician. Historian. Wrote the most detailed travel journal of the early church.",
+            "decoy": "Physician. Historian. Took really good notes. Two books, both for my buddy Theophilus.",
             "bot_answers": [
-                "Doctor by trade, careful researcher by calling",
-                "Author of two books, both addressed to my friend Theophilus",
-                "Traveled with Paul. Took really good notes.",
+                "Doctor by trade. Footnote enthusiast by calling",
+                "Traveled with Paul. Packed the first-aid kit. Used it a lot",
+                "Fun fact: I interviewed more eyewitnesses than a TV detective",
             ],
             "scripture_note": "Colossians 4:14 - Luke the beloved physician greets you.",
-            "announcer": "Bible Bios! Luke needs an author bio for the back cover! Write it!",
+            "announcer": (
+                "Bible Bios! Luke needs an author bio for the back cover, and he did a LOT of research! Write it!"
+            ),
         },
         {
             "id": "bb_esther_bio",
             "prompt": "Write Queen Esther's social-media bio.",
-            "decoy": "Orphan turned queen. Banquet planner. Here for such a time as this.",
+            "decoy": "Orphan turned queen. Professional banquet planner. Here for such a time as this.",
             "bot_answers": [
-                "Royal beauty treatments: twelve months. Courage: priceless",
-                "Raised by cousin Mordecai, raising the bar for bravery",
-                "Ask me about my two-banquet strategy",
+                "Twelve months of beauty treatments. One very brave walk down a hallway",
+                "Raised by cousin Mordecai. He's still texting me advice",
+                "Ask me about my two-banquet strategy. Spoiler: it worked",
             ],
             "scripture_note": (
                 "Esther 2:7,17 - Mordecai raised his orphaned cousin Esther, and the king loved her and made her "
                 "queen."
             ),
-            "announcer": "Bible Bios! Queen Esther just made a profile! Write her bio!",
+            "announcer": (
+                "Bible Bios! Queen Esther just made a profile, and she's planning another banquet! Write her bio!"
+            ),
         },
         {
             "id": "bb_elijah_apprentice",
             "prompt": "Write the job listing for Elijah's apprentice prophet.",
-            "decoy": "Must love mountain hikes, raven meals, and fire. Cloak provided after training.",
+            "decoy": "Must love mountain hikes, bird-delivered meals, and fire. Cloak provided after training.",
             "bot_answers": [
-                "Benefits: a double portion upon completion",
-                "Travel required, sometimes by whirlwind",
-                "Must be willing to leave the family farm and twelve oxen behind",
+                "Travel required, sometimes by whirlwind. No luggage allowed",
+                "Must leave the family farm and twelve oxen. Yes, all twelve",
+                "Benefits: double portion upon completion. Lunch delivered by ravens. No tipping",
             ],
             "scripture_note": (
                 "1 Kings 19:19-21 - Elijah found Elisha plowing with twelve yoke of oxen and cast his cloak upon him, "
                 "and Elisha followed him."
             ),
-            "announcer": "Bible Bios! Elijah is hiring an apprentice! Write the job listing!",
+            "announcer": (
+                "Bible Bios! Elijah is hiring an apprentice, and lunch arrives by raven! Write the job listing!"
+            ),
         },
         {
             "id": "bb_abraham_bio",
             "prompt": "Write Abraham's social-media bio.",
-            "decoy": "Father of many nations. Became a dad at 100. Still counting the stars.",
+            "decoy": "Father of many nations. Dad at 100. Still counting the stars. Lost count. Starting over.",
             "bot_answers": [
-                "Moved from Ur. Left no forwarding address",
-                "Tent life. Big family. Bigger promises",
-                "Hospitality expert: angels have stayed at my place",
+                "Moved from Ur. No map. No forwarding address. Great story though",
+                "Tent life. Big family. Our group chat has more members than the beach has sand",
+                "Hospitality expert. Angels have stayed at my place. Five stars",
             ],
             "scripture_note": "Genesis 21:5 - Abraham was a hundred years old when his son Isaac was born to him.",
-            "announcer": "Bible Bios! Father Abraham just joined social media! Write his bio!",
+            "announcer": (
+                "Bible Bios! Father Abraham just joined social media, and he's still counting stars! Write his bio!"
+            ),
         },
         {
             "id": "bb_barnabas_headline",
             "prompt": "Write Barnabas's professional profile headline.",
-            "decoy": "Chief Encouragement Officer | Sold a Field to Support the Church",
+            "decoy": "Chief Encouragement Officer | Sold a Field | You're Doing Great, by the Way",
             "bot_answers": [
                 "Son of Encouragement: It's Literally My Name",
-                "Mentor to Paul and John Mark. Second chances available",
-                "Team player. Generous giver. Excellent at introductions",
+                "Mentor to Paul and John Mark. Second chances are my specialty",
+                "Professional cheerleader for the early church. Pom-poms not included",
             ],
             "scripture_note": (
                 "Acts 4:36-37 - Joseph, called Barnabas by the apostles (which means son of encouragement), sold a "
                 "field and brought the money."
             ),
-            "announcer": "Bible Bios! Barnabas needs a profile headline! What does it say?",
+            "announcer": (
+                "Bible Bios! Barnabas needs a profile headline, and it's very, very encouraging! What does it say?"
+            ),
         },
         {
             "id": "bb_eden_gardener",
             "prompt": "Write the job listing for head gardener of the Garden of Eden.",
-            "decoy": "Must name all animals, tend the garden, and avoid ONE specific tree. That's it.",
+            "decoy": "Must name every animal, tend the garden, and avoid ONE tree. Just one. Seriously.",
             "bot_answers": [
-                "Great benefits, amazing views, no weeds (yet)",
-                "Do NOT take advice from any talking snakes",
-                "Free fruit, minus one tree. Read the fine print.",
+                "Great benefits, amazing views, zero weeds (for now)",
+                "Do NOT take advice from talking snakes. This is in the handbook",
+                "Free fruit forever, minus one tree. Read the fine print. Twice.",
             ],
             "scripture_note": (
                 "Genesis 2:15-17 - God put the man in the garden to work it and keep it, and commanded him not to eat "
                 "from one tree."
             ),
-            "announcer": "Bible Bios! The Garden of Eden is hiring a head gardener! Write the job listing!",
+            "announcer": (
+                "Bible Bios! The Garden of Eden is hiring a head gardener, and there's one tiny rule! Write the job "
+                "listing!"
+            ),
         },
         {
             "id": "bb_priscilla_aquila",
             "prompt": "Write the business listing for Priscilla and Aquila's tent shop.",
-            "decoy": "Tents made to order. Sound teaching included free. Ask about our house church.",
+            "decoy": "Tents made to order. Sound teaching included free. Apollos left us five stars.",
             "bot_answers": [
-                "Quality tents, quality teaching. Apollos approves",
-                "Family-owned, Spirit-led, waterproof guaranteed",
-                "Now with a guest room for traveling apostles",
+                "Family-owned. Spirit-led. Waterproof guaranteed",
+                "Come for a tent, stay for church. Church is in our living room",
+                "Guest room available for traveling apostles. Paul, please wipe your sandals",
             ],
             "scripture_note": (
                 "Acts 18:26 & Romans 16:5 - Priscilla and Aquila explained the way of God to Apollos, and a church "
                 "met in their house."
             ),
-            "announcer": "Bible Bios! Priscilla and Aquila are listing their tent shop! Write their listing!",
+            "announcer": (
+                "Bible Bios! Priscilla and Aquila are listing their tent shop, and church meets in the back! Write "
+                "their listing!"
+            ),
         },
         {
             "id": "bb_bezalel_craftsman",
             "prompt": "Write a job-listing line for Bezalel, the master craftsman who built the Tabernacle.",
-            "decoy": "Master craftsman in gold, silver, bronze, stone and wood. Skill: divinely provided.",
+            "decoy": "Master craftsman in gold, silver, bronze, stone and wood. Portfolio: the Tabernacle.",
             "bot_answers": [
-                "Specialist in gold-covered furniture and very precise cubits",
-                "Seeking apprentices good with tiny details and big tents",
-                "My portfolio is literally the Tabernacle",
+                "Specialist in gold-covered furniture and extremely precise cubits",
+                "Seeking apprentices who measure twice, cut once, and never say 'close enough'",
+                "Yes, I do custom work. No, I will not build your treehouse out of gold",
             ],
             "scripture_note": (
                 "Exodus 31:2-5 - God filled Bezalel with skill, intelligence and craftsmanship to work in gold, "
                 "silver, bronze, stone and wood."
             ),
-            "announcer": "Bible Bios! Bezalel, the Tabernacle builder, is posting his job listing! Write it!",
+            "announcer": (
+                "Bible Bios! Bezalel, the Tabernacle builder, is posting a job listing, and his measurements are "
+                "perfect! Write it!"
+            ),
         },
     ],
     "hymn_remix": [
         {
             "id": "hr_lost_keys",
-            "prompt": "Write a hymn title for the moment Mom can't find the car keys on Sunday morning.",
-            "decoy": "I Once Was Lost, Now I'm Found (in the Couch Cushions)",
+            "prompt": "Write a hymn title for the moment Mom can't find the car keys five minutes before church.",
+            "decoy": "Seek and Ye Shall Find (Under Yesterday's Mail)",
             "bot_answers": [
-                "Seek and Ye Shall Find (Under Yesterday's Mail)",
-                "Great Is Thy Faithfulness, Spare Key",
-                "Blessed Assurance, I Left Them in the Door",
+                "Sweet Hour of Searching (We Are Already Late)",
+                "Blessed Assurance, They Were in Your Hand the Whole Time",
+                "Leaning on the Spare Key Hook That Nobody Ever Uses",
             ],
             "scripture_note": "Luke 11:9 - Ask, and it will be given to you; seek, and you will find.",
-            "announcer": "Hymn Remix! Mom can't find the car keys on Sunday morning! Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! Church starts in ten minutes and Mom cannot find the car keys! Write the hymn title!"
+            ),
         },
         {
             "id": "hr_laundry_mountain",
             "prompt": "Write a worship-song title about the family's mountain of laundry.",
-            "decoy": "How Great Thou Art at Folding Fitted Sheets",
+            "decoy": "Washed White as Snow (Except This One Red Sock)",
             "bot_answers": [
-                "Washed White as Snow (Except These Socks)",
-                "Spin Cycle of Praise",
-                "The Lonely Sock That Was Lost and Found",
+                "The Lonely Sock: A Ballad in Four Verses",
+                "Shall We Gather at the Laundry Basket? (Nobody Ever Does)",
+                "Spin Cycle of Praise (Final Rinse)",
             ],
             "scripture_note": "Psalm 51:7 - Wash me, and I shall be whiter than snow.",
             "announcer": (
-                "Hymn Remix! The laundry pile is taller than the Tower of Babel! Write the worship song title!"
+                "Hymn Remix! The laundry pile is taller than the Tower of Babel and starting to lean! Write the worship"
+                " song title!"
             ),
         },
         {
@@ -3221,25 +3326,26 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write one line of a hymn a parent sings to get the kids to eat their vegetables.",
             "decoy": "Daniel ate his veggies, so lift those peas on high!",
             "bot_answers": [
-                "Broccoli, broccoli, little trees of grace",
-                "O taste and see the carrots, they are good",
-                "Every green bean is a blessing in disguise",
+                "Dare to be a Daniel, dare to eat the peas",
+                "Broccoli, broccoli, little trees of green, the healthiest you've ever seen",
+                "Three more bites and then we'll all sing amen",
             ],
             "scripture_note": "Daniel 1:12 - 'Let us be given vegetables to eat and water to drink.'",
-            "announcer": "Hymn Remix! It's dinnertime and nobody wants their vegetables! Sing us a line!",
+            "announcer": "Hymn Remix! It's dinnertime and the broccoli is losing the battle! Sing us a line!",
         },
         {
             "id": "hr_traffic_jam",
             "prompt": "Write a hymn title for being stuck in traffic on the way to church.",
             "decoy": "Be Still, My Soul (Because the Car Certainly Is)",
             "bot_answers": [
-                "When the Road Is Long and the Light Is Red",
-                "Patience Like a River, Brake Lights Like a Sea",
                 "It Is Well With My Soul, Even in Lane Three",
+                "We'll Understand It Better By and By (When the Light Turns Green)",
+                "Onward, Minivan Soldiers, Inching Toward the Church",
             ],
             "scripture_note": "Psalm 46:10 - 'Be still, and know that I am God.'",
             "announcer": (
-                "Hymn Remix! The whole family is stuck in traffic on the way to church! Write the hymn title!"
+                "Hymn Remix! Stuck in traffic on the way to church, and Dad is trying a 'shortcut'! Write the hymn "
+                "title!"
             ),
         },
         {
@@ -3247,108 +3353,131 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": "Write one line of a lullaby hymn for a kid who will NOT go to sleep.",
             "decoy": "The Lord neither slumbers nor sleeps, but YOU, my child, absolutely must",
             "bot_answers": [
-                "Close those eyes, the angels need a break too",
-                "Count the stars like Abraham, but quietly",
-                "One more glass of water, then amen for real",
+                "Close those eyes, the angels need a snack break",
+                "One more glass of water, then amen, for real, amen",
+                "Count the stars like Abraham, but please count them silently",
             ],
             "scripture_note": "Psalm 121:4 - Behold, he who keeps Israel will neither slumber nor sleep.",
-            "announcer": "Hymn Remix! It's way past bedtime and somebody is wide awake! Sing us a lullaby line!",
+            "announcer": (
+                "Hymn Remix! It's way past bedtime, and somebody just asked for a fourth glass of water! Sing us a "
+                "lullaby line!"
+            ),
         },
         {
             "id": "hr_snow_day",
             "prompt": "Write a praise-song title for a surprise snow day with no school.",
             "decoy": "Showers of Blessing (the Frozen Kind)",
             "bot_answers": [
-                "Whiter Than Snow, and Twelve Inches Deep",
-                "This Is the Day That School Got Cancelled",
-                "Let It Snow and Let It Glow",
+                "Whiter Than Snow, Twelve Inches Deep, Pajamas Until Noon",
+                "Let It Snow, Let It Snow, Let Me Never See This Worksheet",
+                "Sledding Down the Hill of Joy (Dad Is Going Too)",
             ],
             "scripture_note": "Job 37:6 - To the snow he says, 'Fall on the earth.'",
-            "announcer": "Hymn Remix! It's a surprise snow day! Write the praise song title!",
+            "announcer": (
+                "Hymn Remix! School just got cancelled for snow, and every kid in town is screaming! Write the praise "
+                "song title!"
+            ),
         },
         {
             "id": "hr_dishwasher_turn",
             "prompt": "Write a hymn title about whose turn it is to unload the dishwasher.",
-            "decoy": "Take My Plate and Let It Be (Put Away by Someone Else)",
+            "decoy": "A Mighty Fortress Is Our Cupboard (Nobody Can Open It)",
             "bot_answers": [
-                "A Mighty Fortress Is Our Cupboard",
-                "Count Your Blessings, Then Count the Forks",
-                "Clean Hearts, Clean Cups, Clean Hands",
+                "I Did It Yesterday: A Hymn in Four Arguments",
+                "Count Your Blessings, Then Count the Forks, Somebody Took a Fork",
+                "Whose Turn? (A Chorus Sung by Three Siblings at Once)",
             ],
             "scripture_note": "Galatians 6:2 - Bear one another's burdens.",
-            "announcer": "Hymn Remix! Whose turn is it to unload the dishwasher? Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! The dishwasher is clean, and suddenly nobody remembers whose turn it is! Write the hymn "
+                "title!"
+            ),
         },
         {
             "id": "hr_road_trip_hour_six",
             "prompt": "Write one line of a worship song for hour six of a family road trip.",
             "decoy": "How long, O Lord? Are we there yet? How long?",
             "bot_answers": [
-                "Lead me to the next rest stop, I pray",
+                "He's touching me, he's touching me, O hear my cry, he's touching me",
+                "Lead me to the next rest stop, it's an emergency, I pray",
                 "My cup runneth over, and so does the back seat",
-                "Onward, Christian travelers, marching to the gas station",
             ],
             "scripture_note": "Psalm 13:1 - How long, O Lord? Will you forget me forever?",
-            "announcer": "Hymn Remix! It's hour six of the family road trip! Sing us a line!",
+            "announcer": (
+                "Hymn Remix! Hour six of the family road trip, and somebody is touching somebody! Sing us a line!"
+            ),
         },
         {
             "id": "hr_grandpa_birthday",
             "prompt": "Write a hymn title for Grandpa's eightieth birthday party.",
-            "decoy": "Ancient of Days (and Candles)",
+            "decoy": "Eighty Candles and One Fire Extinguisher",
             "bot_answers": [
-                "Great Is Thy Faithfulness, and Thy Cake",
-                "Eighty Years of Mercies New",
-                "Gray Hair Is a Crown, Pass the Ice Cream",
+                "Gray Hair Is a Crown, So Pass Grandpa the Biggest Slice",
+                "Eighty Years of Mercies New (and the Same Three Jokes)",
+                "Blessed Be the Recliner That Grandpa Will Not Share",
             ],
             "scripture_note": "Proverbs 16:31 - Gray hair is a crown of glory; it is gained in a righteous life.",
-            "announcer": "Hymn Remix! Grandpa is turning eighty! Write the hymn title for his party!",
+            "announcer": (
+                "Hymn Remix! Grandpa is turning eighty, and he's telling his favorite story again! Write the hymn "
+                "title!"
+            ),
         },
         {
             "id": "hr_new_puppy",
             "prompt": "Write one line of a praise song for the day the family brings home a new puppy.",
             "decoy": "All creatures great and small, especially this one chewing my shoe",
             "bot_answers": [
-                "He made the stars, the seas, and this very wiggly tail",
-                "Fearfully and wonderfully made, and also very fluffy",
+                "Fearfully and wonderfully made, and also eating the couch",
                 "Praise Him for the puppy, praise Him for the paper towels",
+                "Who let him on the bed? Nobody let him on the bed! He's on the bed",
             ],
             "scripture_note": "Psalm 145:9 - The Lord is good to all, and his mercy is over all that he has made.",
-            "announcer": "Hymn Remix! A new puppy just came home! Sing us a line of praise!",
+            "announcer": (
+                "Hymn Remix! The new puppy just came home and has already eaten one shoe! Sing us a line of praise!"
+            ),
         },
         {
             "id": "hr_first_school_day",
             "prompt": "Write a hymn title for a kid's very first day of school.",
-            "decoy": "Be Not Afraid (of the Cafeteria)",
+            "decoy": "Be Not Afraid (of the Cafeteria Pizza)",
             "bot_answers": [
-                "Lead Me Gently to Room Twelve",
-                "I Will Not Be Shaken (by Long Division)",
+                "Lead Me Gently to Room Twelve (Mom, Please Stop Waving)",
+                "I Will Not Be Shaken (by the Big Kids on the Bus)",
                 "Brave and Strong in My New Light-Up Shoes",
             ],
             "scripture_note": "Isaiah 41:10 - Fear not, for I am with you; be not dismayed, for I am your God.",
-            "announcer": "Hymn Remix! It's the first day of school! Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! It's the first day of school, and Mom is crying more than the kid! Write the hymn title!"
+            ),
         },
         {
             "id": "hr_spilled_milk",
             "prompt": "Write one line of a worship song for spilled milk at breakfast.",
             "decoy": "My cup overflows, and now so does the table",
             "bot_answers": [
-                "There's power in the paper towels",
                 "Mercies new every morning, and so are the spills",
-                "Wipe it away, Lord, wipe it all away",
+                "Pass the paper towels, pass them, pass them all",
+                "Down the table, off the edge, and into Dad's left sock",
             ],
             "scripture_note": "Lamentations 3:22-23 - His mercies never come to an end; they are new every morning.",
-            "announcer": "Hymn Remix! Somebody spilled the milk at breakfast! Sing us a line!",
+            "announcer": (
+                "Hymn Remix! The milk just spilled at breakfast, and it's heading for the dog! Sing us a line!"
+            ),
         },
         {
             "id": "hr_grocery_trip",
             "prompt": "Write a hymn title for a family trip to the grocery store.",
-            "decoy": "Our Daily Bread (and Snacks Not on the List)",
+            "decoy": "Our Daily Bread (and Nine Snacks Not on the List)",
             "bot_answers": [
-                "Shall We Gather at the Checkout?",
-                "Give Us This Day Our Daily Coupons",
-                "Cart of Ages, Wobbly Wheel",
+                "Shall We Gather at the Free Samples?",
+                "Bringing in the Groceries (Twelve Bags, One Trip, No Help)",
+                "Leaning on the Cart That Only Turns Left",
             ],
             "scripture_note": "Matthew 6:11 - Give us this day our daily bread.",
-            "announcer": "Hymn Remix! The whole family is going grocery shopping! Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! The whole family is grocery shopping, and somebody snuck cookies into the cart! Write the "
+                "hymn title!"
+            ),
         },
         {
             "id": "hr_rainy_saturday",
@@ -3356,11 +3485,14 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Forty Days? Lord, I Can't Even Do Four Hours",
             "bot_answers": [
                 "There Shall Be Showers of Board Games",
-                "Blessed Be the Blanket Fort",
-                "Rain Down, but Please Not on the Picnic",
+                "Blessed Be the Blanket Fort, Built to Last Till Dinner",
+                "Somebody Flipped the Monopoly Board: A Lament",
             ],
             "scripture_note": "Psalm 147:8 - He covers the heavens with clouds; he prepares rain for the earth.",
-            "announcer": "Hymn Remix! It's raining all Saturday and everyone is stuck inside! Write the song title!",
+            "announcer": (
+                "Hymn Remix! It's raining all Saturday, and the blanket fort keeps getting bigger! Write the song "
+                "title!"
+            ),
         },
         {
             "id": "hr_first_haircut",
@@ -3368,71 +3500,84 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Samson Would Never (But Here We Are)",
             "bot_answers": [
                 "Every Hair Is Numbered, Even the Ones on the Floor",
-                "Snip, Snip, Hallelujah",
-                "Lord, Keep Me Still Through the Clippers",
+                "Snip, Snip, Hallelujah (Please Hold Still)",
+                "Lord, Keep Me Still Through the Buzzing Thing",
             ],
             "scripture_note": "Luke 12:7 - Even the hairs of your head are all numbered.",
-            "announcer": "Hymn Remix! It's the first haircut! Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! It's the first haircut, and somebody is NOT a fan of the buzzing thing! Write the hymn "
+                "title!"
+            ),
         },
         {
             "id": "hr_math_homework",
             "prompt": "Write one line of a worship song about math homework.",
             "decoy": "Teach us to number our days, and also these fractions",
             "bot_answers": [
-                "Lord, I lift my pencil up",
-                "You are bigger than my long division",
+                "Forty days of fractions and not one manna snack",
                 "Count your blessings, carry the one",
+                "Show your work, they say, show your work, but I do not know my work",
             ],
             "scripture_note": "Psalm 90:12 - Teach us to number our days, that we may get a heart of wisdom.",
-            "announcer": "Hymn Remix! It's math homework time! Sing us a line!",
+            "announcer": "Hymn Remix! It's math homework time, and the fractions are winning! Sing us a line!",
         },
         {
             "id": "hr_monday_alarm",
             "prompt": "Write a hymn title for the 6 AM alarm on Monday morning.",
             "decoy": "Rise and Shine and Give God the Glory (in Ten More Minutes)",
             "bot_answers": [
-                "Wake, O Sleeper (Seriously, Wake Up)",
+                "Wake, O Sleeper (Seriously, the Bus Is Here)",
                 "Morning Has Broken, and So Has My Snooze Button",
                 "Joy Comes in the Morning, Coffee Comes First",
             ],
             "scripture_note": "Psalm 30:5 - Weeping may tarry for the night, but joy comes with the morning.",
-            "announcer": "Hymn Remix! The Monday morning alarm is ringing! Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! It's 6 AM on a Monday and the snooze button has been hit four times! Write the hymn title!"
+            ),
         },
         {
             "id": "hr_moving_boxes",
             "prompt": "Write a hymn title for a family moving into a new house.",
             "decoy": "This World Is Not My Home, but This Box Says 'Kitchen'",
             "bot_answers": [
-                "I Lift My Eyes Unto the Hills (and the New Neighborhood)",
-                "Bless This House, Especially the Garage",
-                "A Firm Foundation, Two Hundred Boxes",
+                "Bless This House, and Whoever Packed the Box Labeled 'Stuff'",
+                "A Firm Foundation and Two Hundred Boxes",
+                "Where Is the Box With the Coffee Maker? (A Hymn of Urgency)",
             ],
             "scripture_note": "Psalm 127:1 - Unless the Lord builds the house, those who build it labor in vain.",
-            "announcer": "Hymn Remix! The family is moving into a new house! Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! The family is moving into a new house, and nobody knows which box has the forks! Write the"
+                " hymn title!"
+            ),
         },
         {
             "id": "hr_christmas_photo",
             "prompt": "Write one line of a worship song for taking the family Christmas card photo.",
             "decoy": "Let everything that has breath praise the Lord, and SMILE",
             "bot_answers": [
-                "Joy to the world, the photo's done, nobody blinked this year",
-                "Peace on Earth, but not in this living room",
-                "One more take, O Lord, just one more take",
+                "One more take, O Mom, just one more take",
+                "Peace on earth, but not in this living room",
+                "The dog looked away, the baby sneezed, and Dad's eyes were closed again",
             ],
             "scripture_note": "Psalm 150:6 - Let everything that has breath praise the Lord!",
-            "announcer": "Hymn Remix! It's time for the family Christmas card photo! Sing us a line!",
+            "announcer": (
+                "Hymn Remix! Time for the family Christmas card photo, take number forty-seven! Sing us a line!"
+            ),
         },
         {
             "id": "hr_cookie_jar",
             "prompt": "Write a hymn title for the kid caught with a hand in the cookie jar.",
-            "decoy": "Just As I Am (Covered in Crumbs)",
+            "decoy": "Search Me, O Mom (but Maybe Not My Pockets)",
             "bot_answers": [
-                "Search Me, O God (but Maybe Not My Pockets)",
-                "I Surrender All (the Cookies)",
-                "Amazing Grace, How Sweet the Chocolate Chip",
+                "I Surrender All (the Cookies in My Sleeve)",
+                "It Wasn't Me: A Hymn With Chocolate Fingerprints",
+                "Crumbs on My Shirt, Crumbs on My Face, Blame My Brother",
             ],
             "scripture_note": "Psalm 139:23 - Search me, O God, and know my heart!",
-            "announcer": "Hymn Remix! Somebody got caught with a hand in the cookie jar! Write the hymn title!",
+            "announcer": (
+                "Hymn Remix! Somebody got caught with a hand in the cookie jar and chocolate on their face! Write the "
+                "hymn title!"
+            ),
         },
     ],
     "church_bulletin": [
@@ -3441,124 +3586,151 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "prompt": (
                 "Noah's congregation is putting out a bulletin. Write this week's volunteer sign-up announcement."
             ),
-            "decoy": "Wanted: two volunteers of every kind for the Ark cleaning crew. Bring your own shovel.",
+            "decoy": "Ark cleaning crew needs two volunteers of every kind. Bring a shovel. Bring two shovels.",
             "bot_answers": [
-                "Rain-or-shine choir practice is now rain only",
-                "Ark tours Saturday. Please do not feed the lions",
-                "Lost: one dove. Last seen carrying an olive leaf",
+                "Choir practice moved inside the ark. Please stand far away from the elephants",
+                "Lost: one dove. Last seen carrying an olive leaf. Answers to 'Hey, Bird'",
+                "This week's potluck is cancelled. The animals found the potluck",
             ],
             "scripture_note": "Genesis 6:22 - Noah did this; he did all that God commanded him.",
-            "announcer": "Church Bulletin! Noah needs volunteers! Write the sign-up announcement!",
+            "announcer": (
+                "Church Bulletin! Noah needs volunteers, and the ark smells like forty days of zoo! Write the sign-up "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_jericho_walkers",
             "prompt": "Write the bulletin announcement for Joshua's Jericho walking club.",
             "decoy": "Silent walking club meets daily. Trumpet section, please wait for day seven.",
             "bot_answers": [
-                "Bring comfy sandals; we're doing seven laps Saturday",
-                "Shouting practice postponed until further notice",
-                "Parking near the city wall is NOT recommended this weekend",
+                "Seven laps Saturday. Comfy sandals required. Shouting at the END only, Gary",
+                "Do NOT park near the city wall this weekend. You have been warned",
+                "Trumpet section: 'just warming up' is still very loud. Please.",
             ],
             "scripture_note": (
                 "Joshua 6:10 - Joshua commanded, 'You shall not shout or make your voice heard until the day I tell "
                 "you to shout.'"
             ),
-            "announcer": "Church Bulletin! Joshua's walking club needs members! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! Joshua's walking club is quiet for six days and VERY loud on day seven! Write the "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_vbs_den",
             "prompt": "Write the bulletin announcement for this summer's Vacation Bible School theme: Daniel's Den.",
-            "decoy": "Real lions will not be present. We promise. Mostly promise.",
+            "decoy": "Real lions will not be present. We promise. We mostly promise.",
             "bot_answers": [
-                "Bring a flashlight, a buddy, and your bravest roar",
-                "Snack this week: Daniel's vegetables. Sorry, kids",
-                "Pickup is at 3 PM sharp at the den entrance",
+                "Snack all week: Daniel's vegetables. We are sorry. We are so sorry",
+                "The theme song has hand motions. Your kids will sing it until Thanksgiving",
+                "Dads needed to wear lion costumes. Must be good at being very, very calm lions",
             ],
             "scripture_note": (
                 "Daniel 6:10 - Daniel got down on his knees three times a day and prayed and gave thanks before his "
                 "God."
             ),
-            "announcer": "Church Bulletin! Vacation Bible School is coming to Daniel's Den! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! Vacation Bible School is coming to Daniel's Den, and the snack is vegetables! Write "
+                "the announcement!"
+            ),
         },
         {
             "id": "cb_lost_found",
             "prompt": "Write the strangest item ever listed in the church bulletin's lost and found.",
-            "decoy": "Found: one coat of many colors. Owner's brothers say it isn't theirs.",
+            "decoy": "Found: one coat of many colors. His brothers say they have never seen it before.",
             "bot_answers": [
+                "Found: twelve baskets of leftover bread. Please take some. Please.",
+                "Lost: one pair of sandals, last seen near a burning bush. Owner was told to take them off",
                 "Found: Elijah's cloak. Please claim before Elisha does",
-                "Lost: one sandal, last seen near a burning bush",
-                "Found: twelve baskets of leftover bread. Please take some home",
             ],
             "scripture_note": "Luke 15:6 - 'Rejoice with me, for I have found my sheep that was lost.'",
-            "announcer": "Church Bulletin! Check out the lost and found section! What's the strangest item listed?",
+            "announcer": (
+                "Church Bulletin! The lost and found table has some VERY interesting items this week! What's the "
+                "strangest one?"
+            ),
         },
         {
             "id": "cb_choir_tryouts",
             "prompt": "Write the choir tryout announcement if King David were the new choir director.",
-            "decoy": "Choir tryouts Thursday. Dancing in the aisles strongly encouraged.",
+            "decoy": "Tryouts Thursday. Dancing in the aisles is not optional. Bring a tambourine.",
             "bot_answers": [
-                "Harp players wanted. Must be able to calm a grumpy king",
-                "All voices welcome; a joyful noise is in the job description",
-                "All one hundred fifty psalms will be on the test",
+                "Harp players wanted. Must be able to calm a very grumpy king",
+                "All one hundred fifty psalms will be on the audition",
+                "Joyful noise welcome. LOUD joyful noise very welcome. Back row, we can hear you",
             ],
             "scripture_note": "Psalm 150:4 - Praise him with tambourine and dance; praise him with strings and pipe!",
-            "announcer": "Church Bulletin! King David is directing the choir! Write the tryout announcement!",
+            "announcer": (
+                "Church Bulletin! King David is directing the choir, and everybody has to dance! Write the tryout "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_parking_notice",
             "prompt": "Write a bulletin announcement about the church parking lot that nobody saw coming.",
-            "decoy": "Chariot parking is now in the back. Camels, please use the overflow lot.",
+            "decoy": "The last shall be first, but NOT in the church parking lot",
             "bot_answers": [
-                "The last shall be first, but NOT in the parking lot",
-                "Please do not leave donkeys tied to the minivans",
-                "Valet parking is now available for visiting Magi",
+                "After service the parking lot becomes a 45-minute fellowship hour. Please plan accordingly",
+                "Camels, please use the overflow lot. Chariots, back row",
+                "To whoever parked the minivan across four spaces: we love you. Please move.",
             ],
             "scripture_note": "Matthew 20:16 - So the last will be first, and the first last.",
-            "announcer": "Church Bulletin! There's a surprising new parking lot announcement! What does it say?",
+            "announcer": (
+                "Church Bulletin! There's a surprising new parking lot announcement, and a minivan is involved! What "
+                "does it say?"
+            ),
         },
         {
             "id": "cb_endless_bake_sale",
             "prompt": "Write the church bake sale announcement if the widow of Zarephath were in charge.",
-            "decoy": "Bake sale all year! Our flour jar and oil jug just will not run out.",
+            "decoy": "Bake sale all year! Our flour jar and oil jug will not run out. Please send more buyers.",
             "bot_answers": [
-                "Bread available daily. Visiting prophets eat first",
-                "Somehow we're never out of muffins. Don't ask, just enjoy",
-                "Small batch, big miracle, endless refills",
+                "Visiting prophets eat first. Then everyone. Then everyone again. Forever.",
+                "We are never out of muffins. Don't ask. Just enjoy",
+                "Please stop asking for the recipe. It's flour and oil. It's just flour and oil",
             ],
             "scripture_note": (
                 "1 Kings 17:16 - The jar of flour was not spent, neither did the jug of oil become empty, according "
                 "to the word of the Lord."
             ),
-            "announcer": "Church Bulletin! The widow of Zarephath is running the bake sale! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! The widow of Zarephath is running the bake sale, and the muffins never run out! Write"
+                " the announcement!"
+            ),
         },
         {
             "id": "cb_pastor_vacation",
             "prompt": "Write the bulletin note explaining that the pastor is on vacation this week.",
-            "decoy": "Pastor is on a forty-day fishing retreat. Please do not call unless the boat sinks.",
+            "decoy": "Pastor is resting like it's the seventh day. Please do not text him about the thermostat.",
             "bot_answers": [
-                "Pastor is resting like it's the seventh day; please let him",
-                "Pastor is touring the seven churches of Revelation by bus",
-                "This week's guest preacher promises to finish before lunch",
+                "Guest preacher this week promises to finish before the pot roast burns",
+                "Pastor's 'quick announcements' will resume next week. All forty-five minutes of them",
+                "Pastor is fishing. If you see him at the lake, no you didn't",
             ],
             "scripture_note": (
                 "Genesis 2:2 - On the seventh day God finished his work that he had done, and he rested."
             ),
-            "announcer": "Church Bulletin! The pastor is on vacation! Write the bulletin note!",
+            "announcer": (
+                "Church Bulletin! The pastor is on vacation, and the thermostat committee is getting nervous! Write the"
+                " bulletin note!"
+            ),
         },
         {
             "id": "cb_peter_breakfast",
             "prompt": "Write the men's breakfast announcement if Simon Peter were cooking.",
-            "decoy": "Men's breakfast on the beach at dawn. Fish provided. Bring your own toast.",
+            "decoy": "Men's breakfast on the beach at dawn. Fish provided. Fish for dessert. It's all fish.",
             "bot_answers": [
-                "Bacon is NOT on the menu. Fish is. Always fish",
-                "Meet at the boat ramp; bring a net and your appetite",
-                "Breakfast is cooked over a charcoal fire. Seconds are free",
+                "Bring a net and an appetite. Do not bring bacon. Peter will know",
+                "Peter will be cooking AND talking. Mostly talking",
+                "If no fish are caught, try the other side of the boat. Trust us",
             ],
             "scripture_note": (
                 "John 21:9 - When they got out on land, they saw a charcoal fire in place, with fish laid out on it, "
                 "and bread."
             ),
-            "announcer": "Church Bulletin! Simon Peter is cooking the men's breakfast! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! Simon Peter is cooking the men's breakfast, and there is a theme! Write the "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_nursery_reeds",
@@ -3566,70 +3738,84 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "decoy": "Nursery now offers floating basket naps. Lifeguards on duty.",
             "bot_answers": [
                 "Lost a baby in the reeds? Check with us first",
-                "Helpers wanted; must be good at peeking from behind tall plants",
-                "We found three babies this morning. Please claim yours",
+                "Helpers wanted. Must be good at peeking from behind tall plants",
+                "Your baby's big sister may 'just happen' to know a great nanny",
             ],
             "scripture_note": (
                 "Exodus 2:10 - She named him Moses, 'Because,' she said, 'I drew him out of the water.'"
             ),
-            "announcer": "Church Bulletin! Pharaoh's daughter is running the nursery! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! Pharaoh's daughter is running the nursery, and she really likes baskets! Write the "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_too_much_giving",
             "prompt": "Write the building-fund update if Moses were collecting gifts for the Tabernacle.",
             "decoy": "PLEASE STOP GIVING. We have more than enough. Signed, the very overwhelmed finance team.",
             "bot_answers": [
-                "Gold, silver and goat hair still welcome. Mostly goat hair",
-                "Building fund 100 percent funded. Committee in shock",
-                "Thank you! Please take your extra earrings back",
+                "Gold, silver and goat hair still welcome. Mostly goat hair. We have SO much gold",
+                "Building fund 100 percent funded. The finance committee is lying down",
+                "Thank you! Please come pick up your extra earrings",
             ],
             "scripture_note": (
                 "Exodus 36:5-7 - 'The people bring much more than enough,' so Moses told them to stop, for they had "
                 "more than enough."
             ),
-            "announcer": "Church Bulletin! Moses has an update on the Tabernacle building fund! Write it!",
+            "announcer": (
+                "Church Bulletin! Moses has an update on the building fund, and it's a church first! Write it!"
+            ),
         },
         {
             "id": "cb_disciples_small_group",
             "prompt": "Write the small-group announcement if the twelve disciples were hosting a Bible study.",
             "decoy": "Small group meets Thursday. Peter will talk first. Thomas will have questions.",
             "bot_answers": [
-                "Bring your own boat; we're meeting on the lake",
-                "James and John will be arguing over the best seats",
-                "Matthew will be collecting the snack money",
+                "James and John will arrive early to argue about the best seats",
+                "Matthew is collecting the snack money. He WILL keep receipts",
+                "Bring your own boat. We're meeting on the lake. Again.",
             ],
             "scripture_note": "Matthew 18:20 - 'Where two or three are gathered in my name, there am I among them.'",
-            "announcer": "Church Bulletin! The twelve disciples are hosting a small group! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! The twelve disciples are hosting small group, and there are twelve opinions about "
+                "snacks! Write the announcement!"
+            ),
         },
         {
             "id": "cb_midnight_lockin",
             "prompt": "Write the youth group lock-in announcement if Paul and Silas were the chaperones.",
             "decoy": "Youth lock-in Friday! Midnight hymn sing included. Doors may open on their own.",
             "bot_answers": [
-                "Bring a sleeping bag and earplugs; earthquakes possible",
-                "Chaperones will be singing all night. ALL night",
-                "Pizza at midnight, prayer at midnight, everything at midnight",
+                "Chaperones will be singing hymns all night. ALL. NIGHT.",
+                "Bring a sleeping bag and earplugs. Earthquakes possible",
+                "Parents: pickup is at dawn, or whenever the jailer's family finishes getting baptized",
             ],
             "scripture_note": (
                 "Acts 16:25 - About midnight Paul and Silas were praying and singing hymns to God, and the prisoners "
                 "were listening."
             ),
-            "announcer": "Church Bulletin! Paul and Silas are chaperoning the youth lock-in! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! Paul and Silas are chaperoning the youth lock-in, and nobody is sleeping! Write the "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_river_baptisms",
             "prompt": "Write the baptism announcement if John the Baptist were in charge of scheduling.",
-            "decoy": "Baptisms in the Jordan River this Sunday. Locust snacks served afterward.",
+            "decoy": "Baptisms in the Jordan this Sunday. Locust snacks afterward. Towels not provided.",
             "bot_answers": [
-                "Dress code: camel hair encouraged",
-                "No pool. We're doing this the old-fashioned way, in the river",
-                "Bring a towel and a ready heart",
+                "Dress code: camel hair. Yes, it's itchy. Yes, it's required",
+                "There is no heated pool. This is a river. The river is cold",
+                "Come as you are, but maybe bring a towel and a change of socks",
             ],
             "scripture_note": (
                 "Matthew 3:5-6 - Jerusalem and all Judea went out to him and were baptized by him in the river "
                 "Jordan."
             ),
-            "announcer": "Church Bulletin! John the Baptist is scheduling baptisms! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! John the Baptist is scheduling baptisms, and the river is chilly! Write the "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_sermon_series",
@@ -3638,79 +3824,97 @@ EXTRA_PROMPTS: dict[str, list[dict[str, Any]]] = {
             "bot_answers": [
                 "Begats: Learning to Pronounce Everyone in First Chronicles",
                 "Balaam's Donkey: Lessons From the Back Seat",
-                "Numbers: Yes, There Will Be Math",
+                "Numbers: Yes, There Will Be a Quiz",
             ],
             "scripture_note": "2 Timothy 3:16 - All Scripture is breathed out by God and profitable for teaching.",
-            "announcer": "Church Bulletin! The pastor is starting a surprising new sermon series! What's it called?",
+            "announcer": (
+                "Church Bulletin! The pastor is starting a surprising new sermon series, and it runs fifty-two weeks! "
+                "What's it called?"
+            ),
         },
         {
             "id": "cb_coffee_bar",
             "prompt": "Write the bulletin announcement for the church's brand new coffee bar.",
             "decoy": "New coffee bar opens Sunday! Our espresso is so strong it could part a sea.",
             "bot_answers": [
-                "Try the Jacob's Ladder latte: twelve shots, stacked to heaven",
-                "Decaf available at the early service. Just kidding.",
-                "Free refills, just like the widow's oil",
+                "Try the Jacob's Ladder: twelve shots, stacked to heaven",
+                "Decaf available at the early service. Just kidding. There is no decaf",
+                "Free refills, just like the widow's oil jar",
             ],
             "scripture_note": "Psalm 23:5 - My cup overflows.",
-            "announcer": "Church Bulletin! The church is opening a coffee bar! Write the announcement!",
+            "announcer": (
+                "Church Bulletin! The church opened a coffee bar, and the early service is suddenly packed! Write the "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_pageant_casting",
             "prompt": "Write the Christmas pageant casting call that nobody saw coming.",
             "decoy": "Now casting: one very calm donkey and three kids who can walk slowly carrying gifts.",
             "bot_answers": [
-                "Wanted: a shepherd who will not wave at Grandma",
+                "Wanted: a shepherd who will not wave at Grandma during the entire show",
                 "Angel roles open. Must say 'Fear not!' without giggling",
-                "Real sheep auditions have been moved outside after last year",
+                "Real sheep auditions moved outside after last year. We don't talk about last year",
             ],
             "scripture_note": (
                 "Luke 2:8-10 - The angel said to the shepherds, 'Fear not, for behold, I bring you good news of great "
                 "joy.'"
             ),
-            "announcer": "Church Bulletin! The Christmas pageant is casting! Write the casting call!",
+            "announcer": (
+                "Church Bulletin! The Christmas pageant is casting, and last year's sheep are not invited back! Write "
+                "the casting call!"
+            ),
         },
         {
             "id": "cb_elijah_forecast",
             "prompt": "Write the church picnic weather update if Elijah were the forecaster.",
             "decoy": "No rain for three and a half years. Picnic is ON. Bring sunscreen.",
             "bot_answers": [
-                "Small cloud spotted, about the size of a hand. Bring umbrellas",
-                "Fire expected on the mountain; do not bring paper plates",
-                "Forecast: dry, dry, dry, then a downpour after prayer",
+                "Small cloud spotted, about the size of a hand. Grab umbrellas. Grab them NOW",
+                "Fire expected on the mountain. Please do not bring paper plates",
+                "Forecast: dry, dry, dry, dry, then a downpour right after prayer",
             ],
             "scripture_note": (
                 "James 5:17-18 - Elijah prayed that it might not rain, and for three years and six months it did not "
                 "rain. Then he prayed again, and heaven gave rain."
             ),
-            "announcer": "Church Bulletin! Elijah has the weather forecast for the church picnic! Write the update!",
+            "announcer": (
+                "Church Bulletin! Elijah has the weather forecast for the church picnic, and it's very specific! Write "
+                "the update!"
+            ),
         },
         {
             "id": "cb_magi_visitors",
             "prompt": "Write the 'Welcome, Visitors!' announcement for the Sunday the Magi showed up at church.",
             "decoy": "Welcome, travelers from the East! Camel parking is behind the fellowship hall.",
             "bot_answers": [
-                "Gifts of gold accepted at the offering. Myrrh, please see the pastor",
                 "Please fill out a visitor card and include your star's coordinates",
-                "Our greeters will show you to a seat near the nativity scene",
+                "Gold accepted in the offering plate. Myrrh, please see the church office",
+                "Our greeters apologize for calling you 'the three wise guys'",
             ],
             "scripture_note": (
                 "Matthew 2:1-2 - Wise men from the east came to Jerusalem, saying, 'We saw his star when it rose and "
                 "have come to worship him.'"
             ),
-            "announcer": "Church Bulletin! The Magi have arrived at church! Write the welcome announcement!",
+            "announcer": (
+                "Church Bulletin! The Magi showed up at church, and the greeters are VERY excited! Write the welcome "
+                "announcement!"
+            ),
         },
         {
             "id": "cb_zacchaeus_dinner",
             "prompt": "Write the bulletin note about this week's fellowship dinner hosted by Zacchaeus.",
-            "decoy": "Dinner at Zacchaeus's house! He's paying everyone back four times over. Bring a big bag.",
+            "decoy": "Fellowship dinner at Zacchaeus's house! Dessert is a refund check.",
             "bot_answers": [
-                "Seating is limited; shorter guests get the front row",
-                "Tree climbing before dinner for anyone who can't see",
-                "Tax refunds will be served with dessert",
+                "Bring a calculator. He's paying everyone back four times over",
+                "Tree climbing before dinner for anyone who can't see the buffet",
+                "Jesus is the guest of honor. The neighbors are VERY surprised",
             ],
             "scripture_note": "Luke 19:8 - 'If I have defrauded anyone of anything, I restore it fourfold.'",
-            "announcer": "Church Bulletin! Zacchaeus is hosting the fellowship dinner! Write the bulletin note!",
+            "announcer": (
+                "Church Bulletin! Zacchaeus is hosting the fellowship dinner, and dessert is a refund! Write the "
+                "bulletin note!"
+            ),
         },
     ],
 }
