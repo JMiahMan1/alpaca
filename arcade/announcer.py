@@ -80,9 +80,26 @@ def pronounce(text: str) -> str:
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+(?=\S)")
 
 
+_ABBREV = re.compile(r"(?:^|\s)(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|Mt)\.$", re.IGNORECASE)
+_PUNCT_ONLY = re.compile(r"^[.…!?\s]+$")
+
+
 def sentences(text: str) -> list[str]:
-    """A line as a host breathes it: one sentence at a time."""
-    return [s.strip() for s in _SENTENCE.split((text or "").strip()) if s.strip()]
+    """A line as a host breathes it: one sentence at a time.
+
+    "Mrs." does not end a sentence, and a lone "..." (the beat before a
+    punchline) stays with the sentence before it: sent on its own it was a
+    clip of nothing, or no clip at all, which lost the whole line.
+    """
+    out: list[str] = []
+    for piece in (s.strip() for s in _SENTENCE.split((text or "").strip())):
+        if not piece:
+            continue
+        if out and (_PUNCT_ONLY.match(piece) or _ABBREV.search(out[-1])):
+            out[-1] = f"{out[-1]} {piece}"
+        else:
+            out.append(piece)
+    return out
 
 
 def cadence(sentence: str, base: float = ANNOUNCER_SPEED) -> tuple[float, float]:
@@ -102,7 +119,7 @@ def cadence(sentence: str, base: float = ANNOUNCER_SPEED) -> tuple[float, float]
         return base * 1.05 + jitter, 300.0
     return base + jitter, 340.0
 
-_CALL = re.compile(r"^\s*((?:extra[!.,]?\s*){1,3})(read all about it[!.]?\s*)?", re.IGNORECASE)
+_CALL = re.compile(r"^\s*((?:extra\b[!.,]?\s*){1,3})(read all about it[!.]?\s*)?", re.IGNORECASE)
 
 
 def split_show_line(text: str) -> list[tuple[str, str]]:

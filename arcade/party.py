@@ -699,7 +699,9 @@ MATCH_OPENER, MATCH_FINALE = "blank_o_matic", "survey_says"
 
 def new_match_schedule() -> list[str]:
     middle_pool = [k for k in PROMPT_BANK if k not in (MATCH_FINALE,) and PROMPT_BANK[k] and k in ROUND_META]
-    others = [k for k in middle_pool if k != "truth_or_bluff"]
+    # Variety first: the opener's type isn't drawn again while others are left.
+    others = [k for k in middle_pool if k not in ("truth_or_bluff", MATCH_OPENER)] or \
+        [k for k in middle_pool if k != "truth_or_bluff"]
     picks = random.sample(others, k=min(4, len(others)))
     if "truth_or_bluff" in middle_pool:
         picks.append("truth_or_bluff")
@@ -760,17 +762,6 @@ def _matches_truth(text: str, prompt_item: dict[str, Any]) -> bool:
         if kw_words and (" " + " ".join(kw_words) + " ") in joined:
             return True
     return False
-    norm = _normalize_compare(text)
-    if not norm:
-        return False
-    truth_norm = _normalize_compare(str(prompt_item.get("truth") or ""))
-    if truth_norm and (norm == truth_norm or (len(norm) >= 6 and norm in truth_norm)):
-        return True
-    for kw in prompt_item.get("truth_keywords") or []:
-        kw_norm = _normalize_compare(str(kw))
-        if kw_norm and kw_norm in norm:
-            return True
-    return False
 
 
 def _humans_unlocked(room: dict[str, Any]) -> list[dict[str, Any]]:
@@ -800,10 +791,16 @@ def _prune_expired_unlocked(now: float) -> None:
 
 def remember_screen(code: str, screen_id: str | None) -> None:
     """The TV a room was cast to (``None`` once it is taken off), so ending the room can free it."""
+    screen = _clean_text(screen_id, 160) or None
     with _lock:
+        if screen:
+            # A TV shows one room: an older room ending must not take the new one off it.
+            for other in _rooms.values():
+                if other.get("cast_screen") == screen:
+                    other["cast_screen"] = None
         room = _rooms.get(_clean_code(code))
         if room is not None:
-            room["cast_screen"] = _clean_text(screen_id, 160) or None
+            room["cast_screen"] = screen
 
 
 def _release_screen_async(room: dict[str, Any] | None) -> None:
@@ -830,10 +827,13 @@ def _pick_room_code_unlocked() -> str:
 def _select_prompt_unlocked(room: dict[str, Any], kind: str) -> dict[str, Any]:
     used: set[str] = set(room.get("used_prompt_ids") or [])
     pool = PROMPT_BANK.get(kind) or PROMPT_BANK["blank_o_matic"]
-    recent = set(_recent_prompt_ids)
-    # Best: never seen in this room nor lately anywhere; then not in this room; then anything.
-    fresh = [p for p in pool if p["id"] not in used and p["id"] not in recent] or \
-        [p for p in pool if p["id"] not in used] or pool
+    # Never twice in this room's matches if avoidable; among the rest, the one
+    # used least recently anywhere (a set test stopped helping once every
+    # prompt had been used once).
+    last_seen = {pid: i for i, pid in enumerate(_recent_prompt_ids)}
+    candidates = [p for p in pool if p["id"] not in used] or pool
+    oldest = min(last_seen.get(p["id"], -1) for p in candidates)
+    fresh = [p for p in candidates if last_seen.get(p["id"], -1) == oldest]
     chosen = dict(random.choice(fresh))
     chosen["kind"] = kind
     room.setdefault("used_prompt_ids", []).append(chosen["id"])
@@ -886,7 +886,8 @@ def _top_up_bots_unlocked(room: dict[str, Any]) -> None:
     now = time.time()
     for bot in added:
         if room.get("phase") == "writing":
-            pool = list(prompt.get("bot_answers") or []) or [f"{bot['name']}'s wise quip"]
+            taken = {s.get("text") for s in room["submissions"].values()}
+            pool = [a for a in prompt.get("bot_answers") or [] if a not in taken] or [f"{bot['name']}'s wise quip"]
             room["submissions"][bot["id"]] = {"player_id": bot["id"], "text": random.choice(pool), "is_decoy": False,
                                              "submitted_at": now + random.uniform(4.0, 20.0)}
         elif room.get("phase") == "voting":
@@ -979,7 +980,11 @@ def _build_voting_options_unlocked(room: dict[str, Any]) -> None:
 
     for pid, sub in submissions.items():
         if sub.get("is_decoy"):
-            decoy_authors.append(pid)
+            # Only someone who chose the decoy is its author. A seat that never
+            # answered is not: its phone would call the trap "Yours" and it
+            # could never fall for it.
+            if not sub.get("auto_filled"):
+                decoy_authors.append(pid)
             continue
         sub_text = sub["text"]
         opt_hash = hashlib.sha1(f"{pid}:{sub_text}".encode()).hexdigest()[:8]
@@ -1170,7 +1175,8 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     # Build announcer summary for the reveal screen
     if round_winner_names:
         winner_str = " and ".join(round_winner_names)
-        announcer_reveal = f"The votes are in! {winner_str} takes the round bonus!"
+        verb = "take" if len(round_winner_names) > 1 else "takes"
+        announcer_reveal = f"The votes are in! {winner_str} {verb} the round bonus!"
     elif any(e["type"] == "truth_found" for e in events):
         announcer_reveal = "The truth is revealed! Let's see who spotted the real Scripture!"
     else:
@@ -1262,9 +1268,20 @@ DAD_JOKES: tuple[tuple[str, str], ...] = (
 )
 
 
+#: Joke slots: each round tells one while players write and one after the result.
+_JOKE_SLOTS = {"writing": 0, "between": 1}
+
+
 def joke_for(room: dict[str, Any], salt: str) -> tuple[str, str]:
-    seed = f"{room.get('match_id', '') or room.get('code', '')}:{room.get('round', 0)}:{salt}"
-    return random.Random(seed).choice(DAD_JOKES)
+    """The next joke from a deck shuffled once per match, so none is told twice in a match."""
+    if salt in _JOKE_SLOTS:
+        deck_seed, idx = room.get("match_id", "") or room.get("code", ""), int(room.get("round") or 0) * 2 + _JOKE_SLOTS[salt]
+    else:  # lobby rotation: its own deck, stepped by time bucket
+        deck_seed = f"{room.get('code', '')}:lobby"
+        idx = int(re.sub(r"\D", "", salt) or 0)
+    deck = list(DAD_JOKES)
+    random.Random(deck_seed).shuffle(deck)
+    return deck[idx % len(deck)]
 
 
 #: While players write and vote, the host keeps talking: a remark about the
@@ -1295,6 +1312,26 @@ HOST_CHATTER: dict[str, tuple[str, ...]] = {
         "Think like the crowd. What would most folks say?",
         "Last round! Everything's on the line!",
     ),
+    "parable_remix": (
+        "Same story, brand new setting. Make it make sense... or don't!",
+        "Jesus told the best stories. No pressure!",
+        "Modern day, timeless truth. Let's hear it!",
+    ),
+    "bible_bios": (
+        "Keep it short and snappy. Nobody reads a long bio!",
+        "Imagine the profile picture. Now write the bio!",
+        "Would this character swipe right on that? Write it!",
+    ),
+    "hymn_remix": (
+        "Feel free to hum while you write. I won't tell!",
+        "The best hymn titles practically sing themselves!",
+        "Somewhere a church organist is already warming up!",
+    ),
+    "church_bulletin": (
+        "Every church bulletin has one announcement nobody expected!",
+        "Potluck sign-ups? Choir tryouts? Something stranger? Go!",
+        "Keep it bulletin-sized. The deacons are watching!",
+    ),
     "voting": (
         "Read them carefully. One of those is the Scribe's Trap!",
         "No voting for yourself. I'm watching!",
@@ -1304,6 +1341,24 @@ HOST_CHATTER: dict[str, tuple[str, ...]] = {
 HOST_HURRY = ("Ten seconds left!", "Ten seconds! Finish that thought!", "Hurry, hurry! Ten seconds!")
 
 
+def reveal_result_at(room: dict[str, Any]) -> float:
+    """Seconds into the reveal when the TV has unveiled its last answer (its revealStep pacing)."""
+    n = len(room.get("options") or [])
+    return round(1.0 + max(0, n - 1) * REVEAL_PER_ANSWER_SECONDS + 1.5 + _stage_delay(room), 1)
+
+
+def reveal_result_line(room: dict[str, Any]) -> str:
+    reveal = room.get("reveal") or {}
+    if reveal.get("round_winners") or any(e.get("type") == "truth_found" for e in reveal.get("events") or []):
+        result = str(reveal.get("announcer") or "")
+    else:
+        result = _pick(room, HOST_TRAPPED, "trap")
+    if int(room.get("round") or 0) < int(room.get("total_rounds") or TOTAL_ROUNDS):
+        setup, punch = joke_for(room, "between")
+        result += f" And while we catch our breath... {setup} ... {punch}"
+    return result
+
+
 def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
     """Lines to say during the current phase: ``[{"at": seconds into it, "text"}]``.
 
@@ -1311,6 +1366,8 @@ def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
     still being read) and its last ten seconds (the hurry call).
     """
     phase = room.get("phase")
+    if phase == "reveal":
+        return [{"at": reveal_result_at(room), "text": reveal_result_line(room)}]
     if phase not in ("writing", "voting"):
         return []
     kind = "voting" if phase == "voting" else str((room.get("current_prompt") or {}).get("kind") or "blank_o_matic")
@@ -1356,16 +1413,9 @@ def announce_line(room: dict[str, Any]) -> str:
     if phase == "voting":
         return _pick(room, HOST_VOTING, "vote")
     if phase == "reveal":
-        reveal = room.get("reveal") or {}
-        if reveal.get("round_winners") or any(e.get("type") == "truth_found" for e in reveal.get("events") or []):
-            result = str(reveal.get("announcer") or "")
-        else:
-            result = _pick(room, HOST_TRAPPED, "trap")
-        line = f"{_pick(room, HOST_DRUMROLL, 'drum')} {result}".strip()
-        if int(room.get("round") or 0) < int(room.get("total_rounds") or TOTAL_ROUNDS):
-            setup, punch = joke_for(room, "between")
-            line += f" And while we catch our breath... {setup} ... {punch}"
-        return line
+        # The result waits for the TV to show the last answer (see chatter_for);
+        # saying it now gave the winner away before the reveal.
+        return _pick(room, HOST_DRUMROLL, "drum")
     if phase == "finished":
         players = [p for p in (room.get("players") or {}).values() if not p.get("spectator")]
         if not players:
@@ -1717,8 +1767,6 @@ def create_or_join_room(
                 "updated_at": now,
             }
             _rooms[room_code] = room
-        elif voice and _clean_text(voice, 64):
-            room["voice"] = _clean_text(voice, 64)
 
         players = room["players"]
         human_contestants = [p for p in players.values() if not p.get("is_bot") and not p.get("spectator")]
@@ -1799,6 +1847,8 @@ def leave_room(code: str, *, player_id: str) -> dict[str, Any]:
             raise LookupError(f"Room '{clean_code}' not found.")
         if pid not in room["players"]:
             return {"closed": False, "room": serialize_room(room)}
+        if (room["players"].get(pid) or {}).get("is_bot"):
+            raise PermissionError("That is an AI scribe's seat.")
         room["players"].pop(pid, None)
         if room.get("phase") == "writing":
             (room.get("submissions") or {}).pop(pid, None)
@@ -1959,6 +2009,8 @@ def submit_answer(
             raise ValueError("This round's writing phase has already closed.")
         if pid not in room["players"]:
             raise ValueError("Join the room before submitting an answer.")
+        if room["players"][pid].get("is_bot"):
+            raise PermissionError("That is an AI scribe's seat.")
         if room["players"][pid].get("spectator"):
             if not _seat_free_unlocked(room):
                 raise ValueError("The room is full. You're watching this match.")
@@ -2004,6 +2056,8 @@ def submit_vote(code: str, *, player_id: str, option_id: str) -> dict[str, Any]:
             raise ValueError("Voting is not open right now.")
         if pid not in room["players"]:
             raise ValueError("Join the room to vote.")
+        if room["players"][pid].get("is_bot"):
+            raise PermissionError("That is an AI scribe's seat.")
         if room["players"][pid].get("spectator"):
             raise ValueError("You're watching this match, so you can't vote this round.")
         target = next((o for o in room["options"] if o["option_id"] == oid), None)
@@ -2036,7 +2090,7 @@ def advance_phase(code: str, *, use_ai_prompt: bool = False, player_id: str | No
         _check_auto_advance_unlocked(room)
         if expect and (
             (expect.get("phase") and expect["phase"] != room["phase"])
-            or (expect.get("round") is not None and int(expect["round"]) != int(room.get("round") or 0))
+            or (expect.get("round") is not None and str(expect["round"]) != str(int(room.get("round") or 0)))
             or (expect.get("match_id") and expect["match_id"] != room.get("match_id"))
         ):
             return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
