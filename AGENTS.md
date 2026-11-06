@@ -497,7 +497,7 @@ other fails the build.
   "Extra! Extra!" is split: a paper boy shouts "Extra! Extra! Read all about it!" first. No Kokoro voice is a boy
   (every male voice measured 88-166 Hz), so he is `am_eric,af_kore` (~170 Hz) resampled up 1.32x to ~235 Hz,
   band-limited, driven and given a street slap echo. Stdlib only, ~0.2 s a line, cached with the clips.
-- **243 prompts in 9 round types** (`PROMPT_BANK` + `arcade/party_prompts.py`, validated by
+- **243 writing prompts in 9 round types, plus 275 race clues and boards** (`PROMPT_BANK` + `arcade/party_prompts.py`, validated by
   `tests/test_party_prompts.py`, including that every Truth or Bluff truth trips `_matches_truth` and its bluffs do
   not). A match is an easy Blank-O-Matic opener, five different round types drawn per match (always one Truth or
   Bluff), and the double-points Survey Says finale. Prompts are chosen least-recently-used across all rooms.
@@ -511,6 +511,13 @@ other fails the build.
   capitals (headlines, "WE ASKED 100 PARENTS"), which misaki would otherwise spell letter by letter.
 - **A changed music recipe recomposes itself.** Each cue's file has a `.json` sidecar with the prompt, seed and length
   it was made from; `party_music.is_current()` treats a mismatch like a missing file.
+- **Race rounds** (`arcade/party_race.py`, content in `arcade/party_race_content.py`): Quick Draw (5 clues, 4 choices),
+  Lightning (8 true/false), Pair Up (match 5 pairs) and In Order (sort 5). Everyone answers at once; the first correct
+  answer scores most (1000/750/600...), a wrong tap in Quick Draw or Lightning costs points, and boards score per right
+  part plus a speed bonus for a perfect board. The phase is `racing`; clues advance inside it (`step` in the snapshot
+  changes per clue and per answer flash, so screens redraw and the announcer speaks), and a streamed TV's lag applies
+  per clue (`phase_age_s` is per clue). Answers go to `POST /api/party/rooms/<code>/race` `{player_id, item, choice}`.
+  Every match has one race round, sometimes two, in place of a writing round.
 - **Ids on screens are public.** A player's own id authorises their actions, so snapshots carry
   `public_id(room, pid)` only and tell each phone which one is `you`. Host actions must name the host; `/next`
   carries the screen it was tapped on (`expect`) and is ignored if the room has already moved on.

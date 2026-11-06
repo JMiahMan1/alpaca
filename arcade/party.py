@@ -688,6 +688,13 @@ except ImportError:  # the arcade image runs with arcade/ on sys.path
     except ImportError:
         EXTRA_PROMPTS, NEW_ROUND_META = {}, {}
 ROUND_META.update(NEW_ROUND_META)
+
+# Race rounds (Quick Draw, Lightning, Pair Up, In Order) have their own engine and content.
+try:
+    from arcade import party_race
+except ImportError:  # the arcade image runs with arcade/ on sys.path
+    import party_race  # type: ignore[no-redef]
+ROUND_META.update(party_race.RACE_ROUND_META)
 for _kind, _items in EXTRA_PROMPTS.items():
     PROMPT_BANK.setdefault(_kind, []).extend(_items)
 
@@ -707,6 +714,14 @@ def new_match_schedule() -> list[str]:
         picks.append("truth_or_bluff")
     while len(picks) < TOTAL_ROUNDS - 2:
         picks.append(random.choice(middle_pool))
+    # One race round every match, sometimes two, in place of a writing round:
+    # no two evenings play the same.
+    races = [k for k in party_race.RACE_KINDS if party_race.POOLS.get(k) and k in ROUND_META]
+    if races:
+        swappable = [i for i, k in enumerate(picks) if k != "truth_or_bluff"]
+        n = min(len(swappable), len(races), 2 if random.random() < 0.4 else 1)
+        for i, kind in zip(random.sample(swappable, n), random.sample(races, n), strict=True):
+            picks[i] = kind
     random.shuffle(picks)
     return [MATCH_OPENER, *picks[: TOTAL_ROUNDS - 2], MATCH_FINALE]
 
@@ -907,6 +922,9 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
         room["schedule"] = new_match_schedule()
     kind = round_kind(room, round_num)
     meta = ROUND_META[kind]
+    if party_race.is_race(kind):
+        _start_race_round_unlocked(room, round_num, kind, meta, now)
+        return
     prompt_item = custom_prompt if custom_prompt else _select_prompt_unlocked(room, kind)
     prompt_item["kind"] = kind
 
@@ -956,6 +974,194 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
     room["votes"] = {}
     room["reveal"] = None
     room["updated_at"] = now
+
+
+RACE_INTROS = {
+    "quick_draw": "Quick Draw! Fingers on buttons! First right answer scores the most, and a wrong tap costs you!",
+    "lightning": "Lightning Round! True or false, as fast as you can! Here we go!",
+    "pair_up": "Pair Up! Match every pair on your phone. Perfect and fast wins big!",
+    "in_order": "In Order! Put them in the right order on your phone. Perfect and fast wins big!",
+}
+RACE_REVEAL_SECONDS = 16.0
+
+
+def _race_bots(room: dict[str, Any]) -> list[str]:
+    return [p["id"] for p in room["players"].values() if p.get("is_bot") and not p.get("spectator")]
+
+
+def _race_humans(room: dict[str, Any]) -> list[str]:
+    return [p["id"] for p in _active_contestants_unlocked(room) if not p.get("is_bot")]
+
+
+def _start_race_round_unlocked(room: dict[str, Any], round_num: int, kind: str, meta: dict[str, Any], now: float) -> None:
+    rng = random.Random(secrets.randbits(64))
+    last_seen = {pid: i for i, pid in enumerate(_recent_prompt_ids)}
+    used = set(room.get("used_prompt_ids") or [])
+    raws = party_race.choose(kind, last_seen, used, rng)
+    for raw in raws:
+        room.setdefault("used_prompt_ids", []).append(raw["id"])
+        _recent_prompt_ids.append(raw["id"])
+    race = party_race.new_race(kind, raws, rng)
+    party_race.start_item(race, now, _stage_delay(room), _race_bots(room), rng)
+    for p in room["players"].values():
+        p["round_delta"] = 0
+    room["race"] = race
+    room["round"] = round_num
+    room["total_rounds"] = TOTAL_ROUNDS
+    room["phase"] = "racing"
+    room["phase_started_at"] = now
+    room["phase_deadline"] = race["deadline"]
+    room["current_prompt"] = {
+        "id": f"race:{kind}:{raws[0]['id'] if raws else ''}",
+        "kind": kind,
+        "title": meta["title"],
+        "badge": meta["badge"],
+        "icon": meta["icon"],
+        "multiplier": meta["multiplier"],
+        "instructions": meta["instructions"],
+        "prompt": meta["instructions"],
+        "subprompt": "",
+        "scene": "",
+        "speaker": "",
+        "decoy": "",
+        "bot_answers": [],
+        "truth": "",
+        "truth_keywords": [],
+        "scripture_note": "",
+        "announcer": RACE_INTROS.get(kind, meta["title"]),
+    }
+    room["submissions"] = {}
+    room["options"] = []
+    room["votes"] = {}
+    room["reveal"] = None
+    room["updated_at"] = now
+
+
+def _tick_race_unlocked(room: dict[str, Any], now: float) -> None:
+    race = room.get("race") or {}
+    if not race:
+        return
+    before = (race.get("index"), bool(race.get("flash_until")))
+    done = party_race.tick(race, now, _race_humans(room), _stage_delay(room, now), _race_bots(room),
+                           random.Random(secrets.randbits(64)))
+    if done:
+        _score_race_unlocked(room)
+        return
+    room["phase_deadline"] = race["flash_until"] or race["deadline"]
+    if (race.get("index"), bool(race.get("flash_until"))) != before:
+        room["updated_at"] = now
+
+
+def _score_race_unlocked(room: dict[str, Any]) -> None:
+    now = time.time()
+    race = room["race"]
+    race["done"] = True
+    prompt = room["current_prompt"]
+    players = room["players"]
+    deltas, raw_events = party_race.score(race, int(prompt.get("multiplier") or 1))
+    for p in players.values():
+        p["round_delta"] = 0
+    for pid, delta in deltas.items():
+        p = players.get(pid)
+        if not p:
+            continue
+        before = int(p.get("score") or 0)
+        p["score"] = max(0, before + delta)
+        p["round_delta"] = p["score"] - before
+    events: list[dict[str, Any]] = []
+    firsts: dict[str, int] = {}
+    for e in raw_events:
+        p = players.get(e["player_id"])
+        if not p:
+            continue
+        name = p["name"]
+        if e["type"] == "race_first":
+            firsts[name] = firsts.get(name, 0) + 1
+            text = f"{name} was fastest on question {e['item'] + 1}! (+{e['delta']:,} pts)"
+        elif e["type"] == "race_wrong":
+            text = f"{name} buzzed in wrong on question {e['item'] + 1}. ({e['delta']:,} pts)"
+        else:
+            text = f"{name} got it perfect{' and fastest' if e.get('place') == 0 else ''}! (+{e['delta']:,} pts)"
+        events.append({**{k: v for k, v in e.items() if k != "item"}, "player_name": name, "text": text})
+    ranked = sorted((p for p in players.values() if not p.get("spectator")), key=lambda p: -int(p.get("round_delta") or 0))
+    top = ranked[0] if ranked and int(ranked[0].get("round_delta") or 0) > 0 else None
+    if top is None:
+        line = "Tough round! Nobody cracked that one. The Scribe is laughing in the back!"
+    elif race["kind"] in ("pair_up", "in_order") and any(e["type"] == "race_perfect" for e in raw_events):
+        line = f"{top['name']} takes the round! Fast hands and a sharp mind!"
+    else:
+        line = f"{top['name']} wins the race with {int(top['round_delta']):,} points! Lightning fingers!"
+    room["reveal"] = {
+        "events": events,
+        "round_winners": [top["name"]] if top else [],
+        "scripture_note": "",
+        "announcer": line,
+        "race": [party_race.public_item(it, reveal=True)
+                 | {"right": [players[pid]["name"] for pid in party_race.item_result(race, i)["right"] if pid in players]}
+                 for i, it in enumerate(race["items"])],
+    }
+    room["phase"] = "reveal"
+    room["phase_started_at"] = now
+    room["phase_deadline"] = now + RACE_REVEAL_SECONDS + _stage_delay(room)
+    room["updated_at"] = now
+    _prefetch_next_prompt_unlocked(room)
+
+
+def race_answer(code: str, player_id: str, item: Any, choice: Any) -> dict[str, Any]:
+    """A player's tap in a race round. The first answer to each clue stands."""
+    code = _clean_code(code)
+    with _lock:
+        room = _rooms.get(code)
+        if room is None:
+            raise KeyError(code)
+        p = room["players"].get(player_id)
+        if p is None:
+            raise KeyError(player_id)
+        if p.get("is_bot"):
+            raise PermissionError("That seat belongs to a scribe.")
+        if p.get("spectator"):
+            raise ValueError("You're watching this round.")
+        if room.get("phase") != "racing" or not room.get("race"):
+            raise ValueError("There's no race on right now.")
+        now = time.time()
+        p["last_seen"] = now
+        try:
+            index = int(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Which question?") from exc
+        party_race.answer(room["race"], player_id, index, choice, now)
+        _tick_race_unlocked(room, now)
+        room["updated_at"] = now
+        return serialize_room(room, player_id)
+
+
+def _public_race(room: dict[str, Any], viewer_id: str | None, now: float) -> dict[str, Any] | None:
+    race = room.get("race")
+    if not race or room.get("phase") != "racing":
+        return None
+    idx = race["index"]
+    flash = bool(race.get("flash_until"))
+    item = race["items"][idx]
+    answers = race["answers"][idx]
+    mine = answers.get(viewer_id) if viewer_id else None
+    out: dict[str, Any] = {
+        "kind": race["kind"],
+        "index": idx,
+        "count": len(race["items"]),
+        "flash": flash,
+        "item": party_race.public_item(item, reveal=flash),
+        "answered": [public_id(room, pid) for pid in answers],
+        "mine": {"choice": mine["choice"], "correct": mine["correct"] if flash else None} if mine else None,
+    }
+    if flash:
+        res = party_race.item_result(race, idx)
+        players = room["players"]
+        out["right"] = [players[pid]["name"] for pid in res["right"] if pid in players]
+        out["wrong"] = [players[pid]["name"] for pid in res["wrong"] if pid in players]
+        if mine:
+            place = res["right"].index(viewer_id) if viewer_id in res["right"] else -1
+            out["mine"]["place"] = place
+    return out
 
 
 def _house_extra_answer(prompt: dict[str, Any], submissions: dict[str, dict[str, Any]]) -> str:
@@ -1468,6 +1674,8 @@ def announce_line(room: dict[str, Any]) -> str:
         return f"{_pick(room, HOST_OPENERS, 'open')} {line}".strip()
     if phase == "voting":
         return _pick(room, HOST_VOTING, "vote")
+    if phase == "racing" and room.get("race"):
+        return race_line(room)
     if phase == "reveal":
         # The result waits for the TV to show the last answer (see chatter_for);
         # saying it now gave the winner away before the reveal.
@@ -1479,6 +1687,28 @@ def announce_line(room: dict[str, Any]) -> str:
         best = max(players, key=lambda p: int(p.get("score") or 0))
         return _pick(room, HOST_FINALE, "finale").format(name=best.get("name", "Our winner"), score=best.get("score", 0))
     return ""
+
+
+def race_line(room: dict[str, Any]) -> str:
+    """The host during a race: the intro with the first clue, each clue, then who got it."""
+    race = room["race"]
+    idx, item = race["index"], race["items"][race["index"]]
+    kind = race["kind"]
+    if race.get("flash_until"):
+        res = party_race.item_result(race, idx)
+        players = room["players"]
+        names = [players[pid]["name"] for pid in res["right"] if pid in players]
+        answer = party_race.correct_text(item)
+        if kind == "lightning":
+            answer = "True!" if item["answer"] == 0 else "False!"
+        if not names:
+            return f"It's {answer} Nobody got that one!"
+        return f"It's {answer} {names[0]} was fastest!"
+    if item["type"] == "pick":
+        clue = f"{item['clue']} True or false?" if kind == "lightning" else item["clue"]
+        lead = f"Question {idx + 1}!" if idx else str((room.get("current_prompt") or {}).get("announcer") or "")
+        return f"{lead} {clue}".strip()
+    return f"{(room.get('current_prompt') or {}).get('announcer') or ''} {item['clue']}".strip()
 
 
 def _stage_delay(room: dict[str, Any], now: float | None = None) -> float:
@@ -1520,6 +1750,8 @@ def _check_auto_advance_unlocked(room: dict[str, Any]) -> None:
         all_voted = bool(humans) and all(p["id"] in room["votes"] for p in humans)
         if all_voted or (deadline and now >= deadline + SUBMIT_GRACE_SECONDS):
             _score_round_unlocked(room)
+    elif phase == "racing":
+        _tick_race_unlocked(room, now)
     elif phase == "reveal" and deadline and now >= deadline:
         # The scores have been up long enough: the show goes on without waiting for the host.
         _advance_unlocked(room)
@@ -1573,6 +1805,8 @@ def _advance_unlocked(room: dict[str, Any], custom: dict[str, Any] | None = None
         _build_voting_options_unlocked(room)
     elif phase == "voting":
         _score_round_unlocked(room)
+    elif phase == "racing":
+        _score_race_unlocked(room)
     elif phase == "reveal":
         nxt = _next_kind(room)
         if nxt is None:
@@ -1622,7 +1856,8 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
             "round_delta": int(p.get("round_delta") or 0),
             "is_bot": bool(p.get("is_bot")),
             "spectator": bool(p.get("spectator")),
-            "submitted": p["id"] in submissions
+            "submitted": (p["id"] in room["race"]["answers"][room["race"]["index"]]) if phase == "racing" and room.get("race")
+            else p["id"] in submissions
             and (not p.get("is_bot") or now >= float(submissions[p["id"]].get("submitted_at") or 0)),
             "voted": p["id"] in votes
             and (not p.get("is_bot") or now >= float((room.get("bot_vote_at") or {}).get(p["id"]) or 0)),
@@ -1686,7 +1921,14 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
 
     my_sub = submissions.get(viewer_id) if viewer_id else None
     my_vote = votes.get(viewer_id) if viewer_id else None
-    remaining = max(0, round(float(room.get("phase_deadline") or now) - now, 1)) if phase in ("writing", "voting", "reveal") else 0.0
+    timed = ("writing", "voting", "reveal", "racing")
+    race = room.get("race") if phase == "racing" else None
+    # In a race the clock, and the phones' hold for a streamed TV, are per clue.
+    started = float(room.get("phase_started_at") or now)
+    if race:
+        started = (float(race["flash_until"]) - party_race.FLASH_SECONDS if race.get("flash_until")
+                   else float(race.get("started_at") or started))
+    remaining = max(0, round(float(room.get("phase_deadline") or now) - now, 1)) if phase in timed else 0.0
 
     return {
         "code": room["code"],
@@ -1696,8 +1938,11 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         "round": int(room.get("round") or 0),
         "total_rounds": int(room.get("total_rounds") or TOTAL_ROUNDS),
         "seconds_remaining": remaining,
-        "phase_seconds": round(float(room.get("phase_deadline") or now) - float(room.get("phase_started_at") or now), 1)
-        if phase in ("writing", "voting", "reveal") else 0.0,
+        "phase_seconds": round(float(room.get("phase_deadline") or now) - (started if race else float(room.get("phase_started_at") or now)), 1)
+        if phase in timed else 0.0,
+        "race": _public_race(room, viewer_id, now),
+        # Changes with every clue and every answer flash, so screens know to redraw and speak.
+        "step": f"{race['index']}{'f' if race.get('flash_until') else ''}" if race else "",
         "reveal_step_seconds": REVEAL_PER_ANSWER_SECONDS,
         "players": public_players,
         "prompt": public_prompt,
@@ -1723,8 +1968,8 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         "joke": dict(zip(("setup", "punch"), joke_for(room, f"lobby{int(now // LOBBY_JOKE_SECONDS)}"), strict=True))
         if phase == "lobby" else None,
         "music": bool(room.get("music", True)),
-        "phase_age_s": round(max(0.0, now - float(room.get("phase_started_at") or now)), 2)
-        if phase in ("writing", "voting", "reveal") else 0.0,
+        "phase_age_s": round(max(0.0, now - (started if race else float(room.get("phase_started_at") or now))), 2)
+        if phase in timed else 0.0,
     }
 
 

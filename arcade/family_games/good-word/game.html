@@ -138,6 +138,27 @@
   .gw-opt.mine { background: #e9e2fb; color: #6b5a99; box-shadow: none; border-style: dashed; }
   .gw-opt.picked { background: var(--gold); }
   .gw-opt .meta { display: block; font-size: 15px; font-weight: 900; color: #6b5a99; margin-top: 6px; }
+  /* race rounds: big game-show buttons */
+  .gw-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .gw-pick { min-height: 84px; font: 900 19px/1.2 var(--font); color: var(--ink); border: 3px solid var(--ink); border-radius: 18px;
+    box-shadow: 0 6px 0 var(--ink); padding: 10px 8px; cursor: pointer; text-align: center; overflow-wrap: anywhere; }
+  .gw-pick:active:not(:disabled) { transform: translateY(5px); box-shadow: 0 1px 0 var(--ink); }
+  .gw-pick .l { display: block; font-size: 15px; opacity: .7; }
+  .gw-pick.c0 { background: var(--gold); } .gw-pick.c1 { background: var(--teal); }
+  .gw-pick.c2 { background: #ff9b9b; } .gw-pick.c3 { background: #b9a6ff; }
+  .gw-picks.tf .gw-pick { min-height: 120px; font-size: 30px; }
+  .gw-picks.tf .c0 { background: var(--teal); } .gw-picks.tf .c1 { background: var(--coral); color: #fff; }
+  .gw-pick.right { outline: 5px solid #fff; background: #4ade80 !important; color: var(--ink); }
+  .gw-pick.dim { opacity: .4; }
+  .gw-board2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .gw-cell { font: 800 16px/1.2 var(--font); color: var(--ink); background: var(--paper); border: 3px solid var(--ink); border-radius: 14px;
+    padding: 10px 8px; min-height: 52px; box-shadow: 0 4px 0 var(--ink); cursor: pointer; text-align: center; overflow-wrap: anywhere; }
+  .gw-cell.sel { background: var(--gold); }
+  .gw-cell.m0 { background: #ffd66b; } .gw-cell.m1 { background: #7ee8d5; } .gw-cell.m2 { background: #ffb3b3; }
+  .gw-cell.m3 { background: #cdbdff; } .gw-cell.m4 { background: #a7e3ff; }
+  .gw-cell .k { display: inline-block; min-width: 22px; font-weight: 900; }
+  .gw-cell.used { opacity: .45; }
+  .gw-colhead { font: 900 15px var(--font); color: #fff; text-transform: uppercase; letter-spacing: .08em; text-align: center; }
   .gw-opt.win { background: #fff1b8; } .gw-opt.trap { background: #ffd9d9; } .gw-opt.truth { background: #c9f7ec; }
   .gw-opt .pts { float: right; color: #138a6f; font-weight: 900; margin-left: 8px; }
 
@@ -416,12 +437,12 @@
     }
     const stings = new Set();
     function duck(on) { ducked = on; if (bed) fade(bed, level(), 300); }
-    const BEDS = { lobby: "lobby", writing: "think", voting: "vote", reveal: "reveal" };
+    const BEDS = { lobby: "lobby", writing: "think", voting: "vote", reveal: "reveal", racing: "vote" };
     function apply(r, quiet) {
       clearTimeout(timer);
       if (!r || !phoneMaySpeak() || r.music === false || isAutomatedCheck) { setBed(""); return; }
       load();
-      const key = r.match_id + ":" + r.round + ":" + r.phase;
+      const key = stepKey(r);
       const go = () => {
         if (!quiet && key !== lastKey) {
           if (r.phase === "writing" && r.round === 1) sting("theme");
@@ -459,8 +480,10 @@
     });
   }, 500);
 
+  // A race moves through clues inside one phase: each clue and answer flash is its own moment.
+  function stepKey(r) { return r.match_id + ":" + r.round + ":" + r.phase + (r.step ? ":" + r.step : ""); }
   function announceFor(r) {
-    const k = r.match_id + ":" + r.round + ":" + r.phase;
+    const k = stepKey(r);
     if (k !== chatterKey) { chatterKey = k; phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000; }
     if (r.phase !== "lobby" && r.announce) { announce(r.announce, k); return; }
     if (r.phase === "writing" && r.prompt) announce(r.prompt.announcer || ("Round " + r.round + "! " + r.prompt.prompt), k);
@@ -544,7 +567,7 @@
     const prev = room;
     room = r;
     if (r.stage_connected) stageEverSeen = true;
-    if (["writing", "voting", "reveal"].includes(r.phase)) {
+    if (["writing", "voting", "reveal", "racing"].includes(r.phase)) {
       deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
       const hold = Math.max(0, (r.stage_delay_s || 0) - (r.phase_age_s || 0));
       holdUntil = hold > 0.2 ? Date.now() + hold * 1000 : 0;
@@ -556,6 +579,11 @@
     const me = meOf(r);
     if (me && typeof me.score === "number" && me.score !== kit.score) kit.setScore(me.score, { quiet: true });
     const moved = !prev || prev.phase !== r.phase || prev.round !== r.round || prev.match_id !== r.match_id;
+    if (r.phase === "racing" && (!prev || stepKey(prev) !== stepKey(r))) {
+      if (!r.race || !r.race.flash) raceUi = { key: stepKey(r), sel: -1, map: {}, order: [] };
+      else if (r.race.mine) sfx(r.race.mine.correct ? "win" : "lose");
+      if (prev && !moved) tap();
+    }
     if (prev && prev.match_id !== r.match_id && kit.state === "over") kit.start();
     if (prev && moved) {
       if (r.phase === "writing") draft = "";
@@ -578,10 +606,11 @@
   function signature(r) {
     // Only what the current screen shows. While a player is still choosing,
     // other players' progress must not rebuild the buttons under their thumb.
-    const choosing = (r.phase === "writing" && !r.my_submission) || (r.phase === "voting" && !r.my_vote);
+    const choosing = (r.phase === "writing" && !r.my_submission) || (r.phase === "voting" && !r.my_vote)
+      || (r.phase === "racing" && r.race && !r.race.mine && !r.race.flash);
     const people = choosing ? [] : (r.players || []).map((p) => [p.id, p.score, p.submitted, p.voted, p.connected, p.avatar, p.is_host]);
     const lobbyPeople = r.phase === "lobby" ? (r.players || []).map((p) => [p.id, p.avatar, p.connected, p.is_host, p.name]) : [];
-    return JSON.stringify([r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
+    return JSON.stringify([r.step || "", r.race && r.race.mine ? 1 : 0, r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
       people, lobbyPeople, choosing ? [] : (r.options || []).map((o) => [o.option_id, (o.voters || []).length]),
       (r.options || []).map((o) => o.option_id).join(","), activeScreen && activeScreen.id]);
   }
@@ -720,11 +749,12 @@
 
   function viewHold(r) {
     // The TV is a video a few seconds behind; nothing here may get ahead of it.
-    const what = r.phase === "writing" ? "Round " + r.round + " is coming up" : r.phase === "voting" ? "Time to vote" : "Here come the results";
+    const what = r.phase === "writing" ? "Round " + r.round + " is coming up" : r.phase === "voting" ? "Time to vote"
+      : r.phase === "racing" ? "Next question coming up" : "Here come the results";
     return `<div class="gw-panel gw-enter" style="text-align:center;padding:34px 18px">
       <div style="font-size:54px;line-height:1">📺</div>
       <h1 style="margin:12px 0 6px">Get ready!</h1>
-      <p class="gw-note" style="font-weight:800">${what}. Watch the TV…</p></div>`;
+      <p class="gw-note" style="font-weight:800;color:#fff3c4">${what}. Watch the TV…</p></div>`;
   }
   function viewWriting(r) {
     let h = header(r);
@@ -746,6 +776,74 @@
         <div style="margin-top:8px"><button type="button" class="gw-btn coral" id="gw-send" ${busy ? "disabled" : ""}>Send it!</button></div>
       </div>
       <button type="button" class="gw-btn ghost" id="gw-decoy" ${busy ? "disabled" : ""}>🪤 Stuck? Play the Scribe's Decoy (+500 per vote)</button>`;
+  }
+
+  /* ---------- race rounds ---------- */
+  let raceUi = { key: "", sel: -1, map: {}, order: [] };
+  function raceSend(choice) {
+    if (busy || !room || !room.race) return;
+    busy = true;
+    api(`/api/party/rooms/${encodeURIComponent(code)}/race`, { player_id: myId, item: room.race.index, choice })
+      .then((d) => { busy = false; tap(); lastSig = ""; setRoom(d.room); })
+      .catch((e) => { busy = false; lastSig = ""; render(); toast(e.message); });
+  }
+  function viewRacing(r) {
+    const race = r.race || {};
+    const item = race.item || {};
+    let h = header(r);
+    const qn = race.count > 1 ? `<div class="gw-label" style="color:#fff3c4;text-align:center">Question ${race.index + 1} of ${race.count}</div>` : "";
+    const me = meOf(r);
+    const clue = `<div class="gw-card gw-enter"><div class="gw-prompt">${esc(item.clue || "")}</div>
+      ${item.type === "pairs" ? `<div class="gw-instr">Tap one on the left, then its match on the right.</div>`
+        : item.type === "order" ? `<div class="gw-instr">Tap them in order: ${esc(item.order_label || "first to last")}.</div>` : ""}</div>`;
+    if (!me || me.spectator) return h + qn + clue + `<div class="gw-hero"><div class="big">👀</div><h1>You're watching this round</h1></div>`;
+    if (race.flash) {
+      const mine = race.mine;
+      const right = race.right || [];
+      const head = !mine ? `<div class="big">⏰</div><h1>Too slow!</h1>`
+        : mine.correct ? `<div class="big">${mine.place === 0 ? "⚡" : "✅"}</div><h1>${mine.place === 0 ? "FASTEST!" : "Correct! " + ordinal(mine.place + 1) + " in"}</h1>`
+          : `<div class="big">❌</div><h1>Not quite!</h1>`;
+      return h + qn + `<div class="gw-hero gw-enter">${head}<p>The answer: <b>${esc(item.answer_text || "")}</b></p>
+        <p style="margin-top:8px">${right.length ? "⚡ " + esc(right[0]) + " got there first" : "Nobody got that one!"}</p></div>`;
+    }
+    if (race.mine) {
+      const waiting = humansOf(r).filter((p) => !p.submitted).length;
+      return h + qn + clue + `<div class="gw-hero gw-enter"><div class="big">🔒</div><h1>Locked in!</h1>
+        <p>${waiting ? "Waiting on " + waiting + " more…" : "Everyone's in!"}</p></div>`;
+    }
+    if (item.type === "pick") {
+      const tf = (item.options || []).length === 2;
+      return h + qn + clue + `<div class="gw-picks${tf ? " tf" : ""}">` + (item.options || []).map((o, i) =>
+        `<button type="button" class="gw-pick c${i}" data-pick="${i}" ${busy ? "disabled" : ""}>${tf ? "" : `<span class="l">${"ABCD"[i]}</span>`}${esc(o)}</button>`).join("") + "</div>";
+    }
+    if (item.type === "pairs") {
+      const leftOf = {}; Object.keys(raceUi.map).forEach((l) => { leftOf[raceUi.map[l]] = Number(l); });
+      const done = Object.keys(raceUi.map).length === (item.left || []).length;
+      let g = `<div class="gw-board2"><div class="gw-colhead">${esc(item.left_label || "")}</div><div class="gw-colhead">${esc(item.right_label || "")}</div>`;
+      for (let i = 0; i < (item.left || []).length; i++) {
+        const lm = raceUi.map[i] !== undefined ? " m" + i : raceUi.sel === i ? " sel" : "";
+        const rl = leftOf[i];
+        g += `<button type="button" class="gw-cell${lm}" data-left="${i}">${esc(item.left[i])}</button>`;
+        g += `<button type="button" class="gw-cell${rl !== undefined ? " m" + rl : ""}" data-right="${i}">${esc(item.right[i])}</button>`;
+      }
+      return h + qn + clue + g + `</div><div class="gw-row" style="gap:8px"><button type="button" class="gw-btn ghost" id="gw-race-reset">Start over</button>
+        <button type="button" class="gw-btn coral" id="gw-race-lock" ${done && !busy ? "" : "disabled"}>Lock it in!</button></div>`;
+    }
+    const items = item.items || [];
+    const done = raceUi.order.length === items.length;
+    let g = `<div class="gw-card" style="padding:12px"><div class="gw-label">Your order (${esc(item.order_label || "first → last")})</div>` +
+      (raceUi.order.length ? raceUi.order.map((idx, n) => `<div style="font-weight:900;margin:4px 0">${n + 1}. ${esc(items[idx])}</div>`).join("") : `<div class="gw-note" style="color:#5b4a8a">Tap below to start</div>`) + "</div>";
+    g += `<div class="gw-board2" style="grid-template-columns:1fr">` + items.map((t, i) => {
+      const pos = raceUi.order.indexOf(i);
+      return `<button type="button" class="gw-cell${pos >= 0 ? " used" : ""}" data-ord="${i}" ${pos >= 0 ? "disabled" : ""}>${esc(t)}</button>`;
+    }).join("") + "</div>";
+    return h + qn + clue + g + `<div class="gw-row" style="gap:8px"><button type="button" class="gw-btn ghost" id="gw-race-reset">Start over</button>
+      <button type="button" class="gw-btn coral" id="gw-race-lock" ${done && !busy ? "" : "disabled"}>Lock it in!</button></div>`;
+  }
+  function raceSummaryHtml(r) {
+    const list = (r.reveal && r.reveal.race) || [];
+    return list.map((it, i) => `<div class="gw-opt" style="cursor:default">${list.length > 1 ? `<b>${i + 1}.</b> ` : ""}${esc(it.clue)}
+      <span class="meta">✅ ${esc(it.answer_text || "")}${(it.right || []).length ? " · ⚡ " + esc(it.right[0]) : ""}</span></div>`).join("");
   }
 
   function viewVoting(r) {
@@ -794,7 +892,8 @@
       <h1>${r.stage_connected ? "Look at the TV!" : "Round " + r.round + " results"}</h1>
       <p>${rank ? "You're in " + ordinal(rank) + " place" : ""}</p>
       <div class="gw-delta ${d > 0 ? "" : d < 0 ? "neg" : "zero"}">${d > 0 ? "+" : ""}${d} pts</div></div>`;
-    if (!r.stage_connected) h += resultsHtml(r) + (r.prompt && r.prompt.scripture_note ? `<div class="gw-tag">${esc(r.prompt.scripture_note)}</div>` : "");
+    if (!r.stage_connected && r.reveal && r.reveal.race) h += `<div class="gw-opts">${raceSummaryHtml(r)}</div>`;
+    else if (!r.stage_connected) h += resultsHtml(r) + (r.prompt && r.prompt.scripture_note ? `<div class="gw-tag">${esc(r.prompt.scripture_note)}</div>` : "");
     h += boardHtml(r);
     const last = r.round >= r.total_rounds;
     h += `<div class="gw-tag" style="margin-top:8px">${last ? "Final scores in" : "Next round starts in"} <b id="gw-next-in">${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}</b>s</div>`;
@@ -845,7 +944,8 @@
     let html;
     if (view === "join" || !room) html = viewJoin();
     else if (room.phase === "lobby") html = viewLobby(room);
-    else if (["writing", "voting", "reveal"].includes(room.phase) && holding()) html = viewHold(room);
+    else if (["writing", "voting", "reveal", "racing"].includes(room.phase) && holding()) html = viewHold(room);
+    else if (room.phase === "racing") html = viewRacing(room);
     else if (room.phase === "writing") html = viewWriting(room);
     else if (room.phase === "voting") html = viewVoting(room);
     else if (room.phase === "reveal") html = viewReveal(room);
@@ -889,6 +989,32 @@
       document.querySelectorAll("[data-av]").forEach((x) => x.classList.toggle("on", x === b));
     }));
     document.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => join(b.getAttribute("data-open"), false)));
+    document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
+      document.querySelectorAll("[data-pick]").forEach((x) => { x.disabled = true; x.classList.toggle("dim", x !== b); });
+      raceSend(Number(b.getAttribute("data-pick")));
+    }));
+    document.querySelectorAll("[data-left]").forEach((b) => b.addEventListener("click", () => {
+      const i = Number(b.getAttribute("data-left"));
+      if (raceUi.map[i] !== undefined) delete raceUi.map[i]; else raceUi.sel = raceUi.sel === i ? -1 : i;
+      tap(); lastSig = ""; render();
+    }));
+    document.querySelectorAll("[data-right]").forEach((b) => b.addEventListener("click", () => {
+      const j = Number(b.getAttribute("data-right"));
+      Object.keys(raceUi.map).forEach((l) => { if (raceUi.map[l] === j) delete raceUi.map[l]; });
+      if (raceUi.sel >= 0) { raceUi.map[raceUi.sel] = j; raceUi.sel = -1; }
+      else { const free = (room.race.item.left || []).findIndex((_, i) => raceUi.map[i] === undefined); if (free >= 0) raceUi.map[free] = j; }
+      tap(); lastSig = ""; render();
+    }));
+    document.querySelectorAll("[data-ord]").forEach((b) => b.addEventListener("click", () => {
+      raceUi.order.push(Number(b.getAttribute("data-ord"))); tap(); lastSig = ""; render();
+    }));
+    on("gw-race-reset", () => { raceUi.map = {}; raceUi.sel = -1; raceUi.order = []; lastSig = ""; render(); });
+    on("gw-race-lock", () => {
+      const item = room && room.race && room.race.item;
+      if (!item) return;
+      if (item.type === "pairs") raceSend((item.left || []).map((_, i) => raceUi.map[i]));
+      else raceSend(raceUi.order.slice());
+    });
     document.querySelectorAll("[data-vote]").forEach((b) => b.addEventListener("click", () => {
       document.querySelectorAll("[data-vote]").forEach((x) => { x.disabled = true; });
       b.classList.add("picked");
