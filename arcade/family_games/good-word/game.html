@@ -221,6 +221,7 @@
   let pollTimer = null;
   let lastSig = "";
   let deadline = 0;
+  let holdUntil = 0; // streamed TV: the picture is behind, so each phase waits for it
   let stageEverSeen = false; // a TV played for this room: phones stay silent from then on
   const spoken = {};
   let voices = [];
@@ -310,9 +311,12 @@
 
   /* ================= sound: the TV is the speaker ================= */
   function phoneMaySpeak() {
-    if (!room || stageEverSeen || room.stage_connected) return false;
-    return !!room.you_are_host;
+    if (!room || !room.you_are_host) return false;
+    // A streamed TV (Roku) has no announcer of its own: the host phone is the voice.
+    if (room.stage_delay_s > 0) return true;
+    return !(stageEverSeen || room.stage_connected);
   }
+  function holding() { return holdUntil > Date.now(); }
   function sfx(name) { if (phoneMaySpeak()) kit.sound.play(name); }
   let currentAudio = null;
   function announce(text, key) {
@@ -324,11 +328,76 @@
       body: JSON.stringify({ text: String(text).replace(/_{3,}/g, "blank").slice(0, 260), voice: room.voice || "" })
     }).then((r) => (r.status === 200 ? r.blob() : null)).then((blob) => {
       if (!blob || blob.size < 128 || !phoneMaySpeak()) return;
-      try { if (currentAudio) currentAudio.pause(); } catch (_) {}
-      currentAudio = new Audio(URL.createObjectURL(blob));
-      currentAudio.play().catch(() => {});
+      // In step with the TV picture: wait out whatever is left of the hold.
+      setTimeout(() => {
+        try { if (currentAudio) currentAudio.pause(); } catch (_) {}
+        currentAudio = new Audio(URL.createObjectURL(blob));
+        music.duck(true);
+        currentAudio.onended = currentAudio.onerror = () => music.duck(false);
+        currentAudio.play().catch(() => music.duck(false));
+      }, Math.max(0, holdUntil - Date.now()));
     }).catch(() => {});
   }
+  /* ================= game-show music (only where the announcer plays) ================= */
+  const music = (() => {
+    let cues = null, loadedAt = 0, bed = null, bedName = "", ducked = false, lastKey = "", timer = 0;
+    const ready = (n) => cues && cues[n] && cues[n].ready;
+    const level = () => ((cues && cues[bedName]) ? cues[bedName].volume : 0.3) * (ducked ? 0.35 : 1);
+    function fade(el, to, ms, done) {
+      const from = el.volume, t0 = Date.now();
+      const iv = setInterval(() => {
+        const k = Math.min(1, (Date.now() - t0) / ms);
+        try { el.volume = Math.max(0, Math.min(1, from + (to - from) * k)); } catch (_) {}
+        if (k >= 1) { clearInterval(iv); if (done) done(); }
+      }, 50);
+    }
+    function load() {
+      if (loadedAt && Date.now() - loadedAt < 60000) return;
+      loadedAt = Date.now();
+      fetch("/api/party/music").then((r) => r.json()).then((d) => { if (d && d.cues) { cues = d.cues; if (room) apply(room, true); } }).catch(() => {});
+    }
+    function setBed(name) {
+      if (!ready(name)) name = "";
+      if (name === bedName) return;
+      const old = bed;
+      if (old) fade(old, 0, 900, () => { try { old.pause(); } catch (_) {} });
+      bed = null; bedName = name;
+      if (!name) return;
+      bed = new Audio(cues[name].url);
+      bed.loop = true; bed.volume = 0;
+      bed.play().catch(() => {});
+      fade(bed, level(), 1200);
+    }
+    function sting(name) {
+      if (!ready(name)) return;
+      const el = new Audio(cues[name].url);
+      el.volume = cues[name].volume;
+      duck(true);
+      el.onended = el.onerror = () => duck(false);
+      el.play().catch(() => duck(false));
+    }
+    function duck(on) { ducked = on; if (bed) fade(bed, level(), 300); }
+    const BEDS = { lobby: "lobby", writing: "think", voting: "vote", reveal: "reveal" };
+    function apply(r, quiet) {
+      clearTimeout(timer);
+      if (!r || !phoneMaySpeak() || r.music === false || isAutomatedCheck) { setBed(""); return; }
+      load();
+      const key = r.match_id + ":" + r.round + ":" + r.phase;
+      const go = () => {
+        if (!quiet && key !== lastKey) {
+          if (r.phase === "writing" && r.round === 1) sting("theme");
+          if (r.phase === "finished") sting("finale");
+        }
+        lastKey = key;
+        setBed(BEDS[r.phase] || "");
+      };
+      // With a streamed TV the music changes when the picture does.
+      const wait = Math.max(0, holdUntil - Date.now());
+      if (wait > 0 && key !== lastKey) timer = setTimeout(go, wait); else go();
+    }
+    return { apply, duck, stop: () => setBed("") };
+  })();
+
   function announceFor(r) {
     const k = r.match_id + ":" + r.round + ":" + r.phase;
     if (r.phase === "writing" && r.prompt) announce(r.prompt.announcer || ("Round " + r.round + "! " + r.prompt.prompt), k);
@@ -402,7 +471,15 @@
     const prev = room;
     room = r;
     if (r.stage_connected) stageEverSeen = true;
-    if (["writing", "voting", "reveal"].includes(r.phase)) deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
+    if (["writing", "voting", "reveal"].includes(r.phase)) {
+      deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
+      const hold = Math.max(0, (r.stage_delay_s || 0) - (r.phase_age_s || 0));
+      holdUntil = hold > 0.2 ? Date.now() + hold * 1000 : 0;
+      if (holdUntil) {
+        clearTimeout(setRoom.holdTimer);
+        setRoom.holdTimer = setTimeout(() => { lastSig = room ? signature(room) : ""; render(true); }, hold * 1000 + 50);
+      }
+    } else holdUntil = 0;
     const me = meOf(r);
     if (me && typeof me.score === "number" && me.score !== kit.score) kit.setScore(me.score, { quiet: true });
     const moved = !prev || prev.phase !== r.phase || prev.round !== r.round || prev.match_id !== r.match_id;
@@ -421,6 +498,7 @@
       kit.gameOver({ title: "Match complete" }); // the kit posts the score to the family board
     }
     announceFor(r);
+    music.apply(r, false);
     const sig = signature(r);
     if (sig !== lastSig) { lastSig = sig; render(!!(prev && moved)); }
   }
@@ -430,7 +508,7 @@
     const choosing = (r.phase === "writing" && !r.my_submission) || (r.phase === "voting" && !r.my_vote);
     const people = choosing ? [] : (r.players || []).map((p) => [p.id, p.score, p.submitted, p.voted, p.connected, p.avatar, p.is_host]);
     const lobbyPeople = r.phase === "lobby" ? (r.players || []).map((p) => [p.id, p.avatar, p.connected, p.is_host, p.name]) : [];
-    return JSON.stringify([r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.my_vote, !!r.my_submission, r.voice,
+    return JSON.stringify([r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, holding(), r.my_vote, !!r.my_submission, r.voice,
       people, lobbyPeople, choosing ? [] : (r.options || []).map((o) => [o.option_id, (o.voters || []).length]),
       (r.options || []).map((o) => o.option_id).join(","), activeScreen && activeScreen.id]);
   }
@@ -521,6 +599,7 @@
           <select id="gw-voice" class="gw-field">${(voices.length ? voices : [{ id: r.voice, label: r.voice }]).map((v) =>
             `<option value="${esc(v.id)}" ${v.id === r.voice ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select>
           <label class="gw-switch"><span>✨ Fresh AI-written prompts</span><input type="checkbox" id="gw-ai" ${useAiPrompts ? "checked" : ""}></label>
+          <label class="gw-switch"><span>🎵 Game show music</span><input type="checkbox" id="gw-music" ${r.music !== false ? "checked" : ""}></label>
         </div>`;
     } else {
       h += `<div class="gw-card gw-wait">Waiting for ${esc(host ? host.name : "the host")} to start<span class="gw-dots"><span>.</span><span>.</span><span>.</span></span>
@@ -532,7 +611,7 @@
   function header(r) {
     const pr = r.prompt || {};
     const x2 = pr.multiplier > 1 ? ` <b>· ${pr.multiplier}X</b>` : "";
-    const total = r.phase_seconds || (r.phase === "writing" ? 55 : r.phase === "voting" ? 35 : 14);
+    const total = Math.max(1, (r.phase_seconds || (r.phase === "writing" ? 55 : r.phase === "voting" ? 35 : 14)) - (r.stage_delay_s || 0));
     const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     const frac = Math.max(0, Math.min(1, left / total));
     return `<div class="gw-head"><div class="gw-badge">Round ${r.round}/${r.total_rounds} · ${esc(pr.icon || "📜")} ${esc(pr.badge || pr.title || "")}${x2}</div>
@@ -549,6 +628,14 @@
       ${compact ? "" : `<div class="gw-instr">${esc(pr.instructions || "")}</div>`}</div>`;
   }
 
+  function viewHold(r) {
+    // The TV is a video a few seconds behind; nothing here may get ahead of it.
+    const what = r.phase === "writing" ? "Round " + r.round + " is coming up" : r.phase === "voting" ? "Time to vote" : "Here come the results";
+    return `<div class="gw-panel gw-enter" style="text-align:center;padding:34px 18px">
+      <div style="font-size:54px;line-height:1">📺</div>
+      <h1 style="margin:12px 0 6px">Get ready!</h1>
+      <p class="gw-note" style="font-weight:800">${what}. Watch the TV…</p></div>`;
+  }
   function viewWriting(r) {
     let h = header(r);
     const me = meOf(r);
@@ -636,7 +723,15 @@
   function roomFooter(r) {
     const leaveLabel = confirming === "leave" ? "Tap again to leave" : "Leave game";
     const endLabel = confirming === "end" ? "Tap again to end for all" : "End game for everyone";
-    return `<div class="gw-row" style="margin-top:6px">
+    // Only a room whose TV is a video stream has a lag to tune.
+    const sync = r.you_are_host && r.stage_delay_s > 0 ? `<div class="gw-card" style="padding:12px 14px">
+      <div class="gw-row" style="align-items:center;justify-content:space-between;gap:10px">
+        <div><b>📺 TV picture lag: ${Number(r.stage_delay_s).toFixed(0)}s</b>
+          <div class="gw-note">Phones wait this long for the TV. Nudge it if they get ahead or fall behind.</div></div>
+        <div class="gw-row" style="gap:6px;flex:0 0 auto">
+          <button type="button" class="gw-btn ghost small" data-lag="-1" aria-label="Less lag">−</button>
+          <button type="button" class="gw-btn ghost small" data-lag="1" aria-label="More lag">+</button></div></div></div>` : "";
+    return sync + `<div class="gw-row" style="margin-top:6px">
       <button type="button" class="gw-btn ghost" id="gw-leave">${leaveLabel}</button>
       ${r.you_are_host ? `<button type="button" class="gw-btn ghost" id="gw-end" style="border-color:rgba(255,107,107,.7)">${endLabel}</button>` : ""}</div>`;
   }
@@ -655,6 +750,7 @@
     let html;
     if (view === "join" || !room) html = viewJoin();
     else if (room.phase === "lobby") html = viewLobby(room);
+    else if (["writing", "voting", "reveal"].includes(room.phase) && holding()) html = viewHold(room);
     else if (room.phase === "writing") html = viewWriting(room);
     else if (room.phase === "voting") html = viewVoting(room);
     else if (room.phase === "reveal") html = viewReveal(room);
@@ -682,6 +778,13 @@
     on("gw-send", () => submitAnswer(false));
     on("gw-decoy", () => submitAnswer(true));
     on("gw-tv-open", openTvSheet);
+    document.querySelectorAll("[data-lag]").forEach((b) => b.addEventListener("click", () => {
+      if (!room) return;
+      tap();
+      const seconds = Math.max(0, Math.min(30, (room.stage_delay_s || 0) + Number(b.getAttribute("data-lag"))));
+      api(`/api/party/rooms/${encodeURIComponent(room.code)}/stream_delay`, { player_id: myId, seconds })
+        .then(() => { room.stage_delay_s = seconds; lastSig = ""; render(); }).catch(() => {});
+    }));
     const codeEl = $("gw-code");
     if (codeEl) codeEl.addEventListener("input", () => { codeEl.value = cleanCode(codeEl.value); });
     const nameEl = $("gw-name");
@@ -709,6 +812,11 @@
     const voiceEl = $("gw-voice");
     if (voiceEl) voiceEl.addEventListener("change", () => {
       api(`/api/party/rooms/${encodeURIComponent(code)}/voice`, { voice: voiceEl.value, player_id: myId }).catch(() => {});
+    });
+    const mu = $("gw-music");
+    if (mu) mu.addEventListener("change", () => {
+      api(`/api/party/rooms/${encodeURIComponent(code)}/music`, { on: mu.checked, player_id: myId })
+        .then((d) => { if (d && d.room) setRoom(d.room); }).catch(() => {});
     });
     const ai = $("gw-ai");
     if (ai) ai.addEventListener("change", () => { useAiPrompts = ai.checked; });

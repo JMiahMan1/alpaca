@@ -226,6 +226,13 @@ _CANONICAL_TOOLS = {
     # has to recognise it.
     "aicapabilitiesrequest",
     "storagetexttoaudiorequest",
+    # Added downstream since: scripture lookup, the Calibre library, browser
+    # automation, household chores and meal plans.
+    "biblerequest",
+    "calibrerequest",
+    "browserautomationrequest",
+    "chorerequest",
+    "mealplanrequest",
 }
 
 # Tier-2 regex aliases mirroring the app (agent_loop.py lines ~3690-3735).

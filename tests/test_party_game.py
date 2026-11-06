@@ -553,3 +553,53 @@ def test_abandoned_rooms_close_by_themselves():
     with party._lock:
         party._rooms["IDLE"]["players"]["p"]["last_seen"] -= party.ROOM_IDLE_SECONDS + 5
     assert all(r["code"] != "IDLE" for r in party.list_active_rooms())
+
+
+def test_a_streamed_stage_delays_each_phase_so_phones_wait_for_the_tv(client):
+    """A Roku sees the stage as video ~8 s late: every phase gets that time, phones hold."""
+    client.post("/api/party/rooms", json={"code": "ROKU", "player_id": "p1", "name": "Ann"})
+    client.post("/api/party/rooms", json={"code": "ROKU", "player_id": "p2", "name": "Ben"})
+    client.get("/api/party/rooms/ROKU?stage=1&video=1")  # the headless renderer polling
+    client.post("/api/party/rooms/ROKU/start", json={"player_id": "p1"})
+    room = client.get("/api/party/rooms/ROKU?player_id=p2").get_json()["room"]
+    assert room["phase"] == "writing"
+    assert room["stage_delay_s"] == party.STREAM_STAGE_DELAY_S
+    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS + party.STREAM_STAGE_DELAY_S, abs=0.2)
+    assert 0 <= room["phase_age_s"] < 2
+
+
+def test_a_live_page_stage_adds_no_delay(client):
+    client.post("/api/party/rooms", json={"code": "LGTV", "player_id": "p1", "name": "Ann"})
+    client.post("/api/party/rooms", json={"code": "LGTV", "player_id": "p2", "name": "Ben"})
+    client.get("/api/party/rooms/LGTV?stage=1")
+    client.post("/api/party/rooms/LGTV/start", json={"player_id": "p1"})
+    room = client.get("/api/party/rooms/LGTV?player_id=p2").get_json()["room"]
+    assert room["stage_delay_s"] == 0
+    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS, abs=0.2)
+
+
+def test_stream_delay_ends_when_the_streamed_stage_goes_away(monkeypatch):
+    party.create_or_join_room(code="GONE", player_id="p1", name="Ann")
+    party.get_room_state("GONE", stage=True, video=True)
+    room = party._rooms["GONE"]
+    assert party._stage_delay(room) == party.STREAM_STAGE_DELAY_S
+    assert party._stage_delay(room, now=room["video_stage_seen_at"] + party.STAGE_PRESENCE_SECONDS + 1) == 0.0
+
+
+def test_phone_and_tv_pages_know_about_the_stream_delay(client):
+    tv = client.get("/tv").get_data(as_text=True)
+    assert "HeadlessChrome" in tv and "&video=1" in tv and "stage_delay_s" in tv
+    from arcade import family
+    phone = family.build_html("good-word")
+    assert "viewHold" in phone and "stage_delay_s" in phone and "phase_age_s" in phone
+
+
+def test_host_can_tune_the_stream_lag_and_others_cannot(client):
+    client.post("/api/party/rooms", json={"code": "SYNC", "player_id": "p1", "name": "Ann"})
+    client.post("/api/party/rooms", json={"code": "SYNC", "player_id": "p2", "name": "Ben"})
+    assert client.post("/api/party/rooms/SYNC/stream_delay", json={"player_id": "p2", "seconds": 3}).status_code == 403
+    assert client.post("/api/party/rooms/SYNC/stream_delay", json={"player_id": "p1", "seconds": 11}).get_json()["stream_delay_s"] == 11
+    # No streamed TV: still no delay at all.
+    assert client.get("/api/party/rooms/SYNC?player_id=p1").get_json()["room"]["stage_delay_s"] == 0
+    client.get("/api/party/rooms/SYNC?stage=1&video=1")
+    assert client.get("/api/party/rooms/SYNC?player_id=p1").get_json()["room"]["stage_delay_s"] == 11
