@@ -32,6 +32,7 @@ Jarvis Family Hub and Alpaca Arcade:
 from __future__ import annotations
 
 import base64
+import collections
 import contextlib
 import hashlib
 import json
@@ -678,6 +679,39 @@ PROMPT_BANK: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
+# The bigger bank and the extra round types live in party_prompts.py.
+try:
+    from arcade.party_prompts import EXTRA_PROMPTS, NEW_ROUND_META
+except ImportError:  # the arcade image runs with arcade/ on sys.path
+    try:
+        from party_prompts import EXTRA_PROMPTS, NEW_ROUND_META  # type: ignore[no-redef]
+    except ImportError:
+        EXTRA_PROMPTS, NEW_ROUND_META = {}, {}
+ROUND_META.update(NEW_ROUND_META)
+for _kind, _items in EXTRA_PROMPTS.items():
+    PROMPT_BANK.setdefault(_kind, []).extend(_items)
+
+#: Every match opens easy and ends on the double-points finale; the five
+#: rounds between are drawn fresh each match from every round type there is,
+#: always including one Truth or Bluff.
+MATCH_OPENER, MATCH_FINALE = "blank_o_matic", "survey_says"
+
+
+def new_match_schedule() -> list[str]:
+    middle_pool = [k for k in PROMPT_BANK if k not in (MATCH_FINALE,) and PROMPT_BANK[k] and k in ROUND_META]
+    others = [k for k in middle_pool if k != "truth_or_bluff"]
+    picks = random.sample(others, k=min(4, len(others)))
+    if "truth_or_bluff" in middle_pool:
+        picks.append("truth_or_bluff")
+    while len(picks) < TOTAL_ROUNDS - 2:
+        picks.append(random.choice(middle_pool))
+    random.shuffle(picks)
+    return [MATCH_OPENER, *picks[: TOTAL_ROUNDS - 2], MATCH_FINALE]
+
+
+#: Prompts used recently in any room: a new room should not replay last night's game.
+_recent_prompt_ids: collections.deque[str] = collections.deque(maxlen=400)
+
 
 _lock = threading.Lock()
 _rooms: dict[str, dict[str, Any]] = {}
@@ -796,10 +830,14 @@ def _pick_room_code_unlocked() -> str:
 def _select_prompt_unlocked(room: dict[str, Any], kind: str) -> dict[str, Any]:
     used: set[str] = set(room.get("used_prompt_ids") or [])
     pool = PROMPT_BANK.get(kind) or PROMPT_BANK["blank_o_matic"]
-    fresh = [p for p in pool if p["id"] not in used]
-    chosen = dict(random.choice(fresh if fresh else pool))
+    recent = set(_recent_prompt_ids)
+    # Best: never seen in this room nor lately anywhere; then not in this room; then anything.
+    fresh = [p for p in pool if p["id"] not in used and p["id"] not in recent] or \
+        [p for p in pool if p["id"] not in used] or pool
+    chosen = dict(random.choice(fresh))
     chosen["kind"] = kind
     room.setdefault("used_prompt_ids", []).append(chosen["id"])
+    _recent_prompt_ids.append(chosen["id"])
     return chosen
 
 
@@ -864,8 +902,9 @@ def _active_contestants_unlocked(room: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: dict[str, Any] | None = None) -> None:
     now = time.time()
-    schedule_idx = max(0, min(len(MATCH_ROUND_SCHEDULE) - 1, round_num - 1))
-    kind = MATCH_ROUND_SCHEDULE[schedule_idx]
+    if round_num == 1 or not room.get("schedule"):
+        room["schedule"] = new_match_schedule()
+    kind = round_kind(room, round_num)
     meta = ROUND_META[kind]
     prompt_item = custom_prompt if custom_prompt else _select_prompt_unlocked(room, kind)
     prompt_item["kind"] = kind
@@ -1190,32 +1229,36 @@ HOST_FINALE = (
 
 #: Clean dad jokes for all ages, Bible-flavoured: (setup, punchline).
 DAD_JOKES: tuple[tuple[str, str], ...] = (
+    ("What kind of man was Boaz before he married Ruth?", "Ruthless!"),
+    ("When is baseball first mentioned in the Bible?", "In the big inning!"),
+    ("What did Jonah's family say when he finally got home?", "Long time no sea!"),
+    ("How do we know Moses wore a wig?", "Sometimes he was seen with Aaron... and sometimes without!"),
+    ("Where was Solomon's temple?", "On the side of his head!"),
+    ("Why did the Israelites wander the desert for forty years?", "Even back then, nobody would stop and ask for directions!"),
+    ("Who broke all ten commandments at once?", "Moses. He dropped the tablets!"),
+    ("What did the Red Sea say when Moses showed up?", "Nothing. It just waved!"),
+    ("What did Noah say while he was loading the Ark?", "Now I've herd everything!"),
     ("Who was the greatest comedian in the Bible?", "Samson. He brought the house down!"),
     ("What kind of car did the disciples drive?", "A Honda. They were all in one Accord!"),
     ("Why didn't anyone play cards on the Ark?", "Because Noah was standing on the deck!"),
     ("What did Adam say the day before Christmas?", "It's Christmas, Eve!"),
     ("Where is the first math problem in the Bible?", "When God told Adam and Eve to go forth and multiply!"),
-    ("How does Moses make his coffee?", "Hebrews it!"),
+    ("How does Moses make his tea?", "Hebrews it!"),
     ("Who was the fastest runner in history?", "Adam. He was first in the human race!"),
-    ("What kind of lights did Noah put on the Ark?", "Floodlights!"),
-    ("Why did the man get so excited reading his Bible?", "He thought he'd found a Job!"),
     ("Who was the shortest man in the Bible?", "Nehemiah. Knee-high-miah!"),
     ("How do we know Peter was a rich fisherman?", "By his net income!"),
     ("Which animal could Noah never trust?", "The cheetah!"),
-    ("Why didn't Noah go fishing?", "He only had two worms!"),
+    ("Why didn't Noah go fishing much?", "He only had two worms!"),
     ("Which Bible character had no parents?", "Joshua, son of Nun!"),
-    ("Why was Goliath so surprised when David's stone hit him?", "Because the thought had never entered his head before!"),
-    ("Where did Noah keep his bees?", "In the Ark hives!"),
-    ("How long did Cain hold a grudge against his brother?", "As long as he was Abel!"),
+    ("Why was Goliath so surprised when David's stone hit him?", "That thought had never entered his head before!"),
     ("Who was the first tennis player in the Bible?", "Joseph. He served in Pharaoh's court!"),
-    ("What do you call a sheep with no legs?", "A cloud!"),
-    ("Why did Noah scold the chickens on the Ark?", "They were using fowl language!"),
-    ("What's the best way to study the Bible?", "Just Luke into it!"),
-    ("Why did the donkey get the best seat on Palm Sunday?", "Because he was the one carrying the King!"),
-    ("What did the whale say after swallowing Jonah?", "I can't stomach this guy!"),
-    ("Why did Noah make the woodpeckers sit still?", "So they wouldn't peck a hole in the Ark!"),
+    ("Why are church bells so well behaved?", "They only ring when they're tolled!"),
+    ("Why did the church potluck hire Samson?", "Somebody had to open the pickle jar!"),
     ("What do you call a lamb covered in chocolate?", "A candy baa!"),
+    ("What's the best way to study the Bible?", "Just Luke into it!"),
+    ("Why did the man get so excited reading his Bible?", "He thought he'd found a Job!"),
     ("What's a sheep's favourite part of the Sermon on the Mount?", "The Baa-atitudes!"),
+    ("Why did Noah scold the chickens on the Ark?", "They were using fowl language!"),
 )
 
 
@@ -1379,11 +1422,16 @@ def _check_auto_advance_unlocked(room: dict[str, Any]) -> None:
 AI_PROMPT_KINDS = ("blank_o_matic", "survey_says")
 
 
+def round_kind(room: dict[str, Any], round_num: int) -> str:
+    schedule = room.get("schedule") or list(MATCH_ROUND_SCHEDULE)
+    return schedule[max(0, min(len(schedule) - 1, round_num - 1))]
+
+
 def _next_kind(room: dict[str, Any]) -> tuple[int, str] | None:
     nxt = int(room.get("round") or 0) + 1
     if nxt > int(room.get("total_rounds") or TOTAL_ROUNDS):
         return None
-    return nxt, MATCH_ROUND_SCHEDULE[max(0, min(len(MATCH_ROUND_SCHEDULE) - 1, nxt - 1))]
+    return nxt, round_kind(room, nxt)
 
 
 def _prefetch_next_prompt_unlocked(room: dict[str, Any]) -> None:
@@ -2249,14 +2297,16 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
         return None
     pieces: list[tuple[str, str, bytes, float]] = []
     for role, line in parts:
-        # Sentence by sentence, each at its own pace with a breath after it.
-        for sentence in announcer.sentences(line):
+        # The announcer goes sentence by sentence, each at its own pace with a
+        # breath after it. The newsboy's call is one breath ("Extra! Extra!"
+        # voiced twice from one clip sounded like a stutter).
+        for sentence in ([line] if role == "paperboy" else announcer.sentences(line)):
             if role == "paperboy":
                 speed, gap = announcer.PAPERBOY_SPEED, 180.0
                 clip = synthesize_announcer_clip(sentence, announcer.PAPERBOY_VOICE, speed=speed)
             else:
                 speed, gap = announcer.cadence(sentence)
-                clip = synthesize_announcer_clip(sentence, voice, clone=clone, speed=speed)
+                clip = synthesize_announcer_clip(announcer.pronounce(sentence), voice, clone=clone, speed=speed)
             if clip is None:
                 if role == "paperboy":
                     continue  # no newsboy today: the announcer still reads the line
@@ -2264,7 +2314,7 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
             pieces.append((role, clip[0], clip[1], gap))
     if not pieces:
         return None
-    show_id = hashlib.sha256(("show:v2:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
+    show_id = hashlib.sha256(("show:v3:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
     with _lock:
         cached = _tts_clips.get(show_id)
     if cached:

@@ -75,13 +75,13 @@ def test_seven_round_schedule_covers_all_five_modes():
         state = party.advance_phase("NOAH", player_id="p1")
         seen_kinds.append(state["prompt"]["kind"])
 
-    assert set(seen_kinds) == {
-        "blank_o_matic",
-        "extra_extra",
-        "truth_or_bluff",
-        "sub_the_scroll",
-        "survey_says",
-    }
+    # Every match: an easy opener, the double-points finale, a Truth or Bluff,
+    # and a different mix in between (drawn per match from every round type).
+    assert seen_kinds[0] == party.MATCH_OPENER and seen_kinds[-1] == party.MATCH_FINALE
+    assert "truth_or_bluff" in seen_kinds and len(set(seen_kinds)) >= 5
+    assert all(k in party.ROUND_META for k in seen_kinds)
+    ids = party._rooms["NOAH"]["used_prompt_ids"]
+    assert len(ids) == len(set(ids)) == 7  # no prompt twice in a match
     assert seen_kinds[-1] == "survey_says"
 
 
@@ -124,8 +124,9 @@ def test_truth_or_bluff_blocks_real_truth_and_scores_truth_and_bluffs():
     party.create_or_join_room(code="LION", player_id="p3", name="Kate", initials="KAT")
     party.start_match("LION", player_id="p1")
 
-    # Jump to Round 3 (truth_or_bluff)
+    # Jump to a Truth or Bluff round (the mix between opener and finale is random)
     with party._lock:
+        party._rooms["LION"]["schedule"][2] = "truth_or_bluff"
         party._start_round_unlocked(party._rooms["LION"], 3)
         truth_text = party._rooms["LION"]["current_prompt"]["truth"]
 
@@ -644,7 +645,8 @@ def test_reveal_moves_on_by_itself_and_never_waits_on_the_ai(monkeypatch):
     monkeypatch.setattr(party, "_generate_ai_prompt", slow_model)
     with party._lock:
         room = party._rooms["FLOW"]
-        room["round"] = 4  # next is round 5, a blank-o-matic: an AI round
+        room["round"] = 4
+        room["schedule"][4] = "blank_o_matic"  # next is round 5, made an AI-written round
         party._build_voting_options_unlocked(room)
         party._score_round_unlocked(room)
         room.pop("next_prompt", None)
@@ -659,6 +661,7 @@ def test_a_prefetched_ai_prompt_is_used_for_the_next_round():
     with party._lock:
         room = party._rooms["PREF"]
         room["round"] = 4
+        room["schedule"][4] = "blank_o_matic"
         room["phase"] = "reveal"
         room["next_prompt"] = {"round": 5, "prompt": {"id": "ai_1", "prompt": "Noah forgot to pack ______.", "decoy": "the ark",
                                                       "bot_answers": ["snacks"]}}
