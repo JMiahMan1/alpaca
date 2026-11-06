@@ -1466,6 +1466,7 @@ def api_party_cast():
     res = party.show_stage_on_screen(
         str(body.get("screen_id") or body.get("entity_id") or ""),
         url,
+        room_code=code,
         method=str(body.get("method") or ""),
         stop=bool(body.get("stop")),
     )

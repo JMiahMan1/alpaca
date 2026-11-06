@@ -467,8 +467,11 @@ other fails the build.
 - **No device is ever named in this repo.** Discovery and display belong to SharedLLM's execution service
   (`services/execution/handlers/tv_stage.py`), which is on the host network with Home Assistant,
   pychromecast and the LG/Samsung clients; the arcade's bridge network cannot do mDNS/SSDP. The arcade
-  relays `GET /api/party/tvs` → `/execute/stage/screens` and `POST /api/party/cast` → `/execute/stage/show`
-  (or `/stop`) through `EXECUTION_SVC_URL`. Unset, discovery reports itself unavailable instead of guessing.
+  relays `GET /api/party/tvs` and `POST /api/party/cast` through the **Jarvis gateway** (`JARVIS_GATEWAY_URL`,
+  the same `/api/arcade/{tvs,cast}` routes the Jarvis app uses) or, on the same host, straight to execution
+  (`EXECUTION_SVC_URL`). Both need `JARVIS_INTERNAL_SECRET` (SharedLLM's `INTERNAL_SECRET`, acting as the
+  household). Execution's :8003 is not exposed to the LAN, which is why the gateway is preferred.
+  Unconfigured, discovery says so instead of guessing.
 - **A caller picks the screen and the room, never the URL.** The cast route always sends this arcade's own
   `/tv/<CODE>` at the address the phone used (`X-Forwarded-*` aware, `ARCADE_PUBLIC_URL` overrides).
 - How each screen shows it (SharedLLM): Google Cast (Chromecast, Google/Android TV, Cast built-in) → the
