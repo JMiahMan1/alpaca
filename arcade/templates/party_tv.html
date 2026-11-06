@@ -147,7 +147,7 @@
 
   /* ---------- sound effects (synthesized; the TV is the only speaker) ---------- */
   var actx = null;
-  function audio() {
+  function sfxCtx() {
     if (actx) return actx;
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
@@ -155,7 +155,7 @@
     return actx;
   }
   function tone(freq, dur, type, vol, delay, slide) {
-    var c = audio();
+    var c = sfxCtx();
     if (!c) return;
     if (c.state === "suspended" && c.resume) c.resume();
     var t0 = c.currentTime + (delay || 0);
@@ -194,6 +194,8 @@
     try { if (audio) audio.pause(); } catch (e) {}
     var url = (window.URL || window.webkitURL).createObjectURL(blob);
     audio = new Audio(url);
+    duck(true);
+    audio.onended = audio.onerror = function () { duck(false); };
     var p = audio.play();
     if (p && p.then) {
       p.then(function () { setSound(false); }, function () { pendingLine = blob; setSound(true); });
@@ -204,11 +206,75 @@
     $("sound").className = blocked ? "on pulse" : "";
   }
   function unlock() {
-    var c = audio();
+    var c = sfxCtx();
     if (c && c.state === "suspended" && c.resume) c.resume();
     if (!soundBlocked) return;
     setSound(false);
     if (pendingLine) { var b = pendingLine; pendingLine = null; play(b); }
+    if (music.bed && music.bed.paused) { var q = music.bed.play(); if (q && q["catch"]) q["catch"](function () {}); }
+  }
+
+  /* ---------- game-show music (composed once by Alpaca's MusicGen) ---------- */
+  var music = { cues: null, loadedAt: 0, bed: null, bedName: "", ducked: false, fades: [] };
+  window.__stageMusic = music; // read by the browser checks
+  function loadMusic() {
+    if (music.loadedAt && Date.now() - music.loadedAt < 60000) return;
+    music.loadedAt = Date.now();
+    xhr("GET", "/api/party/music", null, function (d) {
+      if (d && d.cues) { music.cues = d.cues; if (room) musicFor(room, true); }
+    });
+  }
+  function cueReady(name) { return music.cues && music.cues[name] && music.cues[name].ready; }
+  function fadeTo(el, target, ms, done) {
+    var start = el.volume, t0 = Date.now();
+    var iv = setInterval(function () {
+      var k = Math.min(1, (Date.now() - t0) / ms);
+      try { el.volume = Math.max(0, Math.min(1, start + (target - start) * k)); } catch (e) {}
+      if (k >= 1) { clearInterval(iv); if (done) done(); }
+    }, 50);
+  }
+  function bedLevel() { var c = music.cues && music.cues[music.bedName]; return (c ? c.volume : 0.3) * (music.ducked ? 0.35 : 1); }
+  function setBed(name) {
+    if (!cueReady(name)) name = "";
+    if (name === music.bedName) return;
+    var old = music.bed;
+    if (old) fadeTo(old, 0, 900, function () { try { old.pause(); } catch (e) {} });
+    music.bed = null;
+    music.bedName = name;
+    if (!name) return;
+    var el = new Audio(music.cues[name].url);
+    el.loop = true;
+    el.volume = 0;
+    music.bed = el;
+    var p = el.play();
+    if (p && p["catch"]) p["catch"](function () { setSound(true); });
+    fadeTo(el, bedLevel(), 1200);
+  }
+  function sting(name) {
+    if (!cueReady(name)) return;
+    var el = new Audio(music.cues[name].url);
+    el.volume = music.cues[name].volume;
+    duck(true);
+    el.onended = el.onerror = function () { duck(false); };
+    var p = el.play();
+    if (p && p["catch"]) p["catch"](function () { duck(false); });
+  }
+  function duck(on) {
+    music.ducked = on;
+    if (music.bed) fadeTo(music.bed, bedLevel(), 300);
+  }
+  var BEDS = { lobby: "lobby", writing: "think", voting: "vote", reveal: "reveal" };
+  function musicFor(r, quiet) {
+    // A streamed stage has no sound of its own (the host's phone plays it).
+    if (!r || STREAMED || r.music === false) { setBed(""); return; }
+    loadMusic();
+    var key = r.match_id + ":" + r.round + ":" + r.phase;
+    if (!quiet && key !== music.lastKey) {
+      if (r.phase === "writing" && r.round === 1) sting("theme");
+      if (r.phase === "finished") sting("finale");
+    }
+    music.lastKey = key;
+    setBed(BEDS[r.phase] || "");
   }
   document.addEventListener("keydown", unlock);
   document.addEventListener("click", unlock);
@@ -321,6 +387,9 @@
       return (a.is_round_winner ? 1 : 0) - (b.is_round_winner ? 1 : 0);
     });
   }
+  // Headless Chromium is the stream renderer: this page is being sent to a TV as video.
+  var STREAMED = /HeadlessChrome/.test(navigator.userAgent || "");
+
   function revealStep(r) {
     var n = (r.options || []).length;
     var per = r.reveal_step_seconds || 3.5;
@@ -433,8 +502,13 @@
     if (room && !r) hadRoom = true;
     if (r) hadRoom = false;
     room = r;
+    musicFor(r, false);
     if (r && (r.phase === "writing" || r.phase === "voting" || r.phase === "reveal")) {
-      deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
+      // Viewers see a streamed stage r.stage_delay_s later, so its clock runs
+      // that far ahead and reaches 0 when the round really ends. The reveal
+      // keeps its own pacing.
+      var lag = STREAMED && r.phase !== "reveal" ? (r.stage_delay_s || 0) : 0;
+      deadline = Date.now() + Math.max(0, (r.seconds_remaining || 0) - lag) * 1000;
     }
     var sig = signature(r);
     if (sig !== lastSig) {
@@ -446,7 +520,7 @@
 
   function poll() {
     if (!code) return findRoom();
-    xhr("GET", "/api/party/rooms/" + encodeURIComponent(code) + "?stage=1", null, function (d, status) {
+    xhr("GET", "/api/party/rooms/" + encodeURIComponent(code) + "?stage=1" + (STREAMED ? "&video=1" : ""), null, function (d, status) {
       if (d && d.success && d.room) {
         failures = 0;
         apply(d.room);

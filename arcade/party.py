@@ -99,6 +99,12 @@ ROOM_TTL_SECONDS = 7200
 ROOM_IDLE_SECONDS = 600
 ROOM_EMPTY_GRACE_SECONDS = 120
 STAGE_PRESENCE_SECONDS = 8.0
+#: How far behind real time a streamed stage (Roku, plain video TVs) is seen:
+#: 2 s HLS segments, the player's buffer and the render. The stage page reports
+#: when it is the one being streamed (it runs in headless Chromium), and while
+#: it is, phones hold each phase until the picture catches up and every phase
+#: gets the same extra time.
+STREAM_STAGE_DELAY_S = float(os.getenv("PARTY_STREAM_DELAY_S", "8"))
 WRITE_SECONDS = 55
 VOTE_SECONDS = 35
 REVEAL_SECONDS = 8
@@ -793,7 +799,7 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
     room["total_rounds"] = TOTAL_ROUNDS
     room["phase"] = "writing"
     room["phase_started_at"] = now
-    room["phase_deadline"] = now + WRITE_SECONDS
+    room["phase_deadline"] = now + WRITE_SECONDS + _stage_delay(room)
     room["current_prompt"] = {
         "id": prompt_item["id"],
         "kind": kind,
@@ -899,7 +905,7 @@ def _build_voting_options_unlocked(room: dict[str, Any]) -> None:
     room["votes"] = votes
     room["phase"] = "voting"
     room["phase_started_at"] = now
-    room["phase_deadline"] = now + VOTE_SECONDS
+    room["phase_deadline"] = now + VOTE_SECONDS + _stage_delay(room)
     room["updated_at"] = now
 
 
@@ -1035,8 +1041,32 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     }
     room["phase"] = "reveal"
     room["phase_started_at"] = now
-    room["phase_deadline"] = now + REVEAL_SECONDS + REVEAL_PER_ANSWER_SECONDS * len(room.get("options") or [])
+    room["phase_deadline"] = (now + REVEAL_SECONDS + REVEAL_PER_ANSWER_SECONDS * len(room.get("options") or [])
+                              + _stage_delay(room))
     room["updated_at"] = now
+
+
+def _stage_delay(room: dict[str, Any], now: float | None = None) -> float:
+    """Seconds the room's TV picture lags: the stream delay while a streamed stage is live."""
+    now = time.time() if now is None else now
+    seen = float(room.get("video_stage_seen_at") or 0.0)
+    if not (seen and now - seen < STAGE_PRESENCE_SECONDS):
+        return 0.0
+    return float(room.get("stream_delay_s") or STREAM_STAGE_DELAY_S)
+
+
+def set_stream_delay(code: str, seconds: float, *, player_id: str | None = None) -> float:
+    """The host tunes how far behind their streamed TV is (it varies by TV and Wi-Fi).
+
+    Applies from the next phase; only matters while the room's TV is a stream.
+    """
+    with _lock:
+        room = _rooms.get(_clean_code(code))
+        if room is None:
+            raise LookupError(f"Room '{_clean_code(code)}' not found.")
+        _require_host_unlocked(room, player_id)
+        room["stream_delay_s"] = round(max(0.0, min(30.0, float(seconds))), 1)
+        return room["stream_delay_s"]
 
 
 def _check_auto_advance_unlocked(room: dict[str, Any]) -> None:
@@ -1168,6 +1198,13 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         "announcer_voice": room.get("voice") or DEFAULT_ANNOUNCER_VOICE,
         # A TV stage polled recently: it speaks the announcer, so phones stay quiet.
         "stage_connected": now - float(room.get("stage_seen_at") or 0) < STAGE_PRESENCE_SECONDS,
+        # The TV is a video of the stage, this many seconds behind. Phones hold
+        # each phase until it catches up (``phase_age_s`` avoids clock skew),
+        # and the host phone speaks since a stream carries no announcer.
+        "stage_delay_s": _stage_delay(room),
+        "music": bool(room.get("music", True)),
+        "phase_age_s": round(max(0.0, now - float(room.get("phase_started_at") or now)), 2)
+        if phase in ("writing", "voting", "reveal") else 0.0,
     }
 
 
@@ -1364,8 +1401,22 @@ def set_room_voice(code: str, voice: str) -> dict[str, Any]:
         return serialize_room(room)
 
 
-def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = False) -> dict[str, Any]:
-    """A room snapshot. ``stage=True`` is the TV stage polling, which marks it live."""
+def set_room_music(code: str, on: bool, *, player_id: str | None = None) -> dict[str, Any]:
+    """Host only: game-show music on or off for the room."""
+    with _lock:
+        room = _rooms.get(_clean_code(code))
+        if room is None:
+            raise LookupError(f"Room '{_clean_code(code)}' not found.")
+        _require_host_unlocked(room, player_id)
+        room["music"] = bool(on)
+        room["updated_at"] = time.time()
+        return serialize_room(room, viewer_id=player_id)
+
+
+def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = False,
+                   video: bool = False) -> dict[str, Any]:
+    """A room snapshot. ``stage=True`` is the TV stage polling, which marks it live;
+    ``video`` says that stage is being rendered into a video stream."""
     now = time.time()
     clean_code = _clean_code(code)
     with _lock:
@@ -1375,6 +1426,8 @@ def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = Fal
             raise LookupError(f"Room '{clean_code}' not found.")
         if stage:
             room["stage_seen_at"] = now
+            if video:
+                room["video_stage_seen_at"] = now
         _touch_unlocked(room, viewer_id, now)
         _check_auto_advance_unlocked(room)
         return serialize_room(room, viewer_id=viewer_id)

@@ -39,11 +39,12 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
     import family
     import party
+    import party_music
     from achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from curation import is_curated, load_curated
     from mobile import assess_html, prepare_playable_html
 except ImportError:  # tests import `arcade.app` as a package from the repo root
-    from arcade import family, party
+    from arcade import family, party, party_music
     from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from arcade.curation import is_curated, load_curated
     from arcade.mobile import assess_html, prepare_playable_html
@@ -1335,7 +1336,8 @@ def api_party_rooms():
 def api_party_room_state(code: str):
     viewer_id = (request.args.get("player_id") or "").strip()[:64] or None
     try:
-        room = party.get_room_state(code, viewer_id=viewer_id, stage=request.args.get("stage") == "1")
+        room = party.get_room_state(code, viewer_id=viewer_id, stage=request.args.get("stage") == "1",
+                                    video=request.args.get("video") == "1")
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     return jsonify({"success": True, "room": room})
@@ -1368,6 +1370,19 @@ def api_party_room_voice(code: str):
         room = party.set_room_voice(code, voice)
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/party/rooms/<code>/music", methods=["POST"])
+def api_party_room_music(code: str):
+    """Host only: ``{"player_id", "on"}`` turns the game-show music on or off."""
+    body = request.get_json(silent=True) or {}
+    try:
+        room = party.set_room_music(code, bool(body.get("on")), player_id=body.get("player_id"))
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
     return jsonify({"success": True, "room": room})
 
 
@@ -1455,6 +1470,46 @@ def api_party_room_end(code: str):
     return jsonify({"success": True, "ended": party._clean_code(code)})
 
 
+@app.route("/api/party/rooms/<code>/stream_delay", methods=["POST"])
+def api_party_room_stream_delay(code: str):
+    """Host only: how many seconds the room's streamed TV picture lags (``{"player_id", "seconds"}``)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        seconds = party.set_stream_delay(code, float(body.get("seconds")), player_id=body.get("player_id"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "seconds must be a number"}), 400
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    return jsonify({"success": True, "stream_delay_s": seconds})
+
+
+@app.route("/api/party/music", methods=["GET"])
+def api_party_music():
+    """Which game-show cues are ready; composing the missing ones starts in the background."""
+    party_music.ensure_background()
+    return jsonify({"success": True, **party_music.manifest()})
+
+
+@app.route("/api/party/music/<name>.wav", methods=["GET"])
+def api_party_music_file(name: str):
+    if name not in party_music.CUES or not party_music.cue_path(name).is_file():
+        return jsonify({"success": False, "error": "not composed yet"}), 404
+    resp = send_file(party_music.cue_path(name), mimetype="audio/wav", conditional=True)
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
+
+
+@app.route("/api/admin/party/music/regenerate", methods=["POST"])
+def api_party_music_regenerate():
+    """Admin: compose cues again (``{"cues": [...]}``, default all)."""
+    if not _admin_ok():
+        return jsonify({"success": False, "error": "admin token required"}), 403
+    names = [n for n in ((request.get_json(silent=True) or {}).get("cues") or []) if n in party_music.CUES]
+    return jsonify({"success": True, "started": party_music.regenerate(names or None)})
+
+
 @app.route("/api/party/voices", methods=["GET"])
 def api_party_voices():
     return jsonify({"success": True, **party.list_tts_voices()})
@@ -1512,4 +1567,6 @@ if __name__ == "__main__":
     # Install/update the built-in Family Games shipped with this image. Player
     # data is never touched, so a new game version keeps its scoreboard.
     print("family games:", json.dumps(family.sync()), flush=True)
+    # Compose any missing game-show cues once, in the background.
+    party_music.ensure_background(force=True)
     app.run(host="0.0.0.0", port=PORT, threaded=True)

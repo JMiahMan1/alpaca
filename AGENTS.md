@@ -480,6 +480,17 @@ other fails the build.
   `androidtv_remote`; **Roku has no web engine**, so the page is rendered in headless Chromium and sent as a
   live HLS stream (`stage_stream.py`) to Media Assistant. Every result says which method worked and whether
   the TV confirmed it.
+- **A streamed stage is seconds behind, and only a streamed stage waits.** The stage page knows it is being
+  rendered into video (headless Chromium) and polls with `&video=1`; while such a stage is live the room's
+  `stage_delay_s` is `PARTY_STREAM_DELAY_S` (default 8) or the host's own tuning
+  (`POST /api/party/rooms/<code>/stream_delay`). Each phase gets that much extra time, phones show "Get ready"
+  until `phase_age_s` passes it, the stage's clock runs that far ahead, and the host's phone speaks and plays
+  the music (a stream carries no sound). Rooms on a live-page TV have no delay at all.
+- **Game-show music is composed once by MusicGen** (`arcade/party_music.py`): a theme sting, a winner fanfare and
+  loopable beds for the lobby, writing, voting and reveal, each ≤30 s, seeded, crossfaded into a seamless loop
+  and stored in `ARCADE_DIR/party_music/`. Missing cues are composed in a background thread at startup (a cue
+  that is not ready is just silent); `POST /api/admin/party/music/regenerate` redoes them. It plays wherever the
+  announcer plays, ducks under the announcer, and the host can turn it off per room.
 - **Room snapshots never carry credentials.** An earlier version stored the HA URL + token on the room and
   serialized it to every phone; `test_room_snapshots_never_carry_tv_credentials` keeps it out.
 
