@@ -142,6 +142,7 @@ def test_room_plays_a_quick_draw_round_end_to_end():
     assert snap["race"]["kind"] == "quick_draw" and "answer" not in snap["race"]["item"]
     assert snap["step"] == "0" and "Quick Draw" in snap["announce"]
     item = room["race"]["items"][0]
+    room["race"]["open_at"] = 0  # the clue has been read out
     party.race_answer("RACE", "p0", 0, item["answer"])
     party.race_answer("RACE", "p1", 0, item["answer"])
     snap = party.race_answer("RACE", "p2", 0, (item["answer"] + 1) % 4)
@@ -176,6 +177,7 @@ def test_race_route_and_permissions():
     arcade_app.app.config["TESTING"] = True
     c = arcade_app.app.test_client()
     answer = room["race"]["items"][0]["answer"]
+    room["race"]["open_at"] = 0  # the clue has been read out
     bot = next(p["id"] for p in room["players"].values() if p.get("is_bot"))
     assert c.post("/api/party/rooms/RACE/race", json={"player_id": bot, "item": 0, "choice": answer}).status_code == 403
     assert c.post("/api/party/rooms/RACE/race", json={"player_id": "p0", "item": 0, "choice": [9]}).status_code == 400
@@ -216,3 +218,19 @@ def test_a_race_nobody_scores_in_is_not_blamed_on_the_trap():
             party._tick_race_unlocked(room, (race["flash_until"] or race["deadline"] + 2) + 0.01)
         line = party.reveal_result_line(room)
     assert "Trap" not in line.split("...")[0] and line.startswith(room["reveal"]["announcer"])
+
+
+def test_a_clue_is_closed_until_it_has_been_read_out():
+    """Phones stay grey until the TV has read the clue: nobody answers before hearing it."""
+    room = _room_in_race("quick_draw")
+    race = room["race"]
+    assert race["open_at"] > race["started_at"]  # closed while it is read
+    snap = party.serialize_room(room, "p0")
+    assert snap["race"]["opens_in"] > 0
+    with pytest.raises(ValueError, match="Wait for the question"):
+        party.race_answer("RACE", "p0", 0, race["items"][0]["answer"])
+    # The full answer time starts when it opens.
+    assert race["deadline"] - race["open_at"] >= party_race.ITEM_SECONDS["quick_draw"] - 0.01
+    race["open_at"] = 0  # read out
+    snap = party.race_answer("RACE", "p0", 0, race["items"][0]["answer"])
+    assert snap["race"]["mine"] is not None

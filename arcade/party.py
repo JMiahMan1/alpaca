@@ -700,6 +700,38 @@ try:
 except ImportError:  # the arcade image runs with arcade/ on sys.path
     import party_race  # type: ignore[no-redef]
 ROUND_META.update(party_race.RACE_ROUND_META)
+
+# The host's bigger script lives in party_host_lines.py.
+try:
+    from arcade.party_host_lines import (
+        MORE_CHATTER,
+        MORE_DRUMROLL,
+        MORE_FINALE,
+        MORE_HURRY,
+        MORE_OPENERS,
+        MORE_TRAPPED,
+        MORE_VOTING,
+        RACE_CHATTER,
+        ROUND_INTROS,
+        STANDINGS,
+    )
+except ImportError:  # the arcade image runs with arcade/ on sys.path
+    try:
+        from party_host_lines import (  # type: ignore[no-redef]
+            MORE_CHATTER,
+            MORE_DRUMROLL,
+            MORE_FINALE,
+            MORE_HURRY,
+            MORE_OPENERS,
+            MORE_TRAPPED,
+            MORE_VOTING,
+            RACE_CHATTER,
+            ROUND_INTROS,
+            STANDINGS,
+        )
+    except ImportError:
+        MORE_CHATTER, ROUND_INTROS, STANDINGS, RACE_CHATTER = {}, {}, {}, {}  # type: ignore[assignment]
+        MORE_OPENERS = MORE_VOTING = MORE_DRUMROLL = MORE_TRAPPED = MORE_FINALE = MORE_HURRY = ()  # type: ignore[assignment]
 for _kind, _items in EXTRA_PROMPTS.items():
     PROMPT_BANK.setdefault(_kind, []).extend(_items)
 
@@ -1012,6 +1044,10 @@ def _start_race_round_unlocked(room: dict[str, Any], round_num: int, kind: str, 
         _recent_prompt_ids.append(raw["id"])
     race = party_race.new_race(kind, raws, rng)
     party_race.start_item(race, now, _stage_delay(room), _race_bots(room), rng)
+    room["race"] = race
+    room["current_prompt"] = {"announcer": RACE_INTROS.get(kind, meta["title"]), "kind": kind}
+    _open_clue_after_reading_unlocked(room, now)
+    _premake_race_lines_async(room)
     for p in room["players"].values():
         p["round_delta"] = 0
     room["race"] = race
@@ -1059,6 +1095,41 @@ def _tick_race_unlocked(room: dict[str, Any], now: float) -> None:
     room["phase_deadline"] = race["flash_until"] or race["deadline"]
     if (race.get("index"), bool(race.get("flash_until"))) != before:
         room["updated_at"] = now
+        if not race.get("flash_until"):  # a new clue: closed while it is read out
+            _open_clue_after_reading_unlocked(room, now)
+            room["phase_deadline"] = race["deadline"]
+
+
+#: Longest a clue stays closed while it is read (a long intro and clue still leave time to answer).
+CLUE_READ_MAX_S = 12.0
+
+
+def _open_clue_after_reading_unlocked(room: dict[str, Any], now: float) -> None:
+    """Phones stay grey until the TV has read the clue; the answer clock starts then."""
+    race = room["race"]
+    voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+    line = race_line(room)
+    read = min(CLUE_READ_MAX_S, speech_seconds(line, voice) + (0.4 if (voice, line) in _spoken_seconds
+                                                                   else SPEECH_START_SLACK_S))
+    party_race.open_after(race, now + _stage_delay(room, now), read)
+
+
+def _premake_race_lines_async(room: dict[str, Any]) -> None:
+    """Make every clue's line as the race starts: the TV then speaks each at once, and its length is known."""
+    race = room.get("race") or {}
+    voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+    lines = []
+    for i in range(len(race.get("items") or [])):
+        view = {**room, "race": {**race, "index": i, "flash_until": 0.0}}
+        with contextlib.suppress(Exception):
+            lines.append(race_line(view))
+
+    def work() -> None:
+        for line in lines:
+            with contextlib.suppress(Exception):
+                synthesize_show_line(line, voice=voice)
+
+    threading.Thread(target=work, name=f"party-race-lines-{room.get('code')}", daemon=True).start()
 
 
 def _score_race_unlocked(room: dict[str, Any]) -> None:
@@ -1163,6 +1234,8 @@ def _public_race(room: dict[str, Any], viewer_id: str | None, now: float) -> dic
         "item": party_race.public_item(item, reveal=flash),
         "answered": [public_id(room, pid) for pid in answers],
         "mine": {"choice": mine["choice"], "correct": mine["correct"] if flash else None} if mine else None,
+        # Seconds until answers open (the TV is still reading the clue).
+        "opens_in": round(max(0.0, float(race.get("open_at") or 0) - now), 2) if not flash else 0.0,
     }
     if flash:
         res = party_race.item_result(race, idx)
@@ -1755,11 +1828,18 @@ def reveal_result_line(room: dict[str, Any]) -> str:
     reveal = room.get("reveal") or {}
     if reveal.get("race") is not None:
         result = str(reveal.get("announcer") or "")  # a race has no trap to blame
+        kind = str((room.get("current_prompt") or {}).get("kind") or "")
+        quip = _pick(room, tuple(RACE_CHATTER.get(kind) or ()), "racechat")
+        if quip:
+            result += f" {quip}"
     elif reveal.get("round_winners") or any(e.get("type") == "truth_found" for e in reveal.get("events") or []):
         result = str(reveal.get("announcer") or "")
     else:
-        result = _pick(room, HOST_TRAPPED, "trap")
+        result = _pick(room, _pool(HOST_TRAPPED, MORE_TRAPPED), "trap")
     if int(room.get("round") or 0) < int(room.get("total_rounds") or TOTAL_ROUNDS):
+        board = standings_line(room)
+        if board:
+            result += f" {board}"
         setup, punch = joke_for(room, "between")
         result += f" And while we catch our breath... {setup} ... {punch}"
     return result
@@ -1777,9 +1857,8 @@ def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
     if phase not in ("writing", "voting"):
         return []
     kind = "voting" if phase == "voting" else str((room.get("current_prompt") or {}).get("kind") or "blank_o_matic")
-    pool = HOST_CHATTER.get(kind) or HOST_CHATTER["blank_o_matic"]
-    rng = random.Random(f"{room.get('match_id', '')}:{room.get('round', 0)}:{phase}:chatter")
-    lines = rng.sample(pool, k=min(2, len(pool)))
+    pool = _pool(HOST_CHATTER.get(kind) or HOST_CHATTER["blank_o_matic"], MORE_CHATTER.get(kind))
+    lines = [_pick(room, pool, f"{phase}:chat{i}") for i in range(2)]
     length = float(room.get("phase_deadline") or 0) - float(room.get("phase_started_at") or 0)
     delay = _stage_delay(room)
     start, end = 14.0 + delay, max(14.0 + delay, length - 14.0)
@@ -1794,7 +1873,7 @@ def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
     step = (end - start) / max(1, len(lines))
     out = [{"at": round(start + i * step, 1), "text": t} for i, t in enumerate(lines) if start + i * step < end]
     if length - delay > 20:
-        out.append({"at": round(length - 10.0, 1), "text": rng.choice(HOST_HURRY)})
+        out.append({"at": round(length - 10.0, 1), "text": _pick(room, _pool(HOST_HURRY, MORE_HURRY), f"{phase}:hurry")})
     return out
 
 
@@ -1802,9 +1881,75 @@ def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
 LOBBY_JOKE_SECONDS = 45.0
 
 
+#: Host lines said recently in any room, oldest first.
+_recent_lines: collections.deque[str] = collections.deque(maxlen=600)
+
+
 def _pick(room: dict[str, Any], pool: tuple[str, ...], salt: str) -> str:
-    seed = f"{room.get('match_id', '')}:{room.get('round', 0)}:{salt}"
-    return random.Random(seed).choice(pool)
+    """One host line for one moment of the show, chosen once and then kept.
+
+    Never a line this room has already heard (until it has heard the whole
+    list), and among the rest the one heard longest ago in any room, at random.
+    The old way seeded a choice per round, so the same line came round again.
+    """
+    if not pool:
+        return ""
+    told = room.setdefault("lines_told", {})
+    key = f"{room.get('match_id', '')}:{int(room.get('round') or 0)}:{salt}"
+    if key in told:
+        return str(told[key])
+    heard = set(told.values())
+    fresh = [line for line in pool if line not in heard] or list(pool)
+    last = {line: i for i, line in enumerate(_recent_lines)}
+    rng = random.Random(secrets.randbits(64))
+    line = min(fresh, key=lambda x: (last.get(x, -1), rng.random()))
+    told[key] = line
+    _recent_lines.append(line)
+    return line
+
+
+def _pool(*parts: Any) -> tuple[str, ...]:
+    out: list[str] = []
+    for part in parts:
+        for line in part or ():
+            if line and line not in out:
+                out.append(line)
+    return tuple(out)
+
+
+def standings_line(room: dict[str, Any]) -> str:
+    """A word about the scoreboard after a round's result: a runaway, a close race, a climber."""
+    seats = [p for p in (room.get("players") or {}).values() if not p.get("spectator")]
+    if len(seats) < 2:
+        return ""
+    now = sorted(seats, key=lambda p: -int(p.get("score") or 0))
+    leader, second = now[0], now[1]
+    top, nxt = int(leader.get("score") or 0), int(second.get("score") or 0)
+    rnd, total = int(room.get("round") or 0), int(room.get("total_rounds") or TOTAL_ROUNDS)
+    before = sorted(seats, key=lambda p: -(int(p.get("score") or 0) - int(p.get("round_delta") or 0)))
+    climbs = [(before.index(p) - now.index(p), p) for p in seats]
+    climb, climber = max(climbs, key=lambda c: c[0])
+    names = {"leader": leader["name"], "second": second["name"], "climber": climber["name"]}
+    if top == 0:
+        kind = "everyone_zero"
+    elif rnd == total - 1:
+        kind = "last_round"
+    elif top == nxt:
+        kind = "tied"
+    elif climb >= 2 and climber is not leader:
+        kind = "comeback"
+    elif top - nxt <= 400:
+        kind = "close"
+    elif top - nxt >= 2000:
+        kind = "runaway"
+    else:
+        return ""
+    pool = STANDINGS.get(kind) or ()
+    if not pool:
+        return ""
+    with contextlib.suppress(KeyError, IndexError, ValueError):
+        return _pick(room, tuple(pool), f"standings:{kind}").format(**names)
+    return ""
 
 
 def announce_line(room: dict[str, Any]) -> str:
@@ -1820,21 +1965,24 @@ def announce_line(room: dict[str, Any]) -> str:
             line = f"Extra! Extra! {line}"  # every headline round opens with the paper boy
         if line.lower().startswith("extra"):
             return line
-        return f"{_pick(room, HOST_OPENERS, 'open')} {line}".strip()
+        kind = str(prompt.get("kind") or "")
+        opener = _pick(room, _pool(HOST_OPENERS, MORE_OPENERS, ROUND_INTROS.get(kind)), "open")
+        return f"{opener} {line}".strip()
     if phase == "voting":
-        return _pick(room, HOST_VOTING, "vote")
+        return _pick(room, _pool(HOST_VOTING, MORE_VOTING), "vote")
     if phase == "racing" and room.get("race"):
         return race_line(room)
     if phase == "reveal":
         # The result waits for the TV to show the last answer (see chatter_for);
         # saying it now gave the winner away before the reveal.
-        return _pick(room, HOST_DRUMROLL, "drum")
+        return _pick(room, _pool(HOST_DRUMROLL, MORE_DRUMROLL), "drum")
     if phase == "finished":
         players = [p for p in (room.get("players") or {}).values() if not p.get("spectator")]
         if not players:
             return "What a match!"
         best = max(players, key=lambda p: int(p.get("score") or 0))
-        return _pick(room, HOST_FINALE, "finale").format(name=best.get("name", "Our winner"), score=best.get("score", 0))
+        return _pick(room, _pool(HOST_FINALE, MORE_FINALE), "finale").format(
+            name=best.get("name", "Our winner"), score=best.get("score", 0))
     return ""
 
 

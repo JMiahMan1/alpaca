@@ -128,17 +128,17 @@ def test_the_host_has_patter_for_every_phase_and_everyone_hears_the_same_line():
     if prompt_line.lower().startswith("extra"):
         assert tv == prompt_line  # the paper boy opens it
     else:
-        assert tv.endswith(prompt_line) and any(tv.startswith(o) for o in p.HOST_OPENERS)
+        assert tv.endswith(prompt_line) and any(tv.startswith(o) for o in p._pool(p.HOST_OPENERS, p.MORE_OPENERS, *p.ROUND_INTROS.values()))
     room["phase"] = "voting"
-    assert p.announce_line(room) in p.HOST_VOTING
+    assert p.announce_line(room) in p._pool(p.HOST_VOTING, p.MORE_VOTING)
     room["phase"], room["reveal"] = "reveal", {"round_winners": [], "events": [], "announcer": "x"}
     # The drumroll opens the reveal; the result waits until the TV has shown the last answer.
-    assert p.announce_line(room) in p.HOST_DRUMROLL
+    assert p.announce_line(room) in p._pool(p.HOST_DRUMROLL, p.MORE_DRUMROLL)
     result = p.chatter_for(room)[0]
-    assert any(t in result["text"] for t in p.HOST_TRAPPED) and result["at"] == p.reveal_result_at(room)
+    assert any(t in result["text"] for t in p._pool(p.HOST_TRAPPED, p.MORE_TRAPPED)) and result["at"] == p.reveal_result_at(room)
     room["phase"] = "finished"
     finale = p.announce_line(room)
-    assert any(finale == f.format(name="Ann", score=0) or finale == f.format(name="Ben", score=0) for f in p.HOST_FINALE)
+    assert any(finale == f.format(name="Ann", score=0) or finale == f.format(name="Ben", score=0) for f in p._pool(p.HOST_FINALE, p.MORE_FINALE))
     with p._lock:
         p._rooms.clear()
 
@@ -182,11 +182,11 @@ def test_the_host_chats_while_players_write_and_vote():
     length = room["phase_deadline"] - room["phase_started_at"]
     times = [c["at"] for c in lines]
     assert times == sorted(times) and times[0] >= 14  # never over the prompt being read
-    assert lines[-1]["text"] in p.HOST_HURRY and lines[-1]["at"] == pytest.approx(length - 10, abs=0.2)
+    assert lines[-1]["text"] in p._pool(p.HOST_HURRY, p.MORE_HURRY) and lines[-1]["at"] == pytest.approx(length - 10, abs=0.2)
     assert any(s in c["text"] for c in lines for s, _ in p.DAD_JOKES)
     assert p.get_room_state("CHAT", "b")["chatter"] == p.get_room_state("CHAT", stage=True)["chatter"]
     room["phase"] = "voting"
-    assert any(c["text"] in p.HOST_CHATTER["voting"] for c in p.chatter_for(room))
+    assert any(c["text"] in p._pool(p.HOST_CHATTER["voting"], p.MORE_CHATTER.get("voting")) for c in p.chatter_for(room))
     with p._lock:
         p._rooms.clear()
 

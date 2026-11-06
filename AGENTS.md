@@ -532,6 +532,13 @@ other fails the build.
   room first and never twice in a room, and a writing-phase joke is only one that ends before the ten-second call.
 - **Emoji on TVs without an emoji font** (a 2020 LG drew boxes): the stage measures a smiley on a canvas and, if it
   has no colour, swaps every emoji for its Twemoji image in `arcade/static/twemoji/` (CC-BY 4.0; `?emoji=img` forces it).
+- **The host never repeats himself in a room.** `_pick()` chooses each moment's line once, never one the room has
+  heard until it has heard the whole list, least recently said anywhere first. Lists are the `HOST_*` pools plus
+  `arcade/party_host_lines.py` (523 more: openers, round intros per kind, standings talk, race quips...).
+  `standings_line()` comments on the scoreboard after a result (runaway, close, tied, comeback, last round).
+- **A race clue is closed while it is read.** `open_after()` holds answers until the TV has said the clue (its
+  measured length, capped at 12 s); phones grey their buttons ("Listen to the question...") and every clue's line
+  is made as the race starts so the TV speaks it at once.
 - **Ids on screens are public.** A player's own id authorises their actions, so snapshots carry
   `public_id(room, pid)` only and tell each phone which one is `you`. Host actions must name the host; `/next`
   carries the screen it was tapped on (`expect`) and is ignored if the room has already moved on.

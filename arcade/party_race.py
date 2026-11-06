@@ -113,6 +113,18 @@ def new_race(kind: str, raws: list[dict[str, Any]], rng: random.Random) -> dict[
             "answers": [{} for _ in items], "bot_plan": [{} for _ in items], "done": False}
 
 
+def open_after(race: dict[str, Any], now: float, read_s: float) -> None:
+    """Hold the clue closed while it is read aloud: nobody answers before hearing it.
+
+    The answer clock, and every scribe's plan, start when it opens.
+    """
+    read_s = max(0.0, read_s)
+    race["open_at"] = now + read_s
+    race["deadline"] = float(race["deadline"]) + read_s
+    for plan in race["bot_plan"][race["index"]].values():
+        plan["at"] = float(plan["at"]) + read_s
+
+
 def start_item(race: dict[str, Any], now: float, delay: float, bot_ids: list[str], rng: random.Random) -> None:
     """Open the current clue: the clock starts now, plus the TV's lag, and the scribes plan their answers."""
     kind, idx = race["kind"], race["index"]
@@ -120,6 +132,7 @@ def start_item(race: dict[str, Any], now: float, delay: float, bot_ids: list[str
     race["started_at"] = now
     race["deadline"] = now + seconds + delay
     race["flash_until"] = 0.0
+    race["open_at"] = now + delay  # until the host says how long reading it takes
     item = race["items"][idx]
     plan: dict[str, dict[str, Any]] = {}
     for pid in bot_ids:
@@ -164,6 +177,8 @@ def answer(race: dict[str, Any], pid: str, index: int, choice: Any, now: float) 
         raise ValueError("That question has already closed.")
     if race["flash_until"] or now > race["deadline"] + GRACE_SECONDS:
         raise ValueError("Time's up on that one!")
+    if now < float(race.get("open_at") or 0) - 0.3:
+        raise ValueError("Wait for the question!")
     item = race["items"][index]
     if not _valid_choice(item, choice):
         raise ValueError("That answer doesn't fit this question.")
