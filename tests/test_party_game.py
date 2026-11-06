@@ -448,7 +448,8 @@ def test_reveal_lasts_longer_with_more_answers():
         party.submit_vote("REVL", player_id=f"p{i}", option_id=next(o for o in mine if not o["is_mine"])["option_id"])
     room = party.get_room_state("REVL")
     assert room["phase"] == "reveal"
-    expected = party.REVEAL_SECONDS + party.REVEAL_PER_ANSWER_SECONDS * len(room["options"])
+    expected = (party.REVEAL_SECONDS + party.REVEAL_PER_ANSWER_SECONDS * len(room["options"])
+                + party.REVEAL_LINGER_SECONDS)
     assert abs(room["phase_seconds"] - expected) < 0.2
 
 
@@ -564,7 +565,7 @@ def test_a_streamed_stage_delays_each_phase_so_phones_wait_for_the_tv(client):
     room = client.get("/api/party/rooms/ROKU?player_id=p2").get_json()["room"]
     assert room["phase"] == "writing"
     assert room["stage_delay_s"] == party.STREAM_STAGE_DELAY_S
-    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS + party.STREAM_STAGE_DELAY_S, abs=0.2)
+    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS + party.PROMPT_READ_SECONDS + party.STREAM_STAGE_DELAY_S, abs=0.2)
     assert 0 <= room["phase_age_s"] < 2
 
 
@@ -575,7 +576,7 @@ def test_a_live_page_stage_adds_no_delay(client):
     client.post("/api/party/rooms/LGTV/start", json={"player_id": "p1"})
     room = client.get("/api/party/rooms/LGTV?player_id=p2").get_json()["room"]
     assert room["stage_delay_s"] == 0
-    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS, abs=0.2)
+    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS + party.PROMPT_READ_SECONDS, abs=0.2)
 
 
 def test_stream_delay_ends_when_the_streamed_stage_goes_away(monkeypatch):
@@ -603,3 +604,49 @@ def test_host_can_tune_the_stream_lag_and_others_cannot(client):
     assert client.get("/api/party/rooms/SYNC?player_id=p1").get_json()["room"]["stage_delay_s"] == 0
     client.get("/api/party/rooms/SYNC?stage=1&video=1")
     assert client.get("/api/party/rooms/SYNC?player_id=p1").get_json()["room"]["stage_delay_s"] == 11
+
+
+def test_reveal_moves_on_by_itself_and_never_waits_on_the_ai(monkeypatch):
+    """The game must not stall on the results screen, and a slow AI must never hold the room lock."""
+    party.create_or_join_room(code="FLOW", player_id="h", name="Host")
+    party.create_or_join_room(code="FLOW", player_id="g", name="Guest")
+    party.start_match("FLOW", player_id="h")
+    with party._lock:
+        room = party._rooms["FLOW"]
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+        assert room["phase"] == "reveal"
+        room["phase_deadline"] = 0.01  # the scores have been up long enough
+    party.get_room_state("FLOW", "g")
+    assert party._rooms["FLOW"]["phase"] == "writing" and party._rooms["FLOW"]["round"] == 2
+
+    # The host asks for AI prompts: the model is called with the lock released.
+    held = []
+
+    def slow_model(kind):
+        held.append(party._lock.locked())
+        return None
+
+    monkeypatch.setattr(party, "_generate_ai_prompt", slow_model)
+    with party._lock:
+        room = party._rooms["FLOW"]
+        room["round"] = 4  # next is round 5, a blank-o-matic: an AI round
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+        room.pop("next_prompt", None)
+    party.advance_phase("FLOW", use_ai_prompt=True, player_id="h")
+    assert held and held[0] is False
+    assert party._rooms["FLOW"]["round"] == 5
+
+
+def test_a_prefetched_ai_prompt_is_used_for_the_next_round():
+    party.create_or_join_room(code="PREF", player_id="h", name="Host")
+    party.start_match("PREF", player_id="h")
+    with party._lock:
+        room = party._rooms["PREF"]
+        room["round"] = 4
+        room["phase"] = "reveal"
+        room["next_prompt"] = {"round": 5, "prompt": {"id": "ai_1", "prompt": "Noah forgot to pack ______.", "decoy": "the ark",
+                                                      "bot_answers": ["snacks"]}}
+    party.advance_phase("PREF", player_id="h")
+    assert party._rooms["PREF"]["current_prompt"]["prompt"] == "Noah forgot to pack ______."
