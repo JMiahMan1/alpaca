@@ -29,7 +29,7 @@ body.fk { position: fixed; inset: 0; }
 
 /* HUD: score left, best centre, buttons right; always clear of the notch. */
 #fk-hud {
-  position: absolute; left: 0; right: 0; top: 0; z-index: 5;
+  position: absolute; left: 0; right: 0; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 8px;
   padding: calc(8px + var(--fk-safe-top)) calc(10px + var(--fk-safe-right)) 8px calc(10px + var(--fk-safe-left));
   pointer-events: none; color: var(--fk-hud-ink);

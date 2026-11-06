@@ -32,8 +32,8 @@
   #gw-app {
     position: absolute; inset: 0; z-index: 6; overflow-y: auto; overflow-x: hidden;
     -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y;
-    padding: calc(var(--fk-safe-top, env(safe-area-inset-top, 0px)) + 64px) calc(14px + env(safe-area-inset-right, 0px))
-      calc(24px + env(safe-area-inset-bottom, 0px)) calc(14px + env(safe-area-inset-left, 0px));
+    padding: calc(var(--fk-safe-top) + 64px) calc(14px + var(--fk-safe-right))
+      calc(24px + var(--fk-safe-bottom)) calc(14px + var(--fk-safe-left));
     font-family: var(--font); color: #fff; -webkit-tap-highlight-color: transparent;
   }
   #gw-screen { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
@@ -163,7 +163,7 @@
   #gw-sheet.on { display: flex; animation: gw-fade .2s; }
   @keyframes gw-fade { from { opacity: 0; } }
   .gw-sheet-body { width: 100%; max-height: 84%; overflow-y: auto; overflow-x: hidden; background: var(--paper); color: var(--ink); font-family: var(--font);
-    border-top: 3px solid var(--ink); border-radius: 24px 24px 0 0; padding: 18px 16px calc(20px + env(safe-area-inset-bottom, 0px));
+    border-top: 3px solid var(--ink); border-radius: 24px 24px 0 0; padding: 18px 16px calc(20px + var(--fk-safe-bottom));
     animation: gw-up .25s cubic-bezier(.2, 1.2, .4, 1); }
   @keyframes gw-up { from { transform: translateY(40%); } }
   .gw-sheet-body h2 { margin: 0 0 4px; font-size: 22px; font-weight: 900; }
@@ -174,7 +174,7 @@
   .gw-tv.live { background: #c9f7ec; }
   .gw-status { margin-top: 12px; font-weight: 800; font-size: 14px; border-radius: 12px; padding: 10px 12px; background: #f1e7ff; overflow-wrap: anywhere; }
   .gw-status.ok { background: #c9f7ec; } .gw-status.err { background: #ffd9d9; }
-  #gw-toast { position: absolute; left: 16px; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); z-index: 40;
+  #gw-toast { position: absolute; left: 16px; right: 16px; bottom: calc(18px + var(--fk-safe-bottom)); z-index: 40;
     background: var(--ink); color: #fff; border: 2px solid var(--gold); border-radius: 14px; padding: 12px 14px; font: 800 15px var(--font);
     text-align: center; transform: translateY(20px); opacity: 0; visibility: hidden; transition: transform .25s, opacity .25s, visibility .25s; pointer-events: none; }
   #gw-toast.on { transform: none; opacity: 1; visibility: visible; }
