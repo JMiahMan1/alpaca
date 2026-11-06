@@ -1720,13 +1720,35 @@ def discover_household_tvs() -> list[dict[str, Any]]:
             with urllib.request.urlopen(req, timeout=3.0) as resp:
                 if resp.status == 200:
                     states = json.loads(resp.read().decode("utf-8"))
-                    for st in states if isinstance(states, list) else []:
+                    state_list = states if isinstance(states, list) else []
+                    by_id = {str(s.get("entity_id") or ""): s for s in state_list if isinstance(s, dict)}
+                    for st in state_list:
                         eid = str(st.get("entity_id") or "")
                         if not eid.startswith("media_player.") or eid in seen_ids:
                             continue
+                        st_state = str(st.get("state") or "unknown")
+                        if st_state == "unavailable":
+                            continue
                         attrs = st.get("attributes") or {}
+                        # Skip secondary Music Assistant wrapper queues (_2, _3) when the base TV entity exists
+                        base_slug = re.sub(r"_(chrome|2|3|4)$", "", eid.split(".", 1)[1])
+                        if attrs.get("mass_player_type") and re.search(r"_(2|3|4)$", eid) and f"media_player.{base_slug}" in by_id:
+                            continue
                         friendly = str(attrs.get("friendly_name") or eid)
                         low = f"{eid} {friendly} {attrs.get('app_id', '')}".lower()
+                        rem_sib = (
+                            f"remote.{base_slug}_remote"
+                            if f"remote.{base_slug}_remote" in by_id
+                            else (f"remote.{base_slug}" if f"remote.{base_slug}" in by_id else "")
+                        )
+                        cast_sib = f"media_player.{base_slug}_chrome" if f"media_player.{base_slug}_chrome" in by_id else ""
+                        ma_sib = ""
+                        for suffix in ("_3", "_2"):
+                            cand = f"media_player.{base_slug}{suffix}"
+                            if cand in by_id and (by_id[cand].get("attributes") or {}).get("mass_player_type"):
+                                ma_sib = cand
+                                break
+                        rem_attrs = (by_id.get(rem_sib) or {}).get("attributes") or {}
                         platform = ""
                         if "roku" in low:
                             platform = "roku"
@@ -1734,7 +1756,7 @@ def discover_household_tvs() -> list[dict[str, Any]]:
                             platform = "webos"
                         elif "samsung" in low or "tizen" in low:
                             platform = "samsung"
-                        elif "android" in low:
+                        elif "android" in low or "current_activity" in rem_attrs:
                             platform = "android_tv"
                         elif "chrome" in low or "cast" in low:
                             platform = "cast"
@@ -1746,12 +1768,20 @@ def discover_household_tvs() -> list[dict[str, Any]]:
                                 {
                                     "id": eid,
                                     "entity_id": eid,
-                                    "name": friendly,
+                                    "name": friendly.replace(" Remote", ""),
                                     "platform": platform,
                                     "os_version": platform.replace("_", " ").title(),
-                                    "state": str(st.get("state") or "unknown"),
+                                    "state": st_state,
                                     "ip": "",
-                                    "companions": {},
+                                    "companions": {
+                                        k: v
+                                        for k, v in {
+                                            "remote_sibling": rem_sib,
+                                            "cast_sibling": cast_sib,
+                                            "ma_sibling": ma_sib,
+                                        }.items()
+                                        if v
+                                    },
                                 }
                             )
         except Exception:
@@ -1950,12 +1980,25 @@ def cast_room_to_tv(
                 )
                 actions_taken.append(f"samsung_companion_audio:{cast_or_dlna}")
 
-    # 4. Android TV / Google TV - Wake + ADB VIEW intent for /tv/<CODE> + Cast sibling audio
+    # 4. Android TV / Google TV - Wake + Android TV Remote activity deep-link / ADB VIEW intent for /tv/<CODE> + Cast sibling audio
     elif plat == "android_tv":
         if eff_ha_url and eff_ha_token and eid:
-            _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid)
-            remote_sib = comps.get("remote_sibling") or eid.replace("media_player.", "remote.")
-            _ha_service_call(eff_ha_url, eff_ha_token, "remote", "turn_on", remote_sib)
+            base_slug = re.sub(r"_(chrome|2|3|4)$", "", eid.split(".", 1)[1]) if "." in eid else eid
+            remote_sib = comps.get("remote_sibling") or f"remote.{base_slug}_remote"
+            cast_sib = comps.get("cast_sibling") or f"media_player.{base_slug}_chrome"
+            if _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid):
+                actions_taken.append(f"media_player_turn_on:{eid}")
+            if _ha_service_call(eff_ha_url, eff_ha_token, "remote", "turn_on", remote_sib):
+                actions_taken.append(f"remote_turn_on:{remote_sib}")
+            if _ha_service_call(
+                eff_ha_url,
+                eff_ha_token,
+                "remote",
+                "turn_on",
+                remote_sib,
+                {"activity": stage_url},
+            ):
+                actions_taken.append(f"android_tv_remote_activity:{stage_url}")
             if _ha_service_call(
                 eff_ha_url,
                 eff_ha_token,
@@ -1965,28 +2008,32 @@ def cast_room_to_tv(
                 {"command": f"am start -a android.intent.action.VIEW -d '{stage_url}'"},
             ):
                 actions_taken.append("android_tv_adb_view_intent")
-            cast_sib = comps.get("cast_sibling") or eid
+            _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", cast_sib)
             if tts_wav_url and _ha_service_call(
                 eff_ha_url,
                 eff_ha_token,
                 "media_player",
                 "play_media",
                 cast_sib,
-                {"media_content_id": tts_wav_url, "media_content_type": "url"},
+                {"media_content_id": tts_wav_url, "media_content_type": "audio/wav"},
             ):
                 actions_taken.append(f"android_tv_cast_audio:{cast_sib}")
 
     # 5. Google Chrome / Chromecast - HA Cast play_media + Chrome Presentation API URL
     elif plat in ("cast", "generic_tv", "bravia", "dlna"):
         if eff_ha_url and eff_ha_token and eid:
-            _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid)
+            base_slug = re.sub(r"_(chrome|2|3|4)$", "", eid.split(".", 1)[1]) if "." in eid else eid
+            remote_sib = comps.get("remote_sibling") or f"remote.{base_slug}_remote"
+            _ha_service_call(eff_ha_url, eff_ha_token, "remote", "turn_on", remote_sib, {"activity": stage_url})
+            if _ha_service_call(eff_ha_url, eff_ha_token, "media_player", "turn_on", eid):
+                actions_taken.append(f"media_player_turn_on:{eid}")
             if tts_wav_url and _ha_service_call(
                 eff_ha_url,
                 eff_ha_token,
                 "media_player",
                 "play_media",
                 eid,
-                {"media_content_id": tts_wav_url, "media_content_type": "url"},
+                {"media_content_id": tts_wav_url, "media_content_type": "audio/wav"},
             ):
                 actions_taken.append(f"cast_play_media:{eid}")
 
