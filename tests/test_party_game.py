@@ -512,3 +512,44 @@ def test_a_refused_relay_explains_what_to_configure(client, monkeypatch):
     monkeypatch.setattr(party.urllib.request, "urlopen", _refuse)
     data = client.get("/api/party/tvs").get_json()
     assert data["success"] is False and "JARVIS_INTERNAL_SECRET" in data["error"]
+
+
+def test_leaving_hands_off_host_and_the_last_human_closes_the_room(client):
+    client.post("/api/party/rooms", json={"code": "BYE", "player_id": "h", "name": "Host"})
+    client.post("/api/party/rooms", json={"code": "BYE", "player_id": "g", "name": "Guest"})
+    out = client.post("/api/party/rooms/BYE/leave", json={"player_id": "h"}).get_json()
+    assert out["closed"] is False
+    assert client.get("/api/party/rooms/BYE?player_id=g").get_json()["room"]["you_are_host"] is True
+    out = client.post("/api/party/rooms/BYE/leave", json={"player_id": "g"}).get_json()
+    assert out["closed"] is True
+    assert client.get("/api/party/rooms/BYE").status_code == 404
+
+
+def test_a_leaver_mid_round_does_not_hold_up_the_round():
+    for pid in ("a", "b", "c"):
+        party.create_or_join_room(code="MID", player_id=pid, name=pid.upper())
+    party.start_match("MID")
+    party.submit_answer("MID", player_id="a", text="one")
+    party.submit_answer("MID", player_id="b", text="two")
+    out = party.leave_room("MID", player_id="c")
+    assert out["room"]["phase"] == "voting"
+
+
+def test_only_the_host_or_an_admin_ends_a_room(client, monkeypatch):
+    client.post("/api/party/rooms", json={"code": "END", "player_id": "h", "name": "Host"})
+    client.post("/api/party/rooms", json={"code": "END", "player_id": "g", "name": "Guest"})
+    assert client.post("/api/party/rooms/END/end", json={"player_id": "g"}).status_code == 403
+    assert client.post("/api/party/rooms/END/end", json={"player_id": "h"}).status_code == 200
+    assert client.get("/api/party/rooms/END").status_code == 404
+
+    client.post("/api/party/rooms", json={"code": "ADM", "player_id": "h", "name": "Host"})
+    monkeypatch.setattr(arcade_app, "ADMIN_TOKEN", "tok")
+    assert client.post("/api/party/rooms/ADM/end", json={}, headers={"X-Arcade-Token": "nope"}).status_code == 403
+    assert client.post("/api/party/rooms/ADM/end", json={}, headers={"X-Arcade-Token": "tok"}).status_code == 200
+
+
+def test_abandoned_rooms_close_by_themselves():
+    party.create_or_join_room(code="IDLE", player_id="p", name="P")
+    with party._lock:
+        party._rooms["IDLE"]["players"]["p"]["last_seen"] -= party.ROOM_IDLE_SECONDS + 5
+    assert all(r["code"] != "IDLE" for r in party.list_active_rooms())

@@ -1432,6 +1432,29 @@ def api_party_room_next(code: str):
     return jsonify({"success": True, "room": room})
 
 
+@app.route("/api/party/rooms/<code>/leave", methods=["POST"])
+def api_party_room_leave(code: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        out = party.leave_room(code, player_id=str(body.get("player_id") or ""))
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, **out})
+
+
+@app.route("/api/party/rooms/<code>/end", methods=["POST"])
+def api_party_room_end(code: str):
+    """End a room for everyone: the host (``player_id``) or an admin (``X-Arcade-Token``)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        party.end_room(code, player_id=body.get("player_id"), admin=_admin_ok())
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    return jsonify({"success": True, "ended": party._clean_code(code)})
+
+
 @app.route("/api/party/voices", methods=["GET"])
 def api_party_voices():
     return jsonify({"success": True, **party.list_tts_voices()})

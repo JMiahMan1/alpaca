@@ -369,6 +369,16 @@
     });
   }
   function leave() {
+    if (code) api(`/api/party/rooms/${encodeURIComponent(code)}/leave`, { player_id: myId }).catch(() => {});
+    closeLocally();
+  }
+  function endForEveryone() {
+    if (!code) return;
+    api(`/api/party/rooms/${encodeURIComponent(code)}/end`, { player_id: myId })
+      .then(() => { toast("Game ended for everyone."); closeLocally(); })
+      .catch((e) => toast(e.message || "Could not end the game."));
+  }
+  function closeLocally() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null; room = null; code = ""; store.set("room", ""); view = "join"; lastSig = "";
     try { history.replaceState(null, "", location.pathname + location.search); } catch (_) {}
@@ -383,7 +393,7 @@
     fetch(`/api/party/rooms/${encodeURIComponent(code)}?player_id=${encodeURIComponent(myId)}`)
       .then((r) => r.json().then((d) => ({ status: r.status, d })))
       .then(({ status, d }) => {
-        if (status === 404) { toast("That room has closed."); leave(); return; }
+        if (status === 404) { toast("This game has ended."); closeLocally(); return; }
         if (d && d.success && d.room) { failures = 0; setRoom(d.room); }
       })
       .catch(() => { failures++; if (failures === 4) toast("Reconnecting…"); });
@@ -516,7 +526,7 @@
       h += `<div class="gw-card gw-wait">Waiting for ${esc(host ? host.name : "the host")} to start<span class="gw-dots"><span>.</span><span>.</span><span>.</span></span>
         <div class="gw-note" style="font-weight:800">${r.stage_connected ? "📺 The game is on the TV." : "Get comfy. You'll write your answers here."}</div></div>`;
     }
-    return h + `<button type="button" class="gw-btn ghost" id="gw-leave">Leave room</button>`;
+    return h;
   }
 
   function header(r) {
@@ -619,7 +629,22 @@
     h += r.you_are_host
       ? `<button type="button" class="gw-btn coral" id="gw-again" ${busy ? "disabled" : ""}>Play again</button>`
       : `<div class="gw-card gw-wait">Waiting for the host to start another match<span class="gw-dots"><span>.</span><span>.</span><span>.</span></span></div>`;
-    return h + `<button type="button" class="gw-btn ghost" id="gw-leave">Leave room</button>`;
+    return h;
+  }
+
+  let confirming = "";
+  function roomFooter(r) {
+    const leaveLabel = confirming === "leave" ? "Tap again to leave" : "Leave game";
+    const endLabel = confirming === "end" ? "Tap again to end for all" : "End game for everyone";
+    return `<div class="gw-row" style="margin-top:6px">
+      <button type="button" class="gw-btn ghost" id="gw-leave">${leaveLabel}</button>
+      ${r.you_are_host ? `<button type="button" class="gw-btn ghost" id="gw-end" style="border-color:rgba(255,107,107,.7)">${endLabel}</button>` : ""}</div>`;
+  }
+  function confirmThen(kind, fn) {
+    if (confirming === kind) { confirming = ""; fn(); return; }
+    confirming = kind; render();
+    clearTimeout(confirmThen.timer);
+    confirmThen.timer = setTimeout(() => { confirming = ""; render(); }, 4000);
   }
 
   /* ================= render + bind ================= */
@@ -634,6 +659,7 @@
     else if (room.phase === "voting") html = viewVoting(room);
     else if (room.phase === "reveal") html = viewReveal(room);
     else html = viewFinished(room);
+    if (view === "room" && room) html += roomFooter(room);
     if (!animate) html = html.replace(/ gw-enter/g, "");
     screen.innerHTML = html;
     bind();
@@ -648,7 +674,8 @@
   function bind() {
     on("gw-join", () => join(($("gw-code") || {}).value, false));
     on("gw-host", () => join("", true));
-    on("gw-leave", leave);
+    on("gw-leave", () => confirmThen("leave", leave));
+    on("gw-end", () => confirmThen("end", endForEveryone));
     on("gw-start", () => hostAction("start", { use_ai_prompt: useAiPrompts }));
     on("gw-again", () => hostAction("start", { use_ai_prompt: useAiPrompts }));
     on("gw-next", () => hostAction("next", { use_ai_prompt: useAiPrompts }));

@@ -274,7 +274,12 @@
     return '<div class="badge">' + esc(pr.icon || "📜") + " " + esc(pr.title || "") + mult + "</div>";
   }
 
+  var hadRoom = false;
   function viewWaiting() {
+    if (hadRoom) {
+      return '<div class="center fade"><div class="h1">🙏 Thanks for playing!</div>' +
+        '<div class="h3" style="margin-top:3vh">That game has ended. Start a new room on a phone and it will appear here.</div></div>';
+    }
     return '<div class="center fade"><div class="h1">Ready when you are!</div>' +
       '<div class="h3" style="margin-top:3vh">On a phone, open <b>Jarvis → Family Games → Use Your Good Word</b><br>and start a party room. It will appear here automatically.</div></div>';
   }
@@ -425,6 +430,8 @@
     lastPlayerCount = r ? humans(r).length : -1;
     if (phaseKey !== lastPhaseKey) lastRevealStep = -1;
     lastPhaseKey = phaseKey;
+    if (room && !r) hadRoom = true;
+    if (r) hadRoom = false;
     room = r;
     if (r && (r.phase === "writing" || r.phase === "voting" || r.phase === "reveal")) {
       deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
