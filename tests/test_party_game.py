@@ -868,7 +868,7 @@ def test_the_reveal_ends_on_a_scoreboard_with_whats_next():
         party._score_round_unlocked(room)
         snap = party.serialize_room(room, "a")
     assert snap["scores_at_s"] > party.reveal_result_at(room)  # after the result is called
-    assert snap["seconds_remaining"] - snap["scores_at_s"] >= 10  # and up long enough to read
+    assert 6 <= snap["seconds_remaining"] - snap["scores_at_s"] <= 10  # up long enough to read, short enough to keep moving
     assert snap["up_next"]["round"] == 2 and snap["up_next"]["title"] == party.ROUND_META[party.round_kind(room, 2)]["title"]
     with party._lock:
         room["round"] = room["total_rounds"]

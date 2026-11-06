@@ -17,6 +17,7 @@ and a few seconds of 24 kHz mono is a fraction of a second of pure Python.
 from __future__ import annotations
 
 import array
+import collections
 import io
 import math
 import os
@@ -500,17 +501,50 @@ def presence(x: list[float], rate: int, cutoff_hz: float = 2500.0, gain: float =
 
 
 def compress(x: list[float], rate: int, threshold_db: float = -20.0, ratio: float = 3.5,
-             attack_ms: float = 4.0, release_ms: float = 140.0) -> list[float]:
-    """Feed-forward peak compressor: even loudness, the way a broadcast voice sounds."""
-    att = math.exp(-1.0 / (rate * attack_ms / 1000.0))
-    rel = math.exp(-1.0 / (rate * release_ms / 1000.0))
+             attack_ms: float = 4.0, release_ms: float = 140.0, lookahead_ms: float = 5.0) -> list[float]:
+    """Feed-forward compressor: even loudness, the way a broadcast voice sounds.
+
+    It never clicks. The detector follows the level, but the gain is smoothed on
+    its own (so it cannot wobble within a waveform, which is distortion), and it
+    looks ahead, so the gain is already down when a hard onset like "Ooh" arrives
+    after a pause. The old one clamped down in the first milliseconds of the
+    vowel, and that sudden change was heard as a click.
+    """
+    n = len(x)
+    if not n:
+        return []
+    det_a = math.exp(-1.0 / (rate * 0.0005))
+    det_r = math.exp(-1.0 / (rate * release_ms / 1000.0))
+    g_att = math.exp(-1.0 / (rate * attack_ms / 1000.0))
+    g_rel = math.exp(-1.0 / (rate * release_ms / 1000.0))
     thr = 10 ** (threshold_db / 20.0)
-    env, out = 0.0, []
-    for v in x:
+    env = 0.0
+    target = [1.0] * n
+    for i, v in enumerate(x):
         level = abs(v)
-        env = att * env + (1 - att) * level if level > env else rel * env + (1 - rel) * level
-        gain = (thr * (env / thr) ** (1.0 / ratio)) / env if env > thr else 1.0
-        out.append(v * gain)
+        env = det_a * env + (1 - det_a) * level if level > env else det_r * env + (1 - det_r) * level
+        if env > thr:
+            target[i] = (thr * (env / thr) ** (1.0 / ratio)) / env
+    look = max(0, int(rate * lookahead_ms / 1000.0))
+    # The quietest gain in the next `look` samples, as a sliding-window minimum (one pass).
+    ahead = [1.0] * n
+    window: collections.deque[int] = collections.deque()
+    for j in range(n + look):
+        if j < n:
+            while window and target[window[-1]] >= target[j]:
+                window.pop()
+            window.append(j)
+        i = j - look
+        if i >= 0:
+            while window[0] < i:
+                window.popleft()
+            ahead[i] = target[window[0]]
+    out = [0.0] * n
+    g = 1.0
+    for i in range(n):
+        t = ahead[i]
+        g = g_att * g + (1 - g_att) * t if t < g else g_rel * g + (1 - g_rel) * t
+        out[i] = x[i] * g
     return out
 
 
@@ -602,40 +636,11 @@ def _trim(x: list[float], rate: int, keep_ms: float = 70.0) -> list[float]:
         return x
     y = x[max(0, idx[0] - keep): min(len(x), idx[-1] + keep)]
     fin, fout = min(len(y), int(rate * 0.012)), min(len(y), int(rate * 0.06))
+    # S-curve fades: a straight ramp leaves a kink where it ends.
     for i in range(fin):
-        y[i] *= i / fin
+        y[i] *= 0.5 - 0.5 * math.cos(math.pi * i / fin)
     for i in range(fout):
-        y[len(y) - 1 - i] *= i / fout
-    return y
-
-
-def depop(x: list[float], rate: int) -> list[float]:
-    """Take out the pop Kokoro can put at the very start of a clip that opens on a vowel.
-
-    Measured on "Ooh.": a ~2 ms burst, a dip, then the vowel; heard alone after
-    a pause it is a click. A burst that is much louder than the sound right after
-    it is that pop and is faded in. A real consonant ("B" in "Bold") is followed
-    by a louder vowel, so it never qualifies and is left alone.
-    """
-    peak = max((abs(v) for v in x), default=0.0)
-    if not peak:
-        return x
-    floor = 0.03 * peak
-    on = next((i for i, v in enumerate(x) if abs(v) > floor), None)
-    if on is None:
-        return x
-    head = int(rate * 0.006)  # where a pop lives
-    after = int(rate * 0.010)  # what follows it
-    burst = max((abs(v) for v in x[on:on + head]), default=0.0)
-    follow = x[on + head:on + head + after]
-    level = (sum(abs(v) for v in follow) / len(follow)) if follow else 0.0
-    if not level or burst < 2.5 * level:
-        return x
-    y = list(x)
-    ramp = head + after
-    for i in range(ramp):
-        if on + i < len(y):
-            y[on + i] *= 0.5 - 0.5 * math.cos(math.pi * i / ramp)  # raised cosine: no new edge
+        y[len(y) - 1 - i] *= 0.5 - 0.5 * math.cos(math.pi * i / fout)
     return y
 
 
@@ -675,8 +680,6 @@ def assemble(parts: list[tuple[str, bytes]] | list[tuple[str, bytes, float]]) ->
             samples = resample(samples, r / rate)
         rate = rate or r
         samples = _trim(samples, rate)
-        if role == "announcer":
-            samples = depop(samples, rate)
         if groups and groups[-1][0] == role:
             _, prev, prev_gap = groups[-1]
             groups[-1] = (role, prev + silence(rate, prev_gap) + samples, gap)

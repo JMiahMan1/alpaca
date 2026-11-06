@@ -520,6 +520,12 @@ other fails the build.
   changes per clue and per answer flash, so screens redraw and the announcer speaks), and a streamed TV's lag applies
   per clue (`phase_age_s` is per clue). Answers go to `POST /api/party/rooms/<code>/race` `{player_id, item, choice}`.
   Every match has one race round, sometimes two, in place of a writing round.
+- **Reveal, then scoreboard.** The answers screen shows only the answers; at `scores_at_s` (5 s after the result is
+  called, 8 s into a race reveal) the TV and phones switch to a full-screen scoreboard with "Up next", for about 8 s.
+  The music sits well under the announcer: bed volumes 0.15-0.2 and ducked to 22% while a line plays.
+- **The announcer's chain must never add a click.** `compress()` smooths its gain and looks ahead 5 ms (it used to
+  clamp down inside a hard vowel onset after a pause, which was heard as a click), fades are S-curves, and
+  `test_the_chain_adds_no_clicks` holds it. The remaining sharp edges in a line are Kokoro's own plosives.
 - **Ids on screens are public.** A player's own id authorises their actions, so snapshots carry
   `public_id(room, pid)` only and tell each phone which one is `you`. Host actions must name the host; `/next`
   carries the screen it was tapped on (`expect`) and is ignored if the room has already moved on.

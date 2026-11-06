@@ -137,7 +137,7 @@ LATE_ANSWER_SECONDS = 10.0
 #: The announcer reads the prompt (and a quip) as writing starts; that time is not the players'.
 PROMPT_READ_SECONDS = 8
 #: After the last answer is revealed, how long the scores stay up before the next round starts on its own.
-REVEAL_LINGER_SECONDS = 16
+REVEAL_LINGER_SECONDS = 4
 VOTE_SECONDS = 35
 REVEAL_SECONDS = 8
 #: The TV reveals answers one at a time (fewest votes first, the winner last),
@@ -991,7 +991,7 @@ RACE_INTROS = {
     "in_order": ("In Order! Put them in the right order on your phone. Perfect and fast wins big. "
                  "I believe in you. Mostly."),
 }
-RACE_REVEAL_SECONDS = 24.0
+RACE_REVEAL_SECONDS = 16.0
 
 
 def _race_bots(room: dict[str, Any]) -> list[str]:
@@ -2730,7 +2730,7 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
             pieces.append((role, clip[0], clip[1], gap))
     if not pieces:
         return None
-    show_id = hashlib.sha256(("show:v6:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
+    show_id = hashlib.sha256(("show:v7:" + ":".join(f"{r}={c}" for r, c, _, _ in pieces)).encode()).hexdigest()[:16]
     with _lock:
         cached = _tts_clips.get(show_id)
     if cached:
