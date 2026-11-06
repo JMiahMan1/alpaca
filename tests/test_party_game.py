@@ -384,15 +384,72 @@ def test_tv_stage_page_is_hands_free_and_never_shows_draft_answers(client):
     assert "player_id" not in html and "my_submission" not in html
 
 
-def test_good_word_game_never_uses_browser_speech_synthesis():
+def test_good_word_controller_contract():
     from pathlib import Path
 
     html = Path("arcade/family_games/good-word/game.html").read_text(encoding="utf-8")
-    assert "speechSynthesis" not in html
-    assert "SpeechSynthesisUtterance" not in html
-    assert "privacyShield" in html
-    assert "hostPlaysOnTv" in html
-    assert "Host Scroll Sealed & Locked In" in html
+    # Alpaca TTS only, never the browser's robotic voices.
+    assert "speechSynthesis" not in html and "SpeechSynthesisUtterance" not in html
+    # What a player types is never masked: the TV never shows drafts.
+    assert 'type="password"' not in html
+    # When a TV stage has played for the room, phones stay silent; otherwise only the host speaks.
+    assert "stageEverSeen" in html and "you_are_host" in html
+    # A join lobby, and host-only controls sent with the player's id.
+    assert 'id="gw-join"' in html and 'id="gw-host"' in html and 'id="gw-start"' in html
+    assert "player_id: myId" in html
+
+
+def test_good_word_page_meets_the_mobile_contract():
+    from arcade import family, mobile
+
+    assert mobile.contract_failures(family.build_html("good-word")) == []
+
+
+def test_players_pick_unique_avatars():
+    a = party.create_or_join_room(code="AVTR", player_id="p1", name="Ann", avatar="🦉")
+    assert next(p for p in a["room"]["players"] if p["id"] == "p1")["avatar"] == "🦉"
+    b = party.create_or_join_room(code="AVTR", player_id="p2", name="Bo", avatar="🦉")
+    bo = next(p for p in b["room"]["players"] if p["id"] == "p2")
+    assert bo["avatar"] != "🦉" and bo["avatar"] in party.PLAYER_AVATARS
+    c = party.create_or_join_room(code="AVTR", player_id="p3", name="Cy", avatar="not-an-avatar")
+    assert next(p for p in c["room"]["players"] if p["id"] == "p3")["avatar"] in party.PLAYER_AVATARS
+
+
+def test_only_the_host_starts_and_advances(client):
+    client.post("/api/party/rooms", json={"code": "HOSTY", "player_id": "h", "name": "Host"})
+    client.post("/api/party/rooms", json={"code": "HOSTY", "player_id": "g", "name": "Guest"})
+    assert client.post("/api/party/rooms/HOSTY/start", json={"player_id": "g"}).status_code == 403
+    ok = client.post("/api/party/rooms/HOSTY/start", json={"player_id": "h"})
+    assert ok.status_code == 200 and ok.get_json()["room"]["you_are_host"] is True
+    assert client.post("/api/party/rooms/HOSTY/next", json={"player_id": "g"}).status_code == 403
+    # The phase timer (no player id) may always advance.
+    assert client.post("/api/party/rooms/HOSTY/next", json={}).status_code == 200
+
+
+def test_host_role_passes_on_when_the_host_leaves(monkeypatch):
+    party.create_or_join_room(code="HAND", player_id="h", name="Host")
+    party.create_or_join_room(code="HAND", player_id="g", name="Guest")
+    with party._lock:
+        party._rooms["HAND"]["players"]["h"]["last_seen"] -= party.HOST_HANDOFF_SECONDS + 5
+    state = party.get_room_state("HAND", viewer_id="g")
+    assert state["you_are_host"] is True
+    assert next(p for p in state["players"] if p["id"] == "h")["connected"] is False
+
+
+def test_reveal_lasts_longer_with_more_answers():
+    for i in range(4):
+        party.create_or_join_room(code="REVL", player_id=f"p{i}", name=f"P{i}")
+    party.start_match("REVL")
+    for i in range(4):
+        party.submit_answer("REVL", player_id=f"p{i}", text=f"answer number {i}")
+    room = party.get_room_state("REVL", viewer_id="p0")
+    for i in range(4):
+        mine = party.get_room_state("REVL", viewer_id=f"p{i}")["options"]
+        party.submit_vote("REVL", player_id=f"p{i}", option_id=next(o for o in mine if not o["is_mine"])["option_id"])
+    room = party.get_room_state("REVL")
+    assert room["phase"] == "reveal"
+    expected = party.REVEAL_SECONDS + party.REVEAL_PER_ANSWER_SECONDS * len(room["options"])
+    assert abs(room["phase_seconds"] - expected) < 0.2
 
 
 def test_host_device_can_play_without_projecting_answers_to_tv_stage():
