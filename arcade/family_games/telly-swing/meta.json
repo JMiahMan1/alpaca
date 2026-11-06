@@ -1,7 +1,7 @@
 {
   "title": "Telly Swing",
   "tagline": "Swing, plug in and power your way home!",
-  "description": "Telly is a little cartoon TV with a power cord. Roll and jump through eight hand-built rooms, swing from hooks, push crates onto plates and plug into sockets that power doors, lifts, fans and bridges, then plug in at the gold outlet. Three stars a room.",
+  "description": "Telly is a little cartoon TV with a power cord. Roll, jump, hover and swing through 16 progressively harder Cordy-style rooms with hover-gondolas, turbo boosters, crates, sockets, doors, lifts, fans and bridges, while stomping or cord-whipping Boogaloo's Static Bugs, Volt-Bots and Pogo-Zappers.",
   "emoji": "📺",
   "art": {
     "from": "#ff9f43",
@@ -10,13 +10,13 @@
   "genre": "action",
   "ages": "5+",
   "players": "1",
-  "version": 5,
+  "version": 6,
   "metric": "points",
   "higher_is_better": true,
   "how_to": [
     "◀ ▶ roll Telly along and ⤒ jumps; hold ⤒ while falling to fire Telly's hover jets.",
     "🔌 near a glowing hook throws the cord: hold to swing, pump ◀ ▶ for momentum, or swing right round to wrap it for extra speed.",
-    "🔌 beside a socket plugs in to power doors, lifts, fans and bridges. Push crates onto plates - or hold 🔌 beside a crate to pull it back.",
-    "Stomp or whip 🔌 at patrolling Static Bugs and Volt-Bots, grab ⚡ and the three 🔋 in each room, then plug into the gold outlet!"
+    "🔌 beside a socket plugs in to power doors, lifts, fans and bridges. Ride hover-gondolas, hit chevron turbo boosters, and push or pull crates onto plates.",
+    "Stomp or whip 🔌 at patrolling Static Bugs, Volt-Bots and Pogo-Zappers, grab ⚡ and the three 🔋 in each room, then plug into the gold outlet!"
   ]
 }
