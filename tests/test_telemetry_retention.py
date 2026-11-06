@@ -180,7 +180,12 @@ def test_generations_are_bounded(tdir):
     generations = sorted(p.name for p in tdir.glob("m.jsonl.*"))
     assert len(generations) == tm.TELEMETRY_MAX_GENERATIONS, generations
     assert not list(tdir.glob("m.jsonl.4")), "generation cap not enforced"
-    assert max(tdir.iterdir(), key=lambda p: p.stat().st_size).name == "m.jsonl"
+    # Every file stays within one record of the cap (sizes can tie, so "which
+    # is largest" depends on directory order), and the live file has the newest.
+    one_record = len(json.dumps(_record(399))) + 1
+    assert all(p.stat().st_size < tm.TELEMETRY_MAX_BYTES + one_record for p in tdir.iterdir())
+    newest = json.loads((tdir / "m.jsonl").read_text().splitlines()[-1])
+    assert newest["epoch_time"] == 1700000000 + 399
 
 
 def test_rotation_is_scoped_to_one_model(tdir):
