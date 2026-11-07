@@ -149,7 +149,8 @@ def test_room_plays_a_quick_draw_round_end_to_end():
     assert snap["race"]["flash"] and snap["step"] == "0f"
     assert snap["race"]["item"]["answer"] == item["answer"]
     assert snap["race"]["right"] == ["P0", "P1"] and snap["race"]["mine"]["correct"] is False
-    assert snap["announce"].endswith("! P0 got it first. Naturally.")
+    said = snap["announce"]
+    assert "P0" in said and "P1" not in said and party.party_race.correct_text(item).rstrip(".!? ") in said
     # Run the clock out on the rest.
     with party._lock:
         for _ in range(40):

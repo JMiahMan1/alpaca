@@ -967,7 +967,7 @@ def test_a_writing_joke_only_where_it_fits_before_the_hurry_call():
         if room["phase"] != "writing":
             return
         lines = party.chatter_for(room)
-    joke = next(c for c in lines if c["text"].startswith("While you think"))
+    joke = next(c for c in lines if c["text"].startswith(party.HOST_THINK_LEADIN))
     hurry_at = (room["phase_deadline"] - room["phase_started_at"]) - 10.0
     assert joke["at"] + party.speech_seconds(joke["text"], room.get("voice")) <= hurry_at
 

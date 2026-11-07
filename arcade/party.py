@@ -1045,7 +1045,9 @@ def _start_race_round_unlocked(room: dict[str, Any], round_num: int, kind: str, 
     race = party_race.new_race(kind, raws, rng)
     party_race.start_item(race, now, _stage_delay(room), _race_bots(room), rng)
     room["race"] = race
-    room["current_prompt"] = {"announcer": RACE_INTROS.get(kind, meta["title"]), "kind": kind}
+    room["round"] = round_num  # the intro is picked per round
+    intro = _pick(room, _pool((RACE_INTROS.get(kind, meta["title"]),), ROUND_INTROS.get(kind)), "race-intro")
+    room["current_prompt"] = {"announcer": intro, "kind": kind}
     _open_clue_after_reading_unlocked(room, now)
     _premake_race_lines_async(room)
     for p in room["players"].values():
@@ -1073,7 +1075,7 @@ def _start_race_round_unlocked(room: dict[str, Any], round_num: int, kind: str, 
         "truth": "",
         "truth_keywords": [],
         "scripture_note": "",
-        "announcer": RACE_INTROS.get(kind, meta["title"]),
+        "announcer": intro,
     }
     room["submissions"] = {}
     room["options"] = []
@@ -1210,12 +1212,11 @@ def _score_race_unlocked(room: dict[str, Any]) -> None:
     ranked = sorted((p for p in players.values() if not p.get("spectator")), key=lambda p: -int(p.get("round_delta") or 0))
     top = ranked[0] if ranked and int(ranked[0].get("round_delta") or 0) > 0 else None
     if top is None:
-        line = "Well... nobody cracked that one. The Scribe is laughing in the back. I'm trying very hard not to join him."
+        line = _pick(room, HOST_RACE_NOBODY, "race-nobody")
     elif race["kind"] in ("pair_up", "in_order") and any(e["type"] == "race_perfect" for e in raw_events):
-        line = f"{top['name']} takes the round! Fast hands, a sharp mind... and frankly, a little showing off."
+        line = _pick(room, HOST_RACE_PERFECT, "race-win").format(who=top["name"])
     else:
-        line = (f"{top['name']} wins the race with {int(top['round_delta']):,} points! "
-                "Those thumbs deserve their own trophy.")
+        line = _pick(room, HOST_RACE_WINNER, "race-win").format(who=top["name"], pts=f"{int(top['round_delta']):,}")
     room["reveal"] = {
         "events": events,
         "round_winners": [top["name"]] if top else [],
@@ -1538,12 +1539,14 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
     # Build announcer summary for the reveal screen
     if round_winner_names:
         winner_str = " and ".join(round_winner_names)
-        verb = "take" if len(round_winner_names) > 1 else "takes"
-        announcer_reveal = f"The votes are in! {winner_str} {verb} the round bonus! A triumph of taste. Or at least, of votes."
+        many = len(round_winner_names) > 1
+        line = _pick(room, HOST_ROUND_WINNER, "winner")
+        announcer_reveal = line.format(who=winner_str, take="take" if many else "takes",
+                                       has="have" if many else "has", was="were" if many else "was")
     elif any(e["type"] == "truth_found" for e in events):
-        announcer_reveal = "The truth is revealed. Scripture wins, as it tends to do. Now, let's see who spotted it."
+        announcer_reveal = _pick(room, HOST_TRUTH_FOUND, "truth")
     else:
-        announcer_reveal = "The Scribe's Trap caught the room. Look at those scores. Actually... maybe don't."
+        announcer_reveal = _pick(room, HOST_ROOM_TRAPPED, "trapped")
 
     room["reveal"] = {
         "events": events,
@@ -1564,6 +1567,116 @@ def _score_round_unlocked(room: dict[str, Any]) -> None:
 #
 # Lines are picked per match and round (seeded), so the TV and every phone say
 # the same thing, and a replayed round does not repeat the last match's jokes.
+
+# The result of a voted round. ``{who}`` is the winner (or winners); {take}/{has}/{was} agree with it.
+HOST_ROUND_WINNER = (
+    "The votes are in! {who} {take} the round bonus! A triumph of taste. Or at least, of votes.",
+    "And the room has spoken! The bonus goes to {who}!",
+    "The people have chosen! {who} {take} the bonus, and frankly, I saw it coming. I did not.",
+    "Votes counted! The bonus is going to {who}. Somebody give them a round of applause. A small one.",
+    "A round bonus for {who}! The crowd goes mild!",
+    "It's official! {who} {has} written the best answer of the round. Frame it. Put it on the fridge.",
+    "The ballots are in, and {who} {take} the bonus! A performance for the ages. Well... for this evening.",
+    "Round bonus to {who}! Humble in victory, I hope. We'll see.",
+    "And the winner of the round is... {who}! I'd like to thank the Academy. Wait, that's not me.",
+    "{who} {has} won the round! The rest of you are still wonderful. Just a little less wonderful.",
+    "Hear ye, hear ye! {who} {was} the room's favorite! Let it be written. Let it be done.",
+    "The tally is final! {who} {take} the bonus home. Not literally. It's points.",
+    "Look at that! {who} {take} the round bonus. Somewhere, a proud grandmother is nodding.",
+    "{who} {take} the round! That answer had everything. Wit. Charm. Correct spelling. Mostly.",
+    "Bonus points to {who}! I'm told the judges were unanimous. I'm the judges. I wasn't consulted.",
+    "Winner, winner, potluck dinner! That round belongs to {who}!",
+)
+HOST_TRUTH_FOUND = (
+    "The truth is revealed. Scripture wins, as it tends to do. Now, let's see who spotted it.",
+    "There it is... the real verse! Let's see who knew their Bible, and who knew their bluffing.",
+    "The truth is out! Some of you found it. Some of you found a bluff and loved it dearly.",
+    "And the true answer is on the board! Good news for the Bible readers. Less good for everyone else.",
+    "Truth revealed! Turns out the Good Book was right all along. Shocking, I know.",
+    "That's the real one! Let's see who was fooled... and who did the fooling.",
+    "The genuine article! Give yourselves a pat on the back if you found it. A gentle one.",
+    "Truth wins the day! The bluffers, however, put up a magnificent fight.",
+)
+HOST_ROOM_TRAPPED = (
+    "The Scribe's Trap caught the room. Look at those scores. Actually... maybe don't.",
+    "Nobody won that round. The Scribe did. He is unbearable about it.",
+    "Well. The Scribe's Trap had a lovely round. The rest of us... less so.",
+    "Not one round bonus! The Scribe is thrilled. Somebody take his trumpet away.",
+    "The Trap took the round! Let's never speak of this again. Next!",
+    "That round goes to the Scribe. He'd like to say a few words. We will not be letting him.",
+)
+
+HOST_RACE_WINNER = (
+    "{who} wins the race with {pts} points! Those thumbs deserve their own trophy.",
+    "{who} takes the race with {pts} points! Quick thinking, quicker fingers.",
+    "And the fastest in the house is {who}, with {pts} points!",
+    "{who} wins it! {pts} points. I blinked and missed most of it.",
+    "Race over! {who} leads the pack with {pts} points. The rest of you were... also present.",
+    "{pts} points for {who}! Somebody check those thumbs for rocket boosters.",
+    "{who} crosses the finish line first, with {pts} points! A photo finish. Nobody took a photo.",
+    "First place in the race: {who}! {pts} points, and not even out of breath.",
+)
+HOST_RACE_PERFECT = (
+    "{who} takes the round! Fast hands, a sharp mind... and frankly, a little showing off.",
+    "A perfect board from {who}! Neat, quick and slightly smug. Well earned.",
+    "{who} nailed every one! I'd ask how, but I suspect the answer is 'Sunday school'.",
+    "Flawless! {who} takes the round. Please, everyone, try not to be jealous. Out loud.",
+    "{who} wins it with a perfect board! Tidy as a freshly swept tabernacle.",
+)
+HOST_RACE_NOBODY = (
+    "Well... nobody cracked that one. The Scribe is laughing in the back. I'm trying very hard not to join him.",
+    "Not a single point scored! A truly humbling round. Humility is a virtue, so... well done?",
+    "Nobody got it! Let's call that one a learning experience.",
+    "Zero points all round. The Scribe has asked me to tell you he got them all. He's lying.",
+)
+#: Said just before the between-rounds joke.
+HOST_JOKE_LEADIN = (
+    "And while we catch our breath...",
+    "Now, a quick one before we move on...",
+    "Before the next round, a little something...",
+    "While the scores sink in...",
+    "Here's one for the road...",
+    "A short intermission, if you'll allow me...",
+    "Meanwhile, back at the joke desk...",
+    "While everybody stretches their thumbs...",
+    "Quick question, while we reset...",
+    "Pardon me, but I have to share this...",
+)
+
+#: A race clue's answer, then who got it first. ``{answer}`` already ends in "!".
+HOST_FLASH_FIRST = (
+    "It's {answer} {who} got it first. Naturally.",
+    "It's {answer} And {who} was quickest!",
+    "{answer} {who} was on it like a shepherd on a lost sheep.",
+    "The answer is {answer} First in: {who}!",
+    "It's {answer} {who} saw that one coming.",
+    "{answer} Well done, {who}. Fastest thumbs in the house.",
+    "That's {answer} {who} beat everybody to it.",
+    "It's {answer} Points to {who}!",
+    "{answer} {who} didn't even blink.",
+    "The answer: {answer} {who} buzzed in first!",
+    "It's {answer} Speed and wisdom from {who}.",
+    "{answer} And {who} takes the lead on that one!",
+)
+HOST_FLASH_NOBODY = (
+    "It's {answer} Nobody? Really? Nobody.",
+    "It's {answer} Not a single taker. Fascinating.",
+    "The answer was {answer} The room went very quiet there.",
+    "{answer} Nobody got it. We'll keep that between us.",
+    "It's {answer} I'll pretend you were all just being polite.",
+    "It was {answer} A tough one. Or a sleepy room. Possibly both.",
+)
+#: Said just before a joke in the middle of a writing round.
+HOST_THINK_LEADIN = (
+    "While you think...",
+    "While you're writing...",
+    "Keep typing, but listen...",
+    "While those thumbs are busy...",
+    "A little something while you work...",
+    "While the ideas flow...",
+    "No pressure, but...",
+    "While you ponder...",
+)
 
 HOST_OPENERS = (
     "Good evening, and welcome back. I'm told this is the fun part. Let's find out.",
@@ -1599,7 +1712,7 @@ HOST_TRAPPED = (
     "And there it is. The Scribe's Trap, working exactly as designed. He would like that noted.",
     "The Scribe's Trap strikes again! Somewhere, a very smug Scribe is writing this down.",
     "That one was the trap all along. Shake it off... and maybe read the next one twice.",
-    "Well. That was the Scribe's Trap. He has asked me to thank his fans. I will not.",
+    "Well. The Scribe's Trap strikes. He has asked me to thank his fans. I will not.",
     "Caught by the Scribe's Trap. It happens to the best of us. Tonight, it happened to you.",
     "The Scribe's Trap catches another one! He's already practicing his victory speech. It's very long.",
 )
@@ -1752,7 +1865,7 @@ HOST_CHATTER: dict[str, tuple[str, ...]] = {
         "Make it something a choir could sing with a straight face. Or almost a straight face.",
     ),
     "church_bulletin": (
-        "Every church bulletin has one announcement nobody expected. Write that one.",
+        "Every church bulletin has one announcement nobody expected. That's the one to write.",
         "Potluck sign-ups? Choir tryouts? A lost and found full of casserole dishes? Go.",
         "Keep it bulletin-sized. The deacons are watching. Lovingly.",
         "Somewhere, a church secretary is proofreading this with a red pen. Make her smile.",
@@ -1762,9 +1875,9 @@ HOST_CHATTER: dict[str, tuple[str, ...]] = {
         "Read them carefully. The Scribe's Trap is hiding in there, and the Scribe is feeling very confident tonight.",
         "No voting for yourself. I'm watching. Warmly. But watching.",
         "Go with your gut. Or your funny bone. Whichever one is louder.",
-        "If one made you laugh out loud, that's your vote. Don't overthink it. That's my job.",
+        "If one made you laugh out loud, that's your vote. Leave the overthinking to me.",
         "A tip. The Scribe's Trap usually sounds a little too sure of itself. Much like the Scribe.",
-        "Take your time. Some of these deserve a second look. Some deserve a second chance.",
+        "No rush. Some of these deserve a second look. Some deserve a second chance.",
     ),
 }
 HOST_HURRY = (
@@ -1907,7 +2020,7 @@ def reveal_result_line(room: dict[str, Any]) -> str:
         if board:
             result += f" {board}"
         setup, punch = joke_for(room, "between")
-        result += f" And while we catch our breath... {setup} ... {punch}"
+        result += f" {_pick(room, HOST_JOKE_LEADIN, 'joke-lead')} {setup} ... {punch}"
     return result
 
 
@@ -1933,12 +2046,14 @@ def chatter_for(room: dict[str, Any]) -> list[dict[str, Any]]:
         joke_at = start + (end - start) * len(lines) / (len(lines) + 1)
         room_for_it = (length - 10.0) - joke_at - 1.0
         voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+        lead = _pick(room, HOST_THINK_LEADIN, "think-lead")
+
         def fits(j: tuple[str, str]) -> bool:
-            return speech_seconds(f"While you think... {j[0]} ... {j[1]}", voice) <= room_for_it
+            return speech_seconds(f"{lead} {j[0]} ... {j[1]}", voice) <= room_for_it
 
         if any(fits(j) for j in DAD_JOKES):  # no joke at all rather than one cut off by the hurry call
             setup, punch = joke_for(room, "writing", fits=fits)
-            lines.append(f"While you think... {setup} ... {punch}")
+            lines.append(f"{lead} {setup} ... {punch}")
     step = (end - start) / max(1, len(lines))
     out = [{"at": round(start + i * step, 1), "text": t} for i, t in enumerate(lines) if start + i * step < end]
     if length - delay > 20:
@@ -2069,8 +2184,8 @@ def race_line(room: dict[str, Any]) -> str:
             answer = "True" if item["answer"] == 0 else "False"
         answer = answer.rstrip(".!? ") + "!"
         if not names:
-            return f"It's {answer} Nobody? Really? Nobody."
-        return f"It's {answer} {names[0]} got it first. Naturally."
+            return _pick(room, HOST_FLASH_NOBODY, f"flash-none:{idx}").format(answer=answer)
+        return _pick(room, HOST_FLASH_FIRST, f"flash:{idx}").format(answer=answer, who=names[0])
     if item["type"] == "pick":
         clue = f"{item['clue']} True or false?" if kind == "lightning" else item["clue"]
         lead = f"Question {idx + 1}!" if idx else str((room.get("current_prompt") or {}).get("announcer") or "")

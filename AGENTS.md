@@ -536,6 +536,12 @@ other fails the build.
   heard until it has heard the whole list, least recently said anywhere first. Lists are the `HOST_*` pools plus
   `arcade/party_host_lines.py` (523 more: openers, round intros per kind, standings talk, race quips...).
   `standings_line()` comments on the scoreboard after a result (runaway, close, tied, comeback, last round).
+  **No fixed sentence in a result.** The voted-round winner (`HOST_ROUND_WINNER`, with `{who}`/`{take}`/`{has}`/`{was}`),
+  the truth found, the room trapped, the race winner/perfect/nobody and the lead-in to the between-rounds joke
+  (`HOST_JOKE_LEADIN`, `HOST_THINK_LEADIN`), each race clue's answer (`HOST_FLASH_FIRST`/`_NOBODY`, salted per clue) and
+  the race intro (`RACE_INTROS` + `ROUND_INTROS[kind]`) all go through `_pick()`; "A triumph of taste. Or at least, of
+  votes." once closed every round and "got it first. Naturally." every clue. Lines in a pool should not share a
+  sentence either (two "Ten seconds left." openings sound like a repeat): simulate a few matches and count sentences.
 - **A race clue is closed while it is read.** `open_after()` holds answers until the TV has said the clue (its
   measured length, capped at 12 s); phones grey their buttons ("Listen to the question...") and every clue's line
   is made as the race starts so the TV speaks it at once.

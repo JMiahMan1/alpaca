@@ -335,7 +335,31 @@ def test_the_longest_between_round_line_is_never_cut_short():
     from arcade import party as p
     board = max((line for v in p.STANDINGS.values() for line in v), key=len)
     joke = max(p.DAD_JOKES, key=lambda j: len(j[0]) + len(j[1]))
-    result = max(p._pool(p.HOST_TRAPPED, p.MORE_TRAPPED), key=len)
+    fill = dict(who="Jeremiah and Michele", take="take", has="have", was="were", pts="12,345")
+    results = [*p._pool(p.HOST_TRAPPED, p.MORE_TRAPPED), *p.HOST_TRUTH_FOUND, *p.HOST_RACE_NOBODY,
+               *(x.format(**fill) for x in (*p.HOST_ROUND_WINNER, *p.HOST_RACE_WINNER, *p.HOST_RACE_PERFECT))]
+    result = max(results, key=len)
+    lead = max(p.HOST_JOKE_LEADIN, key=len)
     line = (f"{result} {board.format(leader='Jeremiah', second='Michele', climber='Benjamin')} "
-            f"And while we catch our breath... {joke[0]} ... {joke[1]}")
+            f"{lead} {joke[0]} ... {joke[1]}")
     assert len(line) + 60 <= p.TTS_MAX_CHARS  # with room for long names
+
+
+def test_the_round_result_is_never_the_same_line_twice_in_a_match():
+    """'A triumph of taste. Or at least, of votes.' closed every voted round; each result is its own line now."""
+    from arcade import party as p
+    room = {"match_id": "m1", "round": 0, "lines_told": {}}
+    said = []
+    for rnd in range(1, 8):
+        room["round"] = rnd
+        said.append(p._pick(room, p.HOST_ROUND_WINNER, "winner").format(who="Mia", take="takes", has="has", was="was"))
+        said.append(p._pick(room, p.HOST_JOKE_LEADIN, "joke-lead"))
+    assert len(set(said)) == len(said)
+    room["round"] = 9  # a race: each clue's answer gets its own line
+    said = [p._pick(room, p.HOST_FLASH_FIRST, f"flash:{i}") for i in range(8)]
+    assert len(set(said)) == len(said)
+    for pool in (p.HOST_ROUND_WINNER, p.HOST_RACE_WINNER, p.HOST_RACE_PERFECT, p.HOST_FLASH_FIRST, p.HOST_FLASH_NOBODY):
+        for line in pool:
+            if pool not in (p.HOST_FLASH_NOBODY,):
+                assert "{who}" in line
+            line.format(who="Mia", take="takes", has="has", was="was", pts="1,000", answer="Moses!")  # no stray fields
