@@ -35,6 +35,8 @@ def _room(code="SYNC", tv=False):
     room = party._rooms[code]
     if tv:
         room["stage_seen_at"] = time.time()
+    for pid in ("a", "b"):  # both pages are current: they report from their first poll
+        party.get_room_state(code, viewer_id=pid, ready="")
     party.start_match(code, player_id="a")
     return room
 
@@ -164,3 +166,28 @@ def test_the_said_route():
     assert res.status_code == 200 and res.get_json()["applied"] is True
     assert client.post("/api/party/rooms/NOPE/said", json={"key": "x"}).status_code == 404
     assert client.post("/api/party/rooms/SYNC/said", json={"key": "x", "event": "soon"}).status_code == 400
+
+
+def test_a_screen_that_has_not_gone_never_runs_out_behind_the_waiting_page():
+    """Reported: writing, voting and the reveal each expired while everyone saw 'Get ready'."""
+    room = _room()
+    room["phase_started_at"] -= 120  # two minutes behind the waiting page: its whole clock has passed
+    room["phase_deadline"] -= 120
+    party.get_room_state("SYNC", viewer_id="a", ready=party.step_key(room))
+    assert room["phase"] == "writing"  # not moved on to voting unseen
+    party.get_room_state("SYNC", viewer_id="b", ready=party.step_key(room))
+    assert room["gate"]["go_at"] is not None and room["phase_deadline"] > time.time()  # the clock starts at the go
+
+
+def test_a_page_from_before_ready_reports_is_not_waited_for():
+    """Reported: a browser left open across the deploy never said it was ready, and froze the room."""
+    room = _room()
+    room["players"]["b"].pop("reports_ready")  # an old page: it polls but has never reported
+    party.get_room_state("SYNC", viewer_id="b")
+    _ready("SYNC", "a")
+    assert room["gate"]["go_at"] is not None
+
+
+def test_snapshots_carry_the_build_so_open_pages_reload_after_a_deploy():
+    _room()
+    assert party.get_room_state("SYNC", viewer_id="a")["build"] == party.BUILD and len(party.BUILD) == 12

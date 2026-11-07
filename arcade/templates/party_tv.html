@@ -904,7 +904,7 @@
   var chatterDone = {};
   // The host talks while players write and vote: each line once, never over another.
   function runChatter() {
-    if (closedOut || !room || !room.chatter || !room.chatter.length || STREAMED) return;
+    if (closedOut || !room || room.waiting || !room.chatter || !room.chatter.length || STREAMED) return;
     if (inflightKey || (audio && !audio.paused && !audio.ended)) return;
     var age = (Date.now() - phaseStartLocal) / 1000;
     for (var i = 0; i < room.chatter.length; i++) {
@@ -919,8 +919,10 @@
   var lastScoresShown = false;
   var lastRenderedKey = "";
   var lastTick = -1;
-  var goTimer = null, goneKeys = {};
+  var goTimer = null, goneKeys = {}, seenBuild = "";
   function apply(r) {
+    // A deploy happened while the TV page was open: reload it (the room lives on the server).
+    if (r && r.build) { if (!seenBuild) seenBuild = r.build; else if (r.build !== seenBuild) { window.location.reload(); return; } }
     // A reply sent before the go moment can land after it: a screen that has gone stays gone.
     if (r && r.waiting && goneKeys[stepKey(r)]) { r.waiting = false; r.go_in = null; }
     if (r && !r.waiting) goneKeys[stepKey(r)] = true;
@@ -994,7 +996,7 @@
 
   setInterval(function () {
     runChatter();
-    if (room && room.phase === "reveal") {
+    if (room && room.phase === "reveal" && !room.waiting) {  // the answers wait for the go like everything else
       var sc = scoresShown(room);
       if (sc !== lastScoresShown) {
         lastScoresShown = sc;

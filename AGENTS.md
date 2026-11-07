@@ -566,6 +566,11 @@ other fails the build.
   told `opens_in` in advance, so polling order gives nobody a head start) and an answer flash ends on its `"end"`.
   Nothing waits on a guessed time: a device or TV that stops polling (`PLAYER_AWAY_SECONDS`,
   `STAGE_PRESENCE_SECONDS`) is simply no longer waited for. A video stage keeps its own fixed delay and no gate.
+  **While a screen waits, its round is paused** (`_check_auto_advance_unlocked` does nothing while `gated`): the
+  first deploy let writing, voting and the reveal expire behind "Get ready". **Only devices that report are waited
+  for** (`reports_ready`, set by any poll carrying `ready`, even empty): a page left open across a deploy never
+  reported and froze the room, showing an empty answer box. Snapshots carry `build` (a hash of the screens' code);
+  an open page that sees it change reloads itself. TV timers (reveal steps, chatter) also wait for the go.
   Party tests count devices as ready via the `party_devices_ready` fixture; `party_gate` tests keep the gate.
   Measured in browsers: TV, phone and desktop showed a question within 70 ms of each other.
 - **Taps belong to the screen they started on** (`freshTap` in the phone game): a finger that went down before the

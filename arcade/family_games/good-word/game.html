@@ -573,8 +573,9 @@
   }
   function poll() {
     if (!code) return;
-    // "ready": the screen this device is on (it has the newest one the room sent it).
-    const ready = room ? "&ready=" + encodeURIComponent(stepKey(room)) : "";
+    // "ready": the screen this device is on (it has the newest one the room sent it); sent from the
+    // first poll, empty until there is one, so the room knows this device reports.
+    const ready = "&ready=" + (room ? encodeURIComponent(stepKey(room)) : "");
     fetch(`/api/party/rooms/${encodeURIComponent(code)}?player_id=${encodeURIComponent(myId)}${ready}`)
       .then((r) => r.json().then((d) => ({ status: r.status, d })))
       .then(({ status, d }) => {
@@ -589,7 +590,10 @@
      device fetches the screen. A reply that left before the go moment never takes it back. */
   const goneKeys = {};
   let goTimer = null;
+  let seenBuild = "";
   function setRoom(r) {
+    // A deploy happened while this page was open: reload it (the game lives on the server).
+    if (r.build) { if (!seenBuild) seenBuild = r.build; else if (r.build !== seenBuild) { location.reload(); return; } }
     if (r.waiting && goneKeys[stepKey(r)]) return;  // an old reply: this screen has already gone
     if (!r.waiting) goneKeys[stepKey(r)] = true;
     clearTimeout(goTimer);

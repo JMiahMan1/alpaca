@@ -2249,6 +2249,18 @@ def race_line(room: dict[str, Any]) -> str:
 #: A clue or answer flash waiting on the TV's report is held this far ahead: a placeholder for
 #: "until the TV says so" (or until it stops polling), never a wait anyone sits through.
 AWAITING_TV_S = 3600.0
+def _build_id() -> str:
+    """A fingerprint of the code the screens run, so pages left open across a deploy refresh."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    digest = hashlib.sha1()
+    for rel in ("party.py", "templates/party_tv.html", "family_games/good-word/game.html"):
+        with contextlib.suppress(OSError), open(os.path.join(here, rel), "rb") as fh:
+            digest.update(fh.read())
+    return digest.hexdigest()[:12]
+
+
+BUILD = _build_id()
+
 #: Clients check the room this often, and this often while a screen is waiting to go.
 CLIENT_POLL_S = 1.0
 CLIENT_FAST_POLL_S = 0.2
@@ -2261,8 +2273,13 @@ OPEN_LEAD_S = CLIENT_POLL_S + 0.5
 
 
 def _ready_devices(room: dict[str, Any], now: float) -> list[dict[str, Any]]:
-    """The contestants whose devices are here: each must say it is ready before a screen goes."""
-    return [p for p in _humans_unlocked(room) if now - float(p.get("last_seen") or 0) <= PLAYER_AWAY_SECONDS]
+    """The contestants whose devices are here and report readiness: each must be ready before a screen goes.
+
+    A page from before readiness reports existed (open since an earlier deploy) cannot say it is
+    ready; it is not waited for, and catches up when the screen goes (it reloads on a new build).
+    """
+    return [p for p in _humans_unlocked(room)
+            if p.get("reports_ready") and now - float(p.get("last_seen") or 0) <= PLAYER_AWAY_SECONDS]
 
 
 def _gate_unlocked(room: dict[str, Any], now: float) -> dict[str, Any] | None:
@@ -2427,6 +2444,8 @@ def set_stream_delay(code: str, seconds: float, *, player_id: str | None = None)
 
 def _check_auto_advance_unlocked(room: dict[str, Any]) -> None:
     now = time.time()
+    if gated(room, now):
+        return  # nobody can see this screen yet: its clock has not started (it starts when it goes)
     phase = room.get("phase")
     deadline = float(room.get("phase_deadline") or 0)
 
@@ -2676,6 +2695,8 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None, *, stage:
         # Seconds until it goes, once everyone is ready (the TV starts its line then).
         "go_in": round(max(0.0, float(gate["go_at"]) - now), 2) if gate and gate.get("go_at") else None,
         "poll_ms": int((CLIENT_FAST_POLL_S if waiting else CLIENT_POLL_S) * 1000),
+        # The server's build: an open page that sees it change reloads itself (old pages broke games).
+        "build": BUILD,
         "announce": announce_line(room),
         "chatter": chatter_for(room),
         # A dad joke for the lobby, a new one every LOBBY_JOKE_SECONDS while people join.
@@ -2960,8 +2981,11 @@ def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = Fal
         if viewer_id and (room["players"].get(viewer_id) or {}).get("is_bot"):
             viewer_id = None  # nobody sees the room as a scribe (it would show which answer is theirs)
         _touch_unlocked(room, viewer_id, now)
-        if ready and viewer_id and viewer_id in room["players"]:
-            room["players"][viewer_id]["ready_key"] = str(ready)[:120]  # this device is on that screen
+        if ready is not None and viewer_id and viewer_id in room["players"]:
+            player = room["players"][viewer_id]
+            player["reports_ready"] = True  # a device that reports is waited for
+            if ready:
+                player["ready_key"] = str(ready)[:120]  # this device is on that screen
         _check_auto_advance_unlocked(room)
         return serialize_room(room, viewer_id=viewer_id, stage=stage)
 
