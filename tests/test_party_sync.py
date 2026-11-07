@@ -269,3 +269,15 @@ def test_a_slow_tv_that_reports_is_still_waited_for():
     room["stage_seen_at"] -= party.TV_PRESENCE_SECONDS  # really gone now
     party.get_room_state("SYNC", viewer_id="a")
     assert room["gate"]["go_at"] is not None
+
+
+def test_the_reveal_says_when_the_host_calls_the_result():
+    room = _room()
+    with party._lock:
+        room["submissions"] = {pid: {"player_id": pid, "text": f"a {pid}", "is_decoy": False, "submitted_at": 0}
+                               for pid in ("a", "b")}
+        room["tv_on"] = None
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+    snap = party.serialize_room(room, "a", stage=True)
+    assert snap["phase"] == "reveal" and snap["result_at_s"] == pytest.approx(party.reveal_result_at(room))

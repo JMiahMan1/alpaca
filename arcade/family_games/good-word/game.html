@@ -967,6 +967,9 @@
       `<div class="gw-line ${p.id === r.you ? "me" : ""}"><span class="r">${i + 1}</span><span class="a">${esc(p.avatar)}</span><span class="n">${esc(p.id === r.you ? "You" : p.name)}</span>` +
       `<span class="s">${p.score}${p.round_delta ? `<span class="d${p.round_delta < 0 ? " neg" : ""}">${p.round_delta > 0 ? "+" : ""}${p.round_delta}</span>` : ""}</span></div>`).join("") + "</div>";
   }
+  function resultCalled(r) {
+    return !!(r && r.phase === "reveal" && (Date.now() - phaseStartLocal) / 1000 >= (r.result_at_s || 0));
+  }
   function scoresShown(r) {
     return !!(r && r.phase === "reveal" && r.scores_at_s && (Date.now() - phaseStartLocal) / 1000 >= r.scores_at_s);
   }
@@ -987,6 +990,12 @@
   }
   function viewReveal(r) {
     if (scoresShown(r)) return viewScores(r);
+    if (r.stage_connected && !resultCalled(r)) {
+      // The TV is unveiling the answers and the host has not called it yet: no spoilers here.
+      let w = `<div class="gw-hero gw-enter"><div class="big">📺</div><h1>Look at the TV!</h1><p>Here come the answers…</p></div>`;
+      if (r.you_are_host) w += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>Start next round now ▶</button>`;
+      return w;
+    }
     const me = meOf(r) || { round_delta: 0, score: 0 };
     const rank = seatsOf(r).findIndex((p) => p.id === r.you) + 1;
     const d = me.round_delta || 0;
@@ -1170,8 +1179,10 @@
   }
 
   // the countdown ring ticks between polls without re-rendering the screen
-  let scoresWasShown = false;
+  let scoresWasShown = false, resultWasCalled = false;
   setInterval(() => {
+    const rc = resultCalled(room);
+    if (rc !== resultWasCalled) { resultWasCalled = rc; if (rc && view === "room") { lastSig = ""; render(true); } }
     const sc = scoresShown(room);
     if (sc !== scoresWasShown) { scoresWasShown = sc; if (sc && view === "room") { lastSig = ""; render(true); } }
   }, 250);

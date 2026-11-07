@@ -56,6 +56,16 @@ if not log.handlers:
     log.addHandler(_handler)
     log.setLevel(logging.INFO)
     log.propagate = False
+    # Also kept in the arcade's data folder, which survives a redeploy (the container's own log does not).
+    if os.getenv("ARCADE_DIR") and "pytest" not in __import__("sys").modules:
+        with contextlib.suppress(OSError):
+            import logging.handlers
+            _dir = os.path.join(os.environ["ARCADE_DIR"], "party_logs")
+            os.makedirs(_dir, exist_ok=True)
+            _file = logging.handlers.RotatingFileHandler(os.path.join(_dir, "party.log"), maxBytes=4_000_000,
+                                                         backupCount=6, encoding="utf-8")
+            _file.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+            log.addHandler(_file)
 
 try:
     from arcade import announcer
@@ -2755,6 +2765,8 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None, *, stage:
         "reveal": _public_reveal(room) if phase in ("reveal", "finished") else None,
         # The reveal ends on a full-screen scoreboard that leads into the next round.
         "scores_at_s": scores_at(room) if phase == "reveal" else 0.0,
+        # When the host calls the result: phones keep places and points to themselves until then.
+        "result_at_s": reveal_result_at(room) if phase == "reveal" else 0.0,
         "up_next": up_next(room) if phase == "reveal" else None,
         "my_submission": {"text": my_sub["text"], "is_decoy": bool(my_sub.get("is_decoy"))} if my_sub else None,
         "my_vote": my_vote,
@@ -3069,8 +3081,16 @@ def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = Fal
         if room is None:
             raise LookupError(f"Room '{clean_code}' not found.")
         if stage:
-            if room.get("stage_seen_at") and (rtt or late):
-                # How the TV is doing: its last request's round trip, and how late its poll timer fired.
+            gap = now - float(room.get("stage_seen_at") or now)
+            def _ms(v: str | None) -> float:
+                try:
+                    return float(v or 0)
+                except ValueError:
+                    return 0.0
+
+            slow = gap > 2.5 or _ms(rtt) > 1000 or _ms(late) > 1000
+            if room.get("stage_seen_at") and (rtt or late) and slow:
+                # How the TV is doing (only when it is slow): its last round trip, how late its poll timer fired.
                 log.info("tv %s poll gap %.1fs rtt %sms late %sms", room.get("code"), now - float(room["stage_seen_at"]),
                          str(rtt)[:8], str(late)[:8])
             room["stage_seen_at"] = now
