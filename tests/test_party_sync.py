@@ -281,3 +281,23 @@ def test_the_reveal_says_when_the_host_calls_the_result():
         party._score_round_unlocked(room)
     snap = party.serialize_room(room, "a", stage=True)
     assert snap["phase"] == "reveal" and snap["result_at_s"] == pytest.approx(party.reveal_result_at(room))
+
+
+def test_every_round_shows_its_scoreboard_even_when_the_host_skips():
+    """Reported: tapping 'Start next round now' during the answers skipped the scores every round."""
+    room = _room()
+    with party._lock:
+        room["submissions"] = {pid: {"player_id": pid, "text": f"a {pid}", "is_decoy": False, "submitted_at": 0}
+                               for pid in ("a", "b")}
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+        room["gate"]["go_at"] = time.time() - 1  # the reveal is on screen
+    rnd = room["round"]
+    snap = party.advance_phase("SYNC", player_id="a", expect={"phase": "reveal", "round": rnd})
+    assert room["phase"] == "reveal" and room["round"] == rnd  # not on to the next round
+    assert snap["phase_age_s"] >= snap["scores_at_s"]  # every screen is now on the scoreboard
+    party.advance_phase("SYNC", player_id="a", expect={"phase": "reveal", "round": rnd})
+    assert room["phase"] == "reveal"  # it stays up its minimum
+    room["phase_started_at"] -= party.SCOREBOARD_MIN_SECONDS + 1  # the scores have been seen
+    party.advance_phase("SYNC", player_id="a", expect={"phase": "reveal", "round": rnd})
+    assert room["round"] == rnd + 1 or room["phase"] != "reveal"

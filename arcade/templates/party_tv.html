@@ -973,6 +973,9 @@
     if (r && r.phase === "lobby" && lastPlayerCount >= 0 && humans(r).length > lastPlayerCount) playSfx("join");
     lastPlayerCount = r ? humans(r).length : -1;
     if (phaseKey !== lastPhaseKey) { lastRevealStep = -1; phaseStartLocal = Date.now() - ((r && r.phase_age_s) || 0) * 1000; }
+    else if (r && r.phase === "reveal" && Math.abs((Date.now() - phaseStartLocal) / 1000 - (r.phase_age_s || 0)) > 1.5) {
+      phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000;  // the host skipped ahead to the scoreboard
+    }
     lastPhaseKey = phaseKey;
     if (room && !r) { hadRoom = true; endedAt = Date.now(); silenceAll(); }
     if (r) hadRoom = false;

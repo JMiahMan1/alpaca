@@ -60,6 +60,15 @@ def test_create_and_join_room_lists_active_family_room():
     assert rooms[0]["player_count"] == 2
 
 
+def _scores_seen(code):
+    """Every round shows its scoreboard: let it have been up its time, so 'next' moves on."""
+    party.get_room_state(code)  # the reveal goes on screen first (its clock starts when it does)
+    with party._lock:
+        room = party._rooms[code]
+        if room["phase"] == "reveal":
+            room["phase_started_at"] -= party.scores_at(room) + party.SCOREBOARD_MIN_SECONDS + 1
+
+
 def test_seven_round_schedule_covers_all_five_modes():
     party.create_or_join_room(code="NOAH", player_id="p1", name="Jeremiah", initials="JER")
     party.create_or_join_room(code="NOAH", player_id="p2", name="Michele", initials="MIC")
@@ -73,6 +82,7 @@ def test_seven_round_schedule_covers_all_five_modes():
         # Advance writing -> voting -> reveal -> next round
         party.advance_phase("NOAH", player_id="p1")
         party.advance_phase("NOAH", player_id="p1")
+        _scores_seen("NOAH")
         state = party.advance_phase("NOAH", player_id="p1")
         seen_kinds.append(state["prompt"]["kind"])
 
@@ -659,6 +669,7 @@ def test_reveal_moves_on_by_itself_and_never_waits_on_the_ai(monkeypatch):
         party._build_voting_options_unlocked(room)
         party._score_round_unlocked(room)
         room.pop("next_prompt", None)
+    _scores_seen("FLOW")
     party.advance_phase("FLOW", use_ai_prompt=True, player_id="h")
     assert held and held[0] is False
     assert party._rooms["FLOW"]["round"] == 5
@@ -674,6 +685,7 @@ def test_a_prefetched_ai_prompt_is_used_for_the_next_round():
         room["phase"] = "reveal"
         room["next_prompt"] = {"round": 5, "prompt": {"id": "ai_1", "prompt": "Noah forgot to pack ______.", "decoy": "the ark",
                                                       "bot_answers": ["snacks"]}}
+    _scores_seen("PREF")
     party.advance_phase("PREF", player_id="h")
     assert party._rooms["PREF"]["current_prompt"]["prompt"] == "Noah forgot to pack ______."
 

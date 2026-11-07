@@ -496,6 +496,10 @@
   function announceFor(r) {
     const k = stepKey(r);
     if (k !== chatterKey) { chatterKey = k; phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000; }
+    else if (r.phase === "reveal" && Math.abs((Date.now() - phaseStartLocal) / 1000 - (r.phase_age_s || 0)) > 1.5) {
+      phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000;  // the host skipped ahead to the scoreboard
+      lastSig = "";
+    }
     if (r.phase !== "lobby" && r.announce) { announce(r.announce, k); return; }
     if (r.phase === "writing" && r.prompt) announce(r.prompt.announcer || ("Round " + r.round + "! " + r.prompt.prompt), k);
     else if (r.phase === "voting") announce("All the scrolls are in! Vote for your favorite!", k);
@@ -993,7 +997,7 @@
     if (r.stage_connected && !resultCalled(r)) {
       // The TV is unveiling the answers and the host has not called it yet: no spoilers here.
       let w = `<div class="gw-hero gw-enter"><div class="big">📺</div><h1>Look at the TV!</h1><p>Here come the answers…</p></div>`;
-      if (r.you_are_host) w += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>Start next round now ▶</button>`;
+      if (r.you_are_host) w += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>Show the scores ▶</button>`;
       return w;
     }
     const me = meOf(r) || { round_delta: 0, score: 0 };
@@ -1006,8 +1010,7 @@
     if (!r.stage_connected && r.reveal && r.reveal.race) h += `<div class="gw-opts">${raceSummaryHtml(r)}</div>`;
     else if (!r.stage_connected) h += resultsHtml(r) + (r.prompt && r.prompt.scripture_note ? `<div class="gw-tag">${esc(r.prompt.scripture_note)}</div>` : "");
     // The standings get their own page next (viewScores); here it is only the answers.
-    const last = r.round >= r.total_rounds;
-    if (r.you_are_host) h += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>${last ? "Final scores now ▶" : "Start next round now ▶"}</button>`;
+    if (r.you_are_host) h += `<button type="button" class="gw-btn teal" id="gw-next" ${busy ? "disabled" : ""}>Show the scores ▶</button>`;
     return h;
   }
   function viewFinished(r) {

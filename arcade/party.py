@@ -1985,6 +1985,8 @@ def reveal_result_at(room: dict[str, Any]) -> float:
 
 #: The scoreboard takes over the screen this long after the result is called.
 SCOREBOARD_AFTER_RESULT_SECONDS = 5.0
+#: The scoreboard is up at least this long every round, even when the host skips ahead.
+SCOREBOARD_MIN_SECONDS = 5.0
 RACE_SCOREBOARD_AT_SECONDS = 8.0
 
 
@@ -3284,6 +3286,22 @@ def advance_phase(code: str, *, use_ai_prompt: bool = False, player_id: str | No
             or (expect.get("match_id") and expect["match_id"] != room.get("match_id"))
         ):
             return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
+        if room["phase"] == "reveal":
+            # Every round shows its scoreboard. A tap during the answers jumps to it; a tap while it has just
+            # come up waits out its minimum; only a tap on a scoreboard that has been seen moves on.
+            now = time.time()
+            age = now - float(room.get("phase_started_at") or now)
+            shown_at = scores_at(room)
+            if age < shown_at:
+                room["phase_started_at"] = now - shown_at
+                room["phase_deadline"] = now + SCOREBOARD_MIN_SECONDS + _stage_delay(room)
+                room["updated_at"] = now
+                log.info("scores %s %s: the host skipped to the scoreboard", room.get("code"), room.get("round"))
+                return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
+            if age < shown_at + SCOREBOARD_MIN_SECONDS:
+                room["phase_deadline"] = float(room["phase_started_at"]) + shown_at + SCOREBOARD_MIN_SECONDS
+                room["updated_at"] = now
+                return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
         if use_ai_prompt:
             room["ai_prompts"] = True
         phase, round_now = room["phase"], room.get("round")
