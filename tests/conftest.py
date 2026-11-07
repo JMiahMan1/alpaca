@@ -87,6 +87,25 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
 
 
 @pytest.fixture(autouse=True)
+def party_devices_ready(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Party tests drive rooms directly, with no device polling: count every device as ready.
+
+    Each screen otherwise waits for every connected device to report it is on it (and for the
+    host's line to be made), which is what ``party_gate`` tests check.
+    """
+    if request.node.get_closest_marker("party_gate") or "party" not in request.node.module.__name__:
+        return
+    try:
+        from arcade import party
+    except Exception:
+        return
+    monkeypatch.setattr(party, "_ready_devices", lambda room, now: [])
+    monkeypatch.setattr(party, "_make_line_for_the_gate",
+                        lambda room, key: room["gate"].__setitem__("line_ready", True))
+    monkeypatch.setattr(party, "GO_LEAD_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def no_network(request: pytest.FixtureRequest) -> None:
     """Fail fast instead of hanging if a non-live test opens a socket.
 

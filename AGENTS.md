@@ -556,12 +556,18 @@ other fails the build.
 - **Duplicate answers share one option** (`_build_voting_options_unlocked` merges by `_normalize_compare`; typing the
   trap's words counts as playing it). A player who leaves mid-race takes their taps with them, and a race's answer
   flash is held until its "X got it first" line has been said (`_hold_flash_for_the_line_unlocked`).
-- **Phones follow a live-page TV** (`stage_said`, `POST /api/party/rooms/<code>/said {key, seconds}`). The TV reports
-  when it starts each screen's line (`stepKey`: match:round:phase[:step]) and how long it is (-1 = unknown, the room
-  estimates; 0 = no line or sound blocked). Phones keep showing the screen the TV is on until `tv_key` matches theirs
-  (at most `tv_wait_s`); a race clue opens when the TV has finished reading it (and waits `TV_CLUE_EXTRA_WAIT_S` past
-  its estimate for the report); an answer flash lasts until its line is over; writing/voting/reveal get back the
-  seconds the TV took to start. A video stage keeps its own fixed delay and never reports.
+- **Every screen goes everywhere at once** (`_gate_unlocked`). A new screen (`step_key`: match:round:phase[:step])
+  starts closed: every client gets `waiting` and no content (prompt, ballot, reveal, clue are withheld; answers,
+  votes and race taps are refused). Each device reports it is on it (`?ready=<stepKey>` on its poll); a live TV
+  reports it has the host's line in hand (`POST .../said {key, event: "ready"}`); with no TV the room makes the line
+  itself first. When all are ready the screen goes `GO_LEAD_S` later (`go_in`), the TV starts its line then, and
+  the phase clock starts from that moment (`_start_from_unlocked`). Clients poll at `poll_ms` (200 ms while
+  waiting). With a TV, a race clue opens `OPEN_LEAD_S` after the TV reports `"end"` of reading it (every client is
+  told `opens_in` in advance, so polling order gives nobody a head start) and an answer flash ends on its `"end"`.
+  Nothing waits on a guessed time: a device or TV that stops polling (`PLAYER_AWAY_SECONDS`,
+  `STAGE_PRESENCE_SECONDS`) is simply no longer waited for. A video stage keeps its own fixed delay and no gate.
+  Party tests count devices as ready via the `party_devices_ready` fixture; `party_gate` tests keep the gate.
+  Measured in browsers: TV, phone and desktop showed a question within 70 ms of each other.
 - **Taps belong to the screen they started on** (`freshTap` in the phone game): a finger that went down before the
   screen changed does not press the new button under it. The answer box is never rebuilt while focused, and Return
   closes the keyboard instead of sending (it sent half-written answers).
