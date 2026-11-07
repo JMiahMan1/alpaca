@@ -1103,6 +1103,12 @@ def _tick_race_unlocked(room: dict[str, Any], now: float) -> None:
     race = room.get("race") or {}
     if not race:
         return
+    if race.get("await_tv") and not _tv_sync(room, now):  # the TV went away: nobody waits for it
+        if race.pop("await_tv") == "flash":
+            race["flash_until"] = now
+        else:
+            race["await_tv"] = "clue"
+            _release_clue_unlocked(room, now + OPEN_LEAD_S)
     before = (race.get("index"), bool(race.get("flash_until")))
     done = party_race.tick(race, now, _race_humans(room), _stage_delay(room, now), _race_bots(room),
                            random.Random(secrets.randbits(64)))
@@ -1133,6 +1139,12 @@ def _hold_flash_for_the_line_unlocked(room: dict[str, Any], now: float) -> None:
     settles it.
     """
     race = room["race"]
+    if _tv_sync(room, now):
+        # Up until the TV reports it has finished saying who got it (stage_said "end").
+        race["await_tv"] = "flash"
+        race["flash_until"] = room["phase_deadline"] = now + AWAITING_TV_S
+        return
+    race.pop("await_tv", None)
     voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
     line = race_line(room)
     start = float(race.get("flash_at") or now) + _stage_delay(room, now)
@@ -1173,8 +1185,24 @@ def _open_clue_after_reading_unlocked(room: dict[str, Any], now: float) -> None:
     read = min(CLUE_READ_MAX_S, speech_seconds(line, voice) + (0.4 if (voice, line) in _spoken_seconds
                                                                    else SPEECH_START_SLACK_S))
     if _tv_sync(room, now):
-        read += TV_CLUE_EXTRA_WAIT_S  # until the TV says when it really started reading (stage_said)
+        # Closed until the TV reports it has finished reading the clue (stage_said "end").
+        race["await_tv"] = "clue"
+        party_race.open_after(race, now, AWAITING_TV_S)
+        return
+    race.pop("await_tv", None)
     party_race.open_after(race, now + _stage_delay(room, now), read)
+
+
+def _release_clue_unlocked(room: dict[str, Any], at: float) -> None:
+    """The TV has read the clue (or has gone): answers open at ``at`` and the clock starts then."""
+    race = room["race"]
+    race.pop("await_tv", None)
+    shift = at - float(race.get("open_at") or at)
+    race["open_at"] = at
+    race["deadline"] = float(race["deadline"]) + shift
+    for plan in race["bot_plan"][race["index"]].values():
+        plan["at"] = max(at + 0.5, float(plan["at"]) + shift)
+    room["phase_deadline"] = race["deadline"]
 
 
 def _premake_race_lines_async(room: dict[str, Any]) -> None:
@@ -1267,6 +1295,8 @@ def race_answer(code: str, player_id: str, item: Any, choice: Any) -> dict[str, 
             raise ValueError("You're watching this round.")
         if room.get("phase") != "racing" or not room.get("race"):
             raise ValueError("There's no race on right now.")
+        if gated(room):
+            raise ValueError("Hold on: the question isn't up yet.")
         now = time.time()
         p["last_seen"] = now
         try:
@@ -2216,10 +2246,105 @@ def race_line(room: dict[str, Any]) -> str:
     return f"{(room.get('current_prompt') or {}).get('announcer') or ''} {item['clue']}".strip()
 
 
-#: Longest phones wait for the TV to start a new screen's line before showing it anyway.
-TV_LINE_WAIT_S = 8.0
-#: A race clue waits this much past its estimated reading for the TV's report of when it began.
-TV_CLUE_EXTRA_WAIT_S = 3.0
+#: A clue or answer flash waiting on the TV's report is held this far ahead: a placeholder for
+#: "until the TV says so" (or until it stops polling), never a wait anyone sits through.
+AWAITING_TV_S = 3600.0
+#: Clients check the room this often, and this often while a screen is waiting to go.
+CLIENT_POLL_S = 1.0
+CLIENT_FAST_POLL_S = 0.2
+#: Once everyone is ready, a screen goes this far ahead, so the TV (polling fast) has the moment
+#: before it comes and every screen shows it together.
+GO_LEAD_S = CLIENT_FAST_POLL_S * 2 + 0.1
+#: A clue opens this long after the TV finishes reading it, and every client is told the moment in
+#: advance (``opens_in``), so whoever happens to poll first gets no head start.
+OPEN_LEAD_S = CLIENT_POLL_S + 0.5
+
+
+def _ready_devices(room: dict[str, Any], now: float) -> list[dict[str, Any]]:
+    """The contestants whose devices are here: each must say it is ready before a screen goes."""
+    return [p for p in _humans_unlocked(room) if now - float(p.get("last_seen") or 0) <= PLAYER_AWAY_SECONDS]
+
+
+def _gate_unlocked(room: dict[str, Any], now: float) -> dict[str, Any] | None:
+    """Every screen goes everywhere at once, when every device is ready for it.
+
+    A new screen starts closed: the TV and each device get a waiting page and no content.
+    Each device says it is on that screen (``ready`` on its poll); a live TV says it has the
+    host's line in hand (``stage_said "ready"``); with no TV the room makes the line itself.
+    When all are ready the screen goes ``GO_LEAD_S`` later, on every screen together, and
+    the phase's clock starts from that moment. A device or TV that drops off the network
+    stops being waited for (it is no longer here); nothing waits on a guessed time.
+    """
+    phase = room.get("phase")
+    if phase in ("lobby", "finished") or _stage_delay(room, now) > 0:  # a video TV keeps its own delay
+        return None
+    key = step_key(room)
+    gate = room.get("gate")
+    if not gate or gate.get("key") != key:
+        gate = room["gate"] = {"key": key, "tv_ready": False, "line_ready": False, "go_at": None}
+        _make_line_for_the_gate(room, key)
+    if gate["go_at"] is None:
+        tv_ok = gate["tv_ready"] or not _tv_sync(room, now)
+        line_ok = gate["line_ready"] or _tv_sync(room, now)  # a TV makes its own line
+        devices_ok = all(p.get("ready_key") == key for p in _ready_devices(room, now))
+        if tv_ok and line_ok and devices_ok:
+            gate["go_at"] = now + GO_LEAD_S
+            _start_from_unlocked(room, gate["go_at"])
+    return gate
+
+
+def gated(room: dict[str, Any], now: float | None = None) -> bool:
+    """The current screen has not gone yet: nobody may see it or act on it."""
+    now = time.time() if now is None else now
+    gate = _gate_unlocked(room, now)
+    return bool(gate) and (gate["go_at"] is None or now < gate["go_at"])
+
+
+def _start_from_unlocked(room: dict[str, Any], go_at: float) -> None:
+    """The screen starts at ``go_at``: every clock and plan for it moves there."""
+    race = room.get("race") if room.get("phase") == "racing" else None
+    if race and race.get("flash_until"):
+        shift = go_at - float(race.get("flash_at") or go_at)
+        race["flash_at"] = go_at
+        if race.get("await_tv") != "flash":
+            race["flash_until"] = float(race["flash_until"]) + shift
+        room["phase_deadline"] = race["flash_until"]
+        return
+    if race:
+        shift = go_at - float(race.get("started_at") or go_at)
+        race["started_at"] = go_at
+        race["deadline"] = float(race["deadline"]) + shift
+        if race.get("await_tv") != "clue":
+            race["open_at"] = float(race.get("open_at") or go_at) + shift
+            for plan in race["bot_plan"][race["index"]].values():
+                plan["at"] = float(plan["at"]) + shift
+        room["phase_deadline"] = race["deadline"]
+        return
+    shift = go_at - float(room.get("phase_started_at") or go_at)
+    room["phase_started_at"] = go_at
+    room["phase_deadline"] = float(room.get("phase_deadline") or go_at) + shift
+    for sub in (room.get("submissions") or {}).values():  # the scribes write in the same window
+        if sub.get("submitted_at") and room["players"].get(sub.get("player_id"), {}).get("is_bot"):
+            sub["submitted_at"] = float(sub["submitted_at"]) + shift
+    room["updated_at"] = go_at
+
+
+def _make_line_for_the_gate(room: dict[str, Any], key: str) -> None:
+    """With no TV, the room makes the host's line before the screen goes, so every phone plays it at once."""
+    line, voice, code = announce_line(room), str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE), room.get("code")
+    if not line:
+        room["gate"]["line_ready"] = True
+        return
+
+    def work() -> None:
+        with contextlib.suppress(Exception):
+            synthesize_show_line(line, voice=voice)
+        with _lock:
+            r = _rooms.get(str(code))
+            if r and (r.get("gate") or {}).get("key") == key:
+                r["gate"]["line_ready"] = True
+
+    threading.Thread(target=work, name=f"party-gate-line-{code}", daemon=True).start()
 
 
 def _step(room: dict[str, Any]) -> str:
@@ -2241,46 +2366,38 @@ def _tv_sync(room: dict[str, Any], now: float | None = None) -> bool:
     return bool(seen and now - seen < STAGE_PRESENCE_SECONDS) and _stage_delay(room, now) == 0.0
 
 
-def stage_said(code: str, key: str, seconds: float) -> bool:
-    """The TV has started saying the line for screen ``key``, which lasts ``seconds`` (0: it has none).
+def stage_said(code: str, key: str, event: str = "ready") -> bool:
+    """The TV reports on screen ``key``: ``"ready"`` (it has the host's line in hand and can go)
+    or ``"end"`` (it has finished saying it). Nothing about pacing is guessed while a TV is live.
 
-    Phones show a screen once the TV is on it. A race clue opens when the TV has finished
-    reading it, an answer flash lasts until its line is over, and a writing, voting or
-    reveal phase gets back the seconds the TV took to start, so the round is not shorter
-    for the room than the clock says.
+    A race clue opens, ``OPEN_LEAD_S`` after the TV has finished reading it; an answer flash
+    ends when the TV has finished saying who got it.
     """
     now = time.time()
     with _lock:
         room = _rooms.get(_clean_code(code))
         if room is None:
             raise LookupError(f"Room '{_clean_code(code)}' not found.")
+        if event not in ("ready", "end"):
+            raise ValueError("event must be ready or end")
         if not _tv_sync(room, now) or str(key) != step_key(room):
             return False
-        if (room.get("stage_said") or {}).get("key") == key:
-            return False
-        if seconds < 0:  # the TV could not tell how long its clip is: use the room's measure of the line
-            seconds = speech_seconds(announce_line(room), str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE))
-        seconds = max(0.0, min(30.0, float(seconds)))
-        room["stage_said"] = {"key": key, "at": now, "seconds": seconds}
-        phase, race = room.get("phase"), room.get("race")
-        if phase == "racing" and race:
-            if race.get("flash_until"):
-                until = now + min(FLASH_MAX_S, seconds + 0.8)
-                if until > float(race["flash_until"]):
-                    race["flash_until"] = until
-                    room["phase_deadline"] = until
-            elif not race["answers"][race["index"]]:  # nobody has answered: the clue is still closed
-                opens = now + min(CLUE_READ_MAX_S, seconds) + 0.3
-                shift = opens - float(race.get("open_at") or now)
-                race["open_at"] = opens
-                race["deadline"] = float(race["deadline"]) + shift
-                for plan in race["bot_plan"][race["index"]].values():
-                    plan["at"] = max(opens + 0.5, float(plan["at"]) + shift)
-                room["phase_deadline"] = race["deadline"]
-        elif phase in ("writing", "voting", "reveal"):
-            late = min(TV_LINE_WAIT_S, now - float(room.get("phase_started_at") or now))
-            if late > 0.3:
-                room["phase_deadline"] = float(room.get("phase_deadline") or now) + late
+        gate = _gate_unlocked(room, now)
+        if event == "ready":
+            if not gate or gate["tv_ready"]:
+                return False
+            gate["tv_ready"] = True
+            _gate_unlocked(room, now)
+        else:
+            race = room.get("race") if room.get("phase") == "racing" else None
+            if not race or not race.get("await_tv") or (gate and gate["go_at"] is None):
+                return False
+            if race["await_tv"] == "clue" and not race.get("flash_until"):
+                _release_clue_unlocked(room, max(now, float(gate["go_at"]) if gate else now) + OPEN_LEAD_S)
+            elif race["await_tv"] == "flash":
+                race.pop("await_tv", None)
+                race["flash_until"] = now
+                _tick_race_unlocked(room, now)  # on to the next clue now
         room["updated_at"] = now
         return True
 
@@ -2408,9 +2525,16 @@ def _public_reveal(room: dict[str, Any]) -> dict[str, Any] | None:
     return {**reveal, "events": [{**e, "player_id": public_id(room, e.get("player_id"))} for e in reveal.get("events") or []]}
 
 
-def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[str, Any]:
-    """Build a JSON-safe snapshot of the room for a phone or TV screen."""
+def serialize_room(room: dict[str, Any], viewer_id: str | None = None, *, stage: bool = False) -> dict[str, Any]:
+    """Build a JSON-safe snapshot of the room for a phone or TV screen.
+
+    Until a live TV has reached the current screen, nobody but the TV is sent what is on it
+    (the prompt, the ballot, the clue): a client that peeked would have a head start.
+    """
     now = time.time()
+    gate = _gate_unlocked(room, now)
+    waiting = bool(gate) and (gate["go_at"] is None or now < gate["go_at"])
+    hidden = waiting and not stage
     phase = room["phase"]
     prompt = room.get("current_prompt") or {}
     submissions = room.get("submissions") or {}
@@ -2509,7 +2633,7 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
                    else float(race.get("started_at") or started))
     remaining = max(0, round(float(room.get("phase_deadline") or now) - now, 1)) if phase in timed else 0.0
 
-    return {
+    out = {
         "code": room["code"],
         "host_id": public_id(room, room.get("host_id")),
         "host_name": room.get("host_name", "Host"),
@@ -2547,8 +2671,11 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         # A TV showing the live page reports when it starts each screen's line (``stage_said``);
         # phones keep showing the screen the TV is on until it does, so nothing runs ahead of the host.
         "tv_sync": _tv_sync(room, now),
-        "tv_key": str((room.get("stage_said") or {}).get("key") or "") if _tv_sync(room, now) else "",
-        "tv_wait_s": TV_LINE_WAIT_S,
+        # This screen has not gone yet: every screen shows a waiting page and says it is ready.
+        "waiting": waiting,
+        # Seconds until it goes, once everyone is ready (the TV starts its line then).
+        "go_in": round(max(0.0, float(gate["go_at"]) - now), 2) if gate and gate.get("go_at") else None,
+        "poll_ms": int((CLIENT_FAST_POLL_S if waiting else CLIENT_POLL_S) * 1000),
         "announce": announce_line(room),
         "chatter": chatter_for(room),
         # A dad joke for the lobby, a new one every LOBBY_JOKE_SECONDS while people join.
@@ -2558,6 +2685,14 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         "phase_age_s": round(max(0.0, now - (started if race else float(room.get("phase_started_at") or now))), 2)
         if phase in timed else 0.0,
     }
+    if hidden:
+        # What the TV is about to show stays with the TV until it is showing it.
+        keep = ("kind", "title", "badge", "icon", "multiplier")
+        out["prompt"] = {k: v for k, v in (public_prompt or {}).items() if k in keep} if public_prompt else None
+        out["options"], out["reveal"], out["chatter"], out["announce"] = [], None, [], ""
+        if out.get("race"):
+            out["race"] = {k: out["race"][k] for k in ("kind", "index", "count")} | {"flash": False, "opens_in": 0.0}
+    return out
 
 
 def list_active_rooms() -> list[dict[str, Any]]:
@@ -2808,7 +2943,7 @@ def set_room_music(code: str, on: bool, *, player_id: str | None = None) -> dict
 
 
 def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = False,
-                   video: bool = False) -> dict[str, Any]:
+                   video: bool = False, ready: str | None = None) -> dict[str, Any]:
     """A room snapshot. ``stage=True`` is the TV stage polling, which marks it live;
     ``video`` says that stage is being rendered into a video stream."""
     now = time.time()
@@ -2825,8 +2960,10 @@ def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = Fal
         if viewer_id and (room["players"].get(viewer_id) or {}).get("is_bot"):
             viewer_id = None  # nobody sees the room as a scribe (it would show which answer is theirs)
         _touch_unlocked(room, viewer_id, now)
+        if ready and viewer_id and viewer_id in room["players"]:
+            room["players"][viewer_id]["ready_key"] = str(ready)[:120]  # this device is on that screen
         _check_auto_advance_unlocked(room)
-        return serialize_room(room, viewer_id=viewer_id)
+        return serialize_room(room, viewer_id=viewer_id, stage=stage)
 
 
 def start_match(code: str, *, use_ai_prompt: bool = False, player_id: str | None = None) -> dict[str, Any]:
@@ -2906,6 +3043,8 @@ def submit_answer(
             return serialize_room(room, viewer_id=pid)
         if room["phase"] != "writing":
             raise ValueError("This round's writing phase has already closed.")
+        if gated(room):
+            raise ValueError("Hold on: the question isn't up yet.")
         if pid not in room["players"]:
             raise ValueError("Join the room before submitting an answer.")
         if room["players"][pid].get("is_bot"):
@@ -2953,6 +3092,8 @@ def submit_vote(code: str, *, player_id: str, option_id: str) -> dict[str, Any]:
         _check_auto_advance_unlocked(room)
         if room["phase"] != "voting":
             raise ValueError("Voting is not open right now.")
+        if gated(room):
+            raise ValueError("Hold on: voting isn't up yet.")
         if pid not in room["players"]:
             raise ValueError("Join the room to vote.")
         if room["players"][pid].get("is_bot"):
