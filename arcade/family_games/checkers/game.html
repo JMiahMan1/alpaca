@@ -39,6 +39,10 @@
     margin: 18px auto 4px; font-size: 58px; font-weight: 900; letter-spacing: .16em;
     font-variant-numeric: tabular-nums; color: #ffd98a; text-shadow: 0 3px 0 rgba(0,0,0,.35);
   }
+  .ck-qr {
+    display: block; width: 168px; height: 168px; margin: 12px auto 2px; padding: 10px;
+    border-radius: 16px; background: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.28);
+  }
   .ck-sub { font-size: 14px; font-weight: 700; color: #f2d9c6; }
   .ck-row { display: flex; gap: 10px; margin-top: 12px; }
   .ck-row .ck-btn { margin-top: 0; }
@@ -210,12 +214,13 @@
   }
 
   function showWaiting(room) {
-    const share = shareUrl(room.code);
+    const share = room.invite_url || shareUrl(room.code);
     showLobby(
       `<div class="ck-art">⏳</div>
        <h1>Waiting for a friend</h1>
-       <p class="ck-tag">Share this code - they tap “Join with a code” and type it in.</p>
+       <p class="ck-tag">Send them the link, or hold a phone up to the code to scan it.</p>
        <div class="ck-code" data-ck="code">${room.code}</div>
+       ${room.qr_url ? `<img class="ck-qr" alt="Join code" src="${room.qr_url}">` : ""}
        <div class="ck-spinner"></div>
        <button class="ck-btn" type="button" data-ck="copy">📋 Copy invite link</button>
        <button class="ck-btn ck-alt" type="button" data-ck="ai">🤖 Play the computer instead</button>
@@ -334,12 +339,12 @@
       }
       hideLobby();
     } else if (room.status === "waiting") {
-      // no opponent yet (or they left): offer the code again
-      if (!lobbyEl.classList.contains("ck-show")) showWaiting(room);
-      else {
-        const cEl = lobbyEl.querySelector('[data-ck="code"]');
-        if (cEl) cEl.textContent = room.code;
-      }
+      // no opponent yet (or they left): offer the code again. The code element
+      // only exists on the waiting screen, so its absence means we are still on
+      // "Starting…"/"Finding a game…" and must swap in the real waiting screen.
+      const cEl = lobbyEl.querySelector('[data-ck="code"]');
+      if (cEl) cEl.textContent = room.code;
+      else showWaiting(room);
     }
 
     // a fresh move: animate it

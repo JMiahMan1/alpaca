@@ -437,3 +437,57 @@ def test_checkers_is_a_built_in_source():
 
     assert "checkers" in family.source_names()
     assert family.slug_for("checkers") == "family-checkers"
+
+
+# --------------------------------------------------------------------------- #
+# Reuse of Parable Party (the arcade's other room engine)
+# --------------------------------------------------------------------------- #
+def test_codes_prefer_parable_partys_friendly_words():
+    from arcade import party
+
+    code = checkers._pick_code_unlocked()
+    assert code in party.ROOM_WORDS
+    # and a taken word is not handed out twice
+    checkers._rooms[code] = {}
+    others = {checkers._pick_code_unlocked() for _ in range(50)}
+    assert code not in others
+
+
+def test_public_id_matches_parable_party():
+    from arcade import party
+
+    room = {"secret": "s3cret"}
+    human = {"id": "pid-1", "is_ai": False}
+    assert checkers._public_id(room, human) == party.public_id(room, human["id"])
+    assert checkers._public_id(room, {"id": "ai", "is_ai": True}) == "ai"
+    assert checkers._public_id(room, None) is None
+
+
+def test_room_payload_carries_an_invite_link_and_qr(client):
+    body = client.post("/api/checkers/rooms", json={"mode": "friend", "name": "Ann"}).get_json()
+    room = body["room"]
+    assert room["invite_url"].endswith(f"#room={room['code']}")
+    assert room["qr_url"] == f"/api/checkers/rooms/{room['code']}/join.svg"
+
+
+def test_join_qr_is_an_svg(client):
+    body = client.post("/api/checkers/rooms", json={"mode": "friend", "name": "Ann"}).get_json()
+    code = body["room"]["code"]
+    r = client.get(f"/api/checkers/rooms/{code}/join.svg")
+    assert r.status_code == 200
+    assert r.mimetype == "image/svg+xml"
+    assert b"<svg" in r.data
+
+
+def test_the_lobby_swaps_in_the_waiting_screen():
+    """A friend room used to dead-end on 'Starting…': the waiting screen (with
+    the code and QR) was only rendered when the lobby was hidden, but it was
+    already showing the starting screen. The guard must key on the code element.
+    """
+    from arcade import family
+
+    html = family.build_html("checkers")
+    assert '!lobbyEl.classList.contains("ck-show")' not in html  # the old guard
+    assert 'else showWaiting(room);' in html
+    assert 'room.invite_url || shareUrl(room.code)' in html
+    assert 'room.qr_url' in html

@@ -1271,6 +1271,21 @@ def api_unpublish(slug):
 # be faked. Rooms live in memory (like party rooms) and expire on their own.
 
 
+def _checkers_room(room: dict) -> dict:
+    """Add the invite link + QR path so a friend can join from another phone.
+
+    Reuses Parable Party's canonical address (`_public_base_url`) and its
+    join-by-QR pattern, so a shared link or a scanned code lands the friend on
+    the same lobby either way.
+    """
+    code = room.get("code")
+    return {
+        **room,
+        "invite_url": f"{_public_base_url()}/play/family-checkers#room={code}",
+        "qr_url": f"/api/checkers/rooms/{code}/join.svg",
+    }
+
+
 @app.route("/api/checkers/rooms", methods=["GET", "POST"])
 def api_checkers_rooms():
     """List open rooms (GET) or create / join / quick-match one (POST)."""
@@ -1293,6 +1308,7 @@ def api_checkers_rooms():
         return jsonify({"success": False, "error": str(exc)}), 403
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+    out["room"] = _checkers_room(out["room"])
     return jsonify({"success": True, **out})
 
 
@@ -1301,7 +1317,27 @@ def api_checkers_room(code):
     room = checkers.get_room(code, request.args.get("player_id"))
     if room is None:
         return jsonify({"success": False, "error": "room not found"}), 404
-    return jsonify({"success": True, "room": room})
+    return jsonify({"success": True, "room": _checkers_room(room)})
+
+
+@app.route("/api/checkers/rooms/<code>/join.svg", methods=["GET"])
+def api_checkers_join_svg(code):
+    """A scannable QR that opens the lobby with this room's code already filled."""
+    clean = checkers._clean_code(code)
+    if not clean:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    try:
+        import segno
+    except ImportError:
+        return jsonify({"success": False, "error": "QR codes unavailable"}), 404
+    url = f"{_public_base_url()}/play/family-checkers#room={clean}"
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="svg", scale=10, border=2, dark="#120a26", light="#ffffff", xmldecl=False)
+    return Response(
+        buf.getvalue(),
+        mimetype="image/svg+xml",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.route("/api/checkers/rooms/<code>/move", methods=["POST"])
@@ -1315,6 +1351,7 @@ def api_checkers_move(code):
         return jsonify({"success": False, "error": str(exc)}), 403
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+    out["room"] = _checkers_room(out["room"])
     return jsonify({"success": True, **out})
 
 
@@ -1329,6 +1366,7 @@ def api_checkers_ai(code):
         return jsonify({"success": False, "error": str(exc)}), 403
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+    out["room"] = _checkers_room(out["room"])
     return jsonify({"success": True, **out})
 
 
@@ -1341,6 +1379,7 @@ def api_checkers_reset(code):
         return jsonify({"success": False, "error": "room not found"}), 404
     except PermissionError as exc:
         return jsonify({"success": False, "error": str(exc)}), 403
+    out["room"] = _checkers_room(out["room"])
     return jsonify({"success": True, **out})
 
 
@@ -1350,7 +1389,7 @@ def api_checkers_leave(code):
     room = checkers.leave_room(code, body.get("player_id"))
     if room is None:
         return jsonify({"success": False, "error": "room not found"}), 404
-    return jsonify({"success": True, "room": room})
+    return jsonify({"success": True, "room": _checkers_room(room)})
 
 
 # --- Multiplayer Party Room API ("Parable Party") + TV Cast View ---

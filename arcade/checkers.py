@@ -32,12 +32,22 @@ moves down. Red moves first.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import random
 import re
 import secrets
 import threading
 import time
 from typing import Any
+
+# Parable Party is the arcade's other room engine; checkers reuses its friendly
+# room words and its one-way public ids. Imported by name because this module
+# runs both as `checkers` (the container, arcade/ on sys.path) and as
+# `arcade.checkers` (tests) - the same dual-mode seam app.py has.
+try:
+    party = importlib.import_module("party")
+except ImportError:  # tests import `arcade.checkers` as a package from the repo root
+    party = importlib.import_module("arcade.party")
 
 RED = "red"
 BLACK = "black"
@@ -329,6 +339,11 @@ def _clean_initials(raw: Any) -> str:
 
 
 def _pick_code_unlocked() -> str:
+    # Prefer a friendly word from Parable Party's list (the household already
+    # reads codes like those out loud), then fall back to a random 4-char code.
+    words = [w for w in party.ROOM_WORDS if w not in _rooms]
+    if words:
+        return random.choice(words)
     for _ in range(60):
         candidate = "".join(random.choices(_CODE_ALPHABET, k=4))
         if candidate not in _rooms:
@@ -374,8 +389,8 @@ def _public_id(room: dict[str, Any], player: dict[str, Any] | None) -> str | Non
         return None
     if player.get("is_ai"):
         return "ai"
-    secret = room.setdefault("secret", secrets.token_hex(16))
-    return "u" + hashlib.sha256(f"{secret}:{player['id']}".encode()).hexdigest()[:12]
+    # Same one-way id as Parable Party: sha256 of the per-room secret + player id.
+    return party.public_id(room, player["id"])
 
 
 def _new_room(code: str, creator: dict[str, Any], *, ai: bool) -> dict[str, Any]:

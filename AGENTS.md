@@ -468,9 +468,15 @@ other fails the build.
   draws a snapshot and posts the path of a move; it can never fabricate one.
 - **Routes** (`arcade/app.py`, after the family admin routes): `GET|POST /api/checkers/rooms`
   (list/create; `mode` `friend`|`quick`|`ai`, or `code` to join), `GET /api/checkers/rooms/<code>`,
-  and `POST .../{move,ai,reset,leave}`. Errors are 404 (no room), 403 (not a player), 400 (illegal
-  move / not your turn). Adding the computer mid-lobby (`.../ai`) seats `Alpaca AI` in the free
-  seat; the person is always Red and moves first.
+  `GET .../join.svg` (the invite QR), and `POST .../{move,ai,reset,leave}`. Errors are 404 (no room),
+  403 (not a player), 400 (illegal move / not your turn). Adding the computer mid-lobby (`.../ai`)
+  seats `Alpaca AI` in the free seat; the person is always Red and moves first.
+- **It reuses Parable Party rather than reimplementing it.** `checkers.py` imports `party` (by name,
+  the same dual-mode seam `app.py` has) to share the friendly room words (`party.ROOM_WORDS`, so codes
+  read `NOAH`/`LION` instead of random letters) and the one-way public id (`party.public_id`). The
+  room payload also carries `invite_url` and `qr_url`, built from the party section's
+  `_public_base_url()` and the party QR pattern (`GET .../join.svg`, segno, `no-store`), so a friend
+  arrives by link or by scanning the lobby QR. `party.py` itself is untouched.
 - **Player ids are secrets.** A snapshot carries `public_id` only (sha256 of the room secret), never
   the id; and `legal` (the moves on your turn) is filled **only** for the seat about to move, so a
   spectator or the other seat cannot read your options.
@@ -478,11 +484,11 @@ other fails the build.
   `_maybe_ai_unlocked`, so a poll never waits on a background thread and the turn always returns to
   the person. `choose_move` is bounded by `AI_TIME_BUDGET` (1.6 s) with depth up to 6.
 - The page is a single kit-built HTML (`arcade/family_games/checkers/game.html`) with a custom lobby
-  overlay (friend / quick match / computer / join-by-code, share link `…/play/family-checkers#room=CODE`),
-  a canvas board with slide + capture-burst animation, and a score bridge on the result card
-  (`captures × 50 + 300 win / 120 draw`). It passes `mobile.contract_report` by construction.
-- Tests: `tests/test_checkers.py` (rules, AI, rooms, the HTTP surface, and that the shipped page
-  passes the mobile contract).
+  overlay (friend / quick match / computer / join-by-code, the server's `invite_url` + a scannable
+  `qr_url`), a canvas board with slide + capture-burst animation, and a score bridge on the result
+  card (`captures × 50 + 300 win / 120 draw`). It passes `mobile.contract_report` by construction.
+- Tests: `tests/test_checkers.py` (rules, AI, rooms, the HTTP surface, the Parable Party reuse, and
+  that the shipped page passes the mobile contract).
 
 ### Party games on the TV (`arcade/party.py`, `/tv`, SharedLLM `tv_stage`)
 - **The TV runs the game's stage page; it is never sent audio or a picture of it.** `/tv/<CODE>`
