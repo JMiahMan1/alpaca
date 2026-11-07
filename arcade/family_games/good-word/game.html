@@ -494,6 +494,7 @@
   // A race moves through clues inside one phase: each clue and answer flash is its own moment.
   function stepKey(r) { return r.match_id + ":" + r.round + ":" + r.phase + (r.step ? ":" + r.step : ""); }
   function announceFor(r) {
+    if (r.waiting) return;  // nothing to say until the screen goes (its line is not even sent yet)
     const k = stepKey(r);
     if (k !== chatterKey) { chatterKey = k; phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000; }
     else if (r.phase === "reveal" && Math.abs((Date.now() - phaseStartLocal) / 1000 - (r.phase_age_s || 0)) > 1.5) {
@@ -637,7 +638,10 @@
       }
     } else holdUntil = 0;
     const me = meOf(r);
-    if (me && typeof me.score === "number" && me.score !== kit.score) kit.setScore(me.score, { quiet: true });
+    // Points land with the host's result, not before it (the reveal used to show them in the HUD at once).
+    if (me && typeof me.score === "number" && me.score !== kit.score && !(r.phase === "reveal" && !resultCalled(r))) {
+      kit.setScore(me.score, { quiet: true });
+    }
     const moved = !prev || prev.phase !== r.phase || prev.round !== r.round || prev.match_id !== r.match_id;
     if (r.phase === "racing" && r.race && !r.race.flash) {
       const opensIn = Number(r.race.opens_in || 0);
@@ -991,6 +995,7 @@
       `<span class="s">${p.score}${p.round_delta ? `<span class="d${p.round_delta < 0 ? " neg" : ""}">${p.round_delta > 0 ? "+" : ""}${p.round_delta}</span>` : ""}</span></div>`).join("") + "</div>";
   }
   function resultCalled(r) {
+    if (!r || chatterKey !== stepKey(r)) return false;  // this reveal has not started on this phone yet
     return !!(r && r.phase === "reveal" && (Date.now() - phaseStartLocal) / 1000 >= (r.result_at_s || 0));
   }
   function scoresShown(r) {

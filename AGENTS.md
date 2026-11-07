@@ -617,6 +617,12 @@ other fails the build.
   clue being read sends `listening` and its full `seconds`, held still on every screen until answers open.
   Gate events and TV reports are logged (`arcade.party`: "go ...", "tv ready/end ...") so a live game can be
   followed with `docker logs alpaca-arcade`.
+  **Nothing waits on one message:** the stage snapshot says what the room still needs from the TV (`tv_needs`:
+  "ready"/"end") and the TV re-sends it (and retries a failed POST), so a lost report cannot hold a screen or a
+  locked round. Only a TV page that reports (`tv_reports`, set by `rtt` on its polls) sets the pace; an old page
+  left open across a deploy is ignored. Writing/voting open on the TV's "end" of the question line (`open_at`,
+  `listening`), race clues get their full `ITEM_SECONDS` from when they open, an answer flash stays at least
+  `FLASH_MIN_S`, and the opening line is chosen on the word estimate so measuring its clip never changes it.
   Party tests count devices as ready via the `party_devices_ready` fixture; `party_gate` tests keep the gate.
   Measured in browsers: TV, phone and desktop showed a question within 70 ms of each other.
 - **Taps belong to the screen they started on** (`freshTap` in the phone game): a finger that went down before the

@@ -35,6 +35,7 @@ def _room(code="SYNC", tv=False):
     room = party._rooms[code]
     if tv:
         room["stage_seen_at"] = time.time()
+        room["tv_reports"] = True  # a current TV page (it reports from its first poll)
     for pid in ("a", "b"):  # both pages are current: they report from their first poll
         party.get_room_state(code, viewer_id=pid, ready="")
     party.start_match(code, player_id="a")
@@ -114,6 +115,7 @@ def test_a_race_clue_opens_after_the_tv_has_read_it_announced_to_all_in_advance(
     room = party._rooms["RACE"]
     room["schedule"] = ["blank_o_matic", "quick_draw", *["blank_o_matic"] * 5]
     room["stage_seen_at"] = time.time()
+    room["tv_reports"] = True
     with party._lock:
         party._start_round_unlocked(room, 2)
     key = party.step_key(room)
@@ -137,6 +139,7 @@ def test_an_answer_flash_ends_when_the_tv_has_said_it():
     room = party._rooms["RACE"]
     room["schedule"] = ["blank_o_matic", "quick_draw", *["blank_o_matic"] * 5]
     room["stage_seen_at"] = time.time()
+    room["tv_reports"] = True
     with party._lock:
         party._start_round_unlocked(room, 2)
     for _ in range(2):  # the clue, then its flash
@@ -150,14 +153,18 @@ def test_an_answer_flash_ends_when_the_tv_has_said_it():
             party.race_answer("RACE", "a", 0, room["race"]["items"][0]["answer"])
     assert room["race"]["await_tv"] == "flash" and room["race"]["flash_until"] > time.time() + 60
     party.stage_said("RACE", party.step_key(room), "end")
-    assert room["race"]["index"] == 1  # straight on to the next clue
+    race = room["race"]
+    assert race["flash_until"] >= race["flash_at"] + party.FLASH_MIN_S - 0.01  # still seen, however short the line
+    race["flash_until"] = time.time() - 0.01
+    party.get_room_state("RACE", viewer_id="a")
+    assert room["race"]["index"] == 1  # then on to the next clue
 
 
 def test_a_tv_that_goes_away_is_not_waited_for():
     room = _room(tv=True)
     _ready("SYNC", "a")
     _ready("SYNC", "b")
-    room["stage_seen_at"] -= party.STAGE_PRESENCE_SECONDS + 1
+    room["stage_seen_at"] -= party.TV_PRESENCE_SECONDS + 1
     party.get_room_state("SYNC", viewer_id="a")
     assert room["gate"]["go_at"] is not None
 
@@ -253,6 +260,7 @@ def test_a_race_clue_being_read_holds_its_clock_on_every_screen():
     room = party._rooms["RACE"]
     room["schedule"] = ["blank_o_matic", "quick_draw", *["blank_o_matic"] * 5]
     room["stage_seen_at"] = time.time()
+    room["tv_reports"] = True
     with party._lock:
         party._start_round_unlocked(room, 2)
     key = party.step_key(room)
@@ -301,8 +309,10 @@ def test_every_round_shows_its_scoreboard_even_when_the_host_skips():
                                for pid in ("a", "b")}
         party._build_voting_options_unlocked(room)
         party._score_round_unlocked(room)
-        room["gate"]["go_at"] = time.time() - 1  # the reveal is on screen
     rnd = room["round"]
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    _go(room)  # the reveal is on screen
     snap = party.advance_phase("SYNC", player_id="a", expect={"phase": "reveal", "round": rnd})
     assert room["phase"] == "reveal" and room["round"] == rnd  # not on to the next round
     assert snap["phase_age_s"] >= snap["scores_at_s"]  # every screen is now on the scoreboard
@@ -344,3 +354,99 @@ def test_without_a_tv_writing_opens_when_the_line_has_been_said():
     expected = go + min(party.PROMPT_READ_MAX_S, party.speech_seconds(line, room.get("voice")))
     assert room["open_at"] == pytest.approx(expected, abs=0.05)
     assert room["phase_deadline"] == pytest.approx(room["open_at"] + party.WRITE_SECONDS)
+
+
+def test_a_tap_during_the_reveals_get_ready_still_skips_to_the_scores():
+    room = _room()
+    with party._lock:
+        room["submissions"] = {pid: {"player_id": pid, "text": f"a {pid}", "is_decoy": False, "submitted_at": 0}
+                               for pid in ("a", "b")}
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+    party.advance_phase("SYNC", player_id="a", expect={"phase": "reveal", "round": room["round"]})  # still waiting
+    assert room.get("skip_to_scores")
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    go = room["gate"]["go_at"]
+    assert room["phase_started_at"] == pytest.approx(go - party.scores_at(room))  # it goes straight to the scores
+
+
+def test_an_old_tv_page_that_never_reports_does_not_set_the_pace():
+    room = _room()
+    room["stage_seen_at"] = time.time()  # polling, but never reports (a page from before this version)
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    assert room["gate"]["go_at"] is not None
+
+
+def test_the_tv_is_told_what_the_room_still_needs_from_it():
+    """One lost report must not stall the room: the TV re-sends what the room still waits for."""
+    room = _room(tv=True)
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    assert party.get_room_state("SYNC", stage=True)["tv_needs"] == "ready"
+    party.stage_said("SYNC", party.step_key(room), "ready")
+    _go(room)
+    assert party.get_room_state("SYNC", stage=True)["tv_needs"] == "end"  # writing opens on the TV's "end"
+    party.stage_said("SYNC", party.step_key(room), "end")
+    assert party.get_room_state("SYNC", stage=True)["tv_needs"] == ""
+
+
+def test_hidden_reveal_does_not_give_away_the_points():
+    room = _room()
+    with party._lock:
+        room["submissions"] = {pid: {"player_id": pid, "text": f"a {pid}", "is_decoy": False, "submitted_at": 0}
+                               for pid in ("a", "b")}
+        party._build_voting_options_unlocked(room)
+        room["votes"] = {"a": next(o["option_id"] for o in room["options"] if "b" in (o.get("authors") or []))}
+        party._score_round_unlocked(room)
+    snap = party.get_room_state("SYNC", viewer_id="b")
+    assert snap["waiting"] and all(p["round_delta"] == 0 for p in snap["players"])
+    assert next(p for p in snap["players"] if p["name"] == "Ben")["score"] == 0
+
+
+def _live_race():
+    party.create_or_join_room(code="RACE", player_id="a", name="Ann")
+    room = party._rooms["RACE"]
+    room["schedule"] = ["blank_o_matic", "quick_draw", *["blank_o_matic"] * 5]
+    room["stage_seen_at"], room["tv_reports"] = time.time(), True
+    with party._lock:
+        party._start_round_unlocked(room, 2)
+    return room
+
+
+def test_a_race_clue_gets_its_full_time_however_long_the_gate_took():
+    """Review: a 6 s wait at "Get ready" made a 15 s Quick Draw clue 21.5 s long."""
+    room = _live_race()
+    room["race"]["started_at"] -= 6  # the screen waited six seconds before it went
+    _ready("RACE", "a")
+    party.stage_said("RACE", party.step_key(room), "ready")
+    _go(room)
+    party.stage_said("RACE", party.step_key(room), "end")
+    race = room["race"]
+    assert race["deadline"] - race["open_at"] == pytest.approx(party.party_race.ITEM_SECONDS["quick_draw"])
+
+
+def test_no_hour_long_countdown_during_an_answer_flash():
+    """Review: phones showed ~3600 during a flash that waits on the TV."""
+    room = _live_race()
+    _ready("RACE", "a")
+    party.stage_said("RACE", party.step_key(room), "ready")
+    _go(room)
+    party.stage_said("RACE", party.step_key(room), "end")
+    room["race"]["open_at"] = time.time() - 0.01
+    party.race_answer("RACE", "a", 0, room["race"]["items"][0]["answer"])
+    assert room["race"]["await_tv"] == "flash"
+    room["gate"]["go_at"] = time.time() - 0.01
+    snap = party.get_room_state("RACE", viewer_id="a")
+    assert snap["deadline_at"] is None and snap["seconds_remaining"] == 0
+
+
+def test_the_opening_line_does_not_change_once_its_clip_is_measured():
+    """Review: measuring the clip made ahead flipped the line to its shorter version."""
+    item = max(party.PROMPT_BANK["parable_remix"], key=lambda p: len(p["announcer"]))
+    room = {"phase": "writing", "match_id": "m", "round": 2, "lines_told": {},
+            "current_prompt": {**item, "kind": "parable_remix", "context": party.party_scripture.story_context(item)}}
+    before = party.announce_line(room)
+    party._spoken_seconds[(party.DEFAULT_ANNOUNCER_VOICE, before)] = 99.0  # measured long
+    assert party.announce_line(room) == before

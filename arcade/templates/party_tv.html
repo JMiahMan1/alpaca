@@ -314,27 +314,44 @@
   /* Every screen goes everywhere at once. The TV tells the room when it is "ready" for a screen
      (it has the host's line in hand) and when it has finished saying it ("end": a race clue opens,
      an answer flash ends). Reports go one at a time, in order. */
-  var saidSent = {}, saidQueue = [], saidBusy = false;
-  function said(key, event) {
-    if (STREAMED || !key || !code || saidSent[key + ":" + event]) return;
+  var saidSent = {}, saidAt = {}, saidQueue = [], saidBusy = false;
+  function said(key, event, again) {
+    if (STREAMED || !key || !code || (saidSent[key + ":" + event] && !again)) return;
     saidSent[key + ":" + event] = true;
-    saidQueue.push({ code: code, key: key, event: event });
+    saidAt[key + ":" + event] = Date.now();
+    saidQueue.push({ code: code, key: key, event: event, tries: 0 });
     pumpSaid();
   }
   function pumpSaid() {
     if (saidBusy || !saidQueue.length) return;
     saidBusy = true;
     var m = saidQueue.shift();
-    xhr("POST", "/api/party/rooms/" + encodeURIComponent(m.code) + "/said", { key: m.key, event: m.event }, function () {
+    xhr("POST", "/api/party/rooms/" + encodeURIComponent(m.code) + "/said", { key: m.key, event: m.event }, function (d, status) {
       saidBusy = false;
+      // A report that did not arrive (Wi-Fi blip, timeout) is sent again; a 404 means the room is gone.
+      if (!d && status !== 404 && m.tries < 4) { m.tries++; setTimeout(function () { saidQueue.unshift(m); pumpSaid(); }, 800); return; }
       pumpSaid();
     });
+  }
+  // The room says what it is still waiting to hear about this screen; say it again if it never arrived.
+  function resendWhatTheRoomNeeds(r) {
+    var key = stepKey(r), need = r && r.tv_needs;
+    if (!need || STREAMED || Date.now() - (saidAt[key + ":" + need] || 0) < 3000) return;
+    var playing = audio && !audio.paused && !audio.ended;
+    if (need === "ready") {
+      var p = prepared[key];
+      if (p && !p.loading && !playing && saidSent[key + ":ready"]) said(key, "ready", true);
+    } else if (need === "end") {
+      var mine = playing && audio.__step === key;
+      if (!mine && spokenKeys[key] && !(prepared[key] && prepared[key].loading) && saidSent[key + ":end"]) said(key, "end", true);
+    }
   }
   /* While a screen waits to go, the TV fetches its line and then says it is ready; at the go
      moment it plays the clip it already has, so the line starts as the screen appears. */
   var prepared = {};
   function prepare(r, key) {
     if (prepared[key]) return;
+    for (var k in prepared) if (k !== key && !prepared[k].loading) delete prepared[k];  // only the screen at hand
     var text = r.announce;
     if (!text) { prepared[key] = { none: true }; readyWhenQuiet(key); return; }
     prepared[key] = { loading: true, text: text };
@@ -343,7 +360,7 @@
       p.loading = false;
       p.blob = blob && blob.size >= 128 ? blob : null;
       readyWhenQuiet(key);  // ready even without a clip: nobody waits on a TV that cannot speak
-      if (p.play) { p.play = false; if (p.blob) { lastSpoken = key; play(p.blob, key); } else said(key, "end"); }
+      if (p.play) { p.play = false; if (p.blob) { var clip = p.blob; p.blob = null; lastSpoken = key; play(clip, key); } else said(key, "end"); }
     }, true);
   }
   /* The next screen waits for the host to finish what he is saying: everyone answering in three
@@ -365,7 +382,7 @@
       spokenKeys[key] = true;
       lastSpoken = key;
       if (ready.loading) { ready.play = true; return; }
-      if (ready.blob) { play(ready.blob, key); return; }
+      if (ready.blob) { var clip = ready.blob; ready.blob = null; play(clip, key); return; }  // the page runs for days
       if (ready.none) return;
     }
     spokenKeys[key] = true;
@@ -958,6 +975,7 @@
   function apply(r) {
     // A deploy happened while the TV page was open: reload it (the room lives on the server).
     if (r && r.build) { if (!seenBuild) seenBuild = r.build; else if (r.build !== seenBuild) { window.location.reload(); return; } }
+    if (r) resendWhatTheRoomNeeds(r);
     // A reply sent before the go moment can land after it: a screen that has gone stays gone.
     if (r && r.waiting && goneKeys[stepKey(r)]) { r.waiting = false; r.go_in = null; }
     if (r && !r.waiting) goneKeys[stepKey(r)] = true;

@@ -604,8 +604,8 @@ def test_a_live_page_stage_adds_no_delay(client):
     client.post("/api/party/rooms/LGTV/start", json={"player_id": "p1"})
     room = client.get("/api/party/rooms/LGTV?player_id=p2").get_json()["room"]
     assert room["stage_delay_s"] == 0
-    read = room["phase_seconds"] - party.WRITE_SECONDS
-    assert party.PROMPT_READ_SECONDS - 0.2 <= read <= party.PROMPT_READ_MAX_S + 0.2
+    read = room["phase_seconds"] - party.WRITE_SECONDS  # the clock starts when the question has been asked
+    assert -0.2 <= read <= party.PROMPT_READ_MAX_S + 0.2
 
 
 def test_stream_delay_ends_when_the_streamed_stage_goes_away(monkeypatch):
