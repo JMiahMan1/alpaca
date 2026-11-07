@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from arcade import party
 from arcade.party import PROMPT_BANK, ROUND_META, _matches_truth
 from arcade.party_prompts import EXTRA_PROMPTS, NEW_ROUND_META
 
@@ -156,3 +157,63 @@ def test_prompts_are_new():
     mine = [norm(item["prompt"]) for _, item in ALL_ITEMS]
     assert not set(mine) & existing
     assert len(mine) == len(set(mine))
+
+
+# --- the story behind each prompt, and the verse behind each race answer -------------
+
+def test_every_writing_prompt_has_its_story_with_a_chapter():
+    from arcade import party_scripture as s
+    from arcade.party_story_context import STORY_CONTEXT
+    ids = {it["id"] for items in party.PROMPT_BANK.values() for it in items}
+    assert set(STORY_CONTEXT) == ids  # none missing, none stale
+    for pid, text in STORY_CONTEXT.items():
+        assert 80 <= len(text) <= 240, pid
+        assert "chapter" in text or "Psalm" in text, pid
+        assert '"' not in text and not re.search(r"\d+:\d+", text), pid  # spoken: no quotes, no verse numbers
+    for item in party.PROMPT_BANK["truth_or_bluff"]:  # the story never gives the truth away
+        assert not party._matches_truth(s.story_context(item), item), item["id"]
+
+
+def test_the_story_is_told_before_the_prompt_and_the_paper_boy_still_goes_first():
+    from arcade import party_scripture as s
+    for kind in ("blank_o_matic", "extra_extra", "truth_or_bluff"):
+        item = party.PROMPT_BANK[kind][0]
+        room = {"phase": "writing", "match_id": "m", "round": 2, "lines_told": {},
+                "current_prompt": {**item, "kind": kind, "context": s.story_context(item)}}
+        line = party.announce_line(room)
+        story = s.story_context(item)
+        assert story in line and line.index(story) < line.index(item["announcer"][-15:])  # story, then the prompt
+        if kind == "extra_extra":
+            assert line.startswith("Extra! Extra!")
+
+
+def test_a_prompt_without_a_story_still_names_its_chapter():
+    from arcade import party_scripture as s
+    assert s.story_context({"id": "ai-1", "scripture_note": "1 Sam 17:40 - five smooth stones"}) == \
+        "This one comes from First Samuel chapter 17."
+    assert s.story_context({"id": "ai-2"}) == ""
+
+
+def test_references_are_said_the_way_people_read_them():
+    from arcade import party_scripture as s
+    assert s.spoken_reference("1 Sam 17:40") == "First Samuel chapter 17"
+    assert s.spoken_reference("Psalms 23:1-4") == "Psalm 23"
+    assert s.spoken_reference("2 Cor 5:17") == "Second Corinthians chapter 5"
+
+
+def test_the_verse_is_on_screen_but_never_gives_a_truth_away():
+    for kind in ("blank_o_matic", "truth_or_bluff"):
+        party._rooms.clear()
+        party.create_or_join_room(code="VRS", player_id="v0", name="V0")
+        room = party._rooms["VRS"]
+        room["schedule"] = [kind] * 7
+        with party._lock:
+            party._start_round_unlocked(room, 2)  # round 1 draws a fresh schedule
+        note = party.serialize_room(room, "v0")["prompt"]["scripture_note"]
+        assert bool(note) == (kind != "truth_or_bluff")
+    party._rooms.clear()
+
+
+def test_race_answers_carry_their_verse_for_the_screen():
+    from arcade.party_race_content import LIGHTNING, QUICK_DRAW
+    assert all(it["note"] for it in (*QUICK_DRAW, *LIGHTNING))

@@ -298,7 +298,15 @@
   function playSfx(name) { try { sfx[name](); } catch (e) {} }
 
   /* ---------- announcer (Alpaca TTS, played on the TV's speakers) ---------- */
-  function speak(text, key) {
+  /* The phones follow the TV: it tells the room when a screen's line really starts
+     (and how long it lasts), so no phone shows a screen before the host gets to it. */
+  var saidSent = {};
+  function said(key, seconds) {
+    if (STREAMED || !key || !code || saidSent[key]) return;
+    saidSent[key] = true;
+    xhr("POST", "/api/party/rooms/" + encodeURIComponent(code) + "/said", { key: key, seconds: seconds }, function () {});
+  }
+  function speak(text, key, step) {
     if (!text || spokenKeys[key]) return;
     spokenKeys[key] = true;
     lastSpoken = key;
@@ -306,8 +314,9 @@
     var voice = (room && room.voice) || "";
     xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 700), voice: voice }, function (blob) {
       if (inflightKey === key) inflightKey = "";
-      if (!blob || blob.size < 128 || key !== lastSpoken || closedOut) return;
-      play(blob);
+      if (key !== lastSpoken || closedOut) return;
+      if (!blob || blob.size < 128) { if (step) said(key, 0); return; }
+      play(blob, step ? key : "");
     }, true);
   }
   var U = window.URL || window.webkitURL;
@@ -316,13 +325,19 @@
     try { if (audio) { audio.pause(); if (audio.__url) U.revokeObjectURL(audio.__url); } } catch (e) {}
     audio = null;
   }
-  function play(blob) {
+  function play(blob, stepKeyToReport) {
     dropAudio();
     var url = U.createObjectURL(blob);
     audio = new Audio(url);
     audio.__url = url;
     duck(true);
     var mine = audio;
+    function report(ok) {
+      if (!stepKeyToReport) return;
+      var d = mine.duration;
+      // -1: the length is not known yet, so the room uses its own measure of the line.
+      said(stepKeyToReport, !ok ? 0 : (isFinite(d) && d > 0 ? d : -1));
+    }
     audio.onended = audio.onerror = function () {
       duck(false);
       try { U.revokeObjectURL(url); } catch (e) {}
@@ -330,8 +345,8 @@
     };
     var p = audio.play();
     if (p && p.then) {
-      p.then(function () { setSound(false); }, function () { pendingLine = blob; setSound(true); });
-    }
+      p.then(function () { setSound(false); report(true); }, function () { pendingLine = blob; setSound(true); report(false); });
+    } else report(true);
   }
   function setSound(blocked) {
     soundBlocked = blocked;
@@ -427,18 +442,19 @@
       if (!spokenKeys[jk] && !inflightKey && (!audio || audio.paused || audio.ended)) speak(r.joke.setup + " ... " + r.joke.punch, jk);
       return;
     }
-    if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key); return; }
+    if (r.phase !== "lobby" && !STREAMED) setTimeout(function () { if (!spokenKeys[key]) said(key, 0); }, 0);  // a screen with no line
+    if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key, r.phase !== "lobby"); return; }
     if (r.phase === "lobby") {
       speak("Welcome to Parable Party! Scan the code on the screen, or join room " + r.code.split("").join(" ") + " in Jarvis.", "lobby:" + r.code);
     } else if (r.phase === "writing" && r.prompt) {
-      speak(r.prompt.announcer || ("Round " + r.round + "! " + (r.prompt.prompt || "")), key);
+      speak(r.prompt.announcer || ("Round " + r.round + "! " + (r.prompt.prompt || "")), key, true);
     } else if (r.phase === "voting") {
-      speak("All the scrolls are in! Vote for your favorite on your phone, and and watch out for the Scribe's Trap!", key);
+      speak("All the scrolls are in! Vote for your favorite on your phone, and and watch out for the Scribe's Trap!", key, true);
     } else if (r.phase === "reveal" && r.reveal) {
-      speak(r.reveal.announcer || ("Here are the results for round " + r.round + "!"), key);
+      speak(r.reveal.announcer || ("Here are the results for round " + r.round + "!"), key, true);
     } else if (r.phase === "finished") {
       var w = humans(r)[0];
-      speak(w ? (w.name + " wins the Golden Scroll with " + w.score + " points! Well played, everyone!") : "What a match!", key);
+      speak(w ? (w.name + " wins the Golden Scroll with " + w.score + " points! Well played, everyone!") : "What a match!", key, true);
     }
   }
 
@@ -607,7 +623,7 @@
       var right = race.right || [];
       h += '<div class="center h2" style="margin-top:.2rem">' + (right.length ? "⚡ " + esc(right[0]) + " was fastest!" +
         (right.length > 1 ? ' <span class="h3">Also right: ' + esc(right.slice(1).join(", ")) + "</span>" : "") : "Nobody got that one!") + "</div>";
-      return h + "</div>";
+      return h + verseHtml(item.note) + "</div>";
     }
     h += '<div class="row" style="justify-content:center;margin-top:.16rem">' + clockHtml(true) +
       '<div class="h2" style="font-size:.34rem">⚡ Answer on your phone. Fastest right answer wins!</div></div>';
@@ -699,8 +715,10 @@
       (pr.subprompt || pr.scene ? '<div class="sub">' + esc(pr.subprompt || pr.scene) + "</div>" : "") +
       (pr.instructions ? '<div class="how-now">👉 ' + esc(pr.instructions) + "</div>" : "") +
       '<div class="row" style="justify-content:center;margin-top:.3rem"><div class="gap h2">✍️ Write your answer on your phone</div>' + clockHtml() + "</div>" +
-      playersHtml(r, "submitted", "✅ Sealed", "✍️ Writing…") + "</div>";
+      playersHtml(r, "submitted", "✅ Sealed", "✍️ Writing…") + verseHtml(pr.scripture_note) + "</div>";
   }
+  // The verse behind the round, along the bottom (the host tells the story; the verse is to read).
+  function verseHtml(note) { return note ? '<div class="note">📖 ' + esc(note) + "</div>" : ""; }
   function viewVoting(r) {
     var opts = r.options || [];
     var h = '<div class="fade">' + promptHead(r) + '<div class="sub" style="margin-top:0;font-size:.32rem;color:#f8fafc;font-weight:800">' + esc((r.prompt || {}).prompt) + "</div>";
@@ -710,7 +728,7 @@
     }
     h += '</div><div class="row" style="justify-content:center;margin-top:.12rem">' + clockHtml(true) +
       '<div class="h2" style="font-size:.32rem">🗳️ Vote on your phone for your favourite (not your own). Watch out for the Scribe\'s Trap!</div></div>';
-    return h + chipsHtml(r, "voted", "✅") + "</div>";
+    return h + chipsHtml(r, "voted", "✅") + verseHtml((r.prompt || {}).scripture_note) + "</div>";
   }
   /* Use-Your-Words style reveal: answers are unveiled one at a time, fewest
      votes first and the winner last; each shows who voted for it, then who
@@ -766,15 +784,15 @@
       var shown = i < step;
       var cls = !shown ? " wait" : (o.kind === "decoy" ? " trap" : o.kind === "truth" ? " truth" : o.is_round_winner ? " win" : "") + (i === step - 1 ? " now" : "");
       var by = o.kind === "truth" ? "📖 The real answer" : o.kind === "decoy"
-        ? "🪤 The Scribe's Trap" + ((o.author_names || []).length ? " (planted by " + esc(o.author_names.join(", ")) + ")" : "")
-        : "✍️ " + esc((o.author_names || []).join(", "));
+        ? "🪤 The Scribe's Trap"
+        : (o.author_names || []).length ? "✍️ " + esc(o.author_names.join(", ")) : "";  // only winners are signed
       var voters = "";
       for (var v = 0; v < (o.voters || []).length; v++) {
         var vt = o.voters[v];
         var p = typeof vt === "string" ? playerById(r, vt) : vt;
         voters += p ? '<span style="animation-delay:' + (v * 0.18) + 's" title="' + esc(p.name) + '">' + esc(p.avatar || "⭐") + "</span> " : "";
       }
-      h += '<div class="opt' + cls + '"><div class="t">' + (shown && o.is_round_winner ? "🏆 " : "") + esc(o.text) + '<div class="by">' + by + "</div>" +
+      h += '<div class="opt' + cls + '"><div class="t">' + (shown && o.is_round_winner ? "🏆 " : "") + esc(o.text) + (by ? '<div class="by">' + by + "</div>" : "") +
         '<div class="votes">' + (voters || (shown ? "No votes" : "")) + "</div></div>" + (o.points_awarded ? '<div class="pts">+' + o.points_awarded + "</div>" : "") + "</div>";
     }
     h += "</div>";

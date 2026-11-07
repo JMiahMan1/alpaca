@@ -125,10 +125,13 @@ def test_the_host_has_patter_for_every_phase_and_everyone_hears_the_same_line():
     assert tv == phone and tv  # one line, everywhere
     room = p._rooms["HOST"]
     prompt_line = room["current_prompt"]["announcer"]
+    story = room["current_prompt"]["context"]
+    assert story and story in tv  # the story behind it, every round
     if prompt_line.lower().startswith("extra"):
-        assert tv == prompt_line  # the paper boy opens it
+        assert tv.startswith("Extra! Extra!")  # the paper boy opens it
     else:
-        assert tv.endswith(prompt_line) and any(tv.startswith(o) for o in p._pool(p.HOST_OPENERS, p.MORE_OPENERS, *p.ROUND_INTROS.values()))
+        openers = p._pool(p.HOST_OPENERS, p.MORE_OPENERS, *p.ROUND_INTROS.values())
+        assert tv.endswith(prompt_line) and (tv.startswith(story) or any(tv.startswith(o) for o in openers))
     room["phase"] = "voting"
     assert p.announce_line(room) in p._pool(p.HOST_VOTING, p.MORE_VOTING)
     room["phase"], room["reveal"] = "reveal", {"round_winners": [], "events": [], "announcer": "x"}

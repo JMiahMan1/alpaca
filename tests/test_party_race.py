@@ -289,3 +289,61 @@ def test_the_answer_flash_lasts_as_long_as_its_line(monkeypatch):
     needed = party.speech_seconds(line, room["voice"]) + party.FLASH_LINE_SLACK_S
     assert race["flash_until"] - race["flash_at"] >= min(party.FLASH_MAX_S, needed) - 0.01
     assert room["phase_deadline"] == race["flash_until"]
+
+
+# --- following the TV ----------------------------------------------------------
+
+def _live_tv(room):
+    room["stage_seen_at"] = __import__("time").time()
+
+
+def test_a_live_tv_opens_the_clue_when_it_has_finished_reading_it():
+    room = _room_in_race("quick_draw")
+    with party._lock:
+        _live_tv(room)
+        party._open_clue_after_reading_unlocked(room, __import__("time").time())
+    snap = party.serialize_room(room, "p0")
+    assert snap["tv_sync"] and snap["tv_key"] == ""
+    key = party.step_key(room)
+    assert key.endswith(":racing:0")
+    assert party.stage_said("RACE", "an old screen", 3.0) is False
+    t0 = __import__("time").time()
+    assert party.stage_said("RACE", key, 4.0) is True
+    race = room["race"]
+    assert t0 + 4.0 <= race["open_at"] <= t0 + 4.6  # opens when the TV is done, not on the guess
+    assert race["deadline"] > race["open_at"]
+    assert party.serialize_room(room, "p0")["tv_key"] == key
+    assert party.stage_said("RACE", key, 9.0) is False  # once per screen
+
+
+def test_a_live_tv_holds_the_answer_flash_until_its_line_is_said():
+    room = _room_in_race("quick_draw")
+    _live_tv(room)
+    item = room["race"]["items"][0]
+    room["race"]["open_at"] = 0
+    party.race_answer("RACE", "p0", 0, item["answer"])
+    party.race_answer("RACE", "p1", 0, item["answer"])
+    party.race_answer("RACE", "p2", 0, item["answer"])
+    assert room["race"]["flash_until"]
+    t0 = __import__("time").time()
+    assert party.stage_said("RACE", party.step_key(room), 6.0)
+    assert room["race"]["flash_until"] >= t0 + 6.0
+
+
+def test_a_tv_that_is_a_video_does_not_set_the_pace():
+    room = _room_in_race("quick_draw")
+    now = __import__("time").time()
+    room["stage_seen_at"] = room["video_stage_seen_at"] = now
+    assert party.serialize_room(room, "p0")["tv_sync"] is False
+    assert party.stage_said("RACE", party.step_key(room), 3.0) is False
+
+
+def test_the_said_route():
+    _room_in_race("quick_draw")
+    room = party._rooms["RACE"]
+    _live_tv(room)
+    client = arcade_app.app.test_client()
+    res = client.post("/api/party/rooms/RACE/said", json={"key": party.step_key(room), "seconds": -1})
+    assert res.status_code == 200 and res.get_json()["applied"] is True
+    assert client.post("/api/party/rooms/NOPE/said", json={"key": "x"}).status_code == 404
+    assert client.post("/api/party/rooms/RACE/said", json={"key": "x", "seconds": "soon"}).status_code == 400

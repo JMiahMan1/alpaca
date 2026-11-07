@@ -136,6 +136,10 @@ TTS_CACHE_MAX_BYTES = 48 * 1024 * 1024
 LATE_ANSWER_SECONDS = 10.0
 #: The announcer reads the prompt (and a quip) as writing starts; that time is not the players'.
 PROMPT_READ_SECONDS = 8
+#: ...and at most this long when the story behind it is told first.
+PROMPT_READ_MAX_S = 26.0
+#: A round's opening (banter, story, prompt) longer than this drops the banter.
+OPENING_LINE_MAX_S = 24.0
 #: After the last answer is revealed, how long the scores stay up before the next round starts on its own.
 REVEAL_LINGER_SECONDS = 4
 VOTE_SECONDS = 35
@@ -703,6 +707,11 @@ ROUND_META.update(party_race.RACE_ROUND_META)
 
 # The host's bigger script lives in party_host_lines.py.
 try:
+    from arcade import party_scripture
+except ImportError:  # the arcade image runs with arcade/ on sys.path
+    import party_scripture  # type: ignore[no-redef]
+
+try:
     from arcade.party_host_lines import (
         MORE_CHATTER,
         MORE_DRUMROLL,
@@ -1006,7 +1015,13 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
         "truth_keywords": prompt_item.get("truth_keywords", []),
         "scripture_note": prompt_item.get("scripture_note", ""),
         "announcer": prompt_item.get("announcer") or f"Round {round_num}: {meta['title']}! {prompt_item['prompt']}",
+        # The story behind the prompt, with its chapter, said before it: not everyone knows Eutychus.
+        "context": party_scripture.story_context(prompt_item),
     }
+    # The host reads the story and the prompt before anyone can be expected to write.
+    read = min(PROMPT_READ_MAX_S, max(PROMPT_READ_SECONDS, speech_seconds(
+        announce_line(room), str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)) + 1.0))
+    room["phase_deadline"] = now + WRITE_SECONDS + read + _stage_delay(room)
     room["submissions"] = submissions
     room["options"] = []
     room["votes"] = {}
@@ -1157,6 +1172,8 @@ def _open_clue_after_reading_unlocked(room: dict[str, Any], now: float) -> None:
     line = race_line(room)
     read = min(CLUE_READ_MAX_S, speech_seconds(line, voice) + (0.4 if (voice, line) in _spoken_seconds
                                                                    else SPEECH_START_SLACK_S))
+    if _tv_sync(room, now):
+        read += TV_CLUE_EXTRA_WAIT_S  # until the TV says when it really started reading (stage_said)
     party_race.open_after(race, now + _stage_delay(room, now), read)
 
 
@@ -2145,13 +2162,18 @@ def announce_line(room: dict[str, Any]) -> str:
         return f"Welcome to Parable Party! Scan the code on the screen, or join room {code} in Jarvis."
     if phase == "writing":
         line = str(prompt.get("announcer") or "")
+        story = str(prompt.get("context") or "")
         if prompt.get("kind") == "extra_extra" and not line.lower().startswith("extra"):
             line = f"Extra! Extra! {line}"  # every headline round opens with the paper boy
-        if line.lower().startswith("extra"):
-            return line
+        m = re.match(r"(?i)extra[!.,]?\s+extra[!.,]?\s*", line)
+        if m:  # the paper boy still shouts first; the story follows him
+            return " ".join(x for x in (line[:m.end()].strip(), story, line[m.end():].strip()) if x)
         kind = str(prompt.get("kind") or "")
         opener = _pick(room, _pool(HOST_OPENERS, MORE_OPENERS, ROUND_INTROS.get(kind)), "open")
-        return f"{opener} {line}".strip()
+        full = " ".join(x for x in (opener, story, line) if x)
+        if story and speech_seconds(full, str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)) > OPENING_LINE_MAX_S:
+            return f"{story} {line}".strip()  # the story matters more than the banter
+        return full
     if phase == "voting":
         return _pick(room, _pool(HOST_VOTING, MORE_VOTING), "vote")
     if phase == "racing" and room.get("race"):
@@ -2183,6 +2205,7 @@ def race_line(room: dict[str, Any]) -> str:
         if kind == "lightning":
             answer = "True" if item["answer"] == 0 else "False"
         answer = answer.rstrip(".!? ") + "!"
+        # The verse it comes from is on the screen (``item.note``), not read out.
         if not names:
             return _pick(room, HOST_FLASH_NOBODY, f"flash-none:{idx}").format(answer=answer)
         return _pick(room, HOST_FLASH_FIRST, f"flash:{idx}").format(answer=answer, who=names[0])
@@ -2191,6 +2214,75 @@ def race_line(room: dict[str, Any]) -> str:
         lead = f"Question {idx + 1}!" if idx else str((room.get("current_prompt") or {}).get("announcer") or "")
         return f"{lead} {clue}".strip()
     return f"{(room.get('current_prompt') or {}).get('announcer') or ''} {item['clue']}".strip()
+
+
+#: Longest phones wait for the TV to start a new screen's line before showing it anyway.
+TV_LINE_WAIT_S = 8.0
+#: A race clue waits this much past its estimated reading for the TV's report of when it began.
+TV_CLUE_EXTRA_WAIT_S = 3.0
+
+
+def _step(room: dict[str, Any]) -> str:
+    """The moment inside a phase: each race clue and answer flash is its own."""
+    race = room.get("race") if room.get("phase") == "racing" else None
+    return f"{race['index']}{'f' if race.get('flash_until') else ''}" if race else ""
+
+
+def step_key(room: dict[str, Any]) -> str:
+    """The screen a room is on, spelled as the TV and phones spell it (``stepKey`` in both pages)."""
+    step = _step(room)
+    return f"{room.get('match_id', '')}:{int(room.get('round') or 0)}:{room.get('phase')}" + (f":{step}" if step else "")
+
+
+def _tv_sync(room: dict[str, Any], now: float | None = None) -> bool:
+    """A TV is running the live stage page (not a video of it), so it sets the pace."""
+    now = time.time() if now is None else now
+    seen = float(room.get("stage_seen_at") or 0.0)
+    return bool(seen and now - seen < STAGE_PRESENCE_SECONDS) and _stage_delay(room, now) == 0.0
+
+
+def stage_said(code: str, key: str, seconds: float) -> bool:
+    """The TV has started saying the line for screen ``key``, which lasts ``seconds`` (0: it has none).
+
+    Phones show a screen once the TV is on it. A race clue opens when the TV has finished
+    reading it, an answer flash lasts until its line is over, and a writing, voting or
+    reveal phase gets back the seconds the TV took to start, so the round is not shorter
+    for the room than the clock says.
+    """
+    now = time.time()
+    with _lock:
+        room = _rooms.get(_clean_code(code))
+        if room is None:
+            raise LookupError(f"Room '{_clean_code(code)}' not found.")
+        if not _tv_sync(room, now) or str(key) != step_key(room):
+            return False
+        if (room.get("stage_said") or {}).get("key") == key:
+            return False
+        if seconds < 0:  # the TV could not tell how long its clip is: use the room's measure of the line
+            seconds = speech_seconds(announce_line(room), str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE))
+        seconds = max(0.0, min(30.0, float(seconds)))
+        room["stage_said"] = {"key": key, "at": now, "seconds": seconds}
+        phase, race = room.get("phase"), room.get("race")
+        if phase == "racing" and race:
+            if race.get("flash_until"):
+                until = now + min(FLASH_MAX_S, seconds + 0.8)
+                if until > float(race["flash_until"]):
+                    race["flash_until"] = until
+                    room["phase_deadline"] = until
+            elif not race["answers"][race["index"]]:  # nobody has answered: the clue is still closed
+                opens = now + min(CLUE_READ_MAX_S, seconds) + 0.3
+                shift = opens - float(race.get("open_at") or now)
+                race["open_at"] = opens
+                race["deadline"] = float(race["deadline"]) + shift
+                for plan in race["bot_plan"][race["index"]].values():
+                    plan["at"] = max(opens + 0.5, float(plan["at"]) + shift)
+                room["phase_deadline"] = race["deadline"]
+        elif phase in ("writing", "voting", "reveal"):
+            late = min(TV_LINE_WAIT_S, now - float(room.get("phase_started_at") or now))
+            if late > 0.3:
+                room["phase_deadline"] = float(room.get("phase_deadline") or now) + late
+        room["updated_at"] = now
+        return True
 
 
 def _stage_delay(room: dict[str, Any], now: float | None = None) -> float:
@@ -2363,17 +2455,19 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
                 }
             )
         else:
+            # Only the round's winning answers are signed; the rest stay anonymous.
+            signed = bool(opt.get("is_round_winner"))
             author_names = [
                 room["players"][aid]["name"]
                 for aid in (opt.get("authors") or [])
                 if aid in room["players"]
-            ]
+            ] if signed else []
             public_options.append(
                 {
                     "option_id": opt["option_id"],
                     "text": opt["text"],
                     "kind": opt["kind"],
-                    "authors": [public_id(room, a) for a in opt.get("authors") or []],
+                    "authors": [public_id(room, a) for a in opt.get("authors") or []] if signed else [],
                     "author_names": author_names,
                     "voters": [{**v, "id": public_id(room, v.get("id"))} for v in opt.get("voters") or []],
                     "points_awarded": int(opt.get("points_awarded") or 0),
@@ -2397,7 +2491,10 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
             "scene": prompt.get("scene", ""),
             "speaker": prompt.get("speaker", ""),
             "announcer": prompt.get("announcer", ""),
-            "scripture_note": prompt.get("scripture_note", "") if phase in ("reveal", "finished") else "",
+            # On screen under the prompt while people write and vote, except in Truth or Bluff (it is the answer).
+            "scripture_note": prompt.get("scripture_note", "")
+            if phase in ("reveal", "finished") or (phase in ("writing", "voting") and prompt.get("kind") != "truth_or_bluff")
+            else "",
             "truth": prompt.get("truth", "") if phase in ("reveal", "finished") else "",
         }
 
@@ -2424,7 +2521,7 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         if phase in timed else 0.0,
         "race": _public_race(room, viewer_id, now),
         # Changes with every clue and every answer flash, so screens know to redraw and speak.
-        "step": f"{race['index']}{'f' if race.get('flash_until') else ''}" if race else "",
+        "step": _step(room),
         "reveal_step_seconds": REVEAL_PER_ANSWER_SECONDS,
         "players": public_players,
         "prompt": public_prompt,
@@ -2447,6 +2544,11 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None) -> dict[s
         # each phase until it catches up (``phase_age_s`` avoids clock skew),
         # and the host phone speaks since a stream carries no announcer.
         "stage_delay_s": _stage_delay(room),
+        # A TV showing the live page reports when it starts each screen's line (``stage_said``);
+        # phones keep showing the screen the TV is on until it does, so nothing runs ahead of the host.
+        "tv_sync": _tv_sync(room, now),
+        "tv_key": str((room.get("stage_said") or {}).get("key") or "") if _tv_sync(room, now) else "",
+        "tv_wait_s": TV_LINE_WAIT_S,
         "announce": announce_line(room),
         "chatter": chatter_for(room),
         # A dad joke for the lobby, a new one every LOBBY_JOKE_SECONDS while people join.

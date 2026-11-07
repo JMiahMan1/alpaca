@@ -1516,6 +1516,19 @@ def api_party_room_stream_delay(code: str):
     return jsonify({"success": True, "stream_delay_s": seconds})
 
 
+@app.route("/api/party/rooms/<code>/said", methods=["POST"])
+def api_party_room_said(code: str):
+    """The TV stage has started the line for a screen (``{"key", "seconds"}``); phones follow it."""
+    body = request.get_json(silent=True) or {}
+    try:
+        applied = party.stage_said(code, str(body.get("key") or ""), float(body.get("seconds") or 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "seconds must be a number"}), 400
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    return jsonify({"success": True, "applied": applied})
+
+
 @app.route("/api/party/music", methods=["GET"])
 def api_party_music():
     """Which game-show cues are ready; composing the missing ones starts in the background."""

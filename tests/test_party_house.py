@@ -114,3 +114,26 @@ def test_nobody_can_view_the_room_as_a_scribe():
     assert not snap.get("you") and not snap.get("my_submission")
     with pytest.raises(PermissionError):
         party.create_or_join_room(code="PEEK2", player_id="bot-apollos", name="Sneaky")
+
+
+def test_only_the_winning_answers_are_signed_at_the_reveal():
+    for i in range(3):
+        party.create_or_join_room(code="SIGN", player_id=f"s{i}", name=f"S{i}")
+    party.start_match("SIGN", player_id="s0")
+    room = party._rooms["SIGN"]
+    for i, text in enumerate(("Fish", "Loaves", "Manna")):
+        party.submit_answer("SIGN", player_id=f"s{i}", text=text)
+    with party._lock:
+        if room["phase"] == "writing":
+            party._advance_unlocked(room)
+    fish = next(o for o in room["options"] if o["text"] == "Fish")
+    party.submit_vote("SIGN", player_id="s1", option_id=fish["option_id"])
+    party.submit_vote("SIGN", player_id="s2", option_id=fish["option_id"])
+    with party._lock:
+        if room["phase"] == "voting":
+            party._advance_unlocked(room)
+    snap = party.serialize_room(room, "s1")
+    by_text = {o["text"]: o for o in snap["options"]}
+    assert by_text["Fish"]["author_names"] == ["S0"] and by_text["Fish"]["is_round_winner"]
+    assert by_text["Loaves"]["author_names"] == [] and by_text["Loaves"]["authors"] == []
+    assert by_text["Loaves"]["is_mine"] and not by_text["Manna"]["is_mine"]  # your own still says so

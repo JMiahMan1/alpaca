@@ -574,7 +574,19 @@
       })
       .catch(() => { failures++; if (failures === 4) toast("Reconnecting…"); });
   }
+  // While a TV runs the live stage, a phone shows each new screen once the TV is on it
+  // (the TV reports when it starts that screen's line), so nothing gives the host away.
+  // A TV that never reports is waited for tv_wait_s at most.
+  const tvFirstSeen = {};
+  function tvHolds(r, prev) {
+    if (!r.tv_sync || !prev || prev.match_id !== r.match_id || r.phase === "lobby" || r.phase === "finished") return false;
+    const k = stepKey(r);
+    if (k === stepKey(prev) || r.tv_key === k) return false;
+    const first = tvFirstSeen[k] || (tvFirstSeen[k] = Date.now());
+    return Date.now() - first < (r.tv_wait_s || 8) * 1000;
+  }
   function setRoom(r) {
+    if (tvHolds(r, room)) return;
     const prev = room;
     room = r;
     if (r.stage_connected) stageEverSeen = true;
@@ -794,7 +806,7 @@
     const isBluff = r.prompt && r.prompt.kind === "truth_or_bluff";
     return h + promptCard(r) + `<div class="gw-card">
         <label class="gw-label" for="gw-answer">${isBluff ? "Your believable FAKE answer" : "Your answer"}</label>
-        <textarea id="gw-answer" class="gw-field" maxlength="120" rows="3" enterkeyhint="send" autocapitalize="sentences" placeholder="${isBluff ? "Make it sound true…" : "Be funny. Be wise. Be quick."}">${esc(draft)}</textarea>
+        <textarea id="gw-answer" class="gw-field" maxlength="120" rows="3" enterkeyhint="done" autocapitalize="sentences" placeholder="${isBluff ? "Make it sound true…" : "Be funny. Be wise. Be quick."}">${esc(draft)}</textarea>
         <div class="gw-count" id="gw-count">${draft.length}/120</div>
         <div style="margin-top:8px"><button type="button" class="gw-btn coral" id="gw-send" ${busy ? "disabled" : ""}>Send it!</button></div>
       </div>
@@ -829,7 +841,8 @@
         : mine.correct ? `<div class="big">${mine.place === 0 ? "⚡" : "✅"}</div><h1>${mine.place === 0 ? "FASTEST!" : "Correct! " + ordinal(mine.place + 1) + " in"}</h1>`
           : `<div class="big">❌</div><h1>Not quite!</h1>`;
       return h + qn + `<div class="gw-hero gw-enter">${head}<p>The answer: <b>${esc(item.answer_text || "")}</b></p>
-        <p style="margin-top:8px">${right.length ? "⚡ " + esc(right[0]) + " got there first" : "Nobody got that one!"}</p></div>`;
+        <p style="margin-top:8px">${right.length ? "⚡ " + esc(right[0]) + " got there first" : "Nobody got that one!"}</p></div>` +
+        (item.note ? `<div class="gw-tag">📖 ${esc(item.note)}</div>` : "");
     }
     if (race.mine) {
       const waiting = humansOf(r).filter((p) => !p.submitted).length;
@@ -899,10 +912,11 @@
     opts.forEach((o) => {
       const cls = o.kind === "decoy" ? "trap" : o.kind === "truth" ? "truth" : o.is_round_winner ? "win" : "";
       const who = o.kind === "truth" ? "📖 The real answer"
-        : o.kind === "decoy" ? "🪤 The Scribe's Trap" + ((o.author_names || []).length ? " (planted by " + esc(o.author_names.join(", ")) + ")" : "")
-        : "✍️ " + esc((o.author_names || []).join(", "));
+        : o.kind === "decoy" ? "🪤 The Scribe's Trap"
+        : (o.author_names || []).length ? "✍️ " + esc(o.author_names.join(", "))  // only winners are signed
+        : o.is_mine ? "✍️ Yours" : "";
       const votes = (o.voters || []).map((v) => esc(typeof v === "string" ? "•" : v.avatar || "•")).join(" ");
-      h += `<div class="gw-opt ${cls}" style="cursor:default">${o.points_awarded ? `<span class="pts">+${o.points_awarded}</span>` : ""}${o.is_round_winner ? "🏆 " : ""}${esc(o.text)}<span class="meta">${who}${votes ? " · " + votes : ""}</span></div>`;
+      h += `<div class="gw-opt ${cls}" style="cursor:default">${o.points_awarded ? `<span class="pts">+${o.points_awarded}</span>` : ""}${o.is_round_winner ? "🏆 " : ""}${esc(o.text)}${who || votes ? `<span class="meta">${who}${who && votes ? " · " : ""}${votes}</span>` : ""}</div>`;
     });
     return h + "</div>";
   }
@@ -982,9 +996,25 @@
   }
 
   /* ================= render + bind ================= */
+  /* A tap belongs to the screen it started on. When the screen changes under a finger
+     (writing turns into voting, the next race clue arrives), the lifted finger would
+     otherwise press whatever new button is now under it: an answer chosen for you. */
+  let screenId = "", screenAt = 0, touchedAt = 0;
+  ["pointerdown", "touchstart", "mousedown"].forEach((t) =>
+    document.addEventListener(t, () => { touchedAt = Date.now(); }, { capture: true, passive: true }));
+  function freshTap() { return touchedAt >= screenAt; }
+  function screenOf() {
+    if (view !== "room" || !room) return view;
+    return [stepKey(room), holding(), raceClosed(), !!room.my_submission, room.my_vote || "", !!(room.race && room.race.mine)].join("|");
+  }
   function render(animate) {
     const screen = $("gw-screen");
     const focusedId = document.activeElement && document.activeElement.id;
+    const id = screenOf();
+    // Never rebuild the answer box while someone is typing in it: a rebuilt box loses the
+    // keyboard's half-typed word and autocorrect. The same screen has nothing new to show.
+    if (focusedId === "gw-answer" && id === screenId && $("gw-answer")) return;
+    if (id !== screenId) { screenId = id; screenAt = Date.now(); }
     const caret = focusedId === "gw-answer" ? $("gw-answer").selectionStart : null;
     let html;
     if (view === "join" || !room) html = viewJoin();
@@ -1015,8 +1045,8 @@
     on("gw-start", () => hostAction("start", { use_ai_prompt: useAiPrompts }));
     on("gw-again", () => hostAction("start", { use_ai_prompt: useAiPrompts }));
     on("gw-next", () => hostAction("next", { use_ai_prompt: useAiPrompts }));
-    on("gw-send", () => submitAnswer(false));
-    on("gw-decoy", () => submitAnswer(true));
+    on("gw-send", () => { if (freshTap()) submitAnswer(false); });
+    on("gw-decoy", () => { if (freshTap()) submitAnswer(true); });
     on("gw-tv-open", openTvSheet);
     document.querySelectorAll("[data-lag]").forEach((b) => b.addEventListener("click", () => {
       if (!room) return;
@@ -1035,15 +1065,18 @@
     }));
     document.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => join(b.getAttribute("data-open"), false)));
     document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
+      if (!freshTap()) return;
       document.querySelectorAll("[data-pick]").forEach((x) => { x.disabled = true; x.classList.toggle("dim", x !== b); });
       raceSend(Number(b.getAttribute("data-pick")));
     }));
     document.querySelectorAll("[data-left]").forEach((b) => b.addEventListener("click", () => {
+      if (!freshTap()) return;
       const i = Number(b.getAttribute("data-left"));
       if (raceUi.map[i] !== undefined) delete raceUi.map[i]; else raceUi.sel = raceUi.sel === i ? -1 : i;
       tap(); lastSig = ""; render();
     }));
     document.querySelectorAll("[data-right]").forEach((b) => b.addEventListener("click", () => {
+      if (!freshTap()) return;
       const j = Number(b.getAttribute("data-right"));
       Object.keys(raceUi.map).forEach((l) => { if (raceUi.map[l] === j) delete raceUi.map[l]; });
       if (raceUi.sel >= 0) { raceUi.map[raceUi.sel] = j; raceUi.sel = -1; }
@@ -1051,16 +1084,19 @@
       tap(); lastSig = ""; render();
     }));
     document.querySelectorAll("[data-ord]").forEach((b) => b.addEventListener("click", () => {
+      if (!freshTap()) return;
       raceUi.order.push(Number(b.getAttribute("data-ord"))); tap(); lastSig = ""; render();
     }));
     on("gw-race-reset", () => { raceUi.map = {}; raceUi.sel = -1; raceUi.order = []; lastSig = ""; render(); });
     on("gw-race-lock", () => {
+      if (!freshTap()) return;
       const item = room && room.race && room.race.item;
       if (!item) return;
       if (item.type === "pairs") raceSend((item.left || []).map((_, i) => raceUi.map[i]));
       else raceSend(raceUi.order.slice());
     });
     document.querySelectorAll("[data-vote]").forEach((b) => b.addEventListener("click", () => {
+      if (!freshTap()) return;
       document.querySelectorAll("[data-vote]").forEach((x) => { x.disabled = true; });
       b.classList.add("picked");
       vote(b.getAttribute("data-vote"));
@@ -1073,7 +1109,9 @@
       });
       // keep the box above the on-screen keyboard
       ans.addEventListener("focus", () => setTimeout(() => ans.scrollIntoView({ block: "center", behavior: "smooth" }), 250));
-      ans.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitAnswer(false); } });
+      // Return closes the keyboard; only the Send button sends. Return was sending half-written
+      // answers (it is where a thumb lands to accept autocorrect or start a new line).
+      ans.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ans.blur(); } });
     }
     const voiceEl = $("gw-voice");
     if (voiceEl) voiceEl.addEventListener("change", () => {

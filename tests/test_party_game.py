@@ -582,7 +582,8 @@ def test_a_streamed_stage_delays_each_phase_so_phones_wait_for_the_tv(client):
     room = client.get("/api/party/rooms/ROKU?player_id=p2").get_json()["room"]
     assert room["phase"] == "writing"
     assert room["stage_delay_s"] == party.STREAM_STAGE_DELAY_S
-    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS + party.PROMPT_READ_SECONDS + party.STREAM_STAGE_DELAY_S, abs=0.2)
+    read = room["phase_seconds"] - party.WRITE_SECONDS - party.STREAM_STAGE_DELAY_S  # the story and prompt are read first
+    assert party.PROMPT_READ_SECONDS - 0.2 <= read <= party.PROMPT_READ_MAX_S + 0.2
     assert 0 <= room["phase_age_s"] < 2
 
 
@@ -593,7 +594,8 @@ def test_a_live_page_stage_adds_no_delay(client):
     client.post("/api/party/rooms/LGTV/start", json={"player_id": "p1"})
     room = client.get("/api/party/rooms/LGTV?player_id=p2").get_json()["room"]
     assert room["stage_delay_s"] == 0
-    assert room["phase_seconds"] == pytest.approx(party.WRITE_SECONDS + party.PROMPT_READ_SECONDS, abs=0.2)
+    read = room["phase_seconds"] - party.WRITE_SECONDS
+    assert party.PROMPT_READ_SECONDS - 0.2 <= read <= party.PROMPT_READ_MAX_S + 0.2
 
 
 def test_stream_delay_ends_when_the_streamed_stage_goes_away(monkeypatch):

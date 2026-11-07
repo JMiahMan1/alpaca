@@ -556,6 +556,22 @@ other fails the build.
 - **Duplicate answers share one option** (`_build_voting_options_unlocked` merges by `_normalize_compare`; typing the
   trap's words counts as playing it). A player who leaves mid-race takes their taps with them, and a race's answer
   flash is held until its "X got it first" line has been said (`_hold_flash_for_the_line_unlocked`).
+- **Phones follow a live-page TV** (`stage_said`, `POST /api/party/rooms/<code>/said {key, seconds}`). The TV reports
+  when it starts each screen's line (`stepKey`: match:round:phase[:step]) and how long it is (-1 = unknown, the room
+  estimates; 0 = no line or sound blocked). Phones keep showing the screen the TV is on until `tv_key` matches theirs
+  (at most `tv_wait_s`); a race clue opens when the TV has finished reading it (and waits `TV_CLUE_EXTRA_WAIT_S` past
+  its estimate for the report); an answer flash lasts until its line is over; writing/voting/reveal get back the
+  seconds the TV took to start. A video stage keeps its own fixed delay and never reports.
+- **Taps belong to the screen they started on** (`freshTap` in the phone game): a finger that went down before the
+  screen changed does not press the new button under it. The answer box is never rebuilt while focused, and Return
+  closes the keyboard instead of sending (it sent half-written answers).
+- **Only winning answers are signed at the reveal**; the rest stay anonymous (`is_mine` still tells a phone its own).
+- **Every writing prompt's story is told first** (`party_story_context.STORY_CONTEXT`, by id, one or two sentences
+  naming the chapter; `party_scripture.story_context` falls back to "This one comes from <book> chapter N." for an
+  AI prompt). A Truth or Bluff story stops before the answer (tested with `_matches_truth`). The banter is dropped
+  when the opening would pass `OPENING_LINE_MAX_S`, and the writing clock grants the reading time (up to
+  `PROMPT_READ_MAX_S`). **The verse itself is shown, not read:** under the prompt while writing and voting (never in
+  Truth or Bluff, where it is the answer), at the reveal, and under each race answer.
 - **Ids on screens are public.** A player's own id authorises their actions, so snapshots carry
   `public_id(room, pid)` only and tell each phone which one is `you`. Host actions must name the host; `/next`
   carries the screen it was tapped on (`expect`) and is ignored if the room has already moved on.
