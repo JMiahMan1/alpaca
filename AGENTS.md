@@ -456,6 +456,34 @@ other fails the build.
   plays a game at iPhone 13 / SE / Pixel 7 / iPad sizes and fails on console errors, a missing
   bridge message or page overflow.
 
+### Checkers (`arcade/checkers.py`, `arcade/family_games/checkers/`, `/api/checkers/*`)
+- **The one game two people play against each other**, so it does not fit the party engine's phase
+  machine; it is its own module with its own in-memory room store (4-char codes, two seats, a
+  per-room secret, TTL/idle pruning) modelled on the party rooms. It ships as the built-in family
+  game `family-checkers`; no SharedLLM change is needed - it appears on the shelf once published.
+- **The server owns the board.** `arcade/checkers.py` is the single source of truth: English
+  draughts rules (diagonal-forward men, captures compulsory and chained, a crowning jump ends the
+  move, kings move both ways, no-piece/no-move loss, a 40-move and a threefold-repetition draw),
+  a small iterative-deepening alpha-beta opponent, and the rooms. The page is a thin client that
+  draws a snapshot and posts the path of a move; it can never fabricate one.
+- **Routes** (`arcade/app.py`, after the family admin routes): `GET|POST /api/checkers/rooms`
+  (list/create; `mode` `friend`|`quick`|`ai`, or `code` to join), `GET /api/checkers/rooms/<code>`,
+  and `POST .../{move,ai,reset,leave}`. Errors are 404 (no room), 403 (not a player), 400 (illegal
+  move / not your turn). Adding the computer mid-lobby (`.../ai`) seats `Alpaca AI` in the free
+  seat; the person is always Red and moves first.
+- **Player ids are secrets.** A snapshot carries `public_id` only (sha256 of the room secret), never
+  the id; and `legal` (the moves on your turn) is filled **only** for the seat about to move, so a
+  spectator or the other seat cannot read your options.
+- **The computer answers inside the same request.** After a human move, `submit_move` runs
+  `_maybe_ai_unlocked`, so a poll never waits on a background thread and the turn always returns to
+  the person. `choose_move` is bounded by `AI_TIME_BUDGET` (1.6 s) with depth up to 6.
+- The page is a single kit-built HTML (`arcade/family_games/checkers/game.html`) with a custom lobby
+  overlay (friend / quick match / computer / join-by-code, share link `…/play/family-checkers#room=CODE`),
+  a canvas board with slide + capture-burst animation, and a score bridge on the result card
+  (`captures × 50 + 300 win / 120 draw`). It passes `mobile.contract_report` by construction.
+- Tests: `tests/test_checkers.py` (rules, AI, rooms, the HTTP surface, and that the shipped page
+  passes the mobile contract).
+
 ### Party games on the TV (`arcade/party.py`, `/tv`, SharedLLM `tv_stage`)
 - **The TV runs the game's stage page; it is never sent audio or a picture of it.** `/tv/<CODE>`
   (`arcade/templates/party_tv.html`) is a hands-free big-screen view: it polls the room as the stage

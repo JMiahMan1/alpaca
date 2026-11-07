@@ -1,0 +1,19 @@
+{
+  "title": "Checkers",
+  "tagline": "The classic two-player board game",
+  "description": "Play the classic game of checkers against a friend on another device, or against the computer. Jumps are compulsory, kings move both ways, and the last player with pieces wins.",
+  "emoji": "🔴",
+  "art": { "from": "#e0533d", "to": "#3a7bd5" },
+  "genre": "board",
+  "ages": "5+",
+  "players": "2",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Tap a piece, then tap a highlighted square to move",
+    "Move diagonally forward; jump an opponent to capture it",
+    "If a jump is available you must take it",
+    "Reach the far row to crown a King that moves both ways"
+  ]
+}

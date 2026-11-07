@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Checkers</title>
+<!-- @family-kit -->
+<style>
+  html, body { background: #2a1c14; }
+  #ck-safe { position: absolute; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
+    padding-top: var(--fk-safe-top); padding-bottom: var(--fk-safe-bottom);
+    padding-left: var(--fk-safe-left); padding-right: var(--fk-safe-right); }
+  #ck-lobby {
+    position: absolute; inset: 0; z-index: 30; display: none;
+    align-items: center; justify-content: center;
+    padding: calc(16px + var(--fk-safe-top)) calc(16px + var(--fk-safe-right)) calc(16px + var(--fk-safe-bottom))
+      calc(16px + var(--fk-safe-left));
+    background: radial-gradient(120% 120% at 50% 0%, #4a3324 0%, #2a1c14 70%);
+    color: #fff;
+  }
+  #ck-lobby.ck-show { display: flex; animation: ck-fade .2s ease-out; }
+  @keyframes ck-fade { from { opacity: 0; } to { opacity: 1; } }
+  .ck-panel { width: min(420px, 100%); max-height: 100%; overflow: auto; text-align: center; }
+  .ck-panel .ck-art { font-size: 52px; line-height: 1; margin-bottom: 4px; }
+  .ck-panel h1 { margin: 0; font-size: 34px; font-weight: 900; letter-spacing: -.01em; }
+  .ck-panel .ck-tag { margin: 8px 0 0; font-size: 15px; font-weight: 600; color: #f2d9c6; }
+  .ck-btn {
+    display: flex; width: 100%; min-height: 58px; margin-top: 12px; border: 0; border-radius: 18px;
+    align-items: center; justify-content: center; gap: 10px;
+    background: linear-gradient(135deg, var(--fk-accent), var(--fk-accent-2)); color: #fff;
+    font-family: inherit; font-size: 19px; font-weight: 900; cursor: pointer;
+    box-shadow: 0 8px 0 rgba(0,0,0,.18), 0 12px 26px rgba(0,0,0,.35);
+    transition: transform .08s ease;
+  }
+  .ck-btn:active { transform: translateY(3px) scale(.98); }
+  .ck-btn.ck-alt { background: rgba(255,255,255,.14); box-shadow: none; color: #fff; }
+  .ck-btn.ck-ghost { background: transparent; box-shadow: none; color: #f2d9c6; font-size: 16px; min-height: 46px; }
+  .ck-code {
+    margin: 18px auto 4px; font-size: 58px; font-weight: 900; letter-spacing: .16em;
+    font-variant-numeric: tabular-nums; color: #ffd98a; text-shadow: 0 3px 0 rgba(0,0,0,.35);
+  }
+  .ck-sub { font-size: 14px; font-weight: 700; color: #f2d9c6; }
+  .ck-row { display: flex; gap: 10px; margin-top: 12px; }
+  .ck-row .ck-btn { margin-top: 0; }
+  .ck-inputs { display: flex; gap: 10px; margin-top: 14px; }
+  .ck-inputs input {
+    flex: 1; min-width: 0; height: 58px; border: 0; border-radius: 16px; text-align: center;
+    font-family: inherit; font-size: 28px; font-weight: 900; letter-spacing: .22em; text-transform: uppercase;
+    background: rgba(255,255,255,.94); color: #2a1c14;
+  }
+  .ck-inputs input.ck-name { font-size: 18px; letter-spacing: normal; text-transform: none; text-align: left; padding: 0 14px; }
+  .ck-spinner {
+    width: 40px; height: 40px; margin: 18px auto 2px; border-radius: 50%;
+    border: 4px solid rgba(255,255,255,.22); border-top-color: #ffd98a; animation: ck-spin 1s linear infinite;
+  }
+  @keyframes ck-spin { to { transform: rotate(360deg); } }
+  .ck-err { min-height: 20px; margin-top: 10px; font-size: 14px; font-weight: 700; color: #ff9f9f; }
+  .ck-how { list-style: none; margin: 14px 0 0; padding: 0; text-align: left; display: grid; gap: 7px; }
+  .ck-how li { font-size: 14px; font-weight: 600; color: #f2d9c6; background: rgba(255,255,255,.08);
+    border-radius: 12px; padding: 8px 12px; }
+  @media (prefers-reduced-motion: reduce) { .ck-spinner { animation-duration: 2.6s; } }
+  @media (max-height: 720px) {
+    .ck-panel h1 { font-size: 27px; }
+    .ck-panel .ck-art { font-size: 40px; }
+    .ck-btn { min-height: 50px; font-size: 17px; }
+    .ck-code { font-size: 46px; margin-top: 12px; }
+    .ck-how { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<div id="ck-safe"></div>
+<div id="ck-lobby"></div>
+<script>
+(function () {
+  "use strict";
+  const FK = window.FamilyKit;
+  const { clamp, lerp, easeOutCubic, roundRect, starPath } = FK;
+  const RM = FK.reducedMotion;
+
+  const RED = "red", BLACK = "black";
+  const other = (c) => (c === RED ? BLACK : RED);
+
+  /* ---- launch parameters (query string + #fragment), like the kit ---- */
+  const params = new URLSearchParams(window.location.search);
+  new URLSearchParams(window.location.hash.replace(/^#/, "")).forEach((v, k) => params.set(k, v));
+  const playerName = (params.get("name") || "").replace(/[^\p{L}\p{N} .'-]/gu, "").slice(0, 24);
+  const launchRoom = (params.get("room") || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8);
+
+  const kit = FK.create({
+    slug: "family-checkers",
+    title: "Checkers",
+    tagline: "The classic two-player board game",
+    emoji: "🔴",
+    accent: "#e0533d",
+    accent2: "#3a7bd5",
+    scoreLabel: "Score",
+    howTo: [
+      ["👆", "Tap a piece, then tap where it should go"],
+      ["↗️", "Move diagonally; jump an opponent to capture it"],
+      ["💥", "If a jump is possible, you must take it"],
+      ["👑", "Reach the far row to become a King"],
+    ],
+    onStart: onStart,
+  });
+
+  const FONT = getComputedStyle(document.body).fontFamily;
+  const lobbyEl = document.getElementById("ck-lobby");
+  const safeEl = document.getElementById("ck-safe");
+  const hudEl = document.getElementById("fk-hud");
+  const stageEl = document.getElementById("fk-stage");
+
+  /* ---------------- state ---------------- */
+  let view = null;
+  let boardRect = null;
+  let clock = 0;
+  let code = null;
+  let pid = null;
+  let myColor = null;
+  let state = null;       // latest server snapshot
+  let selected = null;    // selected square index
+  let anim = null;        // slide animation between snapshots
+  let ended = false;      // gameOver already shown for the current finished game
+  let busy = false;       // a move request is in flight
+  let pollTimer = 0;
+  let lastTurnToast = null;
+
+  const insets = () => {
+    const cs = getComputedStyle(safeEl);
+    return {
+      top: parseFloat(cs.paddingTop) || 0,
+      bottom: parseFloat(cs.paddingBottom) || 0,
+      left: parseFloat(cs.paddingLeft) || 0,
+      right: parseFloat(cs.paddingRight) || 0,
+    };
+  };
+
+  /* ---------------- tiny API client ---------------- */
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}));
+    return res.json().catch(() => ({ success: false, error: "network error" }));
+  }
+  const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
+
+  /* ---------------- lobby ---------------- */
+  function showLobby(html, bind) {
+    lobbyEl.innerHTML = `<div class="ck-panel">${html}</div>`;
+    lobbyEl.classList.add("ck-show");
+    if (bind) bind(lobbyEl);
+  }
+  function hideLobby() { lobbyEl.classList.remove("ck-show"); lobbyEl.innerHTML = ""; }
+
+  function nameField() {
+    return playerName ? "" : `<input class="ck-name" data-ck="name" maxlength="16" placeholder="Your name (optional)" autocomplete="off">`;
+  }
+  function readName() {
+    if (playerName) return playerName;
+    const el = lobbyEl.querySelector('[data-ck="name"]');
+    return el && el.value ? el.value.slice(0, 16) : "";
+  }
+
+  function showStart() {
+    showLobby(
+      `<div class="ck-art">🔴⚪</div>
+       <h1>Checkers</h1>
+       <p class="ck-tag">Play a friend on another device, or take on the computer.</p>
+       ${nameField()}
+       <button class="ck-btn" type="button" data-ck="friend">🤝 Play a friend</button>
+       <button class="ck-btn ck-alt" type="button" data-ck="quick">🎲 Quick match</button>
+       <button class="ck-btn ck-alt" type="button" data-ck="ai">🤖 Play the computer</button>
+       <button class="ck-btn ck-ghost" type="button" data-ck="join">🔑 Join with a code</button>
+       <ul class="ck-how">
+         <li>Tap a piece, then tap a highlighted square to move it.</li>
+         <li>Jumps are compulsory - if you can jump, you must.</li>
+         <li>Reach the far row to crown a King that moves both ways.</li>
+       </ul>`,
+      (root) => {
+        onTap(root.querySelector('[data-ck="friend"]'), () => createRoom("friend"));
+        onTap(root.querySelector('[data-ck="quick"]'), () => quickMatch());
+        onTap(root.querySelector('[data-ck="ai"]'), () => createRoom("ai"));
+        onTap(root.querySelector('[data-ck="join"]'), showJoin);
+      },
+    );
+  }
+
+  function showJoin() {
+    showLobby(
+      `<div class="ck-art">🔑</div>
+       <h1>Join a game</h1>
+       <p class="ck-tag">Type the four-letter code your friend gave you.</p>
+       ${nameField()}
+       <div class="ck-inputs"><input data-ck="code" maxlength="8" inputmode="text" autocapitalize="characters"
+         autocomplete="off" placeholder="CODE"></div>
+       <div class="ck-row">
+         <button class="ck-btn ck-alt" type="button" data-ck="back">Back</button>
+         <button class="ck-btn" type="button" data-ck="go">Join</button>
+       </div>
+       <div class="ck-err" data-ck="err"></div>`,
+      (root) => {
+        onTap(root.querySelector('[data-ck="back"]'), showStart);
+        const go = () => joinRoom(root.querySelector('[data-ck="code"]').value);
+        onTap(root.querySelector('[data-ck="go"]'), go);
+        const input = root.querySelector('[data-ck="code"]');
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+        input.addEventListener("input", () => { input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); });
+        setTimeout(() => input.focus(), 50);
+      },
+    );
+  }
+
+  function showWaiting(room) {
+    const share = shareUrl(room.code);
+    showLobby(
+      `<div class="ck-art">⏳</div>
+       <h1>Waiting for a friend</h1>
+       <p class="ck-tag">Share this code - they tap “Join with a code” and type it in.</p>
+       <div class="ck-code" data-ck="code">${room.code}</div>
+       <div class="ck-spinner"></div>
+       <button class="ck-btn" type="button" data-ck="copy">📋 Copy invite link</button>
+       <button class="ck-btn ck-alt" type="button" data-ck="ai">🤖 Play the computer instead</button>
+       <button class="ck-btn ck-ghost" type="button" data-ck="cancel">Cancel</button>
+       <div class="ck-sub" data-ck="status">Waiting…</div>`,
+      (root) => {
+        onTap(root.querySelector('[data-ck="copy"]'), async () => {
+          const ok = await copy(share);
+          kit.toast(ok ? "Invite link copied" : room.code, "#fff");
+        });
+        onTap(root.querySelector('[data-ck="ai"]'), () => addAi(room.code));
+        onTap(root.querySelector('[data-ck="cancel"]'), () => leaveToStart(room.code));
+      },
+    );
+  }
+
+  function shareUrl(roomCode) {
+    const base = `${location.origin}/play/family-checkers`;
+    const p = new URLSearchParams();
+    if (playerName) p.set("name", playerName);
+    const q = p.toString();
+    return `${base}${q ? "?" + q : ""}#room=${roomCode}`;
+  }
+
+  function showError(msg) {
+    const err = lobbyEl.querySelector('[data-ck="err"]');
+    if (err) err.textContent = msg;
+    else kit.toast(msg, "#ffb0b0");
+  }
+
+  /* ---------------- room lifecycle ---------------- */
+  async function createRoom(mode) {
+    const name = readName();
+    showLobby(`<div class="ck-art">🔴</div><h1>Starting…</h1><div class="ck-spinner"></div>`);
+    const res = await post("/api/checkers/rooms", { mode, name, initials: initialsFor(name) });
+    if (!res.success || !res.room) { showError(res.error || "Could not start a game"); showStart(); return; }
+    enterRoom(res.player_id, res.room);
+  }
+
+  async function quickMatch() {
+    const name = readName();
+    showLobby(`<div class="ck-art">🎲</div><h1>Finding a game…</h1><div class="ck-spinner"></div>`);
+    const res = await post("/api/checkers/rooms", { mode: "quick", name, initials: initialsFor(name) });
+    if (!res.success || !res.room) { showError(res.error || "Could not find a game"); showStart(); return; }
+    enterRoom(res.player_id, res.room);
+  }
+
+  async function joinRoom(roomCode) {
+    const clean = (roomCode || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (clean.length < 3) { showError("Enter the code your friend shared"); return; }
+    const name = readName();
+    const storedPid = storeGet(`ck:room:${clean}`);
+    const res = await post("/api/checkers/rooms", { code: clean, name, initials: initialsFor(name), player_id: storedPid });
+    if (!res.success || !res.room) { showError(res.error || "That game was not found"); return; }
+    enterRoom(res.player_id, res.room);
+  }
+
+  async function addAi(roomCode) {
+    const res = await post(`/api/checkers/rooms/${roomCode}/ai`, { player_id: pid });
+    if (!res.success || !res.room) { showError(res.error || "Could not start the computer"); return; }
+    applyState(res.room);
+  }
+
+  async function leaveToStart(roomCode) {
+    try { await post(`/api/checkers/rooms/${roomCode}/leave`, { player_id: pid }); } catch (e) { /* ignore */ }
+    stopPolling();
+    code = null; pid = null; myColor = null; state = null; selected = null; anim = null;
+    showStart();
+  }
+
+  function enterRoom(playerId, room) {
+    code = room.code;
+    pid = playerId;
+    storeSet(`ck:room:${room.code}`, playerId);
+    ended = false;
+    anim = null;
+    selected = null;
+    myColor = room.you ? room.you.color : null;
+    state = room;
+    startPolling();
+    applyState(room);
+  }
+
+  function initialsFor(name) {
+    const letters = (name || "").replace(/[^A-Za-z0-9]/g, "");
+    return letters ? letters.slice(0, 3).toUpperCase() : "YOU";
+  }
+
+  /* ---------------- polling ---------------- */
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(poll, 1100);
+    poll();
+  }
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = 0; } }
+
+  async function poll() {
+    if (!code) return;
+    const res = await api(`/api/checkers/rooms/${code}?player_id=${encodeURIComponent(pid || "")}`);
+    if (res.success && res.room) applyState(res.room);
+  }
+
+  /* ---------------- apply a snapshot ---------------- */
+  function applyState(room) {
+    const prev = state;
+    state = room;
+    if (room.you) myColor = room.you.color;
+
+    if (room.status === "playing") {
+      if (kit.state !== "playing") {
+        ended = false;
+        // hide the lobby and hand control to the kit (calls onStart)
+        hideLobby();
+        kit.start();
+        return;
+      }
+      hideLobby();
+    } else if (room.status === "waiting") {
+      // no opponent yet (or they left): offer the code again
+      if (!lobbyEl.classList.contains("ck-show")) showWaiting(room);
+      else {
+        const cEl = lobbyEl.querySelector('[data-ck="code"]');
+        if (cEl) cEl.textContent = room.code;
+      }
+    }
+
+    // a fresh move: animate it
+    if (prev && Number(room.history_len) > Number(prev.history_len) && room.last_move) {
+      startAnim(prev, room);
+    }
+    if (selected != null && !(room.legal || []).some((m) => m.path[0] === selected)) selected = null;
+
+    updateHud(room);
+    if (room.status === "finished" && !ended) {
+      ended = true;
+      setTimeout(() => finishGame(room), anim ? 460 : 40);
+    }
+  }
+
+  function updateHud(room) {
+    if (room.status === "playing") {
+      const mine = room.turn === myColor;
+      const oppName = (room.players[other(myColor)] || {}).name || "Opponent";
+      kit.setExtra(
+        `<span style="font-size:14px">${mine ? "🟢 Your turn" : "⏳ " + escapeHtml(oppName) + "…"}</span>`,
+      );
+      if (mine && lastTurnToast !== room.history_len) {
+        lastTurnToast = room.history_len;
+        if (kit.playing) kit.sound.tone(700, 0.06, { type: "triangle", vol: 0.1 });
+      }
+    } else if (room.status === "waiting") {
+      kit.setExtra(`<span style="font-size:14px">Room ${room.code}</span>`);
+    }
+  }
+
+  /* ---------------- finishing ---------------- */
+  function finishGame(room) {
+    const won = room.winner === myColor;
+    const draw = !room.winner;
+    const mine = room.you ? room.you.captured : 0;
+    const theirs = room.captured ? room.captured[other(myColor)] : 0;
+    let oppGone = false;
+    const oppSeat = room.players[other(myColor)];
+    if (room.result === "forfeit") oppGone = true;
+
+    const score = mine * 50 + (won ? 300 : 0) + (draw ? 120 : 0);
+    kit.setScore(score, { quiet: true });
+
+    let title, reason, emoji;
+    if (won) {
+      title = "You win!";
+      emoji = "🏆";
+      reason = oppGone ? "Your opponent left the game." : "You captured every last piece.";
+    } else if (draw) {
+      title = "It's a draw";
+      emoji = "🤝";
+      reason = "Nobody could force a win.";
+    } else {
+      title = "Good game";
+      emoji = "🔵";
+      reason = oppSeat && oppSeat.is_ai ? "The computer got you this time." : "Your friend won this one.";
+    }
+    kit.gameOver({
+      win: won,
+      title, emoji, reason,
+      stats: [["Your captures", mine], ["Their captures", theirs], ["Moves", Math.ceil(room.history_len / 2)]],
+    });
+  }
+
+  function onStart() {
+    // Called by the kit's Play / Play-again. Collecting an opponent is the
+    // game's own front door (the kit's title card is the "how to play" screen),
+    // so with no room yet we show the lobby; otherwise rematch or re-poll.
+    ended = false;
+    selected = null;
+    anim = null;
+    if (!code) { showStart(); return; }
+    if (state && state.status === "finished") {
+      post(`/api/checkers/rooms/${code}/reset`, { player_id: pid }).then((res) => {
+        if (res && res.success && res.room) applyState(res.room);
+        else poll();
+      });
+    } else {
+      poll();
+    }
+  }
+
+  /* ---------------- move submission ---------------- */
+  async function submitMove(path) {
+    if (busy || !code) return;
+    busy = true;
+    selected = null;
+    const res = await post(`/api/checkers/rooms/${code}/move`, { player_id: pid, path });
+    busy = false;
+    if (res.success && res.room) {
+      applyState(res.room);
+    } else {
+      kit.sound.play("bad");
+      kit.toast(res.error || "Illegal move", "#ffd0d0");
+      poll();
+    }
+  }
+
+  /* ---------------- input ---------------- */
+  function squareAt(x, y) {
+    if (!boardRect) return -1;
+    const { x0, y0, sq } = boardRect;
+    const c = Math.floor((x - x0) / sq);
+    const r = Math.floor((y - y0) / sq);
+    if (r < 0 || r > 7 || c < 0 || c > 7) return -1;
+    return r * 8 + c;
+  }
+
+  kit.pointer(null, {
+    down(p) {
+      if (!state || state.status !== "playing") return;
+      if (state.turn !== myColor) return;
+      const legal = state.legal || [];
+      const sq = squareAt(p.x, p.y);
+      if (sq < 0) return;
+      if (selected != null) {
+        const matches = legal
+          .filter((m) => m.path[0] === selected && m.path[m.path.length - 1] === sq)
+          .sort((a, b) => b.captures.length - a.captures.length || a.path.length - b.path.length);
+        if (matches.length) { kit.haptic(8); submitMove(matches[0].path); return; }
+      }
+      const mine = legal.some((m) => m.path[0] === sq);
+      if (mine) {
+        selected = sq;
+        kit.haptic(6);
+        kit.sound.tone(560, 0.05, { type: "triangle", vol: 0.14 });
+      } else if (selected != null) {
+        selected = null;
+      }
+    },
+  });
+
+  /* ---------------- animation ---------------- */
+  function startAnim(prev, room) {
+    const path = (room.last_move && room.last_move.path) || [];
+    if (path.length < 2 || RM) { anim = null; return; }
+    const segs = path.length - 1;
+    anim = {
+      from: prev.board.slice(),
+      path: path.slice(),
+      captures: (room.last_move.captures || []).slice(),
+      by: room.last_move.by,
+      t: 0,
+      dur: Math.min(0.6, Math.max(0.24, 0.13 * segs)),
+      seg: 0,
+      lit: [],
+    };
+    if (anim.captures.length) kit.sound.play("pop", 0.8);
+  }
+
+  function updateAnim(dt) {
+    if (!anim) return;
+    anim.t += dt;
+    const frac = clamp(anim.t / anim.dur, 0, 1);
+    const segLen = 1 / (anim.path.length - 1);
+    const seg = Math.min(anim.path.length - 2, Math.floor(frac / segLen + 1e-6));
+    // pop captured pieces as each segment completes
+    for (let i = anim.lit.length; i < seg; i++) {
+      const cap = anim.captures[i];
+      if (cap != null) {
+        const { x, y } = squareCenter(cap);
+        kit.fx.burst(x, y, ["#ffd24a", "#ff8a5c", "#ffe7b8"], 8, { size: 5, speed: 180 });
+        kit.sound.play("tap");
+        kit.haptic(10);
+      }
+      anim.lit.push(i);
+    }
+    if (frac >= 1) {
+      anim = null;
+      if (state && state.status === "finished" && ended) {
+        setTimeout(() => finishGame(state), 60);
+      }
+    }
+  }
+
+  function squareCenter(i) {
+    const { x0, y0, sq } = boardRect;
+    const r = Math.floor(i / 8), c = i % 8;
+    return { x: x0 + c * sq + sq / 2, y: y0 + r * sq + sq / 2 };
+  }
+
+  /* ---------------- board layout & drawing ---------------- */
+  function computeBoard() {
+    const ins = insets();
+    const hudBottom = Math.max(hudEl ? hudEl.getBoundingClientRect().bottom : 0, 54 + ins.top);
+    const infoH = 62 + ins.bottom;
+    const top = hudBottom + 10;
+    const availW = view.w - 20 - ins.left - ins.right;
+    const availH = Math.max(120, view.h - infoH - 8 - top);
+    const size = Math.max(160, Math.min(availW, availH));
+    const x0 = ins.left + 10 + (availW - size) / 2;
+    const y0 = top + (availH - size) / 2;
+    boardRect = { x0, y0, size, sq: size / 8 };
+  }
+
+  function drawBoard(ctx) {
+    if (!boardRect) computeBoard();
+    const { x0, y0, size, sq } = boardRect;
+    // panel
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,.45)";
+    ctx.shadowBlur = 22;
+    ctx.shadowOffsetY = 8;
+    roundRect(ctx, x0 - 6, y0 - 6, size + 12, size + 12, 14);
+    ctx.fillStyle = "#4a3324";
+    ctx.fill();
+    ctx.restore();
+    // squares
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const dark = (r + c) % 2 === 1;
+        ctx.fillStyle = dark ? "#6b4a34" : "#e8cfa9";
+        ctx.fillRect(x0 + c * sq, y0 + r * sq, sq + 0.5, sq + 0.5);
+      }
+    }
+    // last-move trail
+    if (state && state.last_move && !anim) {
+      for (const idx of [state.last_move.path[0], state.last_move.path[state.last_move.path.length - 1]]) {
+        const r = Math.floor(idx / 8), c = idx % 8;
+        ctx.fillStyle = "rgba(255, 216, 120, .28)";
+        ctx.fillRect(x0 + c * sq, y0 + r * sq, sq, sq);
+      }
+    }
+    // legal destinations for the selected piece
+    if (selected != null && state) {
+      const dests = (state.legal || []).filter((m) => m.path[0] === selected);
+      for (const m of dests) {
+        const idx = m.path[m.path.length - 1];
+        const { x, y } = squareCenter(idx);
+        if (m.captures.length) {
+          ctx.beginPath();
+          ctx.arc(x, y, sq * 0.26, 0, Math.PI * 2);
+          ctx.lineWidth = Math.max(3, sq * 0.09);
+          ctx.strokeStyle = "rgba(255, 210, 74, .95)";
+          ctx.stroke();
+        } else {
+          ctx.beginPath();
+          ctx.arc(x, y, sq * 0.18, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(255, 210, 74, .85)";
+          ctx.fill();
+        }
+      }
+    }
+    // pieces
+    const board = anim ? anim.from : (state ? state.board : null);
+    if (board) {
+      const litSet = anim ? new Set(anim.lit.map((i) => anim.captures[i])) : null;
+      for (let i = 0; i < 64; i++) {
+        const p = board[i];
+        if (p === 0) continue;
+        if (anim && i === anim.path[0]) continue;        // the mover is drawn separately
+        if (litSet && litSet.has(i)) continue;           // captured, already popped
+        drawPiece(ctx, i, p, 1);
+      }
+      if (anim) drawMovingPiece(ctx);
+    }
+    // selected ring
+    if (selected != null) {
+      const r = Math.floor(selected / 8), c = selected % 8;
+      ctx.save();
+      roundRect(ctx, x0 + c * sq + 2, y0 + r * sq + 2, sq - 4, sq - 4, sq * 0.18);
+      ctx.lineWidth = Math.max(3, sq * 0.07);
+      ctx.strokeStyle = "rgba(255, 236, 150, .95)";
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawPiece(ctx, idx, p, alpha) {
+    const { x, y } = squareCenter(idx);
+    const { sq } = boardRect;
+    pieceAt(ctx, x, y, sq * 0.38, p, alpha);
+  }
+
+  function pieceAt(ctx, x, y, rad, p, alpha) {
+    const red = p > 0;
+    const king = Math.abs(p) === 2;
+    ctx.save();
+    ctx.globalAlpha = alpha == null ? 1 : alpha;
+    // shadow
+    ctx.beginPath();
+    ctx.ellipse(x, y + rad * 0.24, rad * 0.98, rad * 0.72, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0,0,0,.28)";
+    ctx.fill();
+    // body
+    const g = ctx.createRadialGradient(x - rad * 0.35, y - rad * 0.4, rad * 0.2, x, y, rad * 1.15);
+    if (red) { g.addColorStop(0, "#ff8a7a"); g.addColorStop(0.55, "#e0533d"); g.addColorStop(1, "#9c2a1c"); }
+    else { g.addColorStop(0, "#6b7280"); g.addColorStop(0.55, "#33373f"); g.addColorStop(1, "#12141a"); }
+    ctx.beginPath();
+    ctx.arc(x, y, rad, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    // rim
+    ctx.lineWidth = Math.max(1.5, rad * 0.12);
+    ctx.strokeStyle = red ? "rgba(120,20,10,.55)" : "rgba(0,0,0,.55)";
+    ctx.stroke();
+    // inner rings
+    ctx.beginPath();
+    ctx.arc(x, y, rad * 0.68, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,.22)";
+    ctx.lineWidth = Math.max(1, rad * 0.08);
+    ctx.stroke();
+    if (king) drawCrown(ctx, x, y, rad * 0.62);
+    ctx.restore();
+  }
+
+  function drawCrown(ctx, x, y, r) {
+    const w = r * 1.7, h = r * 1.05;
+    ctx.beginPath();
+    ctx.moveTo(x - w / 2, y + h / 2);
+    ctx.lineTo(x - w / 2, y - h / 2);
+    ctx.lineTo(x - w / 5, y - h * 0.02);
+    ctx.lineTo(x, y - h / 2);
+    ctx.lineTo(x + w / 5, y - h * 0.02);
+    ctx.lineTo(x + w / 2, y - h / 2);
+    ctx.lineTo(x + w / 2, y + h / 2);
+    ctx.closePath();
+    ctx.fillStyle = "#ffd24a";
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, r * 0.1);
+    ctx.strokeStyle = "rgba(120,70,0,.6)";
+    ctx.stroke();
+  }
+
+  function drawMovingPiece(ctx) {
+    const { path, t, dur } = anim;
+    const frac = clamp(t / dur, 0, 1);
+    const segLen = 1 / (path.length - 1);
+    const seg = Math.min(path.length - 2, Math.floor(frac / segLen + 1e-6));
+    const local = clamp((frac - seg * segLen) / segLen, 0, 1);
+    const a = squareCenter(path[seg]);
+    const b = squareCenter(path[seg + 1]);
+    const e = easeOutCubic(local);
+    const x = lerp(a.x, b.x, e);
+    const y = lerp(a.y, b.y, e) - Math.sin(local * Math.PI) * boardRect.sq * 0.12;
+    const p = anim.from[path[0]];
+    pieceAt(ctx, x, y, boardRect.sq * 0.38, p, 1);
+  }
+
+  function drawInfoBar(ctx) {
+    if (!boardRect || !state) return;
+    const ins = insets();
+    const h = 54;
+    const y = view.h - h - 6 - ins.bottom;
+    const m = ins.left + 10;
+    const w = view.w - ins.left - ins.right - 20;
+    const gap = 8;
+    const plateW = (w - gap) / 2;
+    const plates = [
+      { color: RED, x: m },
+      { color: BLACK, x: m + plateW + gap },
+    ];
+    for (const pl of plates) {
+      const seat = state.players[pl.color];
+      const active = state.status === "playing" && state.turn === pl.color;
+      const you = pl.color === myColor;
+      roundRect(ctx, pl.x, y, plateW, h, 14);
+      ctx.fillStyle = active ? "rgba(255, 210, 74, .22)" : "rgba(0, 0, 0, .28)";
+      ctx.fill();
+      ctx.lineWidth = active ? 3 : 1;
+      ctx.strokeStyle = active ? "rgba(255, 210, 74, .9)" : "rgba(255,255,255,.12)";
+      roundRect(ctx, pl.x, y, plateW, h, 14);
+      ctx.stroke();
+      // chip
+      const cx = pl.x + 22, cy = y + h / 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+      ctx.fillStyle = pl.color === RED ? "#e0533d" : "#33373f";
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255,255,255,.35)";
+      ctx.stroke();
+      const name = (seat && seat.name) || (pl.color === RED ? "Red" : "Black");
+      const captured = state.captured ? state.captured[pl.color] : 0;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#fff";
+      ctx.font = `800 ${Math.min(17, plateW * 0.11)}px ${FONT}`;
+      const label = (you ? "You" : trunc(name, 10));
+      ctx.fillText(label, cx + 20, cy - 8);
+      ctx.fillStyle = "rgba(255,255,255,.7)";
+      ctx.font = `700 ${Math.min(13, plateW * 0.09)}px ${FONT}`;
+      ctx.fillText(`captured ${captured}`, cx + 20, cy + 10);
+    }
+  }
+
+  function trunc(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+
+  function update(dt) {
+    clock += dt;
+    updateAnim(dt);
+  }
+
+  function render(dt) {
+    if (!view) return;
+    const ctx = view.ctx;
+    ctx.save();
+    kit.applyShake(ctx);
+    // backdrop
+    const bg = ctx.createLinearGradient(0, 0, 0, view.h);
+    bg.addColorStop(0, "#3a281c");
+    bg.addColorStop(1, "#241812");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, view.w, view.h);
+    drawBoard(ctx);
+    drawInfoBar(ctx);
+    kit.fx.draw(ctx);
+    ctx.restore();
+  }
+
+  /* ---------------- boot ---------------- */
+  view = kit.canvas((v) => { view = v; computeBoard(); });
+  kit.run(update, render);
+
+  // Recover an in-progress room for this device, or one from the shared link.
+  // With no link the kit shows its title/how-to card; the lobby opens when the
+  // player taps Play (see onStart).
+  if (launchRoom) {
+    const saved = storeGet(`ck:room:${launchRoom}`);
+    joinRoomFromLink(launchRoom, saved);
+  }
+
+  async function joinRoomFromLink(roomCode, savedPid) {
+    const name = playerName;
+    showLobby(`<div class="ck-art">🔴</div><h1>Joining…</h1><div class="ck-spinner"></div>`);
+    const res = await post("/api/checkers/rooms", {
+      code: roomCode, name, initials: initialsFor(name), player_id: savedPid,
+    });
+    if (!res.success || !res.room) {
+      showJoin();
+      return;
+    }
+    enterRoom(res.player_id, res.room);
+  }
+
+  /* ---------------- DOM + storage helpers ---------------- */
+  function onTap(node, fn) {
+    if (!node) return;
+    let down = null;
+    node.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY }; });
+    node.addEventListener("pointerup", (e) => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved < 24) { e.preventDefault(); fn(e); }
+    });
+  }
+  function storeGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
+  function storeSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* blocked */ } }
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (_) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        const ok = document.execCommand("copy"); ta.remove();
+        return ok;
+      } catch (e) { return false; }
+    }
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // Test hook (used by the Playwright family check; harmless in play).
+  window.__checkers = {
+    get code() { return code; }, get color() { return myColor; },
+    get status() { return state && state.status; }, get turn() { return state && state.turn; },
+    get board() { return state && state.board; }, get legal() { return state && state.legal; },
+    get selected() { return selected; },
+    get history() { return state && state.history_len; },
+    setSelected(i) { selected = i; },
+    squareCenter,
+  };
+})();
+</script>
+</body>
+</html>
