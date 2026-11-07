@@ -300,66 +300,28 @@
   /* ---------- announcer (Alpaca TTS, played on the TV's speakers) ---------- */
   /* The phones follow the TV: it tells the room when a screen's line really starts
      (and how long it lasts), so no phone shows a screen before the host gets to it. */
-  /* Every screen goes everywhere at once. The TV tells the room when it is "ready" for a screen
-     (it has the host's line in hand) and when it has finished saying it ("end": a race clue opens,
-     an answer flash ends). Reports go one at a time, in order. */
-  var saidSent = {}, saidQueue = [], saidBusy = false;
-  function said(key, event) {
-    if (STREAMED || !key || !code || saidSent[key + ":" + event]) return;
-    saidSent[key + ":" + event] = true;
-    saidQueue.push({ code: code, key: key, event: event });
-    pumpSaid();
-  }
-  function pumpSaid() {
-    if (saidBusy || !saidQueue.length) return;
-    saidBusy = true;
-    var m = saidQueue.shift();
-    xhr("POST", "/api/party/rooms/" + encodeURIComponent(m.code) + "/said", { key: m.key, event: m.event }, function () {
-      saidBusy = false;
-      pumpSaid();
-    });
-  }
-  /* While a screen waits to go, the TV fetches its line and then says it is ready; at the go
-     moment it plays the clip it already has, so the line starts as the screen appears. */
-  var prepared = {};
-  function prepare(r, key) {
-    if (prepared[key]) return;
-    var text = r.announce;
-    if (!text) { prepared[key] = { none: true }; said(key, "ready"); return; }
-    prepared[key] = { loading: true, text: text };
-    xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 700), voice: (r && r.voice) || "" }, function (blob) {
-      var p = prepared[key];
-      p.loading = false;
-      p.blob = blob && blob.size >= 128 ? blob : null;
-      said(key, "ready");  // ready even without a clip: nobody waits on a TV that cannot speak
-      if (p.play) { p.play = false; if (p.blob) { lastSpoken = key; play(p.blob, key); } else said(key, "end"); }
-    }, true);
+  var saidSent = {};
+  function said(key, seconds) {
+    if (STREAMED || !key || !code || saidSent[key]) return;
+    saidSent[key] = true;
+    xhr("POST", "/api/party/rooms/" + encodeURIComponent(code) + "/said", { key: key, seconds: seconds }, function () {});
   }
   function speak(text, key, step) {
     if (!text || spokenKeys[key]) return;
-    var ready = prepared[key];
-    if (ready && step) {
-      spokenKeys[key] = true;
-      lastSpoken = key;
-      if (ready.loading) { ready.play = true; return; }
-      if (ready.blob) { play(ready.blob, key); return; }
-      if (ready.none) return;
-    }
     spokenKeys[key] = true;
     lastSpoken = key;
     inflightKey = key; // being voiced: chatter and lobby jokes wait for it
     var voice = (room && room.voice) || "";
     xhr("POST", "/api/party/tts", { text: String(text).replace(/_{3,}/g, "blank").slice(0, 700), voice: voice }, function (blob) {
       if (inflightKey === key) inflightKey = "";
-      if (key !== lastSpoken || closedOut) { if (step) said(key, "end"); return; }
-      if (!blob || blob.size < 128) { if (step) said(key, "end"); return; }
+      if (key !== lastSpoken || closedOut) return;
+      if (!blob || blob.size < 128) { if (step) said(key, 0); return; }
       play(blob, step ? key : "");
     }, true);
   }
   var U = window.URL || window.webkitURL;
   function dropAudio() {
     // Stop the current line and hand its clip's memory back (a TV runs for days).
-    if (audio && audio.__step) said(audio.__step, "end");  // cut short counts as finished
     try { if (audio) { audio.pause(); if (audio.__url) U.revokeObjectURL(audio.__url); } } catch (e) {}
     audio = null;
   }
@@ -368,14 +330,15 @@
     var url = U.createObjectURL(blob);
     audio = new Audio(url);
     audio.__url = url;
-    audio.__step = stepKeyToReport;
     duck(true);
     var mine = audio;
     function report(ok) {
-      if (stepKeyToReport && !ok) said(stepKeyToReport, "end");  // no sound allowed: nothing to wait for
+      if (!stepKeyToReport) return;
+      var d = mine.duration;
+      // -1: the length is not known yet, so the room uses its own measure of the line.
+      said(stepKeyToReport, !ok ? 0 : (isFinite(d) && d > 0 ? d : -1));
     }
     audio.onended = audio.onerror = function () {
-      if (stepKeyToReport) said(stepKeyToReport, "end");
       duck(false);
       try { U.revokeObjectURL(url); } catch (e) {}
       if (audio === mine) audio = null;
@@ -479,7 +442,7 @@
       if (!spokenKeys[jk] && !inflightKey && (!audio || audio.paused || audio.ended)) speak(r.joke.setup + " ... " + r.joke.punch, jk);
       return;
     }
-    if (r.waiting && !STREAMED) { prepare(r, key); return; }  // say nothing until the screen goes
+    if (r.phase !== "lobby" && !STREAMED) setTimeout(function () { if (!spokenKeys[key]) said(key, 0); }, 0);  // a screen with no line
     if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key, r.phase !== "lobby"); return; }
     if (r.phase === "lobby") {
       speak("Welcome to Parable Party! Scan the code on the screen, or join room " + r.code.split("").join(" ") + " in Jarvis.", "lobby:" + r.code);
@@ -876,7 +839,7 @@
       (r.round ? ' <span class="pill">ROUND ' + r.round + " / " + r.total_rounds + "</span>" : "");
     $("foot-left").innerHTML = "Join: " + esc(window.location.host) + "/join/" + esc(r.code);
     var views = { lobby: viewLobby, writing: viewWriting, voting: viewVoting, reveal: viewReveal, racing: viewRacing, finished: viewFinished };
-    var html = r.waiting ? viewGetReady(r) : (views[r.phase] || viewLobby)(r);
+    var html = (views[r.phase] || viewLobby)(r);
     // The same screen redrawn (someone answered, a score changed) must not replay its entrance.
     var k = stepKey(r);
     if (k === lastRenderedKey) html = html.replace(/class="fade"/g, 'class=""').replace(/ fade"/g, '"').replace(/class="fade /g, 'class="');
@@ -884,11 +847,6 @@
     setHtml(main, html);
   }
 
-  // Between screens, while every phone and the TV get ready for the next one.
-  function viewGetReady(r) {
-    var head = r.prompt && r.prompt.title ? '<div class="center h2">' + esc(r.prompt.icon || "") + " " + esc(r.prompt.title) + "</div>" : "";
-    return '<div class="fade center">' + head + '<div class="h1 pulse" style="margin-top:.3rem">Get ready…</div></div>';
-  }
   function signature(r) {
     if (!r) return "none";
     var p = [];
@@ -896,7 +854,7 @@
       var x = r.players[i];
       p.push(x.id + ":" + x.score + ":" + (x.submitted ? 1 : 0) + (x.voted ? 1 : 0));
     }
-    return [r.step || "", r.waiting ? 1 : 0, r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(","), r.joke ? r.joke.setup : ""].join("|");
+    return [r.step || "", r.code, r.match_id, r.phase, r.round, (r.options || []).length, p.join(","), r.joke ? r.joke.setup : ""].join("|");
   }
 
   var lastPhaseKey = "";
@@ -919,20 +877,9 @@
   var lastScoresShown = false;
   var lastRenderedKey = "";
   var lastTick = -1;
-  var goTimer = null, goneKeys = {};
   function apply(r) {
-    // A reply sent before the go moment can land after it: a screen that has gone stays gone.
-    if (r && r.waiting && goneKeys[stepKey(r)]) { r.waiting = false; r.go_in = null; }
-    if (r && !r.waiting) goneKeys[stepKey(r)] = true;
-    // The go moment is known in advance: show the screen (and start its line) exactly then.
-    clearTimeout(goTimer);
-    if (r && r.waiting && r.go_in !== null && r.go_in !== undefined) {
-      var gone = {}; for (var f in r) gone[f] = r[f];
-      gone.waiting = false; gone.go_in = null; gone.phase_age_s = 0;
-      goTimer = setTimeout(function () { apply(gone); }, Math.max(0, r.go_in * 1000));
-    }
-    var phaseKey = r ? stepKey(r) + (r.waiting ? ":wait" : "") : "";
-    if (r && !r.waiting && phaseKey !== lastPhaseKey && lastPhaseKey) {
+    var phaseKey = r ? stepKey(r) : "";
+    if (r && phaseKey !== lastPhaseKey && lastPhaseKey) {
       if (r.phase === "writing") playSfx("round");
       else if (r.phase === "voting") playSfx("vote");
       else if (r.phase === "finished") playSfx("finale");
@@ -976,7 +923,7 @@
         failures++;
         if (failures === 5) $("main").innerHTML = '<div class="center h2 pulse">Reconnecting…</div>';
       }
-      setTimeout(poll, (room && room.poll_ms) || POLL_MS);  // faster while a screen waits to go
+      setTimeout(poll, POLL_MS);
     });
   }
 

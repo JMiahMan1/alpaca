@@ -555,27 +555,18 @@
   }
   function closeLocally() {
     silence();
-    if (pollTimer) clearTimeout(pollTimer);
-    clearTimeout(goTimer);
+    if (pollTimer) clearInterval(pollTimer);
     pollTimer = null; room = null; code = ""; store.set("room", ""); view = "join"; lastSig = "";
     try { history.replaceState(null, "", location.pathname + location.search); } catch (_) {}
     loadOpenRooms(); render(true);
   }
   function startPolling() {
-    if (pollTimer) clearTimeout(pollTimer);
-    pollTimer = setTimeout(pollLoop, 0);
-  }
-  function pollLoop() {
-    if (!code) { pollTimer = null; return; }
-    poll();
-    // Faster while a screen waits to go, so every device picks it up together.
-    pollTimer = setTimeout(pollLoop, (room && room.poll_ms) || 1000);
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(poll, 1000);
   }
   function poll() {
     if (!code) return;
-    // "ready": the screen this device is on (it has the newest one the room sent it).
-    const ready = room ? "&ready=" + encodeURIComponent(stepKey(room)) : "";
-    fetch(`/api/party/rooms/${encodeURIComponent(code)}?player_id=${encodeURIComponent(myId)}${ready}`)
+    fetch(`/api/party/rooms/${encodeURIComponent(code)}?player_id=${encodeURIComponent(myId)}`)
       .then((r) => r.json().then((d) => ({ status: r.status, d })))
       .then(({ status, d }) => {
         if (status === 404) { toast("This game has ended."); closeLocally(); return; }
@@ -583,17 +574,19 @@
       })
       .catch(() => { failures++; if (failures === 4) toast("Reconnecting…"); });
   }
-  /* Every screen goes everywhere at once (the room decides; see party._gate_unlocked). A new
-     screen arrives "waiting" with nothing on it; this device says it is ready on its next poll,
-     and once the TV and every device are ready the room names the go moment (go_in), when this
-     device fetches the screen. A reply that left before the go moment never takes it back. */
-  const goneKeys = {};
-  let goTimer = null;
+  // While a TV runs the live stage, a phone shows each new screen once the TV is on it
+  // (the TV reports when it starts that screen's line), so nothing gives the host away.
+  // A TV that never reports is waited for tv_wait_s at most.
+  const tvFirstSeen = {};
+  function tvHolds(r, prev) {
+    if (!r.tv_sync || !prev || prev.match_id !== r.match_id || r.phase === "lobby" || r.phase === "finished") return false;
+    const k = stepKey(r);
+    if (k === stepKey(prev) || r.tv_key === k) return false;
+    const first = tvFirstSeen[k] || (tvFirstSeen[k] = Date.now());
+    return Date.now() - first < (r.tv_wait_s || 8) * 1000;
+  }
   function setRoom(r) {
-    if (r.waiting && goneKeys[stepKey(r)]) return;  // an old reply: this screen has already gone
-    if (!r.waiting) goneKeys[stepKey(r)] = true;
-    clearTimeout(goTimer);
-    if (r.waiting && r.go_in !== null && r.go_in !== undefined) goTimer = setTimeout(poll, r.go_in * 1000 + 30);
+    if (tvHolds(r, room)) return;
     const prev = room;
     room = r;
     if (r.stage_connected) stageEverSeen = true;
@@ -652,7 +645,7 @@
       || (r.phase === "racing" && r.race && !r.race.mine && !r.race.flash);
     const people = choosing ? [] : (r.players || []).map((p) => [p.id, p.score, p.submitted, p.voted, p.connected, p.avatar, p.is_host]);
     const lobbyPeople = r.phase === "lobby" ? (r.players || []).map((p) => [p.id, p.avatar, p.connected, p.is_host, p.name]) : [];
-    return JSON.stringify([r.step || "", !!r.waiting, r.race && r.race.mine ? 1 : 0, raceClosed(), r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
+    return JSON.stringify([r.step || "", r.race && r.race.mine ? 1 : 0, raceClosed(), r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
       people, lobbyPeople, choosing ? [] : (r.options || []).map((o) => [o.option_id, (o.voters || []).length]),
       (r.options || []).map((o) => o.option_id).join(","), activeScreen && activeScreen.id]);
   }
@@ -789,15 +782,6 @@
       ${compact ? "" : `<div class="gw-instr">${esc(pr.instructions || "")}</div>`}</div>`;
   }
 
-  // Between screens, while every device (and the TV, if there is one) gets ready for the next one.
-  function viewGetReady(r) {
-    const what = r.phase === "writing" ? "Round " + r.round + " is coming up" : r.phase === "voting" ? "Time to vote"
-      : r.phase === "racing" ? "Next question coming up" : "Here come the results";
-    return `<div class="gw-panel gw-enter" style="text-align:center;padding:34px 18px">
-      <div style="font-size:54px;line-height:1">${r.stage_connected ? "📺" : "⏳"}</div>
-      <h1 style="margin:12px 0 6px">Get ready!</h1>
-      <p class="gw-note" style="font-weight:800;color:#fff3c4">${what}. ${r.stage_connected ? "Watch the TV…" : "Waiting for everyone…"}</p></div>`;
-  }
   function viewHold(r) {
     // The TV is a video a few seconds behind; nothing here may get ahead of it.
     const what = r.phase === "writing" ? "Round " + r.round + " is coming up" : r.phase === "voting" ? "Time to vote"
@@ -1021,7 +1005,7 @@
   function freshTap() { return touchedAt >= screenAt; }
   function screenOf() {
     if (view !== "room" || !room) return view;
-    return [stepKey(room), !!room.waiting, holding(), raceClosed(), !!room.my_submission, room.my_vote || "", !!(room.race && room.race.mine)].join("|");
+    return [stepKey(room), holding(), raceClosed(), !!room.my_submission, room.my_vote || "", !!(room.race && room.race.mine)].join("|");
   }
   function render(animate) {
     const screen = $("gw-screen");
@@ -1035,7 +1019,6 @@
     let html;
     if (view === "join" || !room) html = viewJoin();
     else if (room.phase === "lobby") html = viewLobby(room);
-    else if (room.waiting) html = viewGetReady(room);
     else if (["writing", "voting", "reveal", "racing"].includes(room.phase) && holding()) html = viewHold(room);
     else if (room.phase === "racing") html = viewRacing(room);
     else if (room.phase === "writing") html = viewWriting(room);

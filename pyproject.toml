@@ -45,5 +45,4 @@ markers = [
     "needs_gpu: needs a CUDA GPU (model load, real inference)",
     "needs_sibling_repo: needs ../SharedLLM checked out (cross-repo contract tests)",
     "slow: takes more than a few seconds",
-    "party_gate: keeps Parable Party's screen gate (devices must report ready) instead of opening it",
 ]

@@ -44,10 +44,6 @@ def _check(code: str, snap: dict, viewer: str | None) -> None:
     assert snap["round"] <= snap["total_rounds"]
     ids = [o["option_id"] for o in snap["options"]]
     assert len(ids) == len(set(ids))
-    if snap.get("waiting") and viewer is not None:  # a screen that has not gone shows nothing of itself
-        assert not snap["options"] and not (snap["prompt"] or {}).get("prompt") and not snap["announce"]
-        assert not snap["race"] or "item" not in snap["race"]
-        return
     if snap["phase"] == "voting":
         assert snap["options"]
     if snap["phase"] == "racing":

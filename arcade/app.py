@@ -1342,7 +1342,7 @@ def api_party_room_state(code: str):
     viewer_id = (request.args.get("player_id") or "").strip()[:64] or None
     try:
         room = party.get_room_state(code, viewer_id=viewer_id, stage=request.args.get("stage") == "1",
-                                    video=request.args.get("video") == "1", ready=request.args.get("ready"))
+                                    video=request.args.get("video") == "1")
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     return jsonify({"success": True, "room": room})
@@ -1518,12 +1518,12 @@ def api_party_room_stream_delay(code: str):
 
 @app.route("/api/party/rooms/<code>/said", methods=["POST"])
 def api_party_room_said(code: str):
-    """The TV stage is ready for a screen, or has finished its line (``{"key", "event": "ready"|"end"}``)."""
+    """The TV stage has started the line for a screen (``{"key", "seconds"}``); phones follow it."""
     body = request.get_json(silent=True) or {}
     try:
-        applied = party.stage_said(code, str(body.get("key") or ""), str(body.get("event") or "ready"))
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
+        applied = party.stage_said(code, str(body.get("key") or ""), float(body.get("seconds") or 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "seconds must be a number"}), 400
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     return jsonify({"success": True, "applied": applied})
