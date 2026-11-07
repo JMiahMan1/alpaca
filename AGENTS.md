@@ -571,6 +571,12 @@ other fails the build.
   for** (`reports_ready`, set by any poll carrying `ready`, even empty): a page left open across a deploy never
   reported and froze the room, showing an empty answer box. Snapshots carry `build` (a hash of the screens' code);
   an open page that sees it change reloads itself. TV timers (reveal steps, chatter) also wait for the go.
+  **Each round's opening line is made before the round starts** (`_prepare_round_unlocked`): during the previous
+  reveal, and for round 1 while the room waits in the lobby (`prepared_schedule` and `prepared_match_id` are kept
+  apart, since the opener is chosen per match and the match on screen still reads `schedule`). Without it the TV sat on
+  "Get ready" ~15 s while the long opening (banter, story, prompt) was made. Race rounds premake their own lines.
+  **The party game page is served `no-cache`** (`meta.party`), never `stale-while-revalidate`: a browser kept an old
+  copy and needed a hard refresh. Single-player family games keep the fast cached launch.
   Party tests count devices as ready via the `party_devices_ready` fixture; `party_gate` tests keep the gate.
   Measured in browsers: TV, phone and desktop showed a question within 70 ms of each other.
 - **Taps belong to the screen they started on** (`freshTap` in the phone game): a finger that went down before the

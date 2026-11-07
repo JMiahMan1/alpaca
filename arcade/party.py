@@ -965,7 +965,9 @@ def _active_contestants_unlocked(room: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: dict[str, Any] | None = None) -> None:
     now = time.time()
-    if round_num == 1 or not room.get("schedule"):
+    if round_num == 1:
+        room["schedule"] = room.pop("prepared_schedule", None) or new_match_schedule()
+    elif not room.get("schedule"):
         room["schedule"] = new_match_schedule()
     kind = round_kind(room, round_num)
     meta = ROUND_META[kind]
@@ -2482,6 +2484,50 @@ def _next_kind(room: dict[str, Any]) -> tuple[int, str] | None:
     return nxt, round_kind(room, nxt)
 
 
+def _prepare_round_unlocked(room: dict[str, Any], round_num: int, kind: str, match_id: str | None = None) -> None:
+    """Choose round ``round_num``'s prompt now and make its opening line in the background.
+
+    The opening (banter, story, prompt) takes the audio server several seconds to make; made
+    while the scores are up (or while the room waits in the lobby), it is ready when the round
+    starts, and every screen goes as soon as the devices are. The opener is fixed now too
+    (``_pick`` keeps it), so the line said is the line made.
+    """
+    if party_race.is_race(kind) or (room.get("next_prompt") or {}).get("round") == round_num:
+        return
+    meta = ROUND_META[kind]
+    item = _select_prompt_unlocked(room, kind)
+    room["next_prompt"] = {"round": round_num, "prompt": item}
+    room.setdefault("lines_told", {})  # the opener chosen through the view below is kept on the room itself
+    view = {**room, "phase": "writing", "round": round_num, "match_id": match_id or room.get("match_id", ""),
+            "current_prompt": {
+        **item, "kind": kind, "context": party_scripture.story_context(item),
+        "announcer": item.get("announcer") or f"Round {round_num}: {meta['title']}! {item['prompt']}"}}
+    line, voice = announce_line(view), str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+    if not line:
+        return
+
+    def work() -> None:
+        with contextlib.suppress(Exception):
+            synthesize_show_line(line, voice=voice)
+
+    threading.Thread(target=work, name=f"party-opening-{room.get('code')}", daemon=True).start()
+
+
+def _prepare_first_round_unlocked(room: dict[str, Any]) -> None:
+    """In the lobby: draw the match's rounds and get round 1's opening ready before Start."""
+    if room.get("prepared_schedule"):
+        return
+    # Kept apart from ``schedule``: the match still on screen (its last reveal) reads that one.
+    room["prepared_schedule"] = new_match_schedule()
+    room.pop("next_prompt", None)
+    # The match id it will start with: the opener is chosen per match, so the line made is the line said.
+    future = f"{room['code']}-{int(time.time())}"
+    if future == room.get("match_id"):
+        future += "b"
+    room["prepared_match_id"] = future
+    _prepare_round_unlocked(room, 1, room["prepared_schedule"][0], match_id=future)
+
+
 def _prefetch_next_prompt_unlocked(room: dict[str, Any]) -> None:
     """Write the next round's AI prompt while the scores are on screen.
 
@@ -2489,7 +2535,12 @@ def _prefetch_next_prompt_unlocked(room: dict[str, Any]) -> None:
     serves every room, so a slow model would freeze every game's clock.
     """
     nxt = _next_kind(room)
-    if not room.get("ai_prompts") or nxt is None or nxt[1] not in AI_PROMPT_KINDS:
+    if nxt is not None and not (room.get("ai_prompts") and nxt[1] in AI_PROMPT_KINDS):
+        _prepare_round_unlocked(room, *nxt)  # a prompt from the bank: get its opening ready now
+        return
+    if nxt is None:
+        if not room.get("ai_prompts"):
+            _prepare_first_round_unlocked(room)  # the match is ending: ready the next one's opener
         return
     code, round_now, (round_next, kind) = room["code"], room.get("round"), nxt
 
@@ -2534,6 +2585,13 @@ def _advance_unlocked(room: dict[str, Any], custom: dict[str, Any] | None = None
             p["round_delta"] = 0
         _ensure_bots_unlocked(room)
         room["match_id"] = f"{room['code']}-{int(time.time())}"
+        ready = room.pop("next_prompt", None) or {}
+        prepared_id = room.pop("prepared_match_id", None)
+        if custom is None and ready.get("round") == 1 and room.get("prepared_schedule") and prepared_id:
+            custom = ready["prompt"]
+            room["match_id"] = prepared_id
+        else:
+            room.pop("prepared_schedule", None)
         _start_round_unlocked(room, 1, custom_prompt=custom)
 
 
@@ -2844,6 +2902,8 @@ def create_or_join_room(
                     players[pid]["avatar"] = _free_avatar_unlocked(room, pid)
 
         room["updated_at"] = now
+        if room["phase"] == "lobby":
+            _prepare_first_round_unlocked(room)  # round 1's opening is made while people join
         _check_auto_advance_unlocked(room)
         return {"player_id": pid, "room": serialize_room(room, viewer_id=pid)}
 
@@ -3014,7 +3074,13 @@ def start_match(code: str, *, use_ai_prompt: bool = False, player_id: str | None
         _ensure_bots_unlocked(room)
         room["match_id"] = f"{clean_code}-{int(time.time())}"
         room["ai_prompts"] = bool(use_ai_prompt)
-        room.pop("next_prompt", None)
+        ready = room.pop("next_prompt", None) or {}
+        prepared_id = room.pop("prepared_match_id", None)
+        if custom is None and ready.get("round") == 1 and room.get("prepared_schedule") and prepared_id:
+            custom = ready["prompt"]  # chosen in the lobby; its opening line is already made
+            room["match_id"] = prepared_id
+        else:
+            room.pop("prepared_schedule", None)
         _start_round_unlocked(room, 1, custom_prompt=custom)
         return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
 

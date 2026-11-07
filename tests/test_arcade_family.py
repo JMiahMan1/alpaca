@@ -375,3 +375,19 @@ def test_a_touch_game_page_is_cached_and_revalidated(env):
     assert again.status_code == 304
     # The rest of the arcade still never caches its pages.
     assert client.get("/play/family-cloud-hop").headers["Cache-Control"] == "no-store"
+
+
+def test_the_party_game_page_is_always_revalidated_never_served_stale(env):
+    """Reported: a browser kept last week's Parable Party page and broke a live game until hard-refreshed."""
+    party = env["src"] / "party-test"
+    party.mkdir()
+    party.joinpath("game.html").write_text(GAME)
+    party.joinpath("meta.json").write_text(json.dumps({"title": "Party", "emoji": "📜", "party": True, "version": 1,
+                                                       "art": {"from": "#111", "to": "#222"}}))
+    env["family"].sync()
+    client = env["client"]
+    first = client.get("/game/family-party-test/index.html")
+    assert first.status_code == 200
+    assert first.headers["Cache-Control"] == "no-cache"  # always asks; never "stale-while-revalidate"
+    again = client.get("/game/family-party-test/index.html", headers={"If-None-Match": first.headers["ETag"]})
+    assert again.status_code == 304  # an unchanged page is still cheap

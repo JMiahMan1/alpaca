@@ -191,3 +191,35 @@ def test_a_page_from_before_ready_reports_is_not_waited_for():
 def test_snapshots_carry_the_build_so_open_pages_reload_after_a_deploy():
     _room()
     assert party.get_room_state("SYNC", viewer_id="a")["build"] == party.BUILD and len(party.BUILD) == 12
+
+
+def test_each_rounds_opening_line_is_made_before_the_round_starts(monkeypatch):
+    """Reported: the TV sat on 'Get ready' ~15 s while the long opening line was made."""
+    made = []
+    monkeypatch.setattr(party, "synthesize_show_line", lambda text, voice=None, **k: made.append(text))
+
+    class Now:  # run the background work at once
+        def __init__(self, target, **k):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(party.threading, "Thread", Now)
+    party.create_or_join_room(code="PREP", player_id="a", name="Ann")
+    room = party._rooms["PREP"]
+    assert room["next_prompt"]["round"] == 1 and made  # made in the lobby
+    chosen = room["next_prompt"]["prompt"]["id"]
+    party.start_match("PREP", player_id="a")
+    assert room["current_prompt"]["id"] == chosen
+    assert party.announce_line(room) in made  # the line said is the line made
+    # Later rounds: made while the previous round's scores are up.
+    room["schedule"][1] = "blank_o_matic"
+    with party._lock:
+        party._prefetch_next_prompt_unlocked(room)
+        nxt = room["next_prompt"]
+        assert nxt["round"] == 2
+        room["phase"] = "reveal"
+        party._advance_unlocked(room)
+    assert room["round"] == 2 and room["current_prompt"]["id"] == nxt["prompt"]["id"]
+    assert party.announce_line(room) in made

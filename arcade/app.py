@@ -485,8 +485,8 @@ def _no_store_static(resp):
     # A route that chose its own caching (the cacheable game pages) keeps it.
     if "Cache-Control" in resp.headers:
         return resp
-    if request.path.startswith("/static/") or resp.mimetype == "text/html":
-        resp.headers["Cache-Control"] = "no-store"
+    if request.path.startswith(("/static/", "/api/party/rooms")) or resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = "no-store"  # a room snapshot is never reused either
     return resp
 
 
@@ -619,7 +619,13 @@ def serve_game(slug):
         # the launch after it ships.
         resp = Response(html, mimetype="text/html")
         resp.set_etag(hashlib.sha256(html.encode("utf-8")).hexdigest()[:32])
-        resp.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=604800"
+        if meta.get("party"):
+            # A live game everyone plays together must never run an old copy: one browser kept a
+            # stale page for a week ("stale-while-revalidate") and broke a game until it was
+            # hard-refreshed. Always revalidated; an unchanged page is a tiny 304.
+            resp.headers["Cache-Control"] = "no-cache"
+        else:
+            resp.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=604800"
         return resp.make_conditional(request)
     return Response(prepare_playable_html(html), mimetype="text/html")
 
