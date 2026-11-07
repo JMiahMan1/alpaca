@@ -126,6 +126,9 @@ ROOM_TTL_SECONDS = 7200
 ROOM_IDLE_SECONDS = 600
 ROOM_EMPTY_GRACE_SECONDS = 120
 STAGE_PRESENCE_SECONDS = 8.0
+#: A live TV that has been reporting is waited for this long between its polls: a 2020 LG polled only every 4-10 s
+#: (measured), and dropping it after 8 s let screens go without it.
+TV_PRESENCE_SECONDS = 25.0
 #: How far behind real time a streamed stage (Roku, plain video TVs) is seen:
 #: 2 s HLS segments, the player's buffer and the render. The stage page reports
 #: when it is the one being streamed (it runs in headless Chromium), and while
@@ -2400,7 +2403,8 @@ def _tv_sync(room: dict[str, Any], now: float | None = None) -> bool:
     """A TV is running the live stage page (not a video of it), so it sets the pace."""
     now = time.time() if now is None else now
     seen = float(room.get("stage_seen_at") or 0.0)
-    return bool(seen and now - seen < STAGE_PRESENCE_SECONDS) and _stage_delay(room, now) == 0.0
+    window = TV_PRESENCE_SECONDS if room.get("tv_reports") else STAGE_PRESENCE_SECONDS
+    return bool(seen and now - seen < window) and _stage_delay(room, now) == 0.0
 
 
 def stage_said(code: str, key: str, event: str = "ready") -> bool:
@@ -2421,6 +2425,7 @@ def stage_said(code: str, key: str, event: str = "ready") -> bool:
             log.info("tv %s %s ignored (room is on %s)", room.get("code"), event, step_key(room).split(":", 1)[-1])
             return False
         log.info("tv %s %s %s", room.get("code"), event, str(key).split(":", 1)[-1])
+        room["tv_reports"] = True
         gate = _gate_unlocked(room, now)
         if event == "ready":
             if not gate or gate["tv_ready"]:
@@ -3052,7 +3057,8 @@ def set_room_music(code: str, on: bool, *, player_id: str | None = None) -> dict
 
 
 def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = False,
-                   video: bool = False, ready: str | None = None) -> dict[str, Any]:
+                   video: bool = False, ready: str | None = None, rtt: str | None = None,
+                   late: str | None = None) -> dict[str, Any]:
     """A room snapshot. ``stage=True`` is the TV stage polling, which marks it live;
     ``video`` says that stage is being rendered into a video stream."""
     now = time.time()
@@ -3063,7 +3069,13 @@ def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = Fal
         if room is None:
             raise LookupError(f"Room '{clean_code}' not found.")
         if stage:
+            if room.get("stage_seen_at") and (rtt or late):
+                # How the TV is doing: its last request's round trip, and how late its poll timer fired.
+                log.info("tv %s poll gap %.1fs rtt %sms late %sms", room.get("code"), now - float(room["stage_seen_at"]),
+                         str(rtt)[:8], str(late)[:8])
             room["stage_seen_at"] = now
+            if rtt is not None and not video:
+                room["tv_reports"] = True  # a current TV page: it reports, so it is waited for
             if video:
                 room["video_stage_seen_at"] = now
         if viewer_id and (room["players"].get(viewer_id) or {}).get("is_bot"):

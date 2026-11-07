@@ -37,6 +37,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file
 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
+    import checkers
     import family
     import party
     import party_music
@@ -44,7 +45,7 @@ try:  # container runs `python arcade/app.py` (script dir on sys.path)
     from curation import is_curated, load_curated
     from mobile import assess_html, prepare_playable_html
 except ImportError:  # tests import `arcade.app` as a package from the repo root
-    from arcade import family, party, party_music
+    from arcade import checkers, family, party, party_music
     from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from arcade.curation import is_curated, load_curated
     from arcade.mobile import assess_html, prepare_playable_html
@@ -1264,6 +1265,94 @@ def api_unpublish(slug):
     return jsonify({"success": True, "removed": slug})
 
 
+# --- Checkers: the two-player board game ---
+#
+# Server-authoritative so both phones agree on the board and a move can never
+# be faked. Rooms live in memory (like party rooms) and expire on their own.
+
+
+@app.route("/api/checkers/rooms", methods=["GET", "POST"])
+def api_checkers_rooms():
+    """List open rooms (GET) or create / join / quick-match one (POST)."""
+    if request.method == "GET":
+        return jsonify({"success": True, "rooms": checkers.list_open_rooms()})
+    body = request.get_json(silent=True) or {}
+    mode = str(body.get("mode") or "friend").strip().lower()
+    name, initials = body.get("name"), body.get("initials")
+    player_id, code = body.get("player_id"), body.get("code")
+    try:
+        if code:
+            out = checkers.join_room(code, name=name, initials=initials, player_id=player_id)
+        elif mode == "quick":
+            out = checkers.quick_match(name=name, initials=initials)
+        else:
+            out = checkers.create_room(mode="ai" if mode == "ai" else "friend", name=name, initials=initials)
+    except KeyError:
+        return jsonify({"success": False, "error": "that game was not found"}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **out})
+
+
+@app.route("/api/checkers/rooms/<code>", methods=["GET"])
+def api_checkers_room(code):
+    room = checkers.get_room(code, request.args.get("player_id"))
+    if room is None:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    return jsonify({"success": True, "room": room})
+
+
+@app.route("/api/checkers/rooms/<code>/move", methods=["POST"])
+def api_checkers_move(code):
+    body = request.get_json(silent=True) or {}
+    try:
+        out = checkers.submit_move(code, body.get("player_id"), body.get("path"))
+    except KeyError:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **out})
+
+
+@app.route("/api/checkers/rooms/<code>/ai", methods=["POST"])
+def api_checkers_ai(code):
+    body = request.get_json(silent=True) or {}
+    try:
+        out = checkers.add_ai(code, body.get("player_id"))
+    except KeyError:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **out})
+
+
+@app.route("/api/checkers/rooms/<code>/reset", methods=["POST"])
+def api_checkers_reset(code):
+    body = request.get_json(silent=True) or {}
+    try:
+        out = checkers.reset_room(code, body.get("player_id"))
+    except KeyError:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    return jsonify({"success": True, **out})
+
+
+@app.route("/api/checkers/rooms/<code>/leave", methods=["POST"])
+def api_checkers_leave(code):
+    body = request.get_json(silent=True) or {}
+    room = checkers.leave_room(code, body.get("player_id"))
+    if room is None:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    return jsonify({"success": True, "room": room})
+
+
 # --- Multiplayer Party Room API ("Parable Party") + TV Cast View ---
 
 
@@ -1348,7 +1437,8 @@ def api_party_room_state(code: str):
     viewer_id = (request.args.get("player_id") or "").strip()[:64] or None
     try:
         room = party.get_room_state(code, viewer_id=viewer_id, stage=request.args.get("stage") == "1",
-                                    video=request.args.get("video") == "1", ready=request.args.get("ready"))
+                                    video=request.args.get("video") == "1", ready=request.args.get("ready"),
+                                    rtt=request.args.get("rtt"), late=request.args.get("late"))
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     return jsonify({"success": True, "room": room})

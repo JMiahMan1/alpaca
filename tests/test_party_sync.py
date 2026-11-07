@@ -255,3 +255,17 @@ def test_a_race_clue_being_read_holds_its_clock_on_every_screen():
     room["race"]["open_at"] = time.time() - 0.01
     snap = party.get_room_state("RACE", viewer_id="a")
     assert not snap["race"]["listening"] and snap["deadline_at"] > time.time()  # now it counts, everywhere
+
+
+def test_a_slow_tv_that_reports_is_still_waited_for():
+    """Measured: a 2020 LG polled only every 4-10 s; at 8 s presence the screens went without it."""
+    room = _room(tv=True)
+    party.get_room_state("SYNC", stage=True, rtt="900", late="4000")  # a current TV page
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    room["stage_seen_at"] -= 12  # twelve seconds since its last poll: slow, not gone
+    party.get_room_state("SYNC", viewer_id="a")
+    assert room["gate"]["go_at"] is None  # still waiting for the TV
+    room["stage_seen_at"] -= party.TV_PRESENCE_SECONDS  # really gone now
+    party.get_room_state("SYNC", viewer_id="a")
+    assert room["gate"]["go_at"] is not None

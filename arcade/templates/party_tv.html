@@ -984,11 +984,16 @@
     clockOffset = best.off;
   }
   function localAt(serverSeconds) { return serverSeconds * 1000 - (clockOffset || 0); }
+  var lastRtt = 0, pollDueAt = 0;
   function poll() {
     if (closedOut) return;
     if (!code) return findRoom();
     var sent = Date.now();
-    xhr("GET", "/api/party/rooms/" + encodeURIComponent(code) + "?stage=1" + (STREAMED ? "&video=1" : ""), null, function (d, status) {
+    // Tell the room how this TV is keeping up: the last round trip, and how late this poll's timer fired.
+    var late = pollDueAt ? Math.max(0, sent - pollDueAt) : 0;
+    xhr("GET", "/api/party/rooms/" + encodeURIComponent(code) + "?stage=1" + (STREAMED ? "&video=1" : "") +
+        "&rtt=" + lastRtt + "&late=" + late, null, function (d, status) {
+      lastRtt = Date.now() - sent;
       if (d && d.success && d.room) {
         failures = 0;
         noteClock(d.room.server_time, sent, Date.now());
@@ -1001,7 +1006,9 @@
         failures++;
         if (failures === 5) $("main").innerHTML = '<div class="center h2 pulse">Reconnecting…</div>';
       }
-      setTimeout(poll, (room && room.poll_ms) || POLL_MS);  // faster while a screen waits to go
+      var wait = (room && room.poll_ms) || POLL_MS;  // faster while a screen waits to go
+      pollDueAt = Date.now() + wait;
+      setTimeout(poll, wait);
     });
   }
 
