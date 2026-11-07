@@ -539,6 +539,17 @@ other fails the build.
 - **A race clue is closed while it is read.** `open_after()` holds answers until the TV has said the clue (its
   measured length, capped at 12 s); phones grey their buttons ("Listen to the question...") and every clue's line
   is made as the race starts so the TV speaks it at once.
+- **The TV stage is a 16:9 board that fits any screen.** Every size in `party_tv.html` is in `rem`, and the page sets
+  the root to a tenth of the largest 16:9 frame the screen holds (`sizeFrame`), so a 4:3 or portrait screen letterboxes
+  instead of reflowing; `body` gets its own small size because the root is a layout unit, not a text size. A screen with
+  more on it than fits is scaled down inside `.fitbox` (`fitMain`), never clipped. Write new sizes in `rem`
+  (`1rem` = `10vh` on a 16:9 screen), never `vh`/`vw`, and no `inset` (Chrome < 87 on webOS ignores it).
+- **Visual check:** a stand-in arcade on :5099 can stage every screen and photograph it at TV and phone sizes
+  (see the session tooling pattern in `scripts/family_games_check.mjs`); long names, a long unbroken word and seven
+  options are the cases that used to clip. Phones give names two lines and keep a round's change under the score.
+- **Duplicate answers share one option** (`_build_voting_options_unlocked` merges by `_normalize_compare`; typing the
+  trap's words counts as playing it). A player who leaves mid-race takes their taps with them, and a race's answer
+  flash is held until its "X got it first" line has been said (`_hold_flash_for_the_line_unlocked`).
 - **Ids on screens are public.** A player's own id authorises their actions, so snapshots carry
   `public_id(room, pid)` only and tell each phone which one is `you`. Host actions must name the host; `/next`
   carries the screen it was tapped on (`expect`) and is ignored if the room has already moved on.

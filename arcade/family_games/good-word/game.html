@@ -29,6 +29,7 @@
   }
   #fk-overlay { display: none !important; }
   #fk-hud [data-fk="pause"], #fk-hud [data-fk="best"] { display: none !important; }
+  #fk-hud .fk-pill small { font-size: 12px; }
   #gw-app {
     position: absolute; inset: 0; z-index: 6; overflow-y: auto; overflow-x: hidden;
     -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y;
@@ -88,7 +89,9 @@
   .gw-p { text-align: center; position: relative; min-width: 0; }
   .gw-p .face { width: 100%; aspect-ratio: 1; border-radius: 50%; border: 3px solid var(--ink); background: var(--paper);
     display: flex; align-items: center; justify-content: center; font-size: 30px; box-shadow: 0 4px 0 var(--ink); }
-  .gw-p .nm { font-size: 15px; font-weight: 900; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Names get two lines before they are cut: "Grandpa Joe" fits on the narrowest phone. */
+  .gw-p .nm { font-size: 15px; font-weight: 900; margin-top: 6px; line-height: 1.15; overflow: hidden; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .gw-p.me .face { background: var(--gold); }
   .gw-p.away { opacity: .4; }
   .gw-p.empty .face { background: transparent; border-style: dashed; border-color: rgba(255,255,255,.35); box-shadow: none; color: rgba(255,255,255,.35); font-size: 22px; }
@@ -118,7 +121,7 @@
   .gw-head { display: flex; align-items: center; gap: 10px; }
   .gw-badge { flex: 1; min-width: 0; font-size: 14px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase;
     background: var(--violet); border: 2.5px solid var(--ink); border-radius: 12px; padding: 8px 10px; box-shadow: 0 4px 0 var(--ink);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    line-height: 1.25; overflow-wrap: anywhere; }
   .gw-badge b { color: var(--gold); }
   .gw-clock { width: 54px; height: 54px; flex: 0 0 54px; position: relative; }
   .gw-clock svg { width: 100%; height: 100%; transform: rotate(-90deg); }
@@ -180,8 +183,12 @@
     border-radius: 14px; padding: 9px 12px; font-weight: 900; }
   .gw-line.me { background: var(--gold); color: var(--ink); border-color: var(--ink); }
   .gw-line .r { width: 26px; text-align: center; } .gw-line .a { font-size: 22px; }
-  .gw-line .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gw-line .d { font-size: 15px; color: var(--teal); } .gw-line.me .d { color: #0d6e58; }
+  .gw-line .n { flex: 1; min-width: 0; overflow: hidden; line-height: 1.15; overflow-wrap: break-word;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  /* The score with this round's change under it: the name keeps the room. */
+  .gw-line .s { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.1; }
+  .gw-line .d { font-size: 14px; color: var(--teal); } .gw-line.me .d { color: #0d6e58; }
+  .gw-line .d.neg { color: #ff9b9b; } .gw-line.me .d.neg { color: #be123c; }
 
   /* --- sheet + toast --- */
   #gw-sheet { position: absolute; inset: 0; z-index: 30; background: rgba(10, 5, 30, .6); display: none; align-items: flex-end; }
@@ -902,7 +909,7 @@
   function boardHtml(r) {
     return '<div class="gw-board">' + seatsOf(r).map((p, i) =>
       `<div class="gw-line ${p.id === r.you ? "me" : ""}"><span class="r">${i + 1}</span><span class="a">${esc(p.avatar)}</span><span class="n">${esc(p.id === r.you ? "You" : p.name)}</span>` +
-      `${p.round_delta ? `<span class="d">${p.round_delta > 0 ? "+" : ""}${p.round_delta}</span>` : ""}<span>${p.score}</span></div>`).join("") + "</div>";
+      `<span class="s">${p.score}${p.round_delta ? `<span class="d${p.round_delta < 0 ? " neg" : ""}">${p.round_delta > 0 ? "+" : ""}${p.round_delta}</span>` : ""}</span></div>`).join("") + "</div>";
   }
   function scoresShown(r) {
     return !!(r && r.phase === "reveal" && r.scores_at_s && (Date.now() - phaseStartLocal) / 1000 >= r.scores_at_s);
