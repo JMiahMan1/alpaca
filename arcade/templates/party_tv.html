@@ -508,9 +508,13 @@
     for (var i = 0; i < (r.players || []).length; i++) if (r.players[i].id === id) return r.players[i];
     return null;
   }
+  // Seconds left; a race clue still being read shows its full time, held, like every phone.
+  function clockLeft() {
+    if (room && room.race && room.race.listening) return room.race.seconds || 0;
+    return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  }
   function clockHtml(small) {
-    return '<div class="clock' + (small ? " sm" : "") + '" id="clock" data-size="' + (small ? "sm" : "") + '">' +
-      Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "</div>";
+    return '<div class="clock' + (small ? " sm" : "") + '" id="clock" data-size="' + (small ? "sm" : "") + '">' + clockLeft() + "</div>";
   }
   function playersHtml(r, flag, doneText, waitText) {
     var list = humans(r);
@@ -931,7 +935,8 @@
     if (r && r.waiting && r.go_in !== null && r.go_in !== undefined) {
       var gone = {}; for (var f in r) gone[f] = r[f];
       gone.waiting = false; gone.go_in = null; gone.phase_age_s = 0;
-      goTimer = setTimeout(function () { apply(gone); }, Math.max(0, r.go_in * 1000));
+      var goIn = r.go_at && clockOffset !== null ? localAt(r.go_at) - Date.now() : r.go_in * 1000;
+      goTimer = setTimeout(function () { apply(gone); }, Math.max(0, goIn));
     }
     var phaseKey = r ? stepKey(r) + (r.waiting ? ":wait" : "") : "";
     if (r && !r.waiting && phaseKey !== lastPhaseKey && lastPhaseKey) {
@@ -953,7 +958,9 @@
       // that far ahead and reaches 0 when the round really ends. The reveal
       // keeps its own pacing.
       var lag = STREAMED && r.phase !== "reveal" ? (r.stage_delay_s || 0) : 0;
-      deadline = Date.now() + Math.max(0, (r.seconds_remaining || 0) - lag) * 1000;
+      deadline = r.deadline_at && clockOffset !== null && !r.waiting
+        ? localAt(r.deadline_at) - lag * 1000  // the same instant on every screen
+        : Date.now() + Math.max(0, (r.seconds_remaining || 0) - lag) * 1000;
     }
     var sig = signature(r);
     if (sig !== lastSig) {
@@ -963,12 +970,28 @@
     }
   }
 
+  /* The server's clock, as seen from here: offset = server time - local time, taken from the poll
+     with the shortest round trip among the recent ones (the network's delay then hardly counts).
+     Deadlines and the go moment come as server times, so this TV counts down to the same instant
+     as every phone, however slow its own network is. */
+  var clockSamples = [], clockOffset = null;
+  function noteClock(serverTime, sent, recv) {
+    if (!serverTime) return;
+    clockSamples.push({ rtt: recv - sent, off: serverTime * 1000 - (sent + recv) / 2 });
+    if (clockSamples.length > 30) clockSamples.shift();
+    var best = clockSamples[0];
+    for (var i = 1; i < clockSamples.length; i++) if (clockSamples[i].rtt < best.rtt) best = clockSamples[i];
+    clockOffset = best.off;
+  }
+  function localAt(serverSeconds) { return serverSeconds * 1000 - (clockOffset || 0); }
   function poll() {
     if (closedOut) return;
     if (!code) return findRoom();
+    var sent = Date.now();
     xhr("GET", "/api/party/rooms/" + encodeURIComponent(code) + "?stage=1" + (STREAMED ? "&video=1" : ""), null, function (d, status) {
       if (d && d.success && d.room) {
         failures = 0;
+        noteClock(d.room.server_time, sent, Date.now());
         apply(d.room);
       } else if (status === 404) {
         // The room ended. A pinned TV waits for its code; an unpinned one moves on.
@@ -1016,7 +1039,7 @@
     if (ni && deadline) ni.textContent = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     var c = document.getElementById("clock");
     if (!c || !deadline) return;
-    var left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    var left = clockLeft();
     if (left <= 5 && left > 0 && left !== lastTick && room && (room.phase === "writing" || room.phase === "voting" || (room.phase === "racing" && room.race && !room.race.flash))) playSfx("tick");
     lastTick = left;
     c.textContent = left;

@@ -223,3 +223,35 @@ def test_each_rounds_opening_line_is_made_before_the_round_starts(monkeypatch):
         party._advance_unlocked(room)
     assert room["round"] == 2 and room["current_prompt"]["id"] == nxt["prompt"]["id"]
     assert party.announce_line(room) in made
+
+
+def test_every_screen_counts_down_to_the_same_server_moment():
+    """Reported: the TV's countdown ran behind the phones (it counted from when its slow reply arrived)."""
+    room = _room()
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    _go(room)
+    snap = party.get_room_state("SYNC", viewer_id="a")
+    assert abs(snap["server_time"] - time.time()) < 1
+    assert snap["deadline_at"] == pytest.approx(room["phase_deadline"], abs=0.01)
+    stage = party.get_room_state("SYNC", stage=True)
+    assert stage["deadline_at"] == snap["deadline_at"]  # one instant for every screen
+
+
+def test_a_race_clue_being_read_holds_its_clock_on_every_screen():
+    party.create_or_join_room(code="RACE", player_id="a", name="Ann")
+    room = party._rooms["RACE"]
+    room["schedule"] = ["blank_o_matic", "quick_draw", *["blank_o_matic"] * 5]
+    room["stage_seen_at"] = time.time()
+    with party._lock:
+        party._start_round_unlocked(room, 2)
+    key = party.step_key(room)
+    _ready("RACE", "a")
+    party.stage_said("RACE", key, "ready")
+    _go(room)
+    snap = party.get_room_state("RACE", viewer_id="a")
+    assert snap["race"]["listening"] and snap["race"]["seconds"] == 15.0 and snap["deadline_at"] is None
+    party.stage_said("RACE", key, "end")
+    room["race"]["open_at"] = time.time() - 0.01
+    snap = party.get_room_state("RACE", viewer_id="a")
+    assert not snap["race"]["listening"] and snap["deadline_at"] > time.time()  # now it counts, everywhere

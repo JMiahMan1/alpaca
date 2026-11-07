@@ -571,8 +571,20 @@
     // Faster while a screen waits to go, so every device picks it up together.
     pollTimer = setTimeout(pollLoop, (room && room.poll_ms) || 1000);
   }
+  // The server's clock as seen from this device (see the TV page): offset from the fastest recent
+  // poll, so deadlines and openings land on the same instant on every screen.
+  const clockSamples = [];
+  let clockOffset = null;
+  function noteClock(serverTime, sent, recv) {
+    if (!serverTime) return;
+    clockSamples.push({ rtt: recv - sent, off: serverTime * 1000 - (sent + recv) / 2 });
+    if (clockSamples.length > 30) clockSamples.shift();
+    clockOffset = clockSamples.reduce((a, b) => (b.rtt < a.rtt ? b : a)).off;
+  }
+  function localAt(serverSeconds) { return serverSeconds * 1000 - (clockOffset || 0); }
   function poll() {
     if (!code) return;
+    const sent = Date.now();
     // "ready": the screen this device is on (it has the newest one the room sent it); sent from the
     // first poll, empty until there is one, so the room knows this device reports.
     const ready = "&ready=" + (room ? encodeURIComponent(stepKey(room)) : "");
@@ -580,7 +592,7 @@
       .then((r) => r.json().then((d) => ({ status: r.status, d })))
       .then(({ status, d }) => {
         if (status === 404) { toast("This game has ended."); closeLocally(); return; }
-        if (d && d.success && d.room) { failures = 0; setRoom(d.room); }
+        if (d && d.success && d.room) { failures = 0; noteClock(d.room.server_time, sent, Date.now()); setRoom(d.room); }
       })
       .catch(() => { failures++; if (failures === 4) toast("Reconnecting…"); });
   }
@@ -597,12 +609,17 @@
     if (r.waiting && goneKeys[stepKey(r)]) return;  // an old reply: this screen has already gone
     if (!r.waiting) goneKeys[stepKey(r)] = true;
     clearTimeout(goTimer);
-    if (r.waiting && r.go_in !== null && r.go_in !== undefined) goTimer = setTimeout(poll, r.go_in * 1000 + 30);
+    if (r.waiting && r.go_in !== null && r.go_in !== undefined) {
+      const goIn = r.go_at && clockOffset !== null ? localAt(r.go_at) - Date.now() : r.go_in * 1000;
+      goTimer = setTimeout(poll, Math.max(0, goIn) + 30);  // fetch the screen the moment it goes
+    }
     const prev = room;
     room = r;
     if (r.stage_connected) stageEverSeen = true;
     if (["writing", "voting", "reveal", "racing"].includes(r.phase)) {
-      deadline = Date.now() + (r.seconds_remaining || 0) * 1000;
+      deadline = r.deadline_at && clockOffset !== null && !r.waiting
+        ? localAt(r.deadline_at)  // the same instant on every screen
+        : Date.now() + (r.seconds_remaining || 0) * 1000;
       const hold = Math.max(0, (r.stage_delay_s || 0) - (r.phase_age_s || 0));
       holdUntil = hold > 0.2 ? Date.now() + hold * 1000 : 0;
       if (holdUntil) {
@@ -615,10 +632,10 @@
     const moved = !prev || prev.phase !== r.phase || prev.round !== r.round || prev.match_id !== r.match_id;
     if (r.phase === "racing" && r.race && !r.race.flash) {
       const opensIn = Number(r.race.opens_in || 0);
-      const at = opensIn > 0 ? Date.now() + opensIn * 1000 : 0;
+      const at = opensIn > 0 ? (r.race.open_at && clockOffset !== null ? localAt(r.race.open_at) : Date.now() + opensIn * 1000) : 0;
       if (!raceOpenAt || Math.abs(at - raceOpenAt) > 600 || !at) raceOpenAt = at;
       clearTimeout(setRoom.openTimer);
-      if (at) setRoom.openTimer = setTimeout(() => { raceOpenAt = 0; tap(); lastSig = ""; render(); }, opensIn * 1000 + 30);
+      if (at) setRoom.openTimer = setTimeout(() => { raceOpenAt = 0; tap(); lastSig = ""; render(); }, Math.max(0, raceOpenAt - Date.now()) + 30);
     }
     if (r.phase === "racing" && (!prev || stepKey(prev) !== stepKey(r))) {
       if (!r.race || !r.race.flash) raceUi = { key: stepKey(r), sel: -1, map: {}, order: [] };
@@ -773,11 +790,16 @@
     return h;
   }
 
+  // Seconds left; a race clue still being read shows its full time, held, like the TV.
+  function clockLeft() {
+    if (room && room.race && room.race.listening) return room.race.seconds || 0;
+    return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  }
   function header(r) {
     const pr = r.prompt || {};
     const x2 = pr.multiplier > 1 ? ` <b>· ${pr.multiplier}X</b>` : "";
     const total = Math.max(1, (r.phase_seconds || (r.phase === "writing" ? 55 : r.phase === "voting" ? 35 : 14)) - (r.stage_delay_s || 0));
-    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    const left = clockLeft();
     const frac = Math.max(0, Math.min(1, left / total));
     return `<div class="gw-head"><div class="gw-badge">Round ${r.round}/${r.total_rounds} · ${esc(pr.icon || "📜")} ${esc(pr.badge || pr.title || "")}${x2}</div>
       <div class="gw-clock ${left <= 10 ? "low" : ""}" id="gw-clock" data-total="${total}"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17" fill="#1b0f3b" stroke="rgba(255,255,255,.15)" stroke-width="5"/>
@@ -1160,7 +1182,7 @@
   setInterval(() => {
     const n = $("gw-left"), arc = $("gw-arc"), clock = $("gw-clock");
     if (!n || !arc || !clock || !deadline) return;
-    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    const left = clockLeft();
     const total = Number(clock.getAttribute("data-total")) || 55;
     n.textContent = left;
     arc.setAttribute("stroke-dashoffset", (106.8 * (1 - Math.min(1, left / total))).toFixed(1));

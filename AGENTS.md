@@ -577,6 +577,12 @@ other fails the build.
   "Get ready" ~15 s while the long opening (banter, story, prompt) was made. Race rounds premake their own lines.
   **The party game page is served `no-cache`** (`meta.party`), never `stale-while-revalidate`: a browser kept an old
   copy and needed a hard refresh. Single-player family games keep the fast cached launch.
+  **Every screen counts down to the same server moment**: snapshots carry `server_time`, `deadline_at`, `go_at`
+  and a race's `open_at`; each page keeps its offset from the poll with the shortest round trip (`noteClock`) and
+  counts to `localAt(...)`. Counting from "seconds left" on arrival made a slow TV run a second or more behind. A race
+  clue being read sends `listening` and its full `seconds`, held still on every screen until answers open.
+  Gate events and TV reports are logged (`arcade.party`: "go ...", "tv ready/end ...") so a live game can be
+  followed with `docker logs alpaca-arcade`.
   Party tests count devices as ready via the `party_devices_ready` fixture; `party_gate` tests keep the gate.
   Measured in browsers: TV, phone and desktop showed a question within 70 ms of each other.
 - **Taps belong to the screen they started on** (`freshTap` in the phone game): a finger that went down before the

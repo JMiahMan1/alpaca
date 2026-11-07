@@ -36,6 +36,7 @@ import collections
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -46,6 +47,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+
+#: Pacing events (a screen going, the TV's reports), so a live game can be followed from the logs.
+log = logging.getLogger("arcade.party")
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s party %(message)s"))
+    log.addHandler(_handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 try:
     from arcade import announcer
@@ -1106,6 +1116,7 @@ def _tick_race_unlocked(room: dict[str, Any], now: float) -> None:
     if not race:
         return
     if race.get("await_tv") and not _tv_sync(room, now):  # the TV went away: nobody waits for it
+        log.info("tv gone %s: not waiting for it (%s)", room.get("code"), race.get("await_tv"))
         if race.pop("await_tv") == "flash":
             race["flash_until"] = now
         else:
@@ -1328,8 +1339,12 @@ def _public_race(room: dict[str, Any], viewer_id: str | None, now: float) -> dic
         "item": party_race.public_item(item, reveal=flash),
         "answered": [public_id(room, pid) for pid in answers],
         "mine": {"choice": mine["choice"], "correct": mine["correct"] if flash else None} if mine else None,
-        # Seconds until answers open (the TV is still reading the clue).
+        # Seconds until answers open (the TV is still reading the clue), and the moment on the server's clock.
         "opens_in": round(max(0.0, float(race.get("open_at") or 0) - now), 2) if not flash else 0.0,
+        "open_at": round(float(race.get("open_at") or 0), 3) if not flash else 0.0,
+        # Still being read: every screen holds the clue's full time still until answers open.
+        "listening": bool(not flash and (race.get("await_tv") == "clue" or now < float(race.get("open_at") or 0))),
+        "seconds": party_race.ITEM_SECONDS.get(race["kind"], 0),
     }
     if flash:
         res = party_race.item_result(race, idx)
@@ -2300,7 +2315,7 @@ def _gate_unlocked(room: dict[str, Any], now: float) -> dict[str, Any] | None:
     key = step_key(room)
     gate = room.get("gate")
     if not gate or gate.get("key") != key:
-        gate = room["gate"] = {"key": key, "tv_ready": False, "line_ready": False, "go_at": None}
+        gate = room["gate"] = {"key": key, "tv_ready": False, "line_ready": False, "go_at": None, "opened_at": now}
         _make_line_for_the_gate(room, key)
     if gate["go_at"] is None:
         tv_ok = gate["tv_ready"] or not _tv_sync(room, now)
@@ -2309,6 +2324,9 @@ def _gate_unlocked(room: dict[str, Any], now: float) -> dict[str, Any] | None:
         if tv_ok and line_ok and devices_ok:
             gate["go_at"] = now + GO_LEAD_S
             _start_from_unlocked(room, gate["go_at"])
+            log.info("go %s %s after %.2fs (tv=%s devices=%s)", room.get("code"), key.split(":", 1)[-1],
+                     now - float(gate.get("opened_at") or now), _tv_sync(room, now),
+                     [p.get("name") for p in _ready_devices(room, now)])
     return gate
 
 
@@ -2400,7 +2418,9 @@ def stage_said(code: str, key: str, event: str = "ready") -> bool:
         if event not in ("ready", "end"):
             raise ValueError("event must be ready or end")
         if not _tv_sync(room, now) or str(key) != step_key(room):
+            log.info("tv %s %s ignored (room is on %s)", room.get("code"), event, step_key(room).split(":", 1)[-1])
             return False
+        log.info("tv %s %s %s", room.get("code"), event, str(key).split(":", 1)[-1])
         gate = _gate_unlocked(room, now)
         if event == "ready":
             if not gate or gate["tv_ready"]:
@@ -2755,6 +2775,13 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None, *, stage:
         "poll_ms": int((CLIENT_FAST_POLL_S if waiting else CLIENT_POLL_S) * 1000),
         # The server's build: an open page that sees it change reloads itself (old pages broke games).
         "build": BUILD,
+        # The server's clock, and the moments that matter on it. Each screen measures its offset
+        # from server_time (best of its fastest round trips) and counts down to these, so a slow
+        # TV or phone shows the same second as a fast one ("seconds left" arrives late on slow links).
+        "server_time": round(now, 3),
+        "deadline_at": round(float(room.get("phase_deadline") or 0), 3)
+        if phase in timed and not (race and not race.get("flash_until") and race.get("await_tv") == "clue") else None,
+        "go_at": round(float(gate["go_at"]), 3) if gate and gate.get("go_at") else None,
         "announce": announce_line(room),
         "chatter": chatter_for(room),
         # A dad joke for the lobby, a new one every LOBBY_JOKE_SECONDS while people join.
@@ -2770,7 +2797,8 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None, *, stage:
         out["prompt"] = {k: v for k, v in (public_prompt or {}).items() if k in keep} if public_prompt else None
         out["options"], out["reveal"], out["chatter"], out["announce"] = [], None, [], ""
         if out.get("race"):
-            out["race"] = {k: out["race"][k] for k in ("kind", "index", "count")} | {"flash": False, "opens_in": 0.0}
+            out["race"] = {k: out["race"][k] for k in ("kind", "index", "count")} | {"flash": False, "opens_in": 0.0,
+                                                                                  "open_at": 0.0}
     return out
 
 
