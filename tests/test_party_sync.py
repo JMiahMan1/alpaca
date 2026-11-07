@@ -46,6 +46,13 @@ def _ready(code, pid):
     return party.get_room_state(code, viewer_id=pid, ready=party.step_key(room))
 
 
+def _asked(room):
+    """The host has finished asking: writing / voting is open and its clock is running."""
+    room.pop("await_tv_open", None)
+    room["open_at"] = time.time() - 0.01
+    room["phase_deadline"] = room["open_at"] + float(room.get("clock_s") or 0)
+
+
 def _go(room):
     """Let the go moment pass."""
     gate = room["gate"]
@@ -67,17 +74,19 @@ def test_without_a_tv_no_phone_sees_the_question_until_every_phone_is_ready():
     _go(room)
     snap = party.get_room_state("SYNC", viewer_id="a")
     assert not snap["waiting"] and snap["prompt"]["prompt"]
+    _asked(room)
     party.submit_answer("SYNC", player_id="a", text="now")
 
 
 def test_the_clock_starts_when_the_screen_goes():
     room = _room()
-    length = room["phase_deadline"] - room["phase_started_at"]
     time.sleep(0.05)
     _ready("SYNC", "a")
     _ready("SYNC", "b")
     assert room["phase_started_at"] == room["gate"]["go_at"]
-    assert room["phase_deadline"] - room["phase_started_at"] == pytest.approx(length)
+    # The writing clock is the whole WRITE_SECONDS, counted from when the host has asked the question.
+    assert room["open_at"] >= room["gate"]["go_at"]
+    assert room["phase_deadline"] - room["open_at"] == pytest.approx(party.WRITE_SECONDS)
 
 
 def test_a_device_that_has_gone_is_not_waited_for():
@@ -231,6 +240,7 @@ def test_every_screen_counts_down_to_the_same_server_moment():
     _ready("SYNC", "a")
     _ready("SYNC", "b")
     _go(room)
+    _asked(room)
     snap = party.get_room_state("SYNC", viewer_id="a")
     assert abs(snap["server_time"] - time.time()) < 1
     assert snap["deadline_at"] == pytest.approx(room["phase_deadline"], abs=0.01)
@@ -301,3 +311,36 @@ def test_every_round_shows_its_scoreboard_even_when_the_host_skips():
     room["phase_started_at"] -= party.SCOREBOARD_MIN_SECONDS + 1  # the scores have been seen
     party.advance_phase("SYNC", player_id="a", expect={"phase": "reveal", "round": rnd})
     assert room["round"] == rnd + 1 or room["phase"] != "reveal"
+
+
+def test_nobody_writes_or_votes_until_the_host_has_asked_the_question():
+    """Reported: the box, the Send button and the clock came up while the host was still asking."""
+    room = _room(tv=True)
+    party.get_room_state("SYNC", stage=True, rtt="50", late="0")
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    key = party.step_key(room)
+    party.stage_said("SYNC", key, "ready")
+    _go(room)
+    snap = party.get_room_state("SYNC", viewer_id="a")
+    assert snap["listening"] and snap["clock_s"] == party.WRITE_SECONDS and snap["deadline_at"] is None
+    assert snap["prompt"]["prompt"]  # the question is on screen while it is read
+    with pytest.raises(ValueError, match="Listen"):
+        party.submit_answer("SYNC", player_id="a", text="too soon")
+    t0 = time.time()
+    assert party.stage_said("SYNC", key, "end")  # the host has finished asking
+    assert room["open_at"] == pytest.approx(t0 + party.OPEN_LEAD_S, abs=0.2)
+    assert room["phase_deadline"] == pytest.approx(room["open_at"] + party.WRITE_SECONDS)  # the whole clock, from then
+    room["open_at"] = time.time() - 0.01
+    party.submit_answer("SYNC", player_id="a", text="now")
+
+
+def test_without_a_tv_writing_opens_when_the_line_has_been_said():
+    room = _room()
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    go = room["gate"]["go_at"]
+    line = party.announce_line(room)
+    expected = go + min(party.PROMPT_READ_MAX_S, party.speech_seconds(line, room.get("voice")))
+    assert room["open_at"] == pytest.approx(expected, abs=0.05)
+    assert room["phase_deadline"] == pytest.approx(room["open_at"] + party.WRITE_SECONDS)

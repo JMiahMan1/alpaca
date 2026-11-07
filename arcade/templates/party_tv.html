@@ -536,6 +536,12 @@
   // Seconds left; a race clue still being read shows its full time, held, like every phone.
   function clockLeft() {
     if (room && room.race && room.race.listening) return room.race.seconds || 0;
+    if (room && room.listening) {
+      // Held at full while the host asks; from the shared opening moment it counts down everywhere at once.
+      var at = room.open_at && clockOffset !== null ? localAt(room.open_at) : 0;
+      if (!at || Date.now() < at) return room.clock_s || 0;
+      return Math.max(0, Math.ceil((at + (room.clock_s || 0) * 1000 - Date.now()) / 1000));
+    }
     return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
   }
   function clockHtml(small) {

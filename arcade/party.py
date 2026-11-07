@@ -1047,6 +1047,8 @@ def _start_round_unlocked(room: dict[str, Any], round_num: int, custom_prompt: d
     read = min(PROMPT_READ_MAX_S, max(PROMPT_READ_SECONDS, speech_seconds(
         announce_line(room), str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)) + 1.0))
     room["phase_deadline"] = now + WRITE_SECONDS + read + _stage_delay(room)
+    room["clock_s"], room["open_at"] = float(WRITE_SECONDS), 0.0  # set when the screen goes (_start_from_unlocked)
+    room.pop("await_tv_open", None)
     room["submissions"] = submissions
     room["options"] = []
     room["votes"] = {}
@@ -1487,6 +1489,8 @@ def _build_voting_options_unlocked(room: dict[str, Any]) -> None:
     room["phase"] = "voting"
     room["phase_started_at"] = now
     room["phase_deadline"] = now + VOTE_SECONDS + _stage_delay(room)
+    room["clock_s"], room["open_at"] = float(VOTE_SECONDS), 0.0
+    room.pop("await_tv_open", None)
     room["updated_at"] = now
 
 
@@ -2375,10 +2379,40 @@ def _start_from_unlocked(room: dict[str, Any], go_at: float) -> None:
     shift = go_at - float(room.get("phase_started_at") or go_at)
     room["phase_started_at"] = go_at
     room["phase_deadline"] = float(room.get("phase_deadline") or go_at) + shift
+    if room.get("phase") in ("writing", "voting"):
+        # Nobody types or votes, and no clock runs, until the host has finished asking the question:
+        # with a TV, until it says so (stage_said "end"); without one, for as long as the line takes.
+        if _tv_sync(room, go_at):
+            room["await_tv_open"] = True
+            _open_phase_unlocked(room, go_at + AWAITING_TV_S)
+        else:
+            line = announce_line(room)
+            voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+            _open_phase_unlocked(room, go_at + (min(PROMPT_READ_MAX_S, speech_seconds(line, voice)) if line else 0.0))
+        return
     for sub in (room.get("submissions") or {}).values():  # the scribes write in the same window
         if sub.get("submitted_at") and room["players"].get(sub.get("player_id"), {}).get("is_bot"):
             sub["submitted_at"] = float(sub["submitted_at"]) + shift
     room["updated_at"] = go_at
+
+
+def _open_phase_unlocked(room: dict[str, Any], at: float) -> None:
+    """Writing or voting opens at ``at``: the box and the ballot unlock and the clock starts then."""
+    clock = float(room.get("clock_s") or 0)
+    room["open_at"] = at
+    room["phase_deadline"] = at + clock
+    for sub in (room.get("submissions") or {}).values():  # the scribes write in the same window as everyone
+        if room["players"].get(sub.get("player_id"), {}).get("is_bot"):
+            sub["submitted_at"] = at + random.uniform(6.0, max(6.5, clock * 0.8))
+    for bot_id in list(room.get("bot_vote_at") or {}):
+        room["bot_vote_at"][bot_id] = at + random.uniform(3.0, max(3.5, clock * 0.6))
+    room["updated_at"] = time.time()
+
+
+def phase_open(room: dict[str, Any], now: float | None = None) -> bool:
+    """Writing or voting has opened (the host has finished asking)."""
+    now = time.time() if now is None else now
+    return now >= float(room.get("open_at") or 0) - 0.3
 
 
 def _make_line_for_the_gate(room: dict[str, Any], key: str) -> None:
@@ -2446,6 +2480,12 @@ def stage_said(code: str, key: str, event: str = "ready") -> bool:
             _gate_unlocked(room, now)
         else:
             race = room.get("race") if room.get("phase") == "racing" else None
+            if room.get("await_tv_open") and room.get("phase") in ("writing", "voting") and gate and gate["go_at"]:
+                room.pop("await_tv_open", None)
+                _open_phase_unlocked(room, max(now, float(gate["go_at"])) + OPEN_LEAD_S)  # the same moment everywhere
+                log.info("open %s %s", room.get("code"), str(key).split(":", 1)[-1])
+                room["updated_at"] = now
+                return True
             if not race or not race.get("await_tv") or (gate and gate["go_at"] is None):
                 return False
             if race["await_tv"] == "clue" and not race.get("flash_until"):
@@ -2485,6 +2525,9 @@ def _check_auto_advance_unlocked(room: dict[str, Any]) -> None:
     now = time.time()
     if gated(room, now):
         return  # nobody can see this screen yet: its clock has not started (it starts when it goes)
+    if room.get("await_tv_open") and not _tv_sync(room, now):  # the TV went away: open without it
+        room.pop("await_tv_open", None)
+        _open_phase_unlocked(room, now + OPEN_LEAD_S)
     phase = room.get("phase")
     deadline = float(room.get("phase_deadline") or 0)
 
@@ -2799,7 +2842,12 @@ def serialize_room(room: dict[str, Any], viewer_id: str | None = None, *, stage:
         # TV or phone shows the same second as a fast one ("seconds left" arrives late on slow links).
         "server_time": round(now, 3),
         "deadline_at": round(float(room.get("phase_deadline") or 0), 3)
-        if phase in timed and not (race and not race.get("flash_until") and race.get("await_tv") == "clue") else None,
+        if phase in timed and not (race and not race.get("flash_until") and race.get("await_tv") == "clue")
+        and not (phase in ("writing", "voting") and not phase_open(room, now)) else None,
+        # Writing and voting stay locked, their clock held at full, until the host has asked the question.
+        "listening": phase in ("writing", "voting") and not phase_open(room, now),
+        "open_at": round(float(room.get("open_at") or 0), 3) if phase in ("writing", "voting") else 0.0,
+        "clock_s": float(room.get("clock_s") or 0) if phase in ("writing", "voting") else 0.0,
         "go_at": round(float(gate["go_at"]), 3) if gate and gate.get("go_at") else None,
         "announce": announce_line(room),
         "chatter": chatter_for(room),
@@ -3197,6 +3245,8 @@ def submit_answer(
             raise ValueError("This round's writing phase has already closed.")
         if gated(room):
             raise ValueError("Hold on: the question isn't up yet.")
+        if not phase_open(room):
+            raise ValueError("Listen to the question first.")
         if pid not in room["players"]:
             raise ValueError("Join the room before submitting an answer.")
         if room["players"][pid].get("is_bot"):
@@ -3246,6 +3296,8 @@ def submit_vote(code: str, *, player_id: str, option_id: str) -> dict[str, Any]:
             raise ValueError("Voting is not open right now.")
         if gated(room):
             raise ValueError("Hold on: voting isn't up yet.")
+        if not phase_open(room):
+            raise ValueError("Listen to the host first.")
         if pid not in room["players"]:
             raise ValueError("Join the room to vote.")
         if room["players"][pid].get("is_bot"):

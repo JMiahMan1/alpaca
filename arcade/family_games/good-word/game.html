@@ -613,6 +613,11 @@
     if (r.waiting && goneKeys[stepKey(r)]) return;  // an old reply: this screen has already gone
     if (!r.waiting) goneKeys[stepKey(r)] = true;
     clearTimeout(goTimer);
+    clearTimeout(setRoom.listenTimer);
+    if (r.listening && r.open_at && clockOffset !== null) {
+      const wait = localAt(r.open_at) - Date.now();
+      if (wait < 3000000) setRoom.listenTimer = setTimeout(() => { lastSig = ""; render(); }, Math.max(0, wait) + 30);
+    }
     if (r.waiting && r.go_in !== null && r.go_in !== undefined) {
       const goIn = r.go_at && clockOffset !== null ? localAt(r.go_at) - Date.now() : r.go_in * 1000;
       goTimer = setTimeout(poll, Math.max(0, goIn) + 30);  // fetch the screen the moment it goes
@@ -677,7 +682,7 @@
       || (r.phase === "racing" && r.race && !r.race.mine && !r.race.flash);
     const people = choosing ? [] : (r.players || []).map((p) => [p.id, p.score, p.submitted, p.voted, p.connected, p.avatar, p.is_host]);
     const lobbyPeople = r.phase === "lobby" ? (r.players || []).map((p) => [p.id, p.avatar, p.connected, p.is_host, p.name]) : [];
-    return JSON.stringify([r.step || "", !!r.waiting, r.race && r.race.mine ? 1 : 0, raceClosed(), r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
+    return JSON.stringify([r.step || "", !!r.waiting, stillListening(r), r.race && r.race.mine ? 1 : 0, raceClosed(), r.code, r.phase, r.round, r.match_id, r.you_are_host, r.stage_connected, r.stage_delay_s, r.music, r.joke && r.joke.setup, holding(), r.my_vote, !!r.my_submission, r.voice,
       people, lobbyPeople, choosing ? [] : (r.options || []).map((o) => [o.option_id, (o.voters || []).length]),
       (r.options || []).map((o) => o.option_id).join(","), activeScreen && activeScreen.id]);
   }
@@ -797,7 +802,19 @@
   // Seconds left; a race clue still being read shows its full time, held, like the TV.
   function clockLeft() {
     if (room && room.race && room.race.listening) return room.race.seconds || 0;
+    if (room && room.listening) {
+      // Held at full while the host asks; from the shared opening moment it counts down everywhere at once.
+      const at = room.open_at && clockOffset !== null ? localAt(room.open_at) : 0;
+      if (!at || Date.now() < at) return room.clock_s || 0;
+      return Math.max(0, Math.ceil((at + (room.clock_s || 0) * 1000 - Date.now()) / 1000));
+    }
     return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  }
+  // Writing and voting unlock when the host has finished asking (the shared opening moment).
+  function stillListening(r) {
+    if (!r || !r.listening) return false;
+    const at = r.open_at && clockOffset !== null ? localAt(r.open_at) : 0;
+    return !at || Date.now() < at;
   }
   function header(r) {
     const pr = r.prompt || {};
@@ -850,13 +867,15 @@
         <p style="margin-top:10px">${waiting.length ? "Waiting on " + waiting.map((p) => esc(p.name)).join(", ") : "Everyone's in!"}</p></div>` + playersGrid(r, "submitted");
     }
     const isBluff = r.prompt && r.prompt.kind === "truth_or_bluff";
+    const hold = stillListening(r);
+    const off = busy || hold ? "disabled" : "";
     return h + promptCard(r) + `<div class="gw-card">
-        <label class="gw-label" for="gw-answer">${isBluff ? "Your believable FAKE answer" : "Your answer"}</label>
-        <textarea id="gw-answer" class="gw-field" maxlength="120" rows="3" enterkeyhint="done" autocapitalize="sentences" placeholder="${isBluff ? "Make it sound true…" : "Be funny. Be wise. Be quick."}">${esc(draft)}</textarea>
+        <label class="gw-label" for="gw-answer">${hold ? "🎧 Listen to the question…" : isBluff ? "Your believable FAKE answer" : "Your answer"}</label>
+        <textarea id="gw-answer" class="gw-field" maxlength="120" rows="3" enterkeyhint="done" autocapitalize="sentences" ${hold ? "disabled" : ""} placeholder="${hold ? "You can write when the host is done." : isBluff ? "Make it sound true…" : "Be funny. Be wise. Be quick."}">${esc(draft)}</textarea>
         <div class="gw-count" id="gw-count">${draft.length}/120</div>
-        <div style="margin-top:8px"><button type="button" class="gw-btn coral" id="gw-send" ${busy ? "disabled" : ""}>Send it!</button></div>
+        <div style="margin-top:8px"><button type="button" class="gw-btn coral" id="gw-send" ${off}>Send it!</button></div>
       </div>
-      <button type="button" class="gw-btn ghost" id="gw-decoy" ${busy ? "disabled" : ""}>🪤 Stuck? Play the Scribe's Decoy (+500 per vote)</button>`;
+      <button type="button" class="gw-btn ghost" id="gw-decoy" ${off}>🪤 Stuck? Play the Scribe's Decoy (+500 per vote)</button>`;
   }
 
   /* ---------- race rounds ---------- */
@@ -943,11 +962,11 @@
       return h + `<div class="gw-hero gw-enter"><div class="big">🗳️</div><h1>Vote locked!</h1>
         <p>${mine ? "“" + esc(mine.text) + "”" : ""}</p><p style="margin-top:10px">${r.stage_connected ? "Watch the TV for the reveal." : "Hang tight for the reveal."}</p></div>` + playersGrid(r, "voted");
     }
-    h += promptCard(r, true) + `<div class="gw-tag" style="color:#fff;font-size:20px;font-weight:900">${isBluff ? "Which one is the TRUTH?" : "Tap your favourite!"}</div><div class="gw-opts">`;
+    h += promptCard(r, true) + `<div class="gw-tag" style="color:#fff;font-size:20px;font-weight:900">${stillListening(r) ? "🎧 Listen to the host…" : isBluff ? "Which one is the TRUTH?" : "Tap your favourite!"}</div><div class="gw-opts">`;
     (r.options || []).forEach((o) => {
       h += o.is_mine
         ? `<button type="button" class="gw-opt mine" disabled>${esc(o.text)}<span class="meta">✍️ Yours</span></button>`
-        : `<button type="button" class="gw-opt" data-vote="${esc(o.option_id)}">${esc(o.text)}</button>`;
+        : `<button type="button" class="gw-opt" data-vote="${esc(o.option_id)}" ${stillListening(r) ? "disabled" : ""}>${esc(o.text)}</button>`;
     });
     return h + "</div>";
   }
@@ -1059,7 +1078,7 @@
   function freshTap() { return touchedAt >= screenAt; }
   function screenOf() {
     if (view !== "room" || !room) return view;
-    return [stepKey(room), !!room.waiting, holding(), raceClosed(), !!room.my_submission, room.my_vote || "", !!(room.race && room.race.mine)].join("|");
+    return [stepKey(room), !!room.waiting, stillListening(room), holding(), raceClosed(), !!room.my_submission, room.my_vote || "", !!(room.race && room.race.mine)].join("|");
   }
   function render(animate) {
     const screen = $("gw-screen");

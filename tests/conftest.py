@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+import time
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,10 @@ def party_devices_ready(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     monkeypatch.setattr(party, "_make_line_for_the_gate",
                         lambda room, key: room["gate"].__setitem__("line_ready", True))
     monkeypatch.setattr(party, "GO_LEAD_S", 0.0)
+    # ...and writing/voting open as the screen goes (the host "asks" instantly).
+    original_open = party._open_phase_unlocked
+    monkeypatch.setattr(party, "_open_phase_unlocked",
+                        lambda room, at: (room.pop("await_tv_open", None), original_open(room, time.time()))[-1])
 
 
 @pytest.fixture(autouse=True)
