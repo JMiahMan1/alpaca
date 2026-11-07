@@ -1,5 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
+<script>
+  (function () {  // before first paint: TV browsers get the light look
+    var q = /[?&]lite=([01])/.exec(location.search), tv = /Web0S|webOS|Tizen|SMART-TV|SmartTV|NetCast|HbbTV/i.test(navigator.userAgent || "");
+    if (q ? q[1] === "1" : tv) document.documentElement.className += " lite";
+  })();
+</script>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -138,6 +144,11 @@
       linear-gradient(#000 0 0) left/.22rem 100% no-repeat, linear-gradient(#000 0 0) right/.22rem 100% no-repeat;
     animation: bulbs 1.1s steps(2) infinite; }
   @keyframes bulbs { 0% { background-position: 0 0; } 100% { background-position: .16rem .16rem; } }
+  /* TV browsers (a 2020 LG measured its poll timer firing 2 s late, its replies handled 3 s late): the blinking
+     masked bulbs repaint the whole screen and the conic rays are costly to repaint, so a TV gets lit, still bulbs,
+     no pulsing and a plain gradient. Everything else is the same. ?lite=0 / ?lite=1 override. */
+  html.lite body { background: radial-gradient(ellipse at 50% 35%, #d946ef 0%, #7c3aed 48%, #3b0d7a 100%); }
+  html.lite .marquee, html.lite .pulse, html.lite .clock.low { animation: none; }
   #stage { z-index: 1; }
   .brand { font-size: .42rem; color: #fff; padding: .06rem .284rem; background: #ff6b6b; border: .045rem solid var(--cardink);
     border-radius: .16rem; box-shadow: .06rem .07rem 0 var(--cardink); transform: rotate(-2deg); display: inline-block; }
