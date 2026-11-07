@@ -1098,6 +1098,50 @@ def _tick_race_unlocked(room: dict[str, Any], now: float) -> None:
         if not race.get("flash_until"):  # a new clue: closed while it is read out
             _open_clue_after_reading_unlocked(room, now)
             room["phase_deadline"] = race["deadline"]
+        else:  # the answer flash: long enough for the host to say who got it
+            _hold_flash_for_the_line_unlocked(room, now)
+
+
+#: The flash line is made when the flash starts (it names the winner), so the TV
+#: hears it a poll and a synthesis late; the flash allows for that.
+FLASH_LINE_SLACK_S = 2.2
+FLASH_MAX_S = 9.0
+
+
+def _hold_flash_for_the_line_unlocked(room: dict[str, Any], now: float) -> None:
+    """Keep the answer on screen until "It's X! Name got it first." has been said.
+
+    The next clue's line is ready at once and would cut this one off mid-sentence.
+    The estimate holds the flash now; the measured clip (made in the background)
+    settles it.
+    """
+    race = room["race"]
+    voice = str(room.get("voice") or DEFAULT_ANNOUNCER_VOICE)
+    line = race_line(room)
+    start = float(race.get("flash_at") or now) + _stage_delay(room, now)
+
+    def hold(seconds: float) -> None:
+        until = start + min(FLASH_MAX_S, seconds + FLASH_LINE_SLACK_S)
+        if until > float(race.get("flash_until") or 0):
+            race["flash_until"] = until
+            room["phase_deadline"] = until
+
+    hold(speech_seconds(line, voice))
+    idx, flash_at, code = race.get("index"), race.get("flash_at"), room.get("code")
+
+    def work() -> None:
+        with contextlib.suppress(Exception):
+            synthesize_show_line(line, voice=voice)
+        seconds = _spoken_seconds.get((voice, line))
+        if not seconds:
+            return
+        with _lock:
+            r = _rooms.get(str(code))
+            rr = (r or {}).get("race") or {}
+            if r and r.get("phase") == "racing" and rr.get("index") == idx and rr.get("flash_at") == flash_at:
+                hold(seconds)
+
+    threading.Thread(target=work, name=f"party-flash-line-{code}", daemon=True).start()
 
 
 #: Longest a clue stays closed while it is read (a long intro and clue still leave time to answer).
@@ -1209,7 +1253,7 @@ def race_answer(code: str, player_id: str, item: Any, choice: Any) -> dict[str, 
         p["last_seen"] = now
         try:
             index = int(item)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Which question?") from exc
         party_race.answer(room["race"], player_id, index, choice, now)
         _tick_race_unlocked(room, now)
@@ -1277,16 +1321,24 @@ def _build_voting_options_unlocked(room: dict[str, Any]) -> None:
 
     options: list[dict[str, Any]] = []
     decoy_authors: list[str] = []
+    by_text: dict[str, dict[str, Any]] = {}
+    decoy_key = _normalize_compare(prompt.get("decoy") or "")
 
     for pid, sub in submissions.items():
-        if sub.get("is_decoy"):
+        sub_text = sub["text"]
+        key = _normalize_compare(sub_text)
+        if sub.get("is_decoy") or (key and key == decoy_key):
             # Only someone who chose the decoy is its author. A seat that never
             # answered is not: its phone would call the trap "Yours" and it
-            # could never fall for it.
+            # could never fall for it. Typing the trap's own words counts as choosing it.
             if not sub.get("auto_filled"):
                 decoy_authors.append(pid)
             continue
-        sub_text = sub["text"]
+        if key and key in by_text:
+            # Great minds: two people wrote the same thing. One option on the
+            # ballot, and both share its votes (two identical buttons split them).
+            by_text[key]["authors"].append(pid)
+            continue
         opt_hash = hashlib.sha1(f"{pid}:{sub_text}".encode()).hexdigest()[:8]
         options.append(
             {
@@ -1297,6 +1349,8 @@ def _build_voting_options_unlocked(room: dict[str, Any]) -> None:
                 "voters": [],
             }
         )
+        if key:
+            by_text[key] = options[-1]
 
     # Always include the Scribe's Trap / Decoy option (credits any players who chose Decoy,
     # or acts as the pure House Trap if no one chose it).
@@ -2357,7 +2411,7 @@ def create_or_join_room(
 
     with _lock:
         existing = (_rooms.get(clean_code) or {}).get("players", {}).get(pid) if clean_code else None
-        if existing is not None and existing.get("is_bot"):
+        if (existing is not None and existing.get("is_bot")) or pid.startswith("bot-"):
             raise PermissionError("That seat belongs to an AI scribe.")
         _prune_expired_unlocked(now)
         room = _rooms.get(clean_code) if clean_code else None
@@ -2467,6 +2521,12 @@ def leave_room(code: str, *, player_id: str) -> dict[str, Any]:
         if (room["players"].get(pid) or {}).get("is_bot"):
             raise PermissionError("That is an AI scribe's seat.")
         room["players"].pop(pid, None)
+        race = room.get("race")
+        if room.get("phase") == "racing" and race:
+            # Their taps go with them: a leaver must not keep a place in the
+            # finishing order and push the next player down to second.
+            for answers in race.get("answers") or []:
+                answers.pop(pid, None)
         if room.get("phase") == "writing":
             (room.get("submissions") or {}).pop(pid, None)
         if room.get("phase") == "voting":
@@ -2545,6 +2605,8 @@ def get_room_state(code: str, viewer_id: str | None = None, *, stage: bool = Fal
             room["stage_seen_at"] = now
             if video:
                 room["video_stage_seen_at"] = now
+        if viewer_id and (room["players"].get(viewer_id) or {}).get("is_bot"):
+            viewer_id = None  # nobody sees the room as a scribe (it would show which answer is theirs)
         _touch_unlocked(room, viewer_id, now)
         _check_auto_advance_unlocked(room)
         return serialize_room(room, viewer_id=viewer_id)

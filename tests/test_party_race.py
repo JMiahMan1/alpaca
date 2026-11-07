@@ -244,3 +244,47 @@ def test_a_race_result_waits_for_the_drumroll_to_finish():
         drum = party.announce_line(room)  # the drumroll that opens the reveal
         assert drum
         assert party.reveal_result_at(room) >= party.speech_seconds(drum, room.get("voice")) + party.SPEECH_START_SLACK_S
+
+
+def test_a_player_who_leaves_mid_race_gives_up_their_place():
+    """Reported in review: a leaver stayed first in the order, so the next player scored as second."""
+    room = _room_in_race("quick_draw")
+    item = room["race"]["items"][0]
+    room["race"]["open_at"] = 0
+    party.race_answer("RACE", "p0", 0, item["answer"])
+    party.race_answer("RACE", "p1", 0, item["answer"])
+    party.leave_room("RACE", player_id="p0")
+    snap = party.serialize_room(room, "p1")
+    assert room["race"]["answers"][0].get("p0") is None
+    assert snap["race"]["mine"]["choice"] == item["answer"]
+    with party._lock:
+        for _ in range(40):
+            if room["phase"] != "racing":
+                break
+            race = room["race"]
+            party._tick_race_unlocked(room, (race["flash_until"] or race["deadline"] + 2) + 0.01)
+    firsts = [e for e in room["reveal"].get("events", []) if e.get("type") == "race_first" and e.get("item") == 0]
+    assert room["players"]["p1"]["score"] >= 1000 or any(e.get("player_id") == "p1" for e in firsts)
+
+
+def test_a_huge_question_number_is_a_bad_request_not_a_crash():
+    room = _room_in_race("quick_draw", humans=1)
+    room["race"]["open_at"] = 0
+    with pytest.raises(ValueError):
+        party.race_answer("RACE", "p0", float("inf"), 0)
+
+
+def test_the_answer_flash_lasts_as_long_as_its_line(monkeypatch):
+    """Reported in review: the next clue's line cut "It's X! Name got it first." off mid-sentence."""
+    monkeypatch.setattr(party, "synthesize_show_line", lambda *a, **k: None)
+    room = _room_in_race("quick_draw")
+    room["race"]["open_at"] = 0
+    snap = party.race_answer("RACE", "p0", 0, room["race"]["items"][0]["answer"])
+    for pid in ("p1", "p2"):
+        snap = party.race_answer("RACE", pid, 0, room["race"]["items"][0]["answer"])
+    race = room["race"]
+    assert snap["race"]["flash"]
+    line = party.race_line(room)
+    needed = party.speech_seconds(line, room["voice"]) + party.FLASH_LINE_SLACK_S
+    assert race["flash_until"] - race["flash_at"] >= min(party.FLASH_MAX_S, needed) - 0.01
+    assert room["phase_deadline"] == race["flash_until"]

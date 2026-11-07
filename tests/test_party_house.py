@@ -83,3 +83,34 @@ def test_house_extra_skips_what_a_player_already_wrote():
     for _ in range(20):
         assert party._house_extra_answer(prompt, subs) == "Fresh one"
     assert party._house_extra_answer({"decoy": "D", "bot_answers": []}, {}) == ""
+
+
+def test_the_same_answer_twice_is_one_option_shared_by_both():
+    """Reported in review: two people typing "Fish" put two identical buttons on the ballot."""
+    for i in range(3):
+        party.create_or_join_room(code="DUPE", player_id=f"d{i}", name=f"D{i}")
+    party.start_match("DUPE", player_id="d0")
+    party.submit_answer("DUPE", player_id="d0", text="Fish")
+    party.submit_answer("DUPE", player_id="d1", text="fish!")
+    party.submit_answer("DUPE", player_id="d2", text="Loaves")
+    room = party._rooms["DUPE"]
+    with party._lock:
+        if room["phase"] == "writing":
+            party._advance_unlocked(room)
+    fish = [o for o in room["options"] if party._normalize_compare(o["text"]) == "fish"]
+    assert len(fish) == 1 and sorted(fish[0]["authors"]) == ["d0", "d1"]
+    party.submit_vote("DUPE", player_id="d2", option_id=fish[0]["option_id"])
+    with party._lock:
+        if room["phase"] == "voting":
+            party._advance_unlocked(room)
+    assert room["players"]["d0"]["score"] > 0 and room["players"]["d1"]["score"] > 0
+
+
+def test_nobody_can_view_the_room_as_a_scribe():
+    party.create_or_join_room(code="PEEK", player_id="k0", name="K0")
+    party.start_match("PEEK", player_id="k0")
+    bot = next(p for p in party._rooms["PEEK"]["players"].values() if p.get("is_bot"))
+    snap = party.get_room_state("PEEK", viewer_id=bot["id"])
+    assert not snap.get("you") and not snap.get("my_submission")
+    with pytest.raises(PermissionError):
+        party.create_or_join_room(code="PEEK2", player_id="bot-apollos", name="Sneaky")
