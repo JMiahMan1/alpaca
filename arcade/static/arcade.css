@@ -286,6 +286,10 @@ body > * { position: relative; z-index: 1; }
   @supports (height: 1dvh) {
     .screen iframe { height: 62dvh; }
   }
+  body.touch-native .screen iframe { height: 82vh; min-height: 380px; }
+  @supports (height: 1dvh) {
+    body.touch-native .screen iframe { height: 82dvh; }
+  }
   .pane-block { padding: 0.85rem; }
   .bench-stars { font-size: 1.25rem; }
   .score-form { gap: 0.5rem; }

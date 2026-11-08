@@ -130,6 +130,17 @@
   let pollTimer = 0;
   let lastTurnToast = null;
 
+  const deviceId = (() => {
+    let d = storeGet("ck:device");
+    if (!d) {
+      d = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      storeSet("ck:device", d);
+    }
+    return d;
+  })();
+
   const insets = () => {
     const cs = getComputedStyle(safeEl);
     return {
@@ -143,7 +154,9 @@
   /* ---------------- tiny API client ---------------- */
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}));
-    return res.json().catch(() => ({ success: false, error: "network error" }));
+    const data = await res.json().catch(() => ({ success: false, error: "network error" }));
+    data.http = res.status;
+    return data;
   }
   const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
 
@@ -255,7 +268,7 @@
   async function createRoom(mode) {
     const name = readName();
     showLobby(`<div class="ck-art">🔴</div><h1>Starting…</h1><div class="ck-spinner"></div>`);
-    const res = await post("/api/checkers/rooms", { mode, name, initials: initialsFor(name) });
+    const res = await post("/api/checkers/rooms", { mode, name, initials: initialsFor(name), device_id: deviceId });
     if (!res.success || !res.room) { showError(res.error || "Could not start a game"); showStart(); return; }
     enterRoom(res.player_id, res.room);
   }
@@ -263,7 +276,7 @@
   async function quickMatch() {
     const name = readName();
     showLobby(`<div class="ck-art">🎲</div><h1>Finding a game…</h1><div class="ck-spinner"></div>`);
-    const res = await post("/api/checkers/rooms", { mode: "quick", name, initials: initialsFor(name) });
+    const res = await post("/api/checkers/rooms", { mode: "quick", name, initials: initialsFor(name), device_id: deviceId });
     if (!res.success || !res.room) { showError(res.error || "Could not find a game"); showStart(); return; }
     enterRoom(res.player_id, res.room);
   }
@@ -273,7 +286,7 @@
     if (clean.length < 3) { showError("Enter the code your friend shared"); return; }
     const name = readName();
     const storedPid = storeGet(`ck:room:${clean}`);
-    const res = await post("/api/checkers/rooms", { code: clean, name, initials: initialsFor(name), player_id: storedPid });
+    const res = await post("/api/checkers/rooms", { code: clean, name, initials: initialsFor(name), player_id: storedPid, device_id: deviceId });
     if (!res.success || !res.room) { showError(res.error || "That game was not found"); return; }
     enterRoom(res.player_id, res.room);
   }
@@ -286,6 +299,7 @@
 
   async function leaveToStart(roomCode) {
     try { await post(`/api/checkers/rooms/${roomCode}/leave`, { player_id: pid }); } catch (e) { /* ignore */ }
+    storeRemove(`ck:room:${roomCode}`);
     stopPolling();
     code = null; pid = null; myColor = null; state = null; selected = null; anim = null;
     showStart();
@@ -320,7 +334,17 @@
   async function poll() {
     if (!code) return;
     const res = await api(`/api/checkers/rooms/${code}?player_id=${encodeURIComponent(pid || "")}`);
-    if (res.success && res.room) applyState(res.room);
+    if (res.success && res.room) { applyState(res.room); return; }
+    if (res.http === 404) {
+      // The room is gone (it expired, or the arcade restarted). Never sit on a
+      // dead board: forget the room and go back to the front door.
+      const gone = code;
+      stopPolling();
+      code = null; pid = null; myColor = null; state = null; selected = null; anim = null;
+      storeRemove(`ck:room:${gone}`);
+      showStart();
+      kit.toast("That game was not found - it may have ended", "#ffd0d0");
+    }
   }
 
   /* ---------------- apply a snapshot ---------------- */
@@ -345,6 +369,10 @@
       const cEl = lobbyEl.querySelector('[data-ck="code"]');
       if (cEl) cEl.textContent = room.code;
       else showWaiting(room);
+    } else {
+      // finished: the result card belongs to the kit, so never leave the lobby
+      // (e.g. the "Joining…" screen) covering it.
+      hideLobby();
     }
 
     // a fresh move: animate it
@@ -760,9 +788,9 @@
   view = kit.canvas((v) => { view = v; computeBoard(); });
   kit.run(update, render);
 
-  // Recover an in-progress room for this device, or one from the shared link.
-  // With no link the kit shows its title/how-to card; the lobby opens when the
-  // player taps Play (see onStart).
+  // Recover the room from a shared link (the only room the device may not hold
+  // anymore is the one this page knows about). With no link the kit shows its
+  // title/how-to card; the lobby opens when the player taps Play (see onStart).
   if (launchRoom) {
     const saved = storeGet(`ck:room:${launchRoom}`);
     joinRoomFromLink(launchRoom, saved);
@@ -772,10 +800,11 @@
     const name = playerName;
     showLobby(`<div class="ck-art">🔴</div><h1>Joining…</h1><div class="ck-spinner"></div>`);
     const res = await post("/api/checkers/rooms", {
-      code: roomCode, name, initials: initialsFor(name), player_id: savedPid,
+      code: roomCode, name, initials: initialsFor(name), player_id: savedPid, device_id: deviceId,
     });
     if (!res.success || !res.room) {
       showJoin();
+      showError(res.error || "That game was not found");
       return;
     }
     enterRoom(res.player_id, res.room);
@@ -795,6 +824,7 @@
   }
   function storeGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
   function storeSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* blocked */ } }
+  function storeRemove(k) { try { localStorage.removeItem(k); } catch (_) { /* blocked */ } }
   async function copy(text) {
     try { await navigator.clipboard.writeText(text); return true; }
     catch (_) {

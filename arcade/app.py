@@ -1296,13 +1296,23 @@ def api_checkers_rooms():
     mode = str(body.get("mode") or "friend").strip().lower()
     name, initials = body.get("name"), body.get("initials")
     player_id, code = body.get("player_id"), body.get("code")
+    # A device marker (client-generated id, never returned in a snapshot) so the
+    # server can tell that two seats belong to the same phone and not pair it
+    # with itself.
+    device_id = body.get("device_id")
     try:
         if code:
-            out = checkers.join_room(code, name=name, initials=initials, player_id=player_id)
+            out = checkers.join_room(code, name=name, initials=initials, player_id=player_id, device_id=device_id)
         elif mode == "quick":
-            out = checkers.quick_match(name=name, initials=initials)
+            out = checkers.quick_match(name=name, initials=initials, player_id=player_id, device_id=device_id)
         else:
-            out = checkers.create_room(mode="ai" if mode == "ai" else "friend", name=name, initials=initials)
+            out = checkers.create_room(
+                mode="ai" if mode == "ai" else "friend",
+                name=name,
+                initials=initials,
+                player_id=player_id,
+                device_id=device_id,
+            )
     except KeyError:
         return jsonify({"success": False, "error": "that game was not found"}), 404
     except PermissionError as exc:

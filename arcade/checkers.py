@@ -256,7 +256,8 @@ def evaluate(board: list[int], color: str) -> int:
             if (p > 0 and r == 7) or (p < 0 and r == 0):
                 v += 8
         else:
-            v += 4  # a king near the centre is worth a touch more
+            if 2 <= r <= 5 and 2 <= c <= 5:
+                v += 4  # a king in the centre is worth a touch more
         total += v if p > 0 else -v
     return total * sign
 
@@ -305,19 +306,24 @@ def choose_move(
     for depth in range(1, max_depth + 1):
         alpha = -10**9
         scored: list[tuple[int, dict[str, Any]]] = []
+        complete = True
         for m in _ordered(moves):
             val = -_search(apply_move(board, m), other(color), depth - 1, -10**9, -alpha)
             scored.append((val, m))
             if val > alpha:
                 alpha = val
             if time.monotonic() > deadline:
+                complete = False
                 break
-        if scored:
+        # A depth that ran out of time only searched part of the move list, so
+        # its "best" is not comparable with the previous depth's: keep the move
+        # the last finished depth chose.
+        if scored and (complete or depth == 1):
             top = max(v for v, _ in scored)
             # Nudge among near-equal moves so the computer is not a metronome.
             pool = [m for v, m in scored if v >= top - 1]
             best_move = picker.choice(pool)
-        if time.monotonic() > deadline:
+        if not complete or time.monotonic() > deadline:
             break
     return best_move
 
@@ -338,6 +344,15 @@ def _clean_initials(raw: Any) -> str:
     return re.sub(r"[^A-Za-z0-9]", "", str(raw or ""))[:3].upper() or "YOU"
 
 
+def _clean_device(raw: Any) -> str:
+    """A device's own marker, so a person is never matched with their own room.
+
+    It identifies the phone/browser, not the player, and is never sent back out
+    in a snapshot.
+    """
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(raw or ""))[:64]
+
+
 def _pick_code_unlocked() -> str:
     # Prefer a friendly word from Parable Party's list (the household already
     # reads codes like those out loud), then fall back to a random 4-char code.
@@ -351,15 +366,19 @@ def _pick_code_unlocked() -> str:
     return f"CK{random.randint(100, 999)}"
 
 
-def _new_player(name: Any, initials: Any) -> dict[str, Any]:
+def _new_player(name: Any, initials: Any, device_id: Any = None) -> dict[str, Any]:
     now = time.time()
-    return {
+    player: dict[str, Any] = {
         "id": secrets.token_hex(16),
         "name": _clean_text(name) or "Player",
         "initials": _clean_initials(initials),
         "joined_at": now,
         "last_seen": now,
     }
+    marker = _clean_device(device_id)
+    if marker:
+        player["device_id"] = marker
+    return player
 
 
 def _ai_player() -> dict[str, Any]:
@@ -382,6 +401,25 @@ def _find_seat(room: dict[str, Any], player_id: str | None) -> str | None:
         if p and p.get("id") == player_id:
             return color
     return None
+
+
+def _human_present(room: dict[str, Any], color: str, now: float | None = None) -> bool:
+    """Whether a person still polls the seat ``color`` (the computer always does)."""
+    p = room["seats"].get(color)
+    if not p or p.get("is_ai"):
+        return False
+    now = time.time() if now is None else now
+    return now - float(p.get("last_seen") or 0) < PRESENCE_SECONDS
+
+
+def _device_owns(room: dict[str, Any], device_id: str) -> bool:
+    """Whether any human seat in the room was taken from this device."""
+    if not device_id:
+        return False
+    return any(
+        p and not p.get("is_ai") and p.get("device_id") == device_id
+        for p in room["seats"].values()
+    )
 
 
 def _public_id(room: dict[str, Any], player: dict[str, Any] | None) -> str | None:
@@ -441,6 +479,7 @@ def _finish(room: dict[str, Any], winner: str | None, result: str) -> None:
 
 def _advance(room: dict[str, Any], move: dict[str, Any], by: str) -> None:
     """Apply ``move`` for ``by`` and settle turn, draws and the result."""
+    was_man = abs(room["board"][move["path"][0]]) == MAN
     room["board"] = apply_move(room["board"], move)
     room["history"].append(
         {"by": by, "path": list(move["path"]), "captures": list(move["captures"]),
@@ -451,7 +490,10 @@ def _advance(room: dict[str, Any], move: dict[str, Any], by: str) -> None:
         "captures": list(move["captures"]),
         "by": by,
     }
-    if move["captures"] or move.get("promotes"):
+    # The forty-move rule counts plies with no capture and no man moving: a man
+    # walking forward (or a piece being crowned) is progress, a king shuffling is
+    # not. Only the latter can exhaust the count.
+    if move["captures"] or move.get("promotes") or was_man:
         room["no_progress"] = 0
     else:
         room["no_progress"] += 1
@@ -515,28 +557,54 @@ def _touch(room: dict[str, Any], color: str | None) -> None:
 
 def create_room(
     *, mode: str = "friend", name: Any = None, initials: Any = None,
-    player_id: Any = None,
+    player_id: Any = None, device_id: Any = None,
 ) -> dict[str, Any]:
     """Open a room: ``friend`` waits for a second person, ``ai`` seats the computer."""
     with _lock:
         _prune_unlocked(time.time())
-        creator = _new_player(name, initials)
+        creator = _new_player(name, initials, device_id)
         room = _new_room(_pick_code_unlocked(), creator, ai=(mode == "ai"))
         _rooms[room["code"]] = room
         return {"player_id": creator["id"], "room": snapshot_unlocked(room, creator["id"])}
 
 
-def quick_match(*, name: Any = None, initials: Any = None) -> dict[str, Any]:
-    """Join the oldest room waiting for a person, or open one if none exists."""
+def quick_match(
+    *, name: Any = None, initials: Any = None, player_id: Any = None, device_id: Any = None,
+) -> dict[str, Any]:
+    """Join the oldest room waiting for a person, or open one if none exists.
+
+    A person is never paired with a room they already hold: their own seat is
+    handed back (so a second tap is a no-op rather than a game against yourself),
+    and a room this device opened is never joined as its second seat.
+    """
+    marker = _clean_device(device_id)
     with _lock:
         now = time.time()
         _prune_unlocked(now)
+        if player_id:
+            for room in _rooms.values():
+                seat = _find_seat(room, player_id)
+                if seat:
+                    _touch(room, seat)
+                    room["updated_at"] = now
+                    return {"player_id": player_id, "room": snapshot_unlocked(room, player_id)}
+        for room in _rooms.values():
+            if room["status"] != "waiting" or not _device_owns(room, marker):
+                continue
+            owner = room["seats"].get(RED)
+            if owner and not owner.get("is_ai"):
+                _touch(room, RED)
+                room["updated_at"] = now
+                return {"player_id": owner["id"], "room": snapshot_unlocked(room, owner["id"])}
         waiting = [
             r for r in _rooms.values()
-            if r["status"] == "waiting" and r["seats"].get(BLACK) is None
+            if r["status"] == "waiting"
+            and r["seats"].get(BLACK) is None
+            and _human_present(r, RED, now)
+            and not _device_owns(r, marker)
         ]
         waiting.sort(key=lambda r: float(r.get("created_at") or 0))
-        player = _new_player(name, initials)
+        player = _new_player(name, initials, marker)
         if waiting:
             room = waiting[0]
             room["seats"][BLACK] = player
@@ -550,6 +618,7 @@ def quick_match(*, name: Any = None, initials: Any = None) -> dict[str, Any]:
 
 def join_room(
     code: Any, *, name: Any = None, initials: Any = None, player_id: Any = None,
+    device_id: Any = None,
 ) -> dict[str, Any]:
     """Take the free seat in a room, or rejoin one this player already holds."""
     clean = _clean_code(code)
@@ -563,10 +632,14 @@ def join_room(
             _touch(room, seat)
             room["updated_at"] = time.time()
             return {"player_id": player_id, "room": snapshot_unlocked(room, player_id)}
+        if room["status"] == "finished":
+            # Seating a newcomer here used to flip the room back to "playing"
+            # with the old winner still on it: a game that cannot be played.
+            raise ValueError("that game is over")
         free = next((c for c in (BLACK, RED) if room["seats"].get(c) is None), None)
         if free is None:
             raise ValueError("room is full")
-        player = _new_player(name, initials)
+        player = _new_player(name, initials, device_id)
         room["seats"][free] = player
         room["updated_at"] = time.time()
         if all(room["seats"].get(c) is not None for c in COLORS):
@@ -683,9 +756,13 @@ def leave_room(code: Any, player_id: Any) -> dict[str, Any] | None:
             return snapshot_unlocked(room, player_id)
         if room["status"] == "playing":
             _finish(room, other(seat), "forfeit")
-            room["seats"][seat] = None
-        else:
-            room["seats"][seat] = None
+        room["seats"][seat] = None
+        if not any(p and not p.get("is_ai") for p in room["seats"].values()):
+            # Nobody is left to come back to (a host cancelled a room, or the
+            # last person left a game the computer was in): forget it, so a
+            # quick match can never pair someone into an empty seat.
+            _rooms.pop(clean, None)
+            return None
         room["updated_at"] = time.time()
         return snapshot_unlocked(room, player_id)
 
@@ -698,6 +775,10 @@ def list_open_rooms() -> list[dict[str, Any]]:
         out = []
         for room in _rooms.values():
             if room["status"] != "waiting" or room["seats"].get(BLACK) is not None:
+                continue
+            if not _human_present(room, RED, now):
+                # A room whose host stopped polling is abandoned, not "open":
+                # listing it strands the next person into a seat nobody will move.
                 continue
             host = room["seats"].get(RED)
             out.append(

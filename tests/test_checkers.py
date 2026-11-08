@@ -491,3 +491,116 @@ def test_the_lobby_swaps_in_the_waiting_screen():
     assert 'else showWaiting(room);' in html
     assert 'room.invite_url || shareUrl(room.code)' in html
     assert 'room.qr_url' in html
+
+
+# --------------------------------------------------------------------------- #
+# The bug fixes: self-pairing, hostless rooms, finished rooms
+# --------------------------------------------------------------------------- #
+def test_quick_match_hands_the_same_room_back_to_the_same_device():
+    """A second tap from one device used to return that device's own room as a
+    seat on BOTH sides. It must hand back the first room instead."""
+    a = checkers.quick_match(name="One", device_id="dev-a")
+    b = checkers.quick_match(name="One", device_id="dev-a")
+    assert b["room"]["code"] == a["room"]["code"]
+    assert b["room"]["status"] == "waiting"
+    assert b["player_id"] == a["player_id"]  # the device keeps its own seat, not a new one
+
+
+def test_quick_match_from_another_device_joins_the_waiting_room():
+    a = checkers.quick_match(name="One", device_id="dev-a")
+    b = checkers.quick_match(name="Two", device_id="dev-b")
+    assert b["room"]["code"] == a["room"]["code"]
+    assert b["room"]["status"] == "playing"
+    assert b["room"]["you"]["color"] == "black"
+
+
+def test_quick_match_never_hands_back_a_room_owned_by_the_same_device():
+    own = checkers.quick_match(name="One", device_id="dev-a")
+    found = checkers.quick_match(name="Two", device_id="dev-a")
+    assert found["room"]["code"] == own["room"]["code"]
+    assert found["room"]["status"] == "waiting"
+
+
+def test_quick_match_skips_a_waiting_room_whose_host_stopped_polling():
+    created = checkers.create_room(mode="friend", name="Ann", device_id="dev-a")
+    code = created["room"]["code"]
+    with checkers._lock:
+        checkers._rooms[code]["seats"][RED]["last_seen"] = time.time() - checkers.PRESENCE_SECONDS - 1
+    b = checkers.quick_match(name="Two", device_id="dev-b")
+    assert b["room"]["code"] != code
+    assert b["room"]["status"] == "waiting"
+    listed = checkers.list_open_rooms()
+    assert [r["code"] for r in listed] == [b["room"]["code"]]  # Ann's stale room is gone
+
+
+def test_the_last_person_to_leave_drops_the_room():
+    out = checkers.create_room(mode="friend", name="Ann", device_id="dev-a")
+    code = out["room"]["code"]
+    assert checkers.leave_room(code, out["player_id"]) is None
+    assert checkers.get_room(code) is None
+
+
+def test_an_ai_room_with_no_one_is_dropped_too():
+    out = checkers.create_room(mode="ai", name="Solo")
+    code = out["room"]["code"]
+    assert checkers.leave_room(code, out["player_id"]) is None
+    assert checkers.get_room(code) is None
+
+
+def test_leaving_a_running_game_keeps_it_for_the_survivor():
+    """Ann stays in; she sees the forfeit result and can rematch."""
+    out = checkers.create_room(mode="friend", name="Ann", device_id="dev-a")
+    code = out["room"]["code"]
+    joined = checkers.join_room(code, name="Bob", device_id="dev-b")
+    assert checkers.leave_room(code, joined["player_id"]) is not None
+    seen = checkers.get_room(code, out["player_id"])
+    assert seen["status"] == "finished"
+    assert seen["result"] == "forfeit"
+
+
+def test_joining_a_finished_room_is_refused():
+    created = checkers.create_room(mode="friend", name="Ann", device_id="dev-a")
+    code = created["room"]["code"]
+    checkers.join_room(code, name="Bob", device_id="dev-b")  # both seats filled
+    with checkers._lock:
+        checkers._rooms[code]["status"] = "finished"
+        checkers._rooms[code]["winner"] = RED
+    with pytest.raises(ValueError, match="that game is over"):
+        checkers.join_room(code, name="Carl", device_id="dev-c")
+    assert checkers.get_room(code)["status"] == "finished"  # not resurrected
+
+
+def test_http_joining_a_finished_room_is_400(client):
+    body = client.post(
+        "/api/checkers/rooms", json={"mode": "friend", "name": "Ann", "device_id": "dev-a"}).get_json()
+    code = body["room"]["code"]
+    client.post("/api/checkers/rooms", json={"code": code, "name": "Bob", "device_id": "dev-b"})
+    with checkers._lock:
+        checkers._rooms[code]["status"] = "finished"
+    r = client.post("/api/checkers/rooms", json={"code": code, "name": "Carl", "device_id": "dev-c"})
+    assert r.status_code == 400
+
+
+def test_http_quick_match_sends_the_device_marker_and_is_stable(client):
+    r1 = client.post("/api/checkers/rooms", json={"mode": "quick", "name": "One", "device_id": "dev-a"})
+    assert r1.status_code == 200
+    r2 = client.post("/api/checkers/rooms", json={"mode": "quick", "name": "One", "device_id": "dev-a"})
+    assert r2.status_code == 200
+    assert r2.get_json()["room"]["code"] == r1.get_json()["room"]["code"]
+
+
+def test_http_leave_returns_404_when_the_room_is_dropped(client):
+    body = client.post(
+        "/api/checkers/rooms", json={"mode": "friend", "name": "Ann", "device_id": "dev-a"}).get_json()
+    code, pid = body["room"]["code"], body["player_id"]
+    r = client.post(f"/api/checkers/rooms/{code}/leave", json={"player_id": pid})
+    assert r.status_code == 404
+
+
+def test_a_snapshot_never_carries_a_device_marker():
+    out = checkers.create_room(mode="friend", name="Ann", device_id="dev-secret-marker")
+    snap = checkers.get_room(out["room"]["code"], out["player_id"])
+    assert "dev-secret-marker" not in repr(snap)
+    with checkers._lock:
+        player = checkers._rooms[out["room"]["code"]]["seats"][RED]
+        assert player["device_id"] == "dev-secret-marker"  # stored, never shared

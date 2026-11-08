@@ -23,7 +23,22 @@
       <div class="cabinet-marquee">★ {{ card.title }} ★</div>
       <div class="screen">
         {% if kind == "playable" %}
-        <iframe id="game-frame" src="/game/{{ card.slug }}/index.html{% if score_bridge and request.query_string %}?{{ request.query_string.decode('utf-8', 'replace') }}{% endif %}" title="{{ card.title }}" sandbox="allow-scripts allow-same-origin allow-pointer-lock"></iframe>
+        <iframe id="game-frame" title="{{ card.title }}" sandbox="allow-scripts allow-same-origin allow-pointer-lock"></iframe>
+        <script>
+        // The URL fragment never reaches the server, so the /play page has
+        // to hand it to the game iframe itself - that is how an invite link
+        // (/play/family-checkers#room=CODE) deep-joins outside the family
+        // app. src is assigned here so the fragment is there at boot.
+        (function () {
+          var frame = document.getElementById('game-frame');
+          var url = '/game/{{ card.slug }}/index.html';
+          {% if score_bridge and request.query_string %}
+          url += '?{{ request.query_string.decode("utf-8", "replace") }}';
+          {% endif %}
+          if (window.location.hash.length > 1) url += window.location.hash;
+          frame.src = url;
+        })();
+        </script>
         {% else %}
         <div class="code-game">
           {% if has_screenshot %}
