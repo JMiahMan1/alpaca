@@ -2063,6 +2063,8 @@ def _hold_reveal_for_the_line_unlocked(room: dict[str, Any]) -> None:
 
 def _apply_measured_line_unlocked(room: dict[str, Any], seconds: float) -> None:
     """The result line has been made and timed: hold the reveal exactly that long (plus a breath)."""
+    if room.get("scores_skipped") == (room.get("match_id"), room.get("round")):
+        return  # the host already skipped to the scoreboard: its short clock stands
     started = float(room.get("phase_started_at") or 0)
     said = started + reveal_result_at(room) + MEASURED_START_SLACK_S + seconds + 1.0
     board = started + scores_at(room) + 6.0
@@ -2406,6 +2408,7 @@ def _start_from_unlocked(room: dict[str, Any], go_at: float) -> None:
     if room.get("phase") == "reveal" and room.pop("skip_to_scores", False):
         room["phase_started_at"] = go_at - scores_at(room)
         room["phase_deadline"] = go_at + SCOREBOARD_MIN_SECONDS
+        room["scores_skipped"] = (room.get("match_id"), room.get("round"))
     if room.get("phase") in ("writing", "voting"):
         # Nobody types or votes, and no clock runs, until the host has finished asking the question:
         # with a TV, until it says so (stage_said "end"); without one, for as long as the line takes.
@@ -2941,6 +2944,19 @@ def _seat_free_unlocked(room: dict[str, Any]) -> bool:
     return len(humans) < MAX_CONTESTANTS
 
 
+def _seat_waiting_unlocked(room: dict[str, Any]) -> None:
+    """A new match seats whoever was waiting for a seat (first come first), never someone who chose to watch."""
+    waiting = sorted((p for p in room["players"].values()
+                      if p.get("spectator") and not p.get("is_bot") and not p.get("watching_by_choice")),
+                     key=lambda p: float(p.get("joined_at") or 0))
+    for p in waiting:
+        if not _seat_free_unlocked(room):
+            return
+        p["spectator"] = False
+        if p.get("avatar") == "👀":
+            p["avatar"] = _free_avatar_unlocked(room, p["id"])
+
+
 def _free_avatar_unlocked(room: dict[str, Any], pid: str) -> str:
     taken = {p.get("avatar") for p in room["players"].values() if p["id"] != pid}
     return next((a for a in PLAYER_AVATARS if a not in taken), PLAYER_AVATARS[0])
@@ -3023,6 +3039,7 @@ def create_or_join_room(
                 "round_delta": 0,
                 "is_bot": False,
                 "spectator": is_spec,
+                "watching_by_choice": bool(spectator),
                 "joined_at": now,
                 "last_seen": now,
             }
@@ -3032,6 +3049,7 @@ def create_or_join_room(
             players[pid]["last_seen"] = now
             if wanted and not players[pid].get("spectator"):
                 players[pid]["avatar"] = wanted
+            players[pid]["watching_by_choice"] = bool(spectator)
             if not spectator and players[pid].get("spectator") and _seat_free_unlocked(room):
                 players[pid]["spectator"] = False
                 if players[pid].get("avatar") == "👀":
@@ -3105,6 +3123,8 @@ def leave_room(code: str, *, player_id: str) -> dict[str, Any]:
             return {"closed": True, "room": None}
         if room.get("host_id") == pid:
             _hand_off_host_unlocked(room)
+        if room.get("phase") in ("lobby", "finished", "writing"):
+            _seat_waiting_unlocked(room)  # someone waiting for a seat takes theirs (writing: in time to answer)
         if room.get("phase") in ("writing", "voting", "reveal"):
             _top_up_bots_unlocked(room)  # never leave the last players with only their own answer and the trap
         room["updated_at"] = time.time()
@@ -3222,6 +3242,7 @@ def start_match(code: str, *, use_ai_prompt: bool = False, player_id: str | None
             else:
                 p["score"] = 0
                 p["round_delta"] = 0
+        _seat_waiting_unlocked(room)
         _ensure_bots_unlocked(room)
         room["match_id"] = f"{clean_code}-{int(time.time())}"
         room["ai_prompts"] = bool(use_ai_prompt)
@@ -3391,6 +3412,7 @@ def advance_phase(code: str, *, use_ai_prompt: bool = False, player_id: str | No
             if age < shown_at:
                 room["phase_started_at"] = now - shown_at
                 room["phase_deadline"] = now + SCOREBOARD_MIN_SECONDS + _stage_delay(room)
+                room["scores_skipped"] = (room.get("match_id"), room.get("round"))
                 room["updated_at"] = now
                 log.info("scores %s %s: the host skipped to the scoreboard", room.get("code"), room.get("round"))
                 return serialize_room(room, viewer_id=_clean_text(player_id, 64) or None)
@@ -3650,7 +3672,9 @@ def synthesize_show_line(text: str, voice: str = DEFAULT_ANNOUNCER_VOICE, *,
     an opening "Extra! Extra!" is shouted by the paper boy first. Each Kokoro
     piece is cached on its own, and so is the finished line.
     """
-    parts = announcer.split_show_line((text or "")[:TTS_MAX_CHARS])
+    # A blank is read as "blank", exactly as the TV and phones send it, so a line the room made ahead of
+    # time is the same clip they ask for (it was made twice, and the TV's "ready" waited on the second).
+    parts = announcer.split_show_line(re.sub(r"_{3,}", "blank", text or "")[:TTS_MAX_CHARS])
     if not parts:
         return None
     pieces: list[tuple[str, str, bytes, float]] = []

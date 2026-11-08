@@ -259,6 +259,11 @@
   let view = "join";
   let busy = false;
   let draft = "";
+  let draftFor = "";
+  const drafts = {
+    get(k) { try { return sessionStorage.getItem("gw:draft:" + k) || ""; } catch (_) { return ""; } },
+    set(k, v) { try { sessionStorage.setItem("gw:draft:" + k, v); } catch (_) {} }
+  };
   let pollTimer = null;
   let lastSig = "";
   let deadline = 0;
@@ -269,7 +274,7 @@
   let voices = [];
   let useAiPrompts = false;
   let openRooms = [];
-  let scorePostedFor = "";
+  let scorePostedFor = store.get("posted"); // survives a reload, so a match's score is posted once
   let failures = 0;
   // TV stage
   let screens = [];
@@ -347,7 +352,15 @@
   /* ================= network ================= */
   function api(path, body) {
     const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-    return fetch(path, opts).then((r) => r.json().catch(() => ({})).then((d) => {
+    // A request on bad Wi-Fi gives up after a while, so "busy" can never hold the buttons forever.
+    if (typeof AbortController === "function") {
+      const ac = new AbortController();
+      opts.signal = ac.signal;
+      setTimeout(() => ac.abort(), 12000);
+    }
+    return fetch(path, opts).catch((e) => {
+      throw new Error(e && e.name === "AbortError" ? "The connection is slow. Try again." : "Can't reach the game. Check Wi-Fi.");
+    }).then((r) => r.json().catch(() => ({})).then((d) => {
       if (!r.ok || d.success === false) { const e = new Error(d.error || ("HTTP " + r.status)); e.status = r.status; throw e; }
       return d;
     }));
@@ -496,6 +509,8 @@
   function announceFor(r) {
     if (r.waiting) return;  // nothing to say until the screen goes (its line is not even sent yet)
     const k = stepKey(r);
+    // A page opened (or reloaded) well into a screen does not start its line again from the top.
+    if (k !== chatterKey && r.phase !== "lobby" && (r.phase_age_s || 0) > 3) spoken[k] = true;
     if (k !== chatterKey) { chatterKey = k; phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000; }
     else if (r.phase === "reveal" && Math.abs((Date.now() - phaseStartLocal) / 1000 - (r.phase_age_s || 0)) > 1.5) {
       phaseStartLocal = Date.now() - (r.phase_age_s || 0) * 1000;  // the host skipped ahead to the scoreboard
@@ -642,6 +657,10 @@
     if (me && typeof me.score === "number" && me.score !== kit.score && !(r.phase === "reveal" && !resultCalled(r))) {
       kit.setScore(me.score, { quiet: true });
     }
+    if (r.phase === "writing" && draftFor !== r.match_id + ":" + r.round) {
+      draftFor = r.match_id + ":" + r.round;
+      draft = drafts.get(draftFor);  // a reload (iOS drops background tabs) keeps what was typed
+    }
     const moved = !prev || prev.phase !== r.phase || prev.round !== r.round || prev.match_id !== r.match_id;
     if (r.phase === "racing" && r.race && !r.race.flash) {
       const opensIn = Number(r.race.opens_in || 0);
@@ -662,7 +681,6 @@
     }
     if (prev && prev.match_id !== r.match_id && kit.state === "over") kit.start();
     if (prev && moved) {
-      if (r.phase === "writing") draft = "";
       tap();
       if (r.phase === "reveal") {
         sfx("win");
@@ -671,6 +689,7 @@
     }
     if (r.phase === "finished" && scorePostedFor !== r.match_id && me) {
       scorePostedFor = r.match_id;
+      store.set("posted", r.match_id);
       kit.setScore(me.score, { quiet: true });
       kit.gameOver({ title: "Match complete" }); // the kit posts the score to the family board
     }
@@ -710,6 +729,7 @@
       .catch((e) => { busy = false; render(); toast(e.message); });
   }
   function vote(optionId) {
+    if (busy && room && !room.my_vote) { whenFree(() => vote(optionId)); return; }
     if (busy || !room || room.my_vote) return;
     busy = true;
     api(`/api/party/rooms/${encodeURIComponent(code)}/vote`, { player_id: myId, option_id: optionId })
@@ -886,7 +906,14 @@
   let raceUi = { key: "", sel: -1, map: {}, order: [] };
   let raceOpenAt = 0;  // local time when the current clue takes answers
   function raceClosed() { return raceOpenAt > Date.now(); }
+  // A tap while an earlier request is still out is sent once that finishes (it used to be dropped,
+  // leaving every button greyed out), unless the screen has moved on by then.
+  function whenFree(send) {
+    const key = room ? stepKey(room) : "";
+    setTimeout(() => { if (room && stepKey(room) === key) send(); else { lastSig = ""; render(); } }, 250);
+  }
   function raceSend(choice) {
+    if (busy && room && room.race) { whenFree(() => raceSend(choice)); return; }
     if (busy || !room || !room.race) return;
     busy = true;
     api(`/api/party/rooms/${encodeURIComponent(code)}/race`, { player_id: myId, item: room.race.index, choice })
@@ -1184,6 +1211,7 @@
     if (ans) {
       ans.addEventListener("input", () => {
         draft = ans.value.slice(0, 120);
+        drafts.set(draftFor, draft);
         const c = $("gw-count"); if (c) c.textContent = draft.length + "/120";
       });
       // keep the box above the on-screen keyboard

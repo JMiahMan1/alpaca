@@ -450,3 +450,51 @@ def test_the_opening_line_does_not_change_once_its_clip_is_measured():
     before = party.announce_line(room)
     party._spoken_seconds[(party.DEFAULT_ANNOUNCER_VOICE, before)] = 99.0  # measured long
     assert party.announce_line(room) == before
+
+
+def test_a_result_line_measured_after_the_skip_does_not_undo_it():
+    """Found in review: the reveal's result line finished being made after the host skipped, and the
+    scoreboard's 'starts in' jumped from 5 s back up to ~23 s."""
+    room = _room()
+    with party._lock:
+        room["submissions"] = {pid: {"player_id": pid, "text": f"a {pid}", "is_decoy": False, "submitted_at": 0}
+                               for pid in ("a", "b")}
+        party._build_voting_options_unlocked(room)
+        party._score_round_unlocked(room)
+    rnd = room["round"]
+    _ready("SYNC", "a")
+    _ready("SYNC", "b")
+    _go(room)
+    party.advance_phase("SYNC", player_id="a", expect={"phase": "reveal", "round": rnd})
+    skipped = room["phase_deadline"]
+    with party._lock:
+        party._apply_measured_line_unlocked(room, 18.0)  # the long result line lands now
+    assert room["phase_deadline"] == pytest.approx(skipped)
+
+
+def test_someone_waiting_for_a_seat_gets_it_at_the_next_match():
+    """Found in review: a ninth player stayed a spectator forever once a seat freed (until a reload)."""
+    for i in range(party.MAX_CONTESTANTS):
+        party.create_or_join_room(code="FULL", player_id=f"p{i}", name=f"P{i}")
+    party.create_or_join_room(code="FULL", player_id="late", name="Late")
+    party.create_or_join_room(code="FULL", player_id="eyes", name="Eyes", spectator=True)
+    room = party._rooms["FULL"]
+    assert room["players"]["late"]["spectator"]
+    party.leave_room("FULL", player_id="p3")
+    assert not room["players"]["late"]["spectator"]  # in the lobby: seated as the seat frees
+    assert room["players"]["eyes"]["spectator"]  # chose to watch: stays watching
+    room["players"]["late"]["spectator"] = True  # waiting again (say the room filled back up)
+    party.start_match("FULL", player_id="p0")
+    assert not room["players"]["late"]["spectator"]
+
+
+def test_a_blank_is_made_as_the_screens_ask_for_it(monkeypatch):
+    """Found in review: the TV and phones say '___' as 'blank'; the room made the raw text, a different clip."""
+    said = []
+    monkeypatch.setattr(party, "synthesize_announcer_clip", lambda text, voice, **k: said.append(text) or (text, b"\0" * 400))
+    monkeypatch.setattr(party.announcer, "quieter", lambda wav, db: wav)
+    monkeypatch.setattr(party.announcer, "assemble", lambda parts: b"".join(w for _, w, _ in parts))
+    monkeypatch.setattr(party, "_record_spoken_length", lambda *a: None)
+    raw = party.synthesize_show_line("Noah packed ______ for the ark.")
+    sent = party.synthesize_show_line("Noah packed blank for the ark.")
+    assert raw[0] == sent[0] and not any("_" in t for t in said)

@@ -522,6 +522,12 @@
       return;
     }
     if (r.waiting && !STREAMED) { prepare(r, key); return; }  // say nothing until the screen goes
+    if (r.phase !== "lobby" && !STREAMED && !spokenKeys[key] && !prepared[key] && (r.phase_age_s || 0) > 3 && r.tv_needs !== "end") {
+      // A page that arrived (or reloaded) well into a screen it never saw start: its line has been said,
+      // or is being said by the host's phone. Starting it again from the top would talk over the round.
+      spokenKeys[key] = true;
+      return;
+    }
     if (r.announce) { speak(r.announce, r.phase === "lobby" ? "lobby:" + r.code : key, r.phase !== "lobby"); return; }
     if (r.phase === "lobby") {
       speak("Welcome to Parable Party! Scan the code on the screen, or join room " + r.code.split("").join(" ") + " in Jarvis.", "lobby:" + r.code);
