@@ -1,0 +1,24 @@
+{
+  "title": "Jubilee!",
+  "tagline": "A Bible-story property game for the whole family!",
+  "description": "Buy Bible lands from Bethlehem to the New Jerusalem, build houses and hotels, charge rent, and dodge the Dungeon. A full property-trading board game with Bible-story places and players, for phones and the TV. Classic rules with family rule options, scribe AI opponents, room codes for friends, and a big-screen TV stage.",
+  "emoji": "🎺",
+  "art": {
+    "from": "#6d28d9",
+    "to": "#f59e0b"
+  },
+  "genre": "board",
+  "ages": "7+",
+  "players": "2-8",
+  "party": true,
+  "tv_path": "/jubilee/tv",
+  "version": 1,
+  "metric": "points",
+  "higher_is_better": true,
+  "how_to": [
+    "Open on your phone in Jarvis (or cast /jubilee/tv to a big screen) and join the 4-letter Family Room Code!",
+    "Roll the dice and buy Bible lands. Own a whole colour group to build houses and hotels and charge bigger rents.",
+    "Land on PARABLE or SCRIPTURE for a card. Three doubles in a row sends you to the Dungeon.",
+    "Pass Jubilee! to collect $200. Last family standing wins - or highest net worth when the rounds run out!"
+  ]
+}

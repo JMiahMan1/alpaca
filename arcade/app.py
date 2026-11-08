@@ -39,13 +39,14 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 try:  # container runs `python arcade/app.py` (script dir on sys.path)
     import checkers
     import family
+    import jubilee
     import party
     import party_music
     from achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from curation import is_curated, load_curated
     from mobile import assess_html, prepare_playable_html
 except ImportError:  # tests import `arcade.app` as a package from the repo root
-    from arcade import checkers, family, party, party_music
+    from arcade import checkers, family, jubilee, party, party_music
     from arcade.achievements import HIGH_ROLLER_SCORE, NIGHT_OWL_END, NIGHT_OWL_START, evaluate, unlocked_ids
     from arcade.curation import is_curated, load_curated
     from arcade.mobile import assess_html, prepare_playable_html
@@ -441,7 +442,7 @@ def _game_card(slug: str) -> dict | None:
                 "ages": meta.get("ages", ""),
                 "players": meta.get("players", ""),
                 "party": bool(meta.get("party")),
-                "tv_path": "/tv" if meta.get("party") else None,
+                "tv_path": meta.get("tv_path") or ("/tv" if meta.get("party") else None),
                 "how_to": meta.get("how_to") if isinstance(meta.get("how_to"), list) else [],
                 "version": meta.get("version"),
                 "mobile_ready": True if meta.get("mobile_native") else card["mobile_ready"],
@@ -1391,6 +1392,216 @@ def api_checkers_leave(code):
         return jsonify({"success": False, "error": "room not found"}), 404
     return jsonify({"success": True, "room": _checkers_room(room)})
 
+
+# --- Jubilee!: the Bible-story property game ---
+#
+# Server-authoritative so every phone and the TV stage agree on the board.
+# Rooms live in memory (like checkers) and expire on their own. The stage
+# page is templates/jubilee_tv.html, served at /jubilee/tv[/<code>].
+
+def _jubilee_room(room: dict) -> dict:
+    """Add the invite link + QR path so a friend can open this room."""
+    code = room.get("code")
+    return {
+        **room,
+        "invite_url": f"{_public_base_url()}/play/family-jubilee#room={code}",
+        "qr_url": f"/api/jubilee/rooms/{code}/join.svg",
+    }
+
+def _jubilee_call(fn):
+    """Run an action, map engine errors to HTTP, and dress up the room."""
+    try:
+        out = fn()
+    except KeyError:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    except PermissionError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    if "room" in out:
+        out["room"] = _jubilee_room(out["room"])
+    out.setdefault("success", True)
+    return jsonify(out)
+
+@app.route("/jubilee/tv", methods=["GET"])
+@app.route("/jubilee/tv/<code>", methods=["GET"])
+def jubilee_tv_page(code: str = ""):
+    """Big-screen stage for Jubilee!: runs on the TV, needs no remote."""
+    clean_code = jubilee._clean_code(code) if code else ""
+    html = (Path(__file__).parent / "templates" / "jubilee_tv.html").read_text(encoding="utf-8")
+    html = html.replace("__ROOM_CODE__", clean_code)
+    return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
+
+@app.route("/join/jubilee/<code>", methods=["GET"])
+def jubilee_join_page(code: str):
+    """Where the TV's QR code points: straight into the room on a phone."""
+    clean_code = jubilee._clean_code(code)
+    return redirect(f"/play/family-jubilee#room={clean_code}", code=302)
+
+@app.route("/api/jubilee/rooms", methods=["GET", "POST"])
+def api_jubilee_rooms():
+    if request.method == "GET":
+        return jsonify({"success": True, "rooms": jubilee.list_open_rooms()})
+    body = request.get_json(silent=True) or {}
+    payload = {
+        "name": body.get("name"),
+        "token": body.get("token"),
+        "ruleset": body.get("ruleset"),
+        "device_id": body.get("device_id"),
+        "initials": body.get("initials"),
+        "jackpot": body.get("jackpot"),
+        "double_go": body.get("double_go"),
+        "no_auction": body.get("no_auction"),
+    }
+    code = body.get("code")
+    return _jubilee_call(lambda: jubilee.join_room(code, payload) if code else jubilee.create_room(payload))
+
+@app.route("/api/jubilee/rooms/<code>", methods=["GET"])
+def api_jubilee_room(code):
+    stage = request.args.get("stage") in ("1", "true")
+    room = jubilee.get_room(code, request.args.get("player_id"), stage=stage)
+    if room is None:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    return jsonify({"success": True, "room": _jubilee_room(room)})
+
+@app.route("/api/jubilee/rooms/<code>/join.svg", methods=["GET"])
+def api_jubilee_join_svg(code):
+    """A scannable QR that opens the phone client with this room's code."""
+    clean = jubilee._clean_code(code)
+    if not clean:
+        return jsonify({"success": False, "error": "room not found"}), 404
+    try:
+        import segno
+    except ImportError:
+        return jsonify({"success": False, "error": "QR codes unavailable"}), 404
+    url = f"{_public_base_url()}/join/jubilee/{clean}"
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="svg", scale=10, border=2, dark="#120a26", light="#ffffff", xmldecl=False)
+    return Response(
+        buf.getvalue(),
+        mimetype="image/svg+xml",
+        headers={"Cache-Control": "no-store"},
+    )
+
+@app.route("/api/jubilee/rooms/<code>/roll", methods=["POST"])
+def api_jubilee_roll(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.roll(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/jail_roll", methods=["POST"])
+def api_jubilee_jail_roll(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.jail_roll(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/jail_fine", methods=["POST"])
+def api_jubilee_jail_fine(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.jail_fine(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/jail_card", methods=["POST"])
+def api_jubilee_jail_card(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.jail_card(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/end_turn", methods=["POST"])
+def api_jubilee_end_turn(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.end_turn(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/buy", methods=["POST"])
+def api_jubilee_buy(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.buy(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/decline", methods=["POST"])
+def api_jubilee_decline(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.decline(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/auction_bid", methods=["POST"])
+def api_jubilee_auction_bid(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.auction_bid(code, body.get("player_id"), body.get("amount")))
+
+@app.route("/api/jubilee/rooms/<code>/auction_pass", methods=["POST"])
+def api_jubilee_auction_pass(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.auction_pass(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/tribute_choice", methods=["POST"])
+def api_jubilee_tribute_choice(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.tribute_choice(code, body.get("player_id"), body.get("choice")))
+
+@app.route("/api/jubilee/rooms/<code>/pay_debt", methods=["POST"])
+def api_jubilee_pay_debt(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.pay_debt(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/declare_bankruptcy", methods=["POST"])
+def api_jubilee_declare_bankruptcy(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.declare_bankruptcy(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/build", methods=["POST"])
+def api_jubilee_build(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.build(code, body.get("player_id"), body.get("property_index"), body.get("count", 1)))
+
+@app.route("/api/jubilee/rooms/<code>/sell_building", methods=["POST"])
+def api_jubilee_sell_building(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.sell_building(code, body.get("player_id"), body.get("property_index"), body.get("count", 1)))
+
+@app.route("/api/jubilee/rooms/<code>/mortgage", methods=["POST"])
+def api_jubilee_mortgage(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.mortgage(code, body.get("player_id"), body.get("property_index")))
+
+@app.route("/api/jubilee/rooms/<code>/unmortgage", methods=["POST"])
+def api_jubilee_unmortgage(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.unmortgage(code, body.get("player_id"), body.get("property_index")))
+
+@app.route("/api/jubilee/rooms/<code>/trade/propose", methods=["POST"])
+def api_jubilee_trade_propose(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.trade_propose(code, body.get("player_id"), body.get("to_seat"), body.get("offer"), body.get("ask")))
+
+@app.route("/api/jubilee/rooms/<code>/trade/accept", methods=["POST"])
+def api_jubilee_trade_accept(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.trade_accept(code, body.get("player_id"), body.get("trade_id")))
+
+@app.route("/api/jubilee/rooms/<code>/trade/reject", methods=["POST"])
+def api_jubilee_trade_reject(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.trade_reject(code, body.get("player_id"), body.get("trade_id")))
+
+@app.route("/api/jubilee/rooms/<code>/trade/cancel", methods=["POST"])
+def api_jubilee_trade_cancel(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.trade_cancel(code, body.get("player_id"), body.get("trade_id")))
+
+@app.route("/api/jubilee/rooms/<code>/start", methods=["POST"])
+def api_jubilee_start(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.start_match(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/settings", methods=["POST"])
+def api_jubilee_settings(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.update_settings(code, body.get("player_id"), body))
+
+@app.route("/api/jubilee/rooms/<code>/restart", methods=["POST"])
+def api_jubilee_restart(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.restart_room(code, body.get("player_id")))
+
+@app.route("/api/jubilee/rooms/<code>/leave", methods=["POST"])
+def api_jubilee_leave(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.leave_room(code, body.get("player_id")))
 
 # --- Multiplayer Party Room API ("Parable Party") + TV Cast View ---
 

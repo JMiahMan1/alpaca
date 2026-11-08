@@ -1,0 +1,1652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Jubilee!</title>
+<!-- @family-kit -->
+<!--
+  Jubilee! - a Bible-story property game. Phones are the controllers AND the
+  table: every device renders the board. A TV stage (/jubilee/tv/<CODE>) is the
+  big-screen view of the same room. Friends without Jarvis join by code at
+  games.sumemail.com/join/jubilee/<CODE>.
+-->
+<style>
+  :root {
+    --ink: #1b0f3b;
+    --paper: #fff8e7;
+    --gold: #ffc83d;
+    --gold2: #ffe27a;
+    --coral: #ff6b6b;
+    --teal: #2ed3b7;
+    --violet: #7c5cff;
+    --deep: #120a2e;
+    --deep2: #1d1145;
+    --line: rgba(255,255,255,.14);
+    --font: ui-rounded, "SF Pro Rounded", "Nunito", "Segoe UI Rounded", "Segoe UI", system-ui, sans-serif;
+  }
+  #fk-overlay { display: none !important; }
+  #fk-hud { display: none !important; }
+  #fk-stage { position: fixed; inset: 0; z-index: 0; }
+  html, body { margin: 0; height: 100%; background: var(--deep); overflow: hidden; }
+  body {
+    font-family: var(--font); color: #fff; -webkit-tap-highlight-color: transparent;
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+  }
+  #fk-safe { position: absolute; left: 0; top: 0; width: 0; height: 0; visibility: hidden;
+    padding-top: var(--fk-safe-top); padding-bottom: var(--fk-safe-bottom);
+    padding-left: var(--fk-safe-left); padding-right: var(--fk-safe-right); }
+
+  /* ============ app layout ============ */
+  #jb-app {
+    position: relative; z-index: 2; flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; align-items: center;
+    padding: calc(6px + var(--fk-safe-top)) calc(6px + var(--fk-safe-right)) calc(6px + var(--fk-safe-bottom)) calc(6px + var(--fk-safe-left));
+    gap: 6px;
+  }
+  /* header */
+  #jb-top {
+    width: 100%; max-width: 1100px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    padding: 4px 6px;
+  }
+  .jb-logo { font-weight: 900; font-size: 20px; letter-spacing: .02em; color: var(--gold);
+    text-shadow: 0 2px 0 #4a2c00, 0 0 18px rgba(255,200,61,.35); white-space: nowrap; }
+  .jb-logo small { color: var(--gold2); font-size: .62em; letter-spacing: .14em; margin-left: 4px; }
+  .jb-spacer { flex: 1; }
+  .jb-chip {
+    display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line);
+    background: rgba(255,255,255,.07); color: #fff; border-radius: 999px; padding: 6px 12px;
+    font: 800 13px var(--font); cursor: pointer; white-space: nowrap;
+  }
+  .jb-chip b { color: var(--gold2); letter-spacing: .14em; font-variant-numeric: tabular-nums; }
+  .jb-icon { border: 1px solid var(--line); background: rgba(255,255,255,.07); color: #fff; border-radius: 12px;
+    width: 38px; height: 38px; font-size: 17px; cursor: pointer; display:flex; align-items:center; justify-content:center; }
+  .jb-icon:active { transform: scale(.92); }
+
+  /* board + side panel */
+  #jb-main {
+    width: 100%; max-width: 1100px; flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  #jb-board-wrap {
+    position: relative; flex: 0 1 auto; width: min(100vw - 12px, 100vh * .62, 640px);
+    aspect-ratio: 1; min-height: 0; filter: drop-shadow(0 18px 40px rgba(0,0,0,.55));
+  }
+  #jb-board { width: 100%; height: 100%; display: block; }
+
+  /* side panel (players + tabs) */
+  #jb-side {
+    width: 100%; max-width: 1100px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 6px;
+  }
+  #jb-players { display: flex; gap: 6px; overflow-x: auto; padding: 2px; flex: 0 0 auto; scroll-snap-type: x mandatory; }
+  .jb-player {
+    scroll-snap-align: start; flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    border: 1.5px solid var(--line); background: rgba(255,255,255,.06); border-radius: 16px;
+    padding: 6px 10px 6px 6px; min-width: 132px; position: relative; transition: box-shadow .3s, border-color .3s, transform .3s;
+  }
+  .jb-player.turn { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(255,200,61,.45), 0 0 22px rgba(255,200,61,.35); transform: translateY(-2px); }
+  .jb-player.out { opacity: .38; filter: grayscale(1); }
+  .jb-player .face { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    font-size: 24px; border: 2px solid rgba(0,0,0,.35); box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
+  .jb-player .nm { font-size: 12.5px; font-weight: 900; line-height: 1.1; max-width: 88px; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+  .jb-player .cash { font-size: 12px; font-weight: 800; color: var(--gold2); font-variant-numeric: tabular-nums; }
+  .jb-player .badge { position: absolute; top: -7px; right: -6px; font-size: 10px; font-weight: 900;
+    background: var(--gold); color: var(--ink); border-radius: 999px; padding: 2px 7px; letter-spacing: .06em;
+    box-shadow: 0 2px 0 rgba(0,0,0,.4); }
+  .jb-player .jailchip { display:inline-block; font-size: 9px; font-weight: 900; color:#ffd7d7; background:rgba(255,90,90,.25);
+    border:1px solid rgba(255,120,120,.5); border-radius: 6px; padding: 1px 5px; margin-left: 4px; vertical-align: 1px; }
+
+  /* action bar */
+  #jb-action { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; justify-content: center; min-height: 58px; }
+  .jb-btn {
+    font: 900 17px var(--font); color: var(--ink); background: linear-gradient(180deg, var(--gold2), var(--gold));
+    border: 2px solid #4a2c00; border-radius: 18px; padding: 12px 22px; cursor: pointer;
+    box-shadow: 0 6px 0 #4a2c00, 0 10px 24px rgba(0,0,0,.45); text-transform: uppercase; letter-spacing: .04em;
+    transition: transform .07s, box-shadow .07s, filter .2s; white-space: nowrap;
+  }
+  .jb-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #4a2c00, 0 4px 10px rgba(0,0,0,.4); }
+  .jb-btn:disabled { opacity: .45; filter: grayscale(.6); }
+  .jb-btn.teal { background: linear-gradient(180deg, #7cf0dd, var(--teal)); border-color: #033f34; box-shadow: 0 6px 0 #033f34, 0 10px 24px rgba(0,0,0,.45); }
+  .jb-btn.coral { background: linear-gradient(180deg, #ffa3a3, var(--coral)); border-color: #4f0d0d; box-shadow: 0 6px 0 #4f0d0d, 0 10px 24px rgba(0,0,0,.45); color: #fff; }
+  .jb-btn.ghost { background: rgba(255,255,255,.08); color: #fff; border-color: var(--line); box-shadow: none; font-size: 13px; padding: 10px 14px; text-transform: none; letter-spacing: 0; }
+  .jb-btn.big { font-size: 21px; padding: 15px 34px; animation: jb-pulse 1.6s ease-in-out infinite; }
+  @keyframes jb-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.18); } }
+  .jb-note { font-size: 13px; font-weight: 800; color: #cbb9ff; text-align: center; }
+  .jb-note b { color: var(--gold2); }
+
+  /* tabs: property / trades / log */
+  #jb-panel {
+    flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--line);
+    border-radius: 18px; background: rgba(10,6,32,.72); backdrop-filter: blur(6px); overflow: hidden;
+  }
+  #jb-tabs { flex: 0 0 auto; display: flex; border-bottom: 1px solid var(--line); }
+  .jb-tab { flex: 1; background: transparent; color: #a99ddb; border: 0; padding: 10px 6px; font: 800 13px var(--font);
+    cursor: pointer; border-bottom: 2px solid transparent; }
+  .jb-tab.on { color: var(--gold2); border-bottom-color: var(--gold); }
+  .jb-tab .dot { display:inline-block; min-width: 8px; height: 8px; border-radius: 99px; background: var(--coral); margin-left: 6px; vertical-align: 1px; }
+  #jb-tabbody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px; }
+  .jb-logline { font-size: 12.5px; line-height: 1.35; padding: 5px 8px; border-radius: 8px; color: #e9e4ff; }
+  .jb-logline:nth-child(odd) { background: rgba(255,255,255,.04); }
+  .jb-prop { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 12px; border: 1px solid var(--line); margin-bottom: 7px; background: rgba(255,255,255,.04); }
+  .jb-prop .swatch { width: 26px; align-self: stretch; border-radius: 6px; min-height: 34px; border: 1px solid rgba(0,0,0,.4); }
+  .jb-prop .info { flex: 1; min-width: 0; }
+  .jb-prop .nm { font-size: 13px; font-weight: 800; }
+  .jb-prop .sub { font-size: 11px; color: #b9aee0; font-weight: 700; }
+  .jb-mini { font-size: 11px; font-weight: 900; border-radius: 8px; padding: 6px 9px; border: 1px solid rgba(0,0,0,.35);
+    background: var(--gold); color: var(--ink); cursor: pointer; white-space: nowrap; }
+  .jb-mini.alt { background: rgba(255,255,255,.10); color: #fff; border-color: var(--line); }
+  .jb-mini:disabled { opacity: .4; }
+</style>
+</head>
+<body>
+<div id="fk-stage"></div>
+<div id="fk-safe"></div>
+<canvas id="jb-fx" style="position:fixed;inset:0;z-index:5;pointer-events:none"></canvas>
+<div id="jb-app">
+  <div id="jb-top">
+    <div class="jb-logo">JUBILEE!<small>BIBLE LANDS</small></div>
+    <div class="jb-spacer"></div>
+    <div class="jb-chip" id="jb-code" title="Tap to copy the room code">CODE <b id="jb-code-v">····</b></div>
+    <div class="jb-chip" id="jb-round">ROUND <b id="jb-round-v">1</b></div>
+    <button class="jb-icon" id="jb-sound" aria-label="Sound on or off">🔊</button>
+    <button class="jb-icon" id="jb-leave" aria-label="Leave the game">🚪</button>
+  </div>
+  <div id="jb-main">
+    <div id="jb-board-wrap">
+      <svg id="jb-board" viewBox="0 0 960 960" role="img" aria-label="Jubilee board"></svg>
+      <div id="jb-dice" aria-hidden="true"></div>
+    </div>
+    <div id="jb-side">
+      <div id="jb-players"></div>
+      <div id="jb-action"></div>
+      <div id="jb-panel">
+        <div id="jb-tabs">
+          <button class="jb-tab on" data-tab="prop">My Land</button>
+          <button class="jb-tab" data-tab="trades">Trades <span class="dot" id="jb-trade-dot" style="display:none"></span></button>
+          <button class="jb-tab" data-tab="log">Chronicle</button>
+        </div>
+        <div id="jb-tabbody"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<style>
+  /* ============ 3D dice ============ */
+  #jb-dice {
+    position: absolute; inset: 0; z-index: 6; display: none;
+    align-items: center; justify-content: center; gap: 34px; pointer-events: none;
+  }
+  #jb-dice.show { display: flex; }
+  .jb-die {
+    width: 74px; height: 74px; position: relative;
+    transform-style: preserve-3d;
+    transition: transform 1.05s cubic-bezier(.18,1.36,.32,1.02);
+    filter: drop-shadow(0 16px 14px rgba(0,0,0,.55));
+  }
+  .jb-face {
+    position: absolute; inset: 0; border-radius: 16px;
+    background: linear-gradient(155deg, #fffdf4 0%, #f3ead2 78%, #d9cfae 100%);
+    border: 2px solid #b9a86e;
+    display: grid; grid-template: repeat(3,1fr) / repeat(3,1fr); padding: 9px; gap: 2px;
+  }
+  .jb-face.front  { transform: rotateY(0deg)    translateZ(37px); }
+  .jb-face.back   { transform: rotateY(180deg)  translateZ(37px); }
+  .jb-face.right  { transform: rotateY(90deg)   translateZ(37px); }
+  .jb-face.left   { transform: rotateY(-90deg)  translateZ(37px); }
+  .jb-face.top    { transform: rotateX(90deg)   translateZ(37px); }
+  .jb-face.bottom { transform: rotateX(-90deg)  translateZ(37px); }
+  .jb-pip { width: 13px; height: 13px; border-radius: 50%; place-self: center;
+    background: radial-gradient(circle at 34% 32%, #4b3b8f, #1b0f3b 75%);
+    box-shadow: inset 0 2px 2px rgba(255,255,255,.35), 0 1px 1px rgba(0,0,0,.4); visibility: hidden; }
+  .jb-face[data-v="1"] .jb-pip:nth-child(5),
+  .jb-face[data-v="2"] .jb-pip:nth-child(1), .jb-face[data-v="2"] .jb-pip:nth-child(9),
+  .jb-face[data-v="3"] .jb-pip:nth-child(1), .jb-face[data-v="3"] .jb-pip:nth-child(5), .jb-face[data-v="3"] .jb-pip:nth-child(9),
+  .jb-face[data-v="4"] .jb-pip:nth-child(1), .jb-face[data-v="4"] .jb-pip:nth-child(3), .jb-face[data-v="4"] .jb-pip:nth-child(7), .jb-face[data-v="4"] .jb-pip:nth-child(9),
+  .jb-face[data-v="5"] .jb-pip:nth-child(1), .jb-face[data-v="5"] .jb-pip:nth-child(3), .jb-face[data-v="5"] .jb-pip:nth-child(5), .jb-face[data-v="5"] .jb-pip:nth-child(7), .jb-face[data-v="5"] .jb-pip:nth-child(9),
+  .jb-face[data-v="6"] .jb-pip:nth-child(1), .jb-face[data-v="6"] .jb-pip:nth-child(3), .jb-face[data-v="6"] .jb-pip:nth-child(4), .jb-face[data-v="6"] .jb-pip:nth-child(6), .jb-face[data-v="6"] .jb-pip:nth-child(7), .jb-face[data-v="6"] .jb-pip:nth-child(9)
+    { visibility: visible; }
+  @keyframes jb-dieland { 0% { transform: translateY(-46px) scale(.8,1.25); } 55% { transform: translateY(6px) scale(1.25,.72); } 75% { transform: translateY(-4px) scale(.94,1.08); } 100% { transform: none; } }
+  #jb-dice.show .jb-die { animation: jb-dieland .5s .95s cubic-bezier(.2,1.4,.3,1) backwards; }
+
+  /* ============ bottom sheets & overlays ============ */
+  .jb-shade { position: fixed; inset: 0; z-index: 20; background: rgba(6,3,20,.66); backdrop-filter: blur(3px);
+    display: none; align-items: flex-end; justify-content: center; }
+  .jb-shade.show { display: flex; animation: jb-fadein .18s ease-out; }
+  @keyframes jb-fadein { from { opacity: 0; } }
+  .jb-sheet {
+    width: min(560px, 100%); max-height: 86vh; overflow-y: auto; background: var(--paper); color: var(--ink);
+    border-radius: 26px 26px 0 0; border: 3px solid var(--ink); border-bottom: 0; padding: 18px 18px calc(18px + var(--fk-safe-bottom));
+    animation: jb-sheetup .3s cubic-bezier(.2,1.25,.35,1);
+  }
+  @keyframes jb-sheetup { from { transform: translateY(60%); opacity: 0; } }
+  .jb-sheet h2 { margin: 2px 0 10px; font-size: 22px; font-weight: 900; display:flex; align-items:center; gap:10px; }
+  .jb-sheet h2 small { font-size: 12px; color:#6b5b8f; font-weight:800; }
+  .jb-card { background:#fff; border:2px solid var(--ink); border-radius:16px; padding:12px 14px; margin:10px 0; box-shadow: 3px 4px 0 var(--ink); }
+  .jb-row { display:flex; gap:10px; }
+  .jb-row > * { flex:1; }
+  .jb-field { width:100%; box-sizing:border-box; font:800 18px var(--font); color:var(--ink); background:#fff;
+    border:2px solid var(--ink); border-radius:12px; padding:10px 12px; outline:none; }
+  .jb-field:focus { box-shadow: 0 0 0 4px rgba(124,92,255,.35); }
+  .jb-label { display:block; font-size:12px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; color:#5b4a8a; margin:4px 0 5px; }
+
+  /* property deed inside sheet */
+  .jb-deed { text-align:center; }
+  .jb-deed .band { height: 22px; border-radius: 8px; border: 2px solid var(--ink); margin-bottom: 10px; }
+  .jb-deed .pname { font-size: 24px; font-weight: 900; }
+  .jb-deed table { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 12.5px; }
+  .jb-deed td { padding: 3px 6px; border-bottom: 1px dashed #cbbde9; text-align: left; }
+  .jb-deed td:last-child { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .jb-deed .mort { color: #b91c1c; }
+
+  /* trade modal specifics */
+  .jb-trade-cols { display:flex; gap:12px; }
+  .jb-trade-col { flex:1; min-width:0; }
+  .jb-trade-col h3 { margin: 0 0 6px; font-size: 13px; letter-spacing:.08em; text-transform: uppercase; color:#5b4a8a; }
+  .jb-trade-list { max-height: 180px; overflow-y:auto; border:2px solid #d8cdee; border-radius:12px; padding:6px; background:#faf7ff; }
+  .jb-trade-item { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:800; padding:5px 6px; border-radius:8px; cursor:pointer; }
+  .jb-trade-item:hover { background:#efe8ff; }
+  .jb-trade-item input { accent-color: var(--violet); }
+  .jb-trade-sum { display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-weight:900; }
+
+  /* auction banner */
+  #jb-auction {
+    position: fixed; left: 50%; top: 10px; transform: translateX(-50%) translateY(-16px); z-index: 22;
+    background: linear-gradient(180deg,#ffe9a8,#ffc83d); color: var(--ink); border: 3px solid var(--ink);
+    border-radius: 18px; box-shadow: 0 8px 0 var(--ink), 0 14px 34px rgba(0,0,0,.5); padding: 10px 18px;
+    display: none; align-items: center; gap: 14px; font-weight: 900; opacity: 0; transition: all .25s;
+    max-width: min(720px, 96vw);
+  }
+  #jb-auction.show { display: flex; opacity: 1; transform: translateX(-50%) translateY(0); }
+  #jb-auction .bid { font-size: 30px; font-variant-numeric: tabular-nums; }
+  #jb-auction .who { font-size: 12px; color: #5b4a8a; }
+
+  /* card reveal overlay */
+  #jb-cardreveal { position: fixed; inset: 0; z-index: 24; display: none; align-items: center; justify-content: center; background: rgba(6,3,20,.55); }
+  #jb-cardreveal.show { display: flex; }
+  .jb-parchment {
+    width: min(380px, 88vw); background: linear-gradient(165deg, #fffdf0, #f7ecd2); color: var(--ink);
+    border-radius: 18px; border: 3px solid #7a5b16; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    padding: 24px 22px; text-align: center; transform: rotateY(90deg); opacity: 0;
+  }
+  #jb-cardreveal.show .jb-parchment { animation: jb-flip .55s cubic-bezier(.25,1.3,.4,1) forwards; }
+  @keyframes jb-flip { from { transform: rotateY(90deg) scale(.7); opacity: 0; } to { transform: none; opacity: 1; } }
+  .jb-parchment .kind { font-size: 11px; font-weight: 900; letter-spacing: .28em; color: #a16207; text-transform: uppercase; }
+  .jb-parchment .verse { font-size: 19px; font-weight: 800; line-height: 1.35; margin: 12px 4px; font-style: italic; }
+  .jb-parchment .effect { font-size: 14px; font-weight: 800; color: #422006; background:#fde68a; border-radius: 10px; padding: 8px 10px; }
+
+  /* match end */
+  #jb-end { position: fixed; inset: 0; z-index: 30; display: none; flex-direction: column; align-items: center; justify-content: center;
+    background: radial-gradient(120% 90% at 50% -10%, rgba(255,200,61,.28), transparent 55%), rgba(6,3,20,.78); text-align: center; padding: 24px; gap: 10px; }
+  #jb-end.show { display: flex; animation: jb-fadein .4s ease-out; }
+  #jb-end .crown { font-size: 84px; animation: jb-crown 1.1s cubic-bezier(.2,1.5,.3,1); filter: drop-shadow(0 8px 24px rgba(255,200,61,.6)); }
+  @keyframes jb-crown { 0% { transform: translateY(-140px) rotate(-30deg) scale(.4); opacity: 0; } 70% { transform: translateY(8px) rotate(6deg) scale(1.15); } 100% { transform: none; } }
+  #jb-end h1 { margin: 0; font-size: 34px; color: var(--gold); text-shadow: 0 3px 0 #4a2c00; letter-spacing: .02em; }
+  #jb-end .standings { display:flex; flex-direction: column; gap: 6px; width: min(420px, 92vw); margin: 6px 0 10px; }
+  .jb-standrow { display:flex; align-items:center; gap:10px; background: rgba(255,255,255,.08); border:1px solid var(--line);
+    padding: 8px 12px; border-radius: 12px; font-weight: 800; }
+  .jb-standrow.winner { border-color: var(--gold); background: rgba(255,200,61,.16); box-shadow: 0 0 18px rgba(255,200,61,.3); }
+  .jb-standrow .rank { width: 26px; font-size: 15px; color: var(--gold2); }
+  .jb-standrow .nm { flex: 1; text-align: left; overflow:hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jb-standrow .nw { font-variant-numeric: tabular-nums; color: var(--gold2); }
+
+  /* jail + shake vignettes */
+  #jb-flash { position: fixed; inset: 0; z-index: 15; pointer-events: none; opacity: 0; background: radial-gradient(120% 100% at 50% 50%, transparent 62%, rgba(255,40,40,.45)); transition: opacity .18s; }
+  #jb-flash.on { opacity: 1; }
+  @keyframes jb-shake { 0%,100% { transform: none; } 20% { transform: translate(-9px,4px) } 40% { transform: translate(8px,-5px) } 60% { transform: translate(-6px,-3px) } 80% { transform: translate(5px,4px) } }
+  body.jb-shake #jb-app { animation: jb-shake .45s; }
+
+  /* lobby */
+  #jb-lobby {
+    position: fixed; inset: 0; z-index: 26; display: none; align-items: center; justify-content: center; overflow-y: auto;
+    background: radial-gradient(130% 90% at 50% -10%, #3b1d7a 0%, var(--deep) 62%);
+    padding: calc(14px + var(--fk-safe-top)) 14px calc(14px + var(--fk-safe-bottom));
+  }
+  #jb-lobby.show { display: flex; }
+  .jb-lobbycard { width: min(480px, 100%); text-align: center; }
+  .jb-biglogo { font-size: 54px; font-weight: 900; line-height: .95; letter-spacing: .01em; color: var(--gold);
+    text-shadow: 0 4px 0 #4a2c00, 0 0 42px rgba(255,200,61,.4); margin: 4px 0 2px; animation: jb-logoGlow 2.6s ease-in-out infinite; }
+  @keyframes jb-logoGlow { 0%,100% { text-shadow: 0 4px 0 #4a2c00, 0 0 30px rgba(255,200,61,.35); } 50% { text-shadow: 0 4px 0 #4a2c00, 0 0 64px rgba(255,200,61,.65); } }
+  .jb-biglogo small { display:block; font-size: 13px; letter-spacing: .42em; color: var(--gold2); margin-top: 8px; font-weight: 800; }
+  .jb-tag { color: #cbb9ff; font-weight: 700; margin: 10px 0 16px; }
+  .jb-tokenrow { display: grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap: 6px; margin: 10px 0; }
+  .jb-token { aspect-ratio: 1; font-size: 22px; border-radius: 14px; border: 2px solid var(--line); background: rgba(255,255,255,.06);
+    cursor: pointer; display:flex; align-items:center; justify-content:center; transition: all .15s; padding: 0; }
+  .jb-token.on { border-color: var(--gold); background: rgba(255,200,61,.22); transform: scale(1.14); box-shadow: 0 0 18px rgba(255,200,61,.45); }
+  .jb-token:disabled { opacity: .25; }
+  .jb-rulesets { display:flex; flex-direction: column; gap: 8px; margin: 12px 0; text-align: left; }
+  .jb-ruleset { display:flex; gap: 10px; align-items: flex-start; border: 2px solid var(--line); border-radius: 14px; padding: 10px 12px; cursor: pointer; background: rgba(255,255,255,.05); }
+  .jb-ruleset.on { border-color: var(--gold); background: rgba(255,200,61,.12); }
+  .jb-ruleset b { font-size: 14px; }
+  .jb-ruleset small { display:block; color: #b9aee0; font-weight: 700; font-size: 11px; }
+  .jb-toggles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 6px 0 2px; }
+  .jb-toggle { font-size: 11px; font-weight: 800; color: #d8ceff; border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; cursor: pointer; background: rgba(255,255,255,.05); user-select: none; }
+  .jb-toggle.on { color: var(--ink); background: var(--gold); border-color: var(--gold); }
+  .jb-err { min-height: 18px; color: #ff9f9f; font-size: 13px; font-weight: 800; margin-top: 8px; }
+  .jb-share { background: rgba(255,255,255,.06); border:1px solid var(--line); border-radius: 18px; padding: 14px; margin-top: 12px; }
+  .jb-roomcode { font-size: 44px; font-weight: 900; letter-spacing: .18em; color: var(--gold2); font-variant-numeric: tabular-nums; }
+  .jb-qr { width: 150px; height: 150px; background: #fff; border-radius: 14px; padding: 8px; margin: 8px auto; display: block; }
+
+  /* responsive: wide screens get the side panel beside the board */
+  @media (min-width: 1000px) and (min-height: 620px) {
+    #jb-main { flex-direction: row; justify-content: center; align-items: stretch; }
+    #jb-board-wrap { width: min(64vh, 620px); align-self: center; }
+    #jb-side { flex: 1 1 380px; max-width: 430px; }
+    #jb-players { flex-wrap: nowrap; }
+  }
+  @media (max-height: 560px) {
+    .jb-logo small { display: none; }
+    #jb-tabbody { min-height: 60px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01s !important; animation-iteration-count: 1 !important; transition-duration: .15s !important; }
+  }
+</style>
+
+<!-- lobby -->
+<div id="jb-lobby">
+  <div class="jb-lobbycard">
+    <div id="jb-lobby-main">
+      <div class="jb-biglogo">JUBILEE!<small>BIBLE LANDS</small></div>
+      <p class="jb-tag">A Bible-story property game - roll the dice, buy the lands, build your estate.</p>
+
+      <label class="jb-label" for="jb-name">Your name</label>
+      <input class="jb-field" id="jb-name" maxlength="20" placeholder="e.g. Grandma" autocomplete="off">
+
+      <label class="jb-label" style="margin-top:14px">Choose your piece</label>
+      <div class="jb-tokenrow" id="jb-tokens"></div>
+
+      <div id="jb-create-block">
+        <label class="jb-label" style="margin-top:6px">Rulebook</label>
+        <div class="jb-rulesets" id="jb-rulesets"></div>
+        <div class="jb-toggles" id="jb-toggles">
+          <button class="jb-toggle" data-rule="jackpot">Sabbath pot 🍯</button>
+          <button class="jb-toggle" data-rule="double_go">Jubilee pays $400</button>
+          <button class="jb-toggle" data-rule="no_auction">No auctions</button>
+        </div>
+        <button class="jb-btn big" id="jb-create" style="margin-top:14px">Open a room</button>
+      </div>
+      <div id="jb-join-block">
+        <div class="jb-or" style="text-align:center;color:#cbb9ff;font-weight:900;letter-spacing:.2em;margin:14px 0 6px">- OR JOIN -</div>
+        <div class="jb-row" style="display:flex;gap:8px">
+          <input class="jb-field" id="jb-code-in" maxlength="8" placeholder="CODE" style="text-transform:uppercase;letter-spacing:.25em;text-align:center;font-size:22px" autocomplete="off">
+          <button class="jb-btn teal" id="jb-join" style="flex:0 0 auto;width:auto;padding:0 22px">Join</button>
+        </div>
+      </div>
+      <div class="jb-err" id="jb-lobby-err"></div>
+    </div>
+
+    <div id="jb-lobby-wait" style="display:none">
+      <div class="jb-biglogo" style="font-size:40px">ROOM OPEN</div>
+      <p class="jb-tag">Share the code - friends join at games.sumemail.com/join/jubilee</p>
+      <div class="jb-share">
+        <div class="jb-roomcode" id="jb-share-code">····</div>
+        <img class="jb-qr" id="jb-share-qr" alt="Join QR code">
+        <button class="jb-btn ghost" id="jb-copy" style="margin-top:6px">Copy join link</button>
+      </div>
+      <div class="jb-players" id="jb-wait-players" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:14px 0"></div>
+      <button class="jb-btn big" id="jb-start" style="display:none">Begin the match</button>
+      <p class="jb-tag" id="jb-wait-hint" style="font-size:12px;margin-top:10px">Waiting for the host to start…</p>
+      <button class="jb-btn ghost" id="jb-wait-leave">Leave room</button>
+    </div>
+  </div>
+</div>
+
+<!-- jail flash vignette -->
+<div id="jb-flash"></div>
+
+<!-- bottom sheet host -->
+<div class="jb-shade" id="jb-sheet-shade"><div class="jb-sheet" id="jb-sheet"></div></div>
+
+<!-- auction banner -->
+<div id="jb-auction"><div><div class="who" id="jb-auction-who">Auction - no bids yet</div><div class="bid" id="jb-auction-bid">$0</div></div><div id="jb-auction-btns" style="display:flex;gap:8px"></div><button class="jb-btn small coral" id="jb-auction-pass" style="width:auto">Pass</button></div>
+
+<!-- parchment card reveal -->
+<div id="jb-cardreveal"><div class="jb-parchment"><div class="kind" id="jb-card-kind">PARABLE</div><div class="verse" id="jb-card-verse">“…”</div><div class="effect" id="jb-card-effect">…</div></div></div>
+
+<!-- match end -->
+<div id="jb-end"><div class="crown">👑</div><h1 id="jb-end-title">Match complete</h1><div class="standings" id="jb-end-standings"></div><button class="jb-btn big" id="jb-end-again">Rematch</button><button class="jb-btn ghost" id="jb-end-leave">Back to the lobby</button></div>
+
+<style>
+  /* dice cubes get their orientation on an inner element so the squash animation can not fight it */
+  .jb-die { transition: none !important; }
+  .jb-cube { position: absolute; inset: 0; transform-style: preserve-3d; transition: transform 1.05s cubic-bezier(.18,1.36,.32,1.02); }
+  body { touch-action: manipulation; }
+  button { touch-action: manipulation; }
+</style>
+<script>
+(function () {
+"use strict";
+var FK = window.FamilyKit;
+var RM = FK.reducedMotion;
+var clamp = FK.clamp, fmt = FK.fmt, easeOutCubic = FK.easeOutCubic;
+
+/* ---------- launch parameters ---------- */
+var params = new URLSearchParams(location.search);
+var hashParams = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+hashParams.forEach(function (v, k) { params.set(k, v); });
+var launchName = (params.get("name") || "").replace(/[^\p{L}\p{N} .'-]/gu, "").trim().slice(0, 20);
+var launchRoom = (params.get("room") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+
+/* ---------- the kit (chrome hidden; we drive our own UI) ---------- */
+var kit = FK.create({
+  slug: "family-jubilee",
+  title: "Jubilee!",
+  tagline: "A Bible-story property game",
+  emoji: "🎺",
+  accent: "#6d28d9",
+  accent2: "#f59e0b",
+  scoreLabel: "Net worth",
+  howTo: ["Roll the dice and buy up the Holy Land.", "Build whole color groups - houses, then hotels.", "Charge rent, trade wisely, dodge the Dungeon.", "Last one solvent wins the Jubilee!"],
+  onStart: function () {}
+});
+
+/* ---------- tiny helpers ---------- */
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+function tap(el, fn) {
+  if (!el) return;
+  el.addEventListener("pointerdown", function (e) {
+    var t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    e.preventDefault();
+    fn(e);
+  });
+}
+var store = {
+  get: function (k) { try { return localStorage.getItem("jl:" + k) || ""; } catch (e) { return ""; } },
+  set: function (k, v) { try { localStorage.setItem("jl:" + k, v); } catch (e) {} },
+  del: function (k) { try { localStorage.removeItem("jl:" + k); } catch (e) {} }
+};
+var deviceId = (function () {
+  var d = store.get("device");
+  if (!d) {
+    d = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2, 10);
+    store.set("device", d);
+  }
+  return d;
+})();
+
+/* ---------- canvases: painted stage + particle fx ---------- */
+var fxCanvas = $("jb-fx");
+var fxCtx = fxCanvas.getContext("2d");
+function resizeFx() {
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  fxCanvas.width = Math.round(window.innerWidth * dpr);
+  fxCanvas.height = Math.round(window.innerHeight * dpr);
+  fxCanvas.style.width = window.innerWidth + "px";
+  fxCanvas.style.height = window.innerHeight + "px";
+  fxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resizeFx);
+resizeFx();
+
+var bgCanvas = document.createElement("canvas");
+bgCanvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%";
+$("fk-stage").appendChild(bgCanvas);
+var bgCtx = bgCanvas.getContext("2d");
+var motes = [];
+for (var mi = 0; mi < 42; mi++) motes.push({ x: Math.random(), y: Math.random(), r: 1 + Math.random() * 2.4, s: 0.05 + Math.random() * 0.11, p: Math.random() * 6.28 });
+function resizeBg() {
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  bgCanvas.width = Math.round(window.innerWidth * dpr);
+  bgCanvas.height = Math.round(window.innerHeight * dpr);
+  bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resizeBg);
+resizeBg();
+function drawBg(t) {
+  var w = window.innerWidth, h = window.innerHeight;
+  var g = bgCtx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, "#241040"); g.addColorStop(0.55, "#160b33"); g.addColorStop(1, "#0d0620");
+  bgCtx.fillStyle = g; bgCtx.fillRect(0, 0, w, h);
+  bgCtx.save();
+  bgCtx.translate(w / 2, h * 0.34);
+  if (!RM) bgCtx.rotate(t * 0.045);
+  var ray = Math.max(w, h) * 1.25;
+  for (var i = 0; i < 14; i++) {
+    bgCtx.rotate(Math.PI / 7);
+    bgCtx.fillStyle = i % 2 ? "rgba(255,200,61,0.075)" : "rgba(255,255,255,0.035)";
+    bgCtx.beginPath(); bgCtx.moveTo(0, 0); bgCtx.lineTo(-ray * 0.16, ray); bgCtx.lineTo(ray * 0.16, ray); bgCtx.fill();
+  }
+  bgCtx.restore();
+  for (var m = 0; m < motes.length; m++) {
+    var mo = motes[m];
+    mo.y += mo.s * 0.0035;
+    if (mo.y > 1.02) { mo.y = -0.02; mo.x = Math.random(); }
+    bgCtx.globalAlpha = 0.35 + 0.35 * Math.sin(t * 1.7 + mo.p);
+    bgCtx.fillStyle = "#ffd98a";
+    bgCtx.beginPath(); bgCtx.arc(mo.x * w + Math.sin(t * 0.6 + mo.p) * 22, mo.y * h, mo.r, 0, Math.PI * 2); bgCtx.fill();
+  }
+  bgCtx.globalAlpha = 1;
+}
+
+/* ---------- tiny API client ---------- */
+function api(path, opts) {
+  return fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}))
+    .then(function (res) { return res.json().catch(function () { return { success: false, error: "network error" }; }); });
+}
+function post(path, body) { return api(path, { method: "POST", body: JSON.stringify(body || {}) }); }
+
+/* ---------- shared constants ---------- */
+var TOKENS = [
+  { id: "ark", emoji: "🚢", label: "Ark" },
+  { id: "dove", emoji: "🕊️", label: "Dove" },
+  { id: "menorah", emoji: "🕎", label: "Menorah" },
+  { id: "star", emoji: "⭐", label: "Star of Bethlehem" },
+  { id: "scroll", emoji: "📜", label: "Scroll" },
+  { id: "fish", emoji: "🐟", label: "Fish" },
+  { id: "cup", emoji: "🍷", label: "Cup" },
+  { id: "trumpet", emoji: "🎺", label: "Trumpet" }
+];
+var SEAT_COLORS = ["#ffc83d", "#ff6b6b", "#2ed3b7", "#7dd3fc", "#c084fc", "#fb923c", "#34d399", "#f472b6"];
+var GROUP_COLORS = { brown: "#8c5a3b", lightblue: "#6fd3e7", pink: "#d63384", orange: "#f7871f", red: "#d32f2f", yellow: "#f2c230", green: "#2e9e5b", blue: "#1d4ed8" };
+var RULESETS = [
+  { id: "classic", name: "Classic", desc: "King James rules: auctions, buildings, mortgages, rent. House rules below." },
+  { id: "familyfun", name: "Family Fun", desc: "Debts are forgiven, the Sabbath pot is on, twelve full rounds - highest net worth wins." },
+  { id: "quick", name: "Quick Game", desc: "Two bankruptcies end the match. Shorter game, same rules otherwise." }
+];
+var state = {
+  room: null, prevRoom: null, code: "", pid: "",
+  meSeat: null, busy: false, pollTimer: null,
+  endedShown: false, scorePosted: false,
+  ruleset: "classic",
+  toggles: { jackpot: false, double_go: false, no_auction: false },
+  token: "ark",
+  tab: "prop",
+  hopQueue: [],
+  hopAnim: null,
+  displayedPos: [],   // per-seat displayed tile index (for hop animation)
+  muted: store.get("muted") === "1"
+};
+var soundBtn = $("jb-sound");
+function syncSoundBtn() { soundBtn.textContent = state.muted ? "🔇" : "🔊"; kit.sound.setMuted(state.muted); }
+syncSoundBtn();
+
+  /* ============ lobby ============ */
+  function initialsFor(name) {
+    var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return 'YOU';
+    return ((parts[0][0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+  }
+
+  function renderTokens() {
+    var html = '';
+    for (var i = 0; i < TOKENS.length; i++) {
+      var t = TOKENS[i];
+      html += '<button class="jb-token' + (t.id === state.token ? ' on' : '') + '" data-token="' + t.id + '" aria-label="' + esc(t.label) + '">' + t.emoji + '</button>';
+    }
+    $('jb-tokens').innerHTML = html;
+    $('jb-tokens').querySelectorAll('.jb-token').forEach(function (btn) {
+      tap(btn, function () { state.token = btn.getAttribute('data-token'); renderTokens(); kit.haptic(12); });
+    });
+  }
+
+  function renderRulesets() {
+    var html = '';
+    for (var i = 0; i < RULESETS.length; i++) {
+      var r = RULESETS[i];
+      html += '<button class="jb-ruleset' + (r.id === state.ruleset ? ' on' : '') + '" data-rs="' + r.id + '"><b>' + esc(r.name) + '</b><small>' + esc(r.desc) + '</small></button>';
+    }
+    $('jb-rulesets').innerHTML = html;
+    $('jb-rulesets').querySelectorAll('.jb-ruleset').forEach(function (btn) {
+      tap(btn, function () { state.ruleset = btn.getAttribute('data-rs'); renderRulesets(); renderToggles(); });
+    });
+  }
+
+  function renderToggles() {
+    var familyFun = state.ruleset === 'familyfun';
+    if (familyFun) { state.toggles.jackpot = true; state.toggles.no_auction = true; }
+    $('jb-toggles').querySelectorAll('.jb-toggle').forEach(function (btn) {
+      var key = btn.getAttribute('data-rule');
+      btn.classList.toggle('on', !!state.toggles[key]);
+      btn.disabled = familyFun && (key === 'jackpot' || key === 'no_auction');
+    });
+  }
+
+  $('jb-toggles').querySelectorAll('.jb-toggle').forEach(function (btn) {
+    tap(btn, function () {
+      var key = btn.getAttribute('data-rule');
+      if (btn.disabled) return;
+      state.toggles[key] = !state.toggles[key];
+      renderToggles();
+    });
+  });
+
+  var nameInput = $('jb-name');
+  nameInput.value = launchName || store.get('name') || '';
+  nameInput.addEventListener('input', function () { store.set('name', nameInput.value.trim()); });
+
+  function showLobbyMain(err) {
+    $('jb-lobby').classList.add('show');
+    $('jb-lobby-main').style.display = '';
+    $('jb-lobby-wait').style.display = 'none';
+    $('jb-lobby-err').textContent = err || '';
+  }
+
+  function showWaiting(room) {
+    $('jb-lobby').classList.add('show');
+    $('jb-lobby-main').style.display = 'none';
+    var wait = $('jb-lobby-wait');
+    wait.style.display = 'block';
+    $('jb-share-code').textContent = room.code;
+    $('jb-share-qr').src = '/api/jubilee/rooms/' + room.code + '/join.svg';
+    var chips = '';
+    for (var i = 0; i < room.players.length; i++) {
+      var p = room.players[i];
+      var tok = (TOKENS.find(function (t) { return t.id === p.token; }) || {}).emoji || '🙂';
+      chips += '<div style="text-align:center"><div style="font-size:34px">' + tok + '</div><div style="font-size:13px;font-weight:800">' + esc(p.name) + '</div></div>';
+    }
+    $('jb-wait-players').innerHTML = chips;
+    var isHost = !!(room.you && room.you.is_host);
+    $('jb-start').style.display = isHost ? '' : 'none';
+    $('jb-wait-hint').textContent = isHost ? 'Everyone in? Start the game.' : 'Waiting for the host to start…';
+  }
+
+  function enterRoom(playerId, code, room) {
+    state.pid = playerId;
+    state.code = code;
+    store.set('pid:' + code, playerId);
+    store.set('name', nameInput.value.trim() || 'Player');
+    applyState(room);
+    startPolling();
+  }
+
+  async function handleLobbyResponse(out) {
+    if (out && out.success && out.player_id && out.room) {
+      enterRoom(out.player_id, out.room.code, out.room);
+      if (out.room.status === 'lobby') showWaiting(out.room); else $('jb-lobby').classList.remove('show');
+    } else {
+      $('jb-lobby-err').textContent = (out && out.error) || 'Something went wrong - try again.';
+    }
+  }
+
+  tap($('jb-create'), async function () {
+    var name = nameInput.value.trim();
+    if (!name) { $('jb-lobby-err').textContent = 'What should we call you?'; nameInput.focus(); return; }
+    $('jb-lobby-err').textContent = '';
+    var out = await post('/api/jubilee/rooms', {
+      name: name, token: state.token, ruleset: state.ruleset,
+      jackpot: state.toggles.jackpot, double_go: state.toggles.double_go, no_auction: state.toggles.no_auction,
+      device_id: deviceId, initials: initialsFor(name)
+    });
+    handleLobbyResponse(out);
+  });
+
+  tap($('jb-join'), async function () {
+    var name = nameInput.value.trim();
+    if (!name) { $('jb-lobby-err').textContent = 'What should we call you?'; nameInput.focus(); return; }
+    var code = $('jb-code-in').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (code.length < 3) { $('jb-lobby-err').textContent = 'Enter the room code from the host.'; return; }
+    $('jb-lobby-err').textContent = '';
+    var out = await post('/api/jubilee/rooms', {
+      name: name, token: state.token, code: code,
+      device_id: deviceId, initials: initialsFor(name)
+    });
+    handleLobbyResponse(out);
+  });
+
+  tap($('jb-start'), async function () {
+    var out = await post('/api/jubilee/rooms/' + state.code + '/start', { player_id: state.pid });
+    if (out.success && out.room) { $('jb-lobby').classList.remove('show'); applyState(out.room); }
+  });
+
+  tap($('jb-wait-leave'), function () { leaveToLobby(); });
+  tap($('jb-copy'), function () {
+    var url = location.origin + '/play/family-jubilee#room=' + state.code;
+    (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).catch(function () {});
+    $('jb-copy').textContent = 'Copied!';
+    setTimeout(function () { $('jb-copy').textContent = 'Copy invite link'; }, 1600);
+  });
+
+  /* ============ board ============ */
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  var T = 960 / 11;
+  var CORNER = T; // corner tiles are one tile wide along the edge
+
+  function svgEl(tag, attrs, parent) {
+    var el = document.createElementNS(SVGNS, tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(el);
+    return el;
+  }
+
+  function tileCenter(i) {
+    if (i <= 10) return { x: 960 - T / 2 - i * T, y: 960 - T / 2, side: 0 };
+    if (i <= 20) return { x: T / 2, y: 960 - T / 2 - (i - 10) * T, side: 1 };
+    if (i <= 30) return { x: T / 2 + (i - 20) * T, y: T / 2, side: 2 };
+    return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, side: 3 };
+  }
+
+  function wrapName(name, maxChars) {
+    maxChars = maxChars || 11;
+    var words = String(name).split(' ');
+    var lines = [''];
+    for (var w = 0; w < words.length; w++) {
+      var cur = lines[lines.length - 1];
+      var cand = cur ? cur + ' ' + words[w] : words[w];
+      if (cand.length <= maxChars) lines[lines.length - 1] = cand;
+      else if (lines.length < 2) lines.push(words[w]);
+      else lines[1] = (lines[1] + ' ' + words[w]).slice(0, maxChars + 2);
+    }
+    return lines;
+  }
+
+  var SPACE_ART = {
+    'The King\'s Highway': '🚂', 'The Via Maris': '🚂', 'The Way': '🚂', 'The Desert Caravan': '🐫',
+    'The Lamp': '💡', 'The Well': '⛲',
+    'PARABLE': '❔', 'SCRIPTURE': '✦'
+  };
+
+  function buildBoard() {
+    var svg = $('jb-board');
+    svg.innerHTML = '';
+    // parchment frame
+    var defs = svgEl('defs', {}, svg);
+    var grad = svgEl('radialGradient', { id: 'jb-paper', cx: '50%', cy: '42%', r: '75%' }, defs);
+    svgEl('stop', { offset: '0%', 'stop-color': '#fff8e7' }, grad);
+    svgEl('stop', { offset: '100%', 'stop-color': '#e7d3a7' }, grad);
+    var gold = svgEl('radialGradient', { id: 'jb-gold', cx: '50%', cy: '50%', r: '60%' }, defs);
+    svgEl('stop', { offset: '0%', 'stop-color': '#ffe27a' }, gold);
+    svgEl('stop', { offset: '100%', 'stop-color': '#d97706' }, gold);
+    svgEl('rect', { x: 0, y: 0, width: 960, height: 960, fill: 'url(#jb-paper)', stroke: '#1b0f3b', 'stroke-width': 8, rx: 6 }, svg);
+
+    // center panel
+    var panel = svgEl('g', {}, svg);
+    svgEl('rect', { x: T, y: T, width: 960 - 2 * T, height: 960 - 2 * T, fill: '#1d1145', stroke: '#ffc83d', 'stroke-width': 3, rx: 4 }, panel);
+    // sun rays (CSS rotation)
+    var rays = svgEl('g', { id: 'svg-rays', class: RM ? '' : 'jb-rays', transform: 'translate(480,480)' }, panel);
+    for (var r = 0; r < 12; r++) {
+      svgEl('path', { d: 'M0,0 L -26,-290 L 26,-290 Z', fill: r % 2 ? 'rgba(255,200,61,.16)' : 'rgba(255,200,61,.07)', transform: 'rotate(' + (r * 30) + ')' }, rays);
+    }
+    var title = svgEl('text', { x: 480, y: 400, 'text-anchor': 'middle', 'font-size': 92, 'font-weight': 900, fill: '#ffc83d', 'font-family': 'ui-rounded,"SF Pro Rounded",sans-serif', 'letter-spacing': 8, style: 'filter:drop-shadow(0 4px 0 #4a2c00)' }, panel);
+    title.textContent = 'JUBILEE!';
+    var sub = svgEl('text', { x: 480, y: 440, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 800, fill: '#cbb9ff', 'letter-spacing': 6 }, panel);
+    sub.textContent = 'B I B L E   L A N D S';
+    var pot = svgEl('text', { id: 'svg-pot', x: 480, y: 520, 'text-anchor': 'middle', 'font-size': 24, 'font-weight': 900, fill: '#ffe27a' }, panel);
+    pot.textContent = '';
+    var rule = svgEl('text', { id: 'svg-rule', x: 480, y: 552, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 800, fill: '#8f7fd0', 'letter-spacing': 2 }, panel);
+    rule.textContent = '';
+
+    var spaces = state.room && state.room.board ? state.room.board : null;
+    for (var i = 0; i < 40; i++) {
+      var c = tileCenter(i);
+      var rot = c.side * 90;
+      var g = svgEl('g', { transform: 'translate(' + c.x + ',' + c.y + ') rotate(' + rot + ')', class: 'jb-tile', 'data-i': i }, svg);
+      if (i === 0 || i === 10 || i === 20 || i === 30) { drawCorner(g, i); }
+      else { drawTile(g, spaces ? spaces[i] : null, i); }
+      tap(g, (function (idx) { return function () { openDeed(idx); }; })(i));
+    }
+    // tokens layer
+    svgEl('g', { id: 'svg-tokens' }, svg);
+  }
+
+  function drawCorner(g, i) {
+    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: '#fff3d0', stroke: '#1b0f3b', 'stroke-width': 2 }, g);
+    svgEl('circle', { cx: 0, cy: 0, r: T * 0.34, fill: i === 0 ? 'url(#jb-gold)' : '#f1e6c0', stroke: '#1b0f3b', 'stroke-width': 2 }, g);
+    if (i === 0) {
+      svgEl('text', { x: 0, y: -12, 'text-anchor': 'middle', 'font-size': 21, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'JUBILEE!';
+      svgEl('text', { x: 0, y: 10, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 800, fill: '#1b0f3b' }, g).textContent = 'COLLECT $200';
+      svgEl('text', { x: 0, y: 27, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 800, fill: '#7a5b16' }, g).textContent = '🎺  EVERY LAP';
+    } else if (i === 10) {
+      svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 40 }, g).textContent = '⛓';
+      svgEl('text', { x: 0, y: 17, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
+      svgEl('text', { x: 0, y: 31, 'text-anchor': 'middle', 'font-size': 8, 'font-weight': 800, fill: '#5b4a8a' }, g).textContent = 'PAUL & SILAS';
+    } else if (i === 20) {
+      svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 36 }, g).textContent = '🕊️';
+      svgEl('text', { x: 0, y: 17, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SABBATH REST';
+      svgEl('text', { x: 0, y: 31, 'text-anchor': 'middle', 'font-size': 8, 'font-weight': 800, fill: '#5b4a8a' }, g).textContent = 'FREE · ALL ARE WELCOME';
+    } else {
+      svgEl('text', { x: 0, y: -4, 'text-anchor': 'middle', 'font-size': 34 }, g).textContent = '⛓';
+      svgEl('text', { x: 0, y: 20, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SENT TO';
+      svgEl('text', { x: 0, y: 34, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
+    }
+  }
+
+  function drawTile(g, sp, i) {
+    var kind = sp ? sp.kind : 'street';
+    var isStreet = kind === 'street', isRail = kind === 'railroad', isUtil = kind === 'utility';
+    var bandFill = isStreet ? (GROUP_COLORS[sp.group] || '#888') : (isRail ? '#1b0f3b' : (isUtil ? '#b45309' : null));
+    var tileFill = '#fff8e7';
+    if (kind === 'chance') tileFill = '#efe4ff';
+    else if (kind === 'chest') tileFill = '#e3ecff';
+    else if (kind === 'tax') tileFill = '#ffe9e3';
+    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: tileFill, stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
+    if (bandFill) {
+      svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 18, fill: bandFill, stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
+    }
+    var cy = bandFill ? -T / 2 + 30 : -T / 2 + 14;
+    if (isRail || isUtil) {
+      svgEl('text', { x: 0, y: -T / 2 + 33, 'text-anchor': 'middle', 'font-size': 26 }, g).textContent = isRail ? (SPACE_ART[sp.name] || '🚂') : (SPACE_ART[sp.name] || '💡');
+    } else if (kind === 'chance') {
+      svgEl('text', { x: 0, y: -T / 2 + 36, 'text-anchor': 'middle', 'font-size': 34, 'font-weight': 900, fill: '#7c5cff' }, g).textContent = '?';
+    } else if (kind === 'chest') {
+      svgEl('text', { x: 0, y: -T / 2 + 33, 'text-anchor': 'middle', 'font-size': 26, fill: '#1d4ed8' }, g).textContent = '✦';
+    } else if (kind === 'tax') {
+      svgEl('text', { x: 0, y: -T / 2 + 34, 'text-anchor': 'middle', 'font-size': 24 }, g).textContent = '💸';
+    }
+    var name = sp ? sp.name : '?';
+    var lines = wrapName(name, 12);
+    for (var li = 0; li < lines.length; li++) {
+      svgEl('text', { x: 0, y: cy + (kind === 'chance' || kind === 'chest' || kind === 'tax' || isRail || isUtil ? 24 : 0) + li * 12, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 800, fill: '#1b0f3b' }, g).textContent = lines[li];
+    }
+    if (sp && sp.price) {
+      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = '$' + sp.price;
+    } else if (sp && sp.amount) {
+      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#b91c1c' }, g).textContent = 'PAY $' + sp.amount;
+    }
+    // dynamic bits
+    svgEl('circle', { id: 'own-' + i, cx: -T / 2 + 10, cy: T / 2 - 10, r: 6, fill: 'transparent', stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
+    svgEl('g', { id: 'hse-' + i }, g);
+    svgEl('text', { id: 'mrg-' + i, x: T / 2 - 11, y: T / 2 - 6, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 900, fill: '#dc2626', style: 'display:none' }, g).textContent = 'M';
+  }
+
+  function svgToScreen(x, y) {
+    var rect = $('jb-board').getBoundingClientRect();
+    return { x: rect.left + (x / 960) * rect.width, y: rect.top + (y / 960) * rect.height };
+  }
+
+  function tokenScreenPos(seat) {
+    var board = state.room && state.room.board;
+    if (!board) return null;
+    var players = state.room.players.filter(function (p) { return !p.bankrupt; });
+    if (seat >= board.length) return null;
+    var pos = (state.displayedPos[seat] !== undefined) ? state.displayedPos[seat] : state.room.players[seat].position;
+    var c = tileCenter(pos);
+    // count tokens ahead of this seat on the same tile
+    var k = 0;
+    for (var i = 0; i < seat; i++) {
+      var p2 = (state.displayedPos[i] !== undefined) ? state.displayedPos[i] : state.room.players[i].position;
+      if (p2 === pos && !state.room.players[i].bankrupt) k++;
+    }
+    // 2x4 grid local offsets
+    var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 66;
+    return { x: c.x + dx, y: c.y + dy };
+  }
+
+  /* ============ render ============ */
+  function tokenEmoji(id) {
+    var t = TOKENS.find(function (x) { return x.id === id; });
+    return t ? t.emoji : '🙂';
+  }
+
+  function aliveSeats() {
+    var out = [];
+    var rp = state.room.players;
+    for (var i = 0; i < rp.length; i++) if (!rp[i].bankrupt) out.push(i);
+    return out;
+  }
+
+  function mySpaces() {
+    var board = state.room.board, out = [];
+    for (var i = 0; i < board.length; i++) if (board[i].owner === meSeat()) out.push(board[i]);
+    return out;
+  }
+
+  function meSeat() { return state.room && state.room.you ? state.room.you.seat : null; }
+
+  function renderPlayers() {
+    var room = state.room, html = '';
+    for (var i = 0; i < room.players.length; i++) {
+      var p = room.players[i];
+      var me = room.you && (room.you.seat === i);
+      var cls = 'jb-player' + (p.is_turn ? ' turn' : '') + (p.bankrupt ? ' out' : '') + (me ? ' me' : '');
+      html += '<div class="' + cls + '">';
+      html += '<div class="jb-face-sm" style="background:' + SEAT_COLORS[i] + '">' + tokenEmoji(p.token) + '</div>';
+      html += '<div class="jb-pname">' + esc(p.name) + (p.is_host ? ' 👑' : '') + (me ? ' <span class="jb-you">YOU</span>' : '') + '</div>';
+      html += '<div class="jb-pcash">$' + fmt(p.cash) + '</div>';
+      if (p.bankrupt) html += '<div class="jb-jail">BANKRUPT</div>';
+      else if (p.in_jail) html += '<div class="jb-jail">⛓ DUNGEON</div>';
+      html += '</div>';
+    }
+    $('jb-players').innerHTML = html;
+  }
+
+  function renderBoardDynamic() {
+    var room = state.room;
+    if (!room || !room.board) return;
+    for (var i = 0; i < 40; i++) {
+      var sp = room.board[i];
+      var dot = document.getElementById('own-' + i);
+      var hse = document.getElementById('hse-' + i);
+      var mrg = document.getElementById('mrg-' + i);
+      if (!dot) continue;
+      dot.setAttribute('fill', sp.owner != null ? SEAT_COLORS[sp.owner] : 'transparent');
+      // houses
+      var hh = '';
+      var n = sp.houses || 0;
+      if (n === 5) {
+        hh = '<rect x="-16" y="' + (T / 2 - 44) + '" width="32" height="12" rx="3" fill="#dc2626" stroke="#1b0f3b" stroke-width="1.5"/>';
+      } else {
+        for (var k = 0; k < n; k++) {
+          hh += '<rect x="' + (-24 + k * 13) + '" y="' + (T / 2 - 44) + '" width="11" height="10" rx="2" fill="#16a34a" stroke="#1b0f3b" stroke-width="1.5"/>';
+        }
+      }
+      hse.innerHTML = hh;
+      mrg.style.display = sp.mortgaged ? '' : 'none';
+    }
+    var potText = room.pot > 0 ? '🍯 SABBATH JACKPOT  $' + fmt(room.pot) : '';
+    var potEl = document.getElementById('svg-pot');
+    if (potEl) potEl.textContent = potText;
+    var ruleEl = document.getElementById('svg-rule');
+    if (ruleEl) ruleEl.textContent = (state.room.ruleset || 'classic').toUpperCase() + (room.pot > 0 ? '' : '');
+  }
+
+  function renderTokensLayer() {
+    var g = document.getElementById('svg-tokens');
+    if (!g || !state.room) return;
+    var html = '';
+    var players = state.room.players;
+    // need consistent per-tile stacking index: recompute per displayedPos
+    var posAt = [];
+    for (var i = 0; i < players.length; i++) {
+      posAt[i] = (state.displayedPos[i] !== undefined) ? state.displayedPos[i] : players[i].position;
+    }
+    for (var seat = 0; seat < players.length; seat++) {
+      var p = players[seat];
+      if (p.bankrupt) continue;
+      var pos = posAt[seat];
+      var c = tileCenter(pos);
+      var k = 0;
+      for (var j = 0; j < seat; j++) {
+        var pj = players[j];
+        if (!pj.bankrupt && posAt[j] === pos) k++;
+      }
+      var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 58;
+      var lift = (state.hopAnim && state.hopAnim.seat === seat) ? (state.hopAnim.lift || 0) : 0;
+      var x = c.x + dx, y = c.y + dy - lift;
+      html += '<g transform="translate(' + x + ',' + y + ')">' +
+        '<circle r="13" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.5"/>' +
+        '<text y="5" text-anchor="middle" font-size="15">' + tokenEmoji(p.token) + '</text></g>';
+    }
+    g.innerHTML = html;
+  }
+
+  function renderHeader() {
+    $('jb-code-v').textContent = state.room ? state.room.code : '····';
+    $('jb-round-v').textContent = state.room ? state.room.round : 1;
+  }
+
+  function applyState(next) {
+    state.prevRoom = state.room;
+    state.room = next;
+    meSeat(); // touch
+    buildBoardIfNeeded();
+    renderHeader();
+    renderPlayers();
+    renderBoardDynamic();
+    renderActions();
+    renderTab();
+    renderTokensLayer();
+    diffFx(state.prevRoom, next);
+    if (next.status === 'finished' && !state.endedShown) {
+      state.endedShown = true;
+      showEnd(next);
+    }
+  }
+
+  var boardBuilt = false;
+  function buildBoardIfNeeded() {
+    if (boardBuilt) return;
+    buildBoard();
+    boardBuilt = true;
+  }
+
+  /* ============ sheets ============ */
+  function openSheet(html) { $('jb-sheet').innerHTML = html; $('jb-sheet-shade').classList.add('show'); }
+  function closeSheet() { $('jb-sheet-shade').classList.remove('show'); }
+  tap($('jb-sheet-shade'), function (e) { if (e.target === $('jb-sheet-shade')) closeSheet(); });
+
+  function deedHtml(sp) {
+    var bandColor = sp.kind === 'street' ? (GROUP_COLORS[sp.group] || '#888') : (sp.kind === 'railroad' ? '#1b0f3b' : (sp.kind === 'utility' ? '#b45309' : '#7c5cff'));
+    var rows = '';
+    if (sp.kind === 'street' && sp.rents) {
+      var labels = ['Base rent', 'With 1 house', 'With 2 houses', 'With 3 houses', 'With 4 houses', 'With a hotel'];
+      for (var i = 0; i < 6 && i < sp.rents.length; i++) rows += '<tr><td>' + labels[i] + '</td><td>$' + sp.rents[i] + '</td></tr>';
+      rows += '<tr><td>Unimproved, group complete</td><td>2× rent</td></tr>';
+      rows += '<tr><td>House cost</td><td>$' + sp.house_cost + '</td></tr>';
+    } else if (sp.kind === 'railroad' && sp.rents) {
+      var counts = ['1 owned', '2 owned', '3 owned', '4 owned'];
+      for (var j = 0; j < 4; j++) rows += '<tr><td>Rent with ' + counts[j] + '</td><td>$' + sp.rents[j] + '</td></tr>';
+    } else if (sp.kind === 'utility') {
+      rows += '<tr><td>Rent (1 owned)</td><td>4× dice</td></tr><tr><td>Rent (both owned)</td><td>10× dice</td></tr>';
+    }
+    var html = '<div class="jb-deed"><div class="band" style="background:' + bandColor + '"></div>';
+    html += '<div class="pname">' + esc(sp.name) + '</div>';
+    if (sp.sub) html += '<div style="color:#6b5b8f;font-weight:800;font-size:13px">' + esc(sp.sub) + '</div>';
+    html += '<table>' + rows;
+    if (sp.mortgage) html += '<tr><td class="mort">Mortgage value</td><td class="mort">$' + sp.mortgage + '</td></tr>';
+    if (sp.price) html += '<tr><td>Price</td><td>$' + sp.price + '</td></tr>';
+    html += '</table></div>';
+    if (sp.mortgaged) html += '<div style="text-align:center;color:#b91c1c;font-weight:900;margin-top:8px">MORTGAGED - no rent collected</div>';
+    return html;
+  }
+
+  function openDeed(i) {
+    var sp = state.room && state.room.board[i];
+    if (!sp) return;
+    openSheet('<h2>📜 Title Deed <small>' + esc(sp.name) + '</small></h2>' + deedHtml(sp) +
+      '<div class="jb-row" style="margin-top:12px"><button class="jb-btn ghost" id="jb-deed-close">Close</button></div>');
+    tap($('jb-deed-close'), closeSheet);
+  }
+
+  function propertyRowHtml(sp) {
+    var canBuild = sp.kind === 'street' && !sp.mortgaged;
+    var houseCost = sp.house_cost || 0;
+    return '<div class="jb-card" style="display:flex;align-items:center;gap:10px">' +
+      '<div style="flex:1;min-width:0"><div style="font-weight:900">' + esc(sp.name) +
+      (sp.mortgaged ? ' <span style="color:#b91c1c">M</span>' : '') + '</div>' +
+      '<div style="font-size:12px;color:#6b5b8f;font-weight:800">' +
+      (sp.kind === 'street' ? (sp.houses === 5 ? '🏨 Hotel' : (sp.houses ? '🏠×' + sp.houses : 'No buildings')) + (houseCost ? ' · house $' + houseCost : '') : (sp.kind === 'railroad' ? 'Railroad' : 'Utility')) +
+      '</div></div>' +
+      (canBuild ? '<button class="jb-btn teal small" data-mortgage-btn="' + sp.i + '" style="display:none"></button>' : '') +
+      (sp.kind === 'street' && !sp.mortgaged ? '<button class="jb-btn small teal" data-build="' + sp.i + '">+Build</button>' : '') +
+      (sp.kind === 'street' && sp.houses ? '<button class="jb-btn small coral" data-sell="' + sp.i + '">Sell</button>' : '') +
+      (sp.mortgaged ? '<button class="jb-btn small" data-lift="' + sp.i + '">Lift $' + Math.ceil(sp.mortgage * 1.1) + '</button>' :
+        (sp.houses ? '' : '<button class="jb-btn small ghost" data-mortgage="' + sp.i + '">Mortgage $' + sp.mortgage + '</button>')) +
+      '</div>';
+  }
+
+  function openManage(debtMode) {
+    var my = mySpaces();
+    var rows = my.map(propertyRowHtml).join('');
+    var debtHtml = '';
+    if (debtMode && state.room.pending && state.room.pending.kind === 'debt') {
+      var d = state.room.pending;
+      debtHtml = '<div class="jb-card" style="border-color:#dc2626"><b>⚖ Debt: $' + fmt(d.amount) + '</b> - ' + esc(d.reason || 'you owe') + (d.creditor != null ? ' to ' + esc(state.room.players[d.creditor].name) : ' to the Bank') +
+        '<div style="font-size:12px;color:#6b5b8f;font-weight:800;margin:6px 0">Raise money by mortgaging or selling, then pay - or declare bankruptcy.</div>' +
+        '<div class="jb-row"><button class="jb-btn" id="jb-debt-pay">Pay $' + fmt(d.amount) + '</button>' +
+        '<button class="jb-btn coral" id="jb-debt-bankrupt">Declare bankruptcy</button></div></div>';
+    }
+    openSheet('<h2>🔨 My Land <small>' + my.length + ' owned</small></h2>' + debtHtml + (rows || '<div class="jb-card">No land yet - buy what you land on!</div>') +
+      '<div class="jb-row" style="margin-top:12px"><button class="jb-btn ghost" id="jb-manage-close">Done</button></div>');
+    tap($('jb-manage-close'), closeSheet);
+    $('jb-sheet').querySelectorAll('[data-build]').forEach(function (b) { tap(b, function () { doAction('/build', { property_index: +b.getAttribute('data-build'), count: 1 }); closeSheet(); }); });
+    $('jb-sheet').querySelectorAll('[data-sell]').forEach(function (b) { tap(b, function () { doAction('/sell_building', { property_index: +b.getAttribute('data-sell'), count: 1 }); closeSheet(); }); });
+    $('jb-sheet').querySelectorAll('[data-mortgage]').forEach(function (b) { tap(b, function () { doAction('/mortgage', { property_index: +b.getAttribute('data-mortgage') }); closeSheet(); }); });
+    $('jb-sheet').querySelectorAll('[data-lift]').forEach(function (b) { tap(b, function () { doAction('/unmortgage', { property_index: +b.getAttribute('data-lift') }); closeSheet(); }); });
+    var payBtn = $('jb-debt-pay');
+    if (payBtn) tap(payBtn, function () { doAction('/pay_debt', {}); closeSheet(); });
+    var bankBtn = $('jb-debt-bankrupt');
+    if (bankBtn) tap(bankBtn, function () { doAction('/declare_bankruptcy', {}); closeSheet(); });
+  }
+
+  function doAction(path, body) {
+    body = body || {};
+    body.player_id = state.pid;
+    return post('/api/jubilee/rooms/' + state.code + path, body).then(function (out) {
+      if (out.success && out.room) applyState(out.room);
+      else if (out.error) kit.toast(out.error, '#ff9f9f');
+      return out;
+    });
+  }
+
+  function openBuySheet(sp) {
+    openSheet('<h2>🏷️ For Sale! <small>' + esc(sp.name) + '</small></h2>' + deedHtml(sp) +
+      '<div class="jb-row" style="margin-top:10px">' +
+      '<button class="jb-btn big" id="jb-buy-yes">Buy - $' + fmt(sp.price) + '</button>' +
+      '<button class="jb-btn coral" id="jb-buy-no">Send to Auction</button>' +
+      '</div>');
+    tap($('jb-buy-yes'), function () { doAction('/buy', {}); closeSheet(); });
+    tap($('jb-buy-no'), function () { doAction('/decline', {}); closeSheet(); });
+  }
+
+  function openTributeSheet(p) {
+    var pct = Math.round(0.1 * (state.room.players[meSeat()].net_worth || 0));
+    openSheet('<h2>💸 The Tribute <small>Matthew 22:21</small></h2>' +
+      '<div class="jb-card">Render unto Caesar: <b>a flat $' + p.flat + '</b>, or <b>10% of your net worth = $' + fmt(pct) + '</b>. Your choice.</div>' +
+      '<div class="jb-row" style="margin-top:10px">' +
+      '<button class="jb-btn" id="jb-tribute-flat">Flat $' + p.flat + '</button>' +
+      '<button class="jb-btn teal" id="jb-tribute-pct">10% - $' + fmt(pct) + '</button>' +
+      '</div>');
+    tap($('jb-tribute-flat'), function () { doAction('/tribute_choice', { choice: 'flat' }); closeSheet(); });
+    tap($('jb-tribute-pct'), function () { doAction('/tribute_choice', { choice: 'percent' }); closeSheet(); });
+  }
+
+  /* ---------- Trades ---------- */
+  function tradeSideHtml(title, side, spaces, pre, checked) {
+    var h = '<div class="jb-trade-col"><h3>' + title + '</h3>';
+    h += '<div class="jb-trade-list">';
+    if (!spaces.length) h += '<div class="jb-trade-item" style="color:#b9aee0">No lands yet</div>';
+    spaces.forEach(function (sp) {
+      var chk = checked && checked[sp.i] !== false ? ' checked' : '';
+      h += '<label class="jb-trade-item"><input type="checkbox" data-sp="' + sp.i + '" data-side="' + side + '"' + chk + '>' + esc(sp.name) + '</label>';
+    });
+    h += '</div></div>';
+    return h;
+  }
+
+  function openTrade() {
+    if (!state.room || state.room.status !== 'playing') { kit.toast('The match is not running'); return; }
+    var room = state.room, me = meSeat();
+    var meName = (room.players[me] || {}).name || 'You';
+    var opponents = aliveSeats().filter(function (s) { return s !== me; });
+    if (!opponents.length) { kit.toast('No opponents left to trade with'); return; }
+    var theirSpaces = {};
+    opponents.forEach(function (s) { theirSpaces[s] = room.board.filter(function (sp) { return sp.owner === s; }); });
+    var mySp = room.board.filter(function (sp) { return sp.owner === me; });
+
+    var h = '<h2>🤝 Trade Land<small>' + esc(meName) + ' is making an offer</small></h2>';
+    h += '<div class="jb-row" style="margin-bottom:8px"><label class="jb-label" style="margin:0">TRADE WITH</label>';
+    h += '<select class="jb-field" id="jb-trade-with" style="flex:2;min-width:0">';
+    opponents.forEach(function (s) {
+      h += '<option value="' + s + '">' + esc((room.players[s] || {}).name || 'Seat ' + s) + '</option>';
+    });
+    h += '</select></div>';
+    h += '<div class="jb-trade-cols">';
+    h += tradeSideHtml('YOU GIVE', 'give', mySp);
+    h += '<div id="jb-trade-theirs">' + tradeSideHtml('YOU GET', 'get', theirSpaces[opponents[0]]) + '</div>';
+    h += '</div>';
+    h += '<div class="jb-trade-cols" style="margin-top:6px"><div class="jb-trade-col"><h3>CASH YOU GIVE</h3>'
+      + '<input class="jb-field" id="jb-trade-givecash" type="number" min="0" step="10" value="0" inputmode="numeric"></div>'
+      + '<div class="jb-trade-col"><h3>CASH YOU GET</h3>'
+      + '<input class="jb-field" id="jb-trade-getcash" type="number" min="0" step="10" value="0" inputmode="numeric"></div></div>';
+    h += '<div class="jb-trade-sum" id="jb-trade-sum"></div>';
+    h += '<div class="jb-row" style="margin-top:10px"><button class="jb-btn teal" id="jb-trade-send">Send Offer</button>'
+      + '<button class="jb-btn ghost" id="jb-trade-close">Close</button></div>';
+    openSheet(h);
+
+    var refreshTheirs = function () {
+      var seat = +($('jb-trade-with').value);
+      $('jb-trade-theirs').innerHTML = tradeSideHtml('YOU GET', 'get', theirSpaces[seat] || []);
+      bindListSums();
+    };
+    var readSums = function () {
+      var seat = +($('jb-trade-with').value);
+      var give = 0, get = 0;
+      document.querySelectorAll('#jb-sheet input[data-side="give"]:checked').forEach(function (cb) { give++; });
+      document.querySelectorAll('#jb-sheet input[data-side="get"]:checked').forEach(function (cb) { get++; });
+      var giveCash = Math.max(0, +($('jb-trade-givecash').value) || 0);
+      var getCash = Math.max(0, +($('jb-trade-getcash').value) || 0);
+      $('jb-trade-sum').textContent = 'Offering ' + give + ' land(s) + $' + fmt(giveCash) + ' for ' + get + ' land(s) + $' + fmt(getCash);
+      return { give: give, get: get, giveCash: giveCash, getCash: getCash, seat: seat };
+    };
+    var bindListSums = function () {
+      document.querySelectorAll('#jb-sheet input[data-side]').forEach(function (cb) { cb.addEventListener('change', readSums); });
+      readSums();
+    };
+    $('jb-trade-with').addEventListener('change', refreshTheirs);
+    $('jb-trade-givecash').addEventListener('input', readSums);
+    $('jb-trade-getcash').addEventListener('input', readSums);
+    tap($('jb-trade-close'), closeSheet);
+    tap($('jb-trade-send'), function () {
+      var s = readSums();
+      var offer = { cash: s.giveCash, spaces: [], jail_cards: 0 };
+      var ask = { cash: s.getCash, spaces: [], jail_cards: 0 };
+      document.querySelectorAll('#jb-sheet input[data-side="give"]:checked').forEach(function (cb) { offer.spaces.push(+cb.dataset.sp); });
+      document.querySelectorAll('#jb-sheet input[data-side="get"]:checked').forEach(function (cb) { ask.spaces.push(+cb.dataset.sp); });
+      doAction('/trade_propose', { to_seat: s.seat, offer: offer, ask: ask });
+      closeSheet();
+    });
+    bindListSums();
+  }
+
+  /* ---------- Tabs ---------- */
+  function renderPropTab() {
+    var room = state.room, me = meSeat();
+    var lines = [];
+    lines.push('<div class="jb-trade-sum" style="text-align:left">Net worth: <b>$' + fmt((room.players[me] || {}).net_worth || 0) + '</b> · Houses left in bank: <b>' + fmt(room.bank_houses) + '</b> · Hotels: <b>' + fmt(room.bank_hotels) + '</b></div>');
+    mySpaces().forEach(function (sp) {
+      var built = sp.houses === 5 ? '🏨' : (sp.houses ? Array(sp.houses + 1).join('🏠') : '');
+      lines.push('<div class="jb-trade-item" style="border:none;border-bottom:1px solid rgba(255,255,255,.08);border-radius:0"><span style="flex:1">' + esc(sp.name) + '</span><span>' + built + '</span><span style="color:' + (sp.mortgaged ? '#ff9f9f' : '#ffc83d') + '">' + (sp.mortgaged ? 'MORTGAGED' : '$' + fmt(sp.price)) + '</span></div>');
+    });
+    if (!mySpaces().length) lines.push('<div class="jb-trade-item" style="color:#b9aee0;border:none">No land yet - claim some!</div>');
+    return lines.join('');
+  }
+
+  function renderTradesTab() {
+    var room = state.room, me = meSeat();
+    var trades = (room.trades || []).filter(function (t) { return t.status === 'pending'; });
+    var mine = trades.filter(function (t) { return t.to_seat === me; });
+    var others = trades.filter(function (t) { return t.from_seat === me; });
+    var html = '';
+    if (mine.length) {
+      html += '<div class="jb-label" style="margin-top:2px">OFFERS FOR YOU</div>';
+      mine.forEach(function (t) {
+        var dir = t;
+        html += '<div class="jb-trade-item" style="border-radius:12px;margin-bottom:6px"><div style="flex:1;min-width:0"><b>' + esc((room.players[t.from_seat] || {}).name || 'Seat ' + t.from_seat) + '</b><br><span style="font-size:12px;color:#b9aee0">gives: ' + tradeSummary(t.offer) + '<br>wants: ' + tradeSummary(t.ask) + '</span></div>'
+          + '<div style="display:flex;flex-direction:column;gap:6px"><button class="jb-btn teal" style="font-size:13px;padding:8px 10px;box-shadow:0 4px 0 #1b0f3b" data-taccept="' + t.id + '">Accept</button>'
+          + '<button class="jb-btn coral" style="font-size:13px;padding:8px 10px;box-shadow:0 4px 0 #1b0f3b" data-treject="' + t.id + '">Reject</button></div></div>';
+      });
+    }
+    if (others.length) {
+      html += '<div class="jb-label" style="margin-top:8px">OFFERS YOU SENT</div>';
+      others.forEach(function (t) {
+        html += '<div class="jb-trade-item" style="border-radius:12px;margin-bottom:6px"><div style="flex:1;min-width:0"><b>To ' + esc((room.players[t.to_seat] || {}).name || 'Seat ' + t.to_seat) + '</b><br><span style="font-size:12px;color:#b9aee0">' + tradeSummary(t.offer) + ' ⇄ ' + tradeSummary(t.ask) + '</span></div>'
+          + '<button class="jb-btn ghost" style="font-size:13px;padding:8px 10px" data-tcancel="' + t.id + '">Cancel</button></div>';
+      });
+    }
+    if (!mine.length && !others.length) html = '<div class="jb-trade-item" style="color:#b9aee0;border:none">No pending offers. Tap 🤝 Trade in the action bar to propose one.</div>';
+    return html;
+  }
+
+  function tradeSummary(s) {
+    var bits = [];
+    if ((s.spaces || []).length) bits.push((s.spaces.length) + ' land');
+    if (s.cash) bits.push('$' + fmt(s.cash));
+    if (s.jail_cards) bits.push(s.jail_cards + ' jail card' + (s.jail_cards > 1 ? 's' : ''));
+    return bits.join(' + ') || 'nothing';
+  }
+
+  function renderLog() {
+    var log = (state.room && state.room.log) || [];
+    var html = '';
+    for (var i = log.length - 1; i >= Math.max(0, log.length - 30); i--) {
+      html += '<div class="jb-logline">' + esc(log[i]) + '</div>';
+    }
+    return html || '<div class="jb-trade-item" style="color:#b9aee0;border:none">The story begins…</div>';
+  }
+
+  function renderTab() {
+    var room = state.room;
+    if (!room) return;
+    var body = $('jb-tabbody');
+    if (state.tab === 'prop') body.innerHTML = renderPropTab();
+    else if (state.tab === 'trades') body.innerHTML = renderTradesTab();
+    else body.innerHTML = renderLog();
+    $('jb-trade-dot').style.display = ((room.trades || []).some(function (t) { return t.status === 'pending' && t.to_seat === meSeat(); })) ? 'block' : 'none';
+    body.querySelectorAll('[data-taccept]').forEach(function (b) { tap(b, function () { doAction('/trade_accept', { trade_id: b.dataset.taccept }); }); });
+    body.querySelectorAll('[data-treject]').forEach(function (b) { tap(b, function () { doAction('/trade_reject', { trade_id: b.dataset.treject }); }); });
+    body.querySelectorAll('[data-tcancel]').forEach(function (b) { tap(b, function () { doAction('/trade_cancel', { trade_id: b.dataset.tcancel }); }); });
+  }
+
+  $('jb-tabs').addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-tab]');
+    if (!btn) return;
+    state.tab = btn.dataset.tab;
+    document.querySelectorAll('#jb-tabs [data-tab]').forEach(function (b) { b.classList.toggle('on', b === btn); });
+    renderTab();
+  });
+
+  /* ---------- Action bar ---------- */
+  function renderAuctionBar(a) {
+    $('jb-auction-who').textContent = a.spaceName + ' - Bidding';
+    $('jb-auction-bid').textContent = '$' + fmt(a.high_bid);
+    var me = meSeat(), leader = a.high_bidder === me;
+    var passed = (a.passed || []).indexOf(me) !== -1;
+    var btns = '';
+    var room = state.room;
+    var myCash = room && room.players[me] ? room.players[me].cash : 0;
+    [10, 25, 50, 100].forEach(function (step) {
+      var amt = (a.high_bid || 0) + step;
+      btns += '<button class="jb-btn teal jb-quickbid" style="font-size:13px;padding:8px 12px;box-shadow:0 4px 0 #1b0f3b" data-bid="' + amt + '"' + ((passed || leader || amt > myCash) ? ' disabled' : '') + '>+' + step + '</button>';
+    });
+    $('jb-auction-btns').innerHTML = btns;
+    $('jb-auction').classList.add('show');
+    $('jb-auction-btns').querySelectorAll('[data-bid]').forEach(function (b) {
+      tap(b, function () { doAction('/auction_bid', { amount: +b.dataset.bid }); kit.sound.play('coin'); });
+    });
+    tap($('jb-auction-pass'), function () { doAction('/auction_pass', {}); });
+  }
+
+  function renderActions() {
+    var room = state.room;
+    if (!room) return;
+    if (room.status === 'lobby' || room.status === 'finished') { $('jb-auction').classList.remove('show'); $('jb-action').innerHTML = ''; return; }
+    var me = meSeat(), myTurn = room.turn === me, html = '';
+    var my = room.players[me] || {};
+    var p = room.pending;
+
+    if (p && myTurn) {
+      if (p.kind === 'buy') {
+        html = '<button class="jb-btn big" id="jb-act-buy">Buy - $' + fmt(p.price) + '</button>'
+          + '<button class="jb-btn coral" id="jb-act-auction">Send to Auction</button>';
+      } else if (p.kind === 'tribute') {
+        html = '<button class="jb-btn gold big" id="jb-act-flat">Pay Flat $' + fmt(p.flat) + '</button>'
+          + '<button class="jb-btn gold big" id="jb-act-pct">Pay 10% ($' + fmt(p.percent) + ')</button>';
+      } else if (p.kind === 'debt') {
+        var canPay = (my.cash || 0) >= p.amount;
+        html = '<button class="jb-btn big" id="jb-act-manage">⚖ Pay / Raise Funds - $' + fmt(p.amount) + '</button>'
+          + '<button class="jb-btn coral" id="jb-act-bankrupt">Bankruptcy</button>';
+        html += '<div class="jb-hint">' + (canPay ? 'Tap Pay when you have the cash!' : 'Raise cash by mortgaging or selling buildings. Tap to manage your land.') + '</div>';
+      }
+    } else if (room.auction && room.auction.high_bidder !== undefined) {
+      var a = room.auction;
+      renderAuctionBar({ space: a.space, spaceName: (room.board[a.space] || {}).name || 'Land', high_bid: a.high_bid, high_bidder: a.high_bidder, passed: a.passed });
+      html = '<div class="jb-hint">Bidding for <b>' + esc((room.board[a.space] || {}).name || 'Land') + '</b></div>';
+    } else {
+      $('jb-auction').classList.remove('show');
+      if (myTurn) {
+        var inJail = !!my.in_jail;
+        if (!room.rolled) {
+          if (inJail) {
+            html += '<button class="jb-btn big" id="jb-act-roll">🎲 Roll for Doubles</button>';
+            html += '<button class="jb-btn" id="jb-act-fine">Pay $50</button>';
+            if ((my.jail_cards || 0) > 0) html += '<button class="jb-btn" id="jb-act-card">Get-Out Card (' + my.jail_cards + ')</button>';
+          } else {
+            html += '<button class="jb-btn big" id="jb-act-roll">🎲 Roll the Dice</button>';
+          }
+          html += '<div class="jb-row jb-actions-secondary"><button class="jb-btn ghost" id="jb-act-manage">🔨 Manage</button>'
+            + '<button class="jb-btn ghost" id="jb-act-trade">🤝 Trade</button></div>';
+        } else if (room.bonus_roll) {
+          html += '<button class="jb-btn big" id="jb-act-roll">🎲 Bonus Roll!</button>';
+        } else {
+          html += '<button class="jb-btn teal big" id="jb-act-end">End Turn</button>'
+            + '<div class="jb-row jb-actions-secondary"><button class="jb-btn ghost" id="jb-act-manage">🔨 Manage</button>'
+            + '<button class="jb-btn ghost" id="jb-act-trade">🤝 Trade</button></div>';
+        }
+      } else {
+        var cur = room.players[room.turn];
+        html = '<div class="jb-waitingchip">' + esc(cur ? cur.name : '…') + "'s turn…</div>";
+      }
+    }
+    $('jb-action').innerHTML = html;
+    (function wire() {
+      var b;
+      if ((b = $('jb-act-buy'))) tap(b, function () { doAction('/buy', {}); kit.sound.play('coin'); });
+      if ((b = $('jb-act-auction'))) tap(b, function () { doAction('/decline', {}); });
+      if ((b = $('jb-act-flat'))) tap(b, function () { doAction('/tribute_choice', { choice: 'flat' }); });
+      if ((b = $('jb-act-pct'))) tap(b, function () { doAction('/tribute_choice', { choice: 'percent' }); });
+      if ((b = $('jb-act-manage'))) tap(b, function () { openManage(p && p.kind === 'debt'); });
+      if ((b = $('jb-act-bankrupt'))) tap(b, function () { doAction('/declare_bankruptcy', {}); });
+      if ((b = $('jb-act-roll'))) tap(b, function () { doAction(inJailVar() ? '/jail_roll' : '/roll', {}); });
+      if ((b = $('jb-act-fine'))) tap(b, function () { doAction('/jail_fine', {}); });
+      if ((b = $('jb-act-card'))) tap(b, function () { doAction('/jail_card', {}); });
+      if ((b = $('jb-act-end'))) tap(b, function () { doAction('/end_turn', {}); });
+      if ((b = $('jb-act-trade'))) tap(b, openTrade);
+      if ((b = $('jb-act-manage'))) { /* handled above */ }
+    })();
+    function inJailVar() { return !!(state.room && state.room.players[meSeat()] && state.room.players[meSeat()].in_jail); }
+  }
+
+  /* ---------- FX: dice tumble, token hops, log cues ---------- */
+  function screenShake() {
+    document.body.classList.remove('jb-shake');
+    void document.body.offsetWidth;
+    document.body.classList.add('jb-shake');
+    window.setTimeout(function () { document.body.classList.remove('jb-shake'); }, 500);
+  }
+  function flashRed() {
+    var f = $('jb-flash');
+    f.classList.add('on');
+    window.setTimeout(function () { f.classList.remove('on'); }, 280);
+  }
+  function goldBurst(x, y) {
+    kit.fx.burst(x, y, ['#ffc83d', '#ffe27a', '#f59e0b', '#fff8e7'], 34, { speed: 300, lift: 140, life: 1.1, size: 6, shape: 'star' });
+  }
+
+  var FACE_ROT = { 1: [0, 0], 2: [90, 0], 3: [0, -90], 4: [0, 90], 5: [-90, 0], 6: [0, 180] };
+  function tumbleDice(d1, d2) {
+    var host = $('jb-dice');
+    host.innerHTML = '';
+    [[d1, 'd1'], [d2, 'd2']].forEach(function (pair) {
+      var v = pair[0];
+      var die = document.createElement('div');
+      die.className = 'jb-die';
+      var cube = document.createElement('div');
+      cube.className = 'jb-cube';
+      var faces = [['front', 1], ['back', 6], ['right', 3], ['left', 4], ['top', 5], ['bottom', 2]];
+      faces.forEach(function (f) {
+        var face = document.createElement('div');
+        face.className = 'jb-face ' + f[0];
+        face.setAttribute('data-v', f[1]);
+        for (var p = 0; p < 9; p++) {
+          var pip = document.createElement('div');
+          pip.className = 'jb-pip';
+          face.appendChild(pip);
+        }
+        cube.appendChild(face);
+      });
+      die.appendChild(cube);
+      host.appendChild(die);
+      var rot = FACE_ROT[v] || [0, 0];
+      cube.style.transform = 'rotateX(' + (rot[0] - 720) + 'deg) rotateY(' + (rot[1] - 720) + 'deg)';
+    });
+    host.classList.add('show');
+    window.setTimeout(function () {
+      host.querySelectorAll('.jb-cube').forEach(function (cube, i) {
+        var v = i === 0 ? d1 : d2;
+        var rot = FACE_ROT[v] || [0, 0];
+        cube.style.transform = 'rotateX(' + rot[0] + 'deg) rotateY(' + rot[1] + 'deg)';
+      });
+      kit.sound.noise(0.32, { filter: 'bandpass', freq: 700, vol: 0.5 });
+      kit.haptic(18);
+    }, 30);
+    window.setTimeout(function () { host.classList.remove('show'); host.innerHTML = ''; }, 1500);
+  }
+
+  function queueHop(seat, from, to) {
+    state.hopQueue.push({ seat: seat, from: from, to: to, start: 0, dur: 340 });
+  }
+
+  function startHop(h) {
+    state.hopAnim = h;
+    h.start = performance.now();
+  }
+
+  function diffFx(prev, next) {
+    if (!next) return;
+    // dice
+    var rollChanged = next.last_roll && (!prev || !prev.last_roll || prev.last_roll[0] !== next.last_roll[0] || prev.last_roll[1] !== next.last_roll[1] || prev.rolled !== next.rolled);
+    if (rollChanged && next.rolled) tumbleDice(next.last_roll[0], next.last_roll[1]);
+    // hops
+    if (prev && prev.players) {
+      next.players.forEach(function (p, seat) {
+        var old = prev.players[seat];
+        if (!old) return;
+        var steps = (p.position - old.position + 40) % 40;
+        if (steps > 0 && steps <= 8 && !p.bankrupt) {
+          for (var s = 0; s < steps; s++) queueHop(seat, (old.position + s) % 40, (old.position + s + 1) % 40);
+        } else if (steps !== 0) {
+          state.displayedPos[seat] = p.position;
+        }
+      });
+    }
+    // log cues
+    var prevLen = prev && prev.log ? prev.log.length : 0;
+    var lines = (next.log || []).slice(prevLen);
+    lines.forEach(function (line) {
+      if (/passes Jubilee!/.test(line)) {
+        var r = $('jb-board-wrap').getBoundingClientRect();
+        goldBurst(r.left + r.width / 2, r.top + r.height / 2);
+        kit.sound.play('coin');
+        kit.haptic(25);
+      } else if (/pay/i.test(line) && /\$\d/.test(line)) {
+        flashRed(); screenShake(); kit.sound.play('bad');
+      } else if (/Dungeon/.test(line)) {
+        flashRed(); screenShake(); kit.sound.noise(0.4, { filter: 'bandpass', freq: 320, vol: 0.45 });
+      } else if (/is bankrupt/i.test(line)) {
+        screenShake(); flashRed();
+        kit.fx.burst(innerWidth / 2, innerHeight / 2, ['#ff6b6b', '#d32f2f', '#ffc83d'], 40, { speed: 340, lift: 120, life: 1.2, size: 7, shape: 'square' });
+      } else if (/builds?|hotels?|buildings?/i.test(line)) {
+        var r2 = $('jb-board-wrap').getBoundingClientRect();
+        kit.fx.burst(r2.left + r2.width / 2, r2.top + r2.height / 2, ['#34d399', '#2e9e5b', '#ffe27a'], 26, { speed: 240, lift: 150, life: 0.9, size: 5, shape: 'star' });
+        kit.sound.play('pop');
+      } else if (/draws -/.test(line)) {
+        showCardReveal(line);
+      }
+    });
+  }
+
+  function showCardReveal(line) {
+    var room = state.room;
+    var mover = null;
+    var m = /^(.+?) draws -/.exec(line);
+    if (m && room && room.players) mover = room.players.filter(function (p) { return p.name === m[1]; })[0] || null;
+    var tile = mover ? (room.board[mover.position] || {}) : {};
+    var kind = tile.kind === 'chance' ? 'PARABLE' : tile.kind === 'chest' ? 'SCRIPTURE' : 'JUBILEE!';
+    var verse = line;
+    var effect = '';
+    var open = line.indexOf('“');
+    var close = line.lastIndexOf('”');
+    if (open !== -1 && close > open) {
+      verse = line.slice(open + 1, close);
+      effect = line.slice(close + 1).replace(/^[\s--]+/, '').trim();
+    }
+    $('jb-card-kind').textContent = kind === 'PARABLE' ? '📖 A Parable' : kind === 'SCRIPTURE' ? '✦ Scripture' : '🎺 Jubilee!';
+    $('jb-card-verse').textContent = verse;
+    $('jb-card-effect').textContent = effect || line;
+    $('jb-cardreveal').classList.add('show');
+    kit.sound.play('whoosh');
+    kit.haptic(30);
+    window.setTimeout(function () { $('jb-cardreveal').classList.remove('show'); }, 2800);
+  }
+
+  /* ---------- Polling ---------- */
+  function startPolling() {
+    stopPolling();
+    state.pollTimer = window.setInterval(poll, 1100);
+    poll();
+  }
+  function stopPolling() {
+    if (state.pollTimer) window.clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+  var pollFails = 0;
+  function poll() {
+    if (!state.code) return;
+    fetch('/api/jubilee/rooms/' + encodeURIComponent(state.code) + '?player_id=' + encodeURIComponent(state.pid), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (out) {
+        if (!out || !out.success || !out.room) {
+          pollFails++;
+          if (pollFails >= 5) { stopPolling(); leaveToLobby('That room has ended.'); }
+          return;
+        }
+        pollFails = 0;
+        applyState(out.room);
+      })
+      .catch(function () { pollFails++; });
+  }
+
+  /* ---------- Match end ---------- */
+  function showEnd(room) {
+    if (state.endedShown) return;
+    state.endedShown = true;
+    var standings = (room.players || []).slice().sort(function (a, b) { return (b.net_worth || 0) - (a.net_worth || 0); });
+    var winner = standings[0] || {};
+    $('jb-end-title').textContent = (winner.name || 'Someone') + ' wins the Jubilee!';
+    var html = '';
+    standings.forEach(function (p, i) {
+      html += '<div class="jb-standrow' + (i === 0 ? ' winner' : '') + '"><div class="rank">' + (i + 1) + '</div>'
+        + '<div class="nm">' + esc(p.name) + (p.is_ai ? ' <span style="color:#b9aee0">·scribe</span>' : '') + '</div>'
+        + '<div class="nw">$' + fmt(p.net_worth || 0) + '</div></div>';
+    });
+    $('jb-end-standings').innerHTML = html;
+    $('jb-end').classList.add('show');
+    // celebrate
+    var r = $('jb-board-wrap').getBoundingClientRect();
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    kit.fx.burst(cx, cy, ['#ffc83d', '#ffe27a', '#2ed3b7', '#7c5cff', '#ff6b6b', '#fff8e7'], 90, { speed: 520, lift: 260, life: 1.8, size: 7, shape: 'star' });
+    kit.sound.play('win');
+    kit.haptic([40, 40, 40]);
+    // score bridge, once per human
+    if (!state.scorePosted) {
+      state.scorePosted = true;
+      var me = (room.players || []).filter(function (p) { return room.you && p.seat === room.you.seat; })[0];
+      kit.setScore(Math.max(1, (me && me.net_worth) || 1), { quiet: true });
+      kit.gameOver({ title: (winner.name || 'Someone') + ' wins the Jubilee!', emoji: '👑', win: room.you && winner.seat === room.you.seat, stats: standings.map(function (p) { return [p.name, '$' + fmt(p.net_worth || 0)]; }) });
+    }
+  }
+
+  /* ---------- Master frame loop ---------- */
+  var lastFrame = 0;
+  function frame(t) {
+    var dt = Math.min(0.05, (t - lastFrame) / 1000 || 0.016);
+    lastFrame = t;
+    drawBg(t / 1000);
+    // hops
+    if (!state.hopAnim && state.hopQueue.length) startHop(state.hopQueue.shift());
+    if (state.hopAnim) {
+      var h = state.hopAnim;
+      var k = Math.min(1, (t - h.start) / h.dur);
+      if (!(k >= 0)) k = 0;
+      h.lift = Math.sin(Math.PI * k) * 34;
+      state.displayedPos[h.seat] = h.from + k;
+      if (k >= 1) {
+        state.displayedPos[h.seat] = h.to;
+        state.hopAnim = null;
+        var sp = tileCenter(h.to);
+        var scr = svgToScreen(sp.x, sp.y);
+        kit.fx.burst(scr.x, scr.y, ['#d9c8a0', '#b9a86e', '#fff8e7'], 8, { speed: 120, lift: 40, life: 0.5, size: 3.5 });
+        kit.sound.play('pop');
+      }
+    }
+    renderTokensLayer();
+    // fx
+    kit.fx.update(dt);
+    fxCtx.clearRect(0, 0, fxCtx.canvas.width, fxCtx.canvas.height);
+    kit.fx.draw(fxCtx);
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- Boot ---------- */
+  function leaveToLobby(msg) {
+    stopPolling();
+    state.room = null; state.prevRoom = null; state.code = ''; state.pid = ''; state.meSeat = null;
+    state.endedShown = false; state.scorePosted = false; state.hopQueue = []; state.hopAnim = null; state.displayedPos = [];
+    $('jb-end').classList.remove('show');
+    $('jb-auction').classList.remove('show');
+    showLobbyMain();
+    if (msg) $('jb-lobby-err').textContent = msg;
+  }
+
+  tap($('jb-leave'), function () {
+    var code = state.code, pid = state.pid;
+    leaveToLobby();
+    if (code && pid) post('/api/jubilee/rooms/' + encodeURIComponent(code) + '/leave', { player_id: pid }).catch(function () {});
+  });
+  tap($('jb-code'), function () {
+    var url = location.origin + '/play/family-jubilee#room=' + state.code;
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(function () { $('jb-code-v').textContent = 'Copied!'; window.setTimeout(function () { if (state.code) $('jb-code-v').textContent = state.code; }, 1200); }, function () {});
+  });
+  tap($('jb-end-again'), function () {
+    if (state.busy) return;
+    state.busy = true;
+    post('/api/jubilee/rooms/' + encodeURIComponent(state.code) + '/restart', { player_id: state.pid }).then(function (out) {
+      state.busy = false;
+      if (out && out.success && out.room) {
+        $('jb-end').classList.remove('show');
+        state.endedShown = false; state.scorePosted = false;
+        kit.start();
+        applyState(out.room);
+      } else kit.toast((out && out.error) || 'Could not rematch');
+    });
+  });
+  tap($('jb-end-leave'), function () {
+    var code = state.code, pid = state.pid;
+    leaveToLobby();
+    if (code && pid) post('/api/jubilee/rooms/' + encodeURIComponent(code) + '/leave', { player_id: pid }).catch(function () {});
+  });
+
+  renderTokens();
+  renderRulesets();
+  renderToggles();
+  nameInput.value = launchName || store.get('name') || '';
+
+  window.addEventListener('resize', function () { resizeFx(); resizeBg(); });
+  resizeFx(); resizeBg();
+  requestAnimationFrame(frame);
+
+  // auto-join from #room=CODE
+  if (launchRoom) {
+    var stored = store.get('pid:' + launchRoom);
+    post('/api/jubilee/rooms', { code: launchRoom, player_id: stored || '', name: launchName || store.get('name') || '', device_id: deviceId, initials: initialsFor(launchName || store.get('name') || '') })
+      .then(function (out) { if (out && out.success && out.room) enterRoom(out.player_id, launchRoom, out.room); else showLobbyMain(); })
+      .catch(function () { showLobbyMain(); });
+  } else {
+    showLobbyMain();
+  }
+})();
+</script>
+<style>
+  /* players rail */
+  .jb-face-sm { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; position: relative; }
+  .jb-pname { font-size: 12px; font-weight: 900; color: #efe9ff; line-height: 1.15; max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jb-you { position: absolute; top: -6px; right: -6px; background: var(--gold); color: var(--ink); font-size: 9px; font-weight: 900; border-radius: 99px; padding: 2px 5px; }
+  .jb-pcash { font-size: 12px; font-weight: 800; color: var(--gold2); font-variant-numeric: tabular-nums; }
+  .jb-jail { display: inline-block; font-size: 9px; font-weight: 900; color: #ffd7d7; background: rgba(255,90,90,.28); border-radius: 99px; padding: 2px 6px; margin-top: 2px; }
+  /* actions + tabs */
+  .jb-hint { width: 100%; text-align: center; font-size: 12px; font-weight: 700; color: #cbb9ff; padding: 4px 8px 0; }
+  .jb-waitingchip { font-size: 15px; font-weight: 800; color: #b9aee0; background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 99px; padding: 12px 22px; }
+  .jb-actions-secondary { margin-top: 6px; }
+  .jb-logline { font-size: 12px; font-weight: 700; color: #e8e2ff; padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,.06); line-height: 1.35; }
+  /* board svg */
+  .jb-tile { cursor: pointer; }
+  .jb-tile:hover rect:first-child { stroke: var(--gold); stroke-width: 3; }
+  .jb-rays { animation: jb-rayspin 60s linear infinite; transform-origin: 480px 480px; }
+  @keyframes jb-rayspin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .jb-rays { animation: none; } }
+</style>
+</body>
+</html>

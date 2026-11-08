@@ -71,6 +71,7 @@ SOURCE_FIELDS = (
     "ages",
     "players",
     "party",
+    "tv_path",
     "version",
     "metric",
     "higher_is_better",
