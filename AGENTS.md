@@ -4,7 +4,7 @@
 Alpaca is an LLM model management, benchmarking, and telemetry dashboard for local GPU deployments. It provides:
 - **Model pull/download** from Ollama Registry and Hugging Face GGUF repos
 - **Router-based model management** with automatic hot-swap between models
-- **Functional & performance benchmarking** across 300 general tests, 49 SharedLLM tasks and one
+- **Functional & performance benchmarking** across 307 general tests, 49 SharedLLM tasks and one
   multi-turn agentic workflow
 - **Real-time telemetry** (VRAM, RAM, context usage) with self-healing triggers
 - **Image generation** (stable-diffusion.cpp) with deterministic text composition
@@ -74,7 +74,7 @@ images and need `sudo docker compose up -d --build <service>`.
 | `analyzer.py` | Telemetry-driven llama.cpp tuning recommendations |
 | `telemetry_monitor.py` | Async daemon polling llama-server metrics, writes `data/telemetry/{model}.jsonl` |
 | `benchmark-configs.py` | ctx × cache × flash-attn sweep, then a prefill-only batch sweep, then a quality check |
-| `benchmark_tests.json` | **300 tests in 47 categories** - the general suite's data |
+| `benchmark_tests.json` | **307 tests in 48 categories** - the general suite's data |
 | `web/app.py` | Flask web server + SocketIO - dashboard API, benchmark runner, model pull orchestration, podcast routes |
 | `web/podcast_mixer.py` | The podcast mixer: script parsing, bed synthesis, ducking, WAV encode - numpy only |
 
@@ -121,10 +121,17 @@ images and need `sudo docker compose up -d --build <service>`.
   generic: Gemma 4's projector is `mmproj-F16.gguf`, the same name qwen2.5-vl's uses. A companion
   pull now refuses to replace a same-named file of a different size; pass `--name <distinct-file>`.
   (Before, it deleted the existing file, silently breaking the other model's vision.)
-- `pull_model()` **reindexes on success, which rewrites models.ini.** Never pull while
-  `settings_scan.py` runs: the scan writes the whole ini from its in-memory copy, so the two erase
-  each other's sections. To download during a scan, call `import_huggingface_gguf()` directly and
-  reindex afterwards.
+- **A pull rewrites models.ini** (`import_huggingface_gguf` calls `update_models_ini` itself, not just
+  `pull_model`). Never let that happen while `settings_scan.py` runs: the scan writes the whole ini
+  from its in-memory copy, so the two erase each other's sections. During a scan use
+  `alpaca-puller.py pull <hf ref> --name <n> --download-only` (blob + manifest only), then register
+  with `sudo docker compose run --rm alpaca-indexer` once the scan is done.
+- **Reindex inside the container, never on the host.** Router links are relative to the container
+  layout (`../models/blobs` = `/models`), so on the host every one of them dangles. A host-side
+  `update_models_ini` used to drop the section of every model it could not follow: on 2026-11-09 a
+  host-side import wiped models.ini down to the one new model (and gave that model a host-relative
+  link the container cannot follow). It now keeps an existing section whose link does not resolve
+  and warns; the container's `alpaca-indexer` is still the only correct way to (re)build sections.
 
 ### Router Model IDs
 - Model IDs in the router use `--` as separator: `qwen3.6-35b-a3b--q4_k_m`
@@ -467,6 +474,25 @@ container that has torch). `tests/test_sharedllm_contract.py` pins alpaca's copy
 vocabulary against SharedLLM's in **both** directions, so a tool added on either side without the
 other fails the build.
 
+### Vision benchmarks (`vision` group, `scripts/gen_vision_fixtures.py`)
+- Eight drawn images with known answers (receipt total, device serial, table cell, which switch is
+  on, a settings screen's battery level, a bar chart against gridlines, counting red circles among
+  red squares, a grid cell). The generator draws them deterministically and writes them into
+  `benchmark_tests.json` as `data_base64` attachments (`data/` is gitignored); edit the generator and
+  re-run it with `--apply`, never the JSON. `test_the_shipped_vision_category_is_what_the_generator_draws`
+  keeps the two in step. Answers are numeric or exact strings - a letter key would join the
+  multiple-choice balance, and a word can pass by accident when a model lists every option.
+- The runner sends image attachments as the proxy's Ollama `images` field. **A model without a
+  projector is skipped, not failed**: llama-server rejects the image ("image input is not supported -
+  ... mmproj"), the result carries `skipped: true`, it is left out of every score, and a group whose
+  tests were all skipped emits no `category_` block at all. The direct path and online providers
+  skip image tests too (no image transport there). `_get_test_benchmark_stats` ignores skipped runs.
+- Dashboard: `👁 Run Vision` and `⚡ Quick Benchmark` run one group on the SELECTED models (unlike
+  Run Frontier All, which selects every model: a vision run on a text model is a wasted model swap).
+  Vision tests are `kind: "image"`, so the Test Browser shows each image; results show `Skipped`.
+- The old `mm_image_light_switch` referred to an "attached" image it never had; it was removed and
+  the switch panel is now a real vision test.
+
 ### Creative benchmark tests (all in `benchmark_tests.json`, all scored)
 | Test | Category | Type | What the grader actually checks |
 |---|---|---|---|
@@ -756,7 +782,7 @@ and **`addopts = "-q -m 'not live'"`** - the `live` marker is deselected by defa
 | `test_podcast_mixer.py` + `test_podcast_routes.py` + `test_podcast_frontend.py` | Podcast Studio end to end |
 | `test_telemetry_monitor_unit.py` / `test_analyzer_unit.py` / `test_imageops_unit.py` | The daemons and the deterministic image editor |
 | `test_dashboard_frontend.py` / `test_podcast_frontend.py` | `dashboard.js` via the **node-slice** technique |
-| `test_benchmark_tests_schema.py` | All 300 tests + `_compute_test_hash` semantics + the answer-key balance |
+| `test_benchmark_tests_schema.py` | All 307 tests + `_compute_test_hash` semantics + the answer-key balance |
 | `test_manuscript_rubric.py` / `test_screenshot_ink_coverage.py` | The illuminated-manuscript rubric; the blank-page gate |
 | `test_composite_sprite_game.py` | The `composite` tool-test path end to end, through the real publisher |
 | `test_svg_theme_pack_grader.py` / `test_install_theme_pack.py` | The SVG theme-pack grader and its installer |

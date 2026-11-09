@@ -956,6 +956,10 @@ def _get_test_benchmark_stats():
                 tid = t.get("test_id")
                 if not tid:
                     continue
+                if t.get("skipped"):
+                    # The model cannot take this input (a vision test on a
+                    # text-only model): it was not tested, and did not fail.
+                    continue
 
                 if tid not in stats:
                     stats[tid] = {

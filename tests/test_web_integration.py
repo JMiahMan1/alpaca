@@ -2548,3 +2548,21 @@ def test_ooda_status_and_refresh_routes(client, tmp_path, monkeypatch):
     refreshed = client.post("/api/arcade/ooda/refresh")
     assert refreshed.status_code == 200
     assert refreshed.get_json()["added"] == ["demo_space"]
+
+
+def test_dashboard_offers_quick_and_vision_runs_and_marks_skips(client):
+    index = client.get("/").data
+    assert b'id="btn-run-quick"' in index and b'id="btn-run-vision"' in index
+    js = client.get("/static/js/dashboard.js").data.decode()
+    assert "runGroupOnSelected(btnRunVision, 'vision'" in js
+    assert "test.skipped ? 'skip'" in js
+
+
+def test_vision_tests_are_image_kind_and_serve_their_png(client):
+    tests = client.get("/api/tests").get_json()["tests"]
+    vision = [t for t in tests if t["id"].startswith("vision_")]
+    assert len(vision) == 8 and all(t["kind"] == "image" for t in vision)
+    t = vision[0]
+    res = client.get(f"/api/tests/{t['id']}/attachment/{t['attachments'][0]['name']}")
+    assert res.status_code == 200 and res.mimetype == "image/png"
+    assert res.data[:8] == b"\x89PNG\r\n\x1a\n"

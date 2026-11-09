@@ -40,7 +40,9 @@ VALID_FRAMEWORKS = {"lvgl"}
 # three prompts are asking about something the model cannot see. They have
 # never produced a result file. This set is a shrink-only allow-list: a fourth
 # attachment-dependent test fails the suite until the runner is wired.
-KNOWN_UNWIRED_ATTACHMENT_TESTS = {"mm_image_light_switch", "mm_html_form_render", "mm_node_fib"}
+# mm_image_light_switch left this list by being replaced: the vision category
+# (scripts/gen_vision_fixtures.py) carries real image attachments.
+KNOWN_UNWIRED_ATTACHMENT_TESTS = {"mm_html_form_render", "mm_node_fib"}
 
 # `performance` ships two rows with an EMPTY prompt; `web/app.py` substitutes the
 # real ~800/~1000-token load prompt when it serves `/api/tests`. They are the

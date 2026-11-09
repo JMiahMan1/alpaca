@@ -230,6 +230,40 @@ def _model_sampling_options(model: str) -> dict:
     return options
 
 
+# A server with no vision projector rejects an image instead of ignoring it;
+# llama-server says "image input is not supported - ... provide the mmproj".
+_NO_VISION_RE = re.compile(r"mmproj|image input|multimodal|vision|not support\w*[^.]{0,40}image", re.I)
+
+
+def _test_images(test: dict) -> list[str]:
+    """Base64 payloads of a test's image attachments, for the proxy's Ollama
+    `images` field. Empty for every test without one."""
+    out: list[str] = []
+    for att in test.get("attachments") or []:
+        if not isinstance(att, dict) or not att.get("data_base64"):
+            continue
+        name = str(att.get("name", "")).lower()
+        if str(att.get("mime", "")).startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".webp")):
+            out.append(str(att["data_base64"]))
+    return out
+
+
+def _skipped_result(test: dict, why: str) -> dict:
+    """A result that is not a failure: the model cannot take this input at all
+    (a vision test on a text-only model). Left out of every score."""
+    return {
+        "success": False,
+        "skipped": True,
+        "prompt": test.get("prompt"),
+        "response": None,
+        "latency": 0,
+        "tokens_generated": 0,
+        "eval_duration": 0,
+        "prompt_eval_duration": 0,
+        "error": f"skipped: {why}",
+    }
+
+
 def _ascii_fold(text: str) -> str:
     """Fold a string to ASCII so accented answers match ascii expectations.
 
@@ -1592,6 +1626,9 @@ class LLMModelBenchmark:
 
     def _logic_tests(self, model: str) -> list[dict]:
         return self.tests_config.get("logic", [])
+
+    def _vision_tests(self, model: str) -> list[dict]:
+        return self.tests_config.get("vision", [])
 
     def _retrogames_tests(self, model: str) -> list[dict]:
         return self.tests_config.get("retrogames", [])
@@ -4020,6 +4057,9 @@ class LLMModelBenchmark:
 
     async def test_model_proxy(self, model: str, test: dict, sampler: ResourceSampler | None = None) -> dict:
         """Test a model against a proxy endpoint or online provider."""
+        images = _test_images(test)
+        if images and online_model_provider.is_online_model(model):
+            return _skipped_result(test, "image input is not wired for online providers")
         if online_model_provider.is_online_model(model):
             try:
                 self._pace_online_request(model)
@@ -4110,6 +4150,9 @@ class LLMModelBenchmark:
                     "increase the backend ctx-size."
                 ),
             }
+        user_message: dict = {"role": "user", "content": test["prompt"]}
+        if images:
+            user_message["images"] = images
         for proxy_url in self.PROXY_SERVER_URLS:
             try:
                 start_t = time.time()
@@ -4118,7 +4161,7 @@ class LLMModelBenchmark:
                         sampler.start()
                     payload = {
                         "model": model,
-                        "messages": [{"role": "user", "content": test["prompt"]}],
+                        "messages": [user_message],
                         "stream": True,
                         "think": think_on,
                         "options": {
@@ -4137,6 +4180,8 @@ class LLMModelBenchmark:
                             body = (await response.aread()).decode("utf-8", "replace")
                             if sampler:
                                 await sampler.stop()
+                            if images and _NO_VISION_RE.search(body):
+                                return _skipped_result(test, "model has no vision support (no mmproj)")
                             return {
                                 "proxy": proxy_url,
                                 "success": False,
@@ -4181,7 +4226,7 @@ class LLMModelBenchmark:
                             payload2 = {
                                 "model": model,
                                 "messages": [
-                                    {"role": "user", "content": test["prompt"]},
+                                    user_message,
                                     {"role": "assistant", "content": response_text},
                                     {
                                         "role": "user",
@@ -4743,6 +4788,10 @@ class LLMModelBenchmark:
 
     async def test_model_direct(self, model: str, test: dict, sampler: ResourceSampler | None = None) -> dict:
         """Test a model directly without proxy or via online provider."""
+        if _test_images(test):
+            # /completion takes a prompt string; images travel only through the
+            # proxy's chat path.
+            return _skipped_result(test, "image input needs the proxy path")
         if online_model_provider.is_online_model(model):
             if sampler:
                 sampler.start()
@@ -5104,6 +5153,8 @@ class LLMModelBenchmark:
             "typescript": self._typescript_tests,
             "rpm": self._rpm_tests,
             "android": self._android_tests,
+            # Image input: skipped (not failed) on models without a projector.
+            "vision": self._vision_tests,
             # Heavy knowledge/reasoning corpora last.
             "knowledge": self._knowledge_tests,
             "mmlu_pro": self._mmlu_pro_tests,
@@ -5256,6 +5307,8 @@ class LLMModelBenchmark:
                     _resp = test_result.get("response") or ""
                     _err = (test_result.get("error") or "").lower()
                     _empty = (not _resp) and ("empty" in _err or test_result.get("tokens_generated", 0) == 0)
+                    if test_result.get("skipped"):
+                        break
                     if test_result.get("success") or not _empty or _attempt >= attempts - 1:
                         break
                     print(f"[benchmark] empty result for {test['id']} (attempt {_attempt + 1}); retrying")
@@ -5525,6 +5578,11 @@ class LLMModelBenchmark:
                     except Exception as e:
                         print(f"Callback error: {e}")
 
+            if category_results and all(r.get("skipped") for r in category_results):
+                # e.g. the vision group on a text-only model: no block at all, so
+                # it neither scores 0 nor counts toward the overall average.
+                print(f"[benchmark] {category}: every test skipped ({category_results[0].get('error')})")
+                continue
             results[f"category_{category}"] = self._calculate_category_stats(category_results)
         model_provenance["finished_at"] = utc_timestamp()
         results["provenance"] = model_provenance
@@ -5990,6 +6048,8 @@ class LLMModelBenchmark:
         return 100 if result.get("success") else 0
 
     def _calculate_category_stats(self, results: list[dict]) -> dict:
+        all_results = results
+        results = [r for r in results if not r.get("skipped")]
         successful_tests = [r for r in results if r["success"]]
         scores: list[int] = []
         for r in results:
@@ -6006,7 +6066,7 @@ class LLMModelBenchmark:
                 "stars": self._stars(cat_score),
                 "avg_tokens_per_sec": 0,
                 "avg_ttft_ms": 0,
-                "tests": results,
+                "tests": all_results,
             }
         total_tokens = sum(r.get("tokens_generated", 0) for r in successful_tests)
         total_time = sum(self._extract_duration(r) for r in successful_tests)
@@ -6020,7 +6080,7 @@ class LLMModelBenchmark:
             "stars": self._stars(cat_score),
             "avg_tokens_per_sec": round(avg_tokens_per_sec, 2),
             "avg_ttft_ms": round(avg_ttft_ms, 1),
-            "tests": results,
+            "tests": all_results,
         }
 
     def _compute_overall(self, model_data: dict) -> dict:

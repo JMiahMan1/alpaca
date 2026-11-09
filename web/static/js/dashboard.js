@@ -60,6 +60,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const modeDirectBtn = document.getElementById('mode-direct-btn');
     const btnRun = document.getElementById('btn-run');
     const btnRunFrontierAll = document.getElementById('btn-run-frontier-all');
+    const btnRunQuick = document.getElementById('btn-run-quick');
+    const btnRunVision = document.getElementById('btn-run-vision');
     const btnRunShared = document.getElementById('btn-run-shared');
     const btnRunMultistep = document.getElementById('btn-run-multistep');
     const btnRunOutdated = document.getElementById('btn-run-outdated');
@@ -4168,6 +4170,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const groupLabels = {
                 frontier_diagnostics: 'Frontier Diagnostics',
                 quick_benchmark: `⚡ Quick Benchmark (${(data.quick_benchmark || []).length} all-round tests)`,
+                vision: '👁 Vision (image input)',
             };
             groupCheckboxes.innerHTML = '';
             if (groups.length === 0) {
@@ -7552,8 +7555,9 @@ const saved = _loadHumanRatings(t.id) || {};
                 
                 const tdStatus = document.createElement('td');
                 const badge = document.createElement('span');
-                badge.className = `td-badge ${test.success ? 'success' : 'fail'}`;
-                badge.textContent = test.success ? 'Success' : 'Fail';
+                badge.className = `td-badge ${test.skipped ? 'skip' : test.success ? 'success' : 'fail'}`;
+                badge.textContent = test.skipped ? 'Skipped' : test.success ? 'Success' : 'Fail';
+                if (test.skipped) badge.title = test.error || 'Skipped';
                 tdStatus.appendChild(badge);
 
                 const tdScore = document.createElement('td');
@@ -7980,6 +7984,40 @@ const saved = _loadHumanRatings(t.id) || {};
         });
     }
 
+    // One-group runs on the models the user picked. Unlike Run Frontier All they
+    // do not select every model: a vision run on a text-only model only loads it
+    // to have the images rejected (the result is "skipped"), which costs a model
+    // swap per model for nothing.
+    async function runGroupOnSelected(button, group, missingMsg) {
+        button.disabled = true;
+        try {
+            await Promise.all([loadTests(), loadBenchmarkGroups()]);
+            if (getSelectedModels().length === 0) {
+                showToast('Select the models to run first.', 'error');
+                return;
+            }
+            selectAllTestsBtn.click();
+            let found = false;
+            groupCheckboxes?.querySelectorAll('input[type="checkbox"]').forEach(box => {
+                box.checked = box.value === group;
+                if (box.checked) found = true;
+            });
+            if (!found) {
+                showToast(missingMsg, 'error');
+                return;
+            }
+            await triggerBenchmark('/api/run');
+        } finally {
+            if (!btnRun.disabled) button.disabled = false;
+        }
+    }
+    if (btnRunQuick) {
+        btnRunQuick.addEventListener('click', () => runGroupOnSelected(btnRunQuick, 'quick_benchmark', 'Quick Benchmark group is unavailable.'));
+    }
+    if (btnRunVision) {
+        btnRunVision.addEventListener('click', () => runGroupOnSelected(btnRunVision, 'vision', 'Vision group is unavailable.'));
+    }
+
     // Trigger Outdated-Only Benchmarks: re-run just the tests whose
     // definitions have changed since each model's last run.
     btnRunOutdated.addEventListener('click', () => triggerBenchmark('/api/run', { outdatedOnly: true }));
@@ -8029,6 +8067,7 @@ const saved = _loadHumanRatings(t.id) || {};
         btnRunMultistep.disabled = true;
         btnRunOutdated.disabled = true;
         if (btnRunFrontierAll) btnRunFrontierAll.disabled = true;
+            [btnRunQuick, btnRunVision].forEach((b) => { if (b) b.disabled = true; });
 
         if (isMultistep) {
             btnRunMultistep.innerHTML = `<span class="loader"></span> Starting...`;
@@ -8181,6 +8220,7 @@ const saved = _loadHumanRatings(t.id) || {};
             btnRunMultistep.disabled = true;
             btnRunOutdated.disabled = true;
             if (btnRunFrontierAll) btnRunFrontierAll.disabled = true;
+            [btnRunQuick, btnRunVision].forEach((b) => { if (b) b.disabled = true; });
             btnCancel.disabled = false;
             progressCard.classList.remove('d-none');
 
@@ -8195,6 +8235,7 @@ const saved = _loadHumanRatings(t.id) || {};
             btnRunMultistep.disabled = false;
             btnRunOutdated.disabled = false;
             if (btnRunFrontierAll) btnRunFrontierAll.disabled = false;
+            [btnRunQuick, btnRunVision].forEach((b) => { if (b) b.disabled = false; });
             btnRun.innerHTML = 'Run General';
             btnRunShared.innerHTML = 'Run SharedLLM';
             btnRunMultistep.innerHTML = '🛩 Run MultiStep';
