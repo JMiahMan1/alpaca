@@ -112,3 +112,33 @@ def test_a_lost_connection_says_reconnecting_instead_of_game_over(arcade_server,
     page.wait_for_selector("#tv-reconnect.on", timeout=12000)
     assert "GAME OVER" not in page.inner_text("body").upper()
     time.sleep(0.1)
+
+
+_FIT = """(sel) => {
+  const out = [];
+  document.querySelectorAll(sel).forEach((g, idx) => {
+    const rect = g.querySelector(':scope > rect'); if (!rect) return;
+    const x = +rect.getAttribute('x'), y = +rect.getAttribute('y'), w = +rect.getAttribute('width'), h = +rect.getAttribute('height');
+    g.querySelectorAll(':scope > text, :scope > circle, :scope > ellipse, :scope > g').forEach(el => {
+      if (el.getAttribute('display') === 'none' || el.getAttribute('fill') === 'none') return;
+      let b; try { b = el.getBBox(); } catch (e) { return; }
+      if (!b.width && !b.height) return;
+      const m = el.transform && el.transform.baseVal.consolidate ? el.transform.baseVal.consolidate() : null;
+      if (m) { const k = m.matrix; b = { x: k.e + b.x * k.a, y: k.f + b.y * k.d, width: b.width * k.a, height: b.height * k.d }; }
+      if (b.x < x + 1.5 || b.x + b.width > x + w - 1.5 || b.y < y + 1.5 || b.y + b.height > y + h - 1.5)
+        out.push(idx + ': ' + el.tagName + ' ' + (el.textContent || '').slice(0, 20));
+    });
+  });
+  return out;
+}"""
+
+
+def test_every_space_keeps_its_words_and_picture_inside_its_box(arcade_server, browser):
+    _, base = arcade_server
+    code, _ = _room()
+    page = browser.new_page(viewport={"width": 960, "height": 540})
+    page.goto(f"{base}/jubilee/tv/{code}")
+    page.wait_for_selector(".tvBoard svg text", timeout=8000)
+    page.wait_for_timeout(500)
+    spill = page.evaluate(_FIT, ".tvBoard svg > g[transform]")
+    assert spill == [], f"spilling out of their spaces: {spill}"
