@@ -1291,6 +1291,30 @@ def list_open_rooms() -> list[dict[str, Any]]:
         return out
 
 
+def live_rooms() -> list[dict[str, Any]]:
+    """Rooms with someone at the table right now, lobby or mid-game, newest
+    activity first: what the home-screen widget shows as "playing now"."""
+    with _lock:
+        now = time.time()
+        _prune_unlocked(now)
+        out = []
+        for room in sorted(_rooms.values(), key=lambda r: -float(r.get("updated_at") or 0)):
+            if room["status"] not in ("lobby", "playing"):
+                continue
+            humans = [p for p in room["players"] if p and not p.get("is_ai")]
+            if not humans or now - max(float(p.get("last_seen") or 0) for p in humans) > PRESENCE_SECONDS:
+                continue
+            out.append({
+                "code": room["code"],
+                "status": room["status"],
+                "players": [str(p.get("name") or "Player") for p in humans[:6]],
+                "player_count": len(room["players"]),
+                "joinable": room["status"] == "lobby" and len(room["players"]) < MAX_PLAYERS,
+                "created_at": room["created_at"],
+            })
+        return out
+
+
 def start_match(code: Any, player_id: Any) -> dict[str, Any]:
     """Seat the scribes, and deal the first hand - only the host may call it."""
     clean = _clean_code(code)

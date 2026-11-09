@@ -604,3 +604,14 @@ def test_a_snapshot_never_carries_a_device_marker():
     with checkers._lock:
         player = checkers._rooms[out["room"]["code"]]["seats"][RED]
         assert player["device_id"] == "dev-secret-marker"  # stored, never shared
+
+
+def test_live_rooms_show_waiting_and_playing_tables():
+    waiting = checkers.create_room(mode="friend", name="Ann")["room"]["code"]
+    duel = checkers.create_room(mode="friend", name="Cal")["room"]["code"]
+    checkers.join_room(duel, name="Dee")
+    rooms = {r["code"]: r for r in checkers.live_rooms()}
+    assert rooms[waiting]["status"] == "lobby" and rooms[waiting]["joinable"] is True
+    assert rooms[waiting]["players"] == ["Ann"]
+    assert rooms[duel]["status"] == "playing" and rooms[duel]["joinable"] is False
+    assert rooms[duel]["players"] == ["Cal", "Dee"]

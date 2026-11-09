@@ -1669,6 +1669,40 @@ def api_party_room_join_qr(code: str):
     return Response(buf.getvalue(), mimetype="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
+@app.route("/api/rooms/live", methods=["GET"])
+def api_rooms_live():
+    """Every multiplayer room with someone at it right now, across games: the
+    one list a phone widget or the family shelf shows as "playing now".
+
+    Each game keeps its own rooms; this is the shared view of them (the start
+    of the shared multiplayer registry). Codes and first names only.
+    """
+    rooms: list[dict] = []
+    sources = (
+        ("family-jubilee", "Jubilee!", "🎺", jubilee.live_rooms),
+        ("family-checkers", "Checkers", "⛀", checkers.live_rooms),
+    )
+    for slug, title, emoji, lister in sources:
+        try:
+            for r in lister():
+                rooms.append({"game": slug, "title": title, "emoji": emoji, **r})
+        except Exception as exc:  # one game's trouble never hides the others
+            print(f"[rooms/live] {slug}: {exc}", flush=True)
+    try:
+        for r in party.list_active_rooms():
+            if r.get("player_count", 0) <= 0:
+                continue
+            rooms.append({
+                "game": "party", "title": "Parable Party", "emoji": "🎉",
+                "code": r["code"], "status": "lobby" if r.get("phase") == "lobby" else "playing",
+                "players": r.get("players", []), "player_count": r.get("player_count", 0),
+                "joinable": r.get("phase") == "lobby", "created_at": r.get("created_at"),
+            })
+    except Exception as exc:
+        print(f"[rooms/live] party: {exc}", flush=True)
+    return jsonify({"success": True, "rooms": rooms})
+
+
 @app.route("/api/party/rooms", methods=["GET", "POST"])
 def api_party_rooms():
     if request.method == "GET":

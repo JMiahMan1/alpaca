@@ -767,6 +767,31 @@ def leave_room(code: Any, player_id: Any) -> dict[str, Any] | None:
         return snapshot_unlocked(room, player_id)
 
 
+def live_rooms() -> list[dict[str, Any]]:
+    """Rooms with a player present, waiting or mid-game, newest first (the
+    home-screen widget's "playing now")."""
+    now = time.time()
+    with _lock:
+        _prune_unlocked(now)
+        out = []
+        for room in sorted(_rooms.values(), key=lambda r: -float(r.get("updated_at") or 0)):
+            if room["status"] not in ("waiting", "playing"):
+                continue
+            seats = [room["seats"].get(RED), room["seats"].get(BLACK)]
+            if not any(_human_present(room, color, now) for color in (RED, BLACK) if room["seats"].get(color)):
+                continue
+            names = [str(s["name"]) for s in seats if s]
+            out.append({
+                "code": room["code"],
+                "status": "lobby" if room["status"] == "waiting" else "playing",
+                "players": names,
+                "player_count": len(names),
+                "joinable": room["status"] == "waiting" and room["seats"].get(BLACK) is None,
+                "created_at": room.get("created_at"),
+            })
+        return out
+
+
 def list_open_rooms() -> list[dict[str, Any]]:
     """Rooms still waiting for an opponent, newest activity first."""
     now = time.time()

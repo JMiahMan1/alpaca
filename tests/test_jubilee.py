@@ -6,6 +6,7 @@ whole file runs in the hermetic suite. Dice are made deterministic by
 monkeypatching ``secrets.randbelow``.
 """
 
+import time
 import pytest
 
 from arcade import jubilee
@@ -302,3 +303,21 @@ def test_http_join_redirects(client):
     r = client.get("/join/jubilee/WAVE")
     assert r.status_code == 302
     assert r.headers["Location"].endswith("#room=WAVE")
+
+
+def test_live_rooms_list_lobbies_and_games_with_someone_at_the_table():
+    lobby = _room(name="Mum")["room"]["code"]
+    playing, _pid = _started(name="Dad", token="ark")
+    rooms = {r["code"]: r for r in jubilee.live_rooms()}
+    assert rooms[lobby]["status"] == "lobby" and rooms[lobby]["joinable"] is True
+    assert rooms[lobby]["players"] == ["Mum"]
+    assert rooms[playing]["status"] == "playing" and rooms[playing]["joinable"] is False
+    # Scribes (the AI) are seated but never named as people at the table.
+    assert rooms[playing]["players"] == ["Dad"]
+
+
+def test_live_rooms_drop_a_table_everyone_left(monkeypatch):
+    code = _room(name="Gone")["room"]["code"]
+    later = time.time() + jubilee.PRESENCE_SECONDS + 5
+    monkeypatch.setattr(jubilee.time, "time", lambda: later)
+    assert code not in {r["code"] for r in jubilee.live_rooms()}
