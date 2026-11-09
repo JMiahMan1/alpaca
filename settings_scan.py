@@ -718,6 +718,19 @@ def hill_neighbors(
             mcs["moe-cache-cpu-share"] = MOE_CACHE_CPU_SHARE
             out.append(mcs)
 
+    # Every layer on the GPU with the experts of the first N layers in RAM:
+    # the layout that won for every MoE model on this card (qwen3.6 25 tok/s
+    # and ornith 24 tok/s, against 16 and 11 for the partial-ngl baseline,
+    # which spends VRAM on whole layers and leaves attention on the CPU). The
+    # smallest N the estimate admits; the expert cache is then probed on top
+    # of it if it wins.
+    if is_moe and not settings.get("n-cpu-moe"):
+        for k in range(n_layers + 1):
+            full = {**settings, "n-gpu-layers": str(n_layers), "n-cpu-moe": str(k)}
+            if fits(full):
+                out.append(full)
+                break
+
     up = dict(settings)
     ngl = int(up.get("n-gpu-layers", "0") or 0)
     if ngl < n_layers:

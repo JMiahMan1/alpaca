@@ -495,3 +495,24 @@ def test_a_winner_from_this_run_ends_the_rung_ladder_even_with_fresh():
     # --fresh ignores an earlier run's winner, but only that.
     assert not settings_scan.rung_already_won({"m::winner": won["m"]}, "m", fresh=True, won_this_run=set())
     assert not settings_scan.rung_already_won({}, "m", fresh=False, won_this_run=set())
+
+
+def test_moe_without_offloaded_experts_gets_the_all_layers_on_gpu_layout():
+    partial = {k: v for k, v in MOE_WORKING.items() if k != "n-cpu-moe"} | {"n-gpu-layers": "7"}
+    neighbors = settings_scan.hill_neighbors(partial, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=8188)
+    full = [n for n in neighbors if n.get("n-cpu-moe")]
+    assert len(full) == 1
+    cand = full[0]
+    assert cand["n-gpu-layers"] == "40"
+    k = int(cand["n-cpu-moe"])
+    # The smallest expert offload the estimate admits: one fewer would not fit.
+    assert settings_scan._est_vram_mb(cand, MOE_SHAPE, 65536) <= 8188 * settings_scan.VRAM_TARGET_FRAC
+    tighter = {**cand, "n-cpu-moe": str(k - 1)}
+    assert settings_scan._est_vram_mb(tighter, MOE_SHAPE, 65536) > 8188 * settings_scan.VRAM_TARGET_FRAC
+
+
+def test_dense_models_never_get_an_expert_offload_layout():
+    shape = {**MOE_SHAPE, "expert_count": 0}
+    base = {k: v for k, v in MOE_WORKING.items() if k != "n-cpu-moe"}
+    neighbors = settings_scan.hill_neighbors(base, shape, is_moe=False, ctx=65536, vram_total=8188)
+    assert not any(n.get("n-cpu-moe") for n in neighbors)
