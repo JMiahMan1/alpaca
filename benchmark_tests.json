@@ -648,14 +648,14 @@
       "expected": "24"
     },
     {
-      "id": "math_hard_2_pow_10",
-      "label": "Math-Hard: 2 to the 10th power",
-      "prompt": "What is 2 raised to the 10th power? Answer with only the final number.",
-      "num_predict": 400,
+      "id": "math_hard_last_two_digits",
+      "label": "Math-Hard: last two digits of 7^2026",
+      "prompt": "What are the last two digits of 7^2026? Answer with only the final number.",
+      "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
-      "expected": "1024"
+      "expected": "49"
     },
     {
       "id": "math_hard_choose_3_of_10",
@@ -668,14 +668,14 @@
       "expected": "120"
     },
     {
-      "id": "math_hard_hexagon_angles",
-      "label": "Math-Hard: hexagon interior angle sum",
-      "prompt": "What is the sum of the interior angles of a regular hexagon, in degrees? Answer with only the final number.",
-      "num_predict": 400,
+      "id": "math_hard_inclusion_exclusion",
+      "label": "Math-Hard: divisible by 3 or 5 but not 7",
+      "prompt": "How many integers from 1 to 1000 inclusive are divisible by 3 or by 5, but not by 7? Answer with only the final number.",
+      "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
-      "expected": "720"
+      "expected": "401"
     },
     {
       "id": "math_hard_3_pow_x_81",
@@ -688,14 +688,14 @@
       "expected": "4"
     },
     {
-      "id": "math_hard_det_matrix",
-      "label": "Math-Hard: 2x2 determinant",
-      "prompt": "Compute the determinant of the matrix [[3, 0], [0, 2]]. Answer with only the final number.",
-      "num_predict": 400,
+      "id": "math_hard_expected_rolls",
+      "label": "Math-Hard: expected rolls until two consecutive highs",
+      "prompt": "A fair six-sided die is rolled repeatedly. Call a roll high if it shows 5 or 6. What is the expected number of rolls until two consecutive rolls are both high? Answer with only the final number.",
+      "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",
       "reasoning_estimate": 2048,
-      "expected": "6"
+      "expected": "12"
     },
     {
       "id": "math_hard_geometric_infinite",
@@ -829,15 +829,6 @@
       "label": "Game: Snake (playable, pygame UI)",
       "prompt": "Write a complete, runnable Python program using `pygame` that implements a playable Snake game. Open a window, draw a grid, a snake that grows by one segment when it eats food, and control direction with the arrow keys. The game ends when the snake hits the wall or itself. Display the current length/score. Include a game loop that handles the QUIT event. Use only primitive shapes - no external assets. Design note (interpret freely): Snake became a global obsession as the bundled Nokia phone game - a minimalist grow-vs-avoid loop where the snake glides across a grid at a fixed speed, grows with every food item, and dies on the wall or its own body. Faithfully capture that tight, escalating survival tension. SCORING & PERSISTENT HIGH-SCORE BOARD (REQUIRED): The game MUST award points for gameplay actions and maintain a persistent high-score table. When a run finishes, prompt the player to enter their name/initials and record it with the score. Save the top 5 scores (name + score) to a local JSON file in the working directory (e.g. high_scores.json), and also write the latest finished run as {\"initials\": name, \"score\": number} to /tmp/alpaca_score.json (overwrite it every run) so the arcade scoreboard can pick it up automatically, load and display them on startup and on the game-over screen, and write a new entry whenever a run finishes. Scores must survive restarting the program. Every new game MUST start with the score reset to 0 - never carry over the previous game's score into the next session. The program must run top-to-bottom and open a visible window. OUTPUT REQUIREMENT: Respond with ONLY the raw, runnable source code in a single fenced code block, with the first line starting at column 0 (no leading indentation). Do not include any thinking, explanation, summary, or prose before or after the code, and keep comments inside the code minimal.",
       "num_predict": 7000,
-      "reasoning_budget": 2048,
-      "type": "ui",
-      "reasoning_estimate": 4096
-    },
-    {
-      "id": "game_breakout",
-      "label": "Game: Breakout (playable, pygame UI)",
-      "prompt": "Write a complete, runnable Python program using `pygame` that implements a full-featured, playable arcade Breakout game. The player MUST be able to lose. Open a window and implement ALL of the following required mechanics.\n\n1. Ball mechanics & physics: A ball bounces off a movable paddle (LEFT/RIGHT arrow keys), the walls, and bricks. Ball speed gradually accelerates as rallies lengthen. The ball's bounce angle depends on where it strikes the paddle - hitting the outer edges sends it off at sharp, low angles, rewarding precise paddle control.\n\n2. Brick types: The wall includes standard single-hit bricks, multi-hit reinforced bricks, indestructible wall obstacles, and explosive bricks that clear the surrounding bricks when destroyed.\n\n3. Power-ups: Destroyed bricks occasionally drop falling capsules that temporarily modify gameplay: Paddle Expansion (Enlarge) increases paddle width; Laser Vaus equips the paddle with dual cannons to destroy bricks directly; Multi-Ball (Disruption) splits the active ball into multiple simultaneous balls; Catch holds the ball on contact so the player can aim and launch it at will.\n\n4. Enemies & hazards: Flying alien hazards float down the playfield. They deflect the ball unpredictably; hitting them destroys the hazard and awards extra points.\n\n5. Visual theme & boss: Use a cohesive sci-fi visual theme rather than a bare black-and-white screen, and include a final boss fight against a giant floating head named \"DOH\".\n\n6. Lives & loss system (REQUIRED): The player starts with 3 lives (1 active paddle + 2 in reserve). A life is lost when the active ball falls past the paddle off the bottom of the screen; if the Multi-Ball power-up is active, a life is lost only when the final remaining ball falls. Once all lives are exhausted, show a Game Over screen offering a short timer to insert a coin / continue. Award an extra life at 20,000 points and every 60,000 points thereafter, and allow a rare gray \"P\" (Player) capsule dropped from destroyed bricks to instantly award an extra life.\n\n7. Scoring & HUD: Display the current score and the remaining lives. Include a game loop that handles the QUIT event. Use only primitive drawing - no external assets. Design note (interpret freely): Breakout's defining trait is turning a single bouncing ball into pure brick-clearing physics, and Arkanoid's later interpretation added the Vaus paddle, multiball, and falling power-up capsules. Keep the classic physics-skill core sharp while the power-up/boss systems above stay playable. SCORING & PERSISTENT HIGH-SCORE BOARD (REQUIRED): The game MUST award points for gameplay actions and maintain a persistent high-score table. When a run finishes, prompt the player to enter their name/initials and record it with the score. Save the top 5 scores (name + score) to a local JSON file in the working directory (e.g. high_scores.json), and also write the latest finished run as {\"initials\": name, \"score\": number} to /tmp/alpaca_score.json (overwrite it every run) so the arcade scoreboard can pick it up automatically, load and display them on startup and on the game-over screen, and write a new entry whenever a run finishes. Scores must survive restarting the program. Every new game MUST start with the score reset to 0 - never carry over the previous game's score into the next session. The program must run top-to-bottom and open a visible window. OUTPUT REQUIREMENT: Respond with ONLY the raw, runnable source code in a single fenced code block, with the first line starting at column 0 (no leading indentation). Do not include any thinking, explanation, summary, or prose before or after the code, and keep comments inside the code minimal.",
-      "num_predict": 9000,
       "reasoning_budget": 2048,
       "type": "ui",
       "reasoning_estimate": 4096
@@ -1152,30 +1143,6 @@
   ],
   "debugging": [
     {
-      "id": "debug_offbyone",
-      "label": "Debug: off-by-one array copy",
-      "prompt": "Find and fix the off-by-one error: `for (int i = 0; i <= n; i++)` copies n+1 elements into an array of size n. Explain the fix.",
-      "num_predict": 400,
-      "type": "functional",
-      "reasoning_estimate": 1024
-    },
-    {
-      "id": "debug_null_deref",
-      "label": "Debug: NullPointerException on chained call",
-      "prompt": "Fix the NullPointerException when calling user.getProfile().getName() where getProfile() can return null. Explain the fix.",
-      "num_predict": 400,
-      "type": "functional",
-      "reasoning_estimate": 1024
-    },
-    {
-      "id": "debug_data_race",
-      "label": "Debug: unsynchronized shared counter",
-      "prompt": "Identify and fix the data race on a shared counter incremented from two threads without synchronization. Explain the fix.",
-      "num_predict": 400,
-      "type": "functional",
-      "reasoning_estimate": 1024
-    },
-    {
       "id": "debug_infinite_loop",
       "label": "Debug: infinite loop (no increment)",
       "prompt": "Fix the infinite loop: `while (i < n)` with no increment of i inside the body. Explain the fix.",
@@ -1184,12 +1151,24 @@
       "reasoning_estimate": 1024
     },
     {
-      "id": "debug_sql_injection",
-      "label": "Debug: SQL injection via concatenation",
-      "prompt": "Fix the SQL injection from building a query by string concatenation with user input; use a parameterized query instead. Explain the fix.",
-      "num_predict": 400,
+      "id": "code_trace_late_binding",
+      "label": "Debug: trace Python closure late binding",
+      "prompt": "What does this Python 3 program print? Answer with only the number it prints.\n\nfs = [lambda x: x * i for i in range(1, 4)]\nprint(sum(f(2) for f in fs))",
+      "num_predict": 500,
+      "reasoning_budget": 2048,
       "type": "functional",
-      "reasoning_estimate": 1024
+      "reasoning_estimate": 2048,
+      "expected": "18"
+    },
+    {
+      "id": "code_trace_mutable_default",
+      "label": "Debug: trace a mutable default argument",
+      "prompt": "What does this Python 3 program print? Answer with only the number it prints.\n\ndef add(item, bucket=[]):\n    bucket.append(item)\n    return len(bucket)\n\na = add(1)\nb = add(2)\nc = add(3, [])\nd = add(4)\nprint(a * 1000 + b * 100 + c * 10 + d)",
+      "num_predict": 500,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "1213"
     }
   ],
   "logic": [
@@ -1255,6 +1234,16 @@
       "num_predict": 400,
       "reasoning_budget": 2048,
       "reasoning_estimate": 2048
+    },
+    {
+      "id": "logic_schedule",
+      "label": "Logic: unique-solution talk schedule",
+      "prompt": "Five talks by Ada, Ben, Cy, Dee and Eli fill slots 1 to 5, one per slot.\n- Ben speaks immediately before Cy.\n- Ada is neither first nor last.\n- Dee speaks later than Ada.\n- Eli speaks in an odd-numbered slot, but not slot 1.\n- Dee and Eli are not in adjacent slots.\nIn which slot does Ada speak? Answer with only the slot number.",
+      "num_predict": 500,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "reasoning_estimate": 2048,
+      "expected": "4"
     }
   ],
   "retrogames": [
@@ -2728,6 +2717,32 @@
       "reasoning_estimate": 2048,
       "tier": "standard",
       "expected": "2048"
+    },
+    {
+      "id": "frontier_grounding_absent",
+      "category": "frontier_diagnostics",
+      "label": "Frontier: say when the passage does not say",
+      "prompt": "Answer from the memo only.\n\nMEMO (Q3, Harbor Analytics): Revenue rose 18% to $4.2M. Total headcount grew from 112 to 140, and most hiring this quarter was in sales and customer success. The Lisbon office opened in August with room for 30 people. The data-platform team shipped the new ingestion pipeline two weeks early.\n\nHow many engineers did Harbor Analytics hire in Q3? If the memo does not give that number, answer 0. Answer with only the final number.",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "lang": "text",
+      "reasoning_estimate": 2048,
+      "tier": "standard",
+      "expected": "0"
+    },
+    {
+      "id": "frontier_grounding_counterfactual",
+      "category": "frontier_diagnostics",
+      "label": "Frontier: follow the document over habit",
+      "prompt": "This is an excerpt from the Ledgerline API style guide:\n\n\"Ledgerline never returns 404. A request for a record that does not exist, or never existed, returns 410 Gone with an error body, because clients cache the absence. Validation failures return 422, and an expired token returns 401.\"\n\nFollowing this style guide, what HTTP status code does a Ledgerline endpoint return when the requested invoice id does not exist? Answer with only the status code.",
+      "num_predict": 300,
+      "reasoning_budget": 2048,
+      "type": "functional",
+      "lang": "text",
+      "reasoning_estimate": 2048,
+      "tier": "standard",
+      "expected": "410"
     },
     {
       "id": "frontier_review_async_fetch",

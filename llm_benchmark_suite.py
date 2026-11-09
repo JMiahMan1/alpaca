@@ -815,6 +815,57 @@ def _test_num_predict(test: dict, model: str | None = None) -> int:
     return base + 2 * _test_reasoning_estimate(test)
 
 
+# Quick Benchmark: a 27-test all-round group that runs in well under an hour per model,
+# for checking a settings change or a new model without the full ~300-test suite.
+# It is a selection of existing tests (the web layer expands it to test_ids), so
+# every result still files under its real category and keeps its history.
+#
+# Chosen for disagreement between models, not for coverage of the file: tests the
+# stored results show splitting models (pass rate away from 0 and 1), the
+# frontier_diagnostics set built to discriminate, objective grading (keyed
+# answers, runnable code, rendered UI) wherever a category offers it, and the
+# faster test of any equally good pair. Keyed tests that every model passes
+# (ifeval, knowledge, hle) measure nothing here and are left out.
+QUICK_BENCHMARK_GROUP = "quick_benchmark"
+QUICK_BENCHMARK_IDS: tuple[str, ...] = (
+    # Hard knowledge and math (keyed)
+    "gpqa_infinite_well_half",
+    "gpqa_henderson_hasselbalch",
+    "math_hard_geometric_infinite",
+    "frontier_math_worker_rates",
+    # Reasoning and logic
+    "frontier_reasoning_label_swaps",
+    "logic_knights",
+    "logic_schedule",
+    "meta_loop_detect",
+    # Grounding: admit what a passage does not say; follow it over habit
+    "frontier_grounding_absent",
+    "frontier_grounding_counterfactual",
+    # Instruction following, exact formats, tool calls
+    "frontier_tool_schema_call",
+    "frontier_json_feature_patch",
+    "frontier_transform_sorted_tsv",
+    "instruction_adherence",
+    "device_status",
+    # Long context and agentic state
+    "frontier_context_first_stable_build",
+    "frontier_agent_idempotent_ledger",
+    # Code that is run, not read
+    "frontier_debug_boundary",
+    "frontier_api_ticket_contract",
+    "app_todo_crud",
+    "db_atomic_transfer",
+    "bash_csv_sums",
+    "frontier_review_async_fetch",
+    "code_trace_late_binding",
+    # A rendered UI game each: 2D canvas and 3D
+    "game_breakout_rt",
+    "game_3d_cube",
+    # Writing
+    "story_start",
+)
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger("benchmark_suite")
@@ -2209,25 +2260,6 @@ class LLMModelBenchmark:
                 and any(x in cleaned for x in ["resultset", "executequery", "executequery"])
             )
         # ---- Debugging ----
-        elif test_id == "debug_offbyone":
-            correction = re.search(r"\bi\s*<\s*n\b(?!\s*[-+*/])|\bi\s*<=\s*n\s*-\s*1\b(?!\s*[-+*/])", cleaned)
-            replacement = re.search(r"(?:change|replace)\s+`?<=`?\s+(?:to|with)\s+`?<`?(?![=\w])", cleaned)
-            explanation = re.search(r"\b(?:indices|index|bounds|elements)\b", cleaned) and re.search(
-                r"\bn\s*-\s*1\b|exactly\s+`?n`?\s+elements|(?:exclud|before|less than)\w*\s+`?n\b", cleaned
-            )
-            return bool((correction or replacement) and explanation)
-        elif test_id == "debug_null_deref":
-            return (
-                any(x in cleaned for x in ["null", "none"])
-                and any(x in cleaned for x in ["check", "guard", "if "])
-                and any(x in cleaned for x in ["dereference", "pointer", "attribute", "error", "nullpointerexception"])
-            )
-        elif test_id == "debug_data_race":
-            return (
-                any(x in cleaned for x in ["race", "thread"])
-                and any(x in cleaned for x in ["mutex", "lock", "atomic"])
-                and any(x in cleaned for x in ["shared", "synchron", "volatile"])
-            )
         elif test_id == "debug_infinite_loop":
             increment = re.search(
                 r"\bi\s*\+\+|\+\+\s*i\b|\bi\s*\+=\s*1\b|\bi\s*=\s*i\s*\+\s*1\b"
@@ -2238,12 +2270,6 @@ class LLMModelBenchmark:
                 increment
                 and re.search(r"\b(?:while|loop|iteration)\b", cleaned)
                 and re.search(r"terminat|eventually|reach\w*\s+`?n\b|condition\s+(?:becomes|is)\s+false", cleaned)
-            )
-        elif test_id == "debug_sql_injection":
-            return (
-                any(x in cleaned for x in ["injection", "sql"])
-                and any(x in cleaned for x in ["parameter", "prepared", "bind", "placeholder"])
-                and any(x in cleaned for x in ["statement", "query", "escape"])
             )
         # ---- Logic ----
         elif test_id == "logic_knights":
@@ -2472,17 +2498,6 @@ class LLMModelBenchmark:
                 any(x in cleaned for x in ["sokoban", "box", "push"])
                 and any(x in cleaned for x in ["target", "goal"])
                 and any(x in cleaned for x in ["win", "solved", "all"])
-            ) and self._has_persistent_scoreboard(cleaned)
-        elif test_id == "game_breakout":
-            return (
-                "paddle" in cleaned
-                and "ball" in cleaned
-                and any(x in cleaned for x in ["brick", "bounce", "wall"])
-                and any(x in cleaned for x in ["life", "lives", "miss", "lose", "lost", "bottom"])
-                and any(
-                    x in cleaned
-                    for x in ["power", "capsule", "laser", "multi", "catch", "enlarge", "expand", "boss", "doh"]
-                )
             ) and self._has_persistent_scoreboard(cleaned)
         elif test_id == "game_simcity":
             return (
@@ -5668,7 +5683,6 @@ class LLMModelBenchmark:
     FUNCTIONAL_GRADER_VERSIONS: ClassVar[dict[str, str]] = {
         "life_dad_joke": "v2",
         "uiux_wireframe": "v2",
-        "debug_offbyone": "v2",
         "debug_infinite_loop": "v2",
         "logic_knights": "v2",
         "logic_river": "v2",

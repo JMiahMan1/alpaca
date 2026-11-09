@@ -289,28 +289,6 @@ def test_jokes_require_three_complete_clean_pairs(benchmark, response):
     assert not benchmark._verify_functional_response("life_dad_joke", response)
 
 
-@pytest.mark.parametrize(
-    "condition",
-    ["i < n", "i<n", "i <= n - 1"],
-)
-def test_offbyone_correct_bound_with_explanation(benchmark, prompts, condition):
-    response = f"for (int i = 0; {condition}; i++) {{ dest[i] = src[i]; }}\nValid indices are 0 through n - 1."
-    assert benchmark._verify_functional_response(prompts["debug_offbyone"], response)
-
-
-@pytest.mark.parametrize(
-    "response",
-    [
-        "The off-by-one error is in the array loop boundary. Fix the index bug.",
-        "for (int i=0; i<=n; i++) { dest[i]=src[i]; } Valid indices are 0 through n - 1.",
-        "for (int i=0; i<n+1; i++) { dest[i]=src[i]; } Valid indices are 0 through n - 1.",
-        "for (int i=0; i<n; i++) { dest[i]=src[i]; }",
-    ],
-)
-def test_offbyone_needs_correction_and_explanation(benchmark, response):
-    assert not benchmark._verify_functional_response("debug_offbyone", response)
-
-
 @pytest.mark.parametrize("increment", ["i++;", "++i;", "i += 1;", "i = i + 1;"])
 def test_loop_increment_without_fix_keyword(benchmark, prompts, increment):
     response = f"while (i < n) {{ work(); {increment} }}\nAdvancing i toward n lets the loop terminate."

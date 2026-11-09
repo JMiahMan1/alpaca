@@ -264,6 +264,59 @@ def test_benchmark_groups_include_frontier_diagnostics(client):
     assert "frontier_diagnostics" in response.get_json()["groups"]
 
 
+def test_benchmark_groups_list_quick_benchmark_first_with_its_tests(client):
+    data = client.get("/api/benchmark/groups").get_json()
+    assert data["groups"][0] == "quick_benchmark"
+    from llm_benchmark_suite import QUICK_BENCHMARK_IDS
+
+    assert data["quick_benchmark"] == list(QUICK_BENCHMARK_IDS)
+
+
+def test_quick_benchmark_ids_are_real_unique_tests_spread_across_categories():
+    from llm_benchmark_suite import QUICK_BENCHMARK_IDS
+    from web.app import benchmark
+
+    id_to_cat = {t["id"]: cat for cat, tests in benchmark.tests_config.items() for t in tests}
+    assert len(set(QUICK_BENCHMARK_IDS)) == len(QUICK_BENCHMARK_IDS)
+    assert set(QUICK_BENCHMARK_IDS) <= set(id_to_cat), set(QUICK_BENCHMARK_IDS) - set(id_to_cat)
+    assert len({id_to_cat[t] for t in QUICK_BENCHMARK_IDS}) >= 12  # all-round, not one corner
+
+
+def test_expand_quick_benchmark_into_real_groups_and_ids():
+    from llm_benchmark_suite import QUICK_BENCHMARK_IDS
+    from web.app import benchmark, expand_benchmark_groups
+
+    groups, ids = expand_benchmark_groups(["quick_benchmark"], None)
+    assert ids == sorted(QUICK_BENCHMARK_IDS)
+    assert "quick_benchmark" not in groups and "logic" in groups and "gamedev" in groups
+
+    # Another group selected with it runs in full.
+    logic_ids = {t["id"] for t in benchmark.tests_config["logic"]}
+    groups, ids = expand_benchmark_groups(["quick_benchmark", "logic"], None)
+    assert logic_ids <= set(ids)
+
+    # An explicit / outdated-only list narrows rather than widens.
+    groups, ids = expand_benchmark_groups(["quick_benchmark"], ["logic_knights", "not_in_quick"])
+    assert ids == ["logic_knights"] and groups == ["logic"]
+
+    # Without the pseudo-group nothing changes.
+    assert expand_benchmark_groups(["logic"], None) == (["logic"], None)
+    assert expand_benchmark_groups(None, ["x"]) == (None, ["x"])
+
+
+def test_api_run_quick_benchmark_hands_the_runner_real_groups_and_ids(client):
+    from llm_benchmark_suite import QUICK_BENCHMARK_IDS
+
+    with patch("web.app.threading.Thread") as thread:
+        res = client.post("/api/run", json={"models": ["qwen3:8b"], "groups": ["quick_benchmark"]})
+    assert res.status_code == 200
+    args = thread.call_args.kwargs["args"]
+    test_ids, groups = args[4], args[6]
+    assert test_ids == sorted(QUICK_BENCHMARK_IDS)
+    assert "quick_benchmark" not in groups
+    assert client.get("/api/status").get_json()["groups"] == ["quick_benchmark"]
+
+
 def test_frontier_all_button_and_static_handler(client):
     index = client.get("/")
     assert index.status_code == 200

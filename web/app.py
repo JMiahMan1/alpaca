@@ -40,7 +40,7 @@ import uuid
 
 import docker
 
-from llm_benchmark_suite import LLMModelBenchmark
+from llm_benchmark_suite import QUICK_BENCHMARK_GROUP, QUICK_BENCHMARK_IDS, LLMModelBenchmark
 from multistep_benchmark import MultiStepBenchmark
 from online_providers import build_learning_record
 from sandbox_exec import (
@@ -4208,6 +4208,28 @@ def vision_synthesize_edit_prompt_api():
         )
 
 
+def expand_benchmark_groups(
+    groups: list[str] | None, test_ids: list[str] | None
+) -> tuple[list[str] | None, list[str] | None]:
+    """Resolve the Quick Benchmark pseudo-group into real groups + test ids.
+
+    ``quick_benchmark`` is a selection of existing tests, not a category of its
+    own, so results keep filing under each test's real category (and keep their
+    history, hashes and outdated tracking). Any other groups selected alongside
+    it run in full; an explicit ``test_ids`` list (including the outdated-only
+    list) narrows the result rather than widening it.
+    """
+    if not groups or QUICK_BENCHMARK_GROUP not in groups:
+        return groups, test_ids
+    id_to_cat = {t["id"]: cat for cat, tests in benchmark.tests_config.items() for t in tests}
+    others = {g for g in groups if g != QUICK_BENCHMARK_GROUP}
+    ids = {tid for tid in QUICK_BENCHMARK_IDS if tid in id_to_cat}
+    ids |= {tid for tid, cat in id_to_cat.items() if cat in others}
+    if test_ids is not None:
+        ids &= set(test_ids)
+    return sorted({id_to_cat[t] for t in ids}), sorted(ids)
+
+
 @app.route("/api/run", methods=["POST"])
 def start_benchmark():
     """Start standard benchmarking process"""
@@ -4228,15 +4250,17 @@ def start_benchmark():
     if not models:
         return jsonify({"error": "No models specified"}), 400
 
+    requested_groups = groups
     if outdated_only:
         test_ids = _outdated_test_ids(models)
-        if not test_ids:
-            return jsonify(
-                {
-                    "status": "No outdated benchmarks",
-                    "message": "All benchmark definitions are up to date for the selected models - nothing to redo.",
-                }
-            ), 200
+    groups, test_ids = expand_benchmark_groups(groups, test_ids)
+    if outdated_only and not test_ids:
+        return jsonify(
+            {
+                "status": "No outdated benchmarks",
+                "message": "All benchmark definitions are up to date for the selected models - nothing to redo.",
+            }
+        ), 200
 
     with active_run_lock:
         cancel_event = threading.Event()
@@ -4251,7 +4275,7 @@ def start_benchmark():
         active_run["results"] = []
         active_run["start_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         active_run["saved_as"] = None
-        active_run["groups"] = groups
+        active_run["groups"] = requested_groups
         active_run["tiers"] = tiers
 
         benchmark_thread = threading.Thread(
@@ -4695,8 +4719,10 @@ def sandbox_ui_restart():
 def benchmark_groups():
     """List the available benchmark groups (top-level categories)."""
     try:
-        groups = sorted(benchmark.tests_config.keys())
-        return jsonify({"groups": groups})
+        # Quick Benchmark first: it is the one to reach for, and a selection
+        # across the others rather than a category (see expand_benchmark_groups).
+        groups = [QUICK_BENCHMARK_GROUP, *sorted(benchmark.tests_config.keys())]
+        return jsonify({"groups": groups, "quick_benchmark": list(QUICK_BENCHMARK_IDS)})
     except Exception as e:
         return jsonify({"groups": [], "error": str(e)})
 

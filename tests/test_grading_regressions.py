@@ -10,7 +10,7 @@ import pytest
 from llm_benchmark_suite import LLMModelBenchmark
 
 
-@pytest.mark.parametrize("test_id", ["life_dad_joke", "uiux_wireframe", "debug_offbyone", "debug_infinite_loop"])
+@pytest.mark.parametrize("test_id", ["life_dad_joke", "uiux_wireframe", "logic_knights", "debug_infinite_loop"])
 def test_corrected_functional_grades_are_outdated(test_id):
     import hashlib
 

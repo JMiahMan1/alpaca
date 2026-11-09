@@ -4165,7 +4165,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!res.ok) throw new Error(`status ${res.status}`);
             const data = await res.json();
             const groups = Array.isArray(data) ? data : (data.groups || []);
-            const groupLabels = { frontier_diagnostics: 'Frontier Diagnostics' };
+            const groupLabels = {
+                frontier_diagnostics: 'Frontier Diagnostics',
+                quick_benchmark: `⚡ Quick Benchmark (${(data.quick_benchmark || []).length} all-round tests)`,
+            };
             groupCheckboxes.innerHTML = '';
             if (groups.length === 0) {
                 groupCheckboxes.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;padding:0.5rem;">No groups available</div>`;

@@ -4,7 +4,7 @@
 Alpaca is an LLM model management, benchmarking, and telemetry dashboard for local GPU deployments. It provides:
 - **Model pull/download** from Ollama Registry and Hugging Face GGUF repos
 - **Router-based model management** with automatic hot-swap between models
-- **Functional & performance benchmarking** across 298 general tests, 49 SharedLLM tasks and one
+- **Functional & performance benchmarking** across 300 general tests, 49 SharedLLM tasks and one
   multi-turn agentic workflow
 - **Real-time telemetry** (VRAM, RAM, context usage) with self-healing triggers
 - **Image generation** (stable-diffusion.cpp) with deterministic text composition
@@ -74,7 +74,7 @@ images and need `sudo docker compose up -d --build <service>`.
 | `analyzer.py` | Telemetry-driven llama.cpp tuning recommendations |
 | `telemetry_monitor.py` | Async daemon polling llama-server metrics, writes `data/telemetry/{model}.jsonl` |
 | `benchmark-configs.py` | ctx × cache × flash-attn sweep, then a prefill-only batch sweep, then a quality check |
-| `benchmark_tests.json` | **298 tests in 47 categories** - the general suite's data |
+| `benchmark_tests.json` | **300 tests in 47 categories** - the general suite's data |
 | `web/app.py` | Flask web server + SocketIO - dashboard API, benchmark runner, model pull orchestration, podcast routes |
 | `web/podcast_mixer.py` | The podcast mixer: script parsing, bed synthesis, ducking, WAV encode - numpy only |
 
@@ -147,6 +147,34 @@ images and need `sudo docker compose up -d --build <service>`.
   (hash/prompt mismatch vs `benchmark_tests.json` via `_compute_test_hash`) for the selected
   models and runs only those. Returns `{"status": "No outdated benchmarks"}` when nothing is
   stale. Dashboard button: **⚠ Run Outdated**.
+- **Quick Benchmark** (`quick_benchmark` group, listed first in the dashboard): 27 existing tests
+  across 13 categories (`QUICK_BENCHMARK_IDS` in `llm_benchmark_suite.py`) for checking a settings
+  change or a new model in well under an hour instead of the full suite. It is a *selection*, not a
+  category: `expand_benchmark_groups()` in `web/app.py` turns it into real groups + `test_ids`, so
+  results file under each test's own category and keep their history and outdated tracking. Other
+  groups selected with it run in full; `outdated_only` narrows it. Picked from the stored results
+  for **disagreement between models** (keyed tests every model passes - ifeval, knowledge, hle -
+  measure nothing and are left out), objective grading, and speed; the frontier_diagnostics set
+  is its backbone. Swap a test out when its pass rate across models drifts to 0 or 1.
+- **Gap-filling keyed tests** (Nov 2026; answers computed by running code, the schedule
+  brute-forced to one solution): `frontier_grounding_absent` (the memo never gives the number, so the
+  answer is 0; the traps are 28 = 140-112 and 30) and `frontier_grounding_counterfactual` (the document
+  says 410 where habit says 404) are the suite's first grounding/hallucination checks;
+  `code_trace_late_binding` and `code_trace_mutable_default` (debugging) test predicting a program's
+  output; `logic_schedule` is a unique-solution constraint puzzle. Three `math_hard` items every
+  model passed (2^10, a hexagon's angle sum, a diagonal determinant) became `math_hard_last_two_digits`,
+  `_inclusion_exclusion` and `_expected_rolls`.
+- **New keyed tests are numeric, not multiple choice, unless MC is essential.**
+  `rebalance_choice_keys.py` assigns keys greedily over a fixed order, so adding or removing ONE
+  letter-keyed test reshuffles most of the others (27 of 39 here), and every rewritten prompt
+  re-runs against every model. `test_shipped_file_is_already_rebalanced` catches it.
+- **Redundant tests removed (Nov 2026):** `debug_offbyone`, `debug_null_deref`, `debug_data_race`
+  and `debug_sql_injection` named the bug in the prompt, while `cr_off_by_one` / `cr_null_deref` /
+  `cr_race_condition` / `cr_sql_injection` make the model find the same bug class in real code;
+  `game_breakout` duplicated `game_breakout_rt` (both pygame Breakout). Deliberately KEPT: the same
+  game in a different language or engine (Space Invaders x6, Pong, Snake, Asteroids), the two mobile
+  block puzzles (Family collection, and the deluxe one is a richer spec), and the two Okazaki GPQA
+  items (different facts; removing a letter-keyed test also reshuffles the key balance).
 - **Sandbox stdin**: CLI games calling `input()` get a scripted `/tmp/stdin.txt` redirect in
   `run_code_once` so they don't EOFError; `pids_limit` is 1024 for UI runs (Chromium), 128 for CLI.
 - **SharedLLM Evaluation Tiers**:
@@ -720,7 +748,7 @@ and **`addopts = "-q -m 'not live'"`** - the `live` marker is deselected by defa
 | `test_podcast_mixer.py` + `test_podcast_routes.py` + `test_podcast_frontend.py` | Podcast Studio end to end |
 | `test_telemetry_monitor_unit.py` / `test_analyzer_unit.py` / `test_imageops_unit.py` | The daemons and the deterministic image editor |
 | `test_dashboard_frontend.py` / `test_podcast_frontend.py` | `dashboard.js` via the **node-slice** technique |
-| `test_benchmark_tests_schema.py` | All 298 tests + `_compute_test_hash` semantics + the answer-key balance |
+| `test_benchmark_tests_schema.py` | All 300 tests + `_compute_test_hash` semantics + the answer-key balance |
 | `test_manuscript_rubric.py` / `test_screenshot_ink_coverage.py` | The illuminated-manuscript rubric; the blank-page gate |
 | `test_composite_sprite_game.py` | The `composite` tool-test path end to end, through the real publisher |
 | `test_svg_theme_pack_grader.py` / `test_install_theme_pack.py` | The SVG theme-pack grader and its installer |
