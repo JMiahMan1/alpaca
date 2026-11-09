@@ -33,14 +33,14 @@
     font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
   body { background: radial-gradient(ellipse at 50% -10%, #3b1d7a 0%, #160b33 45%, #0d0620 100%); }
   #frame { position: absolute; left: 50%; top: 50%; width: 17.778rem; height: 10rem; margin-left: -8.889rem; margin-top: -5rem; }
-  #stage { position: absolute; top: .4rem; bottom: .4rem; left: .7rem; right: .7rem; display: flex; flex-direction: column; }
-  .top { display: flex; align-items: center; justify-content: space-between; height: .8rem; flex: 0 0 auto; }
+  #stage { position: absolute; top: .14rem; bottom: .12rem; left: .45rem; right: .45rem; display: flex; flex-direction: column; }
+  .top { display: flex; align-items: center; justify-content: space-between; height: .58rem; flex: 0 0 auto; }
   .brand { font-size: .32rem; font-weight: 900; color: var(--gold); letter-spacing: .04em; text-shadow: 0 0 .3rem rgba(255,200,61,.4); }
   .brand small { color: var(--dim); font-weight: 700; font-size: .2rem; margin-left: .15rem; letter-spacing: .28em; }
   .pill { display: inline-block; padding: .05rem .18rem; border-radius: 99px; background: rgba(255,200,61,.14);
     border: .02rem solid rgba(255,200,61,.45); color: var(--gold2); font-weight: 900; font-size: .2rem; margin-left: .16rem; }
   .main { flex: 1 1 auto; display: flex; min-height: 0; overflow: hidden; }
-  .foot { flex: 0 0 auto; height: .55rem; display: flex; align-items: center; justify-content: center; color: var(--dim);
+  .foot { flex: 0 0 auto; height: .4rem; display: flex; align-items: center; justify-content: center; color: var(--dim);
     font-size: .22rem; font-weight: 700; letter-spacing: .06em; border-top: .02rem solid rgba(255,255,255,.08); }
   .foot b { color: var(--gold2); letter-spacing: .25em; margin: 0 .12rem; }
   /* ---------- lobby ---------- */
@@ -59,8 +59,9 @@
   .seat.empty { border-style: dashed; color: rgba(255,255,255,.35); }
   /* ---------- game layout ---------- */
   .boardCol { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; min-width: 0; }
-  .boardCol svg { height: 8rem; width: 8rem; max-height: 100%; }
-  .sideCol { flex: 0 0 6.4rem; display: flex; flex-direction: column; gap: .18rem; padding-left: .3rem; overflow: hidden; }
+  .boardCol { justify-content: flex-start; position: relative; }
+  .boardCol svg { height: 8.76rem; width: 8.76rem; max-height: 100%; }
+  .sideCol { flex: 0 0 6.9rem; display: flex; flex-direction: column; gap: .18rem; padding-left: .3rem; overflow: hidden; }
   .sideCard { background: rgba(255,255,255,.06); border: .02rem solid rgba(255,255,255,.12); border-radius: .16rem; padding: .14rem .18rem; }
   .sideLabel { font-size: .15rem; letter-spacing: .22em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
   .players { display: flex; flex-direction: column; gap: .12rem; }
@@ -95,15 +96,17 @@
   /* ---------- lite (TV browsers) ---------- */
   html.lite .boardCol svg, html.lite .crown, html.lite .lobbyGlow { filter: none; }
   /* ---------- big moments: the roll and the drawn card ---------- */
-  #tv-fx { position: absolute; left: 0; top: 0; right: 0; bottom: 0; display: none; align-items: center; justify-content: center;
-    background: rgba(8,4,24,.55); z-index: 10; }
+  #tv-fx { position: absolute; left: 0; top: .58rem; width: 8.76rem; bottom: .4rem; display: none; align-items: center; justify-content: center; z-index: 10; }
   #tv-fx.on { display: flex; }
+  #tv-fx.dim { left: -1rem; right: -1rem; width: auto; top: -1rem; bottom: -1rem; background: rgba(8,4,24,.6); }
+  .tvDice { background: rgba(13,7,32,.82); border: .03rem solid rgba(255,200,61,.55); border-radius: .3rem; padding: .3rem .4rem .22rem;
+    box-shadow: 0 .2rem .6rem rgba(0,0,0,.6); }
   .tvDice { display: flex; flex-direction: column; align-items: center; }
   .tvDicePair { display: flex; }
-  .tvDie { width: 1.7rem; height: 1.7rem; margin: 0 .2rem; background: #fffdf4; border-radius: .3rem; border: .04rem solid #b9a86e;
+  .tvDie { width: 1.4rem; height: 1.4rem; margin: 0 .2rem; background: #fffdf4; border-radius: .3rem; border: .04rem solid #b9a86e;
     box-shadow: 0 .14rem .3rem rgba(0,0,0,.6); position: relative; animation: tvpop .5s cubic-bezier(.2,1.5,.3,1); }
-  .tvPip { position: absolute; width: .3rem; height: .3rem; margin: -.15rem 0 0 -.15rem; border-radius: 50%; background: #2a1563; }
-  .tvRollText { margin-top: .3rem; font-size: .4rem; font-weight: 900; color: var(--gold); text-shadow: 0 .04rem 0 #4a2c00; }
+  .tvPip { position: absolute; width: .25rem; height: .25rem; margin: -.125rem 0 0 -.125rem; border-radius: 50%; background: #2a1563; }
+  .tvRollText { margin-top: .24rem; font-size: .34rem; font-weight: 900; color: var(--gold); text-shadow: 0 .04rem 0 #4a2c00; }
   .tvCard { width: 6.2rem; background: #fffdf0; color: #1b0f3b; border-radius: .3rem; border: .06rem solid #7a5b16; overflow: hidden;
     text-align: center; box-shadow: 0 .3rem .9rem rgba(0,0,0,.7); animation: tvpop .6s cubic-bezier(.2,1.3,.3,1); }
   .tvCard .band { padding: .16rem 0; font-size: .26rem; font-weight: 900; letter-spacing: .3em; color: #fff8e7; background: #6d28d9; }
@@ -160,12 +163,14 @@
     for (i = 0; i < pts.length; i++) h += '<div class="tvPip" style="left:' + pts[i][0] + '%;top:' + pts[i][1] + '%"></div>';
     return h + '</div>';
   }
-  function showFx(html, ms) {
+  var fxTurn = null;
+  function hideFx() { var fx = $("tv-fx"); fx.className = ""; fx.innerHTML = ""; fxTurn = null; }
+  function showFx(html, ms, dim) {
     var fx = $("tv-fx");
     fx.innerHTML = html;
-    fx.className = "on";
+    fx.className = dim ? "on dim" : "on";
     if (fxTimer) clearTimeout(fxTimer);
-    fxTimer = setTimeout(function () { fx.className = ""; fx.innerHTML = ""; }, ms);
+    fxTimer = setTimeout(hideFx, ms);
   }
   function bigMoments(room) {
     var r = room.last_roll, c = room.last_card;
@@ -178,15 +183,19 @@
         + '<div class="who">' + esc(c.player || "") + ' drew</div>'
         + '<div class="q">' + esc(c.quote ? "\u201c" + c.quote + "\u201d" : (c.effect || c.text || "")) + '</div>'
         + (c.ref ? '<div class="ref">' + esc(c.ref) + '</div>' : '')
-        + (c.quote && c.effect ? '<div class="eff">' + esc(c.effect) + '</div>' : '<div style="height:.3rem"></div>') + '</div>', 7000);
+        + (c.quote && c.effect ? '<div class="eff">' + esc(c.effect) + '</div>' : '<div style="height:.3rem"></div>') + '</div>', 7000, true);
       return;
     }
     if (rn !== null && rn !== seenRoll) {
       seenRoll = rn;
       var who = room.players && room.players[room.turn] ? room.players[room.turn].name : "";
       showFx('<div class="tvDice"><div class="tvDicePair">' + dieHtml(r.d1) + dieHtml(r.d2) + '</div>'
-        + '<div class="tvRollText">' + esc(who) + ' rolled ' + r.d1 + ' + ' + r.d2 + ' = ' + (r.d1 + r.d2) + (r.doubles ? " · DOUBLES!" : "") + '</div></div>', 2200);
+        + '<div class="tvRollText">' + esc(who) + ' rolled ' + r.d1 + ' + ' + r.d2 + ' = ' + (r.d1 + r.d2) + (r.doubles ? " · DOUBLES!" : "") + '</div></div>', 8000, false);
+      fxTurn = room.turn;
+      return;
     }
+    // The dice stay up while the player moves and decides; they go when the turn passes.
+    if (fxTurn !== null && room.turn !== fxTurn) hideFx();
   }
   function poll() {
     if (!PINNED) { renderNoCode(); return; }
