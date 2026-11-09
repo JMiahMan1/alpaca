@@ -2574,6 +2574,10 @@ def test_settings_scans_endpoint_reports_winners_and_strips_probe_responses(clie
     from web.app import benchmark
 
     monkeypatch.setattr(benchmark, "RESULTS_DIR", tmp_path)
+    ini = tmp_path / "models.ini"
+    ini.write_text("[m--latest]\nctx-size = 65536\n\n[z--latest]\nctx-size = 8192\n")
+    monkeypatch.setattr("web.app.get_models_ini_path", lambda: ini)
+    (tmp_path / "settings_scan_removed.json").write_text(json.dumps({"gone--latest::winner": {"label": "x", "tps": 9}}))
     old = {
         "m--latest::winner": {"label": "old", "tps": 10.0, "settings": {}, "vram_peak_mb": 4000, "verified_at": "x"},
     }
@@ -2592,6 +2596,7 @@ def test_settings_scans_endpoint_reports_winners_and_strips_probe_responses(clie
     assert m["winner"]["label"] == "b" and m["winner"]["tps"] == 25.0  # newer scan wins
     assert [p["label"] for p in m["probes"]] == ["b", "a"]  # fastest first
     assert all("content" not in p for p in m["probes"])  # kilobytes of code stay on disk
+    assert "gone--latest" not in {x["model"] for x in models}  # no longer registered
     z = next(x for x in models if x["model"] == "z--latest")
     assert z["winner"] is None and z["failed"] == "no hello response"
 

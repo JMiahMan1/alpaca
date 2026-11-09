@@ -4759,9 +4759,18 @@ def _settings_scan_summary(results_dir: Path) -> list[dict]:
 
 @app.route("/api/settings-scans", methods=["GET"])
 def settings_scans():
-    """Per-model settings-scan winners and the probes behind them."""
+    """Per-model settings-scan winners and the probes behind them, for the
+    models that are still registered (old scan files name removed models)."""
     try:
-        return jsonify({"models": _settings_scan_summary(benchmark.RESULTS_DIR)})
+        models = _settings_scan_summary(benchmark.RESULTS_DIR)
+        import configparser
+
+        cp = configparser.ConfigParser(delimiters=("=",))
+        cp.read(str(get_models_ini_path()))
+        registered = set(cp.sections())
+        if registered:
+            models = [m for m in models if m["model"] in registered]
+        return jsonify({"models": models})
     except Exception as e:
         return jsonify({"models": [], "error": str(e)}), 500
 
