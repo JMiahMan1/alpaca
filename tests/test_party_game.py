@@ -33,6 +33,17 @@ def _pub(code, pid):
     return party.public_id(party._rooms[code], pid)
 
 
+@pytest.fixture(autouse=True)
+def seated_for_tvs(request, monkeypatch):
+    """The TV routes need a player sitting in the room (see the gate tests,
+    which opt out); the discovery and cast tests are about the relay, so they
+    are seated."""
+    arcade_app._TV_LIMITS.clear()   # each test starts with a fresh rate limit
+    if "tv_gate" in request.node.name:
+        return
+    monkeypatch.setattr(arcade_app, "_tv_player_ok", lambda game, code, pid: True)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     from arcade import family
@@ -778,8 +789,11 @@ def test_bots_finish_at_random_moments_not_all_at_once():
     room = party._rooms["BOTS"]
     bots = [p for p in room["players"].values() if p.get("is_bot")]
     assert bots
-    times = [room["submissions"][b["id"]]["submitted_at"] - room["phase_started_at"] for b in bots]
-    assert all(party.PROMPT_READ_SECONDS + 6 <= t <= party.PROMPT_READ_SECONDS + party.WRITE_SECONDS for t in times)
+    # Measured from when writing opens (the scribes are re-timed to it), not
+    # from the start of the phase: that made this pass or fail at random.
+    opened = float(room.get("open_at") or room["phase_started_at"])
+    times = [room["submissions"][b["id"]]["submitted_at"] - opened for b in bots]
+    assert all(6 <= t <= party.PROMPT_READ_SECONDS + party.WRITE_SECONDS for t in times)
     snap = party.serialize_room(room)
     assert not any(p["submitted"] for p in snap["players"] if p["is_bot"])  # nobody is "Sealed" at 0 s
     with party._lock:
@@ -1078,3 +1092,54 @@ def test_screens_ask_for_the_whole_line():
     for f in ("arcade/templates/party_tv.html", "arcade/family_games/good-word/game.html"):
         src = pathlib.Path(f).read_text()
         assert ".slice(0, 320)" not in src and f".slice(0, {party.TTS_MAX_CHARS})" in src, f
+
+
+def test_tv_gate_turns_away_someone_not_in_the_room(client, monkeypatch):
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    assert client.get("/api/party/tvs?code=ZION").status_code == 403
+    assert client.post("/api/party/cast", json={"screen_id": "ha:x", "room_code": "ZION"}).status_code == 403
+    assert client.get("/api/jubilee/tvs?code=NOAH&player_id=guess").status_code == 403
+    assert client.post("/api/jubilee/cast", json={"screen_id": "ha:x", "room_code": "NOAH", "player_id": "guess"}).status_code == 403
+
+
+def test_tv_gate_lets_a_seated_player_through(client, monkeypatch):
+    import json
+
+    from arcade import jubilee
+
+    def _fake_urlopen(req, timeout=8.0):
+        return _JsonResp(json.dumps({"success": True, "screens": [{"id": "ha:x", "name": "Den"}]}).encode())
+
+    monkeypatch.setattr(party, "JARVIS_GATEWAY_URL", "")
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
+    client.post("/api/party/rooms", json={"code": "ZION", "player_id": "ann", "name": "Ann"})
+    assert client.get("/api/party/tvs?code=ZION&player_id=ann").get_json()["success"] is True
+    made = jubilee.create_room({"name": "Bo"})
+    code, pid = made["room"]["code"], made["player_id"]
+    try:
+        assert client.get(f"/api/jubilee/tvs?code={code}&player_id={pid}").status_code == 200
+    finally:
+        jubilee._clear_rooms()
+
+
+def test_tv_gate_does_not_count_a_computer_seat(client):
+    from arcade import jubilee
+
+    made = jubilee.create_room({"name": "Bo"})
+    code = made["room"]["code"]
+    jubilee.start_match(code, made["player_id"])
+    try:
+        bot = next(p["id"] for p in jubilee._rooms[code]["players"] if p.get("is_ai"))
+        assert client.get(f"/api/jubilee/tvs?code={code}&player_id={bot}").status_code == 403
+    finally:
+        jubilee._clear_rooms()
+
+
+def test_tv_gate_limits_a_flood_of_casts(client, monkeypatch):
+    monkeypatch.setattr(arcade_app, "_tv_player_ok", lambda game, code, pid: True)
+    monkeypatch.setattr(party, "show_stage_on_screen", lambda *a, **k: {"success": True})
+    codes = [client.post("/api/party/cast", json={"screen_id": "ha:x", "room_code": "ZION", "player_id": "p"}).status_code
+             for _ in range(arcade_app.TV_CAST_PER_MINUTE + 2)]
+    assert codes[: arcade_app.TV_CAST_PER_MINUTE] == [200] * arcade_app.TV_CAST_PER_MINUTE
+    assert codes[-1] == 429

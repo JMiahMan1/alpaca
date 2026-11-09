@@ -120,3 +120,35 @@ def test_two_party_rooms_on_two_tvs_each_keep_their_own():
     assert presence.screen_owner("ha:media_player.living_room") == ("party", b)
     assert party._rooms[a]["cast_screen"] == "ha:media_player.office"
     assert party._rooms[b]["cast_screen"] == "ha:media_player.living_room"
+
+
+def test_games_in_progress_survive_a_restart(tmp_path):
+    """Every deploy used to end every game: rooms lived only in memory."""
+    import threading as _t
+
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    jubilee.roll(code, pid)
+    before = jubilee.get_room(code, pid)
+    assert presence.save_rooms_once(str(tmp_path), "jubilee", jubilee._rooms, jubilee._lock, {}) is True
+    jubilee._clear_rooms()                                   # the restart
+    assert presence.restore_rooms(str(tmp_path), "jubilee", jubilee._rooms, jubilee._lock) == 1
+    after = jubilee.get_room(code, pid)
+    assert after["status"] == "playing" and after["you"]["position"] == before["you"]["position"]
+    assert after["last_roll"] == before["last_roll"] and after["log"] == before["log"]
+    assert isinstance(_t.Lock(), type(jubilee._lock))
+
+
+def test_an_unchanged_room_set_is_not_rewritten(tmp_path):
+    jubilee.create_room({"name": "Ann"})
+    last = {}
+    assert presence.save_rooms_once(str(tmp_path), "jubilee", jubilee._rooms, jubilee._lock, last) is True
+    assert presence.save_rooms_once(str(tmp_path), "jubilee", jubilee._rooms, jubilee._lock, last) is False
+
+
+def test_a_damaged_or_missing_save_is_ignored(tmp_path):
+    assert presence.restore_rooms(str(tmp_path), "jubilee", jubilee._rooms, jubilee._lock) == 0
+    (tmp_path / "rooms-jubilee.json").write_text("{ not json")
+    assert presence.restore_rooms(str(tmp_path), "jubilee", jubilee._rooms, jubilee._lock) == 0
+    assert jubilee._rooms == {}

@@ -129,6 +129,10 @@ def no_network(request: pytest.FixtureRequest) -> None:
     a socket, so this only catches real network access.
     """
     if request.node.get_closest_marker("live"):
+        # A generator fixture must yield even when it does nothing:
+        # pytest-asyncio rejects one that returns ("did not yield a value"),
+        # which broke every live test.
+        yield
         return
 
     real_socket = socket.socket

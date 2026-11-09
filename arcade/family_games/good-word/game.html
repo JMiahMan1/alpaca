@@ -1274,7 +1274,7 @@
   }
   function loadScreens(refresh) {
     screensLoading = true; screensError = ""; renderSheet();
-    fetch("/api/party/tvs" + (refresh ? "?refresh=1" : ""))
+    fetch("/api/party/tvs?code=" + encodeURIComponent(code || "") + "&player_id=" + encodeURIComponent(myId || "") + (refresh ? "&refresh=1" : ""))
       .then((r) => r.json())
       .then((d) => {
         if (d && Array.isArray(d.tvs)) mergeScreens(d.tvs);
@@ -1331,7 +1331,7 @@
     castingId = t.id; pendingStop = !!stop;
     castStatus = { kind: "pending", text: stop ? "Taking the game off " + t.name + "…" : "Opening the game on " + t.name + "… (a sleeping TV can take a few seconds)" };
     renderSheet();
-    const payload = { screen_id: t.id, room_code: code, stop: !!stop };
+    const payload = { screen_id: t.id, room_code: code, stop: !!stop, player_id: myId };
     if (jarvisRelay) {
       postToParent({ type: "cast", payload });
       clearTimeout(castTimer);

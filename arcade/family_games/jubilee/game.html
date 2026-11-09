@@ -846,32 +846,35 @@ syncSoundBtn();
     return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, side: 3 };
   }
 
-  /* A land's name at the largest size that fits its tile: one line when that
-     reads as well, else two balanced lines. Bold sans runs about 0.6 em a
-     character, so "Thessalonica" shrinks a little rather than overflowing,
-     and "Gaza" stays big. */
-  function fitName(name, maxW, maxFs, minFs) {
-    var words = String(name || '').split(/\s+/).filter(Boolean);
-    var CH = 0.6;
-    function longest(lines) { var m = 0; for (var i = 0; i < lines.length; i++) m = Math.max(m, lines[i].length); return m || 1; }
-    var one = [words.join(' ')];
-    var two = one;
-    for (var k = 1; k < words.length; k++) {
-      var cand = [words.slice(0, k).join(' '), words.slice(k).join(' ')];
-      if (two.length === 1 || longest(cand) < longest(two)) two = cand;
+  var NAME_FS = 12.5, PRICE_FS = 12.5;
+  var SHORT = { "The King's Highway": "King's Highway", "The Via Maris": "Via Maris", "The Desert Caravan": "Caravan",
+    "The New Jerusalem": "New Jerusalem", "The Tribute": "Tribute", "The Offering": "Offering", "The Lamp": "Lamp",
+    "The Well": "Well", "PARABLE": "Parable", "SCRIPTURE": "Scripture" };
+  function shortName(sp) { return sp ? (SHORT[sp.name] || sp.name || '') : '?'; }
+  function tileLabel(g, label, cy, maxW) {
+    var words = String(label).split(/\s+/).filter(Boolean), lines = [words.join(' ')];
+    if (words.length > 1 && 0.6 * NAME_FS * lines[0].length > maxW) {
+      var best = null;
+      for (var k = 1; k < words.length; k++) {
+        var cand = [words.slice(0, k).join(' '), words.slice(k).join(' ')];
+        var m = Math.max(cand[0].length, cand[1].length);
+        if (!best || m < best.m) best = { lines: cand, m: m };
+      }
+      lines = best.lines;
     }
-    var fsOne = Math.min(maxFs, maxW / (CH * longest(one)));
-    var fsTwo = Math.min(maxFs, maxW / (CH * longest(two)));
-    var useOne = two.length === 1 || fsOne >= fsTwo * 0.9;
-    return { lines: useOne ? one : two, size: Math.max(minFs, Math.round((useOne ? fsOne : fsTwo) * 10) / 10) };
+    var lh = NAME_FS * 1.1;
+    for (var li = 0; li < lines.length; li++) {
+      var attrs = { x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), 'text-anchor': 'middle',
+        'font-size': NAME_FS, 'font-weight': 900, fill: '#1b0f3b' };
+      if (0.6 * NAME_FS * lines[li].length > maxW) { attrs.textLength = maxW; attrs.lengthAdjust = 'spacingAndGlyphs'; }
+      svgEl('text', attrs, g).textContent = lines[li];
+    }
   }
-  function drawName(g, name, cy, maxFs, fill) {
-    var fit = fitName(name, T - 10, maxFs, 8.5);
-    var lh = fit.size * 1.1;
-    for (var li = 0; li < fit.lines.length; li++) {
-      svgEl('text', { x: 0, y: (cy + (li - (fit.lines.length - 1) / 2) * lh + fit.size * 0.36).toFixed(1), 'text-anchor': 'middle',
-        'font-size': fit.size, 'font-weight': 900, fill: fill || '#1b0f3b' }, g).textContent = fit.lines[li];
-    }
+  function medallion(g, x, y, r, art, color) {
+    svgEl('circle', { cx: x + 1.2, cy: y + 2, r: r, fill: 'rgba(27,15,59,.28)' }, g);
+    svgEl('circle', { cx: x, cy: y, r: r, fill: 'url(#jb-medal)', stroke: color || '#7a5b16', 'stroke-width': 2 }, g);
+    svgEl('ellipse', { cx: x - r * 0.25, cy: y - r * 0.45, rx: r * 0.55, ry: r * 0.25, fill: 'rgba(255,255,255,.55)' }, g);
+    svgEl('text', { x: x, y: y + r * 0.38, 'text-anchor': 'middle', 'font-size': (r * 1.15).toFixed(1) }, g).textContent = art;
   }
 
   var SPACE_ART = {
@@ -888,6 +891,13 @@ syncSoundBtn();
     var grad = svgEl('radialGradient', { id: 'jb-paper', cx: '50%', cy: '42%', r: '75%' }, defs);
     svgEl('stop', { offset: '0%', 'stop-color': '#fffbf0' }, grad);
     svgEl('stop', { offset: '100%', 'stop-color': '#e4cfa0' }, grad);
+    var medal = svgEl('radialGradient', { id: 'jb-medal', cx: '40%', cy: '35%', r: '70%' }, defs);
+    svgEl('stop', { offset: '0%', 'stop-color': '#fffbea' }, medal);
+    svgEl('stop', { offset: '100%', 'stop-color': '#e9d29a' }, medal);
+    var glossG = svgEl('radialGradient', { id: 'jb-gloss', cx: '35%', cy: '28%', r: '75%' }, defs);
+    svgEl('stop', { offset: '0%', 'stop-color': '#ffffff', 'stop-opacity': '.85' }, glossG);
+    svgEl('stop', { offset: '45%', 'stop-color': '#ffffff', 'stop-opacity': '.12' }, glossG);
+    svgEl('stop', { offset: '100%', 'stop-color': '#000000', 'stop-opacity': '.35' }, glossG);
     var gold = svgEl('radialGradient', { id: 'jb-gold', cx: '50%', cy: '45%', r: '62%' }, defs);
     svgEl('stop', { offset: '0%', 'stop-color': '#fff099' }, gold);
     svgEl('stop', { offset: '60%', 'stop-color': '#f59e0b' }, gold);
@@ -1028,29 +1038,23 @@ syncSoundBtn();
       var topBar = isParable ? '#7c3aed' : isScripture ? '#1d4ed8' : '#dc2626';
       svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 6, fill: topBar }, g);
     }
-    // Picture tiles: the picture up top, the name under it. Streets: the name
-    // fills the middle. The price is always along the bottom.
-    var hasArt = isRail || isUtil || isParable || isScripture || isTax;
-    var artTop = bandFill ? -T / 2 + 38 : -T / 2 + 32;
-    if (isRail || isUtil) {
-      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 20 }, g).textContent = isRail ? (SPACE_ART[sp.name] || '🚂') : (SPACE_ART[sp.name] || '💡');
-    } else if (isParable) {
-      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 24, 'font-weight': 900, fill: '#6d28d9' }, g).textContent = '📜';
-    } else if (isScripture) {
-      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 23, fill: '#1d4ed8' }, g).textContent = '📖';
-    } else if (isTax) {
-      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 22 }, g).textContent = kind === 'tribute' ? '🪙' : '🕊️';
-    }
+    // The same look as the TV: every space with one name size and one price
+    // size, a short label, and its picture in a medallion. Nothing shrinks to
+    // fit; a rare long word is narrowed a little instead.
+    var art = isRail ? (SPACE_ART[sp.name] || '🚂') : isUtil ? (SPACE_ART[sp.name] || '💡') : isParable ? '📜'
+      : isScripture ? '📖' : isTax ? (kind === 'tribute' ? '🪙' : '🕊️') : null;
+    var bandTop = bandFill ? 20 : 6;
+    if (art) medallion(g, 0, -T / 2 + bandTop + 15, 12, art, bandFill || (isParable ? '#7c3aed' : isScripture ? '#1d4ed8' : '#c2410c'));
     var priceLabel = '';
     if (sp && sp.price) priceLabel = '$' + sp.price;
     else if (sp && (sp.amount || sp.flat)) priceLabel = 'PAY $' + (sp.amount || sp.flat);
-    var name = sp ? sp.name : '?';
-    if (hasArt) drawName(g, name, priceLabel ? 13 : 20, 13);
-    else drawName(g, name, priceLabel ? -1 : 6, 16);
+    var nameTop = art ? -T / 2 + bandTop + 30 : -T / 2 + bandTop + 3, nameBottom = T / 2 - (priceLabel ? 21 : 5);
+    tileLabel(g, shortName(sp), (nameTop + nameBottom) / 2, T - 8);
     if (priceLabel) {
-      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': isTax ? 12 : 13.5, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
+      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
     }
     // dynamic bits: owner badge, 3D houses/hotel, mortgage stamp
+    if (!(isStreet || isRail || isUtil)) return;   // only land can be owned (no ring over "PAY $200")
     svgEl('circle', { id: 'own-' + i, cx: -T / 2 + 10, cy: T / 2 - 10, r: 6, fill: 'transparent', stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
     svgEl('g', { id: 'hse-' + i }, g);
     svgEl('text', { id: 'mrg-' + i, x: T / 2 - 11, y: T / 2 - 6, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#dc2626', style: 'display:none' }, g).textContent = 'M';
@@ -1251,9 +1255,10 @@ syncSoundBtn();
       }
       html += '<ellipse cx="0" cy="4" rx="' + shadowR + '" ry="' + (shadowR * 0.55) + '" fill="rgba(0,0,0,.42)"/>';
       html += '<g transform="translate(0,' + (-lift) + ') scale(' + (2 - squash) + ',' + squash + ')">' +
-        '<circle r="14.5" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.6"/>' +
-        '<circle r="12" cx="-2" cy="-2" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="1.5"/>' +
-        '<text y="5" text-anchor="middle" font-size="16">' + tokenEmoji(p.token) + '</text>' +
+        '<ellipse cx="0" cy="7" rx="15" ry="6" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.2"/>' +
+        '<circle cy="-2" r="14" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.2"/>' +
+        '<circle cy="-2" r="14" fill="url(#jb-gloss)"/>' +
+        '<text y="4" text-anchor="middle" font-size="15">' + tokenEmoji(p.token) + '</text>' +
         '</g></g>';
     }
     g.innerHTML = html;
@@ -1332,7 +1337,7 @@ syncSoundBtn();
   }
   function loadScreens(refresh) {
     tv.loading = true; tv.error = ''; renderTvSheet();
-    api('/api/jubilee/tvs' + (refresh ? '?refresh=1' : '')).then(function (d) {
+    api('/api/jubilee/tvs?code=' + encodeURIComponent(tvCode()) + '&player_id=' + encodeURIComponent(state.pid || '') + (refresh ? '&refresh=1' : '')).then(function (d) {
       if (d && Array.isArray(d.tvs)) mergeScreens(d.tvs);
       if (d && d.success === false && !tv.screens.length && !tv.relay) tv.error = d.error || '';
     }).catch(function () {}).then(function () { tv.loading = false; renderTvSheet(); });
@@ -1393,7 +1398,7 @@ syncSoundBtn();
     tv.castingId = t.id; tv.pendingStop = !!stop;
     tv.status = { kind: 'pending', text: stop ? 'Taking the board off ' + t.name + '…' : 'Opening the board on ' + t.name + '… (a sleeping TV can take a few seconds)' };
     renderTvSheet();
-    var payload = { screen_id: t.id, room_code: tvCode(), stop: !!stop };
+    var payload = { screen_id: t.id, room_code: tvCode(), stop: !!stop, player_id: state.pid || '' };
     if (tv.relay) {
       postToParent({ type: 'cast', payload: payload });
       clearTimeout(tv.timer);

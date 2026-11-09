@@ -388,7 +388,29 @@ def _prune_unlocked(now: float) -> None:
         if now - last > ROOM_IDLE_SECONDS:
             stale.append(code)
     for code in stale:
-        _rooms.pop(code, None)
+        _release_screen_async(_rooms.pop(code, None))
+
+
+def remember_screen(code: Any, screen_id: str | None) -> None:
+    """The TV a room was cast to (None once taken off), so closing it frees the TV."""
+    with _lock:
+        room = _rooms.get(_clean_code(code))
+        if room is not None:
+            room["cast_screen"] = screen_id or None
+
+
+def _release_screen_async(room: dict[str, Any] | None) -> None:
+    """Take a closed room's board off its TV -- only if that TV still shows it
+    (another game may have been cast there since). Off the lock: it is a
+    network call."""
+    screen = (room or {}).get("cast_screen")
+    if not screen:
+        return
+    code = room["code"]  # type: ignore[index]
+    if not presence.release_screen(screen, "jubilee", code) and presence.screen_owner(screen) is not None:
+        return
+    threading.Thread(target=lambda: party.show_stage_on_screen(screen, "", room_code=code, stop=True, game="family-jubilee"),
+                     name=f"jubilee-release-{code}", daemon=True).start()
 
 _rooms: dict[str, dict[str, Any]] = {}
 presence.register_rooms(lambda: tuple(_rooms))
@@ -1462,7 +1484,7 @@ def leave_room(code: Any, player_id: Any) -> dict[str, Any]:
             room["players"].pop(seat)
             room["turn_counts"].pop(seat)
             if not room["players"]:
-                del _rooms[clean]
+                _release_screen_async(_rooms.pop(clean, None))
                 return {"success": True, "gone": True}
         else:
             # Mid-match: a resignation. Their assets fall to the Bank.
@@ -2326,9 +2348,23 @@ def _advance_turn(room: dict[str, Any], seat: int) -> None:
     room["updated_at"] = time.time()
 
 
+#: While a TV shows the game, a computer player waits this long after each
+#: roll (plus the hop time per space) before its next step, and this long
+#: after passing the turn. Taken all at once, several computer turns landed in
+#: one TV update: every piece jumped together and only the last roll showed.
+AI_PACE_AFTER_ROLL_S = 2.4
+AI_PACE_PER_SPACE_S = 0.3
+AI_PACE_AFTER_TURN_S = 1.0
+
+
 def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
-    """Let the scribes take their turns synchronously (bounded loop)."""
+    """Let the scribes take their turns (bounded loop). With a TV watching,
+    one step at a time at a pace the board can show; otherwise at once."""
     if room["status"] != "playing":
+        return False
+    now = time.time()
+    paced = presence.stage_connected(room, now)
+    if paced and now < float(room.get("ai_next_at") or 0):
         return False
     moved = False
     for _ in range(60):
@@ -2359,10 +2395,18 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
             elif not room["rolled"] or room["bonus_roll"]:
                 _do_roll(room, cur)
                 progressed = True
+                if paced:
+                    lr = room.get("last_roll") or {}
+                    spaces = int(lr.get("d1") or 0) + int(lr.get("d2") or 0)
+                    room["ai_next_at"] = now + AI_PACE_AFTER_ROLL_S + AI_PACE_PER_SPACE_S * spaces
+                    return True
             else:
                 _ai_seek_trade(room, cur)
                 if not _ai_build_phase(room, cur):
                     _advance_turn(room, cur)
+                    if paced:
+                        room["ai_next_at"] = now + AI_PACE_AFTER_TURN_S
+                        return True
                 progressed = True
         if not progressed:
             break

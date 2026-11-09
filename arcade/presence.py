@@ -12,6 +12,7 @@ already guarded by that module's lock.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -151,3 +152,74 @@ def release_screen(screen_id: str, game: str, code: str) -> bool:
 def screen_owner(screen_id: str) -> tuple[str, str] | None:
     with _screen_lock:
         return _screen_owner.get(screen_id)
+
+
+# --- Rooms survive a restart ------------------------------------------------
+#
+# Rooms live in memory, so every deploy (a container restart) ended every game
+# in progress: the TV fell to "game over" and phones lost their seats. The app
+# saves each game's rooms to disk every couple of seconds (only when they
+# changed, written to a temporary file and swapped in, so a crash mid-write
+# never leaves half a file) and loads them back when it starts.
+
+ROOM_SAVE_SECONDS = 2.0
+
+
+def _rooms_file(directory: str, game: str) -> str:
+    import os
+    return os.path.join(directory, f"rooms-{game}.json")
+
+
+def restore_rooms(directory: str, game: str, rooms: dict[str, Any], lock: Any) -> int:
+    """Load a game's saved rooms into ``rooms``; returns how many came back."""
+    import json
+    import os
+    path = _rooms_file(directory, game)
+    if not os.path.exists(path):
+        return 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            saved = json.load(fh)
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(saved, dict):
+        return 0
+    with lock:
+        for code, room in saved.items():
+            if isinstance(room, dict) and code not in rooms:
+                rooms[code] = room
+    return len(saved)
+
+
+def save_rooms_once(directory: str, game: str, rooms: dict[str, Any], lock: Any, last: dict[str, str]) -> bool:
+    """Write the rooms if they changed since the last write; True when written."""
+    import json
+    import os
+    with lock:
+        data = json.dumps(rooms, separators=(",", ":"), sort_keys=True)
+    if last.get(game) == data:
+        return False
+    os.makedirs(directory, exist_ok=True)
+    path = _rooms_file(directory, game)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(data)
+    os.replace(tmp, path)
+    last[game] = data
+    return True
+
+
+def start_room_saver(directory: str, games: dict[str, tuple[dict[str, Any], Any]]) -> threading.Thread:
+    """Save every game's rooms in the background (``games``: name -> (rooms, lock))."""
+    last: dict[str, str] = {}
+
+    def run() -> None:
+        while True:
+            for game, (rooms, lock) in games.items():
+                with contextlib.suppress(Exception):   # a full disk must not stop the games
+                    save_rooms_once(directory, game, rooms, lock, last)
+            time.sleep(ROOM_SAVE_SECONDS)
+
+    t = threading.Thread(target=run, name="room-saver", daemon=True)
+    t.start()
+    return t

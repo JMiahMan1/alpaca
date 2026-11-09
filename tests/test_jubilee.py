@@ -425,3 +425,82 @@ def test_a_stranger_still_cannot_join_a_game_in_progress():
     import pytest as _pytest
     with _pytest.raises(ValueError, match="already begun"):
         jubilee.join_room(code, {"player_id": "not-a-seat", "device_id": "dev-bob", "name": "Bob"})
+
+
+def test_with_a_tv_watching_the_computer_takes_one_step_at_a_time(monkeypatch):
+    """All at once, several computer turns landed in one TV update: every piece
+    jumped together and only the last roll showed."""
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    room = jubilee._rooms[code]
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(jubilee.time, "time", lambda: clock["t"])
+    # Ann passes; the computer players are next. A TV is showing the room.
+    room["turn"] = 1
+    room["rolled"] = False
+    room["stage_seen_at"] = clock["t"]
+    with jubilee._lock:
+        jubilee._maybe_ai_unlocked(room)
+    assert room["turn"] == 1 and room["rolled"] is True       # it rolled, and stopped there
+    with jubilee._lock:
+        assert jubilee._maybe_ai_unlocked(room) is False        # waiting while the piece hops
+    clock["t"] += 10
+    room["stage_seen_at"] = clock["t"]
+    with jubilee._lock:
+        jubilee._maybe_ai_unlocked(room)
+    assert room["turn"] != 1 or room["rolled"] is False or room.get("pending")   # it went on
+
+
+def test_without_a_tv_the_computer_plays_straight_through():
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    room = jubilee._rooms[code]
+    room["turn"] = 1
+    room["rolled"] = False
+    with jubilee._lock:
+        jubilee._maybe_ai_unlocked(room)
+    assert room["turn"] == 0   # both computer players took their turns
+
+
+def test_a_closed_room_takes_its_board_off_the_tv(monkeypatch):
+    import threading as _t
+
+    from arcade import party as _party
+    from arcade import presence as _presence
+
+    taken_off = []
+    monkeypatch.setattr(_party, "show_stage_on_screen", lambda screen, url, **kw: taken_off.append((screen, kw.get("room_code"))) or {"success": True})
+    made = jubilee.create_room({"name": "Ann"})
+    code = made["room"]["code"]
+    jubilee.remember_screen(code, "ha:media_player.office")
+    _presence.claim_screen("ha:media_player.office", "jubilee", code)
+    with jubilee._lock:
+        jubilee._rooms[code]["updated_at"] = 0          # long idle: pruned
+        jubilee._prune_unlocked(10 ** 10)
+    for th in list(_t.enumerate()):
+        if th.name.startswith("jubilee-release-"):
+            th.join(timeout=5)
+    assert taken_off == [("ha:media_player.office", code)]
+
+
+def test_a_closed_room_leaves_a_tv_another_game_took_over(monkeypatch):
+    import threading as _t
+
+    from arcade import party as _party
+    from arcade import presence as _presence
+
+    taken_off = []
+    monkeypatch.setattr(_party, "show_stage_on_screen", lambda *a, **kw: taken_off.append(a) or {"success": True})
+    made = jubilee.create_room({"name": "Ann"})
+    code = made["room"]["code"]
+    jubilee.remember_screen(code, "ha:media_player.office")
+    _presence.claim_screen("ha:media_player.office", "party", "ZION")   # a party went on it since
+    with jubilee._lock:
+        jubilee._rooms[code]["updated_at"] = 0
+        jubilee._prune_unlocked(10 ** 10)
+    for th in list(_t.enumerate()):
+        if th.name.startswith("jubilee-release-"):
+            th.join(timeout=5)
+    assert taken_off == []

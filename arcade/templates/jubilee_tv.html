@@ -68,10 +68,6 @@
     padding: .12rem .22rem; font-size: .24rem; font-weight: 800; }
   .seat.empty { border-style: dashed; color: rgba(255,255,255,.35); }
   /* ---------- game layout ---------- */
-  .boardCol { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; min-width: 0; }
-  .boardCol { justify-content: flex-start; position: relative; }
-  .boardCol svg { height: 8.76rem; width: 8.76rem; max-height: 100%; }
-  .sideCol { flex: 0 0 6.9rem; display: flex; flex-direction: column; gap: .18rem; padding-left: .3rem; overflow: hidden; }
   /* In play the board is the screen: a 16:9 board edge to edge, with the
      game in its middle. */
   body.playing #stage { top: .15rem; bottom: .15rem; left: .3rem; right: .3rem; }
@@ -89,6 +85,10 @@
   #tv-fx.dock .tvDie { width: .82rem; height: .82rem; margin: 0 .08rem; border-radius: .16rem; }
   #tv-fx.dock .tvPip { width: .15rem; height: .15rem; margin: -.075rem 0 0 -.075rem; }
   #tv-fx.dock .tvRollText { font-size: .22rem; margin-top: .08rem; line-height: 1.2; max-width: 2.3rem; }
+  #tv-reconnect { position: absolute; left: 50%; bottom: .2rem; transform: translateX(-50%); z-index: 12; display: none;
+    background: rgba(13,7,32,.9); color: var(--gold2); border: .025rem solid rgba(255,200,61,.5); border-radius: 99px;
+    padding: .08rem .3rem; font-size: .26rem; font-weight: 900; }
+  #tv-reconnect.on { display: block; }
   /* The landing card. */
   #tv-land { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: none; align-items: center; justify-content: center; z-index: 9; pointer-events: none; }
   #tv-land.on { display: flex; }
@@ -142,8 +142,6 @@
   .cAlert { margin-top: .14rem; font-size: .32rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .05rem .22rem; }
   .cAlert.debt { background: #ffd4d4; color: #8a1c1c; }
   .cEvent { margin-top: .2rem; font-size: .38rem; font-weight: 900; color: #fff8e7; line-height: 1.25; max-width: 8.6rem; max-height: 1rem; overflow: hidden; }
-  .sideCard { background: rgba(255,255,255,.06); border: .02rem solid rgba(255,255,255,.12); border-radius: .16rem; padding: .14rem .18rem; }
-  .sideLabel { font-size: .15rem; letter-spacing: .22em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
   .players { display: flex; flex-direction: column; gap: .12rem; }
   .plr { display: flex; align-items: center; gap: .14rem; background: rgba(255,255,255,.05); border-radius: .12rem;
     padding: .08rem .12rem; border: .03rem solid transparent; }
@@ -154,16 +152,6 @@
   .plr .nm { font-size: .19rem; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .plr .st { font-size: .14rem; color: var(--dim); font-variant-numeric: tabular-nums; }
   .plr.jail .st { color: var(--rose); }
-  .potRow { display: flex; align-items: baseline; justify-content: space-between; }
-  .potNum { font-size: .4rem; font-weight: 900; color: var(--mint); font-variant-numeric: tabular-nums; }
-  .metaRow { display: flex; gap: .14rem; align-items: center; justify-content: space-between; font-size: .17rem; color: var(--dim); font-weight: 800; }
-  .auctionBar { background: #ffe9a8; color: #3a2503; border-radius: .14rem; padding: .1rem .14rem; border: .025rem solid var(--gold); }
-  .auctionBar .who { font-size: .13rem; letter-spacing: .18em; font-weight: 900; color: #7a5b16; text-transform: uppercase; }
-  .auctionBar .bid { font-size: .32rem; font-weight: 900; font-variant-numeric: tabular-nums; }
-  .auctionBar .pass { font-size: .13rem; font-weight: 800; color: #7a5b16; }
-  .logRow { font-size: .17rem; font-weight: 700; color: #efe9ff; line-height: 1.35; padding: .05rem 0; border-bottom: .01rem solid rgba(255,255,255,.07);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .logLine { font-size: .155rem; color: var(--dim); line-height: 1.45; max-height: 1.9rem; overflow: hidden; }
   /* ---------- finish ---------- */
   .finish { width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
   .crown { font-size: 1.5rem; animation: crownDrop 1.1s cubic-bezier(.2,1.5,.3,1); filter: drop-shadow(0 .1rem .35rem rgba(255,200,61,.55)); }
@@ -176,7 +164,7 @@
   .stRow .nm { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stRow .nw { font-variant-numeric: tabular-nums; color: var(--gold2); }
   /* ---------- lite (TV browsers) ---------- */
-  html.lite .boardCol svg, html.lite .crown, html.lite .lobbyGlow { filter: none; }
+  html.lite .crown, html.lite .lobbyGlow { filter: none; }
   /* ---------- big moments: the roll and the drawn card ---------- */
   #tv-fx { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: none; align-items: center; justify-content: center; z-index: 10; }
   #tv-fx.on { display: flex; }
@@ -216,6 +204,7 @@
     <div class="main" id="tv-main"></div>
     <div id="tv-fx"></div>
     <div id="tv-land"></div>
+    <div id="tv-reconnect">📡 Reconnecting…</div>
     <div class="foot">SCAN TO PLAY · <b id="tv-code">····</b> · games.sumemail.com</div>
   </div>
 </div>
@@ -223,7 +212,10 @@
 (function () {
   "use strict";
   var PINNED = "__ROOM_CODE__";
-  var POLL_MS = 1000, FAILS = 0, MAX_FAILS = 5;
+  var POLL_MS = 1000, FAILS = 0, GONE = 0;
+  // Reduced motion (the TV's or browser's setting): no camera moves, no hop
+  // arcs, no tumbling dice -- the same game, still.
+  var RM = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   var GROUP_COLORS = { brown: "#8c5a3b", lightblue: "#6fd3e7", pink: "#d63384", orange: "#f7871f", red: "#d32f2f", yellow: "#f2c230", green: "#2e9e5b", blue: "#1d4ed8" };
   var SEAT_COLORS = ["#ffc83d","#ff6b6b","#2ed3b7","#7dd3fc","#c084fc","#fb923c","#34d399","#f472b6"];
   var TOKENS = { ark:"🚢", dove:"🕊️", menorah:"🕎", star:"⭐", scroll:"📜", fish:"🐟", cup:"🍷", trumpet:"🎺" };
@@ -280,7 +272,7 @@
       // A real tumble: the dice spin through faces, then land on the roll.
       showFx('<div class="tvDice"><div class="tvDicePair tumbling" id="tv-dice">' + dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)) + '</div>'
         + '<div class="tvRollText" id="tv-rolltext" style="visibility:hidden">' + esc(who) + ' rolled ' + r.d1 + ' + ' + r.d2 + ' = ' + (r.d1 + r.d2) + (r.doubles ? " · DOUBLES!" : "") + '</div></div>', 8000, "dock");
-      var flips = 0, d1 = r.d1, d2 = r.d2;
+      var flips = RM ? 8 : 0, d1 = r.d1, d2 = r.d2;
       var spin = setInterval(function () {
         var pair = $("tv-dice"); if (!pair) { clearInterval(spin); return; }
         flips += 1;
@@ -304,9 +296,23 @@
     var dims = "&vw=" + (window.innerWidth || 0) + "&vh=" + (window.innerHeight || 0)
       + "&sw=" + ((window.screen && screen.width) || 0) + "&sh=" + ((window.screen && screen.height) || 0)
       + "&dpr=" + (window.devicePixelRatio || 1);
-    xhr("GET", "/api/jubilee/rooms/" + encodeURIComponent(PINNED) + "?stage=1" + dims, null, function (d) {
-      if (!d || !d.success) { FAILS += 1; if (FAILS >= MAX_FAILS) renderGone(); return; }
-      FAILS = 0;
+    xhr("GET", "/api/jubilee/rooms/" + encodeURIComponent(PINNED) + "?stage=1" + dims, null, function (d, status) {
+      // A network hiccup or a restarting server is not the end of the game:
+      // say so and keep trying (rooms survive a restart). Only the server
+      // saying the room is gone, a few times running, ends it -- and even then
+      // the page keeps looking, slowly, in case it comes back.
+      if (status === 404 || (d && d.success === false && status && status < 500)) {
+        GONE += 1; FAILS = 0; reconnecting(false);
+        if (GONE >= 3) renderGone();
+        schedule(GONE >= 3 ? 10000 : POLL_MS);
+        return;
+      }
+      if (!d || !d.success) {
+        FAILS += 1; reconnecting(FAILS >= 2);
+        schedule(Math.min(8000, POLL_MS * Math.pow(1.6, FAILS)));
+        return;
+      }
+      FAILS = 0; GONE = 0; reconnecting(false); schedule(POLL_MS);
       var room = d.room;
       $("tv-code").textContent = room.code || PINNED;
       $("tv-round").textContent = room.round || 1;
@@ -474,7 +480,7 @@
     }
     var lh = NAME_FS * 1.1;
     for (var li = 0; li < lines.length; li++) {
-      var attrs = { x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), "text-anchor": "middle",
+      var attrs = { "class": "tl", x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), "text-anchor": "middle",
         "font-size": NAME_FS, "font-weight": 900, fill: "#1b0f3b" };
       if (0.6 * NAME_FS * lines[li].length > maxW) { attrs.textLength = maxW; attrs.lengthAdjust = "spacingAndGlyphs"; }
       svgEl("text", attrs, g).textContent = lines[li];
@@ -527,7 +533,7 @@
       var nameTop = art ? -h / 2 + BAND + 38 : -h / 2 + BAND + 4, nameBottom = h / 2 - (priceTxt ? 28 : 6);
       tileLabel(g, shortName(sp), (nameTop + nameBottom) / 2, w - 8);
       if (priceTxt) {
-        var pt = svgEl("text", { x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900,
+        var pt = svgEl("text", { "class": "tl", x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900,
           fill: (sp.kind === "tribute" || sp.kind === "offering") ? "#b91c1c" : "#1b0f3b" }, g);
         pt.textContent = priceTxt;
       }
@@ -567,7 +573,7 @@
     }
   }
   /* ---------- the pieces: hop along the walk ---------- */
-  var HOP_MS = 280;
+  var HOP_MS = RM ? 90 : 280;
   function tokenFor(p) {
     var t = board.tokens[p.seat];
     if (t) return t;
@@ -599,7 +605,7 @@
   /* The camera: the whole board between moves; in a move it glides in toward
      the piece and follows it (the names there reach TV size), then glides
      back out a moment after it lands -- the way console board games do. */
-  var ZOOM_IN = 1.7, lastCam = 0;
+  var ZOOM_IN = RM ? 1 : 1.7, lastCam = 0;
   function camera(now) {
     var c = board.cam, dt = Math.min(0.1, (now - (lastCam || now)) / 1000); lastCam = now;
     var close = board.focus && now - board.lastMove < 1600;
@@ -626,7 +632,7 @@
           var k = Math.min(1, (now - t.start) / t.dur);
           var e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;   // ease in-out
           pos = t.from + e * (((t.to - t.from) + 40) % 40);
-          lift = Math.sin(Math.PI * k) * 44;
+          lift = RM ? 0 : Math.sin(Math.PI * k) * 44;
           moving = true;
         }
         var key = Math.round(pos) % 40;
@@ -759,8 +765,10 @@
     }
     $("tv-main").innerHTML = '<div class="finish"><div class="crown">👑</div><div class="winTitle">' + esc(winner.name) + ' WINS THE JUBILEE!</div><div class="standings">' + rows + '</div></div>';
   }
+  var pollTimer = null;
+  function schedule(ms) { if (pollTimer) clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }
+  function reconnecting(on) { var el = $("tv-reconnect"); if (el) el.className = on ? "on" : ""; }
   poll();
-  setInterval(poll, POLL_MS);
 })();
 </script>
 </body>

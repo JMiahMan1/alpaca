@@ -1482,6 +1482,9 @@ def api_jubilee_room(code):
 @app.route("/api/jubilee/tvs", methods=["GET"])
 def api_jubilee_tvs():
     """Household screens that can show the Jubilee board (the same discovery as Parable Party)."""
+    denied = _tv_gate("jubilee", request.args.get("code"), request.args.get("player_id"), "list", TV_LIST_PER_MINUTE)
+    if denied:
+        return denied
     return jsonify(party.discover_screens(refresh=request.args.get("refresh") in ("1", "true")))
 
 
@@ -1494,6 +1497,9 @@ def api_jubilee_cast():
     """
     body = request.get_json(silent=True) or {}
     code = party._clean_code(body.get("room_code") or body.get("code"))
+    denied = _tv_gate("jubilee", code, body.get("player_id"), "cast", TV_CAST_PER_MINUTE)
+    if denied:
+        return denied
     base = _public_base_url().rstrip("/")
     url = f"{base}/jubilee/tv/{code}" if code else f"{base}/jubilee/tv"
     screen_id = str(body.get("screen_id") or body.get("entity_id") or "")
@@ -1507,8 +1513,10 @@ def api_jubilee_cast():
         # before must not take it off when it ends.
         if body.get("stop"):
             party.presence.release_screen(screen_id, "jubilee", code)
+            jubilee.remember_screen(code, None)
         else:
             party.presence.claim_screen(screen_id, "jubilee", code)
+            jubilee.remember_screen(code, screen_id)
     return jsonify(res), (200 if res.get("success") or res.get("error") != "screen_id is required" else 400)
 
 
@@ -2008,9 +2016,68 @@ def api_party_tts_clip(clip_id: str):
     return Response(wav, mimetype="audio/wav", headers={"Cache-Control": "public, max-age=3600"})
 
 
+# --- Who may use the household's TVs -----------------------------------------
+#
+# The arcade is on the public internet (games.sumemail.com). Listing the
+# household's screens and putting a page on one used to need only a screen id
+# and a room code; now it takes a player sitting in that room (their private
+# player id, which only their own device holds), and each address is limited
+# to a few tries a minute. Inside Jarvis the app casts through the gateway,
+# which knows who is signed in.
+
+_TV_LIMITS: dict[str, list[float]] = {}
+_TV_LIMIT_LOCK = threading.Lock()
+TV_LIST_PER_MINUTE = 20
+TV_CAST_PER_MINUTE = 8
+
+
+def _tv_rate_ok(kind: str, per_minute: int) -> bool:
+    who = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
+    key = f"{kind}:{who}"
+    now = time.time()
+    with _TV_LIMIT_LOCK:
+        hits = [t for t in _TV_LIMITS.get(key, []) if now - t < 60]
+        if len(hits) >= per_minute:
+            _TV_LIMITS[key] = hits
+            return False
+        hits.append(now)
+        _TV_LIMITS[key] = hits
+    return True
+
+
+def _tv_player_ok(game: str, code: object, player_id: object) -> bool:
+    """A real person sitting in a live room of this game."""
+    pid = str(player_id or "")
+    if not pid:
+        return False
+    if game == "jubilee":
+        clean = jubilee._clean_code(code)
+        with jubilee._lock:
+            room = jubilee._rooms.get(clean)
+            seat = jubilee._find_seat(room, pid) if room else None
+            return seat is not None and not room["players"][seat].get("is_ai")
+    clean = party._clean_code(code)
+    with party._lock:
+        room = party._rooms.get(clean)
+        player = ((room or {}).get("players") or {}).get(pid)
+        return bool(player) and not player.get("is_bot")
+
+
+def _tv_gate(game: str, code: object, player_id: object, kind: str, per_minute: int):
+    """None when allowed, else the (response, status) to send back."""
+    if not _tv_player_ok(game, code, player_id):
+        return jsonify({"success": False, "tvs": [], "error": "Join the game on this device to use a TV."}), 403
+    if not _tv_rate_ok(kind, per_minute):
+        return jsonify({"success": False, "tvs": [], "error": "Too many TV requests. Wait a minute and try again."}), 429
+    return None
+
+
 @app.route("/api/party/tvs", methods=["GET"])
 def api_party_tvs():
     """Household screens that can show the stage (discovered by SharedLLM's execution service)."""
+    denied = _tv_gate("party", request.args.get("code"), request.args.get("player_id"), "list", TV_LIST_PER_MINUTE)
+    if denied:
+        return denied
     return jsonify(party.discover_screens(refresh=request.args.get("refresh") in ("1", "true")))
 
 
@@ -2023,6 +2090,9 @@ def api_party_cast():
     """
     body = request.get_json(silent=True) or {}
     code = party._clean_code(body.get("room_code") or body.get("code"))
+    denied = _tv_gate("party", code, body.get("player_id"), "cast", TV_CAST_PER_MINUTE)
+    if denied:
+        return denied
     url = party.stage_url(_public_base_url(), code)
     res = party.show_stage_on_screen(
         str(body.get("screen_id") or body.get("entity_id") or ""),
@@ -2039,6 +2109,13 @@ def api_party_cast():
 
 if __name__ == "__main__":
     GAMES_DIR.mkdir(parents=True, exist_ok=True)
+    # Games in progress survive a restart (a deploy): load the rooms saved
+    # before it, then keep saving them.
+    _room_games = {"jubilee": (jubilee._rooms, jubilee._lock), "party": (party._rooms, party._lock),
+                   "checkers": (checkers._rooms, checkers._lock)}
+    for _game, (_rooms_dict, _lock_obj) in _room_games.items():
+        print(f"rooms restored ({_game}):", party.presence.restore_rooms(str(ARCADE_DIR), _game, _rooms_dict, _lock_obj), flush=True)
+    party.presence.start_room_saver(str(ARCADE_DIR), _room_games)
     # Install/update the built-in Family Games shipped with this image. Player
     # data is never touched, so a new game version keeps its scoreboard.
     print("family games:", json.dumps(family.sync()), flush=True)
