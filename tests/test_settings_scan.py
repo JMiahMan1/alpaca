@@ -466,3 +466,23 @@ def test_incumbent_is_not_offered_off_rung_or_when_identical():
     assert settings_scan.incumbent_candidate({**MOE_WORKING, "cache-type-k": "q4_0"}, winner) is None
     assert settings_scan.incumbent_candidate(dict(MOE_WORKING), winner) is None
     assert settings_scan.incumbent_candidate({}, winner) is None
+
+
+def test_measured_configs_skip_only_the_vram_estimate(monkeypatch):
+    monkeypatch.setattr(settings_scan, "vram_mb", lambda: 200)
+    monkeypatch.setattr(settings_scan, "llama_server_vram_mb", lambda: 0)
+    monkeypatch.setattr(settings_scan, "ram_available_mb", lambda: 20000)
+    monkeypatch.setattr(settings_scan, "gpu_temp_c", lambda: 50)
+    huge = {**MOE_WORKING, "n-gpu-layers": "41", "n-cpu-moe": ""}
+    assert not settings_scan.probe_guard(MOE_SHAPE, huge, 65536, 8188)[0]
+    assert settings_scan.probe_guard(MOE_SHAPE, huge, 65536, 8188, check_vram=False)[0]
+    monkeypatch.setattr(settings_scan, "gpu_temp_c", lambda: 90)  # heat still blocks
+    assert not settings_scan.probe_guard(MOE_SHAPE, huge, 65536, 8188, check_vram=False)[0]
+
+
+def test_vram_is_measured_for_the_incumbent_and_cache_probes_only():
+    inc = dict(MOE_WORKING)
+    assert settings_scan.vram_is_measured(dict(MOE_WORKING), inc)
+    assert settings_scan.vram_is_measured({**MOE_WORKING, "n-gpu-layers": "12", "moe-cache-mib": "1024"}, None)
+    assert not settings_scan.vram_is_measured({**MOE_WORKING, "n-gpu-layers": "30"}, inc)
+    assert not settings_scan.vram_is_measured(dict(MOE_WORKING), None)

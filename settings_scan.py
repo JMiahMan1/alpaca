@@ -190,8 +190,15 @@ def gpu_weights_mb(settings: dict, shape: dict) -> float:
     return wpl * ngl - wpl * MOE_EXPERT_FRAC * overlap
 
 
-def probe_guard(shape: dict, settings: dict, ctx: int, vram_total: int) -> tuple[bool, str]:
-    """Safety pre-flight: VRAM/RAM headroom and GPU temperature before a probe."""
+def probe_guard(shape: dict, settings: dict, ctx: int, vram_total: int, check_vram: bool = True) -> tuple[bool, str]:
+    """Safety pre-flight: VRAM/RAM headroom and GPU temperature before a probe.
+
+    ``check_vram=False`` is for configs whose VRAM is already MEASURED (the
+    incumbent ran on this card; the expert cache is sized from a measured peak).
+    The file-size estimate badly overcounts hybrid-attention models, where only
+    some layers keep a KV cache: it put the live qwen3.6 config (5.8 GB) at 8.4 GB
+    and blocked it. Temperature and RAM are still checked.
+    """
     temp = gpu_temp_c()
     if temp is not None and temp >= GUARD_MAX_TEMP_C:
         return False, f"gpu temp {temp}C >= {GUARD_MAX_TEMP_C}C - cooling down"
@@ -213,7 +220,7 @@ def probe_guard(shape: dict, settings: dict, ctx: int, vram_total: int) -> tuple
         mcache = 0
     gpu_est = gpu_weights_mb(settings, shape) + (0.0 if kv_in_ram else kv_total_mb) + mcache + GUARD_VRAM_HEADROOM_MB
     free_vram = vram_total - (vram_mb() or 0) + llama_server_vram_mb()
-    if free_vram < gpu_est:
+    if check_vram and free_vram < gpu_est:
         return False, f"vram guard: est {gpu_est:.0f} MB > free {free_vram} MB (ngl={ngl})"
     cpu_layers = max(n_layers - ngl, 0)
     kv_cpu_mb = kv_total_mb if kv_in_ram else kv_total_mb * (cpu_layers / n_layers)
@@ -660,6 +667,15 @@ def incumbent_candidate(original: dict, winner: dict) -> dict | None:
     if _set(cand) == _set(winner):
         return None
     return cand
+
+
+def vram_is_measured(candidate: dict, incumbent: dict | None) -> bool:
+    """True for hill candidates whose VRAM use is known from a measurement
+    rather than the file-size estimate: the incumbent (it ran on this card) and
+    any expert-cache probe (sized from a measured peak)."""
+    if candidate.get("moe-cache-mib"):
+        return True
+    return incumbent is not None and label_for(candidate) == label_for(incumbent)
 
 
 def hill_neighbors(
@@ -1115,7 +1131,9 @@ def main():
 
         last_applied: dict | None = None
 
-        def apply_and_restart(settings: dict, _model: str = cur_model, _shape: dict = shape) -> bool:
+        def apply_and_restart(
+            settings: dict, _model: str = cur_model, _shape: dict = shape, measured: bool = False
+        ) -> bool:
             nonlocal last_applied
             if settings == last_applied:
                 print("[scan] settings unchanged - skipping restart")
@@ -1125,7 +1143,7 @@ def main():
                 guard_ctx = int(settings.get("ctx-size") or args.ctx)
             except (TypeError, ValueError):
                 guard_ctx = args.ctx
-            ok, greason = probe_guard(_shape, settings, guard_ctx, vram_total)
+            ok, greason = probe_guard(_shape, settings, guard_ctx, vram_total, check_vram=not measured)
             if not ok:
                 LAST_GUARD_ERROR = greason
                 print(f"    [guard] BLOCKED {label_for(settings)}: {greason}")
@@ -1444,7 +1462,7 @@ def main():
             tried.add(nlabel)
             nkey = f"{model}::hill::{nlabel}"
             print(f"[scan] hill: {nlabel}")
-            if not apply_and_restart(nset):
+            if not apply_and_restart(nset, measured=vram_is_measured(nset, incumbent)):
                 record(nkey, {"success": False, "error": "llama-server not ready", "settings": dict(nset)})
                 continue
             hello = run_probe(model, quick=True)
