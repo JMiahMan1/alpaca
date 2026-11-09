@@ -77,52 +77,49 @@
   body.playing #stage { top: .15rem; bottom: .15rem; left: .3rem; right: .3rem; }
   body.playing .top, body.playing .foot { display: none; }
   body.playing .main { align-items: center; justify-content: center; }
-  .tvBoard { position: relative; width: 17.178rem; height: 9.667rem; flex: 0 0 auto; }
+  .tvPlay { display: flex; align-items: stretch; justify-content: center; gap: .12rem; height: 9.677rem; }
+  .tvBoard { position: relative; width: 12.5rem; height: 9.677rem; flex: 0 0 auto; }
   .tvBoard svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
-  .tvCenter { position: absolute; box-sizing: border-box; padding: .16rem .2rem; color: #fff8e7;
-    display: grid; grid-template-columns: 1.1fr 1fr; grid-template-rows: auto 1fr auto; gap: .14rem .18rem; }
-  .cTop { grid-column: 1 / 3; display: flex; align-items: center; justify-content: space-between; padding: 0 .06rem; }
+  .tvFrame { flex: 0 0 2.2rem; display: flex; flex-direction: column; gap: .1rem; min-width: 0; color: #fff8e7; }
+  .fLabel { font-size: .16rem; letter-spacing: .2em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
+  .tvFrame .players { display: flex; flex-direction: column; gap: .08rem; margin-top: .06rem; }
+  .tvFrame .plr { display: flex; flex-direction: column; align-items: center; text-align: center; gap: .03rem; background: rgba(255,255,255,.07);
+    border-radius: .16rem; padding: .08rem .06rem; border: .04rem solid transparent; }
+  .tvFrame .plr.turn { border-color: var(--gold); background: rgba(255,200,61,.18); }
+  .tvFrame .plr.out { opacity: .35; }
+  .tvFrame .plr .ring { width: .58rem; height: .58rem; border-radius: 50%; border: .045rem solid; display: flex; align-items: center;
+    justify-content: center; font-size: .34rem; background: rgba(255,255,255,.1); }
+  .tvFrame .plr .who { width: 100%; min-width: 0; }
+  .tvFrame .plr .nm { font-size: .27rem; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
+  .tvFrame .plr .st { font-size: .24rem; font-weight: 900; color: var(--gold2); font-variant-numeric: tabular-nums; }
+  .tvFrame .plr .st small { display: none; }
+  .tvFrame .plr.jail .st { color: var(--rose); font-size: .18rem; }
+  .tvFrame .players.many .plr { flex-direction: row; text-align: left; padding: .05rem .08rem; gap: .08rem; }
+  .tvFrame .players.many .plr .ring { width: .44rem; height: .44rem; font-size: .26rem; flex: 0 0 auto; }
+  .tvFrame .players.many .plr .nm { font-size: .22rem; }
+  .tvFrame .players.many .plr .st { font-size: .2rem; }
+  .fCard { background: rgba(255,255,255,.06); border: .02rem solid rgba(255,255,255,.12); border-radius: .16rem; padding: .1rem .12rem; }
+  .fPot { font-size: .5rem; font-weight: 900; color: var(--mint); font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .fBank { font-size: .2rem; font-weight: 800; color: #e9e4ff; }
+  .fBank small { display: block; color: var(--dim); font-size: .15rem; }
+  .fStory { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+  .fLog { font-size: .19rem; font-weight: 700; color: #d9d0ff; line-height: 1.3; margin-top: .06rem; max-height: .76rem; overflow: hidden; }
+  .fJoin { display: flex; flex-direction: column; align-items: center; text-align: center; }
+  .fJoin img { width: 1.25rem; height: 1.25rem; background: #fff; border-radius: .1rem; padding: .05rem; margin-bottom: .04rem; }
+  .fJoin b { font-size: .4rem; color: var(--gold2); letter-spacing: .15em; }
+  .tvCenter { position: absolute; box-sizing: border-box; padding: .2rem; display: flex; flex-direction: column; align-items: center; color: #fff8e7; }
   .cTitle { display: flex; align-items: center; gap: .14rem; }
-  .cTitle .brand { font-size: .42rem; }
+  .cTitle .brand { font-size: .5rem; }
   .cTitle .pill { font-size: .19rem; margin-left: 0; }
-  .cBank { display: flex; gap: .35rem; font-size: .24rem; font-weight: 800; color: var(--dim); align-items: baseline; }
-  .cBank b { color: var(--mint); font-size: .34rem; }
-  .cPanel { background: rgba(255,255,255,.055); border: .02rem solid rgba(255,255,255,.12); border-radius: .18rem; padding: .12rem .18rem;
-    min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-  .cPlayers { grid-row: 2 / 4; }
-  .cNow { align-items: center; justify-content: center; text-align: center; }
-  .cFoot { flex-direction: row; align-items: center; gap: .2rem; }
-  .cLabel { font-size: .18rem; letter-spacing: .25em; color: var(--dim); font-weight: 900; margin-bottom: .08rem; text-transform: uppercase; align-self: flex-start; }
-  .tvCenter .players { display: flex; flex-direction: column; gap: .08rem; flex: 1 1 auto; min-height: 0; }
-  .tvCenter .players.many { display: grid; grid-template-columns: 1fr 1fr; align-content: start; gap: .07rem .1rem; }
-  .tvCenter .plr { display: flex; align-items: center; gap: .14rem; background: rgba(255,255,255,.07); border-radius: .14rem;
-    padding: .07rem .12rem; border: .035rem solid transparent; min-width: 0; }
-  .tvCenter .plr.turn { border-color: var(--gold); background: rgba(255,200,61,.16); }
-  .tvCenter .plr.out { opacity: .35; }
-  .tvCenter .plr .ring, .tvCenter .cTurn .ring { width: .62rem; height: .62rem; border-radius: 50%; border: .045rem solid; display: flex; align-items: center;
-    justify-content: center; font-size: .36rem; flex: 0 0 auto; background: rgba(255,255,255,.08); }
-  .tvCenter .cTurn .ring.big { width: 1rem; height: 1rem; font-size: .58rem; border-width: .07rem; }
-  .tvCenter .plr .who { min-width: 0; }
-  .tvCenter .plr .nm { font-size: .33rem; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
-  .tvCenter .plr .st { font-size: .26rem; font-weight: 800; color: var(--gold2); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tvCenter .plr .st small { color: var(--dim); font-size: .2rem; }
-  .tvCenter .plr.jail .st, .tvCenter .players .plr.jail .st { color: var(--rose); }
-  .tvCenter .players.many .plr { padding: .05rem .1rem; gap: .1rem; }
-  .tvCenter .players.many .plr .ring { width: .5rem; height: .5rem; font-size: .29rem; }
-  .tvCenter .players.many .plr .nm { font-size: .27rem; }
-  .tvCenter .players.many .plr .st { font-size: .22rem; }
-  .tvCenter .players.many .plr .st small { display: none; }
-  .cTurn { display: flex; align-items: center; justify-content: center; gap: .22rem; }
-  .cWho { font-size: .62rem; font-weight: 900; text-shadow: 0 .04rem 0 rgba(0,0,0,.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 5.6rem; }
-  .cRoll { font-size: .44rem; font-weight: 900; color: #ffe27a; margin-top: .1rem; font-variant-numeric: tabular-nums; }
-  .cAlert { margin-top: .1rem; font-size: .28rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .05rem .2rem; }
+  .cNow { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; width: 100%; }
+  .tvCenter .cTurn { display: flex; align-items: center; justify-content: center; gap: .24rem; }
+  .tvCenter .cTurn .ring.big { width: 1.2rem; height: 1.2rem; border-radius: 50%; border: .08rem solid; display: flex; align-items: center;
+    justify-content: center; font-size: .7rem; background: rgba(255,255,255,.08); }
+  .cWho { font-size: .7rem; font-weight: 900; text-shadow: 0 .04rem 0 rgba(0,0,0,.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 7rem; }
+  .cRoll { font-size: .52rem; font-weight: 900; color: #ffe27a; margin-top: .16rem; font-variant-numeric: tabular-nums; }
+  .cAlert { margin-top: .14rem; font-size: .32rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .05rem .22rem; }
   .cAlert.debt { background: #ffd4d4; color: #8a1c1c; }
-  .cEvent { margin-top: .14rem; font-size: .34rem; font-weight: 900; color: #fff8e7; line-height: 1.25; max-height: .9rem; overflow: hidden; }
-  .cStory { flex: 1 1 auto; min-width: 0; align-self: stretch; display: flex; flex-direction: column; }
-  .cLog { font-size: .23rem; font-weight: 700; color: #d9d0ff; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cJoin { display: flex; align-items: center; gap: .14rem; font-size: .2rem; font-weight: 800; color: var(--dim); text-align: left; flex: 0 0 auto; }
-  .cJoin img { width: .95rem; height: .95rem; background: #fff; border-radius: .1rem; padding: .05rem; }
-  .cJoin b { display: block; font-size: .42rem; color: var(--gold2); letter-spacing: .2em; }
+  .cEvent { margin-top: .2rem; font-size: .38rem; font-weight: 900; color: #fff8e7; line-height: 1.25; max-width: 8.6rem; max-height: 1rem; overflow: hidden; }
   .sideCard { background: rgba(255,255,255,.06); border: .02rem solid rgba(255,255,255,.12); border-radius: .16rem; padding: .14rem .18rem; }
   .sideLabel { font-size: .15rem; letter-spacing: .22em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
   .players { display: flex; flex-direction: column; gap: .12rem; }
@@ -345,10 +342,11 @@
      are big. The middle holds the game itself (players, the turn, the story).
      Built once per room; after that only owners, houses, the pieces and the
      middle change, so a modest Cast receiver keeps up. */
+  // A near-square board (most of the screen) with a slim frame either side.
   // D: how deep the edge tiles are (the corners are D x D); S and TW: a side
   // tile's and a top/bottom tile's length along the edge. Deeper than a real
   // board's, so names and prices read from across the room.
-  var BW = 1706, BH = 960, D = 124, S = (BH - 2 * D) / 9, TW = (BW - 2 * D) / 9;
+  var BW = 1240, BH = 960, D = 140, S = (BH - 2 * D) / 9, TW = (BW - 2 * D) / 9;
   function svgEl(tag, attrs, parent) {
     var el = document.createElementNS(SVGNS, tag);
     for (var k in attrs) el.setAttribute(k, attrs[k]);
@@ -367,10 +365,17 @@
     return { x: BW - D / 2, y: D + (i - 30 - 0.5) * S, rot: 270, w: S, h: D };
   }
   /* A point along the walk: fractional positions slide between tile centres. */
+  /* Toward the middle of the board from a tile (where its colour band is):
+     the pieces stand there, so they cover the band, not the name. */
+  function inward(i) {
+    if (i % 10 === 0) return { x: 0, y: 0 };
+    var g = tileGeom(i), k = D * 0.22;
+    return g.rot === 0 ? { x: 0, y: -k } : g.rot === 90 ? { x: k, y: 0 } : g.rot === 180 ? { x: 0, y: k } : { x: -k, y: 0 };
+  }
   function pathPoint(pos) {
     var i0 = ((Math.floor(pos) % 40) + 40) % 40, f = pos - Math.floor(pos);
-    var a = tileGeom(i0), b = tileGeom((i0 + 1) % 40);
-    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+    var a = tileGeom(i0), b = tileGeom((i0 + 1) % 40), ia = inward(i0), ib = inward((i0 + 1) % 40);
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, ix: ia.x + (ib.x - ia.x) * f, iy: ia.y + (ib.y - ia.y) * f };
   }
   function fitName(name, maxW, maxFs, minFs, maxLines) {
     var words = String(name || "").split(/\s+/).filter(Boolean);
@@ -401,11 +406,21 @@
   }
   function corner(g, w, h, big, small, emoji, fill) {
     svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: h, fill: fill, opacity: 0.35 }, g);
-    var e = svgEl("text", { x: 0, y: -14, "text-anchor": "middle", "font-size": 40 }, g); e.textContent = emoji;
-    var bigFs = Math.min(19, (w - 10) / (0.6 * String(big).length));
-    var smallFs = Math.min(14, (w - 10) / (0.6 * String(small).length));
-    var b = svgEl("text", { x: 0, y: 20, "text-anchor": "middle", "font-size": bigFs.toFixed(1), "font-weight": 900, fill: "#1b0f3b" }, g); b.textContent = big;
-    var s2 = svgEl("text", { x: 0, y: 20 + bigFs + 4, "text-anchor": "middle", "font-size": smallFs.toFixed(1), "font-weight": 800, fill: "#3c2a55" }, g); s2.textContent = small;
+    var e = svgEl("text", { x: 0, y: -18, "text-anchor": "middle", "font-size": 54 }, g); e.textContent = emoji;
+    var bigFs = Math.min(24, (w - 12) / (0.6 * String(big).length));
+    var smallFs = Math.min(17, (w - 12) / (0.6 * String(small).length));
+    var b = svgEl("text", { x: 0, y: 28, "text-anchor": "middle", "font-size": bigFs.toFixed(1), "font-weight": 900, fill: "#1b0f3b" }, g); b.textContent = big;
+    var s2 = svgEl("text", { x: 0, y: 28 + bigFs + 5, "text-anchor": "middle", "font-size": smallFs.toFixed(1), "font-weight": 800, fill: "#3c2a55" }, g); s2.textContent = small;
+  }
+  /* A raised badge behind a tile's picture: a domed disc with a rim and a
+     highlight, so the trains, the camel and the scrolls look set into the
+     board rather than printed on it. */
+  function medallion(g, x, y, r, art, color) {
+    svgEl("circle", { cx: x + 1.5, cy: y + 2.5, r: r, fill: "rgba(27,15,59,.28)" }, g);
+    svgEl("circle", { cx: x, cy: y, r: r, fill: "url(#medal)", stroke: color || "#7a5b16", "stroke-width": 2.5 }, g);
+    svgEl("ellipse", { cx: x - r * 0.25, cy: y - r * 0.45, rx: r * 0.55, ry: r * 0.25, fill: "rgba(255,255,255,.55)" }, g);
+    var t = svgEl("text", { x: x, y: y + r * 0.38, "text-anchor": "middle", "font-size": (r * 1.15).toFixed(1) }, g);
+    t.textContent = art;
   }
   var board = null;   // { code, svg, own: [], houses: [], mort: [], tokens: {}, center }
   function buildBoard(room) {
@@ -417,6 +432,14 @@
     var parchment = svgEl("radialGradient", { id: "parch", cx: "50%", cy: "42%", r: "75%" }, defs);
     svgEl("stop", { offset: "0%", "stop-color": "#fffdf0" }, parchment);
     svgEl("stop", { offset: "100%", "stop-color": "#efe0bd" }, parchment);
+    var medal = svgEl("radialGradient", { id: "medal", cx: "40%", cy: "35%", r: "70%" }, defs);
+    svgEl("stop", { offset: "0%", "stop-color": "#fffbea" }, medal);
+    svgEl("stop", { offset: "100%", "stop-color": "#e9d29a" }, medal);
+    // The pieces: a glossy dome (white light, then the seat colour shows through).
+    var gloss = svgEl("radialGradient", { id: "gloss", cx: "35%", cy: "28%", r: "75%" }, defs);
+    svgEl("stop", { offset: "0%", "stop-color": "#ffffff", "stop-opacity": ".85" }, gloss);
+    svgEl("stop", { offset: "45%", "stop-color": "#ffffff", "stop-opacity": ".12" }, gloss);
+    svgEl("stop", { offset: "100%", "stop-color": "#000000", "stop-opacity": ".35" }, gloss);
     svgEl("rect", { x: 0, y: 0, width: BW, height: BH, fill: "url(#parch)", stroke: "#1b0f3b", "stroke-width": 6 }, svg);
     svgEl("rect", { x: D, y: D, width: BW - 2 * D, height: BH - 2 * D, fill: "#1d1145", stroke: "#f5c344", "stroke-width": 4 }, svg);
     var b = { code: room.code, svg: svg, wrap: wrap, own: [], houses: [], mort: [], tokens: {}, shown: {} };
@@ -433,35 +456,38 @@
       if (i === 30) { corner(g, w, h, "SENT TO", "THE DUNGEON", "⚔️", "#ffc4c4"); continue; }
       var band = GROUP_COLORS[sp.group] || (sp.kind === "railroad" ? "#1f2937" : sp.kind === "utility" ? "#374151" : null);
       var bandColor = sp.kind === "chance" ? "#8b5cf6" : sp.kind === "chest" ? "#1d4ed8" : sp.kind === "tax" ? "#c44" : band;
-      var bandH = 22;
+      var bandH = 26;
       if (bandColor) svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: bandH, fill: bandColor }, g);
       var label = sp.kind === "chance" ? "PARABLE" : sp.kind === "chest" ? "SCRIPTURE" : null;
       var nameTxt = label || sp.name || "";
       var art = sp.kind === "chance" ? "📜" : sp.kind === "chest" ? "📖" : sp.kind === "railroad" ? (sp.i === 35 ? "🐫" : "🚂")
         : sp.kind === "utility" ? (sp.i === 12 ? "💡" : "⛲") : sp.kind === "tax" ? "🪙" : null;
       var priceTxt = sp.kind === "tax" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
-      var wide = w > h;
-      var priceFs = wide ? 23 : 17;
+      var wide = c.rot === 0 || c.rot === 180;   // the top and bottom rows
+      var priceFs = wide ? 28 : 19;
       var top = -h / 2 + (bandColor ? bandH : 0), bottom = h / 2 - (priceTxt ? priceFs + 10 : 4);
       var mid = (top + bottom) / 2;
-      if (art && wide) {
+      if (art && wide && w >= 140) {
         // Wide tile: the picture on the left, the name beside it.
-        var a1 = svgEl("text", { x: -w / 2 + 30, y: mid + 14, "text-anchor": "middle", "font-size": 38 }, g); a1.textContent = art;
-        drawName(g, nameTxt, 26, mid, w - 72, 26);
+        medallion(g, -w / 2 + 34, mid, 27, art, bandColor);
+        drawName(g, nameTxt, 28, mid, w - 72, 32);
       } else if (art) {
         // Narrow tile with a picture: a smaller picture and at most two lines,
         // so the name never runs into the price.
-        var a2 = svgEl("text", { x: 0, y: top + 22, "text-anchor": "middle", "font-size": 21 }, g); a2.textContent = art;
-        drawName(g, nameTxt, 0, (top + 28 + bottom) / 2 + 1, w - 8, 14, null, 2);
+        // Picture above the name (a side tile, or a row tile too narrow to
+        // put them side by side).
+        var mr = wide ? 19 : 17;
+        medallion(g, 0, top + mr + 5, mr, art, bandColor);
+        drawName(g, nameTxt, 0, (top + 2 * mr + 10 + bottom) / 2 + 1, w - 8, wide ? 21 : 17, null, 2);
       } else {
-        drawName(g, nameTxt, 0, mid, w - (wide ? 18 : 8), wide ? 30 : 20);
+        drawName(g, nameTxt, 0, mid, w - (wide ? 18 : 8), wide ? 38 : 22);
       }
       if (priceTxt) {
         var pt = svgEl("text", { x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": priceFs, "font-weight": 900, fill: sp.kind === "tax" ? "#b91c1c" : "#1b0f3b" }, g);
         pt.textContent = priceTxt;
       }
       // Changing bits, kept for update(): owner, houses, mortgage.
-      b.own[i] = svgEl("circle", { cx: -w / 2 + 13, cy: h / 2 - 13, r: 9, fill: "none", stroke: "none", "stroke-width": 1.6 }, g);
+      b.own[i] = svgEl("circle", { cx: -w / 2 + 15, cy: h / 2 - 15, r: 11, fill: "none", stroke: "none", "stroke-width": 1.6 }, g);
       b.houses[i] = svgEl("g", { transform: "translate(0 " + (-h / 2 + 5) + ")" }, g);
       b.mort[i] = svgEl("text", { x: w / 2 - 14, y: h / 2 - 8, "text-anchor": "middle", "font-size": 20, "font-weight": 900, fill: "#c0392b", display: "none" }, g);
       b.mort[i].textContent = "M";
@@ -478,8 +504,8 @@
   }
   function houseMarks(n, w) {
     var out = "";
-    if (n === 5) return '<rect x="-14" y="0" width="28" height="12" rx="2" fill="#d32f2f" stroke="#1b0f3b" stroke-width="1.2"/>';
-    for (var k = 0; k < n; k++) out += '<rect x="' + (-n * 10 + k * 20 + 2) + '" y="0" width="16" height="12" rx="2" fill="#2e9e5b" stroke="#1b0f3b" stroke-width="1"/>';
+    if (n === 5) return '<rect x="-18" y="0" width="36" height="16" rx="3" fill="#d32f2f" stroke="#1b0f3b" stroke-width="1.4"/>';
+    for (var k = 0; k < n; k++) out += '<rect x="' + (-n * 13 + k * 26 + 2) + '" y="0" width="22" height="16" rx="3" fill="#2e9e5b" stroke="#1b0f3b" stroke-width="1.2"/>';
     return out;
   }
   function updateBoard(room) {
@@ -501,9 +527,14 @@
     var t = board.tokens[p.seat];
     if (t) return t;
     var g = svgEl("g", {}, board.tokenLayer);
-    svgEl("circle", { r: 24, fill: seatColor(p.seat), stroke: "#1b0f3b", "stroke-width": 3.5 }, g);
-    var e = svgEl("text", { y: 10, "text-anchor": "middle", "font-size": 28 }, g); e.textContent = tokenEmoji(p.token);
-    t = { g: g, shown: p.position, queue: [], from: p.position, start: 0, dur: 0, lift: 0 };
+    var shadow = svgEl("ellipse", { cx: 0, cy: 14, rx: 26, ry: 9, fill: "rgba(20,10,40,.45)" }, g);
+    var body = svgEl("g", {}, g);
+    var col = seatColor(p.seat);
+    svgEl("ellipse", { cx: 0, cy: 10, rx: 27, ry: 11, fill: col, stroke: "#1b0f3b", "stroke-width": 3 }, body);   // the base
+    svgEl("circle", { cx: 0, cy: -4, r: 25, fill: col, stroke: "#1b0f3b", "stroke-width": 3 }, body);             // the dome
+    svgEl("circle", { cx: 0, cy: -4, r: 25, fill: "url(#gloss)" }, body);
+    var e = svgEl("text", { y: 6, "text-anchor": "middle", "font-size": 28 }, body); e.textContent = tokenEmoji(p.token);
+    t = { g: g, body: body, shadow: shadow, shown: p.position, queue: [], from: p.position, start: 0, dur: 0, lift: 0 };
     board.tokens[p.seat] = t;
     return t;
   }
@@ -532,14 +563,19 @@
           var k = Math.min(1, (now - t.start) / t.dur);
           var e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;   // ease in-out
           pos = t.from + e * (((t.to - t.from) + 40) % 40);
-          lift = Math.sin(Math.PI * k) * 34;
+          lift = Math.sin(Math.PI * k) * 44;
           moving = true;
         }
         var key = Math.round(pos) % 40;
         places[key] = (places[key] || 0) + 1;
         var n = places[key] - 1, pt = pathPoint(pos);
-        var dx = (n % 2) * 36 - 18, dy = Math.floor(n / 2) * 32 - 16;
-        t.g.setAttribute("transform", "translate(" + (pt.x + dx).toFixed(1) + " " + (pt.y + dy - lift).toFixed(1) + ")");
+        var dx = (n % 2) * 40 - 20, dy = Math.floor(n / 2) * 36 - 18;
+        // The piece stands on the band side of its tile (off the name); in a
+        // hop the body rises and its shadow stays on the board, shrinking.
+        t.g.setAttribute("transform", "translate(" + (pt.x + pt.ix + dx).toFixed(1) + " " + (pt.y + pt.iy + dy).toFixed(1) + ")");
+        t.body.setAttribute("transform", "translate(0 " + (-lift).toFixed(1) + ")");
+        var sc = 1 - lift / 90;
+        t.shadow.setAttribute("rx", (26 * sc).toFixed(1)); t.shadow.setAttribute("ry", (9 * sc).toFixed(1));
       }
       animating = moving;
     }
@@ -558,41 +594,48 @@
     }
     return html;
   }
+  /* Left frame: the players. Board middle: the title and what is happening
+     now. Right frame: the money, the story so far, how to join. */
   function centerHtml(room) {
     var p = room.players && room.players[room.turn];
-    var many = room.players.length > 4 ? " many" : "";
-    var head = '<div class="cTop"><div class="cTitle"><span class="brand">🎺 JUBILEE!</span>'
-      + '<span class="pill">ROUND ' + (room.round || 1) + '</span><span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span></div>'
-      + '<div class="cBank"><span>🍯 Jackpot <b>$' + fmt(room.pot) + '</b></span><span>Bank 🏠 ' + room.bank_houses + ' · 🏨 ' + room.bank_hotels + '</span></div></div>';
-    var players = '<div class="cPanel cPlayers"><div class="cLabel">Players</div><div class="players' + many + '">' + playerRows(room) + '</div></div>';
-    var now = '<div class="cPanel cNow"><div class="cLabel">Now</div>';
+    var many = room.players.length > 5 ? " many" : "";
+    var left = '<div class="fLabel">Players</div><div class="players' + many + '">' + playerRows(room) + '</div>';
+    var center = '<div class="cTitle"><span class="brand">🎺 JUBILEE!</span><span class="pill">ROUND ' + (room.round || 1) + '</span>'
+      + '<span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span></div><div class="cNow">';
     if (p && room.status === "playing") {
-      now += '<div class="cTurn"><div class="ring big" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
+      center += '<div class="cTurn"><div class="ring big" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
         + '<div class="cWho" style="color:' + seatColor(p.seat) + '">' + esc((p.in_jail ? "⛓ " : "") + (p.name || "")) + "'s turn</div></div>";
     }
     var lr = room.last_roll;
-    if (lr && lr.d1 && lr.d2) now += '<div class="cRoll">🎲 ' + lr.d1 + ' + ' + lr.d2 + ' = ' + (lr.d1 + lr.d2) + (lr.d1 === lr.d2 ? ' · DOUBLES!' : '') + '</div>';
+    if (lr && lr.d1 && lr.d2) center += '<div class="cRoll">🎲 ' + lr.d1 + ' + ' + lr.d2 + ' = ' + (lr.d1 + lr.d2) + (lr.d1 === lr.d2 ? ' · DOUBLES!' : '') + '</div>';
     if (room.auction) {
       var a = room.auction;
-      now += '<div class="cAlert">🔨 On the block: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : "") + '</div>';
+      center += '<div class="cAlert">🔨 On the block: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : "") + '</div>';
     } else if (room.pending && room.pending.kind === "debt") {
-      now += '<div class="cAlert debt">A debt is due: $' + fmt(room.pending.amount) + '</div>';
+      center += '<div class="cAlert debt">A debt is due: $' + fmt(room.pending.amount) + '</div>';
     }
-    var log = (room.log || []).slice(-3).reverse();
-    if (log[0]) now += '<div class="cEvent">' + esc(log[0]) + '</div>';
-    now += '</div>';
-    var earlier = log.slice(1).map(function (line) { return '<div class="cLog">' + esc(line) + '</div>'; }).join("");
+    var log = (room.log || []).slice(-5).reverse();
+    if (log[0]) center += '<div class="cEvent">' + esc(log[0]) + '</div>';
+    center += '</div>';
     var code = esc(room.code || PINNED);
-    var foot = '<div class="cPanel cFoot"><div class="cStory"><div class="cLabel">Earlier</div>' + earlier + '</div>'
-      + '<div class="cJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div>Scan to play<b>' + code + '</b></div></div></div>';
-    return head + players + now + foot;
+    var right = '<div class="fCard"><div class="fLabel">Jackpot</div><div class="fPot">$' + fmt(room.pot) + '</div>'
+      + '<div class="fBank">🏠 ' + room.bank_houses + ' · 🏨 ' + room.bank_hotels + '<small> in the bank</small></div></div>'
+      + '<div class="fCard fStory"><div class="fLabel">Earlier</div>'
+      + log.slice(1).map(function (line) { return '<div class="fLog">' + esc(line) + '</div>'; }).join("") + '</div>'
+      + '<div class="fCard fJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div class="fLabel">Scan to play</div><b>' + code + '</b></div>';
+    return { left: left, center: center, right: right };
   }
   var centerSig = "";
   function renderGame(room) {
     if (!board || board.code !== room.code || !document.body.contains(board.wrap)) {
       $("tv-main").innerHTML = "";
       board = buildBoard(room);
-      $("tv-main").appendChild(board.wrap);
+      var row = document.createElement("div");
+      row.className = "tvPlay";
+      board.left = document.createElement("div"); board.left.className = "tvFrame left";
+      board.right = document.createElement("div"); board.right.className = "tvFrame right";
+      row.appendChild(board.left); row.appendChild(board.wrap); row.appendChild(board.right);
+      $("tv-main").appendChild(row);
       centerSig = "";
     }
     updateBoard(room);
@@ -600,7 +643,11 @@
     var sig = [room.turn, room.round, room.pot, room.bank_houses, room.bank_hotels, room.log_seq, JSON.stringify(room.last_roll),
       JSON.stringify(room.auction), JSON.stringify(room.pending),
       JSON.stringify(room.players.map(function (p) { return [p.cash, p.net_worth, p.bankrupt, p.in_jail]; }))].join("~");
-    if (sig !== centerSig) { centerSig = sig; board.center.innerHTML = centerHtml(room); }
+    if (sig !== centerSig) {
+      centerSig = sig;
+      var parts = centerHtml(room);
+      board.left.innerHTML = parts.left; board.center.innerHTML = parts.center; board.right.innerHTML = parts.right;
+    }
   }
   function renderFinished(room) {
     var sorted = room.players.slice().sort(function (a, b) { return b.net_worth - a.net_worth; });
