@@ -607,7 +607,8 @@
 
                     <div class="card section-gap">
                         <div class="card-title">Score Trend Over Time <span class="card-sub">(per run snapshot)</span></div>
-                        <div class="chart-wrapper" style="height: 280px;">
+                        <div class="chart-wrapper" style="height: 360px;">
+                            <div class="chart-empty" id="general-trend-empty">Loading run history…</div>
                             <canvas id="general-trend-chart"></canvas>
                         </div>
                     </div>
@@ -720,17 +721,17 @@
                     <div class="metrics-summary-grid">
                         <div class="metric-card primary">
                             <span class="metric-label">FastPath Intent Latency</span>
-                            <span id="shared-metric-fastpath" class="metric-value">0 ms</span>
+                            <span id="shared-metric-fastpath" class="metric-value">-</span>
                             <span class="metric-sub">Tier 1 classification speed</span>
                         </div>
                         <div class="metric-card secondary">
                             <span class="metric-label">Librarian Tool Acc</span>
-                            <span id="shared-metric-librarian" class="metric-value">0%</span>
+                            <span id="shared-metric-librarian" class="metric-value">-</span>
                             <span class="metric-sub">Tier 2 JSON tool select</span>
                         </div>
                         <div class="metric-card success">
                             <span class="metric-label">Raven AST Completeness</span>
-                            <span id="shared-metric-raven" class="metric-value">0%</span>
+                            <span id="shared-metric-raven" class="metric-value">-</span>
                             <span class="metric-sub">Tier 3 structural code validation</span>
                         </div>
                         <div class="metric-card info">
@@ -812,7 +813,8 @@
 
                     <div class="card section-gap">
                         <div class="card-title">SharedLLM Score Trend Over Time <span class="card-sub">(per run snapshot)</span></div>
-                        <div class="chart-wrapper" style="height: 280px;">
+                        <div class="chart-wrapper" style="height: 360px;">
+                            <div class="chart-empty" id="shared-trend-empty">Loading run history…</div>
                             <canvas id="shared-trend-chart"></canvas>
                         </div>
                     </div>
@@ -2270,7 +2272,7 @@
                         <!-- Music pane -->
                         <div class="card" style="border-left:4px solid #f59e0b;">
                             <h3 style="font-size:0.95rem; margin-bottom:0.6rem; display:flex; align-items:center; gap:0.4rem;">🎼 Music Generator <span style="font-weight:400; font-size:0.7rem; color:#94a3b8;">MusicGen-small · 32 kHz</span></h3>
-                            <textarea id="music-prompt" rows="3" placeholder="Describe the music: e.g. upbeat synthwave chase theme, driving arpeggios…"></textarea>
+                            <textarea id="music-prompt" rows="3" placeholder="Describe the music: e.g. upbeat synthwave chase theme, driving arpeggios…" style="width:100%; box-sizing:border-box; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.6rem; font-size:0.85rem; resize:vertical;"></textarea>
                             <div id="music-presets" style="display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.45rem;"></div>
                             <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.55rem; align-items:center;">
                                 <label style="font-size:0.75rem; color:#94a3b8;">Duration</label>
@@ -2596,7 +2598,6 @@
                                     <span style="font-family:monospace; color:white; font-weight:600;">/api/logs</span>
                                 </div>
 
-                                <div style="font-size: 0.65rem; color: var(--text-muted); 
                                 <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Request Monitor (Port 5000)</div>
                                 <div class="doc-menu-item" data-target="doc-api-requests" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
                                     <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
@@ -2606,7 +2607,7 @@
                                     <span class="badge badge-danger" style="font-size:0.6rem; padding:0.1rem 0.3rem; background:var(--color-danger); border-color:var(--color-danger);">POST</span>
                                     <span style="font-family:monospace; color:white; font-weight:600;">/api/requests/clear</span>
                                 </div>
-text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Dashboard Backend (Port 5000)</div>
+                                <div style="font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; margin-top: 0.8rem; margin-bottom: 0.2rem; letter-spacing: 0.05em;">Dashboard Backend (Port 5000)</div>
                                 <div class="doc-menu-item" data-target="doc-api-profiles" style="padding:0.5rem; background:#0f172a; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
                                     <span class="badge badge-success" style="font-size:0.6rem; padding:0.1rem 0.3rem;">GET</span>
                                     <span style="font-family:monospace; color:white; font-weight:600;">/api/profiles</span>

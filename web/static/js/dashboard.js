@@ -4665,7 +4665,7 @@ document.addEventListener('DOMContentLoaded', () => {
             el.innerHTML = '';
             return;
         }
-const saved = _loadHumanRatings(t.id) || {};
+        const saved = _loadHumanRatings(t.id) || {};
         // Rank by total points (benchmark score + star bonus, 30/star).
         // Unrated models keep their plain benchmark score.
         const ranked = tested.slice().sort((a, b) =>
@@ -6527,11 +6527,24 @@ const saved = _loadHumanRatings(t.id) || {};
     }
 
     // Line chart of per-model score across run snapshots (oldest -> newest).
+    // Lines drawn by default; the rest stay in the legend, one click away. With
+    // every model drawn (22+) the legend took most of the card and the plot was
+    // a sliver.
+    const TREND_VISIBLE_MODELS = 8;
+
     function renderTrendChart(kind) {
         const canvas = document.getElementById(`${kind}-trend-chart`);
+        const empty = document.getElementById(`${kind}-trend-empty`);
         if (!canvas || typeof Chart === 'undefined') return;
         const entries = TREND_DATA[kind] || [];
-        if (entries.length === 0) return;
+        if (entries.length === 0) {
+            if (empty) {
+                empty.textContent = 'No run history yet.';
+                empty.classList.remove('d-none');
+            }
+            return;
+        }
+        if (empty) empty.classList.add('d-none');
 
         const labels = [...new Set(entries.map(e => e.label))].sort();
         const models = [...new Set(entries.map(e => e.model))].map(m => ({
@@ -6554,7 +6567,11 @@ const saved = _loadHumanRatings(t.id) || {};
                         data: labels.map(l => byLabel[l] !== undefined ? byLabel[l] : null),
                         borderColor: color,
                         backgroundColor: color + '33',
-                        spanGaps: true,
+                        hidden: i >= TREND_VISIBLE_MODELS,
+                        // Not joined across runs a model was not in: a line
+                        // between distant runs invented a trend that was not
+                        // measured.
+                        spanGaps: false,
                         tension: 0.25,
                         pointRadius: 4,
                         pointHoverRadius: 6,

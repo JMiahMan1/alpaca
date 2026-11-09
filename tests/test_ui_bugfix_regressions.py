@@ -412,3 +412,44 @@ def test_analyze_all_skips_non_model_telemetry_files(client, tmp_path, monkeypat
     data = res.get_json()
     assert data["results"] == []
     assert set(data["models_skipped"]) == {"none", "system_idle", "unknown_model"}
+
+
+# --- Nov 2026 UI pass -------------------------------------------------------
+
+_INDEX = (Path(__file__).resolve().parents[1] / "web" / "templates" / "index.html").read_text()
+_CSS = (Path(__file__).resolve().parents[1] / "web" / "static" / "css" / "style.css").read_text()
+
+
+def test_no_tag_attribute_runs_onto_the_next_line():
+    """A style="... left open at the end of a line swallowed the API Docs menu's
+    section headers and closed the two-column grid early, so the documentation
+    pane rendered below the menu instead of beside it."""
+    import re
+
+    bad = [i + 1 for i, line in enumerate(_INDEX.split("\n")) if re.search(r'<div [^>]*style="[^"]*$', line)]
+    assert bad == []
+
+
+def test_api_docs_detail_pane_sits_inside_the_two_column_grid():
+    import re
+
+    lines = _INDEX.split("\n")
+    start = next(i for i, line in enumerate(lines) if "grid-template-columns: 1fr 2fr" in line)
+    depth = 0
+    for line in lines[start:]:
+        depth += len(re.findall(r"<div\b", line)) - len(re.findall(r"</div>", line))
+        if "Right pane: Documentation Details" in line:
+            break
+    assert depth == 1
+
+
+def test_music_prompt_is_dark_like_every_other_textarea():
+    import re
+
+    tag = re.search(r'<textarea id="music-prompt"[^>]*>', _INDEX).group(0)
+    assert "background:#090d16" in tag
+
+
+def test_empty_ratings_box_and_trend_placeholders():
+    assert ".test-preview-ratings:empty" in _CSS
+    assert 'id="general-trend-empty"' in _INDEX and 'id="shared-trend-empty"' in _INDEX

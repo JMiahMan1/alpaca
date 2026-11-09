@@ -910,6 +910,23 @@ header {
     position: relative;
 }
 
+/* Shown over a chart until its data arrives (run history loads every saved
+   result file, which takes a while), and when there is none. */
+.chart-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    pointer-events: none;
+}
+
+.chart-empty.d-none {
+    display: none;
+}
+
 /* Console Section */
 .console-card {
     background: #060913;
@@ -2376,6 +2393,11 @@ a.badge {
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.03);
+}
+
+/* Nothing to rate until a model has run the test: no empty framed bar. */
+.test-preview-ratings:empty {
+    display: none;
 }
 
 .test-preview-ratings .rating-list {
