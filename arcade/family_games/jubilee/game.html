@@ -55,12 +55,12 @@
   .jb-spacer { flex: 1; }
   .jb-chip {
     display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line);
-    background: rgba(255,255,255,.07); color: #fff; border-radius: 999px; padding: 6px 12px;
+    background: rgba(255,255,255,.07); color: #fff; border-radius: 999px; padding: 6px 12px; min-height: 44px;
     font: 800 13px var(--font); cursor: pointer; white-space: nowrap;
   }
   .jb-chip b { color: var(--gold2); letter-spacing: .14em; font-variant-numeric: tabular-nums; }
-  .jb-icon { border: 1px solid var(--line); background: rgba(255,255,255,.07); color: #fff; border-radius: 12px;
-    width: 38px; height: 38px; font-size: 17px; cursor: pointer; display:flex; align-items:center; justify-content:center; }
+  .jb-icon { border: 1px solid var(--line); background: rgba(255,255,255,.07); color: #fff; border-radius: 14px;
+    width: 44px; height: 44px; min-width: 44px; min-height: 44px; font-size: 18px; cursor: pointer; display:flex; align-items:center; justify-content:center; }
   .jb-icon:active { transform: scale(.92); }
 
   /* board + side panel */
@@ -121,7 +121,7 @@
     border-radius: 18px; background: rgba(10,6,32,.72); backdrop-filter: blur(6px); overflow: hidden;
   }
   #jb-tabs { flex: 0 0 auto; display: flex; border-bottom: 1px solid var(--line); }
-  .jb-tab { flex: 1; background: transparent; color: #a99ddb; border: 0; padding: 10px 6px; font: 800 13px var(--font);
+  .jb-tab { flex: 1; min-height: 44px; background: transparent; color: #a99ddb; border: 0; padding: 10px 6px; font: 800 13px var(--font);
     cursor: pointer; border-bottom: 2px solid transparent; }
   .jb-tab.on { color: var(--gold2); border-bottom-color: var(--gold); }
   .jb-tab .dot { display:inline-block; min-width: 8px; height: 8px; border-radius: 99px; background: var(--coral); margin-left: 6px; vertical-align: 1px; }

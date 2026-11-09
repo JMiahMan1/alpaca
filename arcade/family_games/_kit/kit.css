@@ -36,21 +36,27 @@ body.fk { position: fixed; inset: 0; }
 }
 #fk-hud .fk-pill {
   pointer-events: none; display: inline-flex; align-items: baseline; gap: 6px;
-  padding: 6px 12px; border-radius: 999px;
-  background: rgba(20, 12, 60, 0.38); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  padding: 7px 13px; border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(20, 12, 60, 0.46); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.18);
   font-weight: 800; font-size: 18px; line-height: 1; letter-spacing: 0.01em;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   font-variant-numeric: tabular-nums;
 }
-#fk-hud .fk-pill small { font-size: 11px; font-weight: 700; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.08em; }
+#fk-hud .fk-pill small { font-size: 11px; font-weight: 700; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.08em; }
 #fk-hud .fk-spacer { flex: 1; }
 #fk-hud .fk-extra:empty { display: none; }
 .fk-icon-btn {
-  pointer-events: auto; width: 44px; height: 44px; border-radius: 14px; border: 0;
+  pointer-events: auto; width: 44px; height: 44px; border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
   display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(20, 12, 60, 0.38); color: #fff; font-size: 20px; cursor: pointer;
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  background: rgba(20, 12, 60, 0.46); color: #fff; font-size: 20px; cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  transition: transform 0.1s ease, background 0.15s ease;
 }
+.fk-icon-btn:hover { background: rgba(30, 20, 82, 0.62); }
 .fk-icon-btn:active { transform: scale(0.92); }
 .fk-icon-btn.fk-exit { font-size: 18px; font-weight: 900; }
 .fk-score-bump { animation: fk-bump 0.25s ease-out; }
@@ -62,18 +68,27 @@ body.fk { position: fixed; inset: 0; }
   align-items: center; justify-content: center;
   padding: calc(16px + var(--fk-safe-top)) calc(16px + var(--fk-safe-right)) calc(16px + var(--fk-safe-bottom))
     calc(16px + var(--fk-safe-left));
-  background: rgba(18, 10, 52, 0.45); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  background: radial-gradient(circle at 50% 35%, rgba(36, 22, 92, 0.38), rgba(12, 6, 38, 0.62));
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 #fk-overlay.fk-show { display: flex; animation: fk-fade 0.2s ease-out; }
 @keyframes fk-fade { from { opacity: 0; } to { opacity: 1; } }
 .fk-card {
-  width: min(380px, 100%); max-height: 100%; overflow: auto;
-  background: var(--fk-card); border-radius: 28px; padding: 22px 20px 18px;
-  box-shadow: 0 20px 60px rgba(10, 5, 40, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+  width: min(400px, 100%); max-height: 100%; overflow: auto;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), var(--fk-card));
+  border-radius: 30px; padding: 24px 22px 20px;
+  box-shadow: 0 24px 68px rgba(10, 5, 40, 0.52), 0 0 0 1.5px rgba(255, 255, 255, 0.75) inset;
   text-align: center; animation: fk-pop 0.32s cubic-bezier(0.2, 1.4, 0.4, 1);
 }
 @keyframes fk-pop { from { transform: scale(0.85) translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
-.fk-card .fk-emoji { font-size: 56px; line-height: 1; margin-bottom: 6px; filter: drop-shadow(0 4px 6px rgba(0,0,0,.15)); }
+.fk-card .fk-emoji {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 82px; height: 82px; border-radius: 26px;
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.14), rgba(255, 122, 182, 0.14));
+  border: 1px solid rgba(124, 92, 255, 0.18);
+  font-size: 50px; line-height: 1; margin-bottom: 8px;
+  filter: drop-shadow(0 6px 10px rgba(0,0,0,.12));
+}
 .fk-card h1 { margin: 0; font-size: 30px; font-weight: 900; letter-spacing: -0.01em; color: var(--fk-ink); }
 .fk-card h2 { margin: 0; font-size: 22px; font-weight: 900; color: var(--fk-ink); }
 .fk-card .fk-tag { margin: 6px 0 0; font-size: 15px; color: var(--fk-ink-soft); font-weight: 600; }
@@ -156,7 +171,7 @@ body.fk { position: fixed; inset: 0; }
  * included, fits without scrolling. */
 @media (max-height: 740px) {
   .fk-card { padding: 14px 14px 12px; border-radius: 22px; }
-  .fk-card .fk-emoji { font-size: 40px; margin-bottom: 2px; }
+  .fk-card .fk-emoji { width: 58px; height: 58px; border-radius: 18px; font-size: 36px; margin-bottom: 4px; }
   .fk-card h1 { font-size: 24px; }
   .fk-card h2 { font-size: 20px; }
   .fk-card .fk-tag { font-size: 13px; margin-top: 2px; }

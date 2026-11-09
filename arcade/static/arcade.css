@@ -67,8 +67,9 @@ body {
 /* ---------- Header navigation (Players / My player card) ---------- */
 .arcade-nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.7rem; margin-top: 1rem; }
 .arcade-nav a {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 44px;
   color: var(--cyan); text-decoration: none; font-weight: 700; letter-spacing: 0.06em;
-  background: var(--panel); border: 2px solid var(--border); border-radius: 999px; padding: 0.42rem 1rem;
+  background: var(--panel); border: 2px solid var(--border); border-radius: 999px; padding: 0.42rem 1.1rem;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .arcade-nav a:hover { border-color: var(--cyan); box-shadow: 0 0 12px rgba(34, 211, 238, 0.5); }
@@ -113,8 +114,9 @@ body {
 .arcade-filters input#arcade-search:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 10px rgba(34, 211, 238, 0.5); }
 .category-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .category-chip {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 44px;
   background: var(--panel); color: var(--muted); border: 2px solid var(--border); border-radius: 999px;
-  padding: 0.35rem 0.85rem; font-size: 0.8rem; font-weight: 700; cursor: pointer; letter-spacing: 0.04em;
+  padding: 0.4rem 0.95rem; font-size: 0.82rem; font-weight: 700; cursor: pointer; letter-spacing: 0.04em;
 }
 .category-chip:hover { border-color: var(--cyan); color: var(--text); }
 .category-chip.is-active { background: linear-gradient(90deg, var(--pink), var(--cyan)); color: #0a0418; border-color: transparent; }
@@ -212,8 +214,13 @@ summary { cursor: pointer; color: var(--cyan); }
 .candidates button:hover { border-color: var(--lime); color: var(--lime); }
 .form-msg { font-size: 0.8rem; min-height: 1.2em; margin-top: 0.3rem; color: var(--lime); }
 .rating-widget { font-size: 1.3rem; color: var(--gold); text-shadow: 0 0 12px rgba(255, 210, 62, 0.8); }
-.rate-buttons { display: flex; gap: 0.3rem; margin-top: 0.4rem; }
-.rate-buttons button { background: #241344; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 0.35rem 0.6rem; cursor: pointer; font-size: 1rem; transition: transform 0.08s ease; }
+.rate-buttons { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.4rem; }
+.rate-buttons button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px;
+  background: #241344; color: var(--muted); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0.35rem 0.6rem; cursor: pointer; font-size: 1.05rem; transition: transform 0.08s ease;
+}
 .rate-buttons button:hover { transform: scale(1.2); color: var(--gold); border-color: var(--gold); }
 .rate-buttons button.rated { color: var(--gold); border-color: var(--gold); box-shadow: 0 0 10px rgba(255, 210, 62, 0.5); }
 .arcade-footer { text-align: center; color: var(--muted); font-size: 0.78rem; padding: 1.5rem; border-top: 2px solid var(--border); letter-spacing: 0.2em; text-transform: uppercase; }
