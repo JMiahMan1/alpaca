@@ -1522,6 +1522,10 @@ def leave_room(code: Any, player_id: Any) -> dict[str, Any]:
                 room["bonus_roll"] = False
                 room["doubles"] = 0
             _maybe_finish(room)
+            # The last person has left: nobody is watching the scribes play on.
+            if not any(p and not p.get("is_ai") and not p["bankrupt"] for p in room["players"]):
+                _release_screen_async(_rooms.pop(clean, None))
+                return {"success": True, "gone": True}
         room["updated_at"] = time.time()
         return {"room": _snapshot_unlocked(room, player_id)}
 

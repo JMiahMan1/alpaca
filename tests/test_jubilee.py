@@ -236,6 +236,9 @@ def test_restart_returns_to_lobby(dice):
 
 def test_leave_mid_match_eliminates():
     code, pid = _started()
+    with jubilee._lock:
+        room = jubilee._rooms[code]
+        room["players"][1]["is_ai"] = False          # a second person still at the table
     out = jubilee.leave_room(code, pid)
     assert out["room"]["players"][0]["bankrupt"] is True
 
@@ -597,3 +600,22 @@ def test_offers_reach_the_phone_with_who_and_what():
     jubilee.trade_accept(code, bob, t["id"])
     after = jubilee.get_room(code, ann)
     assert after["trades"] == [] and after["board"][1]["owner"] == 0
+
+
+def test_the_last_person_leaving_mid_game_closes_the_room():
+    """It used to play on with only scribes until the idle timeout, holding its code and its TV."""
+    made = jubilee.create_room({"name": "Ann"})
+    code, ann = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, ann)                 # Ann and two scribes
+    out = jubilee.leave_room(code, ann)
+    assert out.get("gone") is True
+    assert jubilee.get_room(code, ann) is None
+
+
+def test_one_of_two_people_leaving_mid_game_keeps_the_room():
+    made = jubilee.create_room({"name": "Ann"})
+    code, ann = made["room"]["code"], made["player_id"]
+    jubilee.join_room(code, {"name": "Bob"})
+    jubilee.start_match(code, ann)
+    out = jubilee.leave_room(code, ann)
+    assert "room" in out and out["room"]["status"] in ("playing", "finished")
