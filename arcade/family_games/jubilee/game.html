@@ -1739,20 +1739,43 @@ syncSoundBtn();
     syncZoomBtn();
     kit.haptic(10);
   });
-  function updateZoom() {
+  /* Where the camera aims for a seat: the token's path, not the token.
+     The token hops (an arc up, a quick ease into each tile, a nudge aside
+     when it shares a tile); following that made the whole board hop with
+     it. The camera aims at a point gliding at an even pace along the walk
+     instead, and eases after it, so the token bounces while the view
+     travels smoothly. */
+  function camTarget(seat) {
+    var board = state.room && state.room.board;
+    if (!board || !state.room.players[seat]) return null;
+    var h = state.hopAnim;
+    var pos;
+    if (h && h.seat === seat) {
+      // Every animated hop is one tile (from -> from + 1, 39 -> 0 wraps):
+      // an even pace along it, where the token itself eases and arcs.
+      var k = Math.min(1, Math.max(0, (performance.now() - h.start) / h.dur));
+      pos = h.from + k;
+    } else {
+      pos = (state.displayedPos[seat] !== undefined) ? state.displayedPos[seat] : state.room.players[seat].position;
+    }
+    return tileCoord(pos);
+  }
+
+  function updateZoom(dt) {
     var svg = $('jb-board');
     if (!svg) return;
     var tx = 480, ty = 480, ts = 960;
     if (zoom.on && state.room && state.room.status === 'playing') {
       var seat = state.hopAnim ? state.hopAnim.seat : state.room.turn;
-      var p = tokenScreenPos(seat);
+      var p = camTarget(seat);
       if (p) {
         ts = SMALL ? 420 : 520;
         tx = Math.max(ts / 2, Math.min(960 - ts / 2, p.x));
         ty = Math.max(ts / 2, Math.min(960 - ts / 2, p.y));
       }
     }
-    var ease = RM ? 1 : 0.14;
+    // Time-based easing: the same glide at 30 or 120 frames a second.
+    var ease = RM ? 1 : 1 - Math.exp(-(dt || 0.016) * 4.5);
     zoom.cx += (tx - zoom.cx) * ease;
     zoom.cy += (ty - zoom.cy) * ease;
     zoom.s += (ts - zoom.s) * ease;
@@ -1975,7 +1998,7 @@ syncSoundBtn();
         if (last) kit.haptic(14);
       }
     }
-    updateZoom();
+    updateZoom(dt);
     renderTokensLayer();
     renderTurnHighlight(t);
     renderPopups(performance.now());
