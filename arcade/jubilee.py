@@ -79,6 +79,10 @@ try:
     party = importlib.import_module("party")
 except ImportError:  # tests import `arcade.jubilee` as a package from the repo root
     party = importlib.import_module("arcade.party")
+try:
+    presence = importlib.import_module("presence")
+except ImportError:
+    presence = importlib.import_module("arcade.presence")
 
 # --------------------------------------------------------------------------- #
 # The board
@@ -172,6 +176,7 @@ GO_SALARY = 200
 BANK_HOUSES = 32
 BANK_HOTELS = 12
 JUBILEE_ROUND_LIMIT = 12
+MAX_ROUNDS = 100  # Classic and Quick: highest net worth wins after this many full rounds
 QUICK_END_BANKRUPTCIES = 2
 MAX_PLAYERS = 8
 
@@ -475,6 +480,34 @@ def _rent_for(room: dict[str, Any], index: int, dice: list[int] | None) -> int:
 def _log(room: dict[str, Any], msg: str) -> None:
     room.setdefault("log", []).append(msg)
     del room["log"][:-10]
+    # Counts every line ever logged: the log keeps only the last ten, so a
+    # screen finds the new lines by this number, never by the list's length.
+    room["log_seq"] = int(room.get("log_seq") or 0) + 1
+
+
+_CARD_REF = re.compile(r"\s*\(([^()]+)\)\s*$")
+_CARD_QUOTE = re.compile(r"“([^”]+)”")
+
+
+def card_parts(text: str) -> dict[str, str]:
+    """A card's printed text in its parts: the Scripture quote (if any), what
+    happens, and the reference - so a screen can lay the card out."""
+    t = str(text or "").strip()
+    ref = ""
+    m = _CARD_REF.search(t)
+    if m:
+        ref = m.group(1).strip()
+        t = t[: m.start()].strip()
+    quote = ""
+    q = _CARD_QUOTE.search(t)
+    if q:
+        quote = q.group(1).strip()
+        t = (t[: q.start()] + t[q.end():]).strip()
+    effect = t.strip(" --").strip()
+    if not quote and " - " in effect:
+        quote, effect = (x.strip() for x in effect.split(" - ", 1))
+    effect = effect[:1].upper() + effect[1:]
+    return {"quote": quote, "effect": effect, "ref": ref}
 
 
 def _send_to_jail(room: dict[str, Any], seat: int) -> None:
@@ -566,6 +599,23 @@ def _maybe_finish(room: dict[str, Any]) -> bool:
         room["phase"] = "finished"
         room["winner"] = max(alive, key=lambda s: _net_worth(room, s))
         room["result"] = "quick-game"
+        return True
+    # No person left at the table (everyone else went bankrupt or left): the
+    # scribes would play on forever for nobody. Count the ledgers now.
+    if not any(not room["players"][s].get("is_ai") for s in alive):
+        room["status"] = "finished"
+        room["phase"] = "finished"
+        room["winner"] = max(alive, key=lambda s: _net_worth(room, s))
+        room["result"] = "no-players-left"
+        return True
+    counts = room.get("turn_counts", [0] * len(room["players"]))
+    if min(counts[s] for s in alive) >= MAX_ROUNDS:
+        # A deadlocked board (every group split, nobody can build) would never
+        # end; after this many full rounds the highest net worth wins.
+        room["status"] = "finished"
+        room["phase"] = "finished"
+        room["winner"] = max(alive, key=lambda s: _net_worth(room, s))
+        room["result"] = "round-limit"
         return True
     if rules["ruleset"] == "familyfun":
         mins = min(room.get("turn_counts", [0] * len(room["players"]))[s] for s in alive)
@@ -715,6 +765,9 @@ def _resolve_landing(room: dict[str, Any], seat: int, dice: list[int] | None) ->
         return
     if kind in ("parable", "scripture"):
         card = _draw_card(room, kind)
+        room["card_seq"] = int(room.get("card_seq") or 0) + 1
+        room["last_card"] = {"n": room["card_seq"], "deck": kind, "seat": seat, "player": p["name"],
+                             "text": card["text"], **card_parts(card["text"])}
         _log(room, f"{p['name']} draws - {card['text']}")
         _apply_card(room, seat, card, dice)
         return
@@ -816,11 +869,16 @@ def _sell_building(room: dict[str, Any], seat: int, index: int, count: int = 1) 
     for _ in range(max(1, int(count))):
         h = int(prop["houses"])
         if h == 5:
-            # Sell hotel: houses drop back to 4, hotel returns to the Bank
-            prop["houses"] = 4
+            # Sell the hotel: it returns to the Bank and the street steps back
+            # to four houses - as many as the Bank still has. In a housing
+            # shortage the houses it cannot supply are sold too, at half price.
+            back = min(4, max(0, int(room["bank_houses"])))
+            prop["houses"] = back
             room["bank_hotels"] = int(room["bank_hotels"]) + 1
-            room["bank_houses"] = int(room["bank_houses"]) - 4
-            received += int(s["house_cost"]) // 2
+            room["bank_houses"] = int(room["bank_houses"]) - back
+            extra = (4 - back) * (int(s["house_cost"]) // 2)
+            received += int(s["house_cost"]) // 2 + extra
+            p["cash"] = int(p["cash"]) + extra
         elif h > 0:
             prop["houses"] = h - 1
             room["bank_houses"] = int(room["bank_houses"]) + 1
@@ -1399,10 +1457,17 @@ def leave_room(code: Any, player_id: Any) -> dict[str, Any]:
         return {"room": _snapshot_unlocked(room, player_id)}
 
 
+def _record_roll(room: dict[str, Any], d1: int, d2: int) -> None:
+    """The roll everyone's screen shows. ``n`` counts every roll, so two
+    identical rolls in a row (a bonus roll of the same doubles) still animate."""
+    room["roll_seq"] = int(room.get("roll_seq") or 0) + 1
+    room["last_roll"] = {"d1": d1, "d2": d2, "doubles": d1 == d2, "n": room["roll_seq"]}
+
+
 def _do_roll(room: dict[str, Any], seat: int) -> tuple[int, int]:
     d1, d2 = secrets.randbelow(6) + 1, secrets.randbelow(6) + 1
     is_doubles = d1 == d2
-    room["last_roll"] = {"d1": d1, "d2": d2, "doubles": is_doubles}
+    _record_roll(room, d1, d2)
     room["rolled"] = True
     room["doubles"] = int(room["doubles"]) + 1 if is_doubles else 0
     p = room["players"][seat]
@@ -1466,7 +1531,7 @@ def jail_roll(code: Any, player_id: Any) -> dict[str, Any]:
         _touch(room, seat)
         d1, d2 = secrets.randbelow(6) + 1, secrets.randbelow(6) + 1
         is_doubles = d1 == d2
-        room["last_roll"] = {"d1": d1, "d2": d2, "doubles": is_doubles}
+        _record_roll(room, d1, d2)
         room["rolled"] = True
         room["doubles"] = 0
         if is_doubles:
@@ -2144,6 +2209,61 @@ def _ai_raise_for_debt(room: dict[str, Any], seat: int) -> None:
     _declare_bankruptcy(room, seat, int(creditor) if creditor is not None else None)
 
 
+#: Turns between a scribe's offers (to another scribe / to a person).
+AI_TRADE_EVERY = 3
+AI_TRADE_EVERY_PERSON = 6
+
+
+def _ai_seek_trade(room: dict[str, Any], seat: int) -> bool:
+    """A scribe one street short of a colour group offers cash for it.
+
+    Without this the scribes sit on scattered streets forever: nobody owns a
+    whole group, nobody builds, rents stay small and a match never ends. The
+    offer is fair (half again the price, plus a little per street in the
+    group), never leaves the scribe short, and is made at most every few turns
+    (less often to a person, who has to answer it)."""
+    p = room["players"][seat]
+    turns = int(room["turn_counts"][seat])
+    last = room.setdefault("ai_trade_turn", {})
+    if any(t["status"] == "pending" and t["from"] == seat for t in room["trades"]):
+        return False
+    for group, members in _GROUPS.items():
+        mine = [i for i in members if _prop(room, i)["owner"] == seat]
+        if len(mine) != len(members) - 1:
+            continue
+        missing = next(i for i in members if _prop(room, i)["owner"] != seat)
+        owner = _prop(room, missing)["owner"]
+        if owner is None or room["players"][owner]["bankrupt"]:
+            continue
+        if _prop(room, missing)["houses"] or any(_prop(room, i)["mortgaged"] for i in mine):
+            continue
+        person = not room["players"][owner]["is_ai"]
+        key = f"{seat}:{group}"
+        wait = AI_TRADE_EVERY_PERSON if person else AI_TRADE_EVERY
+        if key in last and turns - int(last[key]) < wait:
+            continue
+        price = int(SPACES[missing]["price"])
+        offer_cash = int(round((price * 1.5 + 25 * len(members)) / 10.0)) * 10
+        if int(p["cash"]) - offer_cash < 300:
+            continue
+        last[key] = turns
+        trade = {
+            "id": _new_trade_id(),
+            "from": seat,
+            "to": owner,
+            "offer": {"cash": offer_cash, "spaces": [], "jail_cards": 0},
+            "ask": {"cash": 0, "spaces": [missing], "jail_cards": 0},
+            "status": "pending",
+            "created_at": time.time(),
+        }
+        room["trades"].append(trade)
+        _log(room, f"{p['name']} offers {room['players'][owner]['name']} ${offer_cash} for {SPACES[missing]['name']}")
+        if not person:
+            _ai_respond_to_trade(room, trade)
+        return True
+    return False
+
+
 def _ai_build_phase(room: dict[str, Any], seat: int) -> bool:
     p = room["players"][seat]
     built = False
@@ -2218,6 +2338,7 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
                 _do_roll(room, cur)
                 progressed = True
             else:
+                _ai_seek_trade(room, cur)
                 if not _ai_build_phase(room, cur):
                     _advance_turn(room, cur)
                 progressed = True
@@ -2285,7 +2406,16 @@ def _snapshot_unlocked(room: dict[str, Any], player_id: Any = None, stage: bool 
 
     you = None
     if seat is not None:
-        you = players[seat]
+        # Your own copy, with what you may do to each street you own, so the
+        # Manage sheet can grey out Build and say why (the server's own rule).
+        you = dict(players[seat])
+        build: dict[str, str] = {}
+        for i in _STREET_INDICES:
+            if _prop(room, i)["owner"] == seat:
+                ok, why = _can_build_on(room, seat, i)
+                build[str(i)] = "" if ok else why
+        you["build"] = build
+        you["sellable"] = _sellable_building_counts(room, seat)
 
     alive = _active_seats(room)
     min_count = min((room["turn_counts"][s] for s in alive), default=0)
@@ -2342,6 +2472,10 @@ def _snapshot_unlocked(room: dict[str, Any], player_id: Any = None, stage: bool 
         "bonus_roll": room["bonus_roll"],
         "doubles": room["doubles"],
         "last_roll": room["last_roll"],
+        "last_card": room.get("last_card"),
+        # A TV is showing the board: phones become each player's hand.
+        "stage_connected": presence.stage_connected(room, now),
+        "log_seq": int(room.get("log_seq") or 0),
         "board": [_space_snapshot(room, i) for i in range(40)],
         "players": players,
         "you": you,
@@ -2375,6 +2509,8 @@ def get_room(code: Any, player_id: Any = None, stage: bool = False) -> dict[str,
         seat = _find_seat(room, player_id)
         if seat is not None:
             _touch(room, seat)
+        if stage:
+            presence.mark_stage(room)
         if room["status"] == "playing":
             _maybe_ai_unlocked(room)
         return _snapshot_unlocked(room, player_id, stage)

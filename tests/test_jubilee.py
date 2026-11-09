@@ -321,3 +321,65 @@ def test_live_rooms_drop_a_table_everyone_left(monkeypatch):
     later = time.time() + jubilee.PRESENCE_SECONDS + 5
     monkeypatch.setattr(jubilee.time, "time", lambda: later)
     assert code not in {r["code"] for r in jubilee.live_rooms()}
+
+
+def test_a_tv_stage_turns_on_hand_mode_and_times_out(monkeypatch):
+    code = _room(name="Mum")["room"]["code"]
+    assert jubilee.get_room(code)["stage_connected"] is False
+    jubilee.get_room(code, stage=True)
+    assert jubilee.get_room(code)["stage_connected"] is True
+    later = time.time() + jubilee.presence.STAGE_PRESENCE_SECONDS + 1
+    monkeypatch.setattr(jubilee.presence.time, "time", lambda: later)
+    monkeypatch.setattr(jubilee.time, "time", lambda: later)
+    assert jubilee.get_room(code)["stage_connected"] is False
+
+
+def test_rolls_and_cards_carry_counters_so_repeats_still_animate():
+    code, pid = _started(name="Dad", token="ark")
+    room = jubilee._rooms[code]
+    jubilee._record_roll(room, 6, 6)
+    first = dict(room["last_roll"])
+    jubilee._record_roll(room, 6, 6)
+    assert room["last_roll"]["n"] == first["n"] + 1
+    assert room["last_roll"]["d1"] == 6 and room["last_roll"]["doubles"] is True
+    seq = room.get("log_seq", 0)
+    for i in range(15):
+        jubilee._log(room, f"line {i}")
+    assert len(room["log"]) == 10 and room["log_seq"] == seq + 15
+
+
+def test_card_parts_split_quote_effect_and_reference():
+    parts = jubilee.card_parts("“He opens his hand and satisfies the desire of every living thing.” The bank pays you $200. (Psalm 145:16)")
+    assert parts == {"quote": "He opens his hand and satisfies the desire of every living thing.",
+                     "effect": "The bank pays you $200.", "ref": "Psalm 145:16"}
+    plain = jubilee.card_parts("Your figs and wine bring in coin - the bank pays you $50. (Proverbs 27:18)")
+    assert plain["effect"] == "The bank pays you $50." and plain["ref"] == "Proverbs 27:18"
+
+
+def test_your_view_says_which_streets_you_can_build_on_and_why_not():
+    code, pid = _started(name="Dad", token="ark")
+    room = jubilee._rooms[code]
+    seat = jubilee._find_seat(room, pid)
+    jubilee._prop(room, 6)["owner"] = seat          # Sychar alone: not the whole group
+    you = jubilee.get_room(code, pid)["you"]
+    assert "whole colour group" in you["build"]["6"]
+    for i in (6, 8, 9):                              # the whole light-blue group
+        jubilee._prop(room, i)["owner"] = seat
+    you = jubilee.get_room(code, pid)["you"]
+    assert you["build"]["6"] == "" and you["sellable"] == []
+
+
+def test_selling_a_hotel_in_a_housing_shortage_never_overdraws_the_bank():
+    code, pid = _started(name="Dad", token="ark")
+    room = jubilee._rooms[code]
+    seat = jubilee._find_seat(room, pid)
+    for i in (6, 8, 9):
+        jubilee._prop(room, i)["owner"] = seat
+    jubilee._prop(room, 6)["houses"] = 5
+    room["bank_hotels"] -= 1
+    room["bank_houses"] = 2                      # only two houses left in the Bank
+    cash = room["players"][seat]["cash"]
+    got = jubilee._sell_building(room, seat, 6)
+    assert room["bank_houses"] == 0 and jubilee._prop(room, 6)["houses"] == 2
+    cost = jubilee.SPACES[6]["house_cost"]
+    assert got == (cost // 2) * 3 and room["players"][seat]["cash"] == cash + got
