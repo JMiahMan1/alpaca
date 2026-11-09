@@ -1027,6 +1027,15 @@ def load_section(c, section, overrides):
         pass
 
 
+def rung_already_won(results: dict, model: str, fresh: bool, won_this_run: set[str]) -> bool:
+    """Skip a rung when the model already has a winner: from this run always,
+    from an earlier run unless --fresh."""
+    if model in won_this_run:
+        return True
+    rec = results.get(f"{model}::winner") or {}
+    return not fresh and bool(rec.get("done"))
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Resource-guided settings search: establish a working hello response, "
@@ -1096,6 +1105,12 @@ def main():
                 print(f"[scan] isolate: {name} unload skipped ({str(e)[:80]})")
         time.sleep(5)
 
+    # Models that won a rung in THIS run. --fresh only discards earlier runs'
+    # winners; a winner from this run must still end the model's rung ladder,
+    # or a lower rung (32K) overwrites the higher-quality winner (64K) it just
+    # wrote - which is what the first b12211 scan did to qwen3.6.
+    won_this_run: set[str] = set()
+
     def save():
         out_path.write_text(json.dumps(results, indent=2))
 
@@ -1106,7 +1121,7 @@ def main():
         if not c.has_section(model):
             print(f"[scan] section {model} not in models.ini, skipping")
             continue
-        if not args.fresh and f"{model}::winner" in results and results[f"{model}::winner"].get("done"):
+        if rung_already_won(results, model, args.fresh, won_this_run):
             print(
                 f"[scan] {model} already won at {results[f'{model}::winner'].get('label')} - "
                 "skipping rung (use --fresh to redo)"
@@ -1528,6 +1543,7 @@ def main():
         # proxy's VRAM budgeter reads the sidecar (with ini fallback) and
         # leaves benchmarked settings alone (runtime budgeting is skipped).
         verified_at = mark_bench_verified(model)
+        won_this_run.add(model)
         write_ini(c)
         record(
             f"{model}::winner",

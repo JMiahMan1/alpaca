@@ -486,3 +486,12 @@ def test_vram_is_measured_for_the_incumbent_and_cache_probes_only():
     assert settings_scan.vram_is_measured({**MOE_WORKING, "n-gpu-layers": "12", "moe-cache-mib": "1024"}, None)
     assert not settings_scan.vram_is_measured({**MOE_WORKING, "n-gpu-layers": "30"}, inc)
     assert not settings_scan.vram_is_measured(dict(MOE_WORKING), None)
+
+
+def test_a_winner_from_this_run_ends_the_rung_ladder_even_with_fresh():
+    won = {"m": {"done": True}}
+    assert settings_scan.rung_already_won({}, "m", fresh=True, won_this_run={"m"})
+    assert settings_scan.rung_already_won({"m::winner": won["m"]}, "m", fresh=False, won_this_run=set())
+    # --fresh ignores an earlier run's winner, but only that.
+    assert not settings_scan.rung_already_won({"m::winner": won["m"]}, "m", fresh=True, won_this_run=set())
+    assert not settings_scan.rung_already_won({}, "m", fresh=False, won_this_run=set())
