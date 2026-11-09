@@ -516,3 +516,29 @@ def test_dense_models_never_get_an_expert_offload_layout():
     base = {k: v for k, v in MOE_WORKING.items() if k != "n-cpu-moe"}
     neighbors = settings_scan.hill_neighbors(base, shape, is_moe=False, ctx=65536, vram_total=8188)
     assert not any(n.get("n-cpu-moe") for n in neighbors)
+
+
+def test_dense_models_get_the_tighter_hill_cap():
+    assert settings_scan.hill_limit(10, 4, is_moe=False) == 4
+    assert settings_scan.hill_limit(10, 4, is_moe=True) == 10
+    assert settings_scan.hill_limit(10, None, is_moe=False) == 10
+    assert settings_scan.hill_limit(3, 4, is_moe=False) == 3
+
+
+def test_a_dense_models_first_hill_neighbors_are_the_ones_that_matter():
+    """With the dense cap of 4 (incumbent first), the next three must be more GPU
+    layers, ubatch and MTP - cache-reuse on/off is the one a cap may drop."""
+    shape = {"n_layers": 64, "n_head_kv": 8, "head_dim": 128, "file_size_mb": 13000, "expert_count": 0, "has_mtp": True}
+    base = {
+        "ctx-size": "32768",
+        "cache-type-k": "q8_0",
+        "cache-type-v": "q8_0",
+        "n-gpu-layers": "20",
+        "flash-attn": "on",
+    }
+    neighbors = settings_scan.hill_neighbors(base, shape, is_moe=False, ctx=32768, vram_total=16000)
+    first3 = neighbors[:3]
+    assert first3[0]["n-gpu-layers"] != "20"
+    assert any(n.get("ubatch-size") for n in first3)
+    assert any(n.get("spec-type") == "draft-mtp" for n in first3)
+    assert neighbors[-1].get("cache-reuse") is not None

@@ -1040,6 +1040,13 @@ def load_section(c, section, overrides):
         pass
 
 
+def hill_limit(max_hill: int, max_hill_dense: int | None, is_moe: bool) -> int:
+    """Hill-climb probe cap: --max-hill, tightened by --max-hill-dense for dense models."""
+    if is_moe or max_hill_dense is None:
+        return max_hill
+    return min(max_hill, max_hill_dense)
+
+
 def rung_already_won(results: dict, model: str, fresh: bool, won_this_run: set[str]) -> bool:
     """Skip a rung when the model already has a winner: from this run always,
     from an earlier run unless --fresh."""
@@ -1068,6 +1075,13 @@ def main():
     )
     ap.add_argument("--max-attempts", type=int, default=6, help="max response-establishment escalations per rung")
     ap.add_argument("--max-hill", type=int, default=8, help="max hill-climb probes per model")
+    ap.add_argument(
+        "--max-hill-dense",
+        type=int,
+        default=None,
+        help="tighter hill cap for dense models, whose long probe takes ~25-30 min at 2-3 tok/s; "
+        "the first neighbors (incumbent, more GPU layers, ubatch, MTP) are the ones that matter",
+    )
     ap.add_argument("--out", default=str(OUT))
     ap.add_argument("--skip-restart", action="store_true")
     ap.add_argument(
@@ -1481,8 +1495,9 @@ def main():
         if incumbent is not None:
             print(f"[scan] incumbent candidate: {label_for(incumbent)}")
             neighbors.insert(0, incumbent)
+        hill_cap = hill_limit(args.max_hill, args.max_hill_dense, is_moe)
         for nset in neighbors:
-            if hill_done >= args.max_hill or THERMAL_STOP:
+            if hill_done >= hill_cap or THERMAL_STOP:
                 break
             nlabel = label_for(nset)
             if nlabel in tried:
