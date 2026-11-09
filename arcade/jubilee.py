@@ -2355,6 +2355,10 @@ def _advance_turn(room: dict[str, Any], seat: int) -> None:
 AI_PACE_AFTER_ROLL_S = 2.4
 AI_PACE_PER_SPACE_S = 0.3
 AI_PACE_AFTER_TURN_S = 1.0
+#: When the computer plays at that pace: "watched" -- whenever a TV shows the
+#: room or a person is at the table (so everyone sees each computer player
+#: roll its own dice) -- or "tv" (only with a TV; the tests play at once).
+AI_PACE_WHEN = "watched"
 
 
 def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
@@ -2363,7 +2367,8 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
     if room["status"] != "playing":
         return False
     now = time.time()
-    paced = presence.stage_connected(room, now)
+    paced = presence.stage_connected(room, now) or (
+        AI_PACE_WHEN == "watched" and any(presence.player_present(p, now) for p in room["players"] if p))
     if paced and now < float(room.get("ai_next_at") or 0):
         return False
     moved = False

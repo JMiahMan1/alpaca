@@ -111,6 +111,17 @@ def party_devices_ready(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
 
 
 @pytest.fixture(autouse=True)
+def ai_plays_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Computer players pace themselves for people watching; tests play at once
+    (they pace only when a test puts a TV on the room)."""
+    try:
+        from arcade import jubilee
+    except Exception:
+        return
+    monkeypatch.setattr(jubilee, "AI_PACE_WHEN", "tv")
+
+
+@pytest.fixture(autouse=True)
 def fresh_room_codes() -> None:
     """Room codes picked in one test are not held against the next (presence)."""
     try:

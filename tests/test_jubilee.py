@@ -504,3 +504,20 @@ def test_a_closed_room_leaves_a_tv_another_game_took_over(monkeypatch):
         if th.name.startswith("jubilee-release-"):
             th.join(timeout=5)
     assert taken_off == []
+
+
+
+def test_with_people_watching_each_computer_player_rolls_where_they_can_see_it(monkeypatch):
+    """Without a TV the computer used to play its whole turn inside the
+    person's request, so its dice were gone before any phone saw them."""
+    monkeypatch.setattr(jubilee, "AI_PACE_WHEN", "watched")
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    room = jubilee._rooms[code]
+    room["turn"] = 1
+    room["rolled"] = False
+    with jubilee._lock:
+        jubilee._maybe_ai_unlocked(room)
+    snap = jubilee.get_room(code, pid)
+    assert snap["turn"] == 1 and snap["rolled"] and snap["last_roll"]   # its roll is there to see

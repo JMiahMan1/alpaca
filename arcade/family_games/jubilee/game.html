@@ -864,7 +864,7 @@ syncSoundBtn();
     }
     var lh = NAME_FS * 1.1;
     for (var li = 0; li < lines.length; li++) {
-      var attrs = { x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), 'text-anchor': 'middle',
+      var attrs = { 'data-maxw': maxW, x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), 'text-anchor': 'middle',
         'font-size': NAME_FS, 'font-weight': 900, fill: '#1b0f3b' };
       if (0.6 * NAME_FS * lines[li].length > maxW) { attrs.textLength = maxW; attrs.lengthAdjust = 'spacingAndGlyphs'; }
       svgEl('text', attrs, g).textContent = lines[li];
@@ -1013,6 +1013,14 @@ syncSoundBtn();
       else { drawTile(g, spaces ? spaces[i] : null, i); }
       tap(g, (function (idx) { return function () { openDeed(idx); }; })(i));
     }
+    // Measured in this device's own font: a label wider than its space is
+    // narrowed to fit, never cut.
+    var fitList = svg.querySelectorAll('text[data-maxw]');
+    for (var fi = 0; fi < fitList.length; fi++) {
+      var ft = fitList[fi], fmax = +ft.getAttribute('data-maxw'), fw = 0;
+      try { fw = ft.getComputedTextLength(); } catch (e) {}
+      if (fw > fmax) { ft.setAttribute('textLength', fmax); ft.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+    }
     // Active turn tile highlight & hop trail layer
     svgEl('g', { id: 'svg-highlights' }, svg);
     // Tokens layer
@@ -1085,7 +1093,7 @@ syncSoundBtn();
     var nameTop = art ? -T / 2 + bandTop + 30 : -T / 2 + bandTop + 3, nameBottom = T / 2 - (priceLabel ? 21 : 5);
     tileLabel(g, shortName(sp), (nameTop + nameBottom) / 2, T - 8);
     if (priceLabel) {
-      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
+      svgEl('text', { 'data-maxw': T - 8, x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
     }
     // dynamic bits: owner badge, 3D houses/hotel, mortgage stamp
     if (!(isStreet || isRail || isUtil)) return;   // only land can be owned (no ring over "PAY $200")

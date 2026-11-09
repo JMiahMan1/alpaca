@@ -62,7 +62,7 @@ def test_the_tv_board_fits_and_every_space_looks_the_same(arcade_server, browser
     code, _ = _room()
     page = browser.new_page(viewport={"width": size[0], "height": size[1]})
     page.goto(f"{base}/jubilee/tv/{code}")
-    page.wait_for_selector(".tvBoard svg text", timeout=8000)
+    page.wait_for_selector(".tvZoom > svg text", timeout=8000)
     page.wait_for_timeout(600)
     fit = page.evaluate("""() => {
         const r = document.scrollingElement;
@@ -72,9 +72,9 @@ def test_the_tv_board_fits_and_every_space_looks_the_same(arcade_server, browser
     }""")
     assert fit["sh"] <= fit["ih"] + 1 and fit["sw"] <= fit["iw"] + 1
     assert fit["left"] >= 0 and fit["top"] >= 0 and fit["right"] <= fit["iw"] + 1 and fit["bottom"] <= fit["ih"] + 1
-    tiles = page.evaluate("() => document.querySelectorAll('.tvBoard svg > g[transform]').length")
+    tiles = page.evaluate("() => document.querySelectorAll('.tvZoom > svg > g[transform]').length")
     assert tiles >= 40
-    sizes = page.evaluate("""() => [...document.querySelectorAll('.tvBoard svg text.tl')].map(t => +t.getAttribute('font-size'))""")
+    sizes = page.evaluate("""() => [...document.querySelectorAll('.tvZoom > svg text.tl')].map(t => +t.getAttribute('font-size'))""")
     assert len(sizes) >= 50 and len(set(sizes)) == 1, f"one name/price size on every space, got {sorted(set(sizes))}"
     assert "'s turn" in page.inner_text(".tvCenter")
     assert "Ann" in page.inner_text(".tvFrame.left") and code in page.inner_text(".tvFrame.right")
@@ -85,10 +85,10 @@ def test_a_roll_moves_the_piece_along_and_shows_where_it_landed(arcade_server, b
     code, pid = _room()
     page = browser.new_page(viewport={"width": 960, "height": 540})
     page.goto(f"{base}/jubilee/tv/{code}")
-    page.wait_for_selector(".tvBoard svg text", timeout=8000)
+    page.wait_for_selector(".tvZoom > svg text", timeout=8000)
     page.evaluate("""() => {
         window.__seen = new Set();
-        const tok = () => document.querySelector('.tvBoard svg > g:last-of-type > g');
+        const tok = () => document.querySelector('.tvZoom > svg > g:last-of-type > g');
         (function loop() { const t = tok(); if (t) window.__seen.add(t.getAttribute('transform')); requestAnimationFrame(loop); })();
     }""")
     out = jubilee.roll(code, pid)
@@ -107,7 +107,7 @@ def test_a_lost_connection_says_reconnecting_instead_of_game_over(arcade_server,
     code, _ = _room()
     page = browser.new_page(viewport={"width": 960, "height": 540})
     page.goto(f"{base}/jubilee/tv/{code}")
-    page.wait_for_selector(".tvBoard svg text", timeout=8000)
+    page.wait_for_selector(".tvZoom > svg text", timeout=8000)
     server.shutdown()
     page.wait_for_selector("#tv-reconnect.on", timeout=12000)
     assert "GAME OVER" not in page.inner_text("body").upper()
@@ -138,7 +138,7 @@ def test_every_space_keeps_its_words_and_picture_inside_its_box(arcade_server, b
     code, _ = _room()
     page = browser.new_page(viewport={"width": 960, "height": 540})
     page.goto(f"{base}/jubilee/tv/{code}")
-    page.wait_for_selector(".tvBoard svg text", timeout=8000)
+    page.wait_for_selector(".tvZoom > svg text", timeout=8000)
     page.wait_for_timeout(500)
-    spill = page.evaluate(_FIT, ".tvBoard svg > g[transform]")
+    spill = page.evaluate(_FIT, ".tvZoom > svg > g[transform]")
     assert spill == [], f"spilling out of their spaces: {spill}"

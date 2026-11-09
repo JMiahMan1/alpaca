@@ -77,7 +77,7 @@
   .tvBoard { position: relative; width: 12.5rem; height: 9.677rem; flex: 0 0 auto; }
   .tvBoard { overflow: hidden; border-radius: .06rem; }
   .tvZoom { position: absolute; left: 0; top: 0; width: 100%; height: 100%; transform-origin: 0 0; -webkit-transform-origin: 0 0; will-change: transform; }
-  .tvBoard svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  .tvZoom > svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; font-family: var(--font, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif); }
   /* The dice dock over the top of the right frame, off the board, and stay
      until the turn passes. */
   #tv-fx.dock { left: auto; right: 0; top: 0; bottom: auto; width: 2.45rem; height: 2.2rem; }
@@ -125,23 +125,67 @@
   .fBank { font-size: .26rem; font-weight: 800; color: #e9e4ff; }
   .fBank small { display: block; color: var(--dim); font-size: .2rem; }
   .fStory { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-  .fLog { font-size: .24rem; font-weight: 700; color: #d9d0ff; line-height: 1.3; margin-top: .06rem; max-height: .76rem; overflow: hidden; }
+  /* Two whole lines, then an ellipsis: never half a line cut off. */
+  .fLog { font-size: .24rem; font-weight: 700; color: #d9d0ff; line-height: 1.3; margin-top: .08rem; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .fJoin { display: flex; flex-direction: column; align-items: center; text-align: center; }
   .fJoin img { width: 1.25rem; height: 1.25rem; background: #fff; border-radius: .1rem; padding: .05rem; margin-bottom: .04rem; }
   .fJoin b { font-size: .4rem; color: var(--gold2); letter-spacing: .15em; }
-  .tvCenter { position: absolute; box-sizing: border-box; padding: .2rem; display: flex; flex-direction: column; align-items: center; color: #fff8e7; }
-  .cTitle { display: flex; align-items: center; gap: .14rem; }
-  .cTitle .brand { font-size: .5rem; }
-  .cTitle .pill { font-size: .24rem; margin-left: 0; }
-  .cNow { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; width: 100%; }
-  .tvCenter .cTurn { display: flex; align-items: center; justify-content: center; gap: .24rem; }
-  .tvCenter .cTurn .ring.big { width: 1.2rem; height: 1.2rem; border-radius: 50%; border: .08rem solid; display: flex; align-items: center;
-    justify-content: center; font-size: .7rem; background: rgba(255,255,255,.08); }
-  .cWho { font-size: .7rem; font-weight: 900; text-shadow: 0 .04rem 0 rgba(0,0,0,.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 7rem; }
-  .cRoll { font-size: .52rem; font-weight: 900; color: #ffe27a; margin-top: .16rem; font-variant-numeric: tabular-nums; }
-  .cAlert { margin-top: .14rem; font-size: .32rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .05rem .22rem; }
+  /* The middle of the board: a scene, as on the phone. */
+  .tvCenter { position: absolute; box-sizing: border-box; overflow: hidden; color: #fff8e7; }
+  .cRays { position: absolute; left: 50%; top: 50%; width: 14rem; height: 14rem; margin: -7rem 0 0 -7rem; opacity: .14;
+    background: repeating-conic-gradient(#ffc83d 0deg 7deg, transparent 7deg 22.5deg); border-radius: 50%;
+    animation: cspin 90s linear infinite; }
+  @keyframes cspin { to { transform: rotate(360deg); } }
+  .cSign { position: absolute; left: 50%; top: .32rem; transform: translateX(-50%); text-align: center; padding: .1rem .5rem .12rem;
+    background: rgba(18,10,46,.85); border: .035rem solid #ffc83d; border-radius: .24rem; box-shadow: 0 0 .3rem rgba(255,200,61,.35);
+    animation: cglow 3.2s ease-in-out infinite; white-space: nowrap; }
+  .cSign b { display: block; font-size: .78rem; font-weight: 900; letter-spacing: .06em; line-height: 1; color: #ffc83d;
+    text-shadow: 0 .05rem 0 #4a2c00, 0 0 .25rem rgba(255,200,61,.6); }
+  .cSign small { display: block; font-size: .17rem; font-weight: 900; letter-spacing: .5em; color: #ffe27a; margin-top: .05rem; }
+  @keyframes cglow { 0%, 100% { box-shadow: 0 0 .25rem rgba(255,200,61,.3); } 50% { box-shadow: 0 0 .6rem rgba(255,200,61,.75); } }
+  .cPills { position: absolute; left: 0; right: 0; top: 1.62rem; text-align: center; }
+  .cPills .pill { font-size: .2rem; margin: 0 .05rem; }
+  .cDeck { position: absolute; width: 2rem; height: 1.3rem; border-radius: .16rem; border: .03rem dashed #ffc83d;
+    box-shadow: .06rem .08rem 0 rgba(0,0,0,.45); transform: rotate(-12deg); }
+  .cDeck.parable { left: .45rem; top: .55rem; background: #3b1566; }
+  .cDeck.scripture { right: .45rem; bottom: .5rem; background: #172554; }
+  .cDeck .dInner { position: absolute; inset: .1rem; border-radius: .1rem; border: .025rem solid rgba(255,255,255,.55);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .cDeck.parable .dInner { background: #581c87; }
+  .cDeck.scripture .dInner { background: #1e3a8a; }
+  .cDeck .dIcon { width: .5rem; height: .5rem; display: block; }
+  .cDeck .dIcon svg { width: 100%; height: 100%; display: block; }
+  .cDeck b { font-size: .15rem; letter-spacing: .14em; color: #fff8e7; margin-top: .04rem; }
+  .cNow { position: absolute; left: 0; right: 0; top: 2.1rem; display: flex; justify-content: center; }
+  .tvCenter .cTurn { display: flex; align-items: center; justify-content: center; gap: .2rem; }
+  .tvCenter .cTurn .ring.big { width: .95rem; height: .95rem; border-radius: 50%; border: .07rem solid; display: flex; align-items: center;
+    justify-content: center; font-size: .56rem; background: rgba(255,255,255,.08); }
+  .cWho { font-size: .58rem; font-weight: 900; text-shadow: 0 .04rem 0 rgba(0,0,0,.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 6.4rem; }
+  .cDice { position: absolute; left: 0; right: 0; top: 3.3rem; display: none; flex-direction: column; align-items: center; }
+  .cDice.on { display: flex; }
+  .cDice .tvDie { width: .95rem; height: .95rem; margin: 0 .12rem; border-radius: .2rem; }
+  .cDice .tvPip { width: .17rem; height: .17rem; margin: -.085rem 0 0 -.085rem; }
+  .cDiceTotal { font-size: .34rem; font-weight: 900; color: #ffe27a; margin-top: .1rem; font-variant-numeric: tabular-nums; }
+  .cEventSlot { position: absolute; left: 2.6rem; right: 2.6rem; bottom: .32rem; text-align: center; }
+  .cAlert { display: inline-block; font-size: .28rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .05rem .22rem; margin-bottom: .08rem; }
   .cAlert.debt { background: #ffd4d4; color: #8a1c1c; }
-  .cEvent { margin-top: .2rem; font-size: .38rem; font-weight: 900; color: #fff8e7; line-height: 1.25; max-width: 8.6rem; max-height: 1rem; overflow: hidden; }
+  .cEvent { font-size: .3rem; font-weight: 900; color: #fff8e7; line-height: 1.25; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  /* A drawn card: out of its deck, across, and turned over. */
+  #tv-card { position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 11; display: none; pointer-events: none; }
+  #tv-card.on { display: block; background: rgba(8,4,24,.45); }
+  .flyCard { position: absolute; left: 0; top: 0; width: 6.2rem; perspective: 20rem; transform-origin: 50% 50%; }
+  .flyInner { position: relative; transform-style: preserve-3d; -webkit-transform-style: preserve-3d; }
+  .flyCard .face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .flyCard .face.back { position: absolute; inset: 0; border-radius: .3rem; border: .06rem dashed #ffc83d; display: flex; align-items: center;
+    justify-content: center; font-size: .4rem; letter-spacing: .2em; color: #fff8e7; }
+  .flyCard .face.back.parable { background: #581c87; }
+  .flyCard .face.back.scripture { background: #1e3a8a; }
+  .flyCard .face.front { transform: rotateY(180deg); }
+  .flyCard .tvCard { width: 100%; animation: none; }
+  html.lite .cRays { animation: none; }
+  @media (prefers-reduced-motion: reduce) { .cRays, .cSign { animation: none; } }
   .players { display: flex; flex-direction: column; gap: .12rem; }
   .plr { display: flex; align-items: center; gap: .14rem; background: rgba(255,255,255,.05); border-radius: .12rem;
     padding: .08rem .12rem; border: .03rem solid transparent; }
@@ -204,6 +248,7 @@
     <div class="main" id="tv-main"></div>
     <div id="tv-fx"></div>
     <div id="tv-land"></div>
+    <div id="tv-card"></div>
     <div id="tv-reconnect">📡 Reconnecting…</div>
     <div class="foot">SCAN TO PLAY · <b id="tv-code">····</b> · games.sumemail.com</div>
   </div>
@@ -244,6 +289,28 @@
     return h + '</div>';
   }
   var fxTurn = null;
+  /* The dice sit on the board, under whose turn it is. A new roll tumbles
+     (faces flicking as they spin) and lands on the numbers rolled. */
+  function showDice(r, tumble) {
+    if (!board || !board.diceEl) return;
+    var el = board.diceEl, d1 = r.d1, d2 = r.d2;
+    board.diceShown = true;
+    var total = '<div class="cDiceTotal">' + d1 + ' + ' + d2 + ' = ' + (d1 + d2) + (d1 === d2 ? ' · DOUBLES!' : '') + '</div>';
+    if (!tumble || RM) { el.innerHTML = '<div class="tvDicePair landed">' + dieHtml(d1) + dieHtml(d2) + '</div>' + total; el.className = "cDice on"; return; }
+    el.innerHTML = '<div class="tvDicePair tumbling">' + dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)) + '</div>'
+      + '<div class="cDiceTotal" style="visibility:hidden">' + d1 + ' + ' + d2 + '</div>';
+    el.className = "cDice on";
+    var flips = 0;
+    if (board.diceSpin) clearInterval(board.diceSpin);
+    board.diceSpin = setInterval(function () {
+      var pair = el.querySelector(".tvDicePair"); if (!pair) { clearInterval(board.diceSpin); return; }
+      flips += 1;
+      if (flips < 9) { pair.innerHTML = dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)); return; }
+      clearInterval(board.diceSpin);
+      el.innerHTML = '<div class="tvDicePair landed">' + dieHtml(d1) + dieHtml(d2) + '</div>' + total;
+    }, 75);
+  }
+  function clearDice() { if (board && board.diceEl) { board.diceEl.className = "cDice"; board.diceShown = false; } }
   function hideFx() { var fx = $("tv-fx"); fx.className = ""; fx.innerHTML = ""; fxTurn = null; }
   function showFx(html, ms, dim) {
     var fx = $("tv-fx");
@@ -252,41 +319,64 @@
     if (fxTimer) clearTimeout(fxTimer);
     fxTimer = setTimeout(hideFx, ms);
   }
+  /* A drawn card comes out of its deck on the board, flies to the middle of
+     the screen and turns over: the words, the reference, what it does. */
+  var cardTimer = null;
+  function flyCard(c) {
+    var sc = c.deck === "scripture";
+    var deck = board && board.center ? board.center.querySelector(sc ? "#tv-deck-scripture" : "#tv-deck-parable") : null;
+    var host = $("tv-card");
+    var front = '<div class="tvCard' + (sc ? ' scripture' : '') + '"><div class="band">' + (sc ? "SCRIPTURE" : "PARABLE") + '</div>'
+      + '<div class="who">' + esc(c.player || "") + ' drew</div>'
+      + '<div class="q">' + esc(c.quote ? "\u201c" + c.quote + "\u201d" : (c.effect || c.text || "")) + '</div>'
+      + (c.ref ? '<div class="ref">' + esc(c.ref) + '</div>' : '')
+      + (c.quote && c.effect ? '<div class="eff">' + esc(c.effect) + '</div>' : '<div style="height:.3rem"></div>') + '</div>';
+    host.innerHTML = '<div class="flyCard"><div class="flyInner"><div class="face back ' + (sc ? "scripture" : "parable") + '"><b>' + (sc ? "SCRIPTURE" : "PARABLES") + '</b></div>'
+      + '<div class="face front">' + front + '</div></div></div>';
+    var card = host.querySelector(".flyCard"), inner = host.querySelector(".flyInner");
+    var stage = $("stage").getBoundingClientRect();
+    host.className = "on";
+    var w = card.offsetWidth, h = card.offsetHeight;
+    var endX = stage.width / 2 - w / 2, endY = stage.height / 2 - h / 2;
+    if (deck && !RM) {
+      var d = deck.getBoundingClientRect();
+      var sx = d.left - stage.left + d.width / 2 - w / 2, sy = d.top - stage.top + d.height / 2 - h / 2;
+      var s0 = Math.max(0.15, d.width / w);
+      card.style.transition = "none"; inner.style.transition = "none";
+      card.style.transform = "translate(" + sx + "px," + sy + "px) scale(" + s0 + ") rotate(-12deg)";
+      inner.style.transform = "rotateY(0deg)";
+      void card.offsetWidth;
+      card.style.transition = "transform .75s cubic-bezier(.2,.9,.3,1)";
+      inner.style.transition = "transform .6s ease .55s";
+      card.style.transform = "translate(" + endX + "px," + endY + "px) scale(1) rotate(0deg)";
+      inner.style.transform = "rotateY(180deg)";
+    } else {
+      card.style.transform = "translate(" + endX + "px," + endY + "px)";
+      inner.style.transform = "rotateY(180deg)";
+    }
+    if (cardTimer) clearTimeout(cardTimer);
+    cardTimer = setTimeout(function () { host.className = ""; host.innerHTML = ""; }, 7500);
+  }
+  window.__jbStage = { flyCard: function (c) { flyCard(c); }, showDice: function (r) { showDice(r, true); } };   // for the browser tests
   function bigMoments(room) {
     var r = room.last_roll, c = room.last_card;
     var rn = r && r.n != null ? r.n : null, cn = c && c.n != null ? c.n : null;
     if (!primed) { primed = true; seenRoll = rn; seenCard = cn; return; }
     if (cn !== null && cn !== seenCard) {
       seenCard = cn; seenRoll = rn;
-      var sc = c.deck === "scripture";
-      showFx('<div class="tvCard' + (sc ? ' scripture' : '') + '"><div class="band">' + (sc ? "SCRIPTURE" : "PARABLE") + '</div>'
-        + '<div class="who">' + esc(c.player || "") + ' drew</div>'
-        + '<div class="q">' + esc(c.quote ? "\u201c" + c.quote + "\u201d" : (c.effect || c.text || "")) + '</div>'
-        + (c.ref ? '<div class="ref">' + esc(c.ref) + '</div>' : '')
-        + (c.quote && c.effect ? '<div class="eff">' + esc(c.effect) + '</div>' : '<div style="height:.3rem"></div>') + '</div>', 7000, true);
+      flyCard(c);
       return;
     }
     if (rn !== null && rn !== seenRoll) {
       seenRoll = rn;
       var who = room.players && room.players[room.turn] ? room.players[room.turn].name : "";
-      // A real tumble: the dice spin through faces, then land on the roll.
-      showFx('<div class="tvDice"><div class="tvDicePair tumbling" id="tv-dice">' + dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)) + '</div>'
-        + '<div class="tvRollText" id="tv-rolltext" style="visibility:hidden">' + esc(who) + ' rolled ' + r.d1 + ' + ' + r.d2 + ' = ' + (r.d1 + r.d2) + (r.doubles ? " · DOUBLES!" : "") + '</div></div>', 8000, "dock");
-      var flips = RM ? 8 : 0, d1 = r.d1, d2 = r.d2;
-      var spin = setInterval(function () {
-        var pair = $("tv-dice"); if (!pair) { clearInterval(spin); return; }
-        flips += 1;
-        if (flips < 9) { pair.innerHTML = dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)); return; }
-        clearInterval(spin);
-        pair.innerHTML = dieHtml(d1) + dieHtml(d2);
-        pair.className = "tvDicePair landed";
-        var rt = $("tv-rolltext"); if (rt) rt.style.visibility = "visible";
-      }, 75);
+      showDice(r, true);
       fxTurn = room.turn;
       return;
     }
-    // The dice stay up while the player moves and decides; they go when the turn passes.
-    if (fxTurn !== null && room.turn !== fxTurn) hideFx();
+    // The dice stay on the board while the player moves and decides; they go
+    // when the turn passes.
+    if (fxTurn !== null && room.turn !== fxTurn) { fxTurn = null; clearDice(); }
   }
   function poll() {
     if (!PINNED) { renderNoCode(); return; }
@@ -439,7 +529,7 @@
     var maxW = w - 14;
     function caption(text, y, maxFs, color, weight) {
       var fs = Math.min(maxFs, maxW / (0.6 * String(text).length));
-      var attrs = { x: 0, y: y.toFixed(1), "text-anchor": "middle", "font-size": fs.toFixed(1), "font-weight": weight, fill: color };
+      var attrs = { "data-maxw": maxW, x: 0, y: y.toFixed(1), "text-anchor": "middle", "font-size": fs.toFixed(1), "font-weight": weight, fill: color };
       svgEl("text", attrs, g).textContent = text;
       return fs;
     }
@@ -519,7 +609,7 @@
     }
     var lh = NAME_FS * 1.1;
     for (var li = 0; li < lines.length; li++) {
-      var attrs = { "class": "tl", x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), "text-anchor": "middle",
+      var attrs = { "class": "tl", "data-maxw": maxW, x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), "text-anchor": "middle",
         "font-size": NAME_FS, "font-weight": 900, fill: "#1b0f3b" };
       if (0.6 * NAME_FS * lines[li].length > maxW) { attrs.textLength = maxW; attrs.lengthAdjust = "spacingAndGlyphs"; }
       svgEl("text", attrs, g).textContent = lines[li];
@@ -572,7 +662,7 @@
       var nameTop = art ? -h / 2 + BAND + 38 : -h / 2 + BAND + 4, nameBottom = h / 2 - (priceTxt ? 28 : 6);
       tileLabel(g, shortName(sp), (nameTop + nameBottom) / 2, w - 8);
       if (priceTxt) {
-        var pt = svgEl("text", { "class": "tl", x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900,
+        var pt = svgEl("text", { "class": "tl", "data-maxw": w - 8, x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900,
           fill: (sp.kind === "tribute" || sp.kind === "offering") ? "#b91c1c" : "#1b0f3b" }, g);
         pt.textContent = priceTxt;
       }
@@ -586,11 +676,46 @@
     // The middle of the board: HTML over the centre panel.
     var center = document.createElement("div");
     center.className = "tvCenter";
+    // The middle of the board, as on the phone: a turning sunburst, the
+    // JUBILEE! sign, the two decks the cards come from, the dice, and what is
+    // happening now. Built once; only the dice and the "now" text change.
+    center.innerHTML = '<div class="cRays"></div>'
+      + '<div class="cDeck parable" id="tv-deck-parable"><div class="dInner"><span class="dIcon"></span><b>PARABLES</b></div></div>'
+      + '<div class="cDeck scripture" id="tv-deck-scripture"><div class="dInner"><span class="dIcon"></span><b>SCRIPTURE</b></div></div>'
+      + '<div class="cSign"><b>JUBILEE!</b><small>BIBLE LANDS</small></div>'
+      + '<div class="cPills" id="tv-pills"></div>'
+      + '<div class="cNow" id="tv-now"></div>'
+      + '<div class="cDice" id="tv-dice"></div>'
+      + '<div class="cEventSlot" id="tv-event"></div>';
+    function deckIcon(id, name, color) {
+      var el = center.querySelector("#" + id + " .dIcon");
+      var sv = document.createElementNS(SVGNS, "svg");
+      sv.setAttribute("viewBox", "0 0 24 24");
+      el.appendChild(sv);
+      icon(sv, name, 12, 12, 24, color);
+    }
+    deckIcon("tv-deck-parable", "scroll", "#fde047");
+    deckIcon("tv-deck-scripture", "book", "#fde047");
     center.style.left = (D / BW * 100) + "%"; center.style.top = (D / BH * 100) + "%";
     center.style.width = ((BW - 2 * D) / BW * 100) + "%"; center.style.height = ((BH - 2 * D) / BH * 100) + "%";
     zoom.appendChild(center);
     b.center = center;
+    b.nowEl = center.querySelector("#tv-now");
+    b.pillsEl = center.querySelector("#tv-pills");
+    b.diceEl = center.querySelector("#tv-dice");
+    b.eventEl = center.querySelector("#tv-event");
     return b;
+  }
+  /* Measured in the screen's own font (a Cast receiver's runs wider than a
+     laptop's): any label wider than its space is narrowed to fit, never cut. */
+  function fitTexts(root) {
+    var list = root.querySelectorAll("text[data-maxw]");
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i], max = +t.getAttribute("data-maxw");
+      var w = 0;
+      try { w = t.getComputedTextLength(); } catch (e) {}
+      if (w > max) { t.setAttribute("textLength", max); t.setAttribute("lengthAdjust", "spacingAndGlyphs"); }
+    }
   }
   function houseMarks(n, w) {
     var out = "";
@@ -712,30 +837,28 @@
     var p = room.players && room.players[room.turn];
     var many = room.players.length > 5 ? " many" : "";
     var left = '<div class="fLabel">Players</div><div class="players' + many + '">' + playerRows(room) + '</div>';
-    var center = '<div class="cTitle"><span class="brand">🎺 JUBILEE!</span><span class="pill">ROUND ' + (room.round || 1) + '</span>'
-      + '<span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span></div><div class="cNow">';
+    var pills = '<span class="pill">ROUND ' + (room.round || 1) + '</span><span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span>';
+    var now = "";
     if (p && room.status === "playing") {
-      center += '<div class="cTurn"><div class="ring big" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
+      now += '<div class="cTurn"><div class="ring big" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
         + '<div class="cWho" style="color:' + seatColor(p.seat) + '">' + esc((p.in_jail ? "⛓ " : "") + (p.name || "")) + "'s turn</div></div>";
     }
-    var lr = room.last_roll;
-    if (lr && lr.d1 && lr.d2) center += '<div class="cRoll">🎲 ' + lr.d1 + ' + ' + lr.d2 + ' = ' + (lr.d1 + lr.d2) + (lr.d1 === lr.d2 ? ' · DOUBLES!' : '') + '</div>';
+    var event = "";
     if (room.auction) {
       var a = room.auction;
-      center += '<div class="cAlert">🔨 On the block: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : "") + '</div>';
+      event = '<div class="cAlert">🔨 On the block: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : "") + '</div>';
     } else if (room.pending && room.pending.kind === "debt") {
-      center += '<div class="cAlert debt">A debt is due: $' + fmt(room.pending.amount) + '</div>';
+      event = '<div class="cAlert debt">A debt is due: $' + fmt(room.pending.amount) + '</div>';
     }
     var log = (room.log || []).slice(-5).reverse();
-    if (log[0]) center += '<div class="cEvent">' + esc(log[0]) + '</div>';
-    center += '</div>';
+    if (log[0]) event += '<div class="cEvent">' + esc(log[0]) + '</div>';
     var code = esc(room.code || PINNED);
     var right = '<div class="fCard"><div class="fLabel">Jackpot</div><div class="fPot">$' + fmt(room.pot) + '</div>'
       + '<div class="fBank">🏠 ' + room.bank_houses + ' · 🏨 ' + room.bank_hotels + '<small> in the bank</small></div></div>'
       + '<div class="fCard fStory"><div class="fLabel">Earlier</div>'
       + log.slice(1).map(function (line) { return '<div class="fLog">' + esc(line) + '</div>'; }).join("") + '</div>'
       + '<div class="fCard fJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div class="fLabel">Scan to play</div><b>' + code + '</b></div>';
-    return { left: left, center: center, right: right };
+    return { left: left, now: now, pills: pills, event: event, right: right };
   }
   /* Where a piece lands, a card big enough to read across the room: the full
      name, the price, the rent, and who owns it. */
@@ -779,6 +902,7 @@
       board.right = document.createElement("div"); board.right.className = "tvFrame right";
       row.appendChild(board.left); row.appendChild(board.wrap); row.appendChild(board.right);
       $("tv-main").appendChild(row);
+      fitTexts(board.svg);
       centerSig = "";
     }
     updateBoard(room);
@@ -789,7 +913,9 @@
     if (sig !== centerSig) {
       centerSig = sig;
       var parts = centerHtml(room);
-      board.left.innerHTML = parts.left; board.center.innerHTML = parts.center; board.right.innerHTML = parts.right;
+      board.left.innerHTML = parts.left; board.right.innerHTML = parts.right;
+      board.nowEl.innerHTML = parts.now; board.pillsEl.innerHTML = parts.pills; board.eventEl.innerHTML = parts.event;
+      if (!board.diceShown && room.last_roll && room.last_roll.d1) showDice(room.last_roll, false);
     }
   }
   function renderFinished(room) {
