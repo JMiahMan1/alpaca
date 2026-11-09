@@ -33,7 +33,9 @@
     font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
   body { background: radial-gradient(ellipse at 50% -10%, #3b1d7a 0%, #160b33 45%, #0d0620 100%); }
   #frame { position: absolute; left: 50%; top: 50%; width: 17.778rem; height: 10rem; margin-left: -8.889rem; margin-top: -5rem; }
-  #stage { position: absolute; top: .14rem; bottom: .12rem; left: .45rem; right: .45rem; display: flex; flex-direction: column; }
+  /* Inside the TV-safe area: many TVs overscan and crop about 5% off every
+     edge, which cut off the board's left column. */
+  #stage { position: absolute; top: .5rem; bottom: .5rem; left: .9rem; right: .9rem; display: flex; flex-direction: column; }
   .top { display: flex; align-items: center; justify-content: space-between; height: .58rem; flex: 0 0 auto; }
   .brand { font-size: .32rem; font-weight: 900; color: var(--gold); letter-spacing: .04em; text-shadow: 0 0 .3rem rgba(255,200,61,.4); }
   .brand small { color: var(--dim); font-weight: 700; font-size: .2rem; margin-left: .15rem; letter-spacing: .28em; }
@@ -62,6 +64,36 @@
   .boardCol { justify-content: flex-start; position: relative; }
   .boardCol svg { height: 8.76rem; width: 8.76rem; max-height: 100%; }
   .sideCol { flex: 0 0 6.9rem; display: flex; flex-direction: column; gap: .18rem; padding-left: .3rem; overflow: hidden; }
+  /* In play the board takes the full height of the safe area, and a narrower
+     column of big type sits right beside it (title, players, jackpot, story,
+     how to join) -- no strip above or below, no gap in the middle. */
+  body.playing .top, body.playing .foot { display: none; }
+  body.playing .main { justify-content: center; }
+  body.playing .boardCol { flex: 0 0 auto; }
+  body.playing .boardCol svg { height: 9rem; width: 9rem; max-height: none; }
+  body.playing .sideCol { flex: 0 0 6.2rem; gap: .16rem; padding-left: .4rem; }
+  body.playing .sideCard { padding: .16rem .22rem; border-radius: .18rem; }
+  body.playing .sideLabel { font-size: .18rem; }
+  .sideHead { display: flex; align-items: center; justify-content: space-between; gap: .1rem; }
+  .sideHead .brand { font-size: .36rem; white-space: nowrap; }
+  .sideHead .pill { margin-left: .08rem; font-size: .19rem; }
+  body.playing .plr { padding: .08rem .14rem; gap: .16rem; }
+  body.playing .plr .ring { width: .62rem; height: .62rem; font-size: .38rem; }
+  body.playing .plr .nm { font-size: .3rem; }
+  body.playing .plr .st { font-size: .21rem; }
+  body.playing .players.many .plr .ring { width: .46rem; height: .46rem; font-size: .28rem; }
+  body.playing .players.many .plr .nm { font-size: .23rem; }
+  body.playing .players.many .plr .st { font-size: .17rem; }
+  /* Five to eight players: two columns, so the story and the join card stay on screen. */
+  body.playing .players.many { display: -webkit-box; display: flex; flex-direction: row; flex-wrap: wrap; gap: .08rem; }
+  body.playing .players.many .plr { width: calc(50% - .04rem); box-sizing: border-box; padding: .06rem .08rem; gap: .1rem; }
+  body.playing .potNum { font-size: .5rem; }
+  body.playing .metaRow { font-size: .23rem; }
+  body.playing .logRow { font-size: .21rem; }
+  .joinCard { display: flex; align-items: center; gap: .2rem; }
+  .joinCard img { width: 1.05rem; height: 1.05rem; background: #fff; border-radius: .1rem; padding: .05rem; flex: 0 0 auto; }
+  .joinCard .jc { font-size: .2rem; color: var(--dim); font-weight: 800; line-height: 1.3; }
+  .joinCard .jc b { display: block; font-size: .42rem; color: var(--gold2); letter-spacing: .2em; }
   .sideCard { background: rgba(255,255,255,.06); border: .02rem solid rgba(255,255,255,.12); border-radius: .16rem; padding: .14rem .18rem; }
   .sideLabel { font-size: .15rem; letter-spacing: .22em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
   .players { display: flex; flex-direction: column; gap: .12rem; }
@@ -208,6 +240,7 @@
       $("tv-code").textContent = room.code || PINNED;
       $("tv-round").textContent = room.round || 1;
       $("tv-ruleset").textContent = (room.ruleset || "classic").toUpperCase();
+      document.body.className = room.status === "playing" ? "playing" : "";
       if (room.status === "lobby") { renderLobby(room); lastSig = "lobby"; return; }
       bigMoments(room);
       var sig = [room.turn, room.phase, room.status, JSON.stringify(room.last_roll), room.pot, room.bank_houses, room.log_seq,
@@ -426,7 +459,10 @@
   /* ---------- game + finish screens ---------- */
   function renderGame(room) {
     var svgHolder = buildBoardSvg(room);
-    var side = '<div class="sideCol"><div class="sideCard"><div class="sideLabel">Players</div><div class="players">' + playerRows(room) + '</div></div>';
+    var head = '<div class="sideCard sideHead"><div class="brand">🎺 JUBILEE!</div><div><span class="pill">ROUND ' + (room.round || 1) + '</span>'
+      + '<span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span></div></div>';
+    var many = (room.players || []).length > 4 ? " many" : "";
+    var side = '<div class="sideCol">' + head + '<div class="sideCard"><div class="sideLabel">Players</div><div class="players' + many + '">' + playerRows(room) + '</div></div>';
     side += '<div class="sideCard"><div class="potRow"><span class="sideLabel" style="letter-spacing:.08em">JACKPOT</span><span class="potNum">$' + fmt(room.pot) + '</span></div>'
       + '<div class="metaRow"><span>Bank</span><span>🏠 ' + room.bank_houses + ' · 🏨 ' + room.bank_hotels + '</span></div></div>';
     if (room.auction) {
@@ -443,6 +479,8 @@
       return '<div class="logRow" style="opacity:' + Math.max(0.35, 1 - i * 0.12).toFixed(2) + '">' + esc(line) + '</div>';
     }).join("");
     side += '<div class="sideCard" style="flex:1;min-height:0;overflow:hidden"><div class="sideLabel">Chronicle</div><div id="tv-log">' + logHtml + '</div></div>';
+    var code = esc(room.code || PINNED);
+    side += '<div class="sideCard joinCard"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div class="jc">Scan to play<b>' + code + '</b>games.sumemail.com</div></div>';
     side += '</div>';
     var main = $("tv-main");
     main.innerHTML = '<div class="boardCol"></div>' + side;
