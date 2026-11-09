@@ -578,14 +578,18 @@ def play(slug):
         meta["plays"] = int(meta.get("plays", 0) or 0) + 1
         _write_json(d / "meta.json", meta)
         card["plays"] = meta["plays"]
-    if meta.get("score_bridge") and request.args.get("embed"):
-        # A touch game in the family app: the lean page (no cabinet assets),
-        # with the player's details handed to the game in the URL fragment so
-        # the game page itself stays one cacheable URL.
+    if meta.get("score_bridge"):
+        # A touch game (the family games): the lean full-screen page, in the
+        # family app and in a plain browser alike (a join link or QR code
+        # opened on a phone). The cabinet page around it -- header, scores,
+        # details -- made the game scroll inside a page that scrolled too.
+        # The player's details go to the game in the URL fragment so the game
+        # page itself stays one cacheable URL.
         fragment = urllib.parse.urlencode(
             {k: v for k, v in request.args.items() if k in ("embed", "player", "name", "safe")}
         )
-        return render_template("play_touch.html", card=card, fragment=fragment)
+        return render_template("play_touch.html", card=card, fragment=fragment,
+                               standalone=not request.args.get("embed"))
     scores = _read_json(d / "scores.json", {}).get("scores", [])
     kind = meta.get("kind") or ("code" if (d / "game.py").exists() else "playable")
     code_text = (d / "game.py").read_text(encoding="utf-8", errors="replace") if (d / "game.py").exists() else ""
@@ -1455,6 +1459,7 @@ def api_jubilee_rooms():
     body = request.get_json(silent=True) or {}
     payload = {
         "name": body.get("name"),
+        "player_id": body.get("player_id"),
         "token": body.get("token"),
         "ruleset": body.get("ruleset"),
         "device_id": body.get("device_id"),
@@ -1473,6 +1478,39 @@ def api_jubilee_room(code):
     if room is None:
         return jsonify({"success": False, "error": "room not found"}), 404
     return jsonify({"success": True, "room": _jubilee_room(room)})
+
+@app.route("/api/jubilee/tvs", methods=["GET"])
+def api_jubilee_tvs():
+    """Household screens that can show the Jubilee board (the same discovery as Parable Party)."""
+    return jsonify(party.discover_screens(refresh=request.args.get("refresh") in ("1", "true")))
+
+
+@app.route("/api/jubilee/cast", methods=["POST"])
+def api_jubilee_cast():
+    """Put a Jubilee room's board on a discovered screen (``{"screen_id", "room_code", "stop"?}``).
+
+    The page is always this arcade's own ``/jubilee/tv/<CODE>``: a caller
+    chooses the screen and the room, never the URL a household TV is sent to.
+    """
+    body = request.get_json(silent=True) or {}
+    code = party._clean_code(body.get("room_code") or body.get("code"))
+    base = _public_base_url().rstrip("/")
+    url = f"{base}/jubilee/tv/{code}" if code else f"{base}/jubilee/tv"
+    screen_id = str(body.get("screen_id") or body.get("entity_id") or "")
+    res = party.show_stage_on_screen(
+        screen_id, url, room_code=code, method=str(body.get("method") or ""),
+        stop=bool(body.get("stop")), game="family-jubilee",
+    )
+    res.setdefault("url", url)
+    if code and screen_id and res.get("success"):
+        # The TV now shows this Jubilee room: a Parable Party room that had it
+        # before must not take it off when it ends.
+        if body.get("stop"):
+            party.presence.release_screen(screen_id, "jubilee", code)
+        else:
+            party.presence.claim_screen(screen_id, "jubilee", code)
+    return jsonify(res), (200 if res.get("success") or res.get("error") != "screen_id is required" else 400)
+
 
 @app.route("/api/jubilee/rooms/<code>/join.svg", methods=["GET"])
 def api_jubilee_join_svg(code):

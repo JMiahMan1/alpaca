@@ -260,10 +260,36 @@
     return el;
   }
   function tileCenter(i) {
+    // Upright on every side (rot 0): the room watches one screen from one
+    // side, so no name may be upside down or sideways (the tiles are square).
     if (i <= 10) return { x: 960 - T / 2 - i * T, y: 960 - T / 2, rot: 0 };
-    if (i <= 20) return { x: T / 2, y: 960 - T / 2 - (i - 10) * T, rot: 90 };
-    if (i <= 30) return { x: T / 2 + (i - 20) * T, y: T / 2, rot: 180 };
-    return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, rot: 270 };
+    if (i <= 20) return { x: T / 2, y: 960 - T / 2 - (i - 10) * T, rot: 0 };
+    if (i <= 30) return { x: T / 2 + (i - 20) * T, y: T / 2, rot: 0 };
+    return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, rot: 0 };
+  }
+  /* A land's name at the largest size that fits its tile, one line or two
+     balanced ones (bold sans runs about 0.6 em a character). */
+  function fitName(name, maxW, maxFs, minFs) {
+    var words = String(name || "").split(/\s+/).filter(Boolean);
+    var CH = 0.6;
+    function longest(lines) { var m = 0; for (var i = 0; i < lines.length; i++) m = Math.max(m, lines[i].length); return m || 1; }
+    var one = [words.join(" ")], two = one;
+    for (var k = 1; k < words.length; k++) {
+      var cand = [words.slice(0, k).join(" "), words.slice(k).join(" ")];
+      if (two.length === 1 || longest(cand) < longest(two)) two = cand;
+    }
+    var fsOne = Math.min(maxFs, maxW / (CH * longest(one)));
+    var fsTwo = Math.min(maxFs, maxW / (CH * longest(two)));
+    var useOne = two.length === 1 || fsOne >= fsTwo * 0.9;
+    return { lines: useOne ? one : two, size: Math.max(minFs, Math.round((useOne ? fsOne : fsTwo) * 10) / 10) };
+  }
+  function drawName(g, name, cy, maxFs, fill) {
+    var fit = fitName(name, T - 10, maxFs, 8.5), lh = fit.size * 1.1;
+    for (var li = 0; li < fit.lines.length; li++) {
+      var t = svgEl("text", { x: 0, y: (cy + (li - (fit.lines.length - 1) / 2) * lh + fit.size * 0.36).toFixed(1), "text-anchor": "middle",
+        "font-size": fit.size, "font-weight": 900, fill: fill || "#1b0f3b" }, g);
+      t.textContent = fit.lines[li];
+    }
   }
   function buildBoardSvg(room) {
     var svg = svgEl("svg", { viewBox: "0 0 960 960" }, null);
@@ -304,34 +330,28 @@
       if (bandColor) svgEl("rect", { x: -T / 2, y: -T / 2, width: T, height: 17, fill: bandColor }, g);
       var label = sp.kind === "chance" ? "PARABLE" : sp.kind === "chest" ? "SCRIPTURE" : null;
       var nameTxt = label || sp.name || "";
-      var words = String(nameTxt).split(" "), lines = [""], li = 0;
-      for (var w = 0; w < words.length; w++) {
-        var trial = lines[li] ? lines[li] + " " + words[w] : words[w];
-        if (trial.length > 11 && lines[li]) { li += 1; lines[li] = words[w]; } else lines[li] = trial;
-        if (li >= 1) { lines[1] = lines[1] || ""; }
-      }
-      for (var ln = 0; ln < lines.length; ln++) {
-        if (!lines[ln]) continue;
-        var nt = svgEl("text", { x: 0, y: -T / 2 + 33 + ln * 12.5, "text-anchor": "middle", "font-size": 9.5, "font-weight": 800, fill: "#1b0f3b" }, g);
-        nt.textContent = lines[ln];
-      }
-      if (sp.kind === "chance" || sp.kind === "chest") {
-        var qt = svgEl("text", { x: 0, y: 16, "text-anchor": "middle", "font-size": 30, "font-weight": 900, fill: sp.kind === "chance" ? "#8b5cf6" : "#1d4ed8" }, g);
-        qt.textContent = sp.kind === "chance" ? "?" : "✦";
-      }
-      if (sp.kind === "railroad") { var rr = svgEl("text", { x: 0, y: 12, "text-anchor": "middle", "font-size": 22 }, g); rr.textContent = sp.i === 35 ? "🐫" : "🚂"; }
-      if (sp.kind === "utility") { var ut = svgEl("text", { x: 0, y: 12, "text-anchor": "middle", "font-size": 22 }, g); ut.textContent = sp.i === 12 ? "💡" : "⛲"; }
+      // Picture tiles: the picture up top, the name under it. Streets: the
+      // name fills the middle. The price is always along the bottom.
+      var art = sp.kind === "chance" ? "📜" : sp.kind === "chest" ? "📖" : sp.kind === "railroad" ? (sp.i === 35 ? "🐫" : "🚂")
+        : sp.kind === "utility" ? (sp.i === 12 ? "💡" : "⛲") : sp.kind === "tax" ? "🪙" : null;
       var priceTxt = null;
-      if (sp.kind === "go") priceTxt = null;
-      else if (sp.kind === "tax") priceTxt = "PAY $" + fmt(sp.amount || 100);
+      if (sp.kind === "tax") priceTxt = "PAY $" + fmt(sp.amount || 100);
       else if (sp.price) priceTxt = "$" + sp.price;
-      if (priceTxt) { var pt = svgEl("text", { x: 0, y: T / 2 - 8, "text-anchor": "middle", "font-size": 12.5, "font-weight": 900, fill: "#1b0f3b" }, g); pt.textContent = priceTxt; }
+      if (art) {
+        var at = svgEl("text", { x: 0, y: (bandColor ? -T / 2 + 38 : -T / 2 + 32), "text-anchor": "middle", "font-size": 22 }, g);
+        at.textContent = art;
+        drawName(g, nameTxt, priceTxt ? 13 : 20, 13);
+      } else {
+        drawName(g, nameTxt, priceTxt ? -1 : 6, 16);
+      }
+      if (priceTxt) { var pt = svgEl("text", { x: 0, y: T / 2 - 7, "text-anchor": "middle", "font-size": 14, "font-weight": 900, fill: sp.kind === "tax" ? "#b91c1c" : "#1b0f3b" }, g); pt.textContent = priceTxt; }
       if (sp.owner != null) {
-        svgEl("circle", { cx: 0, cy: T / 2 - 30, r: 6, fill: seatColor(sp.owner), stroke: "#1b0f3b", "stroke-width": 1.5 }, g);
-        var yy = T / 2 - 44;
-        if (sp.houses === 5) { svgEl("rect", { x: -9, y: yy, width: 18, height: 10, rx: 2, fill: "#d32f2f", stroke: "#1b0f3b", "stroke-width": 1.2 }, g); }
-        else if (sp.houses > 0) { for (var hix = 0; hix < sp.houses; hix++) { svgEl("rect", { x: -T / 2 + 6 + hix * 16, y: yy, width: 13, height: 8, rx: 1.5, fill: "#2e9e5b", stroke: "#1b0f3b", "stroke-width": 1 }, g); } }
-        if (sp.mortgaged) { var mg = svgEl("text", { x: T / 2 - 10, y: -T / 2 + 34, "text-anchor": "middle", "font-size": 22, "font-weight": 900, fill: "#c0392b" }, g); mg.textContent = "M"; }
+        // Owner in the bottom corner, houses in the colour band: clear of the name.
+        svgEl("circle", { cx: -T / 2 + 10, cy: T / 2 - 10, r: 6.5, fill: seatColor(sp.owner), stroke: "#1b0f3b", "stroke-width": 1.5 }, g);
+        var yy = -T / 2 + 3;
+        if (sp.houses === 5) { svgEl("rect", { x: -11, y: yy, width: 22, height: 11, rx: 2, fill: "#d32f2f", stroke: "#1b0f3b", "stroke-width": 1.2 }, g); }
+        else if (sp.houses > 0) { for (var hix = 0; hix < sp.houses; hix++) { svgEl("rect", { x: -T / 2 + 8 + hix * 18, y: yy, width: 14, height: 10, rx: 1.5, fill: "#2e9e5b", stroke: "#1b0f3b", "stroke-width": 1 }, g); } }
+        if (sp.mortgaged) { var mg = svgEl("text", { x: T / 2 - 11, y: T / 2 - 6, "text-anchor": "middle", "font-size": 15, "font-weight": 900, fill: "#c0392b" }, g); mg.textContent = "M"; }
       }
     }
     /* tokens on top */
@@ -356,8 +376,10 @@
   function corner(g, big, small, emoji, fill) {
     svgEl("rect", { x: -T / 2, y: -T / 2, width: T, height: T, fill: fill, opacity: 0.35 }, g);
     var e = svgEl("text", { x: 0, y: -14, "text-anchor": "middle", "font-size": 30 }, g); e.textContent = emoji;
-    var b = svgEl("text", { x: 0, y: 6, "text-anchor": "middle", "font-size": 10.5, "font-weight": 900, fill: "#1b0f3b" }, g); b.textContent = big;
-    var s2 = svgEl("text", { x: 0, y: 19, "text-anchor": "middle", "font-size": 8, "font-weight": 800, fill: "#3c2a55" }, g); s2.textContent = small;
+    var bigFs = Math.min(13.5, (T - 8) / (0.6 * String(big).length));
+    var smallFs = Math.min(10.5, (T - 8) / (0.6 * String(small).length));
+    var b = svgEl("text", { x: 0, y: 9, "text-anchor": "middle", "font-size": bigFs.toFixed(1), "font-weight": 900, fill: "#1b0f3b" }, g); b.textContent = big;
+    var s2 = svgEl("text", { x: 0, y: 9 + bigFs + 4, "text-anchor": "middle", "font-size": smallFs.toFixed(1), "font-weight": 800, fill: "#3c2a55" }, g); s2.textContent = small;
   }
   /* ---------- game + finish screens ---------- */
   function renderGame(room) {

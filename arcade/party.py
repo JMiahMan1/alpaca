@@ -35,6 +35,7 @@ import base64
 import collections
 import contextlib
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -71,6 +72,10 @@ try:
     from arcade import announcer
 except ImportError:  # the arcade image runs with arcade/ on sys.path
     import announcer  # type: ignore[no-redef]
+try:
+    presence = importlib.import_module("presence")
+except ImportError:
+    presence = importlib.import_module("arcade.presence")
 
 AUDIO_SERVER_URL = os.getenv("AUDIO_SERVER_URL", "http://audio-server:8082").rstrip("/")
 PROXY_URL = os.getenv("PROXY_URL", "http://host.docker.internal:11434").rstrip("/")
@@ -802,6 +807,7 @@ _recent_prompt_ids: collections.deque[str] = collections.deque(maxlen=2000)
 
 _lock = threading.Lock()
 _rooms: dict[str, dict[str, Any]] = {}
+presence.register_rooms(lambda: tuple(_rooms))
 _tts_clips: dict[str, bytes] = {}
 
 
@@ -886,6 +892,8 @@ def remember_screen(code: str, screen_id: str | None) -> None:
         room = _rooms.get(_clean_code(code))
         if room is not None:
             room["cast_screen"] = screen
+    if screen:
+        presence.claim_screen(screen, "party", _clean_code(code))
 
 
 def _release_screen_async(room: dict[str, Any] | None) -> None:
@@ -894,19 +902,17 @@ def _release_screen_async(room: dict[str, Any] | None) -> None:
     if not screen:
         return
     code = room["code"]  # type: ignore[index]
+    # Only if the TV still shows this room: another game (or room) may have
+    # been cast there since, and ending this one must not blank it.
+    if not presence.release_screen(screen, "party", code) and presence.screen_owner(screen) is not None:
+        return
     threading.Thread(target=lambda: show_stage_on_screen(screen, "", room_code=code, stop=True),
                      name=f"party-release-{code}", daemon=True).start()
 
 
 def _pick_room_code_unlocked() -> str:
-    available = [w for w in ROOM_WORDS if w not in _rooms]
-    if available:
-        return random.choice(available)
-    for _ in range(50):
-        candidate = "".join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", k=4))
-        if candidate not in _rooms:
-            return candidate
-    return f"GW{random.randint(10, 99)}"
+    # Unique across every game's rooms, held until this room is registered.
+    return presence.pick_code(ROOM_WORDS, "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", "GW")
 
 
 def _select_prompt_unlocked(room: dict[str, Any], kind: str) -> dict[str, Any]:
@@ -3001,6 +3007,10 @@ def create_or_join_room(
         if room is None:
             if not create_if_missing and clean_code:
                 raise LookupError(f"Room '{clean_code}' not found.")
+            if clean_code and clean_code in presence.codes_in_use():
+                # Another game's room (a Jubilee code typed into Parable Party):
+                # say so, rather than open an empty party room under its code.
+                raise LookupError(f"'{clean_code}' is a different game's room, not a Parable Party one.")
             room_code = clean_code if (clean_code and len(clean_code) >= 3) else _pick_room_code_unlocked()
             room = {
                 "code": room_code,
@@ -3812,8 +3822,13 @@ def discover_screens(*, refresh: bool = False) -> dict[str, Any]:
     return {"success": True, "tvs": list(screens or []), "home_assistant": bool(data.get("home_assistant"))}
 
 
-def show_stage_on_screen(screen_id: str, url: str, *, room_code: str = "", method: str = "", stop: bool = False) -> dict[str, Any]:
-    """Put a room's ``/tv`` stage page on a discovered screen, or take it off."""
+def show_stage_on_screen(screen_id: str, url: str, *, room_code: str = "", method: str = "", stop: bool = False,
+                         game: str = "") -> dict[str, Any]:
+    """Put a room's stage page on a discovered screen, or take it off.
+
+    ``game`` names whose stage it is (``family-jubilee``); through the Jarvis
+    gateway, which builds the URL itself, that picks the page. Unnamed is
+    Parable Party's ``/tv``."""
     sid = _clean_text(screen_id, 160)
     if not sid:
         return {"success": False, "error": "screen_id is required"}
@@ -3823,7 +3838,8 @@ def show_stage_on_screen(screen_id: str, url: str, *, room_code: str = "", metho
             # The gateway builds the stage URL from the arcade's public address.
             return _relay_json(
                 "POST", f"{base}/api/arcade/cast",
-                {"screen_id": sid, "room_code": _clean_code(room_code), "method": _clean_text(method, 32), "stop": stop},
+                {"screen_id": sid, "room_code": _clean_code(room_code), "method": _clean_text(method, 32), "stop": stop,
+                 **({"game": _clean_text(game, 40)} if game else {})},
                 timeout=100.0,
             )
         action = "stop" if stop else "show"

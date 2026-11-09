@@ -148,7 +148,10 @@ def test_testing_and_published_games_play_but_unpublished_do_not(env):
     assert client.get("/api/games/family-cloud-hop").status_code == 404
     _set(client, "family-cloud-hop", "published")
     page = client.get("/play/family-cloud-hop").get_data(as_text=True)
-    assert "window.ARCADE_BRIDGE = true" in page
+    # In a plain browser too: the full-screen touch page, saving the score
+    # itself (no family app around it to do that).
+    assert "var standalone = true" in page and "/scores" in page
+    assert "arcade.css" not in page
 
 
 def test_state_changes_need_the_admin_token(env):

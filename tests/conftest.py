@@ -111,6 +111,16 @@ def party_devices_ready(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
 
 
 @pytest.fixture(autouse=True)
+def fresh_room_codes() -> None:
+    """Room codes picked in one test are not held against the next (presence)."""
+    try:
+        from arcade import presence
+    except Exception:
+        return
+    presence._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def no_network(request: pytest.FixtureRequest) -> None:
     """Fail fast instead of hanging if a non-live test opens a socket.
 

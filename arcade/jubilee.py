@@ -264,14 +264,8 @@ _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def _pick_code_unlocked() -> str:
-    words = [w for w in party.ROOM_WORDS if w not in _rooms]
-    if words:
-        return random.choice(words)
-    for _ in range(60):
-        candidate = "".join(random.choices(_CODE_ALPHABET, k=4))
-        if candidate not in _rooms:
-            return candidate
-    return f"JU{random.randint(100, 999)}"
+    # Unique across every game's rooms, held until this room is registered.
+    return presence.pick_code(party.ROOM_WORDS, _CODE_ALPHABET, "JU")
 
 
 def _new_player(name: Any, initials: Any, token: Any, device_id: Any = None) -> dict[str, Any]:
@@ -397,6 +391,7 @@ def _prune_unlocked(now: float) -> None:
         _rooms.pop(code, None)
 
 _rooms: dict[str, dict[str, Any]] = {}
+presence.register_rooms(lambda: tuple(_rooms))
 _lock = threading.Lock()
 
 
@@ -1318,6 +1313,14 @@ def join_room(code: Any, payload: dict[str, Any] | None = None) -> dict[str, Any
         room = _rooms.get(clean)
         if room is None:
             raise KeyError(f"no such room: {clean}")
+        # Coming back to your own seat (a reload, the link opened again, the
+        # app reopened): the same player, never a second one -- and the way
+        # back into a game that has already begun.
+        seat = _returning_player_unlocked(room, payload)
+        if seat is not None:
+            seat["last_seen"] = time.time()
+            room["updated_at"] = time.time()
+            return {"player_id": seat["id"], "room": _snapshot_unlocked(room, seat["id"])}
         if room["status"] != "lobby":
             raise ValueError("that game has already begun")
         token = _clean_token(payload.get("token")) if payload.get("token") else None
@@ -1331,6 +1334,25 @@ def join_room(code: Any, payload: dict[str, Any] | None = None) -> dict[str, Any
         room["updated_at"] = time.time()
         _log(room, f"{player['name']} joins the ledger ({len(room['players'])} at the table)")
         return {"player_id": player["id"], "room": _snapshot_unlocked(room, player["id"])}
+
+
+def _returning_player_unlocked(room: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The seat a returning person already holds: by their player id, or --
+    once the game has begun -- by this browser's device id when that seat's
+    person is not at the table now (storage cleared, the same phone)."""
+    pid = str(payload.get("player_id") or "")
+    humans = [p for p in room["players"] if p and not p.get("is_ai")]
+    if pid:
+        for p in humans:
+            if p.get("id") == pid:
+                return p
+    device = _clean_device(payload.get("device_id"))
+    if device and room["status"] != "lobby":
+        now = time.time()
+        for p in humans:
+            if p.get("device_id") == device and not p.get("bankrupt") and not presence.player_present(p, now):
+                return p
+    return None
 
 
 def list_open_rooms() -> list[dict[str, Any]]:
@@ -2243,7 +2265,7 @@ def _ai_seek_trade(room: dict[str, Any], seat: int) -> bool:
         if key in last and turns - int(last[key]) < wait:
             continue
         price = int(SPACES[missing]["price"])
-        offer_cash = int(round((price * 1.5 + 25 * len(members)) / 10.0)) * 10
+        offer_cash = round((price * 1.5 + 25 * len(members)) / 10.0) * 10
         if int(p["cash"]) - offer_cash < 300:
             continue
         last[key] = turns

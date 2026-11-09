@@ -7,6 +7,7 @@ monkeypatching ``secrets.randbelow``.
 """
 
 import time
+
 import pytest
 
 from arcade import jubilee
@@ -335,7 +336,7 @@ def test_a_tv_stage_turns_on_hand_mode_and_times_out(monkeypatch):
 
 
 def test_rolls_and_cards_carry_counters_so_repeats_still_animate():
-    code, pid = _started(name="Dad", token="ark")
+    code, _pid = _started(name="Dad", token="ark")
     room = jubilee._rooms[code]
     jubilee._record_roll(room, 6, 6)
     first = dict(room["last_roll"])
@@ -383,3 +384,44 @@ def test_selling_a_hotel_in_a_housing_shortage_never_overdraws_the_bank():
     assert room["bank_houses"] == 0 and jubilee._prop(room, 6)["houses"] == 2
     cost = jubilee.SPACES[6]["house_cost"]
     assert got == (cost // 2) * 3 and room["players"][seat]["cash"] == cash + got
+
+
+def test_a_reload_mid_game_rejoins_your_own_seat():
+    """The page sends the player id it kept; that used to be ignored, so a
+    reload once the game had begun locked the player out of their own seat."""
+    made = jubilee.create_room({"name": "Ann", "device_id": "dev-ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    back = jubilee.join_room(code, {"player_id": pid, "name": "Ann"})
+    assert back["player_id"] == pid
+    assert back["room"]["status"] == "playing"
+
+
+def test_a_reload_in_the_lobby_is_not_a_second_player():
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.join_room(code, {"player_id": pid, "name": "Ann"})
+    room = jubilee.get_room(code, pid)
+    assert [p["name"] for p in room["players"]] == ["Ann"]
+
+
+def test_the_same_phone_gets_its_seat_back_after_losing_its_saved_id(monkeypatch):
+    made = jubilee.create_room({"name": "Ann", "device_id": "dev-ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    # Away from the table (storage cleared, app reinstalled): same device id.
+    with jubilee._lock:
+        for p in jubilee._rooms[code]["players"]:
+            if p["id"] == pid:
+                p["last_seen"] = 0
+    back = jubilee.join_room(code, {"device_id": "dev-ann", "name": "Ann"})
+    assert back["player_id"] == pid
+
+
+def test_a_stranger_still_cannot_join_a_game_in_progress():
+    made = jubilee.create_room({"name": "Ann", "device_id": "dev-ann"})
+    code = made["room"]["code"]
+    jubilee.start_match(code, made["player_id"])
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="already begun"):
+        jubilee.join_room(code, {"player_id": "not-a-seat", "device_id": "dev-bob", "name": "Bob"})

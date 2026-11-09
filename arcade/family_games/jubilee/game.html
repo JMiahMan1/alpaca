@@ -154,6 +154,7 @@
     <div class="jb-spacer"></div>
     <div class="jb-chip" id="jb-code" title="Tap to copy the room code">CODE <b id="jb-code-v">····</b></div>
     <div class="jb-chip" id="jb-round">ROUND <b id="jb-round-v">1</b></div>
+    <button class="jb-icon" id="jb-tv" aria-label="Show the board on a TV" title="Show the board on a TV">📺</button>
     <button class="jb-icon" id="jb-zoom" aria-label="Zoom board to active player" title="Zoom board to active player">🔍</button>
     <button class="jb-icon" id="jb-sound" aria-label="Sound on or off">🔊</button>
     <button class="jb-icon" id="jb-leave" aria-label="Leave the game">🚪</button>
@@ -220,6 +221,8 @@
   .jb-shade { position: fixed; inset: 0; z-index: 20; background: rgba(6,3,20,.66); backdrop-filter: blur(3px);
     display: none; align-items: flex-end; justify-content: center; }
   .jb-shade.show { display: flex; animation: jb-fadein .18s ease-out; }
+  /* The TV picker opens from the waiting room too, which sits at 26. */
+  .jb-shade.tv { z-index: 28; }
   @keyframes jb-fadein { from { opacity: 0; } }
   .jb-sheet {
     width: min(560px, 100%); max-height: 86vh; overflow-y: auto; background: var(--paper); color: var(--ink);
@@ -231,6 +234,17 @@
   .jb-sheet h2 small { font-size: 12px; color:#6b5b8f; font-weight:800; }
   .jb-card { background:#fff; border:2px solid var(--ink); border-radius:16px; padding:12px 14px; margin:10px 0; box-shadow: 3px 4px 0 var(--ink); }
   .jb-row { display:flex; gap:10px; }
+  .jb-tvlist { display:flex; flex-direction:column; gap:8px; margin:10px 0; }
+  .jb-tvitem { display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:12px 14px; border-radius:14px;
+    border:2px solid rgba(27,15,59,.18); background:rgba(27,15,59,.04); color:var(--ink); font:inherit; font-weight:900; cursor:pointer; }
+  .jb-tvitem small { display:block; font-weight:700; color:#6b5b8f; font-size:12px; margin-top:2px; }
+  .jb-tvitem .ic { font-size:24px; }
+  .jb-tvitem.live { border-color:#2e9e5b; background:rgba(46,158,91,.12); }
+  .jb-tvitem:disabled { opacity:.55; }
+  .jb-tvstatus { padding:10px 12px; border-radius:12px; font-weight:800; font-size:14px; background:rgba(27,15,59,.06); margin:8px 0; }
+  .jb-tvstatus.ok { background:rgba(46,158,91,.15); color:#1d6b3d; }
+  .jb-tvstatus.err { background:rgba(211,47,47,.12); color:#9b1c1c; }
+  .jb-tvurl { font-size:12px; color:#6b5b8f; font-weight:700; margin-top:10px; word-break:break-all; }
   .jb-landrow { display:flex; align-items:center; gap:10px; }
   /* TV mode: the phone is your hand */
   #jb-tvbar { display: flex; align-items: center; gap: 8px; justify-content: space-between; flex: 0 0 auto;
@@ -350,6 +364,7 @@
     padding: calc(14px + var(--fk-safe-top)) 14px calc(14px + var(--fk-safe-bottom));
   }
   #jb-lobby.show { display: flex; }
+  #jb-lobby-wait { display: block; }
   .jb-lobbycard { width: min(480px, 100%); text-align: center; }
   .jb-biglogo { font-size: 54px; font-weight: 900; line-height: .95; letter-spacing: .01em; color: var(--gold);
     text-shadow: 0 4px 0 #4a2c00, 0 0 42px rgba(255,200,61,.4); margin: 4px 0 2px; animation: jb-logoGlow 2.6s ease-in-out infinite; }
@@ -390,6 +405,10 @@
     #jb-board-wrap { width: min(calc(100dvh - 84px), calc(100vw - 480px), 800px); }
     #jb-side { flex: 0 0 440px; max-width: 460px; }
   }
+  @media (max-width: 400px) {
+    .jb-logo { display: none; }            /* the code chip names the room */
+    #jb-round { padding: 3px 6px; }
+  }
   @media (max-width: 440px) {
     .jb-logo small { display: none; }
     #jb-top { gap: 4px; }
@@ -401,6 +420,38 @@
     .jb-logo small { display: none; }
     #jb-top { padding: 1px 4px; }
     #jb-tabbody { min-height: 60px; }
+  }
+  /* The lobby fits the screen it is on: tighter on short phones, two columns
+     on a phone held sideways, so nothing needs scrolling to reach "Open a room". */
+  @media (max-height: 760px) {
+    .jb-biglogo { font-size: 40px; }
+    .jb-biglogo small { margin-top: 5px; font-size: 11px; }
+    .jb-tag { margin: 6px 0 8px; font-size: 13px; }
+    .jb-rulesets { gap: 6px; margin: 8px 0; }
+    .jb-ruleset { padding: 7px 10px; border-radius: 12px; }
+    .jb-ruleset small { font-size: 11px; line-height: 1.3; }
+    .jb-toggle { padding: 6px 10px; }
+    #jb-create { margin-top: 10px !important; }
+    .jb-or { margin: 10px 0 5px !important; }
+    .jb-qr { width: 128px; height: 128px; }
+    .jb-roomcode { font-size: 38px; }
+  }
+  @media (max-height: 660px) {
+    .jb-tag { display: none; }
+    .jb-biglogo { font-size: 34px; }
+    .jb-field { padding-top: 9px !important; padding-bottom: 9px !important; }
+  }
+  @media (orientation: landscape) and (max-height: 560px) {
+    .jb-lobbycard { width: min(880px, 100%); }
+    #jb-lobby-main { display: grid; grid-template-columns: 1fr 1.1fr; column-gap: 22px; align-items: start; }
+    #jb-lobby-main > * { grid-column: 1; }
+    #jb-lobby-main > #jb-create-block { grid-column: 2; grid-row: 1 / span 12; }
+    #jb-lobby-main .jb-tag { display: none; }
+    .jb-biglogo { font-size: 30px; }
+    #jb-lobby-wait { display: grid; grid-template-columns: auto 1fr; column-gap: 22px; align-items: center; text-align: center; }
+    #jb-lobby-wait > * { grid-column: 2; }
+    #jb-lobby-wait > .jb-share { grid-column: 1; grid-row: 1 / span 8; margin-top: 0; }
+    #jb-lobby-wait .jb-biglogo { font-size: 28px !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: .01s !important; animation-iteration-count: 1 !important; transition-duration: .15s !important; }
@@ -449,6 +500,7 @@
         <button class="jb-btn ghost" id="jb-copy" style="margin-top:6px">Copy join link</button>
       </div>
       <div class="jb-players" id="jb-wait-players" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:14px 0"></div>
+      <button class="jb-btn ghost" id="jb-wait-tv" style="margin:4px 0 10px">📺 Show the board on a TV</button>
       <button class="jb-btn big" id="jb-start" style="display:none">Begin the match</button>
       <p class="jb-tag" id="jb-wait-hint" style="font-size:12px;margin-top:10px">Waiting for the host to start…</p>
       <button class="jb-btn ghost" id="jb-wait-leave">Leave room</button>
@@ -704,7 +756,7 @@ syncSoundBtn();
     $('jb-lobby').classList.add('show');
     $('jb-lobby-main').style.display = 'none';
     var wait = $('jb-lobby-wait');
-    wait.style.display = 'block';
+    wait.style.display = '';  // the stylesheet's layout (a grid on a sideways phone)
     $('jb-share-code').textContent = room.code;
     $('jb-share-qr').src = '/api/jubilee/rooms/' + room.code + '/join.svg';
     var chips = '';
@@ -794,18 +846,32 @@ syncSoundBtn();
     return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, side: 3 };
   }
 
-  function wrapName(name, maxChars) {
-    maxChars = maxChars || 11;
-    var words = String(name).split(' ');
-    var lines = [''];
-    for (var w = 0; w < words.length; w++) {
-      var cur = lines[lines.length - 1];
-      var cand = cur ? cur + ' ' + words[w] : words[w];
-      if (cand.length <= maxChars) lines[lines.length - 1] = cand;
-      else if (lines.length < 2) lines.push(words[w]);
-      else lines[1] = (lines[1] + ' ' + words[w]).slice(0, maxChars + 2);
+  /* A land's name at the largest size that fits its tile: one line when that
+     reads as well, else two balanced lines. Bold sans runs about 0.6 em a
+     character, so "Thessalonica" shrinks a little rather than overflowing,
+     and "Gaza" stays big. */
+  function fitName(name, maxW, maxFs, minFs) {
+    var words = String(name || '').split(/\s+/).filter(Boolean);
+    var CH = 0.6;
+    function longest(lines) { var m = 0; for (var i = 0; i < lines.length; i++) m = Math.max(m, lines[i].length); return m || 1; }
+    var one = [words.join(' ')];
+    var two = one;
+    for (var k = 1; k < words.length; k++) {
+      var cand = [words.slice(0, k).join(' '), words.slice(k).join(' ')];
+      if (two.length === 1 || longest(cand) < longest(two)) two = cand;
     }
-    return lines;
+    var fsOne = Math.min(maxFs, maxW / (CH * longest(one)));
+    var fsTwo = Math.min(maxFs, maxW / (CH * longest(two)));
+    var useOne = two.length === 1 || fsOne >= fsTwo * 0.9;
+    return { lines: useOne ? one : two, size: Math.max(minFs, Math.round((useOne ? fsOne : fsTwo) * 10) / 10) };
+  }
+  function drawName(g, name, cy, maxFs, fill) {
+    var fit = fitName(name, T - 10, maxFs, 8.5);
+    var lh = fit.size * 1.1;
+    for (var li = 0; li < fit.lines.length; li++) {
+      svgEl('text', { x: 0, y: (cy + (li - (fit.lines.length - 1) / 2) * lh + fit.size * 0.36).toFixed(1), 'text-anchor': 'middle',
+        'font-size': fit.size, 'font-weight': 900, fill: fill || '#1b0f3b' }, g).textContent = fit.lines[li];
+    }
   }
 
   var SPACE_ART = {
@@ -895,8 +961,9 @@ syncSoundBtn();
     var spaces = state.room && state.room.board ? state.room.board : null;
     for (var i = 0; i < 40; i++) {
       var c = tileCenter(i);
-      var rot = c.side * 90;
-      var g = svgEl('g', { transform: 'translate(' + c.x + ',' + c.y + ') rotate(' + rot + ')', class: 'jb-tile', 'data-i': i }, svg);
+      // Upright on every side: everyone looks at a screen from the same side,
+      // so no name is upside down or sideways (the tiles are square).
+      var g = svgEl('g', { transform: 'translate(' + c.x + ',' + c.y + ')', class: 'jb-tile', 'data-i': i }, svg);
       if (i === 0 || i === 10 || i === 20 || i === 30) { drawCorner(g, i); }
       else { drawTile(g, spaces ? spaces[i] : null, i); }
       tap(g, (function (idx) { return function () { openDeed(idx); }; })(i));
@@ -917,8 +984,8 @@ syncSoundBtn();
       svgEl('text', { x: 0, y: -15, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 900, fill: '#1b0f3b', 'letter-spacing': 0.5 }, g).textContent = 'JUBILEE!';
       svgEl('text', { x: 0, y: 2, 'text-anchor': 'middle', 'font-size': 19 }, g).textContent = '🎺';
       svgEl('rect', { x: -T / 2 + 6, y: 12, width: T - 12, height: 15, rx: 4, fill: '#16a34a', stroke: '#1b0f3b', 'stroke-width': 1.2 }, g);
-      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#ffffff' }, g).textContent = 'COLLECT $200';
-      svgEl('text', { x: 0, y: 37, 'text-anchor': 'middle', 'font-size': 9, 'font-weight': 900, fill: '#b45309' }, g).textContent = '◀ PASS HERE';
+      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 10.5, 'font-weight': 900, fill: '#ffffff' }, g).textContent = 'COLLECT $200';
+      svgEl('text', { x: 0, y: 37, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#b45309' }, g).textContent = '◀ PASS HERE';
     } else if (i === 10) {
       // Dungeon cell in inner corner + "Just Visiting" lane
       svgEl('rect', { x: -T / 2 + 16, y: -T / 2 + 4, width: T - 20, height: T - 22, rx: 4, fill: '#d6cfc2', stroke: '#1b0f3b', 'stroke-width': 1.8 }, g);
@@ -926,18 +993,18 @@ syncSoundBtn();
         svgEl('line', { x1: b, y1: -T / 2 + 4, x2: b, y2: T / 2 - 18, stroke: '#374151', 'stroke-width': 2 }, g);
       }
       svgEl('text', { x: 4, y: -6, 'text-anchor': 'middle', 'font-size': 24 }, g).textContent = '⛓️';
-      svgEl('text', { x: 4, y: 11, 'text-anchor': 'middle', 'font-size': 9, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'DUNGEON';
-      svgEl('text', { x: 0, y: T / 2 - 5, 'text-anchor': 'middle', 'font-size': 8.5, 'font-weight': 900, fill: '#5b4a8a' }, g).textContent = 'JUST VISITING';
+      svgEl('text', { x: 4, y: 11, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'DUNGEON';
+      svgEl('text', { x: 0, y: T / 2 - 5, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#5b4a8a' }, g).textContent = 'JUST VISITING';
     } else if (i === 20) {
       svgEl('circle', { cx: 0, cy: -4, r: T * 0.31, fill: '#e0f2fe', stroke: '#0284c7', 'stroke-width': 2 }, g);
       svgEl('text', { x: 0, y: 4, 'text-anchor': 'middle', 'font-size': 28 }, g).textContent = '🕊️';
-      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SABBATH REST';
-      svgEl('text', { x: 0, y: 35, 'text-anchor': 'middle', 'font-size': 7.5, 'font-weight': 800, fill: '#0369a1' }, g).textContent = 'SANCTUARY · POT';
+      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SABBATH REST';
+      svgEl('text', { x: 0, y: 35, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#0369a1' }, g).textContent = 'SANCTUARY';
     } else {
       svgEl('circle', { cx: 0, cy: -5, r: T * 0.31, fill: '#fee2e2', stroke: '#dc2626', 'stroke-width': 2 }, g);
       svgEl('text', { x: 0, y: 4, 'text-anchor': 'middle', 'font-size': 26 }, g).textContent = '⚔️';
-      svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#991b1b' }, g).textContent = 'SENT TO';
-      svgEl('text', { x: 0, y: 34, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
+      svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#991b1b' }, g).textContent = 'SENT TO';
+      svgEl('text', { x: 0, y: 34, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
     }
   }
 
@@ -960,26 +1027,27 @@ syncSoundBtn();
       var topBar = isParable ? '#7c3aed' : isScripture ? '#1d4ed8' : '#dc2626';
       svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 6, fill: topBar }, g);
     }
-    var cy = bandFill ? -T / 2 + 31 : -T / 2 + 18;
+    // Picture tiles: the picture up top, the name under it. Streets: the name
+    // fills the middle. The price is always along the bottom.
+    var hasArt = isRail || isUtil || isParable || isScripture || isTax;
+    var artTop = bandFill ? -T / 2 + 38 : -T / 2 + 32;
     if (isRail || isUtil) {
-      svgEl('text', { x: 0, y: -T / 2 + 38, 'text-anchor': 'middle', 'font-size': 22 }, g).textContent = isRail ? (SPACE_ART[sp.name] || '🚂') : (SPACE_ART[sp.name] || '💡');
+      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 20 }, g).textContent = isRail ? (SPACE_ART[sp.name] || '🚂') : (SPACE_ART[sp.name] || '💡');
     } else if (isParable) {
-      svgEl('text', { x: 0, y: -T / 2 + 40, 'text-anchor': 'middle', 'font-size': 28, 'font-weight': 900, fill: '#6d28d9' }, g).textContent = '📜';
+      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 24, 'font-weight': 900, fill: '#6d28d9' }, g).textContent = '📜';
     } else if (isScripture) {
-      svgEl('text', { x: 0, y: -T / 2 + 40, 'text-anchor': 'middle', 'font-size': 26, fill: '#1d4ed8' }, g).textContent = '📖';
+      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 23, fill: '#1d4ed8' }, g).textContent = '📖';
     } else if (isTax) {
-      svgEl('text', { x: 0, y: -T / 2 + 38, 'text-anchor': 'middle', 'font-size': 24 }, g).textContent = kind === 'tribute' ? '🪙' : '🕊️';
-    }
-    var name = sp ? sp.name : '?';
-    var lines = wrapName(name, 11);
-    for (var li = 0; li < lines.length; li++) {
-      svgEl('text', { x: 0, y: cy + (isParable || isScripture || isTax || isRail || isUtil ? 25 : 0) + li * 11, 'text-anchor': 'middle', 'font-size': 9.2, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = lines[li];
+      svgEl('text', { x: 0, y: artTop, 'text-anchor': 'middle', 'font-size': 22 }, g).textContent = kind === 'tribute' ? '🪙' : '🕊️';
     }
     var priceLabel = '';
     if (sp && sp.price) priceLabel = '$' + sp.price;
     else if (sp && (sp.amount || sp.flat)) priceLabel = 'PAY $' + (sp.amount || sp.flat);
+    var name = sp ? sp.name : '?';
+    if (hasArt) drawName(g, name, priceLabel ? 13 : 20, 13);
+    else drawName(g, name, priceLabel ? -1 : 6, 16);
     if (priceLabel) {
-      svgEl('text', { x: 0, y: T / 2 - 6, 'text-anchor': 'middle', 'font-size': isTax ? 9.5 : 10.5, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
+      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': isTax ? 12 : 13.5, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
     }
     // dynamic bits: owner badge, 3D houses/hotel, mortgage stamp
     svgEl('circle', { id: 'own-' + i, cx: -T / 2 + 10, cy: T / 2 - 10, r: 6, fill: 'transparent', stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
@@ -1241,9 +1309,129 @@ syncSoundBtn();
   }
 
   /* ============ sheets ============ */
-  function openSheet(html) { $('jb-sheet').innerHTML = html; $('jb-sheet-shade').classList.add('show'); }
+  function openSheet(html) { $('jb-sheet').innerHTML = html; $('jb-sheet').removeAttribute('data-kind'); $('jb-sheet-shade').classList.remove('tv'); $('jb-sheet-shade').classList.add('show'); }
   function closeSheet() { $('jb-sheet-shade').classList.remove('show'); }
   tap($('jb-sheet-shade'), function (e) { if (e.target === $('jb-sheet-shade')) closeSheet(); });
+
+  /* ============ TV: put the board on a household screen ============
+     Screens are discovered by Jarvis (Home Assistant, Google Cast, LG/Samsung);
+     nothing here names a device. Inside the Jarvis app the request goes through
+     the app, which knows who is asking; otherwise through the arcade. Once the
+     TV page connects, every phone here becomes that player's hand. */
+  var tv = { screens: [], loading: false, error: '', castingId: '', pendingStop: false, active: null, status: null, relay: false, timer: 0, open: false };
+  function tvCode() { return (state.room && state.room.code) || ''; }
+  function postToParent(message) {
+    try { if (window.parent && window.parent !== window) window.parent.postMessage(Object.assign({ source: 'arcade-game' }, message), '*'); } catch (e) {}
+  }
+  function mergeScreens(list) {
+    var byId = {};
+    tv.screens.forEach(function (t) { byId[t.id] = t; });
+    (list || []).forEach(function (t) { if (t && t.id) byId[t.id] = t; });
+    tv.screens = Object.keys(byId).map(function (k) { return byId[k]; }).filter(function (t) { return t.display !== 'none'; });
+  }
+  function loadScreens(refresh) {
+    tv.loading = true; tv.error = ''; renderTvSheet();
+    api('/api/jubilee/tvs' + (refresh ? '?refresh=1' : '')).then(function (d) {
+      if (d && Array.isArray(d.tvs)) mergeScreens(d.tvs);
+      if (d && d.success === false && !tv.screens.length && !tv.relay) tv.error = d.error || '';
+    }).catch(function () {}).then(function () { tv.loading = false; renderTvSheet(); });
+    postToParent({ type: 'list-tvs', payload: { refresh: !!refresh } });
+  }
+  function openTvSheet() {
+    if (!tvCode()) return;
+    tv.open = true;
+    renderTvSheet(true);
+    if (!tv.screens.length) loadScreens(false);
+  }
+  /* Redrawn only while it is the sheet on screen: a search finishing after
+     it was closed (or another sheet opened) must not bring it back. */
+  function tvSheetShowing() {
+    return $('jb-sheet-shade').classList.contains('show') && $('jb-sheet').getAttribute('data-kind') === 'tv';
+  }
+  function renderTvSheet(first) {
+    if (!tv.open || (!first && !tvSheetShowing())) return;
+    var list;
+    if (tv.screens.length) {
+      list = '<div class="jb-tvlist">' + tv.screens.map(function (t) {
+        var live = tv.active && tv.active.id === t.id;
+        var sub = (t.display === 'video' ? 'Live video (no web browser on this TV)' : 'Live board')
+          + (t.state === 'off' ? ' · off, will wake it' : t.state === 'unavailable' ? ' · may be offline' : '');
+        var ic = tv.castingId === t.id ? '⏳' : live ? '📡' : t.display === 'video' ? '🎞️' : '📺';
+        return '<button type="button" class="jb-tvitem' + (live ? ' live' : '') + '" data-screen="' + esc(t.id) + '"' + (tv.castingId ? ' disabled' : '') + '>' +
+          '<span class="ic">' + ic + '</span><span>' + esc(t.name) + '<small>' + esc(sub) + '</small></span></button>';
+      }).join('') + '</div>';
+    } else if (tv.loading) {
+      list = '<div class="jb-tvstatus">🔎 Looking for TVs in your home…</div>';
+    } else {
+      list = '<div class="jb-tvstatus err">No TVs found.' + (tv.error ? '<div style="font-weight:700;font-size:12px;margin-top:6px">' + esc(tv.error) + '</div>' : '') + '</div>';
+    }
+    var stageUrl = location.origin + '/jubilee/tv/' + encodeURIComponent(tvCode());
+    openSheet('<h2>📺 Show on a TV</h2>' +
+      '<div class="jb-card" style="font-size:14px">The TV shows the board, the dice and the cards. Each phone becomes that player\'s hand: money, land, trades and buying.</div>' +
+      (tv.status ? '<div class="jb-tvstatus ' + (tv.status.kind === 'ok' ? 'ok' : tv.status.kind === 'error' ? 'err' : '') + '">' + esc(tv.status.text) + '</div>' : '') +
+      list +
+      (tv.active ? '<button type="button" class="jb-btn ghost" id="jb-tv-stop" style="width:100%;margin-top:4px">Take the board off ' + esc(tv.active.name) + '</button>' : '') +
+      '<div class="jb-tvurl">Another screen? Open <b>' + esc(stageUrl) + '</b> in its web browser.</div>' +
+      '<div class="jb-row" style="margin-top:12px"><button type="button" class="jb-btn ghost" id="jb-tv-rescan"' + (tv.loading ? ' disabled' : '') + '>' + (tv.loading ? 'Searching…' : '↻ Search again') + '</button>' +
+      '<button type="button" class="jb-btn" id="jb-tv-done">Done</button></div>');
+    $('jb-sheet').setAttribute('data-kind', 'tv');
+    $('jb-sheet-shade').classList.add('tv');
+    Array.prototype.forEach.call($('jb-sheet').querySelectorAll('[data-screen]'), function (b) {
+      tap(b, function () {
+        var id = b.getAttribute('data-screen');
+        var t = tv.screens.filter(function (s) { return s.id === id; })[0];
+        if (t) sendCast(t, false);
+      });
+    });
+    if ($('jb-tv-stop')) tap($('jb-tv-stop'), function () { sendCast(tv.active, true); });
+    tap($('jb-tv-rescan'), function () { loadScreens(true); });
+    tap($('jb-tv-done'), function () { tv.open = false; closeSheet(); });
+  }
+  function sendCast(t, stop) {
+    if (!t || tv.castingId || !tvCode()) return;
+    tv.castingId = t.id; tv.pendingStop = !!stop;
+    tv.status = { kind: 'pending', text: stop ? 'Taking the board off ' + t.name + '…' : 'Opening the board on ' + t.name + '… (a sleeping TV can take a few seconds)' };
+    renderTvSheet();
+    var payload = { screen_id: t.id, room_code: tvCode(), stop: !!stop };
+    if (tv.relay) {
+      postToParent({ type: 'cast', payload: payload });
+      clearTimeout(tv.timer);
+      tv.timer = setTimeout(function () { castResult({ success: false, error: 'Jarvis did not answer. Try again.' }); }, 100000);
+      return;
+    }
+    post('/api/jubilee/cast', payload).then(castResult).catch(function (e) { castResult({ success: false, error: e && e.message }); });
+  }
+  function castResult(res) {
+    clearTimeout(tv.timer);
+    var t = tv.screens.filter(function (s) { return s.id === tv.castingId; })[0];
+    tv.castingId = '';
+    if (res && res.success) {
+      if (tv.pendingStop) { tv.active = null; tv.status = { kind: 'ok', text: 'The TV is free again. Phones show the board.' }; }
+      else {
+        tv.active = (res.screen && res.screen.id ? res.screen : t) || tv.active;
+        var name = (tv.active && tv.active.name) || 'the TV';
+        tv.status = { kind: 'ok', text: res.display === 'video' ? '✅ ' + name + ' is showing a live video of the board (a few seconds behind).'
+          : res.verified ? '✅ ' + name + ' is showing the board!' : '📺 Sent to ' + name + '. If it does not appear, wake the TV and try again.' };
+        kit.haptic(14);
+      }
+    } else {
+      var tries = (res && res.attempts) || [];
+      tv.status = { kind: 'error', text: '⚠️ ' + ((res && res.error) || (tries.length && tries[tries.length - 1].detail) || 'The TV did not respond.') };
+    }
+    renderTvSheet();
+  }
+  window.addEventListener('message', function (event) {
+    var msg = event.data;
+    if (!msg || msg.source !== 'arcade-host') return;
+    if (msg.type === 'tvs' && Array.isArray(msg.tvs)) {
+      if (msg.available !== false) tv.relay = true;
+      mergeScreens(msg.tvs); renderTvSheet();
+    } else if (msg.type === 'cast-status' && msg.result) {
+      castResult(msg.result);
+    }
+  });
+  tap($('jb-tv'), openTvSheet);
+  tap($('jb-wait-tv'), openTvSheet);
 
   function deedHtml(sp) {
     var bandColor = sp.kind === 'street' ? (GROUP_COLORS[sp.group] || '#888') : (sp.kind === 'railroad' ? '#1b0f3b' : (sp.kind === 'utility' ? '#b45309' : '#7c5cff'));
@@ -2072,7 +2260,9 @@ syncSoundBtn();
   if (launchRoom) {
     var stored = store.get('pid:' + launchRoom);
     post('/api/jubilee/rooms', { code: launchRoom, player_id: stored || '', name: launchName || store.get('name') || '', device_id: deviceId, initials: initialsFor(launchName || store.get('name') || '') })
-      .then(function (out) { if (out && out.success && out.room) enterRoom(out.player_id, launchRoom, out.room); else showLobbyMain(); })
+      // The same path as the Join button: a room still gathering opens on its
+      // waiting room (code, QR, Begin), one already playing on the board.
+      .then(function (out) { if (out && out.success && out.room) handleLobbyResponse(out); else showLobbyMain(); })
       .catch(function () { showLobbyMain(); });
   } else {
     showLobbyMain();

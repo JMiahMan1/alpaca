@@ -364,6 +364,52 @@ def test_cast_sends_only_the_arcades_own_stage_page(client, monkeypatch):
     assert sent[-1][0] == "http://exec:8003/execute/stage/stop"
 
 
+def test_jubilee_cast_sends_the_jubilee_board_page(client, monkeypatch):
+    import json
+
+    sent = []
+
+    def _fake_urlopen(req, timeout=8.0):
+        sent.append((req.full_url, json.loads(req.data.decode())))
+        return _JsonResp(json.dumps({"success": True, "display": "web", "verified": True}).encode())
+
+    monkeypatch.setattr(party, "JARVIS_GATEWAY_URL", "")
+    monkeypatch.setattr(party, "EXECUTION_SVC_URL", "http://exec:8003")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
+    resp = client.post(
+        "/api/jubilee/cast",
+        json={"screen_id": "ha:media_player.den", "room_code": "noah", "url": "http://evil.example/x"},
+        headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "games.example.org"},
+    )
+    assert resp.status_code == 200 and resp.get_json()["success"] is True
+    assert sent[0][0] == "http://exec:8003/execute/stage/show"
+    assert sent[0][1]["url"] == "https://games.example.org/jubilee/tv/NOAH"
+
+
+def test_jubilee_cast_through_jarvis_names_the_game(client, monkeypatch):
+    """The gateway builds the TV address itself; the arcade says whose stage it is."""
+    import json
+
+    sent = []
+
+    def _fake_urlopen(req, timeout=8.0):
+        sent.append((req.full_url, json.loads(req.data.decode())))
+        return _JsonResp(json.dumps({"success": True}).encode())
+
+    monkeypatch.setattr(party, "JARVIS_GATEWAY_URL", "http://jarvis:11435")
+    monkeypatch.setattr(party.urllib.request, "urlopen", _fake_urlopen)
+    client.post("/api/jubilee/cast", json={"screen_id": "ha:media_player.den", "room_code": "NOAH"})
+    assert sent[0][0] == "http://jarvis:11435/api/arcade/cast"
+    assert sent[0][1]["game"] == "family-jubilee" and sent[0][1]["room_code"] == "NOAH"
+    # Parable Party's cast stays unnamed (the gateway's default stage).
+    client.post("/api/party/cast", json={"screen_id": "ha:media_player.den", "room_code": "ZION"})
+    assert "game" not in sent[-1][1]
+
+
+def test_jubilee_cast_without_a_screen_is_a_bad_request(client):
+    assert client.post("/api/jubilee/cast", json={"room_code": "NOAH"}).status_code == 400
+
+
 def test_cast_without_a_screen_is_a_bad_request(client):
     resp = client.post("/api/party/cast", json={"room_code": "ZION"})
     assert resp.status_code == 400

@@ -48,6 +48,10 @@ try:
     party = importlib.import_module("party")
 except ImportError:  # tests import `arcade.checkers` as a package from the repo root
     party = importlib.import_module("arcade.party")
+try:
+    presence = importlib.import_module("presence")
+except ImportError:
+    presence = importlib.import_module("arcade.presence")
 
 RED = "red"
 BLACK = "black"
@@ -75,6 +79,7 @@ _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 _lock = threading.Lock()
 _rooms: dict[str, dict[str, Any]] = {}
+presence.register_rooms(lambda: tuple(_rooms))
 
 
 # --------------------------------------------------------------------------- #
@@ -354,16 +359,9 @@ def _clean_device(raw: Any) -> str:
 
 
 def _pick_code_unlocked() -> str:
-    # Prefer a friendly word from Parable Party's list (the household already
-    # reads codes like those out loud), then fall back to a random 4-char code.
-    words = [w for w in party.ROOM_WORDS if w not in _rooms]
-    if words:
-        return random.choice(words)
-    for _ in range(60):
-        candidate = "".join(random.choices(_CODE_ALPHABET, k=4))
-        if candidate not in _rooms:
-            return candidate
-    return f"CK{random.randint(100, 999)}"
+    # A friendly word from Parable Party's list (the household already reads
+    # codes like those out loud), unique across every game's rooms.
+    return presence.pick_code(party.ROOM_WORDS, _CODE_ALPHABET, "CK")
 
 
 def _new_player(name: Any, initials: Any, device_id: Any = None) -> dict[str, Any]:

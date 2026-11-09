@@ -21,7 +21,26 @@
 (function () {
   "use strict";
   var slug = {{ card.slug|tojson }};
+  var standalone = {{ 'true' if standalone else 'false' }};
   var frame = document.getElementById("game-frame");
+  // The URL fragment never reaches the server: an invite link's #room=CODE is
+  // handed on to the game here, with the player's details the server added.
+  var fragment = {{ fragment|tojson }};
+  var extra = window.location.hash.length > 1 ? window.location.hash.slice(1) : "";
+  if (extra) frame.src = "/game/" + slug + "/index.html#" + [fragment, extra].filter(Boolean).join("&");
+  // Outside the family app nobody saves the score for us: save it under the
+  // arcade initials this browser already uses, quietly skipping without them.
+  function saveScore(score, runId) {
+    var initials = "";
+    try { initials = (localStorage.getItem("arcade_callsign") || "").toUpperCase(); } catch (e) {}
+    if (!initials) return;
+    fetch("/api/games/" + slug + "/scores", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initials: initials, score: score, capture_id: slug + ":" + String(runId).slice(0, 80) })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      toGame({ source: "arcade-host", type: d && d.success ? "saved" : "error", slug: slug, rank: (d && d.rank) || null });
+    }).catch(function () {});
+  }
   var toGame = function (msg) { if (frame.contentWindow) frame.contentWindow.postMessage(msg, "*"); };
   window.addEventListener("message", function (event) {
     var msg = event.data;
@@ -35,6 +54,7 @@
       if (msg.type !== "score") return;
       var score = Math.trunc(Number(msg.score));
       if (!isFinite(score) || score < 0 || !msg.run_id) return;
+      if (standalone) { saveScore(score, msg.run_id); return; }
       // The family app saves it under the signed-in member and answers with
       // the rank, which goes back into the game's result card.
       window.parent.postMessage(
