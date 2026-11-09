@@ -619,9 +619,12 @@
       t.textContent = fit.lines[li];
     }
   }
-  function corner(g, w, h, big, small, iconName, fill, ink) {
+  function corner(g, w, h, big, small, iconName, fill, ink, rot) {
     svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: h, fill: fill, opacity: 0.35 }, g);
-    icon(g, iconName, 0, -h / 2 + 30, 40, ink);
+    // The words follow the board's standard rotation; the picture stays
+    // upright for the room (upside-down candles read as something else).
+    var up = svgEl("g", { transform: "translate(0 " + (-h / 2 + 30) + ") rotate(" + (-(rot || 0)) + ")" }, g);
+    icon(up, iconName, 0, 0, 40, ink);
     var maxW = w - 14;
     function caption(text, y, maxFs, color, weight) {
       var fs = Math.min(maxFs, maxW / (0.6 * String(text).length));
@@ -658,10 +661,11 @@
     go: function (c) { return '<path d="M21 12 H6 M12 5.5 L5.5 12 L12 18.5" stroke="' + c + '" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'; },
     bars: function (c) { return '<rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="#374151"/><path d="M8 4 V20 M12 4 V20 M16 4 V20" stroke="#d1d5db" stroke-width="2"/>'
       + '<rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="none" stroke="' + c + '" stroke-width="1.6"/>'; },
-    candles: function (c) { return '<path d="M8.2 3.2 Q6.9 5.2 8.2 6.6 Q9.5 5.2 8.2 3.2 Z M15.8 3.2 Q14.5 5.2 15.8 6.6 Q17.1 5.2 15.8 3.2 Z" fill="#f59e0b"/>'
-      + '<rect x="7" y="7.2" width="2.4" height="9" rx=".6" fill="#fff8e7" stroke="' + c + '" stroke-width="1"/><rect x="14.6" y="7.2" width="2.4" height="9" rx=".6" fill="#fff8e7" stroke="' + c + '" stroke-width="1"/>'
-      + '<path d="M5.2 16.6 H11.2 M12.8 16.6 H18.8 M8.2 16.6 V19.6 M15.8 16.6 V19.6" stroke="' + c + '" stroke-width="1.8" stroke-linecap="round"/>'
-      + '<path d="M4.5 20.5 H19.5" stroke="' + c + '" stroke-width="2.2" stroke-linecap="round"/>'; },
+    candles: function (c) { return '<ellipse cx="8.2" cy="5.2" rx="2.6" ry="3.6" fill="#fde68a" opacity=".55"/><ellipse cx="15.8" cy="5.2" rx="2.6" ry="3.6" fill="#fde68a" opacity=".55"/>'
+      + '<path d="M8.2 1.6 Q10.2 4.6 8.2 7.4 Q6.2 4.6 8.2 1.6 Z M15.8 1.6 Q17.8 4.6 15.8 7.4 Q13.8 4.6 15.8 1.6 Z" fill="#f59e0b"/>'
+      + '<path d="M8.2 4.2 Q9 5.6 8.2 6.9 Q7.4 5.6 8.2 4.2 Z M15.8 4.2 Q16.6 5.6 15.8 6.9 Q15 5.6 15.8 4.2 Z" fill="#fff7d6"/>'
+      + '<rect x="5.9" y="7.6" width="4.6" height="10.6" rx="1" fill="#fffaf0" stroke="' + c + '" stroke-width="1.4"/><rect x="13.5" y="7.6" width="4.6" height="10.6" rx="1" fill="#fffaf0" stroke="' + c + '" stroke-width="1.4"/>'
+      + '<path d="M3 18.4 H21 Q20 22 12 22 Q4 22 3 18.4 Z" fill="' + c + '"/>'; },
     lock: function (c) { return '<path d="M8 11 V8 A4 4 0 0 1 16 8 V11" stroke="' + c + '" stroke-width="2.6" fill="none"/><rect x="5.5" y="11" width="13" height="10" rx="2" fill="' + c + '"/>'
       + '<circle cx="12" cy="15.4" r="1.6" fill="#fff"/><rect x="11.3" y="15.6" width="1.4" height="3" fill="#fff"/>'; }
   };
@@ -746,10 +750,10 @@
       var g = svgEl("g", { transform: "translate(" + c.x.toFixed(1) + " " + c.y.toFixed(1) + ") rotate(" + c.rot + ")" }, svg);
       var isCorner = (i === 0 || i === 10 || i === 20 || i === 30);
       svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: h, fill: isCorner ? "#ffdf9e" : "#fff8e7", stroke: "#1b0f3b", "stroke-width": isCorner ? 3 : 1.5 }, g);
-      if (i === 0) { corner(g, w, h, "JUBILEE!", "COLLECT $200", "go", "#ffb703", "#b45309"); continue; }
-      if (i === 10) { corner(g, w, h, "DUNGEON", "JUST VISITING", "bars", "#c3b2a0", "#1b0f3b"); continue; }
-      if (i === 20) { corner(g, w, h, "SABBATH", "FREE PARKING", "candles", "#bde0fe", "#0369a1"); continue; }
-      if (i === 30) { corner(g, w, h, "SENT TO", "THE DUNGEON", "lock", "#ffc4c4", "#991b1b"); continue; }
+      if (i === 0) { corner(g, w, h, "JUBILEE!", "COLLECT $200", "go", "#ffb703", "#b45309", c.rot); continue; }
+      if (i === 10) { corner(g, w, h, "DUNGEON", "JUST VISITING", "bars", "#c3b2a0", "#1b0f3b", c.rot); continue; }
+      if (i === 20) { corner(g, w, h, "SABBATH", "FREE PARKING", "candles", "#bde0fe", "#0369a1", c.rot); continue; }
+      if (i === 30) { corner(g, w, h, "SENT TO", "THE DUNGEON", "lock", "#ffc4c4", "#991b1b", c.rot); continue; }
       // Every space the same way: colour band, picture (if any), the name in
       // one size, the price in one size. Nothing shrinks to fit; a rare long
       // word is narrowed a little instead, so the letters stay the same height.
