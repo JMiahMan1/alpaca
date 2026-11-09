@@ -961,9 +961,10 @@ syncSoundBtn();
     var spaces = state.room && state.room.board ? state.room.board : null;
     for (var i = 0; i < 40; i++) {
       var c = tileCenter(i);
-      // Upright on every side: everyone looks at a screen from the same side,
-      // so no name is upside down or sideways (the tiles are square).
-      var g = svgEl('g', { transform: 'translate(' + c.x + ',' + c.y + ')', class: 'jb-tile', 'data-i': i }, svg);
+      // The standard board: each side's tiles face out from the middle, the
+      // colour band on the inner edge and the name reading from that side.
+      var rot = c.side * 90;
+      var g = svgEl('g', { transform: 'translate(' + c.x + ',' + c.y + ') rotate(' + rot + ')', class: 'jb-tile', 'data-i': i }, svg);
       if (i === 0 || i === 10 || i === 20 || i === 30) { drawCorner(g, i); }
       else { drawTile(g, spaces ? spaces[i] : null, i); }
       tap(g, (function (idx) { return function () { openDeed(idx); }; })(i));

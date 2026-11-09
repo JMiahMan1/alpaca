@@ -81,6 +81,8 @@
   .auctionBar .who { font-size: .13rem; letter-spacing: .18em; font-weight: 900; color: #7a5b16; text-transform: uppercase; }
   .auctionBar .bid { font-size: .32rem; font-weight: 900; font-variant-numeric: tabular-nums; }
   .auctionBar .pass { font-size: .13rem; font-weight: 800; color: #7a5b16; }
+  .logRow { font-size: .17rem; font-weight: 700; color: #efe9ff; line-height: 1.35; padding: .05rem 0; border-bottom: .01rem solid rgba(255,255,255,.07);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .logLine { font-size: .155rem; color: var(--dim); line-height: 1.45; max-height: 1.9rem; overflow: hidden; }
   /* ---------- finish ---------- */
   .finish { width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
@@ -208,7 +210,7 @@
       $("tv-ruleset").textContent = (room.ruleset || "classic").toUpperCase();
       if (room.status === "lobby") { renderLobby(room); lastSig = "lobby"; return; }
       bigMoments(room);
-      var sig = [room.turn, room.phase, room.status, JSON.stringify(room.last_roll), room.pot, room.bank_houses,
+      var sig = [room.turn, room.phase, room.status, JSON.stringify(room.last_roll), room.pot, room.bank_houses, room.log_seq,
         JSON.stringify(room.players.map(function (p) { return [p.position, p.cash, p.net_worth, p.bankrupt, p.jail, p.houses, p.hotels]; })),
         JSON.stringify(room.board.map(function (s) { return [s.owner, s.houses, s.mortgaged]; })),
         room.log.slice(-2).join("|"), room.winner].join("~");
@@ -260,12 +262,12 @@
     return el;
   }
   function tileCenter(i) {
-    // Upright on every side (rot 0): the room watches one screen from one
-    // side, so no name may be upside down or sideways (the tiles are square).
+    // The standard board: each side's tiles face out from the middle, the
+    // colour band on the inner edge and the name reading from that side.
     if (i <= 10) return { x: 960 - T / 2 - i * T, y: 960 - T / 2, rot: 0 };
-    if (i <= 20) return { x: T / 2, y: 960 - T / 2 - (i - 10) * T, rot: 0 };
-    if (i <= 30) return { x: T / 2 + (i - 20) * T, y: T / 2, rot: 0 };
-    return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, rot: 0 };
+    if (i <= 20) return { x: T / 2, y: 960 - T / 2 - (i - 10) * T, rot: 90 };
+    if (i <= 30) return { x: T / 2 + (i - 20) * T, y: T / 2, rot: 180 };
+    return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, rot: 270 };
   }
   /* A land's name at the largest size that fits its tile, one line or two
      balanced ones (bold sans runs about 0.6 em a character). */
@@ -291,6 +293,49 @@
       t.textContent = fit.lines[li];
     }
   }
+  /* The middle of the board says what is happening, big enough to read from
+     the sofa: whose turn (in their colour, with their piece), the last roll,
+     the latest event, the jackpot. */
+  function wrapLine(text, max) {
+    var words = String(text || "").split(/\s+/), lines = [""];
+    for (var i = 0; i < words.length; i++) {
+      var cur = lines[lines.length - 1], cand = cur ? cur + " " + words[i] : words[i];
+      if (cand.length <= max || !cur) lines[lines.length - 1] = cand;
+      else if (lines.length < 2) lines.push(words[i]);
+      else { lines[1] = (lines[1] + " " + words[i]); }
+    }
+    if (lines[1] && lines[1].length > max) lines[1] = lines[1].slice(0, max - 1) + "…";
+    return lines;
+  }
+  function centerStatus(svg, room) {
+    var p = room.players && room.players[room.turn];
+    if (p && room.status === "playing") {
+      var color = seatColor(p.seat);
+      svgEl("circle", { cx: 480, cy: 392, r: 46, fill: "rgba(255,255,255,.08)", stroke: color, "stroke-width": 6 }, svg);
+      var em = svgEl("text", { x: 480, y: 410, "text-anchor": "middle", "font-size": 50 }, svg); em.textContent = tokenEmoji(p.token);
+      var nm = String(p.name || "Someone");
+      var whoFs = Math.min(46, 700 / (0.6 * (nm.length + 9)));
+      var who = svgEl("text", { x: 480, y: 492, "text-anchor": "middle", "font-size": whoFs.toFixed(1), "font-weight": 900, fill: color,
+        stroke: "#140a33", "stroke-width": 1.5, "paint-order": "stroke" }, svg);
+      who.textContent = (p.in_jail ? "⛓ " : "") + nm.toUpperCase() + "'S TURN";
+    }
+    var lr = room.last_roll;
+    if (lr && lr.d1 && lr.d2) {
+      var roll = svgEl("text", { x: 480, y: 545, "text-anchor": "middle", "font-size": 30, "font-weight": 900, fill: "#ffe27a" }, svg);
+      roll.textContent = "🎲 " + lr.d1 + " + " + lr.d2 + " = " + (lr.d1 + lr.d2) + (lr.d1 === lr.d2 ? "  DOUBLES!" : "");
+    }
+    var last = (room.log && room.log.length) ? room.log[room.log.length - 1] : "";
+    var lines = wrapLine(last, 46);
+    for (var i = 0; i < lines.length; i++) {
+      if (!lines[i]) continue;
+      var ev = svgEl("text", { x: 480, y: 604 + i * 32, "text-anchor": "middle", "font-size": 25, "font-weight": 800, fill: "#efe9ff" }, svg);
+      ev.textContent = lines[i];
+    }
+    if (room.pot > 0) {
+      var pot = svgEl("text", { x: 480, y: 718, "text-anchor": "middle", "font-size": 28, "font-weight": 900, fill: "#2ed3b7" }, svg);
+      pot.textContent = "🍯 SABBATH JACKPOT $" + fmt(room.pot);
+    }
+  }
   function buildBoardSvg(room) {
     var svg = svgEl("svg", { viewBox: "0 0 960 960" }, null);
     var defs = svgEl("defs", {}, svg);
@@ -305,14 +350,11 @@
       svgEl("path", { d: "M480 480 L" + (480 + Math.cos(r * Math.PI / 6) * 700) + " " + (480 + Math.sin(r * Math.PI / 6) * 700)
         + " L" + (480 + Math.cos((r + 0.5) * Math.PI / 6) * 700) + " " + (480 + Math.sin((r + 0.5) * Math.PI / 6) * 700) + " Z", fill: "#ffc83d" }, rays);
     }
-    var t1 = svgEl("text", { x: 480, y: 430, "text-anchor": "middle", "font-size": 96, "font-weight": 900, fill: "#ffc83d", stroke: "#4a2c00", "stroke-width": 3 }, svg);
+    var t1 = svgEl("text", { x: 480, y: 262, "text-anchor": "middle", "font-size": 76, "font-weight": 900, fill: "#ffc83d", stroke: "#4a2c00", "stroke-width": 3 }, svg);
     t1.textContent = "JUBILEE!";
-    var t2 = svgEl("text", { x: 480, y: 490, "text-anchor": "middle", "font-size": 21, "font-weight": 800, fill: "#ffe88a", "letter-spacing": 10 }, svg);
+    var t2 = svgEl("text", { x: 480, y: 300, "text-anchor": "middle", "font-size": 18, "font-weight": 800, fill: "#ffe88a", "letter-spacing": 10 }, svg);
     t2.textContent = "BIBLE LANDS";
-    if (room.pot > 0) {
-      var t3 = svgEl("text", { x: 480, y: 545, "text-anchor": "middle", "font-size": 24, "font-weight": 900, fill: "#2ed3b7" }, svg);
-      t3.textContent = "🍯 SABBATH JACKPOT $" + fmt(room.pot);
-    }
+    centerStatus(svg, room);
     var board = room.board || [];
     for (var i = 0; i < 40; i++) {
       var sp = board[i]; if (!sp) continue;
@@ -395,8 +437,12 @@
     if (room.pending && room.pending.kind === "debt") {
       side += '<div class="auctionBar" style="background:#ffd4d4;border-color:#d32f2f"><div class="who" style="color:#8a1c1c">A DEBT IS DUE</div><div class="bid" style="font-size:.26rem">$' + fmt(room.pending.amount) + '</div></div>';
     }
-    var lastLog = (room.log && room.log.length) ? room.log[room.log.length - 1] : "";
-    side += '<div class="sideCard" style="flex:1"><div class="sideLabel">Chronicle</div><div class="logLine" id="tv-log">' + esc(lastLog) + '</div></div>';
+    // The story so far: the last several events, newest first, fading back.
+    var log = (room.log || []).slice(-7).reverse();
+    var logHtml = log.map(function (line, i) {
+      return '<div class="logRow" style="opacity:' + Math.max(0.35, 1 - i * 0.12).toFixed(2) + '">' + esc(line) + '</div>';
+    }).join("");
+    side += '<div class="sideCard" style="flex:1;min-height:0;overflow:hidden"><div class="sideLabel">Chronicle</div><div id="tv-log">' + logHtml + '</div></div>';
     side += '</div>';
     var main = $("tv-main");
     main.innerHTML = '<div class="boardCol"></div>' + side;
