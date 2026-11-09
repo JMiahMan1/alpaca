@@ -283,6 +283,11 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
   (`incumbent_candidate`, same rung only), so a scan cannot replace a tuned profile with a
   slower one, and the winner is written over a pre-hill snapshot so a losing probe's keys
   never leak into the saved profile.
+- **Settings-scan results are in the dashboard:** Model Profiles → "⚙️ Settings Scan Results"
+  (`GET /api/settings-scans`) reads every `data/llm_benchmarks/settings_scan*.json`, oldest first, so
+  a newer scan's winner replaces an older one, and lists each model's winner with every config it
+  tried. Probe responses (the generated code) stay on disk. Use a distinct `--out` per scan run:
+  the file name is how the card tells runs apart.
   Also available in presets but not in the editor: `cache-ram`, `ctx-checkpoints`,
   `checkpoint-min-step`, `kv-unified-per-slot`, `cache-idle-slots`, `context-shift`,
   `chat-template-kwargs` (e.g. `{"reasoning_effort": "high"}`).

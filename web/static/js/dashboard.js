@@ -8456,7 +8456,53 @@ document.addEventListener('DOMContentLoaded', () => {
     // Profile presets variables
     let modelProfiles = {};
 
+    // settings_scan.py results: what each profile's settings were measured at.
+    async function loadSettingsScans() {
+        const box = document.getElementById('settings-scan-results');
+        if (!box) return;
+        try {
+            const data = await fetch('/api/settings-scans', { signal: AbortSignal.timeout(10000) }).then(r => r.json());
+            const models = data.models || [];
+            if (!models.length) {
+                box.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;">No settings scans yet. Run <code>settings_scan.py</code> on the server.</div>';
+                return;
+            }
+            const num = (v, unit = '') => (v === null || v === undefined || v === '') ? '-' : `${Math.round(Number(v) * 10) / 10}${unit}`;
+            const rows = models.map((m) => {
+                const w = m.winner;
+                const status = w ? `<span class="td-badge success">Winner</span>`
+                    : m.failed ? `<span class="td-badge fail" title="${escapeHtml(m.failed)}">Failed</span>`
+                    : `<span class="td-badge skip">In progress</span>`;
+                const probes = (m.probes || []).map((p) => `<tr>
+                        <td>${escapeHtml(p.phase)}</td>
+                        <td style="font-family:monospace;font-size:0.72rem;">${escapeHtml(p.label || '')}</td>
+                        <td>${num(p.tps)}</td><td>${num(p.prompt_tps)}</td><td>${num(p.vram_peak_mb, ' MB')}</td>
+                        <td>${p.valid ? '✓' : `<span title="${escapeHtml(p.validity_error || p.error || '')}">✗</span>`}</td>
+                    </tr>`).join('');
+                const best = (m.probes || []).find((p) => p.label === (w && w.label)) || {};
+                return `<tr>
+                    <td><strong>${escapeHtml(m.model.replace(/--latest$/, ''))}</strong></td>
+                    <td>${status}</td>
+                    <td style="font-family:monospace;font-size:0.72rem;">${escapeHtml(w ? w.label : '')}</td>
+                    <td>${num(w && w.tps)}</td>
+                    <td>${num(best.prompt_tps)}</td>
+                    <td>${num(w && w.vram_peak_mb, ' MB')}</td>
+                    <td>${escapeHtml(w && w.verified_at ? w.verified_at.replace('T', ' ') : '')}</td>
+                    <td>${probes ? `<details><summary>${(m.probes || []).length} configs</summary>
+                        <table class="diff-table" style="margin-top:0.4rem;"><thead><tr><th>Phase</th><th>Config</th><th>Decode t/s</th><th>Prefill t/s</th><th>Peak VRAM</th><th>Valid</th></tr></thead><tbody>${probes}</tbody></table>
+                    </details>` : '-'}</td>
+                </tr>`;
+            }).join('');
+            box.innerHTML = `<table class="diff-table"><thead><tr>
+                <th>Model</th><th>Status</th><th>Winning config</th><th>Decode t/s</th><th>Prefill t/s</th><th>Peak VRAM</th><th>Verified</th><th>Probes</th>
+            </tr></thead><tbody>${rows}</tbody></table>`;
+        } catch (e) {
+            box.innerHTML = `<div style="color:var(--color-danger);font-size:0.8rem;">Could not load settings scans: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
     function loadModelProfiles() {
+        loadSettingsScans();
         const select = document.getElementById('profile-section-select');
         const cardsGrid = document.getElementById('profile-cards-grid');
         if (!select) return;

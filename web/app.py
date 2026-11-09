@@ -4719,6 +4719,53 @@ def sandbox_ui_restart():
     return jsonify(ui_restart(cid))
 
 
+def _settings_scan_summary(results_dir: Path) -> list[dict]:
+    """settings_scan.py results for the Model Profiles tab.
+
+    Every data/llm_benchmarks/settings_scan*.json is read oldest first, so a
+    newer scan's winner replaces an older one; each model's probes come from
+    the file its current winner (or failure) came from. Probe responses (the
+    generated code, kilobytes each) are left out.
+    """
+    probe_fields = ("label", "tps", "prompt_tps", "ttft_ms", "tokens", "vram_peak_mb", "valid", "validity_error", "error")
+    models: dict[str, dict] = {}
+    files = sorted(results_dir.glob("settings_scan*.json"), key=lambda f: f.stat().st_mtime)
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        by_model: dict[str, dict] = {}
+        for key, rec in data.items():
+            if not isinstance(rec, dict) or "::" not in key:
+                continue
+            model, _, rest = key.partition("::")
+            kind = rest.split("::", 1)[0]
+            entry = by_model.setdefault(model, {"winner": None, "failed": None, "probes": []})
+            if kind == "winner":
+                entry["winner"] = {k: rec.get(k) for k in ("label", "settings", "tps", "vram_peak_mb", "verified_at")}
+            elif kind == "failed":
+                entry["failed"] = rec.get("error")
+            elif kind in ("long", "hill"):
+                entry["probes"].append({"phase": kind, **{k: rec.get(k) for k in probe_fields}})
+        for model, entry in by_model.items():
+            if entry["winner"] or entry["failed"] or model not in models:
+                entry["probes"].sort(key=lambda p: -(p.get("tps") or 0))
+                models[model] = {"model": model, "file": f.name, **entry}
+    return sorted(models.values(), key=lambda m: -((m.get("winner") or {}).get("tps") or 0))
+
+
+@app.route("/api/settings-scans", methods=["GET"])
+def settings_scans():
+    """Per-model settings-scan winners and the probes behind them."""
+    try:
+        return jsonify({"models": _settings_scan_summary(benchmark.RESULTS_DIR)})
+    except Exception as e:
+        return jsonify({"models": [], "error": str(e)}), 500
+
+
 @app.route("/api/benchmark/groups", methods=["GET"])
 def benchmark_groups():
     """List the available benchmark groups (top-level categories)."""

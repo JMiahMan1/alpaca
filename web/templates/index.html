@@ -969,6 +969,14 @@
                             </div>
                         </div>
 
+                        <!-- settings_scan.py results - populated by JS from /api/settings-scans -->
+                        <div class="card" style="margin-bottom: 1.5rem;">
+                            <div class="card-title">⚙️ Settings Scan Results <span style="font-size:0.7rem;color:var(--text-muted);font-weight:400;">- the measured winner behind each profile; expand a row for every config tried</span></div>
+                            <div id="settings-scan-results" style="margin-top:0.75rem; overflow-x:auto;">
+                                <div style="color:var(--text-muted);font-size:0.8rem;">Loading settings scans...</div>
+                            </div>
+                        </div>
+
                         <div class="grid-2 profiles-editor-grid" style="grid-template-columns: 1fr 2fr; gap: 1.5rem; display: grid;">
 
                             <!-- Left pane: Select Model & Hardware Status -->

@@ -2566,3 +2566,35 @@ def test_vision_tests_are_image_kind_and_serve_their_png(client):
     res = client.get(f"/api/tests/{t['id']}/attachment/{t['attachments'][0]['name']}")
     assert res.status_code == 200 and res.mimetype == "image/png"
     assert res.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_settings_scans_endpoint_reports_winners_and_strips_probe_responses(client, tmp_path, monkeypatch):
+    import os
+
+    from web.app import benchmark
+
+    monkeypatch.setattr(benchmark, "RESULTS_DIR", tmp_path)
+    old = {
+        "m--latest::winner": {"label": "old", "tps": 10.0, "settings": {}, "vram_peak_mb": 4000, "verified_at": "x"},
+    }
+    new = {
+        "m--latest::long::a": {"label": "a", "tps": 12.0, "prompt_tps": 70.0, "valid": True, "content": "x" * 5000},
+        "m--latest::hill::b": {"label": "b", "tps": 25.0, "prompt_tps": 90.0, "valid": True, "content": "y" * 5000},
+        "m--latest::winner": {"label": "b", "tps": 25.0, "settings": {"ctx-size": "65536"}, "vram_peak_mb": 6500},
+        "z--latest::failed": {"error": "no hello response"},
+    }
+    (tmp_path / "settings_scan.json").write_text(json.dumps(old))
+    (tmp_path / "settings_scan_new.json").write_text(json.dumps(new))
+    os.utime(tmp_path / "settings_scan.json", (1, 1))  # the older scan
+
+    models = client.get("/api/settings-scans").get_json()["models"]
+    m = next(x for x in models if x["model"] == "m--latest")
+    assert m["winner"]["label"] == "b" and m["winner"]["tps"] == 25.0  # newer scan wins
+    assert [p["label"] for p in m["probes"]] == ["b", "a"]  # fastest first
+    assert all("content" not in p for p in m["probes"])  # kilobytes of code stay on disk
+    z = next(x for x in models if x["model"] == "z--latest")
+    assert z["winner"] is None and z["failed"] == "no hello response"
+
+
+def test_model_profiles_tab_has_the_settings_scan_card(client):
+    assert b'id="settings-scan-results"' in client.get("/").data
