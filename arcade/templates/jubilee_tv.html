@@ -234,7 +234,13 @@
   }
   function poll() {
     if (!PINNED) { renderNoCode(); return; }
-    xhr("GET", "/api/jubilee/rooms/" + encodeURIComponent(PINNED) + "?stage=1", null, function (d) {
+    // The screen's real size rides along (TVs differ: overscan, a Cast page
+    // drawn at 720p, browser zoom), so the layout can be fitted to what a TV
+    // actually shows.
+    var dims = "&vw=" + (window.innerWidth || 0) + "&vh=" + (window.innerHeight || 0)
+      + "&sw=" + ((window.screen && screen.width) || 0) + "&sh=" + ((window.screen && screen.height) || 0)
+      + "&dpr=" + (window.devicePixelRatio || 1);
+    xhr("GET", "/api/jubilee/rooms/" + encodeURIComponent(PINNED) + "?stage=1" + dims, null, function (d) {
       if (!d || !d.success) { FAILS += 1; if (FAILS >= MAX_FAILS) renderGone(); return; }
       FAILS = 0;
       var room = d.room;
