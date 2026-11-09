@@ -46,50 +46,55 @@
   }
   /* header */
   #jb-top {
-    width: 100%; max-width: 1100px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-    padding: 4px 6px;
+    width: 100%; max-width: 1280px; flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+    padding: 2px 4px; flex-wrap: nowrap;
   }
-  .jb-logo { font-weight: 900; font-size: 20px; letter-spacing: .02em; color: var(--gold);
+  .jb-logo { font-weight: 900; font-size: clamp(16px, 2.5vw, 22px); letter-spacing: .02em; color: var(--gold);
     text-shadow: 0 2px 0 #4a2c00, 0 0 18px rgba(255,200,61,.35); white-space: nowrap; }
-  .jb-logo small { color: var(--gold2); font-size: .62em; letter-spacing: .14em; margin-left: 4px; }
-  .jb-spacer { flex: 1; }
+  .jb-logo small { color: var(--gold2); font-size: .6em; letter-spacing: .14em; margin-left: 5px; }
+  .jb-spacer { flex: 1; min-width: 2px; }
   .jb-chip {
-    display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line);
-    background: rgba(255,255,255,.07); color: #fff; border-radius: 999px; padding: 6px 12px; min-height: 44px;
-    font: 800 13px var(--font); cursor: pointer; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line);
+    background: rgba(255,255,255,.08); color: #fff; border-radius: 999px; padding: 5px 10px; min-height: 40px;
+    font: 800 12px var(--font); cursor: pointer; white-space: nowrap; backdrop-filter: blur(6px);
   }
-  .jb-chip b { color: var(--gold2); letter-spacing: .14em; font-variant-numeric: tabular-nums; }
-  .jb-icon { border: 1px solid var(--line); background: rgba(255,255,255,.07); color: #fff; border-radius: 14px;
-    width: 44px; height: 44px; min-width: 44px; min-height: 44px; font-size: 18px; cursor: pointer; display:flex; align-items:center; justify-content:center; }
+  .jb-chip b { color: var(--gold2); letter-spacing: .12em; font-variant-numeric: tabular-nums; }
+  .jb-icon { border: 1px solid var(--line); background: rgba(255,255,255,.08); color: #fff; border-radius: 12px;
+    width: 40px; height: 40px; min-width: 40px; min-height: 40px; font-size: 17px; cursor: pointer; display:flex; align-items:center; justify-content:center; }
+  .jb-icon.on { border-color: var(--gold); background: rgba(255,200,61,.22); box-shadow: 0 0 12px rgba(255,200,61,.35); }
   .jb-icon:active { transform: scale(.92); }
 
   /* board + side panel */
   #jb-main {
-    width: 100%; max-width: 1100px; flex: 1 1 auto; min-height: 0;
+    width: 100%; max-width: 1280px; flex: 1 1 auto; min-height: 0;
     display: flex; flex-direction: column; align-items: center; gap: 6px;
   }
   #jb-board-wrap {
-    position: relative; flex: 0 1 auto; width: min(100vw - 12px, 100vh * .62, 640px);
-    aspect-ratio: 1; min-height: 0; filter: drop-shadow(0 18px 40px rgba(0,0,0,.55));
+    position: relative; flex: 0 0 auto;
+    width: min(calc(100vw - 12px), 45dvh, 520px);
+    aspect-ratio: 1; min-height: 0;
+    filter: drop-shadow(0 16px 36px rgba(0,0,0,.6));
+    transition: width .25s ease;
   }
-  #jb-board { width: 100%; height: 100%; display: block; }
+  #jb-board { width: 100%; height: 100%; display: block; border-radius: 10px; touch-action: manipulation; }
 
   /* side panel (players + tabs) */
   #jb-side {
-    width: 100%; max-width: 1100px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 6px;
+    width: 100%; max-width: 1280px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 5px;
   }
-  #jb-players { display: flex; gap: 6px; overflow-x: auto; padding: 2px; flex: 0 0 auto; scroll-snap-type: x mandatory; }
+  #jb-players { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 4px; flex: 0 0 auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+  #jb-players::-webkit-scrollbar { display: none; }
   .jb-player {
-    scroll-snap-align: start; flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-    border: 1.5px solid var(--line); background: rgba(255,255,255,.06); border-radius: 16px;
-    padding: 6px 10px 6px 6px; min-width: 132px; position: relative; transition: box-shadow .3s, border-color .3s, transform .3s;
+    scroll-snap-align: start; flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
+    border: 1.5px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.04)); border-radius: 14px;
+    padding: 5px 9px 5px 5px; min-width: 128px; position: relative; transition: box-shadow .3s, border-color .3s, transform .3s;
   }
-  .jb-player.turn { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(255,200,61,.45), 0 0 22px rgba(255,200,61,.35); transform: translateY(-2px); }
+  .jb-player.turn { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(255,200,61,.45), 0 0 20px rgba(255,200,61,.35); transform: translateY(-1px); background: linear-gradient(180deg, rgba(255,200,61,.18), rgba(255,200,61,.06)); }
   .jb-player.out { opacity: .38; filter: grayscale(1); }
-  .jb-player .face { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
-    font-size: 24px; border: 2px solid rgba(0,0,0,.35); box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
-  .jb-player .nm { font-size: 12.5px; font-weight: 900; line-height: 1.1; max-width: 88px; overflow: hidden;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+  .jb-player .face { width: 40px; height: 40px; border-radius: 11px; display: flex; align-items: center; justify-content: center;
+    font-size: 22px; border: 2px solid rgba(0,0,0,.35); box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
+  .jb-player .nm { font-size: 12px; font-weight: 900; line-height: 1.1; max-width: 92px; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
   .jb-player .cash { font-size: 12px; font-weight: 800; color: var(--gold2); font-variant-numeric: tabular-nums; }
   .jb-player .badge { position: absolute; top: -7px; right: -6px; font-size: 10px; font-weight: 900;
     background: var(--gold); color: var(--ink); border-radius: 999px; padding: 2px 7px; letter-spacing: .06em;
@@ -98,19 +103,19 @@
     border:1px solid rgba(255,120,120,.5); border-radius: 6px; padding: 1px 5px; margin-left: 4px; vertical-align: 1px; }
 
   /* action bar */
-  #jb-action { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; justify-content: center; min-height: 58px; }
+  #jb-action { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; min-height: 48px; }
   .jb-btn {
-    font: 900 17px var(--font); color: var(--ink); background: linear-gradient(180deg, var(--gold2), var(--gold));
-    border: 2px solid #4a2c00; border-radius: 18px; padding: 12px 22px; cursor: pointer;
-    box-shadow: 0 6px 0 #4a2c00, 0 10px 24px rgba(0,0,0,.45); text-transform: uppercase; letter-spacing: .04em;
+    font: 900 15px var(--font); color: var(--ink); background: linear-gradient(180deg, var(--gold2), var(--gold));
+    border: 2px solid #4a2c00; border-radius: 15px; padding: 9px 18px; cursor: pointer;
+    box-shadow: 0 5px 0 #4a2c00, 0 8px 20px rgba(0,0,0,.42); text-transform: uppercase; letter-spacing: .04em;
     transition: transform .07s, box-shadow .07s, filter .2s; white-space: nowrap;
   }
-  .jb-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #4a2c00, 0 4px 10px rgba(0,0,0,.4); }
+  .jb-btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #4a2c00, 0 4px 10px rgba(0,0,0,.4); }
   .jb-btn:disabled { opacity: .45; filter: grayscale(.6); }
-  .jb-btn.teal { background: linear-gradient(180deg, #7cf0dd, var(--teal)); border-color: #033f34; box-shadow: 0 6px 0 #033f34, 0 10px 24px rgba(0,0,0,.45); }
-  .jb-btn.coral { background: linear-gradient(180deg, #ffa3a3, var(--coral)); border-color: #4f0d0d; box-shadow: 0 6px 0 #4f0d0d, 0 10px 24px rgba(0,0,0,.45); color: #fff; }
-  .jb-btn.ghost { background: rgba(255,255,255,.08); color: #fff; border-color: var(--line); box-shadow: none; font-size: 13px; padding: 10px 14px; text-transform: none; letter-spacing: 0; }
-  .jb-btn.big { font-size: 21px; padding: 15px 34px; animation: jb-pulse 1.6s ease-in-out infinite; }
+  .jb-btn.teal { background: linear-gradient(180deg, #7cf0dd, var(--teal)); border-color: #033f34; box-shadow: 0 5px 0 #033f34, 0 8px 20px rgba(0,0,0,.42); }
+  .jb-btn.coral { background: linear-gradient(180deg, #ffa3a3, var(--coral)); border-color: #4f0d0d; box-shadow: 0 5px 0 #4f0d0d, 0 8px 20px rgba(0,0,0,.42); color: #fff; }
+  .jb-btn.ghost { background: rgba(255,255,255,.09); color: #fff; border-color: var(--line); box-shadow: none; font-size: 12.5px; padding: 8px 13px; text-transform: none; letter-spacing: 0; }
+  .jb-btn.big { font-size: clamp(15px, 2.2vw, 19px); padding: 11px 24px; animation: jb-pulse 1.6s ease-in-out infinite; }
   @keyframes jb-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.18); } }
   .jb-note { font-size: 13px; font-weight: 800; color: #cbb9ff; text-align: center; }
   .jb-note b { color: var(--gold2); }
@@ -149,6 +154,7 @@
     <div class="jb-spacer"></div>
     <div class="jb-chip" id="jb-code" title="Tap to copy the room code">CODE <b id="jb-code-v">····</b></div>
     <div class="jb-chip" id="jb-round">ROUND <b id="jb-round-v">1</b></div>
+    <button class="jb-icon" id="jb-zoom" aria-label="Zoom board to active player" title="Zoom board to active player">🔍</button>
     <button class="jb-icon" id="jb-sound" aria-label="Sound on or off">🔊</button>
     <button class="jb-icon" id="jb-leave" aria-label="Leave the game">🚪</button>
   </div>
@@ -327,15 +333,30 @@
   .jb-roomcode { font-size: 44px; font-weight: 900; letter-spacing: .18em; color: var(--gold2); font-variant-numeric: tabular-nums; }
   .jb-qr { width: 150px; height: 150px; background: #fff; border-radius: 14px; padding: 8px; margin: 8px auto; display: block; }
 
-  /* responsive: wide screens get the side panel beside the board */
-  @media (min-width: 1000px) and (min-height: 620px) {
-    #jb-main { flex-direction: row; justify-content: center; align-items: stretch; }
-    #jb-board-wrap { width: min(64vh, 620px); align-self: center; }
-    #jb-side { flex: 1 1 380px; max-width: 430px; }
+  /* responsive: tablets, desktops, TVs, and landscape phones */
+  @media (min-width: 680px) and (orientation: portrait) {
+    #jb-board-wrap { width: min(calc(100vw - 24px), 54dvh, 620px); }
+  }
+  @media (min-width: 820px) and (min-height: 500px), (orientation: landscape) and (min-width: 580px) {
+    #jb-main { flex-direction: row; justify-content: center; align-items: stretch; gap: 14px; }
+    #jb-board-wrap { width: min(calc(100dvh - 76px), calc(100vw - 340px), 760px); align-self: center; }
+    #jb-side { flex: 1 1 0; min-width: 300px; max-width: 440px; justify-content: space-between; }
     #jb-players { flex-wrap: nowrap; }
+  }
+  @media (min-width: 1280px) and (min-height: 680px) {
+    #jb-board-wrap { width: min(calc(100dvh - 84px), calc(100vw - 480px), 800px); }
+    #jb-side { flex: 0 0 440px; max-width: 460px; }
+  }
+  @media (max-width: 440px) {
+    .jb-logo small { display: none; }
+    #jb-top { gap: 4px; }
+    .jb-logo { font-size: 15px; }
+    .jb-chip { padding: 3px 7px; gap: 3px; font-size: 10.5px; min-height: 36px; }
+    .jb-icon { width: 34px; height: 34px; min-width: 34px; min-height: 34px; font-size: 14px; border-radius: 10px; }
   }
   @media (max-height: 560px) {
     .jb-logo small { display: none; }
+    #jb-top { padding: 1px 4px; }
     #jb-tabbody { min-height: 60px; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -741,31 +762,79 @@ syncSoundBtn();
   function buildBoard() {
     var svg = $('jb-board');
     svg.innerHTML = '';
-    // parchment frame
+    // parchment frame & gradients
     var defs = svgEl('defs', {}, svg);
     var grad = svgEl('radialGradient', { id: 'jb-paper', cx: '50%', cy: '42%', r: '75%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': '#fff8e7' }, grad);
-    svgEl('stop', { offset: '100%', 'stop-color': '#e7d3a7' }, grad);
-    var gold = svgEl('radialGradient', { id: 'jb-gold', cx: '50%', cy: '50%', r: '60%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': '#ffe27a' }, gold);
-    svgEl('stop', { offset: '100%', 'stop-color': '#d97706' }, gold);
-    svgEl('rect', { x: 0, y: 0, width: 960, height: 960, fill: 'url(#jb-paper)', stroke: '#1b0f3b', 'stroke-width': 8, rx: 6 }, svg);
+    svgEl('stop', { offset: '0%', 'stop-color': '#fffbf0' }, grad);
+    svgEl('stop', { offset: '100%', 'stop-color': '#e4cfa0' }, grad);
+    var gold = svgEl('radialGradient', { id: 'jb-gold', cx: '50%', cy: '45%', r: '62%' }, defs);
+    svgEl('stop', { offset: '0%', 'stop-color': '#fff099' }, gold);
+    svgEl('stop', { offset: '60%', 'stop-color': '#f59e0b' }, gold);
+    svgEl('stop', { offset: '100%', 'stop-color': '#b45309' }, gold);
+    var felt = svgEl('radialGradient', { id: 'jb-felt', cx: '50%', cy: '45%', r: '70%' }, defs);
+    svgEl('stop', { offset: '0%', 'stop-color': '#2b1664' }, felt);
+    svgEl('stop', { offset: '65%', 'stop-color': '#1a0d40' }, felt);
+    svgEl('stop', { offset: '100%', 'stop-color': '#100729' }, felt);
+    var sheen = svgEl('linearGradient', { id: 'jb-sheen', x1: '0%', y1: '0%', x2: '0%', y2: '100%' }, defs);
+    svgEl('stop', { offset: '0%', 'stop-color': 'rgba(255,255,255,.38)' }, sheen);
+    svgEl('stop', { offset: '55%', 'stop-color': 'rgba(255,255,255,0)' }, sheen);
+    svgEl('stop', { offset: '100%', 'stop-color': 'rgba(0,0,0,.22)' }, sheen);
 
-    // center panel
+    // Outer beveled mahogany & gold board border
+    svgEl('rect', { x: 0, y: 0, width: 960, height: 960, fill: 'url(#jb-paper)', stroke: '#1b0f3b', 'stroke-width': 10, rx: 10 }, svg);
+    svgEl('rect', { x: 4, y: 4, width: 952, height: 952, fill: 'none', stroke: '#ffc83d', 'stroke-width': 2, rx: 8, opacity: 0.7 }, svg);
+
+    // Center tabletop panel
     var panel = svgEl('g', {}, svg);
-    svgEl('rect', { x: T, y: T, width: 960 - 2 * T, height: 960 - 2 * T, fill: '#1d1145', stroke: '#ffc83d', 'stroke-width': 3, rx: 4 }, panel);
-    // sun rays (CSS rotation)
-    var rays = svgEl('g', { id: 'svg-rays', class: RM ? '' : 'jb-rays', transform: 'translate(480,480)' }, panel);
-    for (var r = 0; r < 12; r++) {
-      svgEl('path', { d: 'M0,0 L -26,-290 L 26,-290 Z', fill: r % 2 ? 'rgba(255,200,61,.16)' : 'rgba(255,200,61,.07)', transform: 'rotate(' + (r * 30) + ')' }, rays);
+    svgEl('rect', { x: T, y: T, width: 960 - 2 * T, height: 960 - 2 * T, fill: 'url(#jb-felt)', stroke: '#ffc83d', 'stroke-width': 4, rx: 6 }, panel);
+    svgEl('rect', { x: T + 10, y: T + 10, width: 960 - 2 * T - 20, height: 960 - 2 * T - 20, fill: 'none', stroke: 'rgba(255,200,61,.28)', 'stroke-width': 1.5, 'stroke-dasharray': '8 5', rx: 4 }, panel);
+
+    // Rotating sun rays: the outer group places them, the inner one spins (a CSS
+    // transform on the placed group would replace its translate and throw the rays off-centre).
+    var raysAt = svgEl('g', { transform: 'translate(480,480)' }, panel);
+    var rays = svgEl('g', { id: 'svg-rays', class: RM ? '' : 'jb-rays' }, raysAt);
+    for (var r = 0; r < 16; r++) {
+      svgEl('path', { d: 'M0,0 L -22,-320 L 22,-320 Z', fill: r % 2 ? 'rgba(255,200,61,.13)' : 'rgba(255,200,61,.05)', transform: 'rotate(' + (r * 22.5) + ')' }, rays);
     }
-    var title = svgEl('text', { x: 480, y: 400, 'text-anchor': 'middle', 'font-size': 92, 'font-weight': 900, fill: '#ffc83d', 'font-family': 'ui-rounded,"SF Pro Rounded",sans-serif', 'letter-spacing': 8, style: 'filter:drop-shadow(0 4px 0 #4a2c00)' }, panel);
+
+    // Ornate compass rose medallion in center
+    var comp = svgEl('g', { transform: 'translate(480,480)', opacity: 0.22 }, panel);
+    svgEl('circle', { r: 190, fill: 'none', stroke: '#ffc83d', 'stroke-width': 2 }, comp);
+    svgEl('circle', { r: 145, fill: 'none', stroke: '#ffc83d', 'stroke-width': 1.5, 'stroke-dasharray': '4 6' }, comp);
+    for (var cp = 0; cp < 8; cp++) {
+      svgEl('polygon', { points: '0,-185 14,-35 0,0 -14,-35', fill: cp % 2 ? '#ffc83d' : '#fff8e7', transform: 'rotate(' + (cp * 45) + ')' }, comp);
+    }
+
+    // Angled PARABLE Card Deck (Top-Left of center panel, Monopoly style)
+    var pDeck = svgEl('g', { transform: 'translate(238,238) rotate(-45)', style: 'cursor:pointer' }, panel);
+    svgEl('rect', { x: -74, y: -48, width: 148, height: 96, rx: 10, fill: 'rgba(0,0,0,.45)', transform: 'translate(5,7)' }, pDeck);
+    svgEl('rect', { x: -72, y: -46, width: 144, height: 92, rx: 10, fill: '#3b1566', stroke: '#ffc83d', 'stroke-width': 2.5, 'stroke-dasharray': '5 3' }, pDeck);
+    svgEl('rect', { x: -64, y: -38, width: 128, height: 76, rx: 8, fill: '#581c87', stroke: '#e9d5ff', 'stroke-width': 2 }, pDeck);
+    svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 28, 'font-weight': 900, fill: '#fde047' }, pDeck).textContent = '📜 ?';
+    svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 3 }, pDeck).textContent = 'PARABLES';
+
+    // Angled SCRIPTURE Card Deck (Bottom-Right of center panel, Monopoly style)
+    var sDeck = svgEl('g', { transform: 'translate(722,722) rotate(-45)', style: 'cursor:pointer' }, panel);
+    svgEl('rect', { x: -74, y: -48, width: 148, height: 96, rx: 10, fill: 'rgba(0,0,0,.45)', transform: 'translate(5,7)' }, sDeck);
+    svgEl('rect', { x: -72, y: -46, width: 144, height: 92, rx: 10, fill: '#172554', stroke: '#ffc83d', 'stroke-width': 2.5, 'stroke-dasharray': '5 3' }, sDeck);
+    svgEl('rect', { x: -64, y: -38, width: 128, height: 76, rx: 8, fill: '#1e3a8a', stroke: '#bae6fd', 'stroke-width': 2 }, sDeck);
+    svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 26, 'font-weight': 900, fill: '#fde047' }, sDeck).textContent = '✦ 📖';
+    svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 2.5 }, sDeck).textContent = 'SCRIPTURE';
+
+    // Centerpiece Banner & Title
+    var banner = svgEl('g', { transform: 'translate(480,415)' }, panel);
+    svgEl('rect', { x: -245, y: -74, width: 490, height: 112, rx: 22, fill: 'rgba(18,10,46,.82)', stroke: '#ffc83d', 'stroke-width': 3 }, banner);
+    svgEl('rect', { x: -239, y: -68, width: 478, height: 100, rx: 18, fill: 'none', stroke: 'rgba(255,226,122,.4)', 'stroke-width': 1.5 }, banner);
+    var title = svgEl('text', { x: 0, y: -2, 'text-anchor': 'middle', 'font-size': 82, 'font-weight': 900, fill: 'url(#jb-gold)', 'font-family': 'ui-rounded,"SF Pro Rounded",sans-serif', 'letter-spacing': 6, stroke: '#3b1d00', 'stroke-width': 2, style: 'filter:drop-shadow(0 5px 0 #2e1500)' }, banner);
     title.textContent = 'JUBILEE!';
-    var sub = svgEl('text', { x: 480, y: 440, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 800, fill: '#cbb9ff', 'letter-spacing': 6 }, panel);
+    var sub = svgEl('text', { x: 0, y: 26, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 900, fill: '#ffe27a', 'letter-spacing': 7 }, banner);
     sub.textContent = 'B I B L E   L A N D S';
-    var pot = svgEl('text', { id: 'svg-pot', x: 480, y: 520, 'text-anchor': 'middle', 'font-size': 24, 'font-weight': 900, fill: '#ffe27a' }, panel);
+
+    var pot = svgEl('text', { id: 'svg-pot', x: 480, y: 505, 'text-anchor': 'middle', 'font-size': 23, 'font-weight': 900, fill: '#2ed3b7', style: 'filter:drop-shadow(0 2px 4px rgba(0,0,0,.6))' }, panel);
     pot.textContent = '';
-    var rule = svgEl('text', { id: 'svg-rule', x: 480, y: 552, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 800, fill: '#8f7fd0', 'letter-spacing': 2 }, panel);
+    var lastRoll = svgEl('text', { id: 'svg-lastroll', x: 480, y: 540, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 900, fill: '#ffe27a', 'letter-spacing': 1.5 }, panel);
+    lastRoll.textContent = '';
+    var rule = svgEl('text', { id: 'svg-rule', x: 480, y: 568, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 800, fill: '#a99ddb', 'letter-spacing': 2.5 }, panel);
     rule.textContent = '';
 
     var spaces = state.room && state.room.board ? state.room.board : null;
@@ -777,90 +846,121 @@ syncSoundBtn();
       else { drawTile(g, spaces ? spaces[i] : null, i); }
       tap(g, (function (idx) { return function () { openDeed(idx); }; })(i));
     }
-    // tokens layer
+    // Active turn tile highlight & hop trail layer
+    svgEl('g', { id: 'svg-highlights' }, svg);
+    // Tokens layer
     svgEl('g', { id: 'svg-tokens' }, svg);
+    // Floating board popups (cash deltas)
+    svgEl('g', { id: 'svg-popups' }, svg);
   }
 
   function drawCorner(g, i) {
-    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: '#fff3d0', stroke: '#1b0f3b', 'stroke-width': 2 }, g);
-    svgEl('circle', { cx: 0, cy: 0, r: T * 0.34, fill: i === 0 ? 'url(#jb-gold)' : '#f1e6c0', stroke: '#1b0f3b', 'stroke-width': 2 }, g);
+    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: i === 0 ? '#fff0c2' : '#fff5dc', stroke: '#1b0f3b', 'stroke-width': 2.2 }, g);
+    svgEl('rect', { x: -T / 2 + 3, y: -T / 2 + 3, width: T - 6, height: T - 6, fill: 'none', stroke: i === 0 ? '#d97706' : '#c9b38c', 'stroke-width': 1.2, rx: 4 }, g);
     if (i === 0) {
-      svgEl('text', { x: 0, y: -12, 'text-anchor': 'middle', 'font-size': 21, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'JUBILEE!';
-      svgEl('text', { x: 0, y: 10, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 800, fill: '#1b0f3b' }, g).textContent = 'COLLECT $200';
-      svgEl('text', { x: 0, y: 27, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 800, fill: '#7a5b16' }, g).textContent = '🎺  EVERY LAP';
+      svgEl('circle', { cx: 0, cy: -3, r: T * 0.35, fill: 'url(#jb-gold)', stroke: '#1b0f3b', 'stroke-width': 2 }, g);
+      svgEl('text', { x: 0, y: -15, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 900, fill: '#1b0f3b', 'letter-spacing': 0.5 }, g).textContent = 'JUBILEE!';
+      svgEl('text', { x: 0, y: 2, 'text-anchor': 'middle', 'font-size': 19 }, g).textContent = '🎺';
+      svgEl('rect', { x: -T / 2 + 6, y: 12, width: T - 12, height: 15, rx: 4, fill: '#16a34a', stroke: '#1b0f3b', 'stroke-width': 1.2 }, g);
+      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#ffffff' }, g).textContent = 'COLLECT $200';
+      svgEl('text', { x: 0, y: 37, 'text-anchor': 'middle', 'font-size': 9, 'font-weight': 900, fill: '#b45309' }, g).textContent = '◀ PASS HERE';
     } else if (i === 10) {
-      svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 40 }, g).textContent = '⛓';
-      svgEl('text', { x: 0, y: 17, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
-      svgEl('text', { x: 0, y: 31, 'text-anchor': 'middle', 'font-size': 8, 'font-weight': 800, fill: '#5b4a8a' }, g).textContent = 'PAUL & SILAS';
+      // Dungeon cell in inner corner + "Just Visiting" lane
+      svgEl('rect', { x: -T / 2 + 16, y: -T / 2 + 4, width: T - 20, height: T - 22, rx: 4, fill: '#d6cfc2', stroke: '#1b0f3b', 'stroke-width': 1.8 }, g);
+      for (var b = -18; b <= 24; b += 10) {
+        svgEl('line', { x1: b, y1: -T / 2 + 4, x2: b, y2: T / 2 - 18, stroke: '#374151', 'stroke-width': 2 }, g);
+      }
+      svgEl('text', { x: 4, y: -6, 'text-anchor': 'middle', 'font-size': 24 }, g).textContent = '⛓️';
+      svgEl('text', { x: 4, y: 11, 'text-anchor': 'middle', 'font-size': 9, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'DUNGEON';
+      svgEl('text', { x: 0, y: T / 2 - 5, 'text-anchor': 'middle', 'font-size': 8.5, 'font-weight': 900, fill: '#5b4a8a' }, g).textContent = 'JUST VISITING';
     } else if (i === 20) {
-      svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 36 }, g).textContent = '🕊️';
-      svgEl('text', { x: 0, y: 17, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SABBATH REST';
-      svgEl('text', { x: 0, y: 31, 'text-anchor': 'middle', 'font-size': 8, 'font-weight': 800, fill: '#5b4a8a' }, g).textContent = 'FREE · ALL ARE WELCOME';
+      svgEl('circle', { cx: 0, cy: -4, r: T * 0.31, fill: '#e0f2fe', stroke: '#0284c7', 'stroke-width': 2 }, g);
+      svgEl('text', { x: 0, y: 4, 'text-anchor': 'middle', 'font-size': 28 }, g).textContent = '🕊️';
+      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SABBATH REST';
+      svgEl('text', { x: 0, y: 35, 'text-anchor': 'middle', 'font-size': 7.5, 'font-weight': 800, fill: '#0369a1' }, g).textContent = 'SANCTUARY · POT';
     } else {
-      svgEl('text', { x: 0, y: -4, 'text-anchor': 'middle', 'font-size': 34 }, g).textContent = '⛓';
-      svgEl('text', { x: 0, y: 20, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SENT TO';
-      svgEl('text', { x: 0, y: 34, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
+      svgEl('circle', { cx: 0, cy: -5, r: T * 0.31, fill: '#fee2e2', stroke: '#dc2626', 'stroke-width': 2 }, g);
+      svgEl('text', { x: 0, y: 4, 'text-anchor': 'middle', 'font-size': 26 }, g).textContent = '⚔️';
+      svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#991b1b' }, g).textContent = 'SENT TO';
+      svgEl('text', { x: 0, y: 34, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
     }
   }
 
   function drawTile(g, sp, i) {
     var kind = sp ? sp.kind : 'street';
     var isStreet = kind === 'street', isRail = kind === 'railroad', isUtil = kind === 'utility';
-    var bandFill = isStreet ? (GROUP_COLORS[sp.group] || '#888') : (isRail ? '#1b0f3b' : (isUtil ? '#b45309' : null));
-    var tileFill = '#fff8e7';
-    if (kind === 'chance') tileFill = '#efe4ff';
-    else if (kind === 'chest') tileFill = '#e3ecff';
-    else if (kind === 'tax') tileFill = '#ffe9e3';
-    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: tileFill, stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
+    var isParable = (kind === 'parable' || kind === 'chance');
+    var isScripture = (kind === 'scripture' || kind === 'chest');
+    var isTax = (kind === 'tribute' || kind === 'offering' || kind === 'tax');
+    var bandFill = isStreet ? (GROUP_COLORS[sp.group] || '#888') : (isRail ? '#1e293b' : (isUtil ? '#b45309' : null));
+    var tileFill = '#fff9eb';
+    if (isParable) tileFill = '#f3e8ff';
+    else if (isScripture) tileFill = '#e0f2fe';
+    else if (isTax) tileFill = '#ffe4e6';
+    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: tileFill, stroke: '#1b0f3b', 'stroke-width': 1.6 }, g);
     if (bandFill) {
-      svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 18, fill: bandFill, stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
+      svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 20, fill: bandFill, stroke: '#1b0f3b', 'stroke-width': 1.6 }, g);
+      svgEl('rect', { x: -T / 2 + 1, y: -T / 2 + 1, width: T - 2, height: 6, fill: 'rgba(255,255,255,.28)' }, g);
+    } else if (isParable || isScripture || isTax) {
+      var topBar = isParable ? '#7c3aed' : isScripture ? '#1d4ed8' : '#dc2626';
+      svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 6, fill: topBar }, g);
     }
-    var cy = bandFill ? -T / 2 + 30 : -T / 2 + 14;
+    var cy = bandFill ? -T / 2 + 31 : -T / 2 + 18;
     if (isRail || isUtil) {
-      svgEl('text', { x: 0, y: -T / 2 + 33, 'text-anchor': 'middle', 'font-size': 26 }, g).textContent = isRail ? (SPACE_ART[sp.name] || '🚂') : (SPACE_ART[sp.name] || '💡');
-    } else if (kind === 'chance') {
-      svgEl('text', { x: 0, y: -T / 2 + 36, 'text-anchor': 'middle', 'font-size': 34, 'font-weight': 900, fill: '#7c5cff' }, g).textContent = '?';
-    } else if (kind === 'chest') {
-      svgEl('text', { x: 0, y: -T / 2 + 33, 'text-anchor': 'middle', 'font-size': 26, fill: '#1d4ed8' }, g).textContent = '✦';
-    } else if (kind === 'tax') {
-      svgEl('text', { x: 0, y: -T / 2 + 34, 'text-anchor': 'middle', 'font-size': 24 }, g).textContent = '💸';
+      svgEl('text', { x: 0, y: -T / 2 + 38, 'text-anchor': 'middle', 'font-size': 22 }, g).textContent = isRail ? (SPACE_ART[sp.name] || '🚂') : (SPACE_ART[sp.name] || '💡');
+    } else if (isParable) {
+      svgEl('text', { x: 0, y: -T / 2 + 40, 'text-anchor': 'middle', 'font-size': 28, 'font-weight': 900, fill: '#6d28d9' }, g).textContent = '📜';
+    } else if (isScripture) {
+      svgEl('text', { x: 0, y: -T / 2 + 40, 'text-anchor': 'middle', 'font-size': 26, fill: '#1d4ed8' }, g).textContent = '📖';
+    } else if (isTax) {
+      svgEl('text', { x: 0, y: -T / 2 + 38, 'text-anchor': 'middle', 'font-size': 24 }, g).textContent = kind === 'tribute' ? '🪙' : '🕊️';
     }
     var name = sp ? sp.name : '?';
-    var lines = wrapName(name, 12);
+    var lines = wrapName(name, 11);
     for (var li = 0; li < lines.length; li++) {
-      svgEl('text', { x: 0, y: cy + (kind === 'chance' || kind === 'chest' || kind === 'tax' || isRail || isUtil ? 24 : 0) + li * 12, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 800, fill: '#1b0f3b' }, g).textContent = lines[li];
+      svgEl('text', { x: 0, y: cy + (isParable || isScripture || isTax || isRail || isUtil ? 25 : 0) + li * 11, 'text-anchor': 'middle', 'font-size': 9.2, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = lines[li];
     }
-    if (sp && sp.price) {
-      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = '$' + sp.price;
-    } else if (sp && sp.amount) {
-      svgEl('text', { x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#b91c1c' }, g).textContent = 'PAY $' + sp.amount;
+    var priceLabel = '';
+    if (sp && sp.price) priceLabel = '$' + sp.price;
+    else if (sp && (sp.amount || sp.flat)) priceLabel = 'PAY $' + (sp.amount || sp.flat);
+    if (priceLabel) {
+      svgEl('text', { x: 0, y: T / 2 - 6, 'text-anchor': 'middle', 'font-size': isTax ? 9.5 : 10.5, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
     }
-    // dynamic bits
+    // dynamic bits: owner badge, 3D houses/hotel, mortgage stamp
     svgEl('circle', { id: 'own-' + i, cx: -T / 2 + 10, cy: T / 2 - 10, r: 6, fill: 'transparent', stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
     svgEl('g', { id: 'hse-' + i }, g);
-    svgEl('text', { id: 'mrg-' + i, x: T / 2 - 11, y: T / 2 - 6, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 900, fill: '#dc2626', style: 'display:none' }, g).textContent = 'M';
+    svgEl('text', { id: 'mrg-' + i, x: T / 2 - 11, y: T / 2 - 6, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#dc2626', style: 'display:none' }, g).textContent = 'M';
+  }
+
+  function tileCoord(pos) {
+    var i0 = ((Math.floor(pos) % 40) + 40) % 40;
+    var frac = pos - Math.floor(pos);
+    if (frac <= 0.0001) return tileCenter(i0);
+    var i1 = (i0 + 1) % 40;
+    var c0 = tileCenter(i0), c1 = tileCenter(i1);
+    return { x: c0.x + (c1.x - c0.x) * frac, y: c0.y + (c1.y - c0.y) * frac, side: c0.side };
   }
 
   function svgToScreen(x, y) {
-    var rect = $('jb-board').getBoundingClientRect();
-    return { x: rect.left + (x / 960) * rect.width, y: rect.top + (y / 960) * rect.height };
+    var svg = $('jb-board');
+    var rect = svg.getBoundingClientRect();
+    var vb = (svg.getAttribute('viewBox') || '0 0 960 960').split(/\s+/).map(Number);
+    var vx = vb[0] || 0, vy = vb[1] || 0, vw = vb[2] || 960, vh = vb[3] || 960;
+    return { x: rect.left + ((x - vx) / vw) * rect.width, y: rect.top + ((y - vy) / vh) * rect.height };
   }
 
   function tokenScreenPos(seat) {
     var board = state.room && state.room.board;
     if (!board) return null;
-    var players = state.room.players.filter(function (p) { return !p.bankrupt; });
     if (seat >= board.length) return null;
     var pos = (state.displayedPos[seat] !== undefined) ? state.displayedPos[seat] : state.room.players[seat].position;
-    var c = tileCenter(pos);
-    // count tokens ahead of this seat on the same tile
+    var c = tileCoord(pos);
     var k = 0;
     for (var i = 0; i < seat; i++) {
       var p2 = (state.displayedPos[i] !== undefined) ? state.displayedPos[i] : state.room.players[i].position;
-      if (p2 === pos && !state.room.players[i].bankrupt) k++;
+      if (Math.round(p2) === Math.round(pos) && !state.room.players[i].bankrupt) k++;
     }
-    // 2x4 grid local offsets
-    var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 66;
+    var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 10;
     return { x: c.x + dx, y: c.y + dy };
   }
 
@@ -885,21 +985,59 @@ syncSoundBtn();
 
   function meSeat() { return state.room && state.room.you ? state.room.you.seat : null; }
 
+  function playerGroupPips(seat) {
+    var board = (state.room && state.room.board) || [];
+    var counts = {};
+    for (var i = 0; i < board.length; i++) {
+      var sp = board[i];
+      if (sp && sp.owner === seat && sp.group) counts[sp.group] = (counts[sp.group] || 0) + 1;
+    }
+    var groups = ['brown', 'lightblue', 'pink', 'orange', 'red', 'yellow', 'green', 'blue'];
+    var out = '';
+    for (var g = 0; g < groups.length; g++) {
+      var gr = groups[g];
+      if (counts[gr]) {
+        out += '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + GROUP_COLORS[gr] + ';border:1px solid rgba(0,0,0,.5);margin-right:2px" title="' + gr + ' (' + counts[gr] + ')"></span>';
+      }
+    }
+    return out ? '<div style="margin-top:2px;line-height:1">' + out + '</div>' : '';
+  }
+
   function renderPlayers() {
     var room = state.room, html = '';
     for (var i = 0; i < room.players.length; i++) {
       var p = room.players[i];
       var me = room.you && (room.you.seat === i);
       var cls = 'jb-player' + (p.is_turn ? ' turn' : '') + (p.bankrupt ? ' out' : '') + (me ? ' me' : '');
-      html += '<div class="' + cls + '">';
-      html += '<div class="jb-face-sm" style="background:' + SEAT_COLORS[i] + '">' + tokenEmoji(p.token) + '</div>';
-      html += '<div class="jb-pname">' + esc(p.name) + (p.is_host ? ' 👑' : '') + (me ? ' <span class="jb-you">YOU</span>' : '') + '</div>';
-      html += '<div class="jb-pcash">$' + fmt(p.cash) + '</div>';
+      html += '<div class="' + cls + '" data-seat-card="' + i + '">';
+      html += '<div class="jb-face-sm" style="background:' + SEAT_COLORS[i] + ';border:2px solid rgba(0,0,0,.35)">' + tokenEmoji(p.token) + (me ? '<span class="jb-you">YOU</span>' : '') + '</div>';
+      html += '<div style="min-width:0;flex:1">';
+      html += '<div class="jb-pname">' + esc(p.name) + (p.is_host ? ' 👑' : '') + (p.is_ai ? ' 🤖' : '') + '</div>';
+      html += '<div class="jb-pcash">$' + fmt(p.cash) + ' <span style="font-size:10px;color:#b9aee0;font-weight:700">· $' + fmt(p.net_worth || p.cash) + '</span></div>';
+      html += playerGroupPips(i);
       if (p.bankrupt) html += '<div class="jb-jail">BANKRUPT</div>';
       else if (p.in_jail) html += '<div class="jb-jail">⛓ DUNGEON</div>';
-      html += '</div>';
+      html += '</div></div>';
     }
     $('jb-players').innerHTML = html;
+  }
+
+  function house3dSvg(x, y) {
+    return '<g transform="translate(' + x + ',' + y + ')">' +
+      '<polygon points="0,-6 7,-1 7,6 -7,6 -7,-1" fill="#16a34a" stroke="#052e16" stroke-width="1.2"/>' +
+      '<polygon points="0,-6 7,-1 -7,-1" fill="#4ade80" stroke="#052e16" stroke-width="1"/>' +
+      '<rect x="-2" y="1" width="4" height="5" fill="#fef08a"/>' +
+      '</g>';
+  }
+
+  function hotel3dSvg(y) {
+    return '<g transform="translate(0,' + y + ')">' +
+      '<polygon points="0,-9 15,-2 15,7 -15,7 -15,-2" fill="#dc2626" stroke="#450a0a" stroke-width="1.4"/>' +
+      '<polygon points="0,-9 15,-2 -15,-2" fill="#f87171" stroke="#450a0a" stroke-width="1.1"/>' +
+      '<rect x="-10" y="0" width="4" height="4" fill="#fef08a"/>' +
+      '<rect x="-2" y="0" width="4" height="7" fill="#fde047"/>' +
+      '<rect x="6" y="0" width="4" height="4" fill="#fef08a"/>' +
+      '</g>';
   }
 
   function renderBoardDynamic() {
@@ -912,14 +1050,14 @@ syncSoundBtn();
       var mrg = document.getElementById('mrg-' + i);
       if (!dot) continue;
       dot.setAttribute('fill', sp.owner != null ? SEAT_COLORS[sp.owner] : 'transparent');
-      // houses
       var hh = '';
       var n = sp.houses || 0;
+      var hy = -T / 2 + 10;
       if (n === 5) {
-        hh = '<rect x="-16" y="' + (T / 2 - 44) + '" width="32" height="12" rx="3" fill="#dc2626" stroke="#1b0f3b" stroke-width="1.5"/>';
+        hh = hotel3dSvg(hy);
       } else {
         for (var k = 0; k < n; k++) {
-          hh += '<rect x="' + (-24 + k * 13) + '" y="' + (T / 2 - 44) + '" width="11" height="10" rx="2" fill="#16a34a" stroke="#1b0f3b" stroke-width="1.5"/>';
+          hh += house3dSvg(-22 + k * 14.5, hy);
         }
       }
       hse.innerHTML = hh;
@@ -928,8 +1066,33 @@ syncSoundBtn();
     var potText = room.pot > 0 ? '🍯 SABBATH JACKPOT  $' + fmt(room.pot) : '';
     var potEl = document.getElementById('svg-pot');
     if (potEl) potEl.textContent = potText;
+    var rollEl = document.getElementById('svg-lastroll');
+    if (rollEl) {
+      if (room.last_roll && room.last_roll.length === 2) {
+        var d1 = room.last_roll[0], d2 = room.last_roll[1];
+        rollEl.textContent = '🎲 LAST ROLL: ' + d1 + ' + ' + d2 + ' = ' + (d1 + d2) + (d1 === d2 ? ' (DOUBLES!)' : '');
+      } else {
+        rollEl.textContent = '';
+      }
+    }
     var ruleEl = document.getElementById('svg-rule');
-    if (ruleEl) ruleEl.textContent = (state.room.ruleset || 'classic').toUpperCase() + (room.pot > 0 ? '' : '');
+    if (ruleEl) ruleEl.textContent = (state.room.ruleset || 'classic').toUpperCase() + ' RULES · BANK: 🏠 ' + (room.bank_houses != null ? room.bank_houses : 32) + '  🏨 ' + (room.bank_hotels != null ? room.bank_hotels : 12);
+
+  }
+
+  /* A soft pulsing gold frame around the tile under the player whose turn it is. */
+  function renderTurnHighlight(t) {
+    var hl = document.getElementById('svg-highlights');
+    var room = state.room;
+    if (!hl || !room) return;
+    var turnPlayer = room.players && room.players[room.turn];
+    if (!turnPlayer || turnPlayer.bankrupt || room.status !== 'playing') { if (hl.firstChild) hl.innerHTML = ''; return; }
+    var pos = (state.displayedPos[room.turn] !== undefined) ? state.displayedPos[room.turn] : turnPlayer.position;
+    var tc = tileCoord(pos);
+    var pulse = RM ? 0.85 : 0.55 + 0.35 * Math.sin((t || 0) / 260);
+    var col = SEAT_COLORS[room.turn % SEAT_COLORS.length];
+    hl.innerHTML = '<rect x="' + (tc.x - T / 2 + 2).toFixed(1) + '" y="' + (tc.y - T / 2 + 2).toFixed(1) + '" width="' + (T - 4) + '" height="' + (T - 4) +
+      '" rx="7" fill="' + col + '" fill-opacity="' + (pulse * 0.16).toFixed(3) + '" stroke="' + col + '" stroke-width="4" stroke-opacity="' + pulse.toFixed(3) + '"/>';
   }
 
   function renderTokensLayer() {
@@ -937,7 +1100,6 @@ syncSoundBtn();
     if (!g || !state.room) return;
     var html = '';
     var players = state.room.players;
-    // need consistent per-tile stacking index: recompute per displayedPos
     var posAt = [];
     for (var i = 0; i < players.length; i++) {
       posAt[i] = (state.displayedPos[i] !== undefined) ? state.displayedPos[i] : players[i].position;
@@ -946,18 +1108,28 @@ syncSoundBtn();
       var p = players[seat];
       if (p.bankrupt) continue;
       var pos = posAt[seat];
-      var c = tileCenter(pos);
+      var c = tileCoord(pos);
       var k = 0;
       for (var j = 0; j < seat; j++) {
         var pj = players[j];
-        if (!pj.bankrupt && posAt[j] === pos) k++;
+        if (!pj.bankrupt && Math.round(posAt[j]) === Math.round(pos)) k++;
       }
-      var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 58;
+      var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 6;
       var lift = (state.hopAnim && state.hopAnim.seat === seat) ? (state.hopAnim.lift || 0) : 0;
-      var x = c.x + dx, y = c.y + dy - lift;
-      html += '<g transform="translate(' + x + ',' + y + ')">' +
-        '<circle r="13" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.5"/>' +
-        '<text y="5" text-anchor="middle" font-size="15">' + tokenEmoji(p.token) + '</text></g>';
+      var squash = (state.hopAnim && state.hopAnim.seat === seat) ? (state.hopAnim.squash || 1) : 1;
+      var x = c.x + dx, y = c.y + dy;
+      var isTurn = state.room.turn === seat;
+      var shadowR = Math.max(6, 14 - lift * 0.22);
+      html += '<g transform="translate(' + x + ',' + y + ')">';
+      if (isTurn) {
+        html += '<circle r="19" fill="none" stroke="#ffc83d" stroke-width="2.5" stroke-dasharray="5 3" opacity="0.9"/>';
+      }
+      html += '<ellipse cx="0" cy="4" rx="' + shadowR + '" ry="' + (shadowR * 0.55) + '" fill="rgba(0,0,0,.42)"/>';
+      html += '<g transform="translate(0,' + (-lift) + ') scale(' + (2 - squash) + ',' + squash + ')">' +
+        '<circle r="14.5" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.6"/>' +
+        '<circle r="12" cx="-2" cy="-2" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="1.5"/>' +
+        '<text y="5" text-anchor="middle" font-size="16">' + tokenEmoji(p.token) + '</text>' +
+        '</g></g>';
     }
     g.innerHTML = html;
   }
@@ -1185,7 +1357,7 @@ syncSoundBtn();
   function renderPropTab() {
     var room = state.room, me = meSeat();
     var lines = [];
-    lines.push('<div class="jb-trade-sum" style="text-align:left">Net worth: <b>$' + fmt((room.players[me] || {}).net_worth || 0) + '</b> · Houses left in bank: <b>' + fmt(room.bank_houses) + '</b> · Hotels: <b>' + fmt(room.bank_hotels) + '</b></div>');
+    lines.push('<div class="jb-trade-sum" style="display:block;text-align:left;line-height:1.5">Net worth: <b>$' + fmt((room.players[me] || {}).net_worth || 0) + '</b> · Houses left in bank: <b>' + fmt(room.bank_houses) + '</b> · Hotels: <b>' + fmt(room.bank_hotels) + '</b></div>');
     mySpaces().forEach(function (sp) {
       var built = sp.houses === 5 ? '🏨' : (sp.houses ? Array(sp.houses + 1).join('🏠') : '');
       lines.push('<div class="jb-trade-item" style="border:none;border-bottom:1px solid rgba(255,255,255,.08);border-radius:0"><span style="flex:1">' + esc(sp.name) + '</span><span>' + built + '</span><span style="color:' + (sp.mortgaged ? '#ff9f9f' : '#ffc83d') + '">' + (sp.mortgaged ? 'MORTGAGED' : '$' + fmt(sp.price)) + '</span></div>');
@@ -1406,7 +1578,69 @@ syncSoundBtn();
   }
 
   function queueHop(seat, from, to) {
-    state.hopQueue.push({ seat: seat, from: from, to: to, start: 0, dur: 340 });
+    state.hopQueue.push({ seat: seat, from: from, to: to, start: 0, dur: RM ? 90 : 290 });
+  }
+
+  /* Floating "+$200" / "-$50" over a token. `delay` lets it wait for the walk to land. */
+  var popups = [];
+  function addCashPopup(seat, delta, delay) {
+    popups.push({ seat: seat, delta: delta, born: performance.now() + (delay || 0), life: 1600 });
+  }
+  function renderPopups(now) {
+    var g = document.getElementById('svg-popups');
+    if (!g) return;
+    var html = '';
+    popups = popups.filter(function (pp) { return now - pp.born < pp.life; });
+    for (var i = 0; i < popups.length; i++) {
+      var pp = popups[i];
+      var age = now - pp.born;
+      if (age < 0) continue;
+      var pos = tokenScreenPos(pp.seat);
+      if (!pos) continue;
+      var k = age / pp.life;
+      var rise = easeOutCubic(Math.min(1, k * 1.4)) * 62;
+      var alpha = k < 0.75 ? 1 : 1 - (k - 0.75) / 0.25;
+      var pop = k < 0.12 ? 0.6 + (k / 0.12) * 0.55 : (k < 0.22 ? 1.15 - (k - 0.12) * 1.5 : 1);
+      var gain = pp.delta > 0;
+      var label = (gain ? '+$' : '−$') + fmt(Math.abs(pp.delta));
+      html += '<g transform="translate(' + pos.x + ',' + (pos.y - 30 - rise) + ') scale(' + pop + ')" opacity="' + alpha.toFixed(3) + '">' +
+        '<text text-anchor="middle" font-size="30" font-weight="900" stroke="#1b0f3b" stroke-width="6" stroke-linejoin="round" paint-order="stroke" fill="' + (gain ? '#4ade80' : '#ff6b6b') + '">' + label + '</text></g>';
+    }
+    g.innerHTML = html;
+  }
+
+  /* Follow-cam: on small screens the board can zoom to the active token. */
+  var zoom = { on: store.get('zoom') === '1', cx: 480, cy: 480, s: 960 };
+  function syncZoomBtn() { var b = $('jb-zoom'); if (b) b.classList.toggle('on', zoom.on); }
+  syncZoomBtn();
+  tap($('jb-zoom'), function () {
+    zoom.on = !zoom.on;
+    store.set('zoom', zoom.on ? '1' : '0');
+    syncZoomBtn();
+    kit.haptic(10);
+  });
+  function updateZoom() {
+    var svg = $('jb-board');
+    if (!svg) return;
+    var tx = 480, ty = 480, ts = 960;
+    if (zoom.on && state.room && state.room.status === 'playing') {
+      var seat = state.hopAnim ? state.hopAnim.seat : state.room.turn;
+      var p = tokenScreenPos(seat);
+      if (p) {
+        ts = 520;
+        tx = Math.max(ts / 2, Math.min(960 - ts / 2, p.x));
+        ty = Math.max(ts / 2, Math.min(960 - ts / 2, p.y));
+      }
+    }
+    var ease = RM ? 1 : 0.14;
+    zoom.cx += (tx - zoom.cx) * ease;
+    zoom.cy += (ty - zoom.cy) * ease;
+    zoom.s += (ts - zoom.s) * ease;
+    if (Math.abs(zoom.s - ts) < 0.5 && Math.abs(zoom.cx - tx) < 0.5 && Math.abs(zoom.cy - ty) < 0.5) {
+      zoom.cx = tx; zoom.cy = ty; zoom.s = ts;
+    }
+    var vb = (zoom.cx - zoom.s / 2).toFixed(1) + ' ' + (zoom.cy - zoom.s / 2).toFixed(1) + ' ' + zoom.s.toFixed(1) + ' ' + zoom.s.toFixed(1);
+    if (svg.getAttribute('viewBox') !== vb) svg.setAttribute('viewBox', vb);
   }
 
   function startHop(h) {
@@ -1425,11 +1659,15 @@ syncSoundBtn();
         var old = prev.players[seat];
         if (!old) return;
         var steps = (p.position - old.position + 40) % 40;
-        if (steps > 0 && steps <= 8 && !p.bankrupt) {
+        if (steps > 0 && steps <= 12 && !p.bankrupt) {
+          // a normal dice move (2-12): hop tile by tile so everyone sees the walk
           for (var s = 0; s < steps; s++) queueHop(seat, (old.position + s) % 40, (old.position + s + 1) % 40);
         } else if (steps !== 0) {
           state.displayedPos[seat] = p.position;
         }
+        // floating cash delta over the player's token
+        var delta = (p.cash || 0) - (old.cash || 0);
+        if (delta && !p.bankrupt) addCashPopup(seat, delta, steps > 0 && steps <= 12 ? Math.min(steps, 12) * 300 + 250 : 0);
       });
     }
     // log cues
@@ -1464,7 +1702,10 @@ syncSoundBtn();
     var m = /^(.+?) draws -/.exec(line);
     if (m && room && room.players) mover = room.players.filter(function (p) { return p.name === m[1]; })[0] || null;
     var tile = mover ? (room.board[mover.position] || {}) : {};
-    var kind = tile.kind === 'chance' ? 'PARABLE' : tile.kind === 'chest' ? 'SCRIPTURE' : 'JUBILEE!';
+    var kind = (tile.kind === 'parable' || tile.kind === 'chance') ? 'PARABLE'
+      : (tile.kind === 'scripture' || tile.kind === 'chest') ? 'SCRIPTURE' : 'JUBILEE!';
+    var parch = document.querySelector('#jb-cardreveal .jb-parchment');
+    if (parch) parch.setAttribute('data-deck', kind.toLowerCase().replace('!', ''));
     var verse = line;
     var effect = '';
     var open = line.indexOf('“');
@@ -1551,18 +1792,27 @@ syncSoundBtn();
       var h = state.hopAnim;
       var k = Math.min(1, (t - h.start) / h.dur);
       if (!(k >= 0)) k = 0;
-      h.lift = Math.sin(Math.PI * k) * 34;
-      state.displayedPos[h.seat] = h.from + k;
+      // arc up, squash on take-off and landing, stretch at the top
+      h.lift = Math.sin(Math.PI * k) * 30;
+      h.squash = k < 0.15 ? 1 - (0.15 - k) * 1.6 : (k > 0.85 ? 1 - (k - 0.85) * 1.6 : 1 + Math.sin(Math.PI * k) * 0.08);
+      state.displayedPos[h.seat] = h.from + easeOutCubic(k);
       if (k >= 1) {
         state.displayedPos[h.seat] = h.to;
         state.hopAnim = null;
         var sp = tileCenter(h.to);
         var scr = svgToScreen(sp.x, sp.y);
-        kit.fx.burst(scr.x, scr.y, ['#d9c8a0', '#b9a86e', '#fff8e7'], 8, { speed: 120, lift: 40, life: 0.5, size: 3.5 });
-        kit.sound.play('pop');
+        var last = !state.hopQueue.length || state.hopQueue[0].seat !== h.seat;
+        kit.fx.burst(scr.x, scr.y, last ? ['#ffc83d', '#ffe27a', '#fff8e7'] : ['#d9c8a0', '#b9a86e', '#fff8e7'], last ? 18 : 6,
+          { speed: last ? 180 : 110, lift: last ? 70 : 36, life: last ? 0.7 : 0.45, size: last ? 4.5 : 3, shape: last ? 'star' : undefined });
+        if (h.to === 0) { goldBurst(scr.x, scr.y); kit.sound.play('coin'); }
+        else kit.sound.play('pop');
+        if (last) kit.haptic(14);
       }
     }
+    updateZoom();
     renderTokensLayer();
+    renderTurnHighlight(t);
+    renderPopups(performance.now());
     // fx
     kit.fx.update(dt);
     fxCtx.clearRect(0, 0, fxCtx.canvas.width, fxCtx.canvas.height);
@@ -1575,6 +1825,7 @@ syncSoundBtn();
     stopPolling();
     state.room = null; state.prevRoom = null; state.code = ''; state.pid = ''; state.meSeat = null;
     state.endedShown = false; state.scorePosted = false; state.hopQueue = []; state.hopAnim = null; state.displayedPos = [];
+    popups = [];
     $('jb-end').classList.remove('show');
     $('jb-auction').classList.remove('show');
     showLobbyMain();
@@ -1644,9 +1895,34 @@ syncSoundBtn();
   /* board svg */
   .jb-tile { cursor: pointer; }
   .jb-tile:hover rect:first-child { stroke: var(--gold); stroke-width: 3; }
-  .jb-rays { animation: jb-rayspin 60s linear infinite; transform-origin: 480px 480px; }
+  #svg-highlights, #svg-tokens, #svg-popups { pointer-events: none; }
+  .jb-rays { animation: jb-rayspin 80s linear infinite; transform-origin: 0 0; transform-box: view-box; }
   @keyframes jb-rayspin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .jb-rays { animation: none; } }
+  /* deck-coloured card reveal */
+  .jb-parchment { position: relative; overflow: hidden; }
+  .jb-parchment::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 10px; background: linear-gradient(90deg, #a16207, #fde68a, #a16207); }
+  .jb-parchment[data-deck="parable"]::before { background: linear-gradient(90deg, #6d28d9, #c4b5fd, #6d28d9); }
+  .jb-parchment[data-deck="scripture"]::before { background: linear-gradient(90deg, #1d4ed8, #93c5fd, #1d4ed8); }
+  .jb-parchment[data-deck="parable"] .kind { color: #6d28d9; }
+  .jb-parchment[data-deck="scripture"] .kind { color: #1d4ed8; }
+  #jb-cardreveal { perspective: 1200px; }
+  .jb-face-sm { width: 40px; height: 40px; flex: 0 0 auto; box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
+  .jb-player.turn .jb-face-sm { animation: jb-bob 1.4s ease-in-out infinite; }
+  @keyframes jb-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+  /* phones: let the action bar and tabs breathe under a compact board */
+  @media (max-width: 819px) and (orientation: portrait) {
+    #jb-panel { min-height: 120px; }
+    .jb-tab { min-height: 40px; padding: 8px 4px; font-size: 12px; }
+  }
+  /* very large screens (TV browsers opening the phone view, 4K desktops) */
+  @media (min-width: 1800px) and (min-height: 1000px) {
+    html { font-size: 20px; }
+    #jb-board-wrap { width: min(calc(100dvh - 110px), calc(100vw - 600px), 1100px); }
+    #jb-side { flex: 0 0 560px; max-width: 600px; }
+    .jb-btn { font-size: 20px; }
+    .jb-pname, .jb-pcash { font-size: 15px; }
+  }
 </style>
 </body>
 </html>
