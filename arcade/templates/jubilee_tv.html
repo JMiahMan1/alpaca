@@ -79,9 +79,31 @@
   body.playing .main { align-items: center; justify-content: center; }
   .tvPlay { display: flex; align-items: stretch; justify-content: center; gap: .12rem; height: 9.677rem; }
   .tvBoard { position: relative; width: 12.5rem; height: 9.677rem; flex: 0 0 auto; }
+  .tvBoard { overflow: hidden; border-radius: .06rem; }
+  .tvZoom { position: absolute; left: 0; top: 0; width: 100%; height: 100%; transform-origin: 0 0; -webkit-transform-origin: 0 0; will-change: transform; }
   .tvBoard svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  /* The dice dock over the top of the right frame, off the board, and stay
+     until the turn passes. */
+  #tv-fx.dock { left: auto; right: 0; top: 0; bottom: auto; width: 2.45rem; height: 2.2rem; }
+  #tv-fx.dock .tvDice { padding: .12rem .1rem .1rem; border-radius: .2rem; }
+  #tv-fx.dock .tvDie { width: .82rem; height: .82rem; margin: 0 .08rem; border-radius: .16rem; }
+  #tv-fx.dock .tvPip { width: .15rem; height: .15rem; margin: -.075rem 0 0 -.075rem; }
+  #tv-fx.dock .tvRollText { font-size: .22rem; margin-top: .08rem; line-height: 1.2; max-width: 2.3rem; }
+  /* The landing card. */
+  #tv-land { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: none; align-items: center; justify-content: center; z-index: 9; pointer-events: none; }
+  #tv-land.on { display: flex; }
+  .lCard { width: 5.2rem; background: #fffdf0; color: #1b0f3b; border-radius: .26rem; border: .05rem solid #1b0f3b; overflow: hidden;
+    box-shadow: 0 .25rem .8rem rgba(0,0,0,.65); animation: tvpop .45s cubic-bezier(.2,1.3,.3,1); padding-bottom: .16rem; }
+  .lBand { padding: .2rem .2rem; font-size: .5rem; font-weight: 900; color: #fff; text-align: center; text-shadow: 0 .03rem .06rem rgba(0,0,0,.4); line-height: 1.1; }
+  .lWho { text-align: center; font-size: .26rem; font-weight: 800; color: #6b5b8f; margin: .1rem 0 .06rem; }
+  .lRow { display: flex; justify-content: space-between; align-items: baseline; padding: .04rem .3rem; font-size: .3rem; font-weight: 800; }
+  .lRow b { font-size: .38rem; font-variant-numeric: tabular-nums; }
+  .lRow.big { justify-content: center; font-size: .46rem; font-weight: 900; color: #b91c1c; padding: .1rem; }
+  .lOwner { margin: .1rem .3rem 0; padding: .08rem .16rem; border-radius: .14rem; background: rgba(27,15,59,.07); font-size: .3rem; font-weight: 900; text-align: center; }
+  .lOwner i { display: inline-block; width: .26rem; height: .26rem; border-radius: 50%; border: .03rem solid #1b0f3b; vertical-align: -.03rem; margin-right: .1rem; }
+  .lOwner.forsale { background: #e9fbe9; color: #1d6b3d; }
   .tvFrame { flex: 0 0 2.2rem; display: flex; flex-direction: column; gap: .1rem; min-width: 0; color: #fff8e7; }
-  .fLabel { font-size: .16rem; letter-spacing: .2em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
+  .fLabel { font-size: .22rem; letter-spacing: .2em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
   .tvFrame .players { display: flex; flex-direction: column; gap: .08rem; margin-top: .06rem; }
   .tvFrame .plr { display: flex; flex-direction: column; align-items: center; text-align: center; gap: .03rem; background: rgba(255,255,255,.07);
     border-radius: .16rem; padding: .08rem .06rem; border: .04rem solid transparent; }
@@ -90,27 +112,27 @@
   .tvFrame .plr .ring { width: .58rem; height: .58rem; border-radius: 50%; border: .045rem solid; display: flex; align-items: center;
     justify-content: center; font-size: .34rem; background: rgba(255,255,255,.1); }
   .tvFrame .plr .who { width: 100%; min-width: 0; }
-  .tvFrame .plr .nm { font-size: .27rem; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
-  .tvFrame .plr .st { font-size: .24rem; font-weight: 900; color: var(--gold2); font-variant-numeric: tabular-nums; }
+  .tvFrame .plr .nm { font-size: .3rem; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
+  .tvFrame .plr .st { font-size: .28rem; font-weight: 900; color: var(--gold2); font-variant-numeric: tabular-nums; }
   .tvFrame .plr .st small { display: none; }
   .tvFrame .plr.jail .st { color: var(--rose); font-size: .18rem; }
   .tvFrame .players.many .plr { flex-direction: row; text-align: left; padding: .05rem .08rem; gap: .08rem; }
   .tvFrame .players.many .plr .ring { width: .44rem; height: .44rem; font-size: .26rem; flex: 0 0 auto; }
-  .tvFrame .players.many .plr .nm { font-size: .22rem; }
-  .tvFrame .players.many .plr .st { font-size: .2rem; }
+  .tvFrame .players.many .plr .nm { font-size: .26rem; }
+  .tvFrame .players.many .plr .st { font-size: .24rem; }
   .fCard { background: rgba(255,255,255,.06); border: .02rem solid rgba(255,255,255,.12); border-radius: .16rem; padding: .1rem .12rem; }
   .fPot { font-size: .5rem; font-weight: 900; color: var(--mint); font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .fBank { font-size: .2rem; font-weight: 800; color: #e9e4ff; }
-  .fBank small { display: block; color: var(--dim); font-size: .15rem; }
+  .fBank { font-size: .26rem; font-weight: 800; color: #e9e4ff; }
+  .fBank small { display: block; color: var(--dim); font-size: .2rem; }
   .fStory { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-  .fLog { font-size: .19rem; font-weight: 700; color: #d9d0ff; line-height: 1.3; margin-top: .06rem; max-height: .76rem; overflow: hidden; }
+  .fLog { font-size: .24rem; font-weight: 700; color: #d9d0ff; line-height: 1.3; margin-top: .06rem; max-height: .76rem; overflow: hidden; }
   .fJoin { display: flex; flex-direction: column; align-items: center; text-align: center; }
   .fJoin img { width: 1.25rem; height: 1.25rem; background: #fff; border-radius: .1rem; padding: .05rem; margin-bottom: .04rem; }
   .fJoin b { font-size: .4rem; color: var(--gold2); letter-spacing: .15em; }
   .tvCenter { position: absolute; box-sizing: border-box; padding: .2rem; display: flex; flex-direction: column; align-items: center; color: #fff8e7; }
   .cTitle { display: flex; align-items: center; gap: .14rem; }
   .cTitle .brand { font-size: .5rem; }
-  .cTitle .pill { font-size: .19rem; margin-left: 0; }
+  .cTitle .pill { font-size: .24rem; margin-left: 0; }
   .cNow { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; width: 100%; }
   .tvCenter .cTurn { display: flex; align-items: center; justify-content: center; gap: .24rem; }
   .tvCenter .cTurn .ring.big { width: 1.2rem; height: 1.2rem; border-radius: 50%; border: .08rem solid; display: flex; align-items: center;
@@ -193,6 +215,7 @@
     </div>
     <div class="main" id="tv-main"></div>
     <div id="tv-fx"></div>
+    <div id="tv-land"></div>
     <div class="foot">SCAN TO PLAY · <b id="tv-code">····</b> · games.sumemail.com</div>
   </div>
 </div>
@@ -233,7 +256,7 @@
   function showFx(html, ms, dim) {
     var fx = $("tv-fx");
     fx.innerHTML = html;
-    fx.className = dim ? "on dim" : "on";
+    fx.className = dim === "dock" ? "on dock" : dim ? "on dim" : "on";
     if (fxTimer) clearTimeout(fxTimer);
     fxTimer = setTimeout(hideFx, ms);
   }
@@ -256,7 +279,7 @@
       var who = room.players && room.players[room.turn] ? room.players[room.turn].name : "";
       // A real tumble: the dice spin through faces, then land on the roll.
       showFx('<div class="tvDice"><div class="tvDicePair tumbling" id="tv-dice">' + dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)) + '</div>'
-        + '<div class="tvRollText" id="tv-rolltext" style="visibility:hidden">' + esc(who) + ' rolled ' + r.d1 + ' + ' + r.d2 + ' = ' + (r.d1 + r.d2) + (r.doubles ? " · DOUBLES!" : "") + '</div></div>', 8000, false);
+        + '<div class="tvRollText" id="tv-rolltext" style="visibility:hidden">' + esc(who) + ' rolled ' + r.d1 + ' + ' + r.d2 + ' = ' + (r.d1 + r.d2) + (r.doubles ? " · DOUBLES!" : "") + '</div></div>', 8000, "dock");
       var flips = 0, d1 = r.d1, d2 = r.d2;
       var spin = setInterval(function () {
         var pair = $("tv-dice"); if (!pair) { clearInterval(spin); return; }
@@ -346,7 +369,7 @@
   // D: how deep the edge tiles are (the corners are D x D); S and TW: a side
   // tile's and a top/bottom tile's length along the edge. Deeper than a real
   // board's, so names and prices read from across the room.
-  var BW = 1240, BH = 960, D = 140, S = (BH - 2 * D) / 9, TW = (BW - 2 * D) / 9;
+  var BW = 1240, BH = 960, D = 120, S = (BH - 2 * D) / 9, TW = (BW - 2 * D) / 9;
   function svgEl(tag, attrs, parent) {
     var el = document.createElementNS(SVGNS, tag);
     for (var k in attrs) el.setAttribute(k, attrs[k]);
@@ -422,12 +445,50 @@
     var t = svgEl("text", { x: x, y: y + r * 0.38, "text-anchor": "middle", "font-size": (r * 1.15).toFixed(1) }, g);
     t.textContent = art;
   }
+  /* One look for every space. */
+  var NAME_FS = 16, PRICE_FS = 16, BAND = 20;
+  var KIND_BAND = { railroad: "#1f2937", utility: "#374151", parable: "#7c3aed", scripture: "#1d4ed8", tribute: "#c2410c", offering: "#c2410c" };
+  var SHORT = { "The King's Highway": "King's Highway", "The Via Maris": "Via Maris", "The Desert Caravan": "Caravan",
+    "The New Jerusalem": "New Jerusalem", "The Tribute": "Tribute", "The Offering": "Offering", "The Lamp": "Lamp",
+    "The Well": "Well", "PARABLE": "Parable", "SCRIPTURE": "Scripture" };
+  function shortName(sp) { return SHORT[sp.name] || sp.name || ""; }
+  function tileArt(sp) {
+    if (sp.kind === "parable") return "📜";
+    if (sp.kind === "scripture") return "📖";
+    if (sp.kind === "railroad") return sp.i === 35 ? "🐫" : "🚂";
+    if (sp.kind === "utility") return sp.i === 12 ? "💡" : "⛲";
+    if (sp.kind === "tribute") return "🪙";
+    if (sp.kind === "offering") return "🕊️";
+    return null;
+  }
+  function tileLabel(g, label, cy, maxW) {
+    var words = String(label).split(/\s+/).filter(Boolean), lines = [words.join(" ")];
+    if (words.length > 1 && 0.6 * NAME_FS * lines[0].length > maxW) {
+      var best = null;
+      for (var k = 1; k < words.length; k++) {
+        var cand = [words.slice(0, k).join(" "), words.slice(k).join(" ")];
+        var m = Math.max(cand[0].length, cand[1].length);
+        if (!best || m < best.m) best = { lines: cand, m: m };
+      }
+      lines = best.lines;
+    }
+    var lh = NAME_FS * 1.1;
+    for (var li = 0; li < lines.length; li++) {
+      var attrs = { x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), "text-anchor": "middle",
+        "font-size": NAME_FS, "font-weight": 900, fill: "#1b0f3b" };
+      if (0.6 * NAME_FS * lines[li].length > maxW) { attrs.textLength = maxW; attrs.lengthAdjust = "spacingAndGlyphs"; }
+      svgEl("text", attrs, g).textContent = lines[li];
+    }
+  }
   var board = null;   // { code, svg, own: [], houses: [], mort: [], tokens: {}, center }
   function buildBoard(room) {
     var wrap = document.createElement("div");
     wrap.className = "tvBoard";
+    var zoom = document.createElement("div");   // the camera moves this
+    zoom.className = "tvZoom";
+    wrap.appendChild(zoom);
     var svg = svgEl("svg", { viewBox: "0 0 " + BW + " " + BH, preserveAspectRatio: "xMidYMid meet" }, null);
-    wrap.appendChild(svg);
+    zoom.appendChild(svg);
     var defs = svgEl("defs", {}, svg);
     var parchment = svgEl("radialGradient", { id: "parch", cx: "50%", cy: "42%", r: "75%" }, defs);
     svgEl("stop", { offset: "0%", "stop-color": "#fffdf0" }, parchment);
@@ -442,7 +503,8 @@
     svgEl("stop", { offset: "100%", "stop-color": "#000000", "stop-opacity": ".35" }, gloss);
     svgEl("rect", { x: 0, y: 0, width: BW, height: BH, fill: "url(#parch)", stroke: "#1b0f3b", "stroke-width": 6 }, svg);
     svgEl("rect", { x: D, y: D, width: BW - 2 * D, height: BH - 2 * D, fill: "#1d1145", stroke: "#f5c344", "stroke-width": 4 }, svg);
-    var b = { code: room.code, svg: svg, wrap: wrap, own: [], houses: [], mort: [], tokens: {}, shown: {} };
+    var b = { code: room.code, svg: svg, wrap: wrap, zoom: zoom, own: [], houses: [], mort: [], tokens: {}, shown: {},
+      cam: { z: 1, x: BW / 2, y: BH / 2, applied: "" }, focus: null, lastMove: 0 };
     var spaces = room.board || [];
     for (var i = 0; i < 40; i++) {
       var sp = spaces[i]; if (!sp) continue;
@@ -454,36 +516,19 @@
       if (i === 10) { corner(g, w, h, "THE DUNGEON", "JUST VISITING", "⛓️", "#c3b2a0"); continue; }
       if (i === 20) { corner(g, w, h, "SABBATH REST", "FREE PARKING", "🕊️", "#bde0fe"); continue; }
       if (i === 30) { corner(g, w, h, "SENT TO", "THE DUNGEON", "⚔️", "#ffc4c4"); continue; }
-      var band = GROUP_COLORS[sp.group] || (sp.kind === "railroad" ? "#1f2937" : sp.kind === "utility" ? "#374151" : null);
-      var bandColor = sp.kind === "chance" ? "#8b5cf6" : sp.kind === "chest" ? "#1d4ed8" : sp.kind === "tax" ? "#c44" : band;
-      var bandH = 26;
-      if (bandColor) svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: bandH, fill: bandColor }, g);
-      var label = sp.kind === "chance" ? "PARABLE" : sp.kind === "chest" ? "SCRIPTURE" : null;
-      var nameTxt = label || sp.name || "";
-      var art = sp.kind === "chance" ? "📜" : sp.kind === "chest" ? "📖" : sp.kind === "railroad" ? (sp.i === 35 ? "🐫" : "🚂")
-        : sp.kind === "utility" ? (sp.i === 12 ? "💡" : "⛲") : sp.kind === "tax" ? "🪙" : null;
-      var priceTxt = sp.kind === "tax" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
-      var wide = c.rot === 0 || c.rot === 180;   // the top and bottom rows
-      var priceFs = wide ? 28 : 19;
-      var top = -h / 2 + (bandColor ? bandH : 0), bottom = h / 2 - (priceTxt ? priceFs + 10 : 4);
-      var mid = (top + bottom) / 2;
-      if (art && wide && w >= 140) {
-        // Wide tile: the picture on the left, the name beside it.
-        medallion(g, -w / 2 + 34, mid, 27, art, bandColor);
-        drawName(g, nameTxt, 28, mid, w - 72, 32);
-      } else if (art) {
-        // Narrow tile with a picture: a smaller picture and at most two lines,
-        // so the name never runs into the price.
-        // Picture above the name (a side tile, or a row tile too narrow to
-        // put them side by side).
-        var mr = wide ? 19 : 17;
-        medallion(g, 0, top + mr + 5, mr, art, bandColor);
-        drawName(g, nameTxt, 0, (top + 2 * mr + 10 + bottom) / 2 + 1, w - 8, wide ? 21 : 17, null, 2);
-      } else {
-        drawName(g, nameTxt, 0, mid, w - (wide ? 18 : 8), wide ? 38 : 22);
-      }
+      // Every space the same way: colour band, picture (if any), the name in
+      // one size, the price in one size. Nothing shrinks to fit; a rare long
+      // word is narrowed a little instead, so the letters stay the same height.
+      var bandColor = KIND_BAND[sp.kind] || GROUP_COLORS[sp.group] || null;
+      if (bandColor) svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: BAND, fill: bandColor }, g);
+      var art = tileArt(sp);
+      if (art) medallion(g, 0, -h / 2 + BAND + 19, 15, art, bandColor);
+      var priceTxt = sp.kind === "tribute" ? "PAY $" + fmt(sp.flat || 200) : sp.kind === "offering" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
+      var nameTop = art ? -h / 2 + BAND + 38 : -h / 2 + BAND + 4, nameBottom = h / 2 - (priceTxt ? 28 : 6);
+      tileLabel(g, shortName(sp), (nameTop + nameBottom) / 2, w - 8);
       if (priceTxt) {
-        var pt = svgEl("text", { x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": priceFs, "font-weight": 900, fill: sp.kind === "tax" ? "#b91c1c" : "#1b0f3b" }, g);
+        var pt = svgEl("text", { x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900,
+          fill: (sp.kind === "tribute" || sp.kind === "offering") ? "#b91c1c" : "#1b0f3b" }, g);
         pt.textContent = priceTxt;
       }
       // Changing bits, kept for update(): owner, houses, mortgage.
@@ -498,7 +543,7 @@
     center.className = "tvCenter";
     center.style.left = (D / BW * 100) + "%"; center.style.top = (D / BH * 100) + "%";
     center.style.width = ((BW - 2 * D) / BW * 100) + "%"; center.style.height = ((BH - 2 * D) / BH * 100) + "%";
-    wrap.appendChild(center);
+    zoom.appendChild(center);
     b.center = center;
     return b;
   }
@@ -551,6 +596,24 @@
     animating = true;
   }
   var animating = false;
+  /* The camera: the whole board between moves; in a move it glides in toward
+     the piece and follows it (the names there reach TV size), then glides
+     back out a moment after it lands -- the way console board games do. */
+  var ZOOM_IN = 1.7, lastCam = 0;
+  function camera(now) {
+    var c = board.cam, dt = Math.min(0.1, (now - (lastCam || now)) / 1000); lastCam = now;
+    var close = board.focus && now - board.lastMove < 1600;
+    var tz = close ? ZOOM_IN : 1, tx = close ? board.focus.x : BW / 2, ty = close ? board.focus.y : BH / 2;
+    var halfW = BW / (2 * tz), halfH = BH / (2 * tz);
+    tx = Math.max(halfW, Math.min(BW - halfW, tx)); ty = Math.max(halfH, Math.min(BH - halfH, ty));
+    var e = 1 - Math.exp(-dt * 3.2);
+    c.z += (tz - c.z) * e; c.x += (tx - c.x) * e; c.y += (ty - c.y) * e;
+    var W = board.wrap.clientWidth || 1, H = board.wrap.clientHeight || 1;
+    var px = c.x / BW * W, py = c.y / BH * H;
+    var ox = Math.min(0, Math.max(W - W * c.z, W / 2 - px * c.z)), oy = Math.min(0, Math.max(H - H * c.z, H / 2 - py * c.z));
+    var tr = "translate(" + ox.toFixed(1) + "px," + oy.toFixed(1) + "px) scale(" + c.z.toFixed(4) + ")";
+    if (tr !== c.applied) { c.applied = tr; board.zoom.style.transform = tr; board.zoom.style.webkitTransform = tr; }
+  }
   function tick(now) {
     if (board) {
       var moving = false, places = {};
@@ -573,11 +636,15 @@
         // The piece stands on the band side of its tile (off the name); in a
         // hop the body rises and its shadow stays on the board, shrinking.
         t.g.setAttribute("transform", "translate(" + (pt.x + pt.ix + dx).toFixed(1) + " " + (pt.y + pt.iy + dy).toFixed(1) + ")");
+        if (t.dur || t.queue.length) { board.focus = { x: pt.x, y: pt.y }; board.lastMove = now; }
+        if (t.wasMoving && !t.dur && !t.queue.length) landed(t, seat);
+        t.wasMoving = !!(t.dur || t.queue.length);
         t.body.setAttribute("transform", "translate(0 " + (-lift).toFixed(1) + ")");
         var sc = 1 - lift / 90;
         t.shadow.setAttribute("rx", (26 * sc).toFixed(1)); t.shadow.setAttribute("ry", (9 * sc).toFixed(1));
       }
       animating = moving;
+      camera(now);
     }
     requestAnimationFrame(tick);
   }
@@ -625,8 +692,39 @@
       + '<div class="fCard fJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div class="fLabel">Scan to play</div><b>' + code + '</b></div>';
     return { left: left, center: center, right: right };
   }
+  /* Where a piece lands, a card big enough to read across the room: the full
+     name, the price, the rent, and who owns it. */
+  var lastRoom = null, landTimer = null;
+  function landed(t, seat) {
+    var room = lastRoom; if (!room || !room.board) return;
+    var sp = room.board[Math.round(t.shown) % 40];
+    if (!sp || (!sp.price && sp.kind !== "tribute" && sp.kind !== "offering")) return;
+    var color = KIND_BAND[sp.kind] || GROUP_COLORS[sp.group] || "#7c3aed";
+    var rows = "";
+    if (sp.kind === "tribute" || sp.kind === "offering") rows = '<div class="lRow big">Pay $' + fmt(sp.flat || sp.amount || 0) + '</div>';
+    else {
+      rows += '<div class="lRow"><span>Price</span><b>$' + fmt(sp.price) + '</b></div>';
+      if (sp.rents) {
+        rows += '<div class="lRow"><span>Rent</span><b>$' + fmt(sp.rents[0]) + '</b></div>'
+          + '<div class="lRow"><span>With a hotel</span><b>$' + fmt(sp.rents[5]) + '</b></div>';
+      } else if (sp.kind === "railroad") rows += '<div class="lRow"><span>Rent</span><b>$25 - $200</b></div>';
+      else if (sp.kind === "utility") rows += '<div class="lRow"><span>Rent</span><b>4× or 10× the dice</b></div>';
+      var owner = sp.owner != null ? room.players[sp.owner] : null;
+      rows += owner ? '<div class="lOwner"><i style="background:' + seatColor(sp.owner) + '"></i>Owned by ' + esc(owner.name)
+          + (sp.houses === 5 ? ' · 🏨' : sp.houses ? ' · ' + sp.houses + ' 🏠' : '') + (sp.mortgaged ? ' · mortgaged' : '') + '</div>'
+        : '<div class="lOwner forsale">For sale</div>';
+    }
+    var who = room.players[seat];
+    var el = $("tv-land");
+    el.innerHTML = '<div class="lCard"><div class="lBand" style="background:' + color + '">' + esc(sp.name) + '</div>'
+      + '<div class="lWho">' + esc(who ? who.name : "") + ' landed here</div>' + rows + '</div>';
+    el.className = "on";
+    if (landTimer) clearTimeout(landTimer);
+    landTimer = setTimeout(function () { el.className = ""; }, 4500);
+  }
   var centerSig = "";
   function renderGame(room) {
+    lastRoom = room;
     if (!board || board.code !== room.code || !document.body.contains(board.wrap)) {
       $("tv-main").innerHTML = "";
       board = buildBoard(room);
