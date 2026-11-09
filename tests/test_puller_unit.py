@@ -395,3 +395,42 @@ def test_companion_pull_saves_under_name_and_replaces_a_same_size_repull(monkeyp
         alpaca_puller.pull_companion("hf://unsloth/gemma-4-GGUF/mmproj-F16.gguf", local_name="mmproj-gemma-F16.gguf")
         == 0
     )
+
+
+def test_update_models_ini_keeps_sections_whose_link_does_not_resolve_here(monkeypatch, tmp_path):
+    """Router links are relative to the container layout, so on the host every
+    one dangles; dropping their sections once wiped models.ini to one model."""
+    router = tmp_path / "router"
+    router.mkdir()
+    monkeypatch.setattr(alpaca_puller, "ROUTER_MODELS_DIR", str(router))
+    (router / "qwen--latest.gguf").symlink_to("../models/blobs/sha256-not-on-this-host")
+    (router / "models.ini").write_text(
+        "[*]\ntemperature = 0.6\n\n[qwen--latest]\nmodel = /router-models/qwen--latest.gguf\nctx-size = 65536\n"
+        "moe-cache-mib = 512\n"
+    )
+    alpaca_puller.update_models_ini()
+    import configparser
+
+    cp = configparser.ConfigParser(delimiters=("=",))
+    cp.read(router / "models.ini")
+    assert cp.has_section("qwen--latest")
+    assert cp["qwen--latest"]["ctx-size"] == "65536"
+    assert cp["qwen--latest"]["moe-cache-mib"] == "512"
+
+
+def test_download_only_import_never_touches_the_router(monkeypatch, tmp_path):
+    monkeypatch.setattr(alpaca_puller, "MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(alpaca_puller, "resolve_huggingface_filename", lambda repo, filename: filename)
+    monkeypatch.setattr(alpaca_puller, "huggingface_headers", lambda: {})
+    partial = tmp_path / "partial.gguf"
+    monkeypatch.setattr(alpaca_puller, "partial_download_path", lambda *a: partial)
+    monkeypatch.setattr(
+        alpaca_puller, "download_with_progress", lambda client, url, headers, label, path: path.write_bytes(b"GGUF")
+    )
+    touched = []
+    monkeypatch.setattr(alpaca_puller, "ensure_router_symlink", lambda *a, **k: touched.append("link"))
+    monkeypatch.setattr(alpaca_puller, "update_models_ini", lambda *a, **k: touched.append("ini"))
+    monkeypatch.setattr(alpaca_puller, "create_model_profile", lambda *a, **k: touched.append("profile"))
+    rc = alpaca_puller.import_huggingface_gguf("hf://owner/repo/m.gguf", local_name="m:q4", register=False)
+    assert rc == 0
+    assert touched == []

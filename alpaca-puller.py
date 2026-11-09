@@ -409,6 +409,10 @@ def update_models_ini():
     # the reindexer does not derive, e.g. reasoning-budget / thinking used by
     # the benchmark harnesses.
     preexisting_sections = {}
+    existing_ini = configparser.ConfigParser(delimiters=("=",))
+    with contextlib.suppress(Exception):
+        existing_ini.read(ini_path)
+    kept_unresolved: list[str] = []
     try:
         cp = configparser.ConfigParser(delimiters=("=",))
         cp.read(ini_path)
@@ -430,6 +434,16 @@ def update_models_ini():
             if entry.suffix == ".gguf":
                 resolved = entry.resolve()
                 if not resolved.exists():
+                    # Router links are relative to the CONTAINER layout
+                    # (../models/blobs = /models). Run on the host, every one of
+                    # them dangles, and dropping their sections wiped models.ini
+                    # down to the one model whose link happened to resolve. A
+                    # link we cannot follow from here keeps its existing section.
+                    if existing_ini.has_section(entry.stem):
+                        content.append(f"[{entry.stem}]")
+                        content.extend(f"{k} = {v}" for k, v in existing_ini[entry.stem].items())
+                        content.append("")
+                        kept_unresolved.append(entry.stem)
                     continue
 
                 alias = entry.stem
@@ -605,6 +619,13 @@ def update_models_ini():
     with contextlib.suppress(Exception):
         os.chmod(ini_path, 0o666)
     print(f"Updated models preset configuration at {ini_path}")
+    if kept_unresolved:
+        print(
+            f"Warning: kept {len(kept_unresolved)} section(s) whose router link does not resolve from here "
+            f"({', '.join(kept_unresolved)}); reindex inside the container (docker compose run --rm "
+            "alpaca-indexer) to rebuild them.",
+            file=sys.stderr,
+        )
 
 
 def get_model_info(model_name):
@@ -1106,7 +1127,7 @@ def download_to_partial_file(client, url, headers, label, partial_path):
     return partial_path
 
 
-def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resume=False):
+def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resume=False, register=True):
     if insecure:
         raise RuntimeError("--insecure is only supported for Ollama registry pulls.")
 
@@ -1207,6 +1228,13 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resu
             ],
         }
         write_manifest_atomic(manifest_path, manifest)
+        if not register:
+            # Blob + manifest only. The router link, models.ini section and
+            # profile come from a later reindex - inside the container, whose
+            # paths the links are relative to - so a running settings scan
+            # (which owns models.ini) is never raced.
+            print(f"\nDownloaded {normalize_model_name(local_name)} (not registered; run a reindex to register it)")
+            return 0
         router_path = ensure_router_symlink(local_name, manifest)
         update_models_ini()
         create_model_profile(router_path, manifest=manifest, repo=repo, filename=filename)
@@ -1411,7 +1439,9 @@ def pull_companion(model_name, no_resume=False, local_name=None):
         client.close()
 
 
-def pull_model(model_name, source="auto", local_name=None, insecure=False, no_resume=False, companion=False):
+def pull_model(
+    model_name, source="auto", local_name=None, insecure=False, no_resume=False, companion=False, register=True
+):
     global _CURRENT_MODEL
     _CURRENT_MODEL = model_name
     # Defensive: clear any stale stop marker left by a previous cancel so this
@@ -1423,10 +1453,14 @@ def pull_model(model_name, source="auto", local_name=None, insecure=False, no_re
 
         resolved_source = choose_source(model_name, source)
         if resolved_source == "huggingface":
-            result = import_huggingface_gguf(model_name, local_name=local_name, insecure=insecure, no_resume=no_resume)
+            result = import_huggingface_gguf(
+                model_name, local_name=local_name, insecure=insecure, no_resume=no_resume, register=register
+            )
         else:
+            if not register:
+                raise RuntimeError("--download-only is supported for Hugging Face GGUF imports only.")
             result = pull_ollama_model(model_name, insecure=insecure, no_resume=no_resume)
-        if result == 0:
+        if result == 0 and register:
             reindex_models()
         return result
     except httpx.HTTPStatusError as exc:
@@ -1584,6 +1618,14 @@ def build_parser():
         action="store_true",
         help="Download as a companion file (VAE, CLIP, etc.) and save to companion directory.",
     )
+    pull_parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help=(
+            "Hugging Face GGUF: store the blob and manifest but do not register it (no router link, "
+            "no models.ini change). Use while a settings scan runs; reindex in the container afterwards."
+        ),
+    )
 
     remove_parser = subparsers.add_parser("remove", help="Remove a local model manifest and unshared blobs.")
     remove_parser.add_argument("model", help="Local model name, for example tinyllama or qwen3:35b-q4.")
@@ -1610,6 +1652,7 @@ def main(argv=None):
             insecure=args.insecure,
             no_resume=args.no_resume,
             companion=args.companion,
+            register=not args.download_only,
         )
     if args.command == "reindex":
         return reindex_models()
