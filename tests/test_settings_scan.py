@@ -523,6 +523,8 @@ def test_dense_models_get_the_tighter_hill_cap():
     assert settings_scan.hill_limit(10, 4, is_moe=True) == 10
     assert settings_scan.hill_limit(10, None, is_moe=False) == 10
     assert settings_scan.hill_limit(3, 4, is_moe=False) == 3
+    # A dense model entirely in VRAM decodes fast: its probes are cheap, no cap.
+    assert settings_scan.hill_limit(10, 4, is_moe=False, fully_on_gpu=True) == 10
 
 
 def test_a_dense_models_first_hill_neighbors_are_the_ones_that_matter():

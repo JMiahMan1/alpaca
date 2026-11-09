@@ -1040,9 +1040,11 @@ def load_section(c, section, overrides):
         pass
 
 
-def hill_limit(max_hill: int, max_hill_dense: int | None, is_moe: bool) -> int:
-    """Hill-climb probe cap: --max-hill, tightened by --max-hill-dense for dense models."""
-    if is_moe or max_hill_dense is None:
+def hill_limit(max_hill: int, max_hill_dense: int | None, is_moe: bool, fully_on_gpu: bool = False) -> int:
+    """Hill-climb probe cap: --max-hill, tightened by --max-hill-dense for a
+    dense model that spills layers to the CPU. One that fits entirely in VRAM
+    decodes fast, so its probes are cheap and it keeps the full search."""
+    if is_moe or fully_on_gpu or max_hill_dense is None:
         return max_hill
     return min(max_hill, max_hill_dense)
 
@@ -1495,7 +1497,13 @@ def main():
         if incumbent is not None:
             print(f"[scan] incumbent candidate: {label_for(incumbent)}")
             neighbors.insert(0, incumbent)
-        hill_cap = hill_limit(args.max_hill, args.max_hill_dense, is_moe)
+        try:
+            fully_on_gpu = int(winner_settings.get("n-gpu-layers") or 0) >= int(shape.get("n_layers") or 10**6)
+        except (TypeError, ValueError):
+            fully_on_gpu = False
+        hill_cap = hill_limit(args.max_hill, args.max_hill_dense, is_moe, fully_on_gpu)
+        if hill_cap < args.max_hill:
+            print(f"[scan] dense model with layers on the CPU: hill capped at {hill_cap} probes")
         for nset in neighbors:
             if hill_done >= hill_cap or THERMAL_STOP:
                 break
