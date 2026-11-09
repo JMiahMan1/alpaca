@@ -127,7 +127,7 @@
   .fStory { flex: 1 1 auto; min-height: 0; overflow: hidden; }
   /* Two whole lines, then an ellipsis: never half a line cut off. */
   .fLog { font-size: .24rem; font-weight: 700; color: #d9d0ff; line-height: 1.3; margin-top: .08rem; overflow: hidden;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
   .fJoin { display: flex; flex-direction: column; align-items: center; text-align: center; }
   .fJoin img { width: 1.25rem; height: 1.25rem; background: #fff; border-radius: .1rem; padding: .05rem; margin-bottom: .04rem; }
   .fJoin b { font-size: .4rem; color: var(--gold2); letter-spacing: .15em; }
@@ -171,7 +171,7 @@
   .cAlert { display: inline-block; font-size: .28rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .05rem .22rem; margin-bottom: .08rem; }
   .cAlert.debt { background: #ffd4d4; color: #8a1c1c; }
   .cEvent { font-size: .3rem; font-weight: 900; color: #fff8e7; line-height: 1.25; overflow: hidden;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
   /* A drawn card: out of its deck, across, and turned over. */
   #tv-card { position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 11; display: none; pointer-events: none; }
   #tv-card.on { display: block; background: rgba(8,4,24,.45); }
@@ -236,6 +236,9 @@
   .tvCard .eff { margin: .22rem .3rem .3rem; padding: .14rem; border-radius: .14rem; background: #fde68a; border: .03rem solid #b45309;
     font-size: .3rem; font-weight: 900; color: #422006; }
   @keyframes tvpop { 0% { transform: scale(.4); opacity: 0; } 70% { transform: scale(1.06); opacity: 1; } 100% { transform: scale(1); } }
+  .ring { border: none !important; background: none !important; padding: 0; }
+  .ring .tkB { width: 112%; height: 112%; flex: 0 0 auto; filter: drop-shadow(0 .03rem .04rem rgba(0,0,0,.45)); }
+  .tkI { width: 1.25em; height: 1.25em; vertical-align: -.3em; }
 </style>
 </head>
 <body>
@@ -264,6 +267,99 @@
   var GROUP_COLORS = { brown: "#8c5a3b", lightblue: "#6fd3e7", pink: "#d63384", orange: "#f7871f", red: "#d32f2f", yellow: "#f2c230", green: "#2e9e5b", blue: "#1d4ed8" };
   var SEAT_COLORS = ["#ffc83d","#ff6b6b","#2ed3b7","#7dd3fc","#c084fc","#fb923c","#34d399","#f472b6"];
   var TOKENS = { ark:"🚢", dove:"🕊️", menorah:"🕎", star:"⭐", scroll:"📜", fish:"🐟", cup:"🍷", trumpet:"🎺" };
+  /* The players' pieces: one drawn figure per token, embossed in ivory on a
+     glossy disc of the player's colour with a gold rim. Same art everywhere
+     (board pieces, the player list, the lobby), so a piece is recognisable at
+     a glance. Art is drawn in a 36x36 box centred on 0,0. */
+  var TOKEN_ART = {
+    ark: function (f, d) {
+      return '<path d="M-16 2 H16 L11.5 10.5 H-11.5 Z" fill="' + f + '"/>'
+        + '<path d="M-9.5 2 V-5.5 H9.5 V2 Z" fill="' + f + '"/>'
+        + '<path d="M-12.5 -5 L0 -12.5 L12.5 -5 Z" fill="' + f + '"/>'
+        + '<path d="M-6.5 -3 h3 v3 h-3z M-1.5 -3 h3 v3 h-3z M3.5 -3 h3 v3 h-3z M-12 5.5 H12" fill="' + d + '" stroke="' + d + '" stroke-width="1.3"/>';
+    },
+    dove: function (f, d) {
+      return '<path d="M-16 1 L-11 3 C-7 -1 -1 -1 3 0 C5 -3 8 -5 11 -4.5 L15.5 -3 L11.8 -1 C11 5 5 9.5 -3 9.5 C-8 9.5 -12 7 -16 1 Z" fill="' + f + '"/>'
+        + '<path d="M-5 -0.5 C-8 -8 -4 -14.5 4 -16 C1.5 -10 2.5 -5 3.5 0 Z" fill="' + f + '"/>'
+        + '<path d="M-2.5 -2 C-3.5 -7 -1.5 -10.5 1.5 -12" fill="none" stroke="' + d + '" stroke-width="1.2" stroke-linecap="round"/>'
+        + '<circle cx="9.6" cy="-2.6" r="1.2" fill="' + d + '"/>'
+        + '<path d="M14.5 -2 Q16.5 2 14 6" fill="none" stroke="#4d7c0f" stroke-width="1.5" stroke-linecap="round"/>'
+        + '<ellipse cx="16.2" cy="1.6" rx="2" ry="1" transform="rotate(60 16.2 1.6)" fill="#84cc16"/><ellipse cx="13" cy="4.8" rx="2" ry="1" transform="rotate(-30 13 4.8)" fill="#84cc16"/>';
+    },
+    menorah: function (f, d) {
+      var s = '<g fill="none" stroke="' + f + '" stroke-width="2.4" stroke-linecap="round">'
+        + '<path d="M0 -9 V9 M-12 -9 V-5 A12 12 0 0 0 12 -5 V-9 M-8 -9 V-5 A8 8 0 0 0 8 -5 V-9 M-4 -9 V-5 A4 4 0 0 0 4 -5 V-9"/>'
+        + '<path d="M0 9 L-5 13 M0 9 L5 13 M-8 13.5 H8" stroke-width="3"/></g>';
+      for (var x = -12; x <= 12; x += 4) s += '<path d="M' + x + ' -16 Q' + (x + 2.2) + ' -12.4 ' + x + ' -10.6 Q' + (x - 2.2) + ' -12.4 ' + x + ' -16 Z" fill="#fbbf24" stroke="#b45309" stroke-width=".6"/>';
+      return s;
+    },
+    star: function (f, d) {
+      var pts = [], k, a, r;
+      for (k = 0; k < 10; k++) { a = -Math.PI / 2 + k * Math.PI / 5; r = k % 2 ? 6.6 : 16.5; pts.push((r * Math.cos(a)).toFixed(2) + " " + (r * Math.sin(a) + 1).toFixed(2)); }
+      return '<path d="M' + pts.join(" L") + ' Z" fill="' + f + '" stroke-linejoin="round"/>'
+        + '<path d="M0 -15.5 L0 1 M-14.7 -4.1 L0 1 M14.7 -4.1 L0 1" stroke="' + d + '" stroke-width=".9" opacity=".55"/>';
+    },
+    scroll: function (f, d) {
+      return '<rect x="-10" y="-11" width="20" height="22" fill="' + f + '"/>'
+        + '<rect x="-14" y="-15.5" width="28" height="6.5" rx="3.2" fill="' + f + '"/><rect x="-14" y="9" width="28" height="6.5" rx="3.2" fill="' + f + '"/>'
+        + '<path d="M-14 -12.25 H14 M-14 12.25 H14" stroke="' + d + '" stroke-width=".9" opacity=".5"/>'
+        + '<path d="M-6 -5 H6 M-6 -1 H6 M-6 3 H3" stroke="' + d + '" stroke-width="1.6" stroke-linecap="round"/>';
+    },
+    fish: function (f, d) {
+      return '<path d="M-16 0 C-10 -10 3 -10 9 0 C3 10 -10 10 -16 0 Z" fill="' + f + '"/>'
+        + '<path d="M7.5 0 L17 -8.5 L14.5 0 L17 8.5 Z" fill="' + f + '"/>'
+        + '<circle cx="-10" cy="-2" r="1.7" fill="' + d + '"/>'
+        + '<path d="M-5 -5.5 Q-1.5 0 -5 5.5" fill="none" stroke="' + d + '" stroke-width="1.4" stroke-linecap="round"/>';
+    },
+    cup: function (f, d) {
+      return '<path d="M-11 -14 H11 C11 -3 6 1 0 1 C-6 1 -11 -3 -11 -14 Z" fill="' + f + '"/>'
+        + '<path d="M-2 0 H2 V10 H-2 Z" fill="' + f + '"/><ellipse cx="0" cy="5" rx="3.6" ry="2" fill="' + f + '"/>'
+        + '<path d="M-9.5 15 C-9.5 9.5 9.5 9.5 9.5 15 Z" fill="' + f + '"/>'
+        + '<path d="M-10.6 -10.5 H10.6" stroke="' + d + '" stroke-width="1.2" opacity=".55"/>';
+    },
+    trumpet: function (f, d) {
+      return '<path d="M-17 -2 H5 V2 H-17 Z" fill="' + f + '"/>'
+        + '<path d="M4 -2 C9 -3 13 -7 17 -12 V12 C13 7 9 3 4 2 Z" fill="' + f + '"/>'
+        + '<path d="M-18.5 -3.6 H-15.5 V3.6 H-18.5 Z" fill="' + f + '"/>'
+        + '<path d="M-10 -8 h2.6 v6 h-2.6z M-5.6 -8 h2.6 v6 h-2.6z M-1.2 -8 h2.6 v6 h-2.6z" fill="' + f + '"/>'
+        + '<path d="M-13 2 V7 Q-13 9 -11 9 H1 Q3 9 3 7 V2" fill="none" stroke="' + f + '" stroke-width="2.4"/>'
+        + '<path d="M16.2 -10 V10" stroke="' + d + '" stroke-width="1" opacity=".5"/>';
+    }
+  };
+  /* The disc and figure as SVG markup centred on 0,0, radius r. */
+  function tokenMarkup(id, color, r) {
+    tokenDefs();
+    var art = TOKEN_ART[id] || TOKEN_ART.star, k = (r / 22).toFixed(3);
+    return '<circle r="' + r + '" fill="' + color + '" stroke="#1b0f3b" stroke-width="' + (r * 0.1).toFixed(2) + '"/>'
+      + '<circle r="' + (r * 0.86).toFixed(2) + '" fill="none" stroke="#f6d36b" stroke-width="' + (r * 0.09).toFixed(2) + '"/>'
+      + '<circle r="' + r + '" fill="url(#tkGloss)"/>'
+      + '<g transform="scale(' + k + ')">'
+      + '<g transform="translate(1.2,1.8) scale(.9)" opacity=".45">' + art("#1b0f3b", "#1b0f3b") + '</g>'
+      + '<g transform="scale(.9)" stroke="#2a1a4a" stroke-width="2.6" stroke-linejoin="round">' + art("#2a1a4a", "#2a1a4a") + '</g>'
+      + '<g transform="scale(.9)">' + art("url(#tkIvory)", "#5b4636") + '</g></g>';
+  }
+  /* A standing piece for the board: the disc on a short pedestal, its
+     shadow apart so the hop can lift the piece and shrink the shadow. */
+  function pieceMarkup(id, color, r) {
+    var h = r * 0.34, w = r * 0.92;
+    return '<path d="M' + (-w) + ' 0 V' + h + ' A' + w + ' ' + (w * 0.42) + ' 0 0 0 ' + w + ' ' + h + ' V0 Z" fill="' + color + '" stroke="#1b0f3b" stroke-width="' + (r * 0.1).toFixed(2) + '"/>'
+      + '<path d="M' + (-w) + ' 0 V' + h + ' A' + w + ' ' + (w * 0.42) + ' 0 0 0 ' + w + ' ' + h + ' V0 Z" fill="#000" opacity=".28"/>'
+      + tokenMarkup(id, color, r);
+  }
+  /* A whole <svg> for HTML (the player list, the lobby). */
+  function tokenBadge(id, color, cls) {
+    return '<svg class="' + (cls || "tkB") + '" viewBox="-24 -24 48 48" aria-hidden="true">' + tokenMarkup(id, color, 22) + '</svg>';
+  }
+  /* Gradients the pieces use, once per page. */
+  function tokenDefs() {
+    if (document.getElementById("tkDefs")) return;
+    var holder = document.createElement("div");
+    holder.innerHTML = '<svg id="tkDefs" width="0" height="0" style="position:absolute;width:0;height:0" aria-hidden="true"><defs>'
+      + '<linearGradient id="tkIvory" x1="0" y1="0" x2=".3" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#fff4d6"/><stop offset="1" stop-color="#e9c97a"/></linearGradient>'
+      + '<radialGradient id="tkGloss" cx="34%" cy="26%" r="78%"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset=".45" stop-color="#fff" stop-opacity=".08"/><stop offset="1" stop-color="#000" stop-opacity=".28"/></radialGradient>'
+      + '</defs></svg>';
+    document.body.insertBefore(holder.firstChild, document.body.firstChild);
+  }
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;"); }
   function fmt(n) { return Number(n || 0).toLocaleString("en-US"); }
@@ -436,7 +532,7 @@
     var html = "", i, p;
     for (i = 0; i < 8; i++) {
       p = players[i];
-      if (p) html += '<div class="seat">' + tokenEmoji(p.token) + ' ' + esc(p.name) + '</div>';
+      if (p) html += '<div class="seat">' + tokenBadge(p.token, seatColor(p.seat), "tkI") + ' ' + esc(p.name) + '</div>';
       else html += '<div class="seat empty">open seat</div>';
     }
     return '<div class="waitSeats">' + html + '</div>';
@@ -562,7 +658,10 @@
     go: function (c) { return '<path d="M21 12 H6 M12 5.5 L5.5 12 L12 18.5" stroke="' + c + '" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'; },
     bars: function (c) { return '<rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="#374151"/><path d="M8 4 V20 M12 4 V20 M16 4 V20" stroke="#d1d5db" stroke-width="2"/>'
       + '<rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="none" stroke="' + c + '" stroke-width="1.6"/>'; },
-    moon: function (c) { return '<path d="M15 3.5 A8.5 8.5 0 1 0 20.5 17 A6.5 6.5 0 1 1 15 3.5 Z" fill="' + c + '"/><path d="M18 5 L18.6 6.6 L20.2 7.2 L18.6 7.8 L18 9.4 L17.4 7.8 L15.8 7.2 L17.4 6.6 Z" fill="#f59e0b"/>'; },
+    candles: function (c) { return '<path d="M8.2 3.2 Q6.9 5.2 8.2 6.6 Q9.5 5.2 8.2 3.2 Z M15.8 3.2 Q14.5 5.2 15.8 6.6 Q17.1 5.2 15.8 3.2 Z" fill="#f59e0b"/>'
+      + '<rect x="7" y="7.2" width="2.4" height="9" rx=".6" fill="#fff8e7" stroke="' + c + '" stroke-width="1"/><rect x="14.6" y="7.2" width="2.4" height="9" rx=".6" fill="#fff8e7" stroke="' + c + '" stroke-width="1"/>'
+      + '<path d="M5.2 16.6 H11.2 M12.8 16.6 H18.8 M8.2 16.6 V19.6 M15.8 16.6 V19.6" stroke="' + c + '" stroke-width="1.8" stroke-linecap="round"/>'
+      + '<path d="M4.5 20.5 H19.5" stroke="' + c + '" stroke-width="2.2" stroke-linecap="round"/>'; },
     lock: function (c) { return '<path d="M8 11 V8 A4 4 0 0 1 16 8 V11" stroke="' + c + '" stroke-width="2.6" fill="none"/><rect x="5.5" y="11" width="13" height="10" rx="2" fill="' + c + '"/>'
       + '<circle cx="12" cy="15.4" r="1.6" fill="#fff"/><rect x="11.3" y="15.6" width="1.4" height="3" fill="#fff"/>'; }
   };
@@ -649,7 +748,7 @@
       svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: h, fill: isCorner ? "#ffdf9e" : "#fff8e7", stroke: "#1b0f3b", "stroke-width": isCorner ? 3 : 1.5 }, g);
       if (i === 0) { corner(g, w, h, "JUBILEE!", "COLLECT $200", "go", "#ffb703", "#b45309"); continue; }
       if (i === 10) { corner(g, w, h, "DUNGEON", "JUST VISITING", "bars", "#c3b2a0", "#1b0f3b"); continue; }
-      if (i === 20) { corner(g, w, h, "SABBATH", "FREE PARKING", "moon", "#bde0fe", "#0369a1"); continue; }
+      if (i === 20) { corner(g, w, h, "SABBATH", "FREE PARKING", "candles", "#bde0fe", "#0369a1"); continue; }
       if (i === 30) { corner(g, w, h, "SENT TO", "THE DUNGEON", "lock", "#ffc4c4", "#991b1b"); continue; }
       // Every space the same way: colour band, picture (if any), the name in
       // one size, the price in one size. Nothing shrinks to fit; a rare long
@@ -745,10 +844,8 @@
     var shadow = svgEl("ellipse", { cx: 0, cy: 14, rx: 26, ry: 9, fill: "rgba(20,10,40,.45)" }, g);
     var body = svgEl("g", {}, g);
     var col = seatColor(p.seat);
-    svgEl("ellipse", { cx: 0, cy: 10, rx: 27, ry: 11, fill: col, stroke: "#1b0f3b", "stroke-width": 3 }, body);   // the base
-    svgEl("circle", { cx: 0, cy: -4, r: 25, fill: col, stroke: "#1b0f3b", "stroke-width": 3 }, body);             // the dome
-    svgEl("circle", { cx: 0, cy: -4, r: 25, fill: "url(#gloss)" }, body);
-    var e = svgEl("text", { y: 6, "text-anchor": "middle", "font-size": 28 }, body); e.textContent = tokenEmoji(p.token);
+    var fig = svgEl("g", { transform: "translate(0,-4)" }, body);
+    fig.innerHTML = pieceMarkup(p.token, col, 25);
     t = { g: g, body: body, shadow: shadow, shown: p.position, queue: [], from: p.position, start: 0, dur: 0, lift: 0 };
     board.tokens[p.seat] = t;
     return t;
@@ -826,13 +923,23 @@
       var p = room.players[i];
       var cls = "plr" + (room.turn === p.seat && !p.bankrupt ? " turn" : "") + (p.bankrupt ? " out" : "") + (p.in_jail ? " jail" : "");
       var status = p.bankrupt ? "BANKRUPT" : p.in_jail ? "⛓ In the Dungeon" : "$" + fmt(p.cash) + "<small> · worth $" + fmt(p.net_worth) + "</small>";
-      html += '<div class="' + cls + '"><div class="ring" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
+      html += '<div class="' + cls + '"><div class="ring">' + tokenBadge(p.token, seatColor(p.seat)) + '</div>'
         + '<div class="who"><div class="nm">' + esc(p.name) + (p.is_ai ? ' 🤖' : '') + '</div><div class="st">' + status + '</div></div></div>';
     }
     return html;
   }
   /* Left frame: the players. Board middle: the title and what is happening
      now. Right frame: the money, the story so far, how to join. */
+  /* A log line short enough for the screen: a card draw keeps only what the
+     card does (the card itself, big in the middle, shows the verse). */
+  function brief(line) {
+    var m = /^(.*?) draws \u2014 (.*)$/.exec(String(line || ""));
+    if (!m) return line;
+    var t = m[2].replace(/\s*\([^()]+\)\s*$/, "").replace(/\u201c[^\u201d]+\u201d/g, "").replace(/^[\s\u2014-]+|[\s\u2014-]+$/g, "");
+    if (t.indexOf(" \u2014 ") > 0 && !/\u201c/.test(m[2])) t = t.split(" \u2014 ").slice(1).join(" \u2014 ");
+    t = t.replace(/\s+/g, " ");
+    return m[1] + " draws a card" + (t ? ": " + t.charAt(0).toUpperCase() + t.slice(1) : "");
+  }
   function centerHtml(room) {
     var p = room.players && room.players[room.turn];
     var many = room.players.length > 5 ? " many" : "";
@@ -840,23 +947,23 @@
     var pills = '<span class="pill">ROUND ' + (room.round || 1) + '</span><span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span>';
     var now = "";
     if (p && room.status === "playing") {
-      now += '<div class="cTurn"><div class="ring big" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
+      now += '<div class="cTurn"><div class="ring big">' + tokenBadge(p.token, seatColor(p.seat)) + '</div>'
         + '<div class="cWho" style="color:' + seatColor(p.seat) + '">' + esc((p.in_jail ? "⛓ " : "") + (p.name || "")) + "'s turn</div></div>";
     }
     var event = "";
     if (room.auction) {
       var a = room.auction;
-      event = '<div class="cAlert">🔨 On the block: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : "") + '</div>';
+      event = '<div class="cAlert">🔨 On the block: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : " · no bids yet") + (a.ends_in != null ? ' · ⏱ ' + a.ends_in + 's' : '') + '</div>';
     } else if (room.pending && room.pending.kind === "debt") {
       event = '<div class="cAlert debt">A debt is due: $' + fmt(room.pending.amount) + '</div>';
     }
     var log = (room.log || []).slice(-5).reverse();
-    if (log[0]) event += '<div class="cEvent">' + esc(log[0]) + '</div>';
+    if (log[0]) event += '<div class="cEvent">' + esc(brief(log[0])) + '</div>';
     var code = esc(room.code || PINNED);
     var right = '<div class="fCard"><div class="fLabel">Jackpot</div><div class="fPot">$' + fmt(room.pot) + '</div>'
       + '<div class="fBank">🏠 ' + room.bank_houses + ' · 🏨 ' + room.bank_hotels + '<small> in the bank</small></div></div>'
       + '<div class="fCard fStory"><div class="fLabel">Earlier</div>'
-      + log.slice(1).map(function (line) { return '<div class="fLog">' + esc(line) + '</div>'; }).join("") + '</div>'
+      + log.slice(1).map(function (line) { return '<div class="fLog">' + esc(brief(line)) + '</div>'; }).join("") + '</div>'
       + '<div class="fCard fJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div class="fLabel">Scan to play</div><b>' + code + '</b></div>';
     return { left: left, now: now, pills: pills, event: event, right: right };
   }
@@ -926,7 +1033,7 @@
     var rows = "";
     for (var j = 0; j < sorted.length; j++) {
       var p = sorted[j];
-      rows += '<div class="stRow' + (p.seat === winner.seat ? " winner" : "") + '"><div class="rk">' + (j + 1) + '</div><div class="nm">' + tokenEmoji(p.token) + ' ' + esc(p.name) + '</div><div class="nw">$' + fmt(p.net_worth) + '</div></div>';
+      rows += '<div class="stRow' + (p.seat === winner.seat ? " winner" : "") + '"><div class="rk">' + (j + 1) + '</div><div class="nm">' + tokenBadge(p.token, seatColor(p.seat), "tkI") + ' ' + esc(p.name) + '</div><div class="nw">$' + fmt(p.net_worth) + '</div></div>';
     }
     $("tv-main").innerHTML = '<div class="finish"><div class="crown">👑</div><div class="winTitle">' + esc(winner.name) + ' WINS THE JUBILEE!</div><div class="standings">' + rows + '</div></div>';
   }

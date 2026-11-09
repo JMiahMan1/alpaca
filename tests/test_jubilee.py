@@ -521,3 +521,79 @@ def test_with_people_watching_each_computer_player_rolls_where_they_can_see_it(m
         jubilee._maybe_ai_unlocked(room)
     snap = jubilee.get_room(code, pid)
     assert snap["turn"] == 1 and snap["rolled"] and snap["last_roll"]   # its roll is there to see
+
+
+def test_an_auction_nobody_answers_ends_on_the_clock(monkeypatch):
+    """A phone left on the table used to stall an auction -- and the game -- forever."""
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    bob = jubilee.join_room(code, {"name": "Bob"})["player_id"]
+    jubilee.join_room(code, {"name": "Cy"})        # three people, no computer players
+    jubilee.start_match(code, pid)
+    clock = [1_000_000.0]
+    monkeypatch.setattr(jubilee.time, "time", lambda: clock[0])
+    with jubilee._lock:
+        room = jubilee._rooms[code]
+        jubilee._auction_open(room, 1)
+    jubilee.auction_bid(code, bob, 20)
+    snap = jubilee.get_room(code, pid)
+    assert snap["auction"]["high_bidder_name"] == "Bob" and 0 < snap["auction"]["ends_in"] <= jubilee.AUCTION_OPEN_S
+    clock[0] += jubilee.AUCTION_OPEN_S + 1        # Ann never answers
+    snap = jubilee.get_room(code, pid)
+    assert snap["auction"] is None
+    assert snap["board"][1]["owner"] == 1
+
+
+def test_a_bid_buys_everyone_more_time(monkeypatch):
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    bob = jubilee.join_room(code, {"name": "Bob"})["player_id"]
+    jubilee.join_room(code, {"name": "Cy"})        # three people, no computer players
+    jubilee.start_match(code, pid)
+    clock = [1_000_000.0]
+    monkeypatch.setattr(jubilee.time, "time", lambda: clock[0])
+    with jubilee._lock:
+        jubilee._auction_open(jubilee._rooms[code], 1)
+    clock[0] += jubilee.AUCTION_OPEN_S - 2
+    jubilee.auction_bid(code, bob, 20)
+    clock[0] += 5                                  # past the opening window, inside the bid's
+    assert jubilee.get_room(code, pid)["auction"] is not None
+    jubilee.auction_bid(code, pid, 30)
+    clock[0] += jubilee.AUCTION_BID_S + 1
+    snap = jubilee.get_room(code, pid)
+    assert snap["auction"] is None and snap["board"][1]["owner"] == 0
+
+
+def test_every_action_the_phone_sends_has_a_route():
+    """The phone posted trades to /trade_propose while the server listened on
+    /trade/propose: every trade from a phone failed, and nobody saw offers."""
+    import re
+    from pathlib import Path
+
+    import arcade.app as arcade_app
+
+    page = (Path(__file__).resolve().parents[1] / "arcade" / "family_games" / "jubilee" / "game.html").read_text()
+    sent = set(re.findall(r"doAction\('(/[a-z_/]+)'", page))
+    sent |= set(re.findall(r"inJailVar\(\) \? '(/[a-z_]+)' : '(/[a-z_]+)'", page) and
+                [x for pair in re.findall(r"inJailVar\(\) \? '(/[a-z_]+)' : '(/[a-z_]+)'", page) for x in pair])
+    routes = {r.rule for r in arcade_app.app.url_map.iter_rules()}
+    assert {"/trade/propose", "/trade/accept", "/trade/reject", "/trade/cancel", "/auction_bid"} <= sent
+    missing = [p for p in sent if f"/api/jubilee/rooms/<code>{p}" not in routes]
+    assert missing == [], f"the phone calls routes that do not exist: {missing}"
+
+
+def test_offers_reach_the_phone_with_who_and_what():
+    made = jubilee.create_room({"name": "Ann"})
+    code, ann = made["room"]["code"], made["player_id"]
+    bob = jubilee.join_room(code, {"name": "Bob"})["player_id"]
+    jubilee.join_room(code, {"name": "Cy"})
+    jubilee.start_match(code, ann)
+    with jubilee._lock:
+        jubilee._prop(jubilee._rooms[code], 1)["owner"] = 1
+    jubilee.trade_propose(code, ann, 1, {"cash": 80}, {"spaces": [1]})
+    t = jubilee.get_room(code, bob)["trades"][0]
+    assert (t["from"], t["to"], t["from_name"]) == (0, 1, "Ann")
+    assert t["offer"]["cash"] == 80 and t["ask"]["spaces"] == [1]
+    jubilee.trade_accept(code, bob, t["id"])
+    after = jubilee.get_room(code, ann)
+    assert after["trades"] == [] and after["board"][1]["owner"] == 0

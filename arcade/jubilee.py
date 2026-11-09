@@ -940,8 +940,32 @@ def _unmortgage(room: dict[str, Any], seat: int, index: int) -> None:
 # The auction - any player may bid on a declined property
 # --------------------------------------------------------------------------- #
 
+#: The auction clock: a phone left on the table must not stall the game. The
+#: first bid has AUCTION_OPEN_S; each bid gives everyone AUCTION_BID_S more.
+#: When time runs out, whoever has not bid is out and the leader wins.
+AUCTION_OPEN_S = 25.0
+AUCTION_BID_S = 12.0
+
+
+def _auction_deadline(a: dict[str, Any]) -> float:
+    return float(a.get("deadline") or (float(a.get("started_at") or time.time()) + AUCTION_OPEN_S))
+
+
+def _auction_clock(room: dict[str, Any], now: float) -> bool:
+    """Close an auction whose time ran out. True if it closed."""
+    a = room.get("auction")
+    if not a or now < _auction_deadline(a):
+        return False
+    late = [s for s in _auction_remaining(room) if s != a["high_bidder"]]
+    if late:
+        a["passed"].extend(late)
+        _log(room, "Time! The gavel falls")
+    return _auction_check_done(room)
+
+
 def _auction_open(room: dict[str, Any], space: int) -> None:
     room["auction"] = {
+        "deadline": time.time() + AUCTION_OPEN_S,
         "space": int(space),
         "high_bid": 0,
         "high_bidder": None,
@@ -998,6 +1022,7 @@ def _auction_bid(room: dict[str, Any], seat: int, amount: int) -> None:
         raise ValueError("you are already the high bidder")
     a["high_bid"] = amount
     a["high_bidder"] = seat
+    a["deadline"] = max(_auction_deadline(a), time.time() + AUCTION_BID_S)
     a["passed"] = [s for s in a["passed"] if s != seat]
     _log(room, f"{p['name']} bids ${amount}")
 
@@ -2369,9 +2394,9 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
     now = time.time()
     paced = presence.stage_connected(room, now) or (
         AI_PACE_WHEN == "watched" and any(presence.player_present(p, now) for p in room["players"] if p))
+    moved = _auction_clock(room, now)
     if paced and now < float(room.get("ai_next_at") or 0):
-        return False
-    moved = False
+        return moved
     for _ in range(60):
         progressed = False
         if room["auction"]:
@@ -2520,6 +2545,7 @@ def _snapshot_unlocked(room: dict[str, Any], player_id: Any = None, stage: bool 
             "high_bidder_name": room["players"][a["high_bidder"]]["name"] if a["high_bidder"] is not None else None,
             "passed": list(a["passed"]),
             "you_passed": seat is not None and seat in a["passed"],
+            "ends_in": max(0, round(_auction_deadline(a) - time.time())),
         }
 
     pending = None

@@ -142,6 +142,55 @@
     background: var(--gold); color: var(--ink); cursor: pointer; white-space: nowrap; }
   .jb-mini.alt { background: rgba(255,255,255,.10); color: #fff; border-color: var(--line); }
   .jb-mini:disabled { opacity: .4; }
+  .jb-token .tkB { width: 82%; height: 82%; display: block; margin: auto; }
+  .jb-face-sm .tkB, #jb-wait-players .tkB { width: 100%; height: 100%; display: block; filter: drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
+  .jb-face-sm { background: none !important; box-shadow: none !important; }
+  .jb-shakehint { text-align: center; font-size: 13px; font-weight: 800; color: rgba(255,255,255,.7); margin-top: 6px; min-height: 0; }
+  .jb-shakehint:empty { display: none; }
+  .jb-btn.shook { animation: jb-shook .35s ease-in-out; }
+  @keyframes jb-shook { 0%,100% { transform: none; } 25% { transform: rotate(-4deg); } 75% { transform: rotate(4deg); } }
+  .jb-tlabel { font-size: 12px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; color: #5b4a8a; margin: 8px 0 6px; }
+  .jb-twho { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  .jb-twhob { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 78px; padding: 8px 6px; border-radius: 14px;
+    border: 2px solid #d8cdee; background: #faf7ff; color: var(--ink); font: inherit; cursor: pointer; }
+  .jb-twhob .tkB { width: 36px; height: 36px; }
+  .jb-twhob b { font-size: 13px; } .jb-twhob small { font-size: 12px; color: #6b5b8f; font-weight: 800; }
+  .jb-twhob.on { border-color: var(--violet); background: #efe8ff; box-shadow: 0 0 0 3px rgba(124,92,255,.25); }
+  .jb-tcols { display: flex; gap: 10px; }
+  .jb-tcol { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .jb-tdeed { position: relative; display: grid; grid-template-columns: 8px 1fr; grid-template-rows: auto auto; column-gap: 8px; text-align: left; padding: 8px 28px 8px 8px;
+    border-radius: 12px; border: 2px solid #d8cdee; background: #fff; color: var(--ink); font: inherit; cursor: pointer; }
+  .jb-tdeed i { grid-row: 1 / 3; border-radius: 4px; }
+  .jb-tdeed b { font-size: 14px; line-height: 1.15; overflow-wrap: anywhere; } .jb-tdeed small { font-size: 12px; color: #6b5b8f; font-weight: 800; }
+  .jb-tdeed .tick { position: absolute; right: 7px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; border-radius: 50%; border: 2px solid #c9bde6; color: transparent; font-size: 12px; line-height: 15px; text-align: center; font-weight: 900; }
+  .jb-tdeed.on { border-color: #0f9f87; background: #e6fbf6; } .jb-tdeed.on .tick { background: #0f9f87; border-color: #0f9f87; color: #fff; }
+  .jb-tdeed:disabled { opacity: .45; cursor: not-allowed; }
+  .jb-tcash { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-weight: 900; font-size: 13px; color: #5b4a8a; margin-top: 2px; }
+  .jb-tcash span { width: 100%; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+  .jb-tcash button { flex: 1 1 0; min-width: 0; padding: 7px 0; border-radius: 10px; border: 2px solid #d8cdee; background: #faf7ff; font: inherit; font-size: 13px; color: var(--ink); cursor: pointer; }
+  .jb-tcash button:disabled { opacity: .35; }
+  .jb-tcash b { flex: 1.4 1 0; text-align: center; font-size: 17px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .jb-tcard { padding: 7px; border-radius: 10px; border: 2px solid #d8cdee; background: #faf7ff; font: inherit; font-size: 13px; font-weight: 800; color: var(--ink); }
+  .jb-tcard.on { border-color: #0f9f87; background: #e6fbf6; }
+  .jb-tempty { font-size: 13px; color: #8a7bb0; font-weight: 800; padding: 6px 2px; } .jb-tempty.dark { color: #b9aee0; }
+  .jb-tsum { margin-top: 10px; padding: 10px; border-radius: 12px; background: #f3effc; text-align: center; font-weight: 900; font-size: 14px; color: #5b4a8a; }
+  .jb-tsum .fair.ok { color: #0f7a5f; } .jb-tsum .fair.you { color: #b45309; } .jb-tsum .fair.them { color: #b42318; }
+  .jb-toffer { background: #fff8e7; color: var(--ink); border: 3px solid var(--ink); border-radius: 16px; padding: 12px; margin-bottom: 10px; box-shadow: 0 5px 0 rgba(0,0,0,.35); }
+  .jb-toffer-h { font-size: 16px; margin-bottom: 8px; }
+  .jb-toffer .jb-tcol { background: rgba(27,15,59,.05); border-radius: 12px; padding: 6px 8px; }
+  .jb-toffer .jb-tcol.get .jb-tlabel { color: #0f7a5f; } .jb-toffer .jb-tcol.give .jb-tlabel { color: #b42318; }
+  .jb-toffer .jb-row { margin-top: 10px; }
+  .jb-toffer .jb-btn.ghost { color: var(--ink); background: rgba(27,15,59,.06); border-color: rgba(27,15,59,.55); box-shadow: none; }
+  .jb-tline { display: flex; align-items: center; gap: 6px; font-weight: 900; font-size: 14px; padding: 3px 0; }
+  .jb-tline i { width: 10px; height: 16px; border-radius: 3px; flex: 0 0 auto; }
+  .jb-tline.none { color: #8a7bb0; }
+  .jb-landrow2 { display: flex; flex-direction: column; gap: 6px; }
+  .jb-landrow2 .lr-top { display: flex; align-items: center; gap: 10px; }
+  .jb-landrow2 .jb-swatch { width: 10px; align-self: stretch; min-height: 34px; border-radius: 4px; flex: 0 0 auto; }
+  .jb-landrow2 .lr-name { min-width: 0; } .jb-landrow2 .lr-name b { display: block; font-size: 16px; }
+  .jb-landrow2 .lr-name small { font-size: 13px; color: #6b5b8f; font-weight: 800; }
+  .jb-landrow2 .lr-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .jb-landrow2 .lr-btns .jb-btn { flex: 1 1 auto; width: auto; }
 </style>
 </head>
 <body>
@@ -267,7 +316,7 @@
   .jb-purse b { font-size: 30px; color: var(--gold); font-variant-numeric: tabular-nums; text-shadow: 0 2px 0 #4a2c00; }
   .jb-purse span { font-size: 12px; font-weight: 800; color: #d9ccff; text-align: right; }
   .jb-swatch { flex: 0 0 auto; width: 14px; align-self: stretch; min-height: 38px; border-radius: 6px; border: 2px solid rgba(0,0,0,.35); }
-  .jb-why { font-size: 11px; font-weight: 800; color: #9a3412; margin-top: 2px; }
+  .jb-why { font-size: 13px; font-weight: 800; color: #9a3412; margin-top: 2px; }
   /* Ghost buttons sit on the cream paper of the sheets: ink, not white. */
   .jb-sheet .jb-btn.ghost, #jb-auction .jb-btn.ghost { color: var(--ink); background: rgba(27,15,59,.06); border-color: rgba(27,15,59,.55); box-shadow: none; }
   .jb-btn[disabled] { opacity: .38; filter: grayscale(1); cursor: not-allowed; box-shadow: none; transform: none; }
@@ -305,8 +354,22 @@
     max-width: min(720px, 96vw);
   }
   #jb-auction.show { display: flex; opacity: 1; transform: translateX(-50%) translateY(0); }
-  #jb-auction .bid { font-size: 30px; font-variant-numeric: tabular-nums; }
-  #jb-auction .who { font-size: 12px; color: #5b4a8a; }
+  #jb-auction { flex-direction: column; align-items: stretch; gap: 8px; width: min(420px, 94vw); }
+  #jb-auction .au-top { display: flex; align-items: center; gap: 10px; }
+  #jb-auction .au-gavel { font-size: 26px; }
+  #jb-auction .au-what { flex: 1 1 auto; min-width: 0; line-height: 1.1; }
+  #jb-auction .au-what small { display: block; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #6b4e00; }
+  #jb-auction .au-what b { display: block; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #jb-auction .au-clock { font-size: 18px; font-variant-numeric: tabular-nums; background: var(--ink); color: #ffe9a8; border-radius: 999px; padding: 4px 12px; }
+  #jb-auction .au-clock.hurry { background: #d32f2f; color: #fff; animation: jb-pulse .8s ease-in-out infinite; }
+  #jb-auction .au-mid { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  #jb-auction .bid { font-size: 34px; font-variant-numeric: tabular-nums; }
+  #jb-auction .au-lead { font-size: 15px; text-align: right; }
+  #jb-auction .au-lead.me { color: #146c43; }
+  #jb-auction .au-btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  #jb-auction .au-btns .jb-btn { font-size: 15px; padding: 10px 4px; box-shadow: 0 4px 0 #1b0f3b; }
+  #jb-auction .au-note { grid-column: 1 / -1; text-align: center; font-size: 15px; padding: 8px; border-radius: 12px; background: rgba(27,15,59,.08); }
+  @keyframes jb-pulse { 50% { transform: scale(1.08); } }
 
   /* drawn card (flies from its deck, flips, waits for a tap) */
   #jb-cardreveal { position: fixed; inset: 0; z-index: 24; display: none; align-items: center; justify-content: center;
@@ -515,7 +578,12 @@
 <div class="jb-shade" id="jb-sheet-shade"><div class="jb-sheet" id="jb-sheet"></div></div>
 
 <!-- auction banner -->
-<div id="jb-auction"><div><div class="who" id="jb-auction-who">Auction - no bids yet</div><div class="bid" id="jb-auction-bid">$0</div></div><div id="jb-auction-btns" style="display:flex;gap:8px"></div><button class="jb-btn small coral" id="jb-auction-pass" style="width:auto">Pass</button></div>
+<div id="jb-auction" role="dialog" aria-live="polite">
+  <div class="au-top"><span class="au-gavel">🔨</span><div class="au-what"><small>Auction</small><b id="jb-auction-who">-</b></div><div class="au-clock" id="jb-auction-clock">0:25</div></div>
+  <div class="au-mid"><div class="bid" id="jb-auction-bid">$0</div><div class="au-lead" id="jb-auction-lead">No bids yet</div></div>
+  <div id="jb-auction-btns" class="au-btns"></div>
+  <button class="jb-btn small coral" id="jb-auction-pass">Pass - I'm out</button>
+</div>
 
 <!-- drawn card: flies out of its deck on the board and flips over -->
 <div id="jb-cardreveal" role="dialog" aria-live="polite" aria-label="Card drawn">
@@ -667,6 +735,99 @@ var TOKENS = [
   { id: "cup", emoji: "🍷", label: "Cup" },
   { id: "trumpet", emoji: "🎺", label: "Trumpet" }
 ];
+  /* The players' pieces: one drawn figure per token, embossed in ivory on a
+   glossy disc of the player's colour with a gold rim. Same art everywhere
+   (board pieces, the player list, the lobby), so a piece is recognisable at
+   a glance. Art is drawn in a 36x36 box centred on 0,0. */
+var TOKEN_ART = {
+  ark: function (f, d) {
+    return '<path d="M-16 2 H16 L11.5 10.5 H-11.5 Z" fill="' + f + '"/>'
+      + '<path d="M-9.5 2 V-5.5 H9.5 V2 Z" fill="' + f + '"/>'
+      + '<path d="M-12.5 -5 L0 -12.5 L12.5 -5 Z" fill="' + f + '"/>'
+      + '<path d="M-6.5 -3 h3 v3 h-3z M-1.5 -3 h3 v3 h-3z M3.5 -3 h3 v3 h-3z M-12 5.5 H12" fill="' + d + '" stroke="' + d + '" stroke-width="1.3"/>';
+  },
+  dove: function (f, d) {
+    return '<path d="M-16 1 L-11 3 C-7 -1 -1 -1 3 0 C5 -3 8 -5 11 -4.5 L15.5 -3 L11.8 -1 C11 5 5 9.5 -3 9.5 C-8 9.5 -12 7 -16 1 Z" fill="' + f + '"/>'
+      + '<path d="M-5 -0.5 C-8 -8 -4 -14.5 4 -16 C1.5 -10 2.5 -5 3.5 0 Z" fill="' + f + '"/>'
+      + '<path d="M-2.5 -2 C-3.5 -7 -1.5 -10.5 1.5 -12" fill="none" stroke="' + d + '" stroke-width="1.2" stroke-linecap="round"/>'
+      + '<circle cx="9.6" cy="-2.6" r="1.2" fill="' + d + '"/>'
+      + '<path d="M14.5 -2 Q16.5 2 14 6" fill="none" stroke="#4d7c0f" stroke-width="1.5" stroke-linecap="round"/>'
+      + '<ellipse cx="16.2" cy="1.6" rx="2" ry="1" transform="rotate(60 16.2 1.6)" fill="#84cc16"/><ellipse cx="13" cy="4.8" rx="2" ry="1" transform="rotate(-30 13 4.8)" fill="#84cc16"/>';
+  },
+  menorah: function (f, d) {
+    var s = '<g fill="none" stroke="' + f + '" stroke-width="2.4" stroke-linecap="round">'
+      + '<path d="M0 -9 V9 M-12 -9 V-5 A12 12 0 0 0 12 -5 V-9 M-8 -9 V-5 A8 8 0 0 0 8 -5 V-9 M-4 -9 V-5 A4 4 0 0 0 4 -5 V-9"/>'
+      + '<path d="M0 9 L-5 13 M0 9 L5 13 M-8 13.5 H8" stroke-width="3"/></g>';
+    for (var x = -12; x <= 12; x += 4) s += '<path d="M' + x + ' -16 Q' + (x + 2.2) + ' -12.4 ' + x + ' -10.6 Q' + (x - 2.2) + ' -12.4 ' + x + ' -16 Z" fill="#fbbf24" stroke="#b45309" stroke-width=".6"/>';
+    return s;
+  },
+  star: function (f, d) {
+    var pts = [], k, a, r;
+    for (k = 0; k < 10; k++) { a = -Math.PI / 2 + k * Math.PI / 5; r = k % 2 ? 6.6 : 16.5; pts.push((r * Math.cos(a)).toFixed(2) + " " + (r * Math.sin(a) + 1).toFixed(2)); }
+    return '<path d="M' + pts.join(" L") + ' Z" fill="' + f + '" stroke-linejoin="round"/>'
+      + '<path d="M0 -15.5 L0 1 M-14.7 -4.1 L0 1 M14.7 -4.1 L0 1" stroke="' + d + '" stroke-width=".9" opacity=".55"/>';
+  },
+  scroll: function (f, d) {
+    return '<rect x="-10" y="-11" width="20" height="22" fill="' + f + '"/>'
+      + '<rect x="-14" y="-15.5" width="28" height="6.5" rx="3.2" fill="' + f + '"/><rect x="-14" y="9" width="28" height="6.5" rx="3.2" fill="' + f + '"/>'
+      + '<path d="M-14 -12.25 H14 M-14 12.25 H14" stroke="' + d + '" stroke-width=".9" opacity=".5"/>'
+      + '<path d="M-6 -5 H6 M-6 -1 H6 M-6 3 H3" stroke="' + d + '" stroke-width="1.6" stroke-linecap="round"/>';
+  },
+  fish: function (f, d) {
+    return '<path d="M-16 0 C-10 -10 3 -10 9 0 C3 10 -10 10 -16 0 Z" fill="' + f + '"/>'
+      + '<path d="M7.5 0 L17 -8.5 L14.5 0 L17 8.5 Z" fill="' + f + '"/>'
+      + '<circle cx="-10" cy="-2" r="1.7" fill="' + d + '"/>'
+      + '<path d="M-5 -5.5 Q-1.5 0 -5 5.5" fill="none" stroke="' + d + '" stroke-width="1.4" stroke-linecap="round"/>';
+  },
+  cup: function (f, d) {
+    return '<path d="M-11 -14 H11 C11 -3 6 1 0 1 C-6 1 -11 -3 -11 -14 Z" fill="' + f + '"/>'
+      + '<path d="M-2 0 H2 V10 H-2 Z" fill="' + f + '"/><ellipse cx="0" cy="5" rx="3.6" ry="2" fill="' + f + '"/>'
+      + '<path d="M-9.5 15 C-9.5 9.5 9.5 9.5 9.5 15 Z" fill="' + f + '"/>'
+      + '<path d="M-10.6 -10.5 H10.6" stroke="' + d + '" stroke-width="1.2" opacity=".55"/>';
+  },
+  trumpet: function (f, d) {
+    return '<path d="M-17 -2 H5 V2 H-17 Z" fill="' + f + '"/>'
+      + '<path d="M4 -2 C9 -3 13 -7 17 -12 V12 C13 7 9 3 4 2 Z" fill="' + f + '"/>'
+      + '<path d="M-18.5 -3.6 H-15.5 V3.6 H-18.5 Z" fill="' + f + '"/>'
+      + '<path d="M-10 -8 h2.6 v6 h-2.6z M-5.6 -8 h2.6 v6 h-2.6z M-1.2 -8 h2.6 v6 h-2.6z" fill="' + f + '"/>'
+      + '<path d="M-13 2 V7 Q-13 9 -11 9 H1 Q3 9 3 7 V2" fill="none" stroke="' + f + '" stroke-width="2.4"/>'
+      + '<path d="M16.2 -10 V10" stroke="' + d + '" stroke-width="1" opacity=".5"/>';
+  }
+};
+/* The disc and figure as SVG markup centred on 0,0, radius r. */
+function tokenMarkup(id, color, r) {
+  tokenDefs();
+  var art = TOKEN_ART[id] || TOKEN_ART.star, k = (r / 22).toFixed(3);
+  return '<circle r="' + r + '" fill="' + color + '" stroke="#1b0f3b" stroke-width="' + (r * 0.1).toFixed(2) + '"/>'
+    + '<circle r="' + (r * 0.86).toFixed(2) + '" fill="none" stroke="#f6d36b" stroke-width="' + (r * 0.09).toFixed(2) + '"/>'
+    + '<circle r="' + r + '" fill="url(#tkGloss)"/>'
+    + '<g transform="scale(' + k + ')">'
+    + '<g transform="translate(1.2,1.8) scale(.9)" opacity=".45">' + art("#1b0f3b", "#1b0f3b") + '</g>'
+    + '<g transform="scale(.9)" stroke="#2a1a4a" stroke-width="2.6" stroke-linejoin="round">' + art("#2a1a4a", "#2a1a4a") + '</g>'
+    + '<g transform="scale(.9)">' + art("url(#tkIvory)", "#5b4636") + '</g></g>';
+}
+/* A standing piece for the board: the disc on a short pedestal, its
+   shadow apart so the hop can lift the piece and shrink the shadow. */
+function pieceMarkup(id, color, r) {
+  var h = r * 0.34, w = r * 0.92;
+  return '<path d="M' + (-w) + ' 0 V' + h + ' A' + w + ' ' + (w * 0.42) + ' 0 0 0 ' + w + ' ' + h + ' V0 Z" fill="' + color + '" stroke="#1b0f3b" stroke-width="' + (r * 0.1).toFixed(2) + '"/>'
+    + '<path d="M' + (-w) + ' 0 V' + h + ' A' + w + ' ' + (w * 0.42) + ' 0 0 0 ' + w + ' ' + h + ' V0 Z" fill="#000" opacity=".28"/>'
+    + tokenMarkup(id, color, r);
+}
+/* A whole <svg> for HTML (the player list, the lobby). */
+function tokenBadge(id, color, cls) {
+  return '<svg class="' + (cls || "tkB") + '" viewBox="-24 -24 48 48" aria-hidden="true">' + tokenMarkup(id, color, 22) + '</svg>';
+}
+/* Gradients the pieces use, once per page. */
+function tokenDefs() {
+  if (document.getElementById("tkDefs")) return;
+  var holder = document.createElement("div");
+  holder.innerHTML = '<svg id="tkDefs" width="0" height="0" style="position:absolute;width:0;height:0" aria-hidden="true"><defs>'
+    + '<linearGradient id="tkIvory" x1="0" y1="0" x2=".3" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#fff4d6"/><stop offset="1" stop-color="#e9c97a"/></linearGradient>'
+    + '<radialGradient id="tkGloss" cx="34%" cy="26%" r="78%"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset=".45" stop-color="#fff" stop-opacity=".08"/><stop offset="1" stop-color="#000" stop-opacity=".28"/></radialGradient>'
+    + '</defs></svg>';
+  document.body.insertBefore(holder.firstChild, document.body.firstChild);
+}
 var SEAT_COLORS = ["#ffc83d", "#ff6b6b", "#2ed3b7", "#7dd3fc", "#c084fc", "#fb923c", "#34d399", "#f472b6"];
 var GROUP_COLORS = { brown: "#8c5a3b", lightblue: "#6fd3e7", pink: "#d63384", orange: "#f7871f", red: "#d32f2f", yellow: "#f2c230", green: "#2e9e5b", blue: "#1d4ed8" };
 var RULESETS = [
@@ -702,7 +863,7 @@ syncSoundBtn();
     var html = '';
     for (var i = 0; i < TOKENS.length; i++) {
       var t = TOKENS[i];
-      html += '<button class="jb-token' + (t.id === state.token ? ' on' : '') + '" data-token="' + t.id + '" aria-label="' + esc(t.label) + '">' + t.emoji + '</button>';
+      html += '<button class="jb-token' + (t.id === state.token ? ' on' : '') + '" data-token="' + t.id + '" aria-label="' + esc(t.label) + '">' + tokenBadge(t.id, '#6d4fd8') + '</button>';
     }
     $('jb-tokens').innerHTML = html;
     $('jb-tokens').querySelectorAll('.jb-token').forEach(function (btn) {
@@ -762,8 +923,7 @@ syncSoundBtn();
     var chips = '';
     for (var i = 0; i < room.players.length; i++) {
       var p = room.players[i];
-      var tok = (TOKENS.find(function (t) { return t.id === p.token; }) || {}).emoji || '🙂';
-      chips += '<div style="text-align:center"><div style="font-size:34px">' + tok + '</div><div style="font-size:13px;font-weight:800">' + esc(p.name) + '</div></div>';
+      chips += '<div style="text-align:center"><div style="width:44px;height:44px;margin:0 auto">' + tokenBadge(p.token, SEAT_COLORS[i]) + '</div><div style="font-size:13px;font-weight:800">' + esc(p.name) + '</div></div>';
     }
     $('jb-wait-players').innerHTML = chips;
     var isHost = !!(room.you && room.you.is_host);
@@ -895,7 +1055,10 @@ syncSoundBtn();
     go: function (c) { return '<path d="M21 12 H6 M12 5.5 L5.5 12 L12 18.5" stroke="' + c + '" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'; },
     bars: function (c) { return '<rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="#374151"/><path d="M8 4 V20 M12 4 V20 M16 4 V20" stroke="#d1d5db" stroke-width="2"/>'
       + '<rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="none" stroke="' + c + '" stroke-width="1.6"/>'; },
-    moon: function (c) { return '<path d="M15 3.5 A8.5 8.5 0 1 0 20.5 17 A6.5 6.5 0 1 1 15 3.5 Z" fill="' + c + '"/><path d="M18 5 L18.6 6.6 L20.2 7.2 L18.6 7.8 L18 9.4 L17.4 7.8 L15.8 7.2 L17.4 6.6 Z" fill="#f59e0b"/>'; },
+    candles: function (c) { return '<path d="M8.2 3.2 Q6.9 5.2 8.2 6.6 Q9.5 5.2 8.2 3.2 Z M15.8 3.2 Q14.5 5.2 15.8 6.6 Q17.1 5.2 15.8 3.2 Z" fill="#f59e0b"/>'
+      + '<rect x="7" y="7.2" width="2.4" height="9" rx=".6" fill="#fff8e7" stroke="' + c + '" stroke-width="1"/><rect x="14.6" y="7.2" width="2.4" height="9" rx=".6" fill="#fff8e7" stroke="' + c + '" stroke-width="1"/>'
+      + '<path d="M5.2 16.6 H11.2 M12.8 16.6 H18.8 M8.2 16.6 V19.6 M15.8 16.6 V19.6" stroke="' + c + '" stroke-width="1.8" stroke-linecap="round"/>'
+      + '<path d="M4.5 20.5 H19.5" stroke="' + c + '" stroke-width="2.2" stroke-linecap="round"/>'; },
     lock: function (c) { return '<path d="M8 11 V8 A4 4 0 0 1 16 8 V11" stroke="' + c + '" stroke-width="2.6" fill="none"/><rect x="5.5" y="11" width="13" height="10" rx="2" fill="' + c + '"/>'
       + '<circle cx="12" cy="15.4" r="1.6" fill="#fff"/><rect x="11.3" y="15.6" width="1.4" height="3" fill="#fff"/>'; }
   };
@@ -1050,7 +1213,7 @@ syncSoundBtn();
       svgEl('text', { x: 0, y: T / 2 - 5, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#5b4a8a' }, g).textContent = 'JUST VISITING';
     } else if (i === 20) {
       svgEl('circle', { cx: 0, cy: -4, r: T * 0.31, fill: '#e0f2fe', stroke: '#0284c7', 'stroke-width': 2 }, g);
-      icon(g, 'moon', 0, -4, 30, '#0369a1');
+      icon(g, 'candles', 0, -4, 30, '#0369a1');
       svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SABBATH REST';
       svgEl('text', { x: 0, y: 35, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#0369a1' }, g).textContent = 'SANCTUARY';
     } else {
@@ -1180,7 +1343,7 @@ syncSoundBtn();
       var me = room.you && (room.you.seat === i);
       var cls = 'jb-player' + (p.is_turn ? ' turn' : '') + (p.bankrupt ? ' out' : '') + (me ? ' me' : '');
       html += '<div class="' + cls + '" data-seat-card="' + i + '">';
-      html += '<div class="jb-face-sm" style="background:' + SEAT_COLORS[i] + ';border:2px solid rgba(0,0,0,.35)">' + tokenEmoji(p.token) + (me ? '<span class="jb-you">YOU</span>' : '') + '</div>';
+      html += '<div class="jb-face-sm">' + tokenBadge(p.token, SEAT_COLORS[i]) + (me ? '<span class="jb-you">YOU</span>' : '') + '</div>';
       html += '<div style="min-width:0;flex:1">';
       html += '<div class="jb-pname">' + esc(p.name) + (p.is_host ? ' 👑' : '') + (p.is_ai ? ' 🤖' : '') + '</div>';
       html += '<div class="jb-pcash">$' + fmt(p.cash) + ' <span style="font-size:10px;color:#b9aee0;font-weight:700">· $' + fmt(p.net_worth || p.cash) + '</span></div>';
@@ -1297,10 +1460,7 @@ syncSoundBtn();
       }
       html += '<ellipse cx="0" cy="4" rx="' + shadowR + '" ry="' + (shadowR * 0.55) + '" fill="rgba(0,0,0,.42)"/>';
       html += '<g transform="translate(0,' + (-lift) + ') scale(' + (2 - squash) + ',' + squash + ')">' +
-        '<ellipse cx="0" cy="7" rx="15" ry="6" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.2"/>' +
-        '<circle cy="-2" r="14" fill="' + SEAT_COLORS[seat] + '" stroke="#1b0f3b" stroke-width="2.2"/>' +
-        '<circle cy="-2" r="14" fill="url(#jb-gloss)"/>' +
-        '<text y="4" text-anchor="middle" font-size="15">' + tokenEmoji(p.token) + '</text>' +
+        '<g transform="translate(0,-3)">' + pieceMarkup(p.token, SEAT_COLORS[seat], 14) + '</g>' +
         '</g></g>';
     }
     g.innerHTML = html;
@@ -1509,9 +1669,13 @@ syncSoundBtn();
   function openDeed(i) {
     var sp = state.room && state.room.board[i];
     if (!sp) return;
+    var me = meSeat(), owner = sp.owner, theirs = owner != null && owner !== me && state.room.status === 'playing'
+      && state.room.players[owner] && !state.room.players[owner].bankrupt;
     openSheet('<h2>📜 Title Deed <small>' + esc(sp.name) + '</small></h2>' + deedHtml(sp) +
-      '<div class="jb-row" style="margin-top:12px"><button class="jb-btn ghost" id="jb-deed-close">Close</button></div>');
+      '<div class="jb-row" style="margin-top:12px">' + (theirs ? '<button class="jb-btn teal" id="jb-deed-trade">🤝 Ask ' + esc(state.room.players[owner].name) + ' to trade</button>' : '')
+      + '<button class="jb-btn ghost" id="jb-deed-close">Close</button></div>');
     tap($('jb-deed-close'), closeSheet);
+    if (theirs) tap($('jb-deed-trade'), function () { openTrade({ to: owner, get: sp.i }); });
   }
 
   /* The color a space wears: its street group, or the railroad / utility tone. */
@@ -1523,26 +1687,31 @@ syncSoundBtn();
   }
 
   function propertyRowHtml(sp) {
-    var you = (state.room && state.room.you) || {};
+    var room = state.room, you = (room && room.you) || {};
     var why = you.build && Object.prototype.hasOwnProperty.call(you.build, String(sp.i)) ? you.build[String(sp.i)] : null;
-    var buildOk = sp.kind === 'street' && why === '';
-    var sellOk = sp.kind === 'street' && sp.houses > 0 && (you.sellable || []).indexOf(sp.i) !== -1;
-    var houseCost = sp.house_cost || 0;
-    var built = sp.houses === 5 ? '🏨 Hotel' : (sp.houses ? '🏠×' + sp.houses : 'No buildings');
-    var reason = sp.kind === 'street' && why ? '<div class="jb-why">' + esc(why.charAt(0).toUpperCase() + why.slice(1)) + '</div>' : '';
-    return '<div class="jb-card jb-landrow">' +
-      '<span class="jb-swatch" style="background:' + spaceColor(sp) + '"></span>' +
-      '<div style="flex:1;min-width:0"><div style="font-weight:900">' + esc(sp.name) +
-      (sp.mortgaged ? ' <span style="color:#b91c1c">· mortgaged</span>' : '') + '</div>' +
-      '<div style="font-size:12px;color:#6b5b8f;font-weight:800">' +
-      (sp.kind === 'street' ? built + (houseCost ? ' · house $' + houseCost : '') : (sp.kind === 'railroad' ? 'Railroad' : 'Utility')) +
-      '</div>' + reason + '</div>' +
-      (sp.kind === 'street' && !sp.mortgaged ? '<button class="jb-btn small teal" data-build="' + sp.i + '"' + (buildOk ? '' : ' disabled aria-disabled="true"') + '>+Build</button>' : '') +
-      (sp.kind === 'street' && sp.houses ? '<button class="jb-btn small coral" data-sell="' + sp.i + '"' + (sellOk ? '' : ' disabled aria-disabled="true"') + '>Sell</button>' : '') +
-      (sp.mortgaged ? '<button class="jb-btn small" data-lift="' + sp.i + '">Lift $' + Math.ceil(sp.mortgage * 1.1) + '</button>' :
-        (sp.houses ? '' : '<button class="jb-btn small ghost" data-mortgage="' + sp.i + '">Mortgage $' + sp.mortgage + '</button>')) +
-      '</div>';
+    var street = sp.kind === 'street';
+    var buildOk = street && why === '';
+    var sellOk = street && sp.houses > 0 && (you.sellable || []).indexOf(sp.i) !== -1;
+    var groupHasHouses = street && room && groupBuilt(room, sp);
+    var built = sp.houses === 5 ? '🏨 Hotel' : (sp.houses ? Array(sp.houses + 1).join('🏠') + ' ' + sp.houses + ' house' + (sp.houses > 1 ? 's' : '') : 'No houses yet');
+    var line = street ? built + (sp.houses < 5 && sp.house_cost ? ' · next ' + (sp.houses === 4 ? 'hotel' : 'house') + ' $' + sp.house_cost : '')
+      : (sp.kind === 'railroad' ? 'Road' : 'Utility');
+    var note = '';
+    if (sp.mortgaged) note = 'Mortgaged: no rent until you lift it.';
+    else if (street && why) note = why.charAt(0).toUpperCase() + why.slice(1) + '.';
+    var btns = '';
+    if (street && !sp.mortgaged) btns += '<button class="jb-btn small teal" data-build="' + sp.i + '"' + (buildOk ? '' : ' disabled aria-disabled="true"') + '>🏠 Build $' + (sp.house_cost || 0) + '</button>';
+    if (street && sp.houses) btns += '<button class="jb-btn small coral" data-sell="' + sp.i + '"' + (sellOk ? '' : ' disabled aria-disabled="true"') + '>Sell a house</button>';
+    if (sp.mortgaged) btns += '<button class="jb-btn small" data-lift="' + sp.i + '">Lift mortgage $' + Math.ceil(sp.mortgage * 1.1) + '</button>';
+    else if (!groupHasHouses) btns += '<button class="jb-btn small ghost" data-mortgage="' + sp.i + '">Mortgage +$' + sp.mortgage + '</button>';
+    else if (!sp.houses) note = note || 'Sell the houses on this colour before mortgaging.';
+    return '<div class="jb-card jb-landrow2">' +
+      '<div class="lr-top"><span class="jb-swatch" style="background:' + spaceColor(sp) + '"></span>' +
+      '<div class="lr-name"><b>' + esc(sp.name) + '</b><small>' + line + '</small></div></div>' +
+      (note ? '<div class="jb-why">' + esc(note) + '</div>' : '') +
+      '<div class="lr-btns">' + btns + '</div></div>';
   }
+
 
   function openManage(debtMode) {
     var my = mySpaces();
@@ -1567,6 +1736,40 @@ syncSoundBtn();
     var bankBtn = $('jb-debt-bankrupt');
     if (bankBtn) tap(bankBtn, function () { doAction('/declare_bankruptcy', {}); closeSheet(); });
   }
+
+  /* ============ shake to roll ============
+     On a phone or tablet that reports motion, a good shake rolls the dice;
+     the Roll button is always there too. iPhones ask permission first, and
+     only from a tap, so the first Roll tap asks. Desktop browsers claim
+     DeviceMotionEvent but never send readings: "live" waits for a real one. */
+  var shake = (function () {
+    var api = { live: false, onShake: null }, last = null, hits = [], quietUntil = 0, listening = false;
+    var has = typeof window.DeviceMotionEvent !== 'undefined';
+    var ask = has && typeof DeviceMotionEvent.requestPermission === 'function';
+    function onMotion(e) {
+      var a = e.accelerationIncludingGravity || e.acceleration;
+      if (!a || a.x == null) return;
+      if (!api.live) { api.live = true; if (api.onLive) api.onLive(); }
+      if (last) {
+        var jolt = Math.abs(a.x - last.x) + Math.abs(a.y - last.y) + Math.abs(a.z - last.z);
+        var now = Date.now();
+        if (jolt > 24 && now > quietUntil) {
+          hits = hits.filter(function (t) { return now - t < 700; }); hits.push(now);
+          if (hits.length >= 2 && api.onShake) { hits = []; quietUntil = now + 1500; var f = api.onShake; api.onShake = null; f(); }
+        }
+      }
+      last = { x: a.x, y: a.y, z: a.z };
+    }
+    function listen() { if (!listening && has) { listening = true; window.addEventListener('devicemotion', onMotion); } }
+    api.needsAsk = function () { return ask && !listening; };
+    /* Call from a tap. */
+    api.ask = function () {
+      if (!ask || listening) return;
+      try { DeviceMotionEvent.requestPermission().then(function (r) { if (r === 'granted') listen(); }).catch(function () {}); } catch (e) {}
+    };
+    if (has && !ask) listen();
+    return api;
+  })();
 
   function doAction(path, body) {
     body = body || {};
@@ -1601,81 +1804,172 @@ syncSoundBtn();
   }
 
   /* ---------- Trades ---------- */
-  function tradeSideHtml(title, side, spaces, pre, checked) {
-    var h = '<div class="jb-trade-col"><h3>' + title + '</h3>';
-    h += '<div class="jb-trade-list">';
-    if (!spaces.length) h += '<div class="jb-trade-item" style="color:#b9aee0">No lands yet</div>';
-    spaces.forEach(function (sp) {
-      var chk = checked && checked[sp.i] !== false ? ' checked' : '';
-      h += '<label class="jb-trade-item"><input type="checkbox" data-sp="' + sp.i + '" data-side="' + side + '"' + chk + '>' + esc(sp.name) + '</label>';
+  /* ============ trading ============
+     Pick who to trade with, tap the deeds that change hands, nudge the cash,
+     read the deal back in plain words, send. The other phone gets the offer
+     straight away, laid out the same way, with Accept and Decline. */
+  function groupBuilt(room, sp) {
+    return sp.kind === 'street' && room.board.some(function (o) { return o.group === sp.group && (o.houses || 0) > 0; });
+  }
+  function deedChip(room, sp, side, picked) {
+    var blocked = groupBuilt(room, sp);
+    return '<button class="jb-tdeed' + (picked ? ' on' : '') + '" data-tsp="' + sp.i + '" data-tside="' + side + '"' + (blocked ? ' disabled' : '') + '>'
+      + '<i style="background:' + spaceColor(sp) + '"></i><b>' + esc(sp.name) + '</b>'
+      + '<small>' + (blocked ? 'Sell buildings first' : sp.mortgaged ? 'Mortgaged' : '$' + fmt(sp.price)) + '</small>'
+      + '<span class="tick">✓</span></button>';
+  }
+  function dealLines(room, side) {
+    var bits = (side.spaces || []).map(function (i) {
+      var sp = room.board[i] || {};
+      return '<div class="jb-tline"><i style="background:' + spaceColor(sp) + '"></i>' + esc(sp.name || 'Land') + (sp.mortgaged ? ' <small>(mortgaged)</small>' : '') + '</div>';
     });
-    h += '</div></div>';
-    return h;
+    if (side.cash) bits.push('<div class="jb-tline cash">💰 $' + fmt(side.cash) + '</div>');
+    if (side.jail_cards) bits.push('<div class="jb-tline">🗝️ ' + side.jail_cards + ' Dungeon-free card' + (side.jail_cards > 1 ? 's' : '') + '</div>');
+    return bits.join('') || '<div class="jb-tline none">Nothing</div>';
+  }
+  function dealValue(room, side) {
+    var v = side.cash || 0;
+    (side.spaces || []).forEach(function (i) { v += ((room.board[i] || {}).price || 0); });
+    return v + (side.jail_cards || 0) * 50;
   }
 
-  function openTrade() {
+  function openTrade(preset) {
     if (!state.room || state.room.status !== 'playing') { kit.toast('The match is not running'); return; }
     var room = state.room, me = meSeat();
-    var meName = (room.players[me] || {}).name || 'You';
     var opponents = aliveSeats().filter(function (s) { return s !== me; });
-    if (!opponents.length) { kit.toast('No opponents left to trade with'); return; }
-    var theirSpaces = {};
-    opponents.forEach(function (s) { theirSpaces[s] = room.board.filter(function (sp) { return sp.owner === s; }); });
-    var mySp = room.board.filter(function (sp) { return sp.owner === me; });
+    if (!opponents.length) { kit.toast('No one left to trade with'); return; }
+    var deal = { to: preset && preset.to != null ? preset.to : opponents[0], give: {}, get: {}, giveCash: 0, getCash: 0, giveCards: 0, getCards: 0 };
+    if (preset && preset.get != null) deal.get[preset.get] = true;
 
-    var h = '<h2>🤝 Trade Land<small>' + esc(meName) + ' is making an offer</small></h2>';
-    h += '<div class="jb-row" style="margin-bottom:8px"><label class="jb-label" style="margin:0">TRADE WITH</label>';
-    h += '<select class="jb-field" id="jb-trade-with" style="flex:2;min-width:0">';
-    opponents.forEach(function (s) {
-      h += '<option value="' + s + '">' + esc((room.players[s] || {}).name || 'Seat ' + s) + '</option>';
-    });
-    h += '</select></div>';
-    h += '<div class="jb-trade-cols">';
-    h += tradeSideHtml('YOU GIVE', 'give', mySp);
-    h += '<div id="jb-trade-theirs">' + tradeSideHtml('YOU GET', 'get', theirSpaces[opponents[0]]) + '</div>';
-    h += '</div>';
-    h += '<div class="jb-trade-cols" style="margin-top:6px"><div class="jb-trade-col"><h3>CASH YOU GIVE</h3>'
-      + '<input class="jb-field" id="jb-trade-givecash" type="number" min="0" step="10" value="0" inputmode="numeric"></div>'
-      + '<div class="jb-trade-col"><h3>CASH YOU GET</h3>'
-      + '<input class="jb-field" id="jb-trade-getcash" type="number" min="0" step="10" value="0" inputmode="numeric"></div></div>';
-    h += '<div class="jb-trade-sum" id="jb-trade-sum"></div>';
-    h += '<div class="jb-row" style="margin-top:10px"><button class="jb-btn teal" id="jb-trade-send">Send Offer</button>'
-      + '<button class="jb-btn ghost" id="jb-trade-close">Close</button></div>';
-    openSheet(h);
+    function draw() {
+      room = state.room;
+      var my = room.players[me] || {}, them = room.players[deal.to] || {};
+      var h = '<h2>🤝 Make a deal</h2>';
+      h += '<div class="jb-tlabel">1 · Trade with</div><div class="jb-twho">';
+      opponents.forEach(function (s) {
+        var p = room.players[s];
+        h += '<button class="jb-twhob' + (s === deal.to ? ' on' : '') + '" data-twho="' + s + '">' + tokenBadge(p.token, SEAT_COLORS[s]) + '<b>' + esc(p.name) + (p.is_ai ? ' 🤖' : '') + '</b><small>$' + fmt(p.cash) + '</small></button>';
+      });
+      h += '</div>';
+      var mine = room.board.filter(function (sp) { return sp.owner === me; });
+      var theirs = room.board.filter(function (sp) { return sp.owner === deal.to; });
+      h += '<div class="jb-tcols"><div class="jb-tcol give"><div class="jb-tlabel">2 · You give</div>'
+        + (mine.map(function (sp) { return deedChip(room, sp, 'give', deal.give[sp.i]); }).join('') || '<div class="jb-tempty">You have no land yet</div>')
+        + stepper('give', deal.giveCash, my.cash || 0)
+        + (my.jail_cards ? cardToggle('give', deal.giveCards, my.jail_cards) : '')
+        + '</div><div class="jb-tcol get"><div class="jb-tlabel">3 · You get</div>'
+        + (theirs.map(function (sp) { return deedChip(room, sp, 'get', deal.get[sp.i]); }).join('') || '<div class="jb-tempty">' + esc(them.name || 'They') + ' has no land yet</div>')
+        + stepper('get', deal.getCash, them.cash || 0)
+        + (them.jail_cards ? cardToggle('get', deal.getCards, them.jail_cards) : '')
+        + '</div></div>';
+      var offer = side('give'), ask = side('get');
+      var empty = !offer.spaces.length && !offer.cash && !offer.jail_cards && !ask.spaces.length && !ask.cash && !ask.jail_cards;
+      var gv = dealValue(room, offer), tv = dealValue(room, ask);
+      var fair = empty ? '' : Math.abs(gv - tv) <= Math.max(40, 0.15 * Math.max(gv, tv)) ? '<span class="fair ok">⚖️ About even</span>'
+        : gv > tv ? '<span class="fair you">You give more ($' + fmt(gv) + ' vs $' + fmt(tv) + ')</span>'
+        : '<span class="fair them">You ask more ($' + fmt(tv) + ' vs $' + fmt(gv) + ')' + (them.is_ai ? ' - scribes rarely say yes' : '') + '</span>';
+      h += '<div class="jb-tsum">' + (empty ? 'Tap the deeds or add cash to build your offer.' : fair) + '</div>';
+      h += '<div class="jb-row" style="margin-top:10px"><button class="jb-btn teal" id="jb-trade-send"' + (empty ? ' disabled' : '') + '>Send offer to ' + esc(them.name || '') + '</button>'
+        + '<button class="jb-btn ghost" id="jb-trade-close">Close</button></div>';
+      openSheet(h);
+      $('jb-sheet').setAttribute('data-kind', 'trade');
+      wire();
+    }
+    function stepper(which, val, max) {
+      return '<div class="jb-tcash"><span>Cash</span><button data-tcash="' + which + '" data-d="-50">−50</button><button data-tcash="' + which + '" data-d="-10">−10</button>'
+        + '<b>$' + fmt(val) + '</b><button data-tcash="' + which + '" data-d="10"' + (val + 10 > max ? ' disabled' : '') + '>+10</button><button data-tcash="' + which + '" data-d="50"' + (val + 50 > max ? ' disabled' : '') + '>+50</button></div>';
+    }
+    function cardToggle(which, val, max) {
+      return '<button class="jb-tcard' + (val ? ' on' : '') + '" data-tcard="' + which + '" data-max="' + max + '">🗝️ Dungeon-free card' + (val ? ' ✓' : '') + '</button>';
+    }
+    function side(which) {
+      var picked = deal[which], spaces = [];
+      Object.keys(picked).forEach(function (k) { if (picked[k]) spaces.push(+k); });
+      return which === 'give' ? { cash: deal.giveCash, spaces: spaces, jail_cards: deal.giveCards } : { cash: deal.getCash, spaces: spaces, jail_cards: deal.getCards };
+    }
+    function wire() {
+      var sh = $('jb-sheet');
+      sh.querySelectorAll('[data-twho]').forEach(function (b) { tap(b, function () {
+        var s = +b.dataset.twho; if (s === deal.to) return;
+        deal.to = s; deal.get = {}; deal.getCash = 0; deal.getCards = 0; kit.haptic(10); draw(); }); });
+      sh.querySelectorAll('[data-tsp]:not([disabled])').forEach(function (b) { tap(b, function () {
+        var set = deal[b.dataset.tside], i = b.dataset.tsp; set[i] = !set[i]; kit.haptic(8); draw(); }); });
+      sh.querySelectorAll('[data-tcash]').forEach(function (b) { tap(b, function () {
+        if (b.disabled) return;
+        var key = b.dataset.tcash === 'give' ? 'giveCash' : 'getCash';
+        deal[key] = Math.max(0, deal[key] + (+b.dataset.d)); draw(); }); });
+      sh.querySelectorAll('[data-tcard]').forEach(function (b) { tap(b, function () {
+        var key = b.dataset.tcard === 'give' ? 'giveCards' : 'getCards';
+        deal[key] = deal[key] ? 0 : 1; draw(); }); });
+      tap($('jb-trade-close'), closeSheet);
+      tap($('jb-trade-send'), function () {
+        if ($('jb-trade-send').disabled) return;
+        var to = deal.to, name = (state.room.players[to] || {}).name || '';
+        doAction('/trade/propose', { to_seat: to, offer: side('give'), ask: side('get') }).then(function (out) {
+          if (!out || !out.success) return;
+          closeSheet();
+          var still = (out.room.trades || []).some(function (t) { return t.from === me && t.to === to; });
+          kit.toast(still ? 'Offer sent to ' + name + ' - waiting for an answer' : lastTradeAnswer(out.room, name));
+        });
+      });
+    }
+    draw();
+  }
+  function lastTradeAnswer(room, name) {
+    var log = room.log || [];
+    for (var i = log.length - 1; i >= Math.max(0, log.length - 4); i--) {
+      if (log[i].indexOf(name + ' accepts the deal') === 0) return '🤝 ' + name + ' accepted!';
+      if (log[i].indexOf(name + ' declines the deal') === 0) return name + ' said no to that deal';
+    }
+    return 'Offer answered';
+  }
 
-    var refreshTheirs = function () {
-      var seat = +($('jb-trade-with').value);
-      $('jb-trade-theirs').innerHTML = tradeSideHtml('YOU GET', 'get', theirSpaces[seat] || []);
-      bindListSums();
-    };
-    var readSums = function () {
-      var seat = +($('jb-trade-with').value);
-      var give = 0, get = 0;
-      document.querySelectorAll('#jb-sheet input[data-side="give"]:checked').forEach(function (cb) { give++; });
-      document.querySelectorAll('#jb-sheet input[data-side="get"]:checked').forEach(function (cb) { get++; });
-      var giveCash = Math.max(0, +($('jb-trade-givecash').value) || 0);
-      var getCash = Math.max(0, +($('jb-trade-getcash').value) || 0);
-      $('jb-trade-sum').textContent = 'Offering ' + give + ' land(s) + $' + fmt(giveCash) + ' for ' + get + ' land(s) + $' + fmt(getCash);
-      return { give: give, get: get, giveCash: giveCash, getCash: getCash, seat: seat };
-    };
-    var bindListSums = function () {
-      document.querySelectorAll('#jb-sheet input[data-side]').forEach(function (cb) { cb.addEventListener('change', readSums); });
-      readSums();
-    };
-    $('jb-trade-with').addEventListener('change', refreshTheirs);
-    $('jb-trade-givecash').addEventListener('input', readSums);
-    $('jb-trade-getcash').addEventListener('input', readSums);
-    tap($('jb-trade-close'), closeSheet);
-    tap($('jb-trade-send'), function () {
-      var s = readSums();
-      var offer = { cash: s.giveCash, spaces: [], jail_cards: 0 };
-      var ask = { cash: s.getCash, spaces: [], jail_cards: 0 };
-      document.querySelectorAll('#jb-sheet input[data-side="give"]:checked').forEach(function (cb) { offer.spaces.push(+cb.dataset.sp); });
-      document.querySelectorAll('#jb-sheet input[data-side="get"]:checked').forEach(function (cb) { ask.spaces.push(+cb.dataset.sp); });
-      doAction('/trade_propose', { to_seat: s.seat, offer: offer, ask: ask });
-      closeSheet();
+  /* An offer for me: shown at once (unless another sheet is open). */
+  function offerHtml(room, t, me) {
+    var forMe = t.to === me;
+    var who = esc(forMe ? t.from_name : t.to_name);
+    var youGet = forMe ? t.offer : t.ask, youGive = forMe ? t.ask : t.offer;
+    return '<div class="jb-toffer">'
+      + '<div class="jb-toffer-h">' + (forMe ? '📨 <b>' + who + '</b> offers you a deal' : '⏳ Waiting for <b>' + who + '</b>') + '</div>'
+      + '<div class="jb-tcols"><div class="jb-tcol get"><div class="jb-tlabel">You get</div>' + dealLines(room, youGet) + '</div>'
+      + '<div class="jb-tcol give"><div class="jb-tlabel">You give</div>' + dealLines(room, youGive) + '</div></div>'
+      + (forMe ? '<div class="jb-row"><button class="jb-btn teal" data-taccept="' + t.id + '">✓ Accept</button><button class="jb-btn coral" data-treject="' + t.id + '">✗ Decline</button></div>'
+               : '<div class="jb-row"><button class="jb-btn ghost" data-tcancel="' + t.id + '">Take back offer</button></div>')
+      + '</div>';
+  }
+  function wireOffers(root) {
+    root.querySelectorAll('[data-taccept]').forEach(function (b) { tap(b, function () { doAction('/trade/accept', { trade_id: b.dataset.taccept }).then(function (o) { if (o && o.success) { kit.toast('🤝 Deal done!'); kit.sound.play('coin'); closeOfferSheet(); } }); }); });
+    root.querySelectorAll('[data-treject]').forEach(function (b) { tap(b, function () { doAction('/trade/reject', { trade_id: b.dataset.treject }).then(function () { closeOfferSheet(); }); }); });
+    root.querySelectorAll('[data-tcancel]').forEach(function (b) { tap(b, function () { doAction('/trade/cancel', { trade_id: b.dataset.tcancel }); }); });
+  }
+  function closeOfferSheet() { if ($('jb-sheet').getAttribute('data-kind') === 'offer') closeSheet(); }
+  var seenOffers = {}, sentOffers = {};
+  function checkOffers() {
+    var room = state.room, me = meSeat();
+    if (!room || me == null) return;
+    var trades = room.trades || [];
+    var live = {};
+    trades.forEach(function (t) { live[t.id] = true; });
+    // My offers that were answered.
+    Object.keys(sentOffers).forEach(function (id) {
+      if (!live[id]) { kit.toast(lastTradeAnswer(room, sentOffers[id])); delete sentOffers[id]; }
     });
-    bindListSums();
+    trades.forEach(function (t) { if (t.from === me) sentOffers[t.id] = t.to_name; });
+    // An offer to me went away while it was open: close it.
+    if ($('jb-sheet').getAttribute('data-kind') === 'offer' && $('jb-sheet-shade').classList.contains('show')) {
+      var openId = $('jb-sheet').getAttribute('data-offer');
+      if (!live[openId]) closeSheet();
+    }
+    var fresh = trades.filter(function (t) { return t.to === me && !seenOffers[t.id]; });
+    if (!fresh.length) return;
+    fresh.forEach(function (t) { seenOffers[t.id] = true; });
+    if ($('jb-sheet-shade').classList.contains('show')) { kit.toast('📨 ' + fresh[0].from_name + ' sent you an offer - see Trades'); return; }
+    var t = fresh[0];
+    openSheet('<h2>🤝 A deal for you</h2>' + offerHtml(room, t, me));
+    $('jb-sheet').setAttribute('data-kind', 'offer');
+    $('jb-sheet').setAttribute('data-offer', t.id);
+    wireOffers($('jb-sheet'));
+    kit.haptic(30); kit.sound.play('coin');
   }
 
   /* ---------- Tabs ---------- */
@@ -1707,36 +2001,15 @@ syncSoundBtn();
 
   function renderTradesTab() {
     var room = state.room, me = meSeat();
-    var trades = (room.trades || []).filter(function (t) { return t.status === 'pending'; });
-    var mine = trades.filter(function (t) { return t.to_seat === me; });
-    var others = trades.filter(function (t) { return t.from_seat === me; });
+    var trades = room.trades || [];
+    var mine = trades.filter(function (t) { return t.to === me; });
+    var sent = trades.filter(function (t) { return t.from === me; });
     var html = '';
-    if (mine.length) {
-      html += '<div class="jb-label" style="margin-top:2px">OFFERS FOR YOU</div>';
-      mine.forEach(function (t) {
-        var dir = t;
-        html += '<div class="jb-trade-item" style="border-radius:12px;margin-bottom:6px"><div style="flex:1;min-width:0"><b>' + esc((room.players[t.from_seat] || {}).name || 'Seat ' + t.from_seat) + '</b><br><span style="font-size:12px;color:#b9aee0">gives: ' + tradeSummary(t.offer) + '<br>wants: ' + tradeSummary(t.ask) + '</span></div>'
-          + '<div style="display:flex;flex-direction:column;gap:6px"><button class="jb-btn teal" style="font-size:13px;padding:8px 10px;box-shadow:0 4px 0 #1b0f3b" data-taccept="' + t.id + '">Accept</button>'
-          + '<button class="jb-btn coral" style="font-size:13px;padding:8px 10px;box-shadow:0 4px 0 #1b0f3b" data-treject="' + t.id + '">Reject</button></div></div>';
-      });
-    }
-    if (others.length) {
-      html += '<div class="jb-label" style="margin-top:8px">OFFERS YOU SENT</div>';
-      others.forEach(function (t) {
-        html += '<div class="jb-trade-item" style="border-radius:12px;margin-bottom:6px"><div style="flex:1;min-width:0"><b>To ' + esc((room.players[t.to_seat] || {}).name || 'Seat ' + t.to_seat) + '</b><br><span style="font-size:12px;color:#b9aee0">' + tradeSummary(t.offer) + ' ⇄ ' + tradeSummary(t.ask) + '</span></div>'
-          + '<button class="jb-btn ghost" style="font-size:13px;padding:8px 10px" data-tcancel="' + t.id + '">Cancel</button></div>';
-      });
-    }
-    if (!mine.length && !others.length) html = '<div class="jb-trade-item" style="color:#b9aee0;border:none">No pending offers. Tap 🤝 Trade in the action bar to propose one.</div>';
+    mine.forEach(function (t) { html += offerHtml(room, t, me); });
+    sent.forEach(function (t) { html += offerHtml(room, t, me); });
+    if (!html) html = '<div class="jb-tempty dark">No offers right now.</div>';
+    if (room.status === 'playing') html += '<button class="jb-btn teal" id="jb-tab-newtrade" style="margin-top:8px">🤝 Make a deal</button>';
     return html;
-  }
-
-  function tradeSummary(s) {
-    var bits = [];
-    if ((s.spaces || []).length) bits.push((s.spaces.length) + ' land');
-    if (s.cash) bits.push('$' + fmt(s.cash));
-    if (s.jail_cards) bits.push(s.jail_cards + ' jail card' + (s.jail_cards > 1 ? 's' : ''));
-    return bits.join(' + ') || 'nothing';
   }
 
   function renderLog() {
@@ -1752,13 +2025,15 @@ syncSoundBtn();
     var room = state.room;
     if (!room) return;
     var body = $('jb-tabbody');
-    if (state.tab === 'prop') body.innerHTML = renderPropTab();
-    else if (state.tab === 'trades') body.innerHTML = renderTradesTab();
-    else body.innerHTML = renderLog();
-    $('jb-trade-dot').style.display = ((room.trades || []).some(function (t) { return t.status === 'pending' && t.to_seat === meSeat(); })) ? 'block' : 'none';
-    body.querySelectorAll('[data-taccept]').forEach(function (b) { tap(b, function () { doAction('/trade_accept', { trade_id: b.dataset.taccept }); }); });
-    body.querySelectorAll('[data-treject]').forEach(function (b) { tap(b, function () { doAction('/trade_reject', { trade_id: b.dataset.treject }); }); });
-    body.querySelectorAll('[data-tcancel]').forEach(function (b) { tap(b, function () { doAction('/trade_cancel', { trade_id: b.dataset.tcancel }); }); });
+    var html = state.tab === 'prop' ? renderPropTab() : state.tab === 'trades' ? renderTradesTab() : renderLog();
+    $('jb-trade-dot').style.display = ((room.trades || []).some(function (t) { return t.to === meSeat(); })) ? 'block' : 'none';
+    checkOffers();
+    // Only when it changed, so a button is not swapped out from under a tap.
+    if (body.dataset.html === html) return;
+    body.dataset.html = html;
+    body.innerHTML = html;
+    wireOffers(body);
+    if ($('jb-tab-newtrade')) tap($('jb-tab-newtrade'), function () { openTrade(); });
   }
 
   $('jb-tabs').addEventListener('click', function (e) {
@@ -1770,33 +2045,58 @@ syncSoundBtn();
   });
 
   /* ---------- Action bar ---------- */
+  var auctionTick = null, auctionEnds = 0;
   function renderAuctionBar(a) {
-    $('jb-auction-who').textContent = a.spaceName + ' - Bidding';
-    $('jb-auction-bid').textContent = '$' + fmt(a.high_bid);
-    var me = meSeat(), leader = a.high_bidder === me;
-    var passed = (a.passed || []).indexOf(me) !== -1;
-    var btns = '';
-    var room = state.room;
+    var room = state.room, me = meSeat();
+    var leader = a.high_bidder === me, passed = !!a.you_passed || (a.passed || []).indexOf(me) !== -1;
     var myCash = room && room.players[me] ? room.players[me].cash : 0;
-    [10, 25, 50, 100].forEach(function (step) {
+    $('jb-auction-who').textContent = a.name || ((room.board[a.space] || {}).name) || 'Land';
+    $('jb-auction-bid').textContent = '$' + fmt(a.high_bid || 0);
+    var lead = $('jb-auction-lead');
+    lead.className = 'au-lead' + (leader ? ' me' : '');
+    lead.textContent = a.high_bidder == null ? 'No bids yet' : leader ? '🏆 You lead!' : (a.high_bidder_name || 'Someone') + ' leads';
+    var btns = '';
+    if (leader) btns = '<div class="au-note">You have the top bid. Hold on - others can still raise.</div>';
+    else if (passed) btns = '<div class="au-note">You passed on this one.</div>';
+    else [10, 25, 50, 100].forEach(function (step) {
       var amt = (a.high_bid || 0) + step;
-      btns += '<button class="jb-btn teal jb-quickbid" style="font-size:13px;padding:8px 12px;box-shadow:0 4px 0 #1b0f3b" data-bid="' + amt + '"' + ((passed || leader || amt > myCash) ? ' disabled' : '') + '>+' + step + '</button>';
+      btns += '<button class="jb-btn teal" data-bid="' + amt + '"' + (amt > myCash ? ' disabled title="Not enough cash"' : '') + '>$' + fmt(amt) + '</button>';
     });
-    $('jb-auction-btns').innerHTML = btns;
+    var key = btns + '|' + (leader || passed);
+    if ($('jb-auction-btns').dataset.key !== key) {
+      $('jb-auction-btns').dataset.key = key;
+      $('jb-auction-btns').innerHTML = btns;
+      $('jb-auction-btns').querySelectorAll('[data-bid]').forEach(function (b) {
+        tap(b, function () { doAction('/auction_bid', { amount: +b.dataset.bid }); kit.sound.play('coin'); kit.haptic(15); });
+      });
+    }
+    var passBtn = $('jb-auction-pass');
+    passBtn.style.display = (leader || passed) ? 'none' : '';
+    if (!passBtn.dataset.wired) { passBtn.dataset.wired = '1'; tap(passBtn, function () { doAction('/auction_pass', {}); }); }
+    auctionEnds = Date.now() + (a.ends_in || 0) * 1000;
+    function tickClock() {
+      var left = Math.max(0, Math.ceil((auctionEnds - Date.now()) / 1000));
+      var c = $('jb-auction-clock');
+      c.textContent = '0:' + (left < 10 ? '0' : '') + left;
+      c.classList.toggle('hurry', left <= 5);
+    }
+    tickClock();
+    if (!auctionTick) auctionTick = setInterval(tickClock, 250);
     $('jb-auction').classList.add('show');
-    $('jb-auction-btns').querySelectorAll('[data-bid]').forEach(function (b) {
-      tap(b, function () { doAction('/auction_bid', { amount: +b.dataset.bid }); kit.sound.play('coin'); });
-    });
-    tap($('jb-auction-pass'), function () { doAction('/auction_pass', {}); });
+  }
+  function hideAuctionBar() {
+    $('jb-auction').classList.remove('show');
+    if (auctionTick) { clearInterval(auctionTick); auctionTick = null; }
   }
 
   function renderActions() {
     var room = state.room;
     if (!room) return;
-    if (room.status === 'lobby' || room.status === 'finished') { $('jb-auction').classList.remove('show'); $('jb-action').innerHTML = ''; return; }
+    if (room.status === 'lobby' || room.status === 'finished') { hideAuctionBar(); $('jb-action').innerHTML = ''; return; }
     var me = meSeat(), myTurn = room.turn === me, html = '';
     var my = room.players[me] || {};
     var p = room.pending;
+    if (!room.auction) hideAuctionBar();
 
     if (p && myTurn) {
       if (p.kind === 'buy') {
@@ -1813,10 +2113,10 @@ syncSoundBtn();
       }
     } else if (room.auction && room.auction.high_bidder !== undefined) {
       var a = room.auction;
-      renderAuctionBar({ space: a.space, spaceName: (room.board[a.space] || {}).name || 'Land', high_bid: a.high_bid, high_bidder: a.high_bidder, passed: a.passed });
+      renderAuctionBar(a);
       html = '<div class="jb-hint">Bidding for <b>' + esc((room.board[a.space] || {}).name || 'Land') + '</b></div>';
     } else {
-      $('jb-auction').classList.remove('show');
+      hideAuctionBar();
       if (myTurn) {
         var inJail = !!my.in_jail;
         if (!room.rolled) {
@@ -1841,6 +2141,10 @@ syncSoundBtn();
         html = '<div class="jb-waitingchip">' + esc(cur ? cur.name : '…') + "'s turn…</div>";
       }
     }
+    // Rebuilt only when it changes: replacing the buttons on every poll could
+    // swallow a tap that landed just as the next update arrived.
+    if ($('jb-action').dataset.html === html) return;
+    $('jb-action').dataset.html = html;
     $('jb-action').innerHTML = html;
     (function wire() {
       var b;
@@ -1850,7 +2154,19 @@ syncSoundBtn();
       if ((b = $('jb-act-pct'))) tap(b, function () { doAction('/tribute_choice', { choice: 'percent' }); });
       if ((b = $('jb-act-manage'))) tap(b, function () { openManage(p && p.kind === 'debt'); });
       if ((b = $('jb-act-bankrupt'))) tap(b, function () { doAction('/declare_bankruptcy', {}); });
-      if ((b = $('jb-act-roll'))) tap(b, function () { doAction(inJailVar() ? '/jail_roll' : '/roll', {}); });
+      shake.onShake = null;
+      if ((b = $('jb-act-roll'))) {
+        var rollNow = function () { shake.onShake = null; doAction(inJailVar() ? '/jail_roll' : '/roll', {}); };
+        tap(b, rollNow);
+        // iPhones grant motion only from a click or touchend, not pointerdown.
+        b.addEventListener('touchend', shake.ask); b.addEventListener('click', shake.ask);
+        shake.onShake = function () { kit.haptic(40); b.classList.add('shook'); rollNow(); };
+        var hint = document.createElement('div');
+        hint.className = 'jb-shakehint';
+        var say = function () { hint.textContent = shake.live ? '📳 or shake your phone to roll' : ''; };
+        say(); shake.onLive = say;
+        b.parentNode.insertBefore(hint, b.nextSibling);
+      }
       if ((b = $('jb-act-fine'))) tap(b, function () { doAction('/jail_fine', {}); });
       if ((b = $('jb-act-card'))) tap(b, function () { doAction('/jail_card', {}); });
       if ((b = $('jb-act-end'))) tap(b, function () { doAction('/end_turn', {}); });
