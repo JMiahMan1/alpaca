@@ -79,45 +79,50 @@
   body.playing .main { align-items: center; justify-content: center; }
   .tvBoard { position: relative; width: 17.178rem; height: 9.667rem; flex: 0 0 auto; }
   .tvBoard svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
-  .tvCenter { position: absolute; box-sizing: border-box; padding: .22rem .3rem; display: flex; gap: .35rem; color: #fff8e7; }
-  .cCol { display: flex; flex-direction: column; min-width: 0; }
-  .cPlayers { flex: 0 0 6.4rem; }
-  .cPlay { flex: 1 1 auto; align-items: center; text-align: center; }
-  .cLabel { font-size: .2rem; letter-spacing: .25em; color: var(--dim); font-weight: 900; margin-bottom: .1rem; }
-  .tvCenter .players { display: flex; flex-direction: column; gap: .1rem; flex: 1 1 auto; min-height: 0; }
-  .tvCenter .plr { display: flex; align-items: center; gap: .16rem; background: rgba(255,255,255,.07); border-radius: .14rem;
-    padding: .08rem .14rem; border: .035rem solid transparent; }
+  .tvCenter { position: absolute; box-sizing: border-box; padding: .16rem .2rem; color: #fff8e7;
+    display: grid; grid-template-columns: 1.1fr 1fr; grid-template-rows: auto 1fr auto; gap: .14rem .18rem; }
+  .cTop { grid-column: 1 / 3; display: flex; align-items: center; justify-content: space-between; padding: 0 .06rem; }
+  .cTitle { display: flex; align-items: center; gap: .14rem; }
+  .cTitle .brand { font-size: .42rem; }
+  .cTitle .pill { font-size: .19rem; margin-left: 0; }
+  .cBank { display: flex; gap: .35rem; font-size: .24rem; font-weight: 800; color: var(--dim); align-items: baseline; }
+  .cBank b { color: var(--mint); font-size: .34rem; }
+  .cPanel { background: rgba(255,255,255,.055); border: .02rem solid rgba(255,255,255,.12); border-radius: .18rem; padding: .12rem .18rem;
+    min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .cPlayers { grid-row: 2 / 4; }
+  .cNow { align-items: center; justify-content: center; text-align: center; }
+  .cFoot { flex-direction: row; align-items: center; gap: .2rem; }
+  .cLabel { font-size: .18rem; letter-spacing: .25em; color: var(--dim); font-weight: 900; margin-bottom: .08rem; text-transform: uppercase; align-self: flex-start; }
+  .tvCenter .players { display: flex; flex-direction: column; gap: .08rem; flex: 1 1 auto; min-height: 0; }
+  .tvCenter .players.many { display: grid; grid-template-columns: 1fr 1fr; align-content: start; gap: .07rem .1rem; }
+  .tvCenter .plr { display: flex; align-items: center; gap: .14rem; background: rgba(255,255,255,.07); border-radius: .14rem;
+    padding: .07rem .12rem; border: .035rem solid transparent; min-width: 0; }
   .tvCenter .plr.turn { border-color: var(--gold); background: rgba(255,200,61,.16); }
   .tvCenter .plr.out { opacity: .35; }
-  .tvCenter .plr .ring, .tvCenter .cTurn .ring { width: .64rem; height: .64rem; border-radius: 50%; border: .045rem solid; display: flex; align-items: center;
-    justify-content: center; font-size: .38rem; flex: 0 0 auto; background: rgba(255,255,255,.08); }
-  .tvCenter .cTurn .ring.big { width: 1.05rem; height: 1.05rem; font-size: .62rem; border-width: .07rem; }
+  .tvCenter .plr .ring, .tvCenter .cTurn .ring { width: .62rem; height: .62rem; border-radius: 50%; border: .045rem solid; display: flex; align-items: center;
+    justify-content: center; font-size: .36rem; flex: 0 0 auto; background: rgba(255,255,255,.08); }
+  .tvCenter .cTurn .ring.big { width: 1rem; height: 1rem; font-size: .58rem; border-width: .07rem; }
   .tvCenter .plr .who { min-width: 0; }
-  .tvCenter .plr .nm { font-size: .34rem; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
-  .tvCenter .plr .st { font-size: .26rem; font-weight: 800; color: var(--gold2); font-variant-numeric: tabular-nums; }
-  .tvCenter .plr .st small { color: var(--dim); font-size: .21rem; }
+  .tvCenter .plr .nm { font-size: .33rem; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
+  .tvCenter .plr .st { font-size: .26rem; font-weight: 800; color: var(--gold2); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tvCenter .plr .st small { color: var(--dim); font-size: .2rem; }
   .tvCenter .plr.jail .st, .tvCenter .players .plr.jail .st { color: var(--rose); }
-  .tvCenter .players.many { gap: .05rem; }
-  .tvCenter .players.many .plr { padding: .04rem .12rem; }
-  .tvCenter .players.many .plr .ring { width: .5rem; height: .5rem; font-size: .3rem; }
+  .tvCenter .players.many .plr { padding: .05rem .1rem; gap: .1rem; }
+  .tvCenter .players.many .plr .ring { width: .5rem; height: .5rem; font-size: .29rem; }
   .tvCenter .players.many .plr .nm { font-size: .27rem; }
-  .tvCenter .players.many .plr .st { font-size: .21rem; }
-  .cBank { display: flex; justify-content: space-between; gap: .2rem; margin-top: .12rem; font-size: .24rem; font-weight: 800; color: var(--dim); }
-  .cBank b { color: var(--mint); font-size: .32rem; }
-  .cHead { display: flex; align-items: center; justify-content: center; gap: .14rem; }
-  .cHead .brand { font-size: .44rem; }
-  .cHead .pill { font-size: .2rem; margin-left: 0; }
-  .cTurn { display: flex; align-items: center; justify-content: center; gap: .24rem; margin-top: .3rem; }
-  .cWho { font-size: .66rem; font-weight: 900; text-shadow: 0 .04rem 0 rgba(0,0,0,.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 7rem; }
-  .cRoll { font-size: .46rem; font-weight: 900; color: #ffe27a; margin-top: .14rem; font-variant-numeric: tabular-nums; }
-  .cAlert { margin-top: .14rem; font-size: .3rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .06rem .2rem; }
+  .tvCenter .players.many .plr .st { font-size: .22rem; }
+  .tvCenter .players.many .plr .st small { display: none; }
+  .cTurn { display: flex; align-items: center; justify-content: center; gap: .22rem; }
+  .cWho { font-size: .62rem; font-weight: 900; text-shadow: 0 .04rem 0 rgba(0,0,0,.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 5.6rem; }
+  .cRoll { font-size: .44rem; font-weight: 900; color: #ffe27a; margin-top: .1rem; font-variant-numeric: tabular-nums; }
+  .cAlert { margin-top: .1rem; font-size: .28rem; font-weight: 900; color: #3a2503; background: #ffe9a8; border-radius: .14rem; padding: .05rem .2rem; }
   .cAlert.debt { background: #ffd4d4; color: #8a1c1c; }
-  .cStory { margin-top: .2rem; width: 100%; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-  .cLog { font-size: .26rem; font-weight: 700; color: #d9d0ff; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .75; }
-  .cLog.newest { font-size: .34rem; font-weight: 900; color: #fff8e7; opacity: 1; }
-  .cJoin { display: flex; align-items: center; gap: .18rem; font-size: .22rem; font-weight: 800; color: var(--dim); text-align: left; }
-  .cJoin img { width: 1.05rem; height: 1.05rem; background: #fff; border-radius: .1rem; padding: .05rem; }
-  .cJoin b { display: block; font-size: .46rem; color: var(--gold2); letter-spacing: .2em; }
+  .cEvent { margin-top: .14rem; font-size: .34rem; font-weight: 900; color: #fff8e7; line-height: 1.25; max-height: .9rem; overflow: hidden; }
+  .cStory { flex: 1 1 auto; min-width: 0; align-self: stretch; display: flex; flex-direction: column; }
+  .cLog { font-size: .23rem; font-weight: 700; color: #d9d0ff; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cJoin { display: flex; align-items: center; gap: .14rem; font-size: .2rem; font-weight: 800; color: var(--dim); text-align: left; flex: 0 0 auto; }
+  .cJoin img { width: .95rem; height: .95rem; background: #fff; border-radius: .1rem; padding: .05rem; }
+  .cJoin b { display: block; font-size: .42rem; color: var(--gold2); letter-spacing: .2em; }
   .sideCard { background: rgba(255,255,255,.06); border: .02rem solid rgba(255,255,255,.12); border-radius: .16rem; padding: .14rem .18rem; }
   .sideLabel { font-size: .15rem; letter-spacing: .22em; color: var(--dim); font-weight: 900; text-transform: uppercase; }
   .players { display: flex; flex-direction: column; gap: .12rem; }
@@ -340,7 +345,10 @@
      are big. The middle holds the game itself (players, the turn, the story).
      Built once per room; after that only owners, houses, the pieces and the
      middle change, so a modest Cast receiver keeps up. */
-  var BW = 1706, BH = 960, T = BH / 11, TW = (BW - 2 * T) / 9;
+  // D: how deep the edge tiles are (the corners are D x D); S and TW: a side
+  // tile's and a top/bottom tile's length along the edge. Deeper than a real
+  // board's, so names and prices read from across the room.
+  var BW = 1706, BH = 960, D = 124, S = (BH - 2 * D) / 9, TW = (BW - 2 * D) / 9;
   function svgEl(tag, attrs, parent) {
     var el = document.createElementNS(SVGNS, tag);
     for (var k in attrs) el.setAttribute(k, attrs[k]);
@@ -349,14 +357,14 @@
   }
   /* Centre, rotation and size (w along the edge, h deep) of tile i. */
   function tileGeom(i) {
-    if (i === 0) return { x: BW - T / 2, y: BH - T / 2, rot: 0, w: T, h: T };
-    if (i < 10) return { x: BW - T - (i - 0.5) * TW, y: BH - T / 2, rot: 0, w: TW, h: T };
-    if (i === 10) return { x: T / 2, y: BH - T / 2, rot: 90, w: T, h: T };
-    if (i < 20) return { x: T / 2, y: BH - T - (i - 10 - 0.5) * T, rot: 90, w: T, h: T };
-    if (i === 20) return { x: T / 2, y: T / 2, rot: 180, w: T, h: T };
-    if (i < 30) return { x: T + (i - 20 - 0.5) * TW, y: T / 2, rot: 180, w: TW, h: T };
-    if (i === 30) return { x: BW - T / 2, y: T / 2, rot: 270, w: T, h: T };
-    return { x: BW - T / 2, y: T + (i - 30 - 0.5) * T, rot: 270, w: T, h: T };
+    if (i === 0) return { x: BW - D / 2, y: BH - D / 2, rot: 0, w: D, h: D };
+    if (i < 10) return { x: BW - D - (i - 0.5) * TW, y: BH - D / 2, rot: 0, w: TW, h: D };
+    if (i === 10) return { x: D / 2, y: BH - D / 2, rot: 90, w: D, h: D };
+    if (i < 20) return { x: D / 2, y: BH - D - (i - 10 - 0.5) * S, rot: 90, w: S, h: D };
+    if (i === 20) return { x: D / 2, y: D / 2, rot: 180, w: D, h: D };
+    if (i < 30) return { x: D + (i - 20 - 0.5) * TW, y: D / 2, rot: 180, w: TW, h: D };
+    if (i === 30) return { x: BW - D / 2, y: D / 2, rot: 270, w: D, h: D };
+    return { x: BW - D / 2, y: D + (i - 30 - 0.5) * S, rot: 270, w: S, h: D };
   }
   /* A point along the walk: fractional positions slide between tile centres. */
   function pathPoint(pos) {
@@ -364,7 +372,7 @@
     var a = tileGeom(i0), b = tileGeom((i0 + 1) % 40);
     return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
   }
-  function fitName(name, maxW, maxFs, minFs) {
+  function fitName(name, maxW, maxFs, minFs, maxLines) {
     var words = String(name || "").split(/\s+/).filter(Boolean);
     var CH = 0.6;
     function longest(lines) { var m = 0; for (var i = 0; i < lines.length; i++) m = Math.max(m, lines[i].length); return m || 1; }
@@ -373,13 +381,18 @@
       var cand = [words.slice(0, k).join(" "), words.slice(k).join(" ")];
       if (two.length === 1 || longest(cand) < longest(two)) two = cand;
     }
+    if (words.length >= 3 && maxW < 100 && (maxLines || 3) >= 3) {
+      // A narrow tile: "The New Jerusalem" reads better as three short lines.
+      var three = [words[0], words.slice(1, words.length - 1).join(" "), words[words.length - 1]];
+      if (longest(three) < longest(two)) two = three;
+    }
     var fsOne = Math.min(maxFs, maxW / (CH * longest(one)));
     var fsTwo = Math.min(maxFs, maxW / (CH * longest(two)));
     var useOne = two.length === 1 || fsOne >= fsTwo * 0.9;
     return { lines: useOne ? one : two, size: Math.max(minFs, Math.round((useOne ? fsOne : fsTwo) * 10) / 10) };
   }
-  function drawName(g, name, cx, cy, maxW, maxFs, fill) {
-    var fit = fitName(name, maxW, maxFs, 9), lh = fit.size * 1.08;
+  function drawName(g, name, cx, cy, maxW, maxFs, fill, maxLines) {
+    var fit = fitName(name, maxW, maxFs, 9, maxLines), lh = fit.size * 1.08;
     for (var li = 0; li < fit.lines.length; li++) {
       var t = svgEl("text", { x: cx, y: (cy + (li - (fit.lines.length - 1) / 2) * lh + fit.size * 0.36).toFixed(1), "text-anchor": "middle",
         "font-size": fit.size, "font-weight": 900, fill: fill || "#1b0f3b" }, g);
@@ -388,11 +401,11 @@
   }
   function corner(g, w, h, big, small, emoji, fill) {
     svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: h, fill: fill, opacity: 0.35 }, g);
-    var e = svgEl("text", { x: 0, y: -10, "text-anchor": "middle", "font-size": 30 }, g); e.textContent = emoji;
-    var bigFs = Math.min(14, (w - 8) / (0.6 * String(big).length));
-    var smallFs = Math.min(11, (w - 8) / (0.6 * String(small).length));
-    var b = svgEl("text", { x: 0, y: 14, "text-anchor": "middle", "font-size": bigFs.toFixed(1), "font-weight": 900, fill: "#1b0f3b" }, g); b.textContent = big;
-    var s2 = svgEl("text", { x: 0, y: 14 + bigFs + 3, "text-anchor": "middle", "font-size": smallFs.toFixed(1), "font-weight": 800, fill: "#3c2a55" }, g); s2.textContent = small;
+    var e = svgEl("text", { x: 0, y: -14, "text-anchor": "middle", "font-size": 40 }, g); e.textContent = emoji;
+    var bigFs = Math.min(19, (w - 10) / (0.6 * String(big).length));
+    var smallFs = Math.min(14, (w - 10) / (0.6 * String(small).length));
+    var b = svgEl("text", { x: 0, y: 20, "text-anchor": "middle", "font-size": bigFs.toFixed(1), "font-weight": 900, fill: "#1b0f3b" }, g); b.textContent = big;
+    var s2 = svgEl("text", { x: 0, y: 20 + bigFs + 4, "text-anchor": "middle", "font-size": smallFs.toFixed(1), "font-weight": 800, fill: "#3c2a55" }, g); s2.textContent = small;
   }
   var board = null;   // { code, svg, own: [], houses: [], mort: [], tokens: {}, center }
   function buildBoard(room) {
@@ -405,7 +418,7 @@
     svgEl("stop", { offset: "0%", "stop-color": "#fffdf0" }, parchment);
     svgEl("stop", { offset: "100%", "stop-color": "#efe0bd" }, parchment);
     svgEl("rect", { x: 0, y: 0, width: BW, height: BH, fill: "url(#parch)", stroke: "#1b0f3b", "stroke-width": 6 }, svg);
-    svgEl("rect", { x: T, y: T, width: BW - 2 * T, height: BH - 2 * T, fill: "#1d1145", stroke: "#f5c344", "stroke-width": 4 }, svg);
+    svgEl("rect", { x: D, y: D, width: BW - 2 * D, height: BH - 2 * D, fill: "#1d1145", stroke: "#f5c344", "stroke-width": 4 }, svg);
     var b = { code: room.code, svg: svg, wrap: wrap, own: [], houses: [], mort: [], tokens: {}, shown: {} };
     var spaces = room.board || [];
     for (var i = 0; i < 40; i++) {
@@ -420,42 +433,45 @@
       if (i === 30) { corner(g, w, h, "SENT TO", "THE DUNGEON", "⚔️", "#ffc4c4"); continue; }
       var band = GROUP_COLORS[sp.group] || (sp.kind === "railroad" ? "#1f2937" : sp.kind === "utility" ? "#374151" : null);
       var bandColor = sp.kind === "chance" ? "#8b5cf6" : sp.kind === "chest" ? "#1d4ed8" : sp.kind === "tax" ? "#c44" : band;
-      var bandH = 18;
+      var bandH = 22;
       if (bandColor) svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: bandH, fill: bandColor }, g);
       var label = sp.kind === "chance" ? "PARABLE" : sp.kind === "chest" ? "SCRIPTURE" : null;
       var nameTxt = label || sp.name || "";
       var art = sp.kind === "chance" ? "📜" : sp.kind === "chest" ? "📖" : sp.kind === "railroad" ? (sp.i === 35 ? "🐫" : "🚂")
         : sp.kind === "utility" ? (sp.i === 12 ? "💡" : "⛲") : sp.kind === "tax" ? "🪙" : null;
       var priceTxt = sp.kind === "tax" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
-      var wide = w > h * 1.4;
-      var top = -h / 2 + (bandColor ? bandH : 0), bottom = h / 2 - (priceTxt ? 22 : 4);
+      var wide = w > h;
+      var priceFs = wide ? 23 : 17;
+      var top = -h / 2 + (bandColor ? bandH : 0), bottom = h / 2 - (priceTxt ? priceFs + 10 : 4);
       var mid = (top + bottom) / 2;
       if (art && wide) {
         // Wide tile: the picture on the left, the name beside it.
-        var a1 = svgEl("text", { x: -w / 2 + 26, y: mid + 11, "text-anchor": "middle", "font-size": 30 }, g); a1.textContent = art;
-        drawName(g, nameTxt, 22, mid, w - 64, 21);
+        var a1 = svgEl("text", { x: -w / 2 + 30, y: mid + 14, "text-anchor": "middle", "font-size": 38 }, g); a1.textContent = art;
+        drawName(g, nameTxt, 26, mid, w - 72, 26);
       } else if (art) {
-        var a2 = svgEl("text", { x: 0, y: top + 24, "text-anchor": "middle", "font-size": 22 }, g); a2.textContent = art;
-        drawName(g, nameTxt, 0, (top + 30 + bottom) / 2 + 2, w - 10, 13);
+        // Narrow tile with a picture: a smaller picture and at most two lines,
+        // so the name never runs into the price.
+        var a2 = svgEl("text", { x: 0, y: top + 22, "text-anchor": "middle", "font-size": 21 }, g); a2.textContent = art;
+        drawName(g, nameTxt, 0, (top + 28 + bottom) / 2 + 1, w - 8, 14, null, 2);
       } else {
-        drawName(g, nameTxt, 0, mid, w - (wide ? 16 : 10), wide ? 24 : 16);
+        drawName(g, nameTxt, 0, mid, w - (wide ? 18 : 8), wide ? 30 : 20);
       }
       if (priceTxt) {
-        var pt = svgEl("text", { x: 0, y: h / 2 - 6, "text-anchor": "middle", "font-size": wide ? 19 : 14, "font-weight": 900, fill: sp.kind === "tax" ? "#b91c1c" : "#1b0f3b" }, g);
+        var pt = svgEl("text", { x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": priceFs, "font-weight": 900, fill: sp.kind === "tax" ? "#b91c1c" : "#1b0f3b" }, g);
         pt.textContent = priceTxt;
       }
       // Changing bits, kept for update(): owner, houses, mortgage.
-      b.own[i] = svgEl("circle", { cx: -w / 2 + 11, cy: h / 2 - 11, r: 7, fill: "none", stroke: "none", "stroke-width": 1.6 }, g);
-      b.houses[i] = svgEl("g", { transform: "translate(0 " + (-h / 2 + 3) + ")" }, g);
-      b.mort[i] = svgEl("text", { x: w / 2 - 12, y: h / 2 - 6, "text-anchor": "middle", "font-size": 17, "font-weight": 900, fill: "#c0392b", display: "none" }, g);
+      b.own[i] = svgEl("circle", { cx: -w / 2 + 13, cy: h / 2 - 13, r: 9, fill: "none", stroke: "none", "stroke-width": 1.6 }, g);
+      b.houses[i] = svgEl("g", { transform: "translate(0 " + (-h / 2 + 5) + ")" }, g);
+      b.mort[i] = svgEl("text", { x: w / 2 - 14, y: h / 2 - 8, "text-anchor": "middle", "font-size": 20, "font-weight": 900, fill: "#c0392b", display: "none" }, g);
       b.mort[i].textContent = "M";
     }
     b.tokenLayer = svgEl("g", {}, svg);
     // The middle of the board: HTML over the centre panel.
     var center = document.createElement("div");
     center.className = "tvCenter";
-    center.style.left = (T / BW * 100) + "%"; center.style.top = (T / BH * 100) + "%";
-    center.style.width = ((BW - 2 * T) / BW * 100) + "%"; center.style.height = ((BH - 2 * T) / BH * 100) + "%";
+    center.style.left = (D / BW * 100) + "%"; center.style.top = (D / BH * 100) + "%";
+    center.style.width = ((BW - 2 * D) / BW * 100) + "%"; center.style.height = ((BH - 2 * D) / BH * 100) + "%";
     wrap.appendChild(center);
     b.center = center;
     return b;
@@ -485,8 +501,8 @@
     var t = board.tokens[p.seat];
     if (t) return t;
     var g = svgEl("g", {}, board.tokenLayer);
-    svgEl("circle", { r: 19, fill: seatColor(p.seat), stroke: "#1b0f3b", "stroke-width": 3 }, g);
-    var e = svgEl("text", { y: 8, "text-anchor": "middle", "font-size": 22 }, g); e.textContent = tokenEmoji(p.token);
+    svgEl("circle", { r: 24, fill: seatColor(p.seat), stroke: "#1b0f3b", "stroke-width": 3.5 }, g);
+    var e = svgEl("text", { y: 10, "text-anchor": "middle", "font-size": 28 }, g); e.textContent = tokenEmoji(p.token);
     t = { g: g, shown: p.position, queue: [], from: p.position, start: 0, dur: 0, lift: 0 };
     board.tokens[p.seat] = t;
     return t;
@@ -516,13 +532,13 @@
           var k = Math.min(1, (now - t.start) / t.dur);
           var e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;   // ease in-out
           pos = t.from + e * (((t.to - t.from) + 40) % 40);
-          lift = Math.sin(Math.PI * k) * 26;
+          lift = Math.sin(Math.PI * k) * 34;
           moving = true;
         }
         var key = Math.round(pos) % 40;
         places[key] = (places[key] || 0) + 1;
         var n = places[key] - 1, pt = pathPoint(pos);
-        var dx = (n % 2) * 30 - 15, dy = Math.floor(n / 2) * 28 - 14;
+        var dx = (n % 2) * 36 - 18, dy = Math.floor(n / 2) * 32 - 16;
         t.g.setAttribute("transform", "translate(" + (pt.x + dx).toFixed(1) + " " + (pt.y + dy - lift).toFixed(1) + ")");
       }
       animating = moving;
@@ -545,30 +561,31 @@
   function centerHtml(room) {
     var p = room.players && room.players[room.turn];
     var many = room.players.length > 4 ? " many" : "";
-    var left = '<div class="cCol cPlayers"><div class="cLabel">PLAYERS</div><div class="players' + many + '">' + playerRows(room) + '</div>'
+    var head = '<div class="cTop"><div class="cTitle"><span class="brand">🎺 JUBILEE!</span>'
+      + '<span class="pill">ROUND ' + (room.round || 1) + '</span><span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span></div>'
       + '<div class="cBank"><span>🍯 Jackpot <b>$' + fmt(room.pot) + '</b></span><span>Bank 🏠 ' + room.bank_houses + ' · 🏨 ' + room.bank_hotels + '</span></div></div>';
-    var turn = "";
+    var players = '<div class="cPanel cPlayers"><div class="cLabel">Players</div><div class="players' + many + '">' + playerRows(room) + '</div></div>';
+    var now = '<div class="cPanel cNow"><div class="cLabel">Now</div>';
     if (p && room.status === "playing") {
-      turn = '<div class="cTurn"><div class="ring big" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
+      now += '<div class="cTurn"><div class="ring big" style="border-color:' + seatColor(p.seat) + '">' + tokenEmoji(p.token) + '</div>'
         + '<div class="cWho" style="color:' + seatColor(p.seat) + '">' + esc((p.in_jail ? "⛓ " : "") + (p.name || "")) + "'s turn</div></div>";
     }
-    var lr = room.last_roll, roll = "";
-    if (lr && lr.d1 && lr.d2) roll = '<div class="cRoll">🎲 ' + lr.d1 + ' + ' + lr.d2 + ' = ' + (lr.d1 + lr.d2) + (lr.d1 === lr.d2 ? ' · DOUBLES!' : '') + '</div>';
-    var extra = "";
+    var lr = room.last_roll;
+    if (lr && lr.d1 && lr.d2) now += '<div class="cRoll">🎲 ' + lr.d1 + ' + ' + lr.d2 + ' = ' + (lr.d1 + lr.d2) + (lr.d1 === lr.d2 ? ' · DOUBLES!' : '') + '</div>';
     if (room.auction) {
       var a = room.auction;
-      extra = '<div class="cAlert">🔨 ON THE BLOCK: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : "") + '</div>';
+      now += '<div class="cAlert">🔨 On the block: ' + esc(a.name || ("Space " + a.space)) + ' · $' + fmt(a.high_bid) + (a.high_bidder_name ? " · " + esc(a.high_bidder_name) + " leads" : "") + '</div>';
     } else if (room.pending && room.pending.kind === "debt") {
-      extra = '<div class="cAlert debt">A debt is due: $' + fmt(room.pending.amount) + '</div>';
+      now += '<div class="cAlert debt">A debt is due: $' + fmt(room.pending.amount) + '</div>';
     }
-    var log = (room.log || []).slice(-4).reverse();
-    var story = log.map(function (line, i) { return '<div class="cLog' + (i ? '' : ' newest') + '">' + esc(line) + '</div>'; }).join("");
+    var log = (room.log || []).slice(-3).reverse();
+    if (log[0]) now += '<div class="cEvent">' + esc(log[0]) + '</div>';
+    now += '</div>';
+    var earlier = log.slice(1).map(function (line) { return '<div class="cLog">' + esc(line) + '</div>'; }).join("");
     var code = esc(room.code || PINNED);
-    var right = '<div class="cCol cPlay"><div class="cHead"><span class="brand">🎺 JUBILEE!</span><span class="pill">ROUND ' + (room.round || 1) + '</span>'
-      + '<span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span></div>'
-      + turn + roll + extra + '<div class="cStory">' + story + '</div>'
+    var foot = '<div class="cPanel cFoot"><div class="cStory"><div class="cLabel">Earlier</div>' + earlier + '</div>'
       + '<div class="cJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div>Scan to play<b>' + code + '</b></div></div></div>';
-    return left + right;
+    return head + players + now + foot;
   }
   var centerSig = "";
   function renderGame(room) {
