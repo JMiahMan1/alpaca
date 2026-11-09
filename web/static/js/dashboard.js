@@ -2961,7 +2961,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     'kv-unified': 'KV Unified',
                     'spec-type': 'Speculative Type',
                     'spec-draft-n-max': 'Spec Draft Max',
-                    'n-cpu-moe': 'CPU MoE Threads'
+                    'n-cpu-moe': 'MoE Layers on CPU',
+                    'moe-cache-mib': 'MoE Expert Cache (MiB)',
+                    'moe-cache-cpu-share': 'MoE Cache CPU Share'
                 };
                 
                 if (runningSettingsContainer) {
@@ -8580,6 +8582,8 @@ const saved = _loadHumanRatings(t.id) || {};
             setNumberInput('spec-draft-n-max', 'spec-draft-n-max', '0 (Disabled)');
             setNumberInput('spec-draft-n-min', 'spec-draft-n-min', '0 (Default)');
             setNumberInput('n-cpu-moe', 'n-cpu-moe', isSd ? 'Auto (nproc - 2)' : '0 (all experts on GPU)');
+            setNumberInput('moe-cache-mib', 'moe-cache-mib', '0 (Disabled)');
+            setNumberInput('moe-cache-cpu-share', 'moe-cache-cpu-share', '0 (Upload every miss)');
             setNumberInput('temperature', 'temperature', '0.6 (Recommended)');
 
             // Throughput and prompt-cache knobs (llama.cpp server args)
@@ -8699,6 +8703,8 @@ const saved = _loadHumanRatings(t.id) || {};
                     'spec-draft-n-max': elVal('spec-draft-n-max'),
                     'spec-draft-n-min': elVal('spec-draft-n-min'),
                     'n-cpu-moe': elVal('n-cpu-moe'),
+                    'moe-cache-mib': elVal('moe-cache-mib'),
+                    'moe-cache-cpu-share': elVal('moe-cache-cpu-share'),
                     'batch-size': elVal('batch-size'),
                     'ubatch-size': elVal('ubatch-size'),
                     'cache-reuse': elVal('cache-reuse'),

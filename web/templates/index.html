@@ -1108,6 +1108,19 @@
 
                                      <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
                                          <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">MoE expert cache, MiB (moe-cache-mib)</label>
+                                             <input type="number" name="moe-cache-mib" min="0" step="256" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Spare VRAM that caches the hot experts n-cpu-moe keeps in RAM. Only does anything with n-cpu-moe set.</div>
+                                         </div>
+                                         <div>
+                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Cache-miss CPU share (moe-cache-cpu-share)</label>
+                                             <input type="number" name="moe-cache-cpu-share" min="0" max="1" step="0.05" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                             <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">0-1: share of misses the CPU computes instead of uploading the expert, once the cache is full.</div>
+                                         </div>
+                                     </div>
+
+                                     <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+                                         <div>
                                              <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Logical Batch (batch-size)</label>
                                              <input type="number" name="batch-size" min="1" class="form-control" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
                                              <div style="font-size:0.65rem; color:var(--text-muted); margin-top:0.25rem;">Tokens per prompt-processing pass. llama.cpp default 2048.</div>

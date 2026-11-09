@@ -5894,14 +5894,23 @@ LLAMA_PRESET_KEYS = frozenset(
         "main-gpu",
         "tensor-split",
         "device",
-        "mmap",
-        "mlock",
+        # mmap / mlock are NOT here: llama.cpp replaced --mmap/--no-mmap/--mlock
+        # with --load-mode, and a preset carrying either key crash-loops the
+        # router. Saving a profile now sweeps them out of the section.
         "load-mode",
         "threads",
         "threads-batch",
         "cpu-moe",
         "n-cpu-moe",
+        "n-cpu-ffn",
+        # GPU cache for the MoE experts n-cpu-moe keeps in RAM (0 = off), and
+        # the share of cache misses the CPU computes instead of uploading
+        # (--moe-cache-cpu-share, new in b12233).
+        "moe-cache-mib",
+        "moe-cache-cpu-share",
         "override-tensor",
+        "mmproj",
+        "shard",
         # Batching and slots
         "batch-size",
         "ubatch-size",

@@ -160,6 +160,36 @@ def gpu_temp_c() -> int | None:
         return None
 
 
+# Share of a MoE layer's weights that are expert FFNs (Qwen3-30B-A3B class:
+# ~28.5 of 30.5 B parameters). n-cpu-moe keeps those in RAM for the first N
+# layers, so a file-size x ngl/layers estimate counts them as VRAM they never
+# use - which blocked every high-ngl MoE config at the guard.
+MOE_EXPERT_FRAC = 0.9
+
+
+def gpu_weights_mb(settings: dict, shape: dict) -> float:
+    """Estimated weight MB on the GPU, honouring ngl and n-cpu-moe.
+
+    llama.cpp offloads the LAST ngl layers; n-cpu-moe moves the experts of
+    the FIRST N layers to RAM, so only their overlap is subtracted.
+    """
+    n_layers = int(shape.get("n_layers") or 0)
+    file_mb = float(shape.get("file_size_mb") or 0.0)
+    if not n_layers or not file_mb:
+        return 0.0
+    wpl = file_mb / n_layers
+    try:
+        ngl = min(n_layers, int(settings.get("n-gpu-layers") or 0))
+    except (TypeError, ValueError):
+        ngl = 0
+    try:
+        cpu_moe = int(settings.get("n-cpu-moe") or 0) if shape.get("expert_count") else 0
+    except (TypeError, ValueError):
+        cpu_moe = 0
+    overlap = max(0, min(cpu_moe, n_layers) - (n_layers - ngl))
+    return wpl * ngl - wpl * MOE_EXPERT_FRAC * overlap
+
+
 def probe_guard(shape: dict, settings: dict, ctx: int, vram_total: int) -> tuple[bool, str]:
     """Safety pre-flight: VRAM/RAM headroom and GPU temperature before a probe."""
     temp = gpu_temp_c()
@@ -177,8 +207,11 @@ def probe_guard(shape: dict, settings: dict, ctx: int, vram_total: int) -> tuple
     kv_bpt = kv_bytes_per_token(shape, settings.get("cache-type-k") or "f16")
     kv_total_mb = (kv_bpt * ctx / 1e6) if kv_bpt else 0.0
     kv_in_ram = str(settings.get("no-kv-offload", "")).lower() in ("1", "true", "yes", "on")
-    weights_mb = float(shape.get("file_size_mb") or 0)
-    gpu_est = weights_mb * (ngl / n_layers) + (0.0 if kv_in_ram else kv_total_mb) + GUARD_VRAM_HEADROOM_MB
+    try:
+        mcache = int(settings.get("moe-cache-mib") or 0)
+    except (TypeError, ValueError):
+        mcache = 0
+    gpu_est = gpu_weights_mb(settings, shape) + (0.0 if kv_in_ram else kv_total_mb) + mcache + GUARD_VRAM_HEADROOM_MB
     free_vram = vram_total - (vram_mb() or 0) + llama_server_vram_mb()
     if free_vram < gpu_est:
         return False, f"vram guard: est {gpu_est:.0f} MB > free {free_vram} MB (ngl={ngl})"
@@ -522,6 +555,10 @@ def label_for(s: dict) -> str:
     label = f"ctx={s.get('ctx-size')} kv={s.get('cache-type-k')} ngl={s.get('n-gpu-layers')} fa={s.get('flash-attn')}"
     if s.get("n-cpu-moe"):
         label += f" moe={s['n-cpu-moe']}"
+    if s.get("moe-cache-mib"):
+        label += f" mcache={s['moe-cache-mib']}"
+        if s.get("moe-cache-cpu-share"):
+            label += f"/{s['moe-cache-cpu-share']}"
     if s.get("ubatch-size"):
         label += f" ub={s['ubatch-size']}"
     if s.get("spec-type"):
@@ -555,11 +592,74 @@ def escalate_step(settings: dict, shape: dict, is_moe: bool) -> dict | None:
 
 
 def _est_vram_mb(s: dict, shape: dict, ctx: int) -> int:
-    n_layers = shape.get("n_layers") or 48
-    file_mb = shape.get("file_size_mb") or 0.0
-    wpl = file_mb / n_layers if n_layers else 0.0
     kv_mb = kv_bytes_per_token(shape, s.get("cache-type-k", "q8_0")) * ctx / 1e6
-    return int(int(s.get("n-gpu-layers", "0") or 0) * wpl + kv_mb + VRAM_OVERHEAD_MB)
+    try:
+        mcache = int(s.get("moe-cache-mib") or 0)
+    except (TypeError, ValueError):
+        mcache = 0
+    weights = gpu_weights_mb(s, {**shape, "n_layers": shape.get("n_layers") or 48})
+    return int(weights + kv_mb + VRAM_OVERHEAD_MB + mcache)
+
+
+# Keys the scan tunes. A candidate built from another config (the incumbent)
+# must name every one of them, blank meaning "remove", or keys left in the
+# section by an earlier probe would leak into it.
+MANAGED_KEYS = (
+    "ctx-size",
+    "cache-type-k",
+    "cache-type-v",
+    "n-gpu-layers",
+    "flash-attn",
+    "n-cpu-moe",
+    "moe-cache-mib",
+    "moe-cache-cpu-share",
+    "ubatch-size",
+    "batch-size",
+    "spec-type",
+    "spec-draft-n-max",
+    "cache-reuse",
+)
+
+# --moe-cache-mib: a GPU cache for the hot experts n-cpu-moe keeps in RAM.
+# Sized from the VRAM the working config was MEASURED to leave free (the
+# file-size estimate counts offloaded experts as GPU weights, so it cannot
+# see this headroom), rounded down to 256 MiB, and only worth a probe when at
+# least MOE_CACHE_MIN_MIB is spare.
+MOE_CACHE_MIN_MIB = 512
+MOE_CACHE_FILL = 0.8  # of the measured headroom - leave room for compute-buffer growth
+MOE_CACHE_CPU_SHARE = "0.5"  # second probe: CPU computes half the misses instead of uploading
+
+
+def moe_cache_size_mib(measured_vram_mb: int | None, vram_total: int, target_frac: float = VRAM_TARGET_FRAC) -> int:
+    """MiB to give --moe-cache-mib, or 0 when the measured headroom is too small."""
+    if not measured_vram_mb:
+        return 0
+    spare = vram_total * target_frac - measured_vram_mb
+    size = int(spare * MOE_CACHE_FILL) // 256 * 256
+    return size if size >= MOE_CACHE_MIN_MIB else 0
+
+
+def incumbent_candidate(original: dict, winner: dict) -> dict | None:
+    """The model's pre-scan config as a hill candidate, so a scan can never
+    replace a hand-tuned profile with a slower one.
+
+    Only offered on the winner's rung (same context and KV quant): the rung
+    ladder decides quality, the hill only decides speed.
+    """
+    if not original:
+        return None
+    if str(original.get("ctx-size")) != str(winner.get("ctx-size")):
+        return None
+    if original.get("cache-type-k") != winner.get("cache-type-k"):
+        return None
+    cand = {k: original.get(k, "") for k in MANAGED_KEYS}
+
+    def _set(s: dict) -> dict:
+        return {k: str(s[k]) for k in MANAGED_KEYS if s.get(k) not in (None, "")}
+
+    if _set(cand) == _set(winner):
+        return None
+    return cand
 
 
 def hill_neighbors(
@@ -570,6 +670,7 @@ def hill_neighbors(
     vram_total: int,
     section: dict | None = None,
     target_frac: float = VRAM_TARGET_FRAC,
+    measured_vram_mb: int | None = None,
 ) -> list[dict]:
     """Ordered upgrade variants of a working baseline (faster if they fit).
 
@@ -577,6 +678,8 @@ def hill_neighbors(
     and prompt-cache reuse on/off. ``section`` is the model's current
     models.ini section, used as the baseline for keys the scan does not
     otherwise manage (ubatch-size, spec-type, cache-reuse).
+    ``measured_vram_mb`` is the peak VRAM the working config used; with it a
+    MoE config that offloads experts also gets a --moe-cache-mib probe.
     """
     out: list[dict] = []
     budget = vram_total * target_frac
@@ -586,6 +689,18 @@ def hill_neighbors(
 
     def fits(s: dict) -> bool:
         return _est_vram_mb(s, shape, ctx) <= budget
+
+    # The MoE expert cache goes first: it is the one lever that spends VRAM
+    # the working config measurably left idle, at no cost to context or KV.
+    if is_moe and settings.get("n-cpu-moe") and not settings.get("moe-cache-mib"):
+        size = moe_cache_size_mib(measured_vram_mb, vram_total, target_frac)
+        if size:
+            mc = dict(settings)
+            mc["moe-cache-mib"] = str(size)
+            out.append(mc)
+            mcs = dict(mc)
+            mcs["moe-cache-cpu-share"] = MOE_CACHE_CPU_SHARE
+            out.append(mcs)
 
     up = dict(settings)
     ngl = int(up.get("n-gpu-layers", "0") or 0)
@@ -944,6 +1059,10 @@ def main():
         except Exception:
             results = {}
 
+    # Each model's config before the scan touched it: offered as a hill
+    # candidate (incumbent_candidate) so a scan cannot regress a tuned profile.
+    originals = {m: dict(c[m]) for m in models if c.has_section(m)}
+
     vram_total = vram_total_mb() or 8188
     print(f"[scan] VRAM total: {vram_total} MB, RAM available: {ram_available_mb()} MB")
 
@@ -1299,7 +1418,23 @@ def main():
             hill_ctx = int(winner_settings.get("ctx-size") or rung_ctx)
         except (TypeError, ValueError):
             hill_ctx = rung_ctx
-        neighbors = hill_neighbors(winner_settings, shape, is_moe, hill_ctx, vram_total, dict(c[model]))
+        # Every probe below writes its keys into the section; the winner is
+        # written over THIS snapshot, so a losing probe's ubatch/reuse/spec
+        # change cannot survive into the saved profile.
+        pre_hill_section = dict(c[model])
+        neighbors = hill_neighbors(
+            winner_settings,
+            shape,
+            is_moe,
+            hill_ctx,
+            vram_total,
+            dict(c[model]),
+            measured_vram_mb=(winner_res or {}).get("vram_peak_mb"),
+        )
+        incumbent = incumbent_candidate(originals.get(model, {}), winner_settings)
+        if incumbent is not None:
+            print(f"[scan] incumbent candidate: {label_for(incumbent)}")
+            neighbors.insert(0, incumbent)
         for nset in neighbors:
             if hill_done >= args.max_hill or THERMAL_STOP:
                 break
@@ -1347,6 +1482,13 @@ def main():
             if valid and res.get("tps", 0) > cur_best_tps:
                 winner_settings, winner_res = dict(nset), res
                 print(f"[scan] hill IMPROVED: {res.get('tps')} tok/s (was {cur_best_tps})")
+                # A new winner that offloads experts (typically the incumbent)
+                # gets its own expert-cache probes, sized from its own VRAM.
+                if is_moe and nset.get("n-cpu-moe") and not nset.get("moe-cache-mib"):
+                    size = moe_cache_size_mib(res.get("vram_peak_mb"), vram_total)
+                    if size:
+                        mc = {**nset, "moe-cache-mib": str(size)}
+                        neighbors.extend([mc, {**mc, "moe-cache-cpu-share": MOE_CACHE_CPU_SHARE}])
             elif (
                 valid
                 and cur_best_tps
@@ -1358,6 +1500,10 @@ def main():
 
         # ---- Phase D: write the winner to the model profile ----
         final_label = label_for(winner_settings)
+        for k in list(c[model]):
+            c[model].pop(k)
+        for k, v in pre_hill_section.items():
+            c[model][k] = v
         load_section(c, model, winner_settings)
         # Bench-verified marker goes to the sidecar file, NOT models.ini:
         # llama-server rejects unknown preset keys and crash-loops. The

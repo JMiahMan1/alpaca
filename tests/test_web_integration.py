@@ -575,6 +575,28 @@ mlock = true
     assert config["new-model"]["flash-attn"] == "on"
 
 
+def test_profiles_save_drops_removed_mmap_mlock_and_writes_moe_cache_keys(client, tmp_path, monkeypatch):
+    """--mmap/--mlock no longer exist (llama.cpp uses --load-mode), so a preset
+    carrying them crash-loops the router; the MoE expert-cache flags are real."""
+    mock_ini = tmp_path / "models.ini"
+    mock_ini.write_text("[moe-model]\nmlock = true\nmmap = true\nn-cpu-moe = 34\n")
+    monkeypatch.setattr("web.app.get_models_ini_path", lambda: mock_ini)
+
+    settings = {"mlock": "true", "mmap": "true", "moe-cache-mib": "1536", "moe-cache-cpu-share": "0.5"}
+    res = client.post("/api/profiles/save", json={"section": "moe-model", "settings": settings})
+    assert res.status_code == 200
+
+    import configparser
+
+    config = configparser.ConfigParser(delimiters=("=",))
+    config.read(str(mock_ini))
+    section = config["moe-model"]
+    assert "mlock" not in section and "mmap" not in section
+    assert section["moe-cache-mib"] == "1536"
+    assert section["moe-cache-cpu-share"] == "0.5"
+    assert section["n-cpu-moe"] == "34"
+
+
 def test_profile_save_keeps_harness_keys_out_of_models_ini(client, tmp_path, monkeypatch):
     """llama-server's preset parser rejects keys that are not its own arguments and
     the container crash-loops, so harness-only settings must stay in the overlay."""

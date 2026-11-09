@@ -220,7 +220,26 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
 - Flags worth knowing, exposed in the Model Profiles editor: `cache-reuse` (min chunk
   reused from the prompt cache via KV shifting, 0 = off), `batch-size` / `ubatch-size`
   (llama.cpp defaults 2048 / 512), `swa-full`, `reasoning-effort`, `split-mode`,
-  `spec-draft-n-min`, `n-cpu-moe` (**MoE layers kept in RAM - not a thread count**).
+  `spec-draft-n-min`, `n-cpu-moe` (**MoE layers kept in RAM - not a thread count**),
+  `moe-cache-mib` (a VRAM cache for the hot experts `n-cpu-moe` keeps in RAM; 0 = off) and
+  `moe-cache-cpu-share` (0-1, share of cache misses the CPU computes instead of uploading;
+  **new in b12233**, so a preset carrying it crash-loops an older image).
+- **`mmap` / `mlock` are not preset keys.** llama.cpp replaced `--mmap`/`--no-mmap`/`--mlock`
+  with `--load-mode` (`auto|mmap|mlock|mmap+mlock`); saving a profile sweeps them out of the
+  section and reindex maps an old `mlock=false` to `load-mode = mmap`.
+- **Checking a new llama.cpp build for flag changes:** fetch `common/arg.cpp` at both tags and
+  diff the `"--flag"` sets; also check every `LLAMA_PRESET_KEYS` entry still exists upstream
+  (that is how the dead `mmap`/`mlock` were found). The image is `server-cuda12`, so
+  `sudo docker compose build --pull llama-server` is what picks up a new build.
+- **`settings_scan.py` and MoE:** the guard and hill estimates subtract the experts of the
+  `n-cpu-moe` layers that are on the GPU (`gpu_weights_mb`; llama.cpp offloads the *last* ngl
+  layers, `n-cpu-moe` covers the *first* N), so ngl=99 + n-cpu-moe is no longer blocked as
+  "the whole file in VRAM". A working config that offloads experts gets a `moe-cache-mib` probe
+  sized from its **measured** peak VRAM (80% of the headroom, 256 MiB steps), with and without
+  `moe-cache-cpu-share 0.5`. The model's pre-scan config is always probed too
+  (`incumbent_candidate`, same rung only), so a scan cannot replace a tuned profile with a
+  slower one, and the winner is written over a pre-hill snapshot so a losing probe's keys
+  never leak into the saved profile.
   Also available in presets but not in the editor: `cache-ram`, `ctx-checkpoints`,
   `checkpoint-min-step`, `kv-unified-per-slot`, `cache-idle-slots`, `context-shift`,
   `chat-template-kwargs` (e.g. `{"reasoning_effort": "high"}`).

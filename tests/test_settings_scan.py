@@ -384,3 +384,85 @@ def test_thermal_thresholds_are_ordered():
     """Pre-cool target < throttle start < abort, or the watchdogs fight each other."""
     assert settings_scan.GUARD_PRECOOL_C < settings_scan.THERMAL_THROTTLE_C
     assert settings_scan.THERMAL_THROTTLE_C < settings_scan.THERMAL_CPU_ABORT_C
+
+
+# ---------- MoE expert cache, incumbent, n-cpu-moe-aware VRAM estimate ----------
+
+MOE_SHAPE = {"n_layers": 40, "n_head_kv": 2, "head_dim": 256, "file_size_mb": 18536, "expert_count": 256}
+MOE_WORKING = {
+    "ctx-size": "65536",
+    "cache-type-k": "q8_0",
+    "cache-type-v": "q8_0",
+    "n-gpu-layers": "26",
+    "flash-attn": "on",
+    "n-cpu-moe": "34",
+}
+
+
+def test_moe_cache_is_sized_from_measured_headroom_and_rounded():
+    # 8188 * 0.85 = 6959.8 budget; 5000 used -> 1959.8 spare -> 80% = 1567 -> 1536
+    assert settings_scan.moe_cache_size_mib(5000, 8188) == 1536
+
+
+@pytest.mark.parametrize("measured", [None, 0, 6500, 9000])
+def test_moe_cache_is_skipped_without_a_measurement_or_headroom(measured):
+    assert settings_scan.moe_cache_size_mib(measured, 8188) == 0
+
+
+def test_hill_offers_the_moe_cache_first_when_experts_are_offloaded():
+    neighbors = settings_scan.hill_neighbors(
+        MOE_WORKING, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=8188, measured_vram_mb=5000
+    )
+    assert neighbors[0] == {**MOE_WORKING, "moe-cache-mib": "1536"}
+    assert neighbors[1] == {**MOE_WORKING, "moe-cache-mib": "1536", "moe-cache-cpu-share": "0.5"}
+    assert "mcache=1536/0.5" in settings_scan.label_for(neighbors[1])
+
+
+def test_hill_offers_no_moe_cache_without_offloaded_experts_or_measurement():
+    no_offload = {k: v for k, v in MOE_WORKING.items() if k != "n-cpu-moe"}
+    for settings, measured in ((no_offload, 5000), (MOE_WORKING, None)):
+        neighbors = settings_scan.hill_neighbors(
+            settings, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=8188, measured_vram_mb=measured
+        )
+        assert not any(n.get("moe-cache-mib") for n in neighbors)
+
+
+def test_gpu_weights_subtract_only_experts_of_offloaded_gpu_layers():
+    wpl = 18536 / 40
+    # ngl=26 puts layers 14..39 on the GPU; n-cpu-moe=34 covers layers 0..33,
+    # so 20 GPU layers have their experts in RAM.
+    assert settings_scan.gpu_weights_mb(MOE_WORKING, MOE_SHAPE) == pytest.approx(wpl * 26 - wpl * 0.9 * 20)
+    # ngl=99 clamps to the layer count instead of counting 99 layers of VRAM.
+    full = {**MOE_WORKING, "n-gpu-layers": "99", "n-cpu-moe": "0"}
+    assert settings_scan.gpu_weights_mb(full, MOE_SHAPE) == pytest.approx(18536)
+    # n-cpu-moe means nothing for a dense model.
+    dense = {**MOE_SHAPE, "expert_count": 0}
+    assert settings_scan.gpu_weights_mb(MOE_WORKING, dense) == pytest.approx(wpl * 26)
+
+
+def test_guard_no_longer_blocks_a_high_ngl_moe_config_with_offloaded_experts(monkeypatch):
+    monkeypatch.setattr(settings_scan, "gpu_temp_c", lambda: 50)
+    monkeypatch.setattr(settings_scan, "vram_mb", lambda: 200)
+    monkeypatch.setattr(settings_scan, "llama_server_vram_mb", lambda: 0)
+    monkeypatch.setattr(settings_scan, "ram_available_mb", lambda: 20000)
+    ornith = {**MOE_WORKING, "n-gpu-layers": "99", "n-cpu-moe": "38"}
+    ok, reason = settings_scan.probe_guard(MOE_SHAPE, ornith, 65536, 8188)
+    assert ok, reason
+
+
+def test_incumbent_is_offered_on_the_same_rung_with_every_managed_key():
+    original = {**MOE_WORKING, "spec-type": "draft-mtp", "spec-draft-n-max": "3", "model": "/m.gguf"}
+    winner = {**MOE_WORKING, "n-gpu-layers": "12", "n-cpu-moe": ""}
+    cand = settings_scan.incumbent_candidate(original, winner)
+    assert cand is not None
+    assert set(cand) == set(settings_scan.MANAGED_KEYS)  # blanks remove keys a probe left behind
+    assert cand["n-cpu-moe"] == "34" and cand["ubatch-size"] == ""
+    assert "model" not in cand
+
+
+def test_incumbent_is_not_offered_off_rung_or_when_identical():
+    winner = dict(MOE_WORKING)
+    assert settings_scan.incumbent_candidate({**MOE_WORKING, "ctx-size": "32768"}, winner) is None
+    assert settings_scan.incumbent_candidate({**MOE_WORKING, "cache-type-k": "q4_0"}, winner) is None
+    assert settings_scan.incumbent_candidate(dict(MOE_WORKING), winner) is None
+    assert settings_scan.incumbent_candidate({}, winner) is None
