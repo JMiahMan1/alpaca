@@ -117,6 +117,14 @@ images and need `sudo docker compose up -d --build <service>`.
 - Download resume is built-in via HTTP `Range` headers; `--no-resume` forces fresh download
 - Hugging Face GGUF imports: single-file download, direct blob copy to Ollama blob store
 - Ollama pulls: multi-layer manifest + blob download
+- **Companions are shared by filename** (`.alpaca-router/companions/`), and upstream names are
+  generic: Gemma 4's projector is `mmproj-F16.gguf`, the same name qwen2.5-vl's uses. A companion
+  pull now refuses to replace a same-named file of a different size; pass `--name <distinct-file>`.
+  (Before, it deleted the existing file, silently breaking the other model's vision.)
+- `pull_model()` **reindexes on success, which rewrites models.ini.** Never pull while
+  `settings_scan.py` runs: the scan writes the whole ini from its in-memory copy, so the two erase
+  each other's sections. To download during a scan, call `import_huggingface_gguf()` directly and
+  reindex afterwards.
 
 ### Router Model IDs
 - Model IDs in the router use `--` as separator: `qwen3.6-35b-a3b--q4_k_m`

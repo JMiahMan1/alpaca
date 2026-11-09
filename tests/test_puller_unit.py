@@ -357,3 +357,41 @@ def test_pull_model_resets_current_model_on_completion(tmp_path):
         assert params["no_resume"].default is False
     finally:
         alpaca_puller._CURRENT_MODEL = original_model
+
+
+def _companion_env(monkeypatch, tmp_path, payload: bytes):
+    """Point pull_companion at tmp dirs and make the 'download' write payload."""
+    router = tmp_path / "router"
+    monkeypatch.setattr(alpaca_puller, "ROUTER_MODELS_DIR", str(router))
+    monkeypatch.setattr(alpaca_puller, "resolve_huggingface_filename", lambda repo, filename: filename)
+    monkeypatch.setattr(alpaca_puller, "huggingface_headers", lambda: {})
+    partial = tmp_path / "partial.bin"
+    monkeypatch.setattr(alpaca_puller, "partial_download_path", lambda *a: partial)
+
+    def fake_download(client, url, headers, label, path):
+        pathlib.Path(path).write_bytes(payload)
+
+    monkeypatch.setattr(alpaca_puller, "download_with_progress", fake_download)
+    return router / "companions"
+
+
+def test_companion_pull_refuses_to_clobber_another_models_file(monkeypatch, tmp_path):
+    companions = _companion_env(monkeypatch, tmp_path, b"gemma projector, different size")
+    companions.mkdir(parents=True)
+    (companions / "mmproj-F16.gguf").write_bytes(b"qwen")
+    rc = alpaca_puller.pull_companion("hf://unsloth/gemma-4-GGUF/mmproj-F16.gguf")
+    assert rc == 1
+    assert (companions / "mmproj-F16.gguf").read_bytes() == b"qwen"
+
+
+def test_companion_pull_saves_under_name_and_replaces_a_same_size_repull(monkeypatch, tmp_path):
+    companions = _companion_env(monkeypatch, tmp_path, b"gemma")
+    rc = alpaca_puller.pull_companion("hf://unsloth/gemma-4-GGUF/mmproj-F16.gguf", local_name="mmproj-gemma-F16.gguf")
+    assert rc == 0
+    assert (companions / "mmproj-gemma-F16.gguf").read_bytes() == b"gemma"
+    assert not (companions / "mmproj-F16.gguf").exists()
+    # Same size = the same file re-pulled: replacing it is fine.
+    assert (
+        alpaca_puller.pull_companion("hf://unsloth/gemma-4-GGUF/mmproj-F16.gguf", local_name="mmproj-gemma-F16.gguf")
+        == 0
+    )

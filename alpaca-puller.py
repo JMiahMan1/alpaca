@@ -1263,7 +1263,16 @@ def pull_ollama_model(model_name, insecure=False, no_resume=False):
         client.close()
 
 
-def pull_companion(model_name, no_resume=False):
+def companion_replace_is_safe(existing: Path, incoming: Path) -> bool:
+    """Replacing a companion is only safe when it is the same file (a re-pull);
+    a different size means a different file that another model may use."""
+    try:
+        return existing.stat().st_size == incoming.stat().st_size
+    except OSError:
+        return False
+
+
+def pull_companion(model_name, no_resume=False, local_name=None):
     try:
         repo, filename = parse_huggingface_ref(model_name)
     except ValueError as exc:
@@ -1285,8 +1294,10 @@ def pull_companion(model_name, no_resume=False):
         return 1
 
     # Keep companions flat in companions/ even when the HF path has subdirs
-    # (e.g. vae/foo.safetensors) so discovery globs keep working.
-    output_path = companions_dir / Path(filename).name
+    # (e.g. vae/foo.safetensors) so discovery globs keep working. --name picks
+    # the filename: generic upstream names (mmproj-F16.gguf) collide across
+    # models, and companions are shared by every model that names them.
+    output_path = companions_dir / Path(local_name or filename).name
 
     print(f"Downloading companion file: {repo}/{filename}")
     print(f"Destination: {output_path}")
@@ -1306,8 +1317,16 @@ def pull_companion(model_name, no_resume=False):
             print(f"\nInterrupted: companion download ({partial_path.stat().st_size} bytes downloaded).")
             return 1
 
-        # Move partial file to final companion location
+        # Move partial file to final companion location. A same-named file of a
+        # different size is another model's companion (every vision repo ships
+        # an "mmproj-F16.gguf"); replacing it would silently break that model.
         if output_path.exists():
+            if not companion_replace_is_safe(output_path, partial_path):
+                print(
+                    f"Error: {output_path.name} already exists with a different size and may belong to "
+                    "another model. Re-run with --name <distinct-filename>."
+                )
+                return 1
             with contextlib.suppress(Exception):
                 output_path.unlink()
         try:
@@ -1400,7 +1419,7 @@ def pull_model(model_name, source="auto", local_name=None, insecure=False, no_re
     try:
         _clear_stop_marker(model_name)
         if companion:
-            return pull_companion(model_name, no_resume=no_resume)
+            return pull_companion(model_name, no_resume=no_resume, local_name=local_name)
 
         resolved_source = choose_source(model_name, source)
         if resolved_source == "huggingface":
@@ -1545,7 +1564,10 @@ def build_parser():
     )
     pull_parser.add_argument(
         "--name",
-        help="Local Ollama model name to create for Hugging Face imports, for example qwen3:35b-q4.",
+        help=(
+            "Local Ollama model name to create for Hugging Face imports, for example qwen3:35b-q4; "
+            "with --companion, the filename to save it as (e.g. mmproj-gemma-4-26B-F16.gguf)."
+        ),
     )
     pull_parser.add_argument(
         "--insecure",
