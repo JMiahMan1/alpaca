@@ -7,7 +7,15 @@
     /* The frame is a fixed 17.778 x 10 rem (16:9). Scale rem to the viewport so the stage
        fills the screen on any display instead of overflowing a small/portrait one. */
     function fit() {
-      var rem = Math.min((window.innerHeight || 1080) * 0.1, (window.innerWidth || 1920) / 17.778);
+      // Fit what the screen shows, not the page: a Cast receiver can lay the
+      // page out larger than its picture (the office TV: a 1040x585 page on a
+      // 960x540 screen, so about 4% went missing on every edge). The frame
+      // stays centred, so sizing it to the screen keeps all of it in view.
+      var w = window.innerWidth || 1920, h = window.innerHeight || 1080;
+      var sw = (window.screen && screen.width) || 0, sh = (window.screen && screen.height) || 0;
+      if (sw > 0 && sw < w) w = sw;
+      if (sh > 0 && sh < h) h = sh;
+      var rem = Math.min(h * 0.1, w / 17.778);
       document.documentElement.style.fontSize = rem + "px";
     }
     window.addEventListener("resize", fit);
@@ -35,7 +43,7 @@
   #frame { position: absolute; left: 50%; top: 50%; width: 17.778rem; height: 10rem; margin-left: -8.889rem; margin-top: -5rem; }
   /* Inside the TV-safe area: many TVs overscan and crop about 5% off every
      edge, which cut off the board's left column. */
-  #stage { position: absolute; top: .5rem; bottom: .5rem; left: .9rem; right: .9rem; display: flex; flex-direction: column; }
+  #stage { position: absolute; top: .3rem; bottom: .3rem; left: .5rem; right: .5rem; display: flex; flex-direction: column; }
   .top { display: flex; align-items: center; justify-content: space-between; height: .58rem; flex: 0 0 auto; }
   .brand { font-size: .32rem; font-weight: 900; color: var(--gold); letter-spacing: .04em; text-shadow: 0 0 .3rem rgba(255,200,61,.4); }
   .brand small { color: var(--dim); font-weight: 700; font-size: .2rem; margin-left: .15rem; letter-spacing: .28em; }
@@ -68,12 +76,12 @@
      overscan crops the sides more, so 5% there), and a narrow column of
      essentials right beside it -- title, players, jackpot, the latest events,
      how to join. */
-  body.playing #stage { top: .3rem; bottom: .3rem; }
+  body.playing #stage { top: .15rem; bottom: .15rem; left: .3rem; right: .3rem; }
   body.playing .top, body.playing .foot { display: none; }
   body.playing .main { justify-content: center; }
   body.playing .boardCol { flex: 0 0 auto; }
-  body.playing .boardCol svg { height: 9.4rem; width: 9.4rem; max-height: none; }
-  body.playing .sideCol { flex: 0 0 4.7rem; gap: .12rem; padding-left: .3rem; }
+  body.playing .boardCol svg { height: 9.7rem; width: 9.7rem; max-height: none; }
+  body.playing .sideCol { flex: 0 0 5.2rem; gap: .12rem; padding-left: .35rem; }
   body.playing .sideCard { padding: .12rem .16rem; border-radius: .16rem; }
   body.playing .sideLabel { font-size: .15rem; }
   .sideHead { display: flex; align-items: center; justify-content: space-between; gap: .06rem; }
