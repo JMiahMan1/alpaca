@@ -380,9 +380,11 @@
      shadow apart so the hop can lift the piece and shrink the shadow. */
   function pieceMarkup(id, color, r) {
     var h = r * 0.34, w = r * 0.92;
-    return '<path d="M' + (-w) + ' 0 V' + h + ' A' + w + ' ' + (w * 0.42) + ' 0 0 0 ' + w + ' ' + h + ' V0 Z" fill="' + color + '" stroke="#1b0f3b" stroke-width="' + (r * 0.1).toFixed(2) + '"/>'
+    tokenDefs();
+    return '<g filter="url(#tkShadow)">'
+      + '<path d="M' + (-w) + ' 0 V' + h + ' A' + w + ' ' + (w * 0.42) + ' 0 0 0 ' + w + ' ' + h + ' V0 Z" fill="' + color + '" stroke="#1b0f3b" stroke-width="' + (r * 0.1).toFixed(2) + '"/>'
       + '<path d="M' + (-w) + ' 0 V' + h + ' A' + w + ' ' + (w * 0.42) + ' 0 0 0 ' + w + ' ' + h + ' V0 Z" fill="#000" opacity=".28"/>'
-      + tokenMarkup(id, color, r);
+      + tokenMarkup(id, color, r) + '</g>';
   }
   /* A whole <svg> for HTML (the player list, the lobby). */
   function tokenBadge(id, color, cls) {
@@ -395,6 +397,7 @@
     holder.innerHTML = '<svg id="tkDefs" width="0" height="0" style="position:absolute;width:0;height:0" aria-hidden="true"><defs>'
       + '<linearGradient id="tkIvory" x1="0" y1="0" x2=".3" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#fff4d6"/><stop offset="1" stop-color="#e9c97a"/></linearGradient>'
       + '<radialGradient id="tkGloss" cx="34%" cy="26%" r="78%"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset=".45" stop-color="#fff" stop-opacity=".08"/><stop offset="1" stop-color="#000" stop-opacity=".28"/></radialGradient>'
+      + '<filter id="tkShadow" x="-25%" y="-25%" width="150%" height="150%" color-interpolation-filters="sRGB"><feDropShadow dx="0" dy="2.4" stdDeviation="2.6" flood-color="#14092e" flood-opacity="0.42"/></filter>'
       + '</defs></svg>';
     document.body.insertBefore(holder.firstChild, document.body.firstChild);
   }

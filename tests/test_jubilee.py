@@ -439,6 +439,8 @@ def test_with_a_tv_watching_the_computer_takes_one_step_at_a_time(monkeypatch):
     room = jubilee._rooms[code]
     clock = {"t": 1_000_000.0}
     monkeypatch.setattr(jubilee.time, "time", lambda: clock["t"])
+    faces = iter([0, 1])                          # faces 1 and 2 - no doubles
+    monkeypatch.setattr(jubilee.secrets, "randbelow", lambda n: next(faces, 4))
     # Ann passes; the computer players are next. A TV is showing the room.
     room["turn"] = 1
     room["rolled"] = False
@@ -619,3 +621,120 @@ def test_one_of_two_people_leaving_mid_game_keeps_the_room():
     jubilee.start_match(code, ann)
     out = jubilee.leave_room(code, ann)
     assert "room" in out and out["room"]["status"] in ("playing", "finished")
+
+
+
+def test_a_scribe_on_the_third_dungeon_turn_pays_instead_of_walking_free(monkeypatch):
+    monkeypatch.setattr(jubilee, "AI_PACE_WHEN", "watched")          # one step at a time
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)                 # Ann and two scribes
+    room = jubilee._rooms[code]
+    with jubilee._lock:
+        room["turn"] = 1
+        room["rolled"] = False
+        ai = room["players"][1]
+        assert ai["is_ai"]
+        ai["jail"] = {"turns": 2}
+        ai["jail_cards"] = 0
+        ai["cash"] = 500
+        ai["position"] = 10
+        jubilee._maybe_ai_unlocked(room)
+        assert ai["jail"] is None                 # it paid its way out
+        assert ai["cash"] == 450                  # the $50 due came out of its purse
+
+
+def test_a_scribe_early_in_the_dungeon_rolls_doubles_instead_of_walking_free(monkeypatch):
+    monkeypatch.setattr(jubilee, "AI_PACE_WHEN", "watched")
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    room = jubilee._rooms[code]
+    seq = iter([0, 1])                             # faces 1 and 2 - no doubles
+    monkeypatch.setattr(jubilee.secrets, "randbelow", lambda n: next(seq, 4))
+    with jubilee._lock:
+        room["turn"] = 1
+        room["rolled"] = False
+        ai = room["players"][1]
+        ai["jail"] = {"turns": 0}
+        ai["jail_cards"] = 0
+        ai["cash"] = 500
+        ai["position"] = 10
+        jubilee._maybe_ai_unlocked(room)
+        assert ai["jail"] is not None              # a failed roll keeps it inside
+        assert int(ai["jail"]["turns"]) == 1
+        assert ai["position"] == 10                # and it did not slip free on foot
+
+
+def test_a_scribe_holding_a_dungeon_free_card_plays_it(monkeypatch):
+    monkeypatch.setattr(jubilee, "AI_PACE_WHEN", "watched")
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    room = jubilee._rooms[code]
+    with jubilee._lock:
+        room["turn"] = 1
+        room["rolled"] = False
+        ai = room["players"][1]
+        ai["jail"] = {"turns": 1}
+        ai["jail_cards"] = 1
+        ai["position"] = 10
+        jubilee._maybe_ai_unlocked(room)
+        assert ai["jail"] is None and ai["jail_cards"] == 0
+        assert ai["position"] == 10                # the card does the work, not its feet
+
+
+def test_the_dungeon_due_keeps_an_empty_pocketed_player_inside(monkeypatch):
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    seq = iter([0, 1])                             # faces 1 and 2
+    monkeypatch.setattr(jubilee.secrets, "randbelow", lambda n: next(seq, 4))
+    with jubilee._lock:
+        room = jubilee._rooms[code]
+        room["turn"] = 0
+        room["rolled"] = False
+        p = room["players"][0]
+        p["jail"] = {"turns": 2}                   # one failed roll left
+        p["cash"] = 10
+        p["position"] = 10
+    jubilee.jail_roll(code, pid)
+    with jubilee._lock:
+        room = jubilee._rooms[code]
+        assert room["players"][0]["jail"] is not None
+        debt = room["pending"]
+        assert debt and debt["kind"] == "debt" and debt.get("release_jail") is True
+        assert debt["dice"] == [1, 2]
+        room["players"][0]["cash"] += 100         # the player mortgages a street's worth
+    jubilee.pay_debt(code, pid)
+    with jubilee._lock:
+        room = jubilee._rooms[code]
+        assert room["players"][0]["jail"] is None
+        assert room["players"][0]["position"] == 13
+
+
+def test_a_hotel_counts_five_house_costs_in_net_worth():
+    made = jubilee.create_room({"name": "Ann"})
+    code = made["room"]["code"]
+    room = jubilee._rooms[code]
+    with jubilee._lock:
+        room["players"][0]["cash"] = 1000
+        room["props"][1] = {"owner": 0, "houses": 5, "mortgaged": False}   # Bethlehem
+        worth = jubilee._net_worth(room, 0)
+    assert worth == 1000 + 60 + 5 * 50
+
+
+def test_a_rematch_clears_the_scribes_trade_pacing_memory():
+    code, pid = _started()
+    with jubilee._lock:
+        jubilee._rooms[code]["ai_trade_turn"] = {"1:lightblue": 3}
+        jubilee._rooms[code]["status"] = "finished"      # a rematch is for after the game
+    jubilee.restart_room(code, pid)
+    with jubilee._lock:
+        assert jubilee._rooms[code]["ai_trade_turn"] == {}
+
+
+def test_no_parable_card_names_the_wrong_road():
+    text = " ".join(c["text"] for c in jubilee.PARABLE_DECK)
+    assert "Damascus" not in text
+    assert any("King's Highway" in c["text"] for c in jubilee.PARABLE_DECK)

@@ -211,7 +211,7 @@ PARABLE_DECK: list[dict[str, Any]] = [
     {"t": "jail", "text": "Caught preaching without a permit in Philippi - go directly to the Dungeon. Do not pass Jubilee! (Acts 16:24)"},
     {"t": "per_building", "per_house": 25, "per_hotel": 100, "text": "Repair every roof and well in your lands - pay $25 per house, $100 per hotel. (Luke 14:28)"},
     {"t": "money", "amount": -15, "text": "Give to the poor, as the scribe did. Pay $15. (Matthew 19:21)"},
-    {"t": "advance_street", "to": 5, "text": "Take the King's Highway to Damascus - advance to The King's Highway. (2 Kings 20:13)"},
+    {"t": "advance_street", "to": 5, "text": "Ride out on the King's Highway - advance to The King's Highway. (2 Kings 20:13)"},
     {"t": "advance_nearest", "kind": "railroad", "text": "Every road from Jerusalem runs through Rome - advance to the nearest toll road. (Acts 25:12)"},
     {"t": "advance_nearest", "kind": "utility", "text": "The oil and wine of the Good Samaritan - advance to The Well or The Lamp. If owned, throw the dice and pay ten times what you throw. (Luke 10:34)"},
     {"t": "advance_street", "to": 24, "text": "A certain man of the assembly at Ephesus summoned you - advance to Ephesus. (Acts 19:34)"},
@@ -452,7 +452,7 @@ def _net_worth(room: dict[str, Any], seat: int) -> int:
             total += int(s.get("price", 0))
         houses = int(prop["houses"])
         house_cost = int(s.get("house_cost", 0))
-        total += houses * house_cost + (4 * house_cost if houses == 5 else 0)
+        total += houses * house_cost
     return total
 
 
@@ -1110,7 +1110,17 @@ def _pay_debt(room: dict[str, Any], seat: int) -> bool:
         # The pot is fed now (not when the debt is raised) so money raised by
         # mortgaging and selling buildings counts toward the Sabbath pot.
         room["pot"] = int(room["pot"]) + amount
+    release_jail = bool(pending.get("release_jail"))
+    dice = pending.get("dice") or [1, 1]
     room["pending"] = None
+    if release_jail:
+        # The mandatory fine on a third failed Dungeon roll: clearing the debt
+        # frees the player, who then moves with the dice that failed them.
+        p["jail"] = None
+        total = int(dice[0]) + int(dice[1])
+        _advance(room, seat, int(p["position"]) + total, collect_go=True)
+        _log(room, f"{p['name']} pays the Dungeon's due and walks out")
+        _resolve_landing(room, seat, [int(dice[0]), int(dice[1])])
     _refresh_bonus(room, seat)
     _maybe_finish(room)
     return True
@@ -1324,6 +1334,7 @@ def _reset_match(room: dict[str, Any]) -> None:
     room["bankruptcies"] = 0
     room["winner"] = None
     room["result"] = None
+    room["ai_trade_turn"] = {}
     room["match_no"] = int(room.get("match_no", 1)) + 1
     room["updated_at"] = time.time()
 
@@ -1555,6 +1566,64 @@ def _do_roll(room: dict[str, Any], seat: int) -> tuple[int, int]:
     return d1, d2
 
 
+def _jail_card_unlocked(room: dict[str, Any], seat: int) -> None:
+    """Consume a Dungeon-free card and let the player out. They still get their roll."""
+    p = room["players"][seat]
+    p["jail_cards"] = int(p["jail_cards"]) - 1
+    p["jail"] = None
+    room["rolled"] = False
+    room["bonus_roll"] = False
+    room["doubles"] = 0
+    _log(room, f"{p['name']} plays a Dungeon-free card")
+
+
+def _jail_fine_unlocked(room: dict[str, Any], seat: int) -> bool:
+    """Pay $50 to leave the Dungeon. Returns whether it was paid."""
+    p = room["players"][seat]
+    paid = _charge(room, seat, 50, None, "fine")
+    if paid:
+        p["jail"] = None
+        room["rolled"] = False
+        room["bonus_roll"] = False
+        room["doubles"] = 0
+        _log(room, f"{p['name']} pays $50 to leave the Dungeon")
+    return paid
+
+
+def _jail_roll_attempt_unlocked(room: dict[str, Any], seat: int) -> None:
+    """Roll for doubles to leave the Dungeon; the third failed attempt owes $50."""
+    p = room["players"][seat]
+    d1, d2 = secrets.randbelow(6) + 1, secrets.randbelow(6) + 1
+    is_doubles = d1 == d2
+    _record_roll(room, d1, d2)
+    room["rolled"] = True
+    room["doubles"] = 0
+    if is_doubles:
+        p["jail"] = None
+        _log(room, f"{p['name']} throws doubles - out of the Dungeon!")
+        _advance(room, seat, int(p["position"]) + d1 + d2, collect_go=True)
+        _resolve_landing(room, seat, [d1, d2])
+        room["bonus_roll"] = False
+        return
+    p["jail"]["turns"] = int(p["jail"]["turns"]) + 1
+    _log(room, f"{p['name']} throws {d1}-{d2} - no doubles, one turn passes in the Dungeon")
+    if p["jail"]["turns"] >= 3:
+        # Third failed attempt: $50 is mandatory.
+        paid = _charge(room, seat, 50, None, "fine")
+        if paid:
+            p["jail"] = None
+            _log(room, f"{p['name']} pays $50 and leaves the Dungeon")
+            _advance(room, seat, int(p["position"]) + d1 + d2, collect_go=True)
+            _resolve_landing(room, seat, [d1, d2])
+        else:
+            # Not enough cash: stay in the Dungeon with the fine owed.
+            # The player may raise it (sell buildings, mortgage, trade)
+            # and then pay, or declare bankruptcy - never simply walk out.
+            room["pending"]["release_jail"] = True
+            room["pending"]["dice"] = [d1, d2]
+            _log(room, f"{p['name']} owes the Dungeon's due of $50 - raise it, or go bankrupt")
+
+
 def roll(code: Any, player_id: Any) -> dict[str, Any]:
     clean = _clean_code(code)
     with _lock:
@@ -1602,27 +1671,7 @@ def jail_roll(code: Any, player_id: Any) -> dict[str, Any]:
         if room["rolled"]:
             raise ValueError("you already made your move")
         _touch(room, seat)
-        d1, d2 = secrets.randbelow(6) + 1, secrets.randbelow(6) + 1
-        is_doubles = d1 == d2
-        _record_roll(room, d1, d2)
-        room["rolled"] = True
-        room["doubles"] = 0
-        if is_doubles:
-            p["jail"] = None
-            _log(room, f"{p['name']} throws doubles - out of the Dungeon!")
-            _advance(room, seat, int(p["position"]) + d1 + d2, collect_go=True)
-            _resolve_landing(room, seat, [d1, d2])
-            room["bonus_roll"] = False
-        else:
-            p["jail"]["turns"] = int(p["jail"]["turns"]) + 1
-            _log(room, f"{p['name']} throws {d1}-{d2} - no doubles, one turn passes in the Dungeon")
-            if p["jail"]["turns"] >= 3:
-                # Third failed attempt: $50 is mandatory; move with the dice.
-                _charge(room, seat, 50, None, "fine")
-                p["jail"] = None
-                _log(room, f"{p['name']} pays $50 and leaves the Dungeon")
-                _advance(room, seat, int(p["position"]) + d1 + d2, collect_go=True)
-                _resolve_landing(room, seat, [d1, d2])
+        _jail_roll_attempt_unlocked(room, seat)
         _maybe_ai_unlocked(room)
         _maybe_finish(room)
         return {"room": _snapshot_unlocked(room, player_id)}
@@ -1645,13 +1694,7 @@ def jail_fine(code: Any, player_id: Any) -> dict[str, Any]:
         if room["turn"] != seat:
             raise ValueError("it is not your turn")
         _touch(room, seat)
-        paid = _charge(room, seat, 50, None, "fine")
-        if paid:
-            p["jail"] = None
-            room["rolled"] = False
-            room["bonus_roll"] = False
-            room["doubles"] = 0
-            _log(room, f"{p['name']} pays $50 to leave the Dungeon")
+        _jail_fine_unlocked(room, seat)
         _maybe_ai_unlocked(room)
         return {"room": _snapshot_unlocked(room, player_id)}
 
@@ -1675,12 +1718,7 @@ def jail_card(code: Any, player_id: Any) -> dict[str, Any]:
         if int(p["jail_cards"]) < 1:
             raise ValueError("no Dungeon-free card in hand")
         _touch(room, seat)
-        p["jail_cards"] = int(p["jail_cards"]) - 1
-        p["jail"] = None
-        room["rolled"] = False
-        room["bonus_roll"] = False
-        room["doubles"] = 0
-        _log(room, f"{p['name']} plays a Dungeon-free card")
+        _jail_card_unlocked(room, seat)
         _maybe_ai_unlocked(room)
         return {"room": _snapshot_unlocked(room, player_id)}
 
@@ -2426,6 +2464,20 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
                 else:
                     break
                 progressed = True
+            elif p["jail"] is not None and not room["rolled"]:
+                # The scribes honour the Dungeon: a card if one is held, the
+                # $50 fine when the third attempt is near, else a roll for
+                # doubles - never a free walk.
+                if int(p["jail_cards"]) > 0:
+                    _jail_card_unlocked(room, cur)
+                elif int(p["jail"]["turns"]) >= 2 and int(p["cash"]) >= 50:
+                    _jail_fine_unlocked(room, cur)
+                else:
+                    _jail_roll_attempt_unlocked(room, cur)
+                progressed = True
+                if paced:
+                    room["ai_next_at"] = now + AI_PACE_AFTER_TURN_S
+                    return True
             elif not room["rolled"] or room["bonus_roll"]:
                 _do_roll(room, cur)
                 progressed = True
