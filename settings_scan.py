@@ -781,10 +781,16 @@ def hill_neighbors(
     # Every layer on the GPU with the experts of the first N layers in RAM:
     # the layout that won for every MoE model on this card (qwen3.6 25 tok/s
     # and ornith 24 tok/s, against 16 and 11 for the partial-ngl baseline,
-    # which spends VRAM on whole layers and leaves attention on the CPU). The
-    # smallest N the estimate admits; the expert cache is then probed on top
-    # of it if it wins.
-    if is_moe and not settings.get("n-cpu-moe"):
+    # which spends VRAM on whole layers and leaves attention on the CPU; kat-
+    # coder 32 tok/s against 13). The smallest N the estimate admits; the expert
+    # cache is then probed on top of it if it wins. Offered to any MoE config
+    # that leaves layers off the GPU - including one that already offloads
+    # experts (qwen3.6's incumbent ngl=26/moe=34 never got to try ngl=41).
+    try:
+        partial_ngl = int(settings.get("n-gpu-layers") or 0) < n_layers
+    except (TypeError, ValueError):
+        partial_ngl = True
+    if is_moe and (not settings.get("n-cpu-moe") or partial_ngl):
         for k in range(n_layers + 1):
             full = {**settings, "n-gpu-layers": str(n_layers), "n-cpu-moe": str(k)}
             if fits(full):

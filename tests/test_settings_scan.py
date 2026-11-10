@@ -577,3 +577,14 @@ def test_hybrid_baseline_no_longer_starves_qwen38_27b_of_gpu_layers():
     # Counting every layer's KV put this at 0 GPU layers (then the guard blocked
     # even that); its old hand profile ran 24 layers at 32K.
     assert int(baseline["n-gpu-layers"]) >= 15
+
+
+def test_a_partial_ngl_moe_config_with_offloaded_experts_still_gets_the_full_layout():
+    """qwen3.6's incumbent (ngl=26, moe=34) never tried every layer on the GPU."""
+    neighbors = settings_scan.hill_neighbors(MOE_WORKING, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=8188)
+    full = [n for n in neighbors if n.get("n-gpu-layers") == "40" and n.get("n-cpu-moe")]
+    assert len(full) == 1  # every layer on the GPU, the smallest expert offload that fits
+    # Already all on the GPU with experts offloaded: nothing to add.
+    done = {**MOE_WORKING, "n-gpu-layers": "40"}
+    again = settings_scan.hill_neighbors(done, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=8188)
+    assert not [n for n in again if n.get("n-gpu-layers") == "40" and n.get("n-cpu-moe") != done["n-cpu-moe"]]
