@@ -177,3 +177,18 @@ def test_per_model_file_reports_the_latest_run_date(tmp_path):
     data = json.loads(first.read_text())
     assert data["generated_at"] == "2026-11-09T17:23:17"
     assert data["first_generated_at"] == "2026-08-20T07:42:40"
+
+
+def test_profile_lookup_maps_a_public_name_tag_onto_the_router_section(tmp_path, monkeypatch):
+    """`lfm2.5-24b-a2b:q4_k_m` is the router section `lfm2.5-24b-a2b--q4_k_m`;
+    the lookup only knew `--latest`, so LFM2.5's thinking=true never applied."""
+    import llm_benchmark_suite as s
+
+    ini = tmp_path / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.6\n\n[lfm2.5-24b-a2b--q4_k_m]\ntemperature = 0.3\n")
+    (tmp_path / "lfm2.5-24b-a2b--q4_k_m.profile.json").write_text('{"thinking": "true"}')
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+    assert s._model_thinking("lfm2.5-24b-a2b:q4_k_m") is True
+    assert s._model_temperature("lfm2.5-24b-a2b:q4_k_m") == 0.3
+    assert s._model_section_names("ornith-1-5-9b-q4-k-m") == ["ornith-1-5-9b-q4-k-m", "ornith-1-5-9b-q4-k-m--latest"]
+    assert "qwen2.5-vl--7b" in s._model_section_names("qwen2.5-vl:7b")

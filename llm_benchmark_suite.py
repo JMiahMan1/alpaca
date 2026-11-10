@@ -73,11 +73,22 @@ def _models_ini_candidates() -> list[Path]:
 
 
 def _model_section_names(model: str) -> list[str]:
-    """Router aliases carry the --latest suffix (e.g. ornith-1-5-9b-q4-k-m--latest)
-    while callers may pass either form, so try both section spellings."""
-    if model.endswith("--latest"):
-        return [model, model[: -len("--latest")]]
-    return [model, f"{model}--latest"]
+    """models.ini section spellings for a model name, most specific first.
+
+    Router aliases are `name--tag` (`ornith-1-5-9b-q4-k-m--latest`,
+    `lfm2.5-24b-a2b--q4_k_m`) while callers pass the public `name:tag` or a
+    bare name. Without the `name:tag` -> `name--tag` step, every model with a
+    tag other than `latest` (Gemma 4, LFM2.5, qwen2.5-vl:7b) silently lost its
+    profile - LFM2.5's `thinking=true` never applied, so a model that always
+    thinks ran on thinking-off budgets and answered nothing.
+    """
+    base = model
+    if ":" in model:
+        name, tag = model.rsplit(":", 1)
+        base = f"{name}--{tag}"
+    names = [model, base]
+    names.append(base[: -len("--latest")] if base.endswith("--latest") else f"{base}--latest")
+    return list(dict.fromkeys(names))
 
 
 def _profile_overlay(ini_dir: Path, model: str) -> dict:
@@ -88,7 +99,7 @@ def _profile_overlay(ini_dir: Path, model: str) -> dict:
     over equally-keyed ini values (same merge order the dashboard uses).
     """
     merged: dict = {}
-    for alias in {model, model[: -len("--latest")] if model.endswith("--latest") else model}:
+    for alias in _model_section_names(model):
         for ext in (".profile.json", ".gguf.profile.json", ".safetensors.profile.json"):
             candidate = ini_dir / f"{alias}{ext}"
             try:
