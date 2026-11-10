@@ -299,8 +299,12 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
   section and reindex maps an old `mlock=false` to `load-mode = mmap`.
 - **Checking a new llama.cpp build for flag changes:** fetch `common/arg.cpp` at both tags and
   diff the `"--flag"` sets; also check every `LLAMA_PRESET_KEYS` entry still exists upstream
-  (that is how the dead `mmap`/`mlock` were found). The image is `server-cuda12`, so
-  `sudo docker compose build --pull llama-server` is what picks up a new build.
+  (that is how the dead `mmap`/`mlock` were found). `Dockerfile.llama-server` is **pinned to a
+  build** (`server-cuda12-b12211`): upgrade by bumping that tag, after checking the flag diff. The
+  moving `server-cuda12` tag bit us: `docker compose up -d --build alpaca-proxy` also rebuilds its
+  dependency llama-server, from whatever `server-cuda12` the local cache held (b12019), and the old
+  preset parser rejected `moe-cache-cpu-share` and crash-looped. Rebuild one service with
+  `--no-deps` when you mean one service.
 - **`settings_scan.py` KV estimate reads the attention layout** (`kv_cache_mb`): qwen35/qwen35moe
   GGUFs carry `full_attention_interval = 4` (only one layer in four keeps a KV cache), and
   sliding-window models (`muse-glimmer`: `sliding_window = 2048`, pattern 4) cap three layers in four

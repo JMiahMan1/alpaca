@@ -1,3 +1,8 @@
-FROM ghcr.io/ggml-org/llama.cpp:server-cuda12
+# Pinned to a build, not the moving server-cuda12 tag: a rebuild used whatever
+# server-cuda12 the local cache held, and `docker compose up --build alpaca-proxy`
+# (which rebuilds this dependency too) silently took llama-server from b12211 back
+# to b12019, whose preset parser rejected moe-cache-cpu-share and crash-looped.
+# Upgrade by bumping the tag (check flags first: AGENTS.md "llama.cpp Preset Keys").
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda12-b12211
 
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
