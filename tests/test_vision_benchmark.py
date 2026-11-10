@@ -165,3 +165,15 @@ def test_skipped_results_do_not_count_toward_a_category():
     stats = benchmark._calculate_category_stats([passed, _skipped_result(VISION[0], "no vision")])
     assert stats["tests_run"] == 1 and stats["tests_passed"] == 1 and stats["score"] == 100
     assert len(stats["tests"]) == 2  # the skip is still recorded, just not scored
+
+
+def test_per_model_file_reports_the_latest_run_date(tmp_path):
+    """Its first date was kept forever, so a run tonight showed up as August."""
+    benchmark = LLMModelBenchmark()
+    benchmark.MODELS_DIR = tmp_path
+    block = {"category_logic": {"tests": [{"test_id": "logic_knights", "success": True, "score": 100}]}}
+    first = benchmark.save_per_model_result({"model": "m", **block}, "all", True, "2026-08-20T07:42:40")
+    benchmark.save_per_model_result({"model": "m", **block}, "all", True, "2026-11-09T17:23:17")
+    data = json.loads(first.read_text())
+    assert data["generated_at"] == "2026-11-09T17:23:17"
+    assert data["first_generated_at"] == "2026-08-20T07:42:40"

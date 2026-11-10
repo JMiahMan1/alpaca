@@ -15,6 +15,7 @@ services:
       # until someone rebuilds.
       - ./alpaca-puller.py:/app/alpaca-puller.py:ro
     environment:
+      TZ: ${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       MODELS_DIR: /models
       ROUTER_MODELS_DIR: /router-models
 
@@ -50,6 +51,7 @@ services:
       - ./llama-server-flags.py:/scripts/llama-server-flags.py:ro
       - ./llama-server-entrypoint.sh:/scripts/llama-server-entrypoint.sh:ro
     environment:
+      TZ: ${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       # Reasoning-budget control for reasoning models (Qwen3 MoE etc.).
       # --reasoning-budget is a llama.cpp server-startup flag (NOT per-request):
       # it caps the thinking phase so the model cannot spend the whole
@@ -98,6 +100,7 @@ services:
       - ./online_providers.py:/app/online_providers.py:ro
       - ./data:/app/data
     environment:
+      TZ: ${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       MODELS_DIR: /models
       ROUTER_MODELS_DIR: /router-models
       SLOTS_CACHE_DIR: /slots-cache
@@ -167,6 +170,7 @@ services:
     env_file:
       - ./.env
     environment:
+      TZ: ${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       OLLAMA_SERVER_URLS: "http://llama-server:8080"
       PROXY_SERVER_URLS: "http://host.docker.internal:11434"
       AUDIO_SERVER_URL: "http://audio-server:8082"
@@ -195,6 +199,7 @@ services:
     env_file:
       - ./.env
     environment:
+      TZ: ${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       ARCADE_DIR: /app/data/arcade
       ARCADE_PORT: "5001"
       AUDIO_SERVER_URL: "http://audio-server:8082"
@@ -225,6 +230,7 @@ services:
       - ./data:/app/data
       - ./telemetry_monitor.py:/app/telemetry_monitor.py:ro
     environment:
+      TZ: ${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       TELEMETRY_DIR: /app/data/telemetry
       LLAMA_SERVER_URL: http://llama-server:8080
       LLAMA_DOCKER_CONTAINER: llama-server
@@ -253,6 +259,7 @@ services:
     ports:
       - "8081:8081"
     environment:
+      - TZ=${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       # Cap sd.cpp CPU threads so CPU-bound diffusion doesn't peg every core
       # and thermally shut down weak-cooled hosts. Tune to your thermals.
       - SD_CPU_THREADS=6
@@ -312,6 +319,7 @@ services:
     ports:
       - "5443:5443"
     environment:
+      - TZ=${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       - ALPACA_TLS_HOST=${ALPACA_TLS_HOST:-localhost}
     volumes:
       - ./tls:/etc/caddy:ro
@@ -337,6 +345,7 @@ services:
     ports:
       - "8082:8082"
     environment:
+      - TZ=${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
       # Models load lazily on first request; the OTHER model is evicted first
       # and idle models are unloaded after this many seconds so llama-server
       # gets its VRAM back on an 8 GB card.

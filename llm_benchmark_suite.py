@@ -1114,7 +1114,10 @@ class LLMModelBenchmark:
                 merged = list(by_id.values())
                 entry[cat_key] = self._calculate_category_stats(merged)
             entry["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            existing["generated_at"] = existing.get("generated_at") or generated_at
+            # generated_at is the latest run that wrote here: keeping the file's
+            # first date made a run tonight show up in the dashboard as August.
+            existing.setdefault("first_generated_at", existing.get("generated_at"))
+            existing["generated_at"] = generated_at or time.strftime("%Y-%m-%dT%H:%M:%S")
             if model_data.get("run_id"):
                 existing["run_id"] = model_data.get("run_id")
             if model_data.get("provenance"):

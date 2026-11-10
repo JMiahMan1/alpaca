@@ -188,3 +188,15 @@ def test_the_two_required_reasoning_vars_are_documented_for_a_fresh_clone():
         # compose reads it as ${VAR:?message} - a hard failure with an
         # instruction, not a silent default - so match the interpolation form.
         assert re.search(rf"\$\{{{var}:", COMPOSE), f"{var} is not required by docker-compose (expected ${{{var}:?hint}})"
+
+
+def test_every_service_takes_the_host_time_zone():
+    """Containers default to UTC; timestamps shown as local were 7 hours ahead."""
+    import yaml
+
+    compose = yaml.safe_load((REPO / "docker-compose.yml").read_text())
+    for name, svc in compose["services"].items():
+        env = svc.get("environment") or {}
+        tz = env.get("TZ") if isinstance(env, dict) else next((e for e in env if str(e).startswith("TZ=")), None)
+        assert tz and "${TZ" in str(tz), f"{name} does not pass TZ through"
+    assert re.search(r"^TZ=", (REPO / ".env.example").read_text(), re.M)
