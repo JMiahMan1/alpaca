@@ -1249,6 +1249,42 @@ def apply_direct_llama_fields(payload, body):
     return payload
 
 
+_IMAGE_MIME_BY_PREFIX = (("iVBOR", "image/png"), ("/9j/", "image/jpeg"), ("R0lGOD", "image/gif"), ("UklGR", "image/webp"))
+
+
+def _image_data_url(image) -> str:
+    """An Ollama `images` entry (bare base64, or already a data URL) as a data URL."""
+    text = str(image)
+    if text.startswith("data:"):
+        return text
+    mime = next((m for prefix, m in _IMAGE_MIME_BY_PREFIX if text.startswith(prefix)), "image/png")
+    return f"data:{mime};base64,{text}"
+
+
+def openai_messages(messages):
+    """Ollama chat messages -> what llama-server's OpenAI chat endpoint reads.
+
+    Ollama carries images as `message["images"]` (base64 strings); llama-server
+    ignores that key and reads OpenAI content parts. Passed through as-is, a
+    vision model got the text alone: Gemma 4 asked for "the image" and
+    qwen2.5-vl answered every vision test by guessing. Messages without images
+    are returned unchanged.
+    """
+    out = []
+    for message in messages or []:
+        images = message.get("images") if isinstance(message, dict) else None
+        if not images:
+            out.append(message)
+            continue
+        converted = {k: v for k, v in message.items() if k != "images"}
+        content = message.get("content")
+        parts = list(content) if isinstance(content, list) else ([{"type": "text", "text": content}] if content else [])
+        parts += [{"type": "image_url", "image_url": {"url": _image_data_url(img)}} for img in images]
+        converted["content"] = parts
+        out.append(converted)
+    return out
+
+
 def build_chat_message(prompt, images=None):
     message = {"role": "user", "content": prompt}
     if images is not None:
@@ -1395,7 +1431,7 @@ def build_generate_chat_payload(body, backend_model):
     prompt = body.get("prompt", "")
     payload = {
         "model": backend_model,
-        "messages": [build_chat_message(prompt, body.get("images"))],
+        "messages": openai_messages([build_chat_message(prompt, body.get("images"))]),
         "stream": should_stream(body),
     }
     if body.get("system"):
@@ -1414,7 +1450,7 @@ def build_generate_chat_payload(body, backend_model):
 def build_chat_payload(body, backend_model):
     payload = {
         "model": backend_model,
-        "messages": body.get("messages", []),
+        "messages": openai_messages(body.get("messages", [])),
         "stream": should_stream(body),
     }
     if body.get("tools") is not None:
@@ -8815,11 +8851,11 @@ async def chat(request: Request):
 
                     if full_response_content:
                         current_payload["messages"] = [
-                            *body.get("messages", []),
+                            *openai_messages(body.get("messages", [])),
                             {"role": "assistant", "content": full_response_content},
                         ]
                     else:
-                        current_payload["messages"] = body.get("messages", [])
+                        current_payload["messages"] = openai_messages(body.get("messages", []))
 
             # Save the new slot cache checkpoint
             if full_response_content:

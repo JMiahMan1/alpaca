@@ -3615,3 +3615,29 @@ def test_a_stale_scan_lock_does_not_block(tmp_path, monkeypatch):
     assert not alpaca_proxy.settings_scan_active()
     lock.unlink()
     assert not alpaca_proxy.settings_scan_active()
+
+
+PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+
+def test_ollama_images_become_openai_image_parts_for_llama_server():
+    """llama-server's chat endpoint reads OpenAI content parts and ignores an
+    Ollama `images` key: vision models got the prompt with no picture."""
+    payload = alpaca_proxy.build_chat_payload(
+        {"messages": [{"role": "user", "content": "What is in the picture?", "images": [PNG_B64]}]}, "m--latest"
+    )
+    (msg,) = payload["messages"]
+    assert "images" not in msg
+    assert msg["content"][0] == {"type": "text", "text": "What is in the picture?"}
+    assert msg["content"][1] == {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{PNG_B64}"}}
+
+
+def test_generate_images_and_plain_messages():
+    payload = alpaca_proxy.build_generate_chat_payload(
+        {"prompt": "Read the label", "images": ["/9j/4AAQSkZJRg=="], "think": False}, "m--latest"
+    )
+    assert payload["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    plain = [{"role": "user", "content": "hi"}]
+    assert alpaca_proxy.openai_messages(plain) == plain  # untouched without images
+    already = [{"role": "user", "content": "x", "images": ["data:image/webp;base64,AAAA"]}]
+    assert alpaca_proxy.openai_messages(already)[0]["content"][1]["image_url"]["url"] == "data:image/webp;base64,AAAA"
