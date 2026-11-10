@@ -4,6 +4,13 @@
   (function () {  // before first paint: TV browsers get the light look, and the frame fits any screen
     var q = /[?&]lite=([01])/.exec(location.search), tv = /Web0S|webOS|Tizen|SMART-TV|SmartTV|NetCast|HbbTV|CrKey|AFT[A-Z]|BRAVIA|Android TV|GoogleTV/i.test(navigator.userAgent || "");
     if (q ? q[1] === "1" : tv) document.documentElement.className += " lite";
+    /* Low-power mode for a weak TV browser: LG webOS (and the older NetCast)
+       runs an old Chromium that paints on a slow CPU, so the 3D card flip,
+       filters, blurred and animated shadows and the camera glide made every
+       animation crawl there. Android TV / Cast / desktop are untouched.
+       ?lowfx=1 forces it on, ?lowfx=0 off. */
+    var lq = /[?&]lowfx=([01])/.exec(location.search), weak = /Web0S|webOS|NetCast/i.test(navigator.userAgent || "");
+    if (lq ? lq[1] === "1" : weak) document.documentElement.className += " lowfx";
     /* The frame is a fixed 17.778 x 10 rem (16:9). Scale rem to the viewport so the stage
        fills the screen on any display instead of overflowing a small/portrait one. */
     function fit() {
@@ -150,7 +157,7 @@
     box-shadow: .06rem .08rem 0 rgba(0,0,0,.45); transform: rotate(-12deg); }
   .cDeck.parable { left: .45rem; top: .55rem; background: #3b1566; }
   .cDeck.scripture { right: .45rem; bottom: .5rem; background: #172554; }
-  .cDeck .dInner { position: absolute; inset: .1rem; border-radius: .1rem; border: .025rem solid rgba(255,255,255,.55);
+  .cDeck .dInner { position: absolute; left: .1rem; right: .1rem; top: .1rem; bottom: .1rem; border-radius: .1rem; border: .025rem solid rgba(255,255,255,.55);
     display: flex; flex-direction: column; align-items: center; justify-content: center; }
   .cDeck.parable .dInner { background: #581c87; }
   .cDeck.scripture .dInner { background: #1e3a8a; }
@@ -178,7 +185,7 @@
   .flyCard { position: absolute; left: 0; top: 0; width: 6.2rem; perspective: 20rem; transform-origin: 50% 50%; }
   .flyInner { position: relative; transform-style: preserve-3d; -webkit-transform-style: preserve-3d; }
   .flyCard .face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
-  .flyCard .face.back { position: absolute; inset: 0; border-radius: .3rem; border: .06rem dashed #ffc83d; display: flex; align-items: center;
+  .flyCard .face.back { position: absolute; left: 0; right: 0; top: 0; bottom: 0; border-radius: .3rem; border: .06rem dashed #ffc83d; display: flex; align-items: center;
     justify-content: center; font-size: .4rem; letter-spacing: .2em; color: #fff8e7; }
   .flyCard .face.back.parable { background: #581c87; }
   .flyCard .face.back.scripture { background: #1e3a8a; }
@@ -239,6 +246,28 @@
   .ring { border: none !important; background: none !important; padding: 0; }
   .ring .tkB { width: 112%; height: 112%; flex: 0 0 auto; filter: drop-shadow(0 .03rem .04rem rgba(0,0,0,.45)); }
   .tkI { width: 1.25em; height: 1.25em; vertical-align: -.3em; }
+  /* ---------- lowfx: a weak TV browser (LG webOS) ----------
+     Flat and cheap: no 3D, no filters, no blurred or animated shadows, no
+     always-running decoration. What carries the game stays (a piece hopping,
+     a card coming out of its deck, the dice landing) but only as short
+     transform/opacity motion. Nothing here applies without html.lowfx. */
+  html.lowfx .cRays { display: none; }
+  html.lowfx .cSign { animation: none; box-shadow: none; }
+  html.lowfx .cSign b, html.lowfx .lobbyGlow { text-shadow: 0 .05rem 0 #4a2c00; }
+  html.lowfx .brand, html.lowfx .lBand { text-shadow: none; }
+  html.lowfx .ring .tkB, html.lowfx .plr.out, html.lowfx .crown { filter: none; }
+  html.lowfx .plr.turn, html.lowfx .tvDice, html.lowfx .tvDie { box-shadow: none; }
+  html.lowfx .lCard, html.lowfx .tvCard { box-shadow: 0 .08rem 0 rgba(0,0,0,.5); }
+  html.lowfx .tvZoom { will-change: auto; }   /* no camera here, so no board-sized layer */
+  html.lowfx .flyCard { perspective: none; }
+  html.lowfx .flyInner { transform-style: flat; -webkit-transform-style: flat; }
+  html.lowfx .flyCard .face.back { display: none; }
+  html.lowfx .flyCard .face.front { transform: none; }
+  html.lowfx .lCard, html.lowfx .tvCard { animation-duration: .25s; }
+  html.lowfx .tvDie { animation-duration: .25s; }
+  html.lowfx .tvDicePair.tumbling .tvDie { animation: none; }
+  html.lowfx .tvDicePair.landed .tvDie { animation-duration: .2s; }
+  html.lowfx .crown { animation-duration: .5s; }
 </style>
 </head>
 <body>
@@ -264,6 +293,9 @@
   // Reduced motion (the TV's or browser's setting): no camera moves, no hop
   // arcs, no tumbling dice -- the same game, still.
   var RM = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  // Low-power mode (set before first paint, in the head): no camera, a flat
+  // card, fewer dice flips. See the html.lowfx styles.
+  var LOWFX = /(^|\s)lowfx(\s|$)/.test(document.documentElement.className);
   var GROUP_COLORS = { brown: "#8c5a3b", lightblue: "#6fd3e7", pink: "#d63384", orange: "#f7871f", red: "#d32f2f", yellow: "#f2c230", green: "#2e9e5b", blue: "#1d4ed8" };
   var SEAT_COLORS = ["#ffc83d","#ff6b6b","#2ed3b7","#7dd3fc","#c084fc","#fb923c","#34d399","#f472b6"];
   var TOKENS = { ark:"🚢", dove:"🕊️", menorah:"🕎", star:"⭐", scroll:"📜", fish:"🐟", cup:"🍷", trumpet:"🎺" };
@@ -396,15 +428,15 @@
     el.innerHTML = '<div class="tvDicePair tumbling">' + dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)) + '</div>'
       + '<div class="cDiceTotal" style="visibility:hidden">' + d1 + ' + ' + d2 + '</div>';
     el.className = "cDice on";
-    var flips = 0;
+    var flips = 0, FLIPS = LOWFX ? 6 : 9;
     if (board.diceSpin) clearInterval(board.diceSpin);
     board.diceSpin = setInterval(function () {
       var pair = el.querySelector(".tvDicePair"); if (!pair) { clearInterval(board.diceSpin); return; }
       flips += 1;
-      if (flips < 9) { pair.innerHTML = dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)); return; }
+      if (flips < FLIPS) { pair.innerHTML = dieHtml(1 + Math.floor(Math.random() * 6)) + dieHtml(1 + Math.floor(Math.random() * 6)); return; }
       clearInterval(board.diceSpin);
       el.innerHTML = '<div class="tvDicePair landed">' + dieHtml(d1) + dieHtml(d2) + '</div>' + total;
-    }, 75);
+    }, LOWFX ? 100 : 75);
   }
   function clearDice() { if (board && board.diceEl) { board.diceEl.className = "cDice"; board.diceShown = false; } }
   function hideFx() { var fx = $("tv-fx"); fx.className = ""; fx.innerHTML = ""; fxTurn = null; }
@@ -427,7 +459,10 @@
       + '<div class="q">' + esc(c.quote ? "\u201c" + c.quote + "\u201d" : (c.effect || c.text || "")) + '</div>'
       + (c.ref ? '<div class="ref">' + esc(c.ref) + '</div>' : '')
       + (c.quote && c.effect ? '<div class="eff">' + esc(c.effect) + '</div>' : '<div style="height:.3rem"></div>') + '</div>';
-    host.innerHTML = '<div class="flyCard"><div class="flyInner"><div class="face back ' + (sc ? "scripture" : "parable") + '"><b>' + (sc ? "SCRIPTURE" : "PARABLES") + '</b></div>'
+    // Low-power: no back face and no 3D turn (an old TV browser draws the
+    // flip slowly, and can show a turned face mirrored); the face flies out.
+    host.innerHTML = '<div class="flyCard"><div class="flyInner">'
+      + (LOWFX ? '' : '<div class="face back ' + (sc ? "scripture" : "parable") + '"><b>' + (sc ? "SCRIPTURE" : "PARABLES") + '</b></div>')
       + '<div class="face front">' + front + '</div></div></div>';
     var card = host.querySelector(".flyCard"), inner = host.querySelector(".flyInner");
     var stage = $("stage").getBoundingClientRect();
@@ -440,15 +475,15 @@
       var s0 = Math.max(0.15, d.width / w);
       card.style.transition = "none"; inner.style.transition = "none";
       card.style.transform = "translate(" + sx + "px," + sy + "px) scale(" + s0 + ") rotate(-12deg)";
-      inner.style.transform = "rotateY(0deg)";
+      if (!LOWFX) inner.style.transform = "rotateY(0deg)";
       void card.offsetWidth;
-      card.style.transition = "transform .75s cubic-bezier(.2,.9,.3,1)";
-      inner.style.transition = "transform .6s ease .55s";
+      card.style.transition = LOWFX ? "transform .45s cubic-bezier(.2,.9,.3,1)" : "transform .75s cubic-bezier(.2,.9,.3,1)";
+      if (!LOWFX) inner.style.transition = "transform .6s ease .55s";
       card.style.transform = "translate(" + endX + "px," + endY + "px) scale(1) rotate(0deg)";
-      inner.style.transform = "rotateY(180deg)";
+      if (!LOWFX) inner.style.transform = "rotateY(180deg)";
     } else {
       card.style.transform = "translate(" + endX + "px," + endY + "px)";
-      inner.style.transform = "rotateY(180deg)";
+      if (!LOWFX) inner.style.transform = "rotateY(180deg)";
     }
     if (cardTimer) clearTimeout(cardTimer);
     cardTimer = setTimeout(function () { host.className = ""; host.innerHTML = ""; }, 7500);
@@ -864,13 +899,12 @@
       if (steps > 0 && steps <= 12) { for (var k = 1; k <= steps; k++) t.queue.push((last + k) % 40); }
       else { t.queue = []; t.shown = target; t.dur = 0; }   // the Dungeon, a card: straight there
     }
-    animating = true;
+    kick();
   }
-  var animating = false;
   /* The camera: the whole board between moves; in a move it glides in toward
      the piece and follows it (the names there reach TV size), then glides
      back out a moment after it lands -- the way console board games do. */
-  var ZOOM_IN = RM ? 1 : 1.7, lastCam = 0;
+  var ZOOM_IN = (RM || LOWFX) ? 1 : 1.7, lastCam = 0;
   function camera(now) {
     var c = board.cam, dt = Math.min(0.1, (now - (lastCam || now)) / 1000); lastCam = now;
     var close = board.focus && now - board.lastMove < 1600;
@@ -879,13 +913,34 @@
     tx = Math.max(halfW, Math.min(BW - halfW, tx)); ty = Math.max(halfH, Math.min(BH - halfH, ty));
     var e = 1 - Math.exp(-dt * 3.2);
     c.z += (tz - c.z) * e; c.x += (tx - c.x) * e; c.y += (ty - c.y) * e;
-    var W = board.wrap.clientWidth || 1, H = board.wrap.clientHeight || 1;
+    // The board's size only changes with the window: reading it every frame,
+    // right after the pieces' attributes were written, forced a style and
+    // layout pass per frame.
+    if (!board.W) { board.W = board.wrap.clientWidth; board.H = board.wrap.clientHeight; }
+    var W = board.W || 1, H = board.H || 1;
     var px = c.x / BW * W, py = c.y / BH * H;
     var ox = Math.min(0, Math.max(W - W * c.z, W / 2 - px * c.z)), oy = Math.min(0, Math.max(H - H * c.z, H / 2 - py * c.z));
     var tr = "translate(" + ox.toFixed(1) + "px," + oy.toFixed(1) + "px) scale(" + c.z.toFixed(4) + ")";
-    if (tr !== c.applied) { c.applied = tr; board.zoom.style.transform = tr; board.zoom.style.webkitTransform = tr; }
+    if (tr === c.applied) return close;
+    c.applied = tr; board.zoom.style.transform = tr; board.zoom.style.webkitTransform = tr;
+    return true;
   }
+  /* The frame loop runs only while something moves: a piece hopping or
+     queued, or the camera gliding. Idle, it stops (it used to rewrite every
+     piece's attributes and re-read the board's size 60 times a second for
+     the whole game, which kept a slow TV repainting the board). A move or a
+     resize starts it again. */
+  var rafOn = false, stillFrames = 0;
+  function kick() {
+    stillFrames = 0;
+    if (rafOn) return;
+    rafOn = true; lastCam = 0;
+    requestAnimationFrame(tick);
+  }
+  window.addEventListener("resize", function () { if (board) board.W = 0; kick(); });
+  function setAttr(el, cache, name, val) { if (cache[name] !== val) { cache[name] = val; el.setAttribute(name, val); } }
   function tick(now) {
+    var busy = false;
     if (board) {
       var moving = false, places = {};
       for (var seat in board.tokens) {
@@ -906,20 +961,25 @@
         var dx = (n % 2) * 40 - 20, dy = Math.floor(n / 2) * 36 - 18;
         // The piece stands on the band side of its tile (off the name); in a
         // hop the body rises and its shadow stays on the board, shrinking.
-        t.g.setAttribute("transform", "translate(" + (pt.x + pt.ix + dx).toFixed(1) + " " + (pt.y + pt.iy + dy).toFixed(1) + ")");
+        if (!t.at) t.at = { g: {}, body: {}, shadow: {} };
+        setAttr(t.g, t.at.g, "transform", "translate(" + (pt.x + pt.ix + dx).toFixed(1) + " " + (pt.y + pt.iy + dy).toFixed(1) + ")");
         if (t.dur || t.queue.length) { board.focus = { x: pt.x, y: pt.y }; board.lastMove = now; }
         if (t.wasMoving && !t.dur && !t.queue.length) landed(t, seat);
         t.wasMoving = !!(t.dur || t.queue.length);
-        t.body.setAttribute("transform", "translate(0 " + (-lift).toFixed(1) + ")");
+        if (t.wasMoving) busy = true;
+        setAttr(t.body, t.at.body, "transform", "translate(0 " + (-lift).toFixed(1) + ")");
         var sc = 1 - lift / 90;
-        t.shadow.setAttribute("rx", (26 * sc).toFixed(1)); t.shadow.setAttribute("ry", (9 * sc).toFixed(1));
+        setAttr(t.shadow, t.at.shadow, "rx", (26 * sc).toFixed(1)); setAttr(t.shadow, t.at.shadow, "ry", (9 * sc).toFixed(1));
       }
-      animating = moving;
-      camera(now);
+      if (moving) busy = true;
+      if (camera(now)) busy = true;
     }
-    requestAnimationFrame(tick);
+    // A few still frames in a row before stopping, so a glide's last
+    // sub-pixel steps and a just-landed piece are not cut short.
+    stillFrames = busy ? 0 : stillFrames + 1;
+    if (board && stillFrames < 30) requestAnimationFrame(tick); else rafOn = false;
   }
-  requestAnimationFrame(tick);
+  kick();
   /* ---------- the middle: what is happening, big ---------- */
   function playerRows(room) {
     var html = "";
@@ -967,9 +1027,9 @@
     var right = '<div class="fCard"><div class="fLabel">Jackpot</div><div class="fPot">$' + fmt(room.pot) + '</div>'
       + '<div class="fBank">🏠 ' + room.bank_houses + ' · 🏨 ' + room.bank_hotels + '<small> in the bank</small></div></div>'
       + '<div class="fCard fStory"><div class="fLabel">Earlier</div>'
-      + log.slice(1).map(function (line) { return '<div class="fLog">' + esc(brief(line)) + '</div>'; }).join("") + '</div>'
-      + '<div class="fCard fJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div class="fLabel">Scan to play</div><b>' + code + '</b></div>';
-    return { left: left, now: now, pills: pills, event: event, right: right };
+      + log.slice(1).map(function (line) { return '<div class="fLog">' + esc(brief(line)) + '</div>'; }).join("") + '</div>';
+    var join = '<div class="fCard fJoin"><img alt="" src="/api/jubilee/rooms/' + code + '/join.svg"><div class="fLabel">Scan to play</div><b>' + code + '</b></div>';
+    return { left: left, now: now, pills: pills, event: event, right: right, join: join, code: code };
   }
   /* Where a piece lands, a card big enough to read across the room: the full
      name, the price, the rent, and who owns it. */
@@ -1025,6 +1085,14 @@
       centerSig = sig;
       var parts = centerHtml(room);
       board.left.innerHTML = parts.left; board.right.innerHTML = parts.right;
+      // The join card (its QR) is the same node every time: it is served
+      // no-store, so rebuilding it re-fetched and re-drew the QR on every
+      // change of cash or log.
+      if (!board.joinEl || board.joinCode !== parts.code) {
+        var jh = document.createElement("div"); jh.innerHTML = parts.join;
+        board.joinEl = jh.firstChild; board.joinCode = parts.code;
+      }
+      board.right.appendChild(board.joinEl);
       board.nowEl.innerHTML = parts.now; board.pillsEl.innerHTML = parts.pills; board.eventEl.innerHTML = parts.event;
       if (!board.diceShown && room.last_roll && room.last_roll.d1) showDice(room.last_roll, false);
     }

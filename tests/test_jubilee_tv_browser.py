@@ -95,7 +95,11 @@ def test_a_roll_moves_the_piece_along_and_shows_where_it_landed(arcade_server, b
     steps = out["room"]["last_roll"]["d1"] + out["room"]["last_roll"]["d2"]
     page.wait_for_timeout(1500 + steps * 300)
     positions = page.evaluate("() => window.__seen.size")
-    assert positions > steps * 3, f"the piece hopped through {positions} positions for {steps} spaces"
+    # A card on the space it reached can send it on (to the Dungeon, or more
+    # than 12 spaces, which the page jumps straight to), so count hops only
+    # when the piece ended where the dice put it.
+    if out["room"]["you"]["position"] == steps:
+        assert positions > steps * 3, f"the piece hopped through {positions} positions for {steps} spaces"
     landed_on = jubilee.SPACES[out["room"]["you"]["position"]]
     if landed_on.get("price"):
         page.wait_for_selector("#tv-land.on", timeout=4000)
@@ -142,3 +146,38 @@ def test_every_space_keeps_its_words_and_picture_inside_its_box(arcade_server, b
     page.wait_for_timeout(500)
     spill = page.evaluate(_FIT, ".tvZoom > svg > g[transform]")
     assert spill == [], f"spilling out of their spaces: {spill}"
+
+
+_LG_UA = ("Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) "
+          "Chrome/68.0.3440.106 Safari/537.36 WebAppManager")
+
+
+@pytest.mark.parametrize("ua,query,expect", [(_LG_UA, "", True), (_LG_UA, "?lowfx=0", False), (None, "?lowfx=1", True), (None, "", False)])
+def test_low_power_mode_on_webos_flat_card_and_the_loop_sleeps(arcade_server, browser, ua, query, expect):
+    _, base = arcade_server
+    code, pid = _room()
+    ctx = browser.new_context(viewport={"width": 960, "height": 540}, **({"user_agent": ua} if ua else {}))
+    page = ctx.new_page()
+    page.add_init_script("""(() => { window.__frames = 0; const raf = window.requestAnimationFrame.bind(window);
+        window.requestAnimationFrame = (f) => raf((t) => { window.__frames++; f(t); }); })()""")
+    page.goto(f"{base}/jubilee/tv/{code}{query}")
+    page.wait_for_selector(".tvZoom > svg text", timeout=8000)
+    assert page.evaluate("() => document.documentElement.classList.contains('lowfx')") is expect
+    # Idle, the frame loop stops instead of running for the whole game.
+    page.wait_for_timeout(1500)
+    before = page.evaluate("() => window.__frames")
+    page.wait_for_timeout(700)
+    assert page.evaluate("() => window.__frames") == before, "the frame loop kept running with nothing moving"
+    page.evaluate("""() => window.__jbStage.flyCard({deck: 'parable', player: 'Ann', quote: 'Seek and ye shall find', ref: 'Matthew 7:7', effect: 'Collect $50'})""")
+    page.wait_for_selector("#tv-card.on .face.front", timeout=2000)
+    assert (page.locator("#tv-card .face.back").count() == 0) is expect
+    if expect:
+        flat = page.evaluate("""() => [getComputedStyle(document.querySelector('.flyCard')).perspective,
+            getComputedStyle(document.querySelector('.flyCard .face.front')).transform,
+            getComputedStyle(document.querySelector('.cSign')).animationName]""")
+        assert flat == ["none", "none", "none"]
+    # A roll still moves the piece (and wakes the loop).
+    jubilee.roll(code, pid)
+    page.wait_for_timeout(1500)
+    assert page.evaluate("() => window.__frames") > before
+    ctx.close()
