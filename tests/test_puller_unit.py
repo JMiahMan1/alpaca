@@ -434,3 +434,16 @@ def test_download_only_import_never_touches_the_router(monkeypatch, tmp_path):
     rc = alpaca_puller.import_huggingface_gguf("hf://owner/repo/m.gguf", local_name="m:q4", register=False)
     assert rc == 0
     assert touched == []
+
+
+def test_update_models_ini_skips_while_a_settings_scan_owns_it(monkeypatch, tmp_path):
+    router = tmp_path / "router"
+    router.mkdir()
+    monkeypatch.setattr(alpaca_puller, "ROUTER_MODELS_DIR", str(router))
+    ini = router / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.6\n\n[scanning--latest]\nctx-size = 65536\n")
+    (router / ".settings-scan.lock").write_text("{}")
+    assert alpaca_puller.update_models_ini() is False
+    assert "[scanning--latest]" in ini.read_text()  # untouched
+    os.utime(router / ".settings-scan.lock", (1, 1))  # stale: a crashed scan
+    assert alpaca_puller.update_models_ini() is not False

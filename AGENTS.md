@@ -126,6 +126,15 @@ images and need `sudo docker compose up -d --build <service>`.
   from its in-memory copy, so the two erase each other's sections. During a scan use
   `alpaca-puller.py pull <hf ref> --name <n> --download-only` (blob + manifest only), then register
   with `sudo docker compose run --rm alpaca-indexer` once the scan is done.
+- **Delete models through the API, never by hand:** dashboard `POST /api/models/delete` → proxy
+  `/admin/models/delete` (unloads it, removes the manifest, keeps blobs another manifest shares, drops
+  its router link, profiles and models.ini section, reloads the router). If it cannot do the job, fix
+  it rather than going around it.
+- **A running settings scan owns models.ini** and holds `.alpaca-router/.settings-scan.lock`
+  (refreshed on every write, released on exit or SIGTERM; older than an hour = a crashed scan). The
+  delete API answers 409 while it is held, and `update_models_ini` skips with a warning instead of
+  racing it (skip, not fail: the startup indexer must still exit 0). Before the lock, a section the
+  API removed mid-scan would have been written back by the scan's next probe.
 - **Reindex inside the container, never on the host.** Router links are relative to the container
   layout (`../models/blobs` = `/models`), so on the host every one of them dangles. A host-side
   `update_models_ini` used to drop the section of every model it could not follow: on 2026-11-09 a
@@ -274,6 +283,12 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
   diff the `"--flag"` sets; also check every `LLAMA_PRESET_KEYS` entry still exists upstream
   (that is how the dead `mmap`/`mlock` were found). The image is `server-cuda12`, so
   `sudo docker compose build --pull llama-server` is what picks up a new build.
+- **`settings_scan.py` KV estimate reads the attention layout** (`kv_cache_mb`): qwen35/qwen35moe
+  GGUFs carry `full_attention_interval = 4` (only one layer in four keeps a KV cache), and
+  sliding-window models (`muse-glimmer`: `sliding_window = 2048`, pattern 4) cap three layers in four
+  at the window. Counting every layer at full context charged qwen3.8-27b ~9.3 GB of KV at 64K q8
+  instead of ~2.3 GB: the scan chose 0 GPU layers, the guard blocked even that, and the 32K retry ran
+  almost entirely on the CPU until the thermal stop.
 - **`settings_scan.py` and MoE:** the guard and hill estimates subtract the experts of the
   `n-cpu-moe` layers that are on the GPU (`gpu_weights_mb`; llama.cpp offloads the *last* ngl
   layers, `n-cpu-moe` covers the *first* N), so ngl=99 + n-cpu-moe is no longer blocked as

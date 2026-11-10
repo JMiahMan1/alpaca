@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import configparser
+import contextlib
 import json
 import os
 import re
@@ -211,8 +212,7 @@ def probe_guard(shape: dict, settings: dict, ctx: int, vram_total: int, check_vr
         ngl = int(settings.get("n-gpu-layers") or 0)
     except ValueError:
         ngl = 0
-    kv_bpt = kv_bytes_per_token(shape, settings.get("cache-type-k") or "f16")
-    kv_total_mb = (kv_bpt * ctx / 1e6) if kv_bpt else 0.0
+    kv_total_mb = kv_cache_mb(shape, settings.get("cache-type-k") or "f16", ctx)
     kv_in_ram = str(settings.get("no-kv-offload", "")).lower() in ("1", "true", "yes", "on")
     try:
         mcache = int(settings.get("moe-cache-mib") or 0)
@@ -277,7 +277,33 @@ def read_ini():
     return c
 
 
+# While a scan runs it owns models.ini: it rewrites the whole file from its
+# in-memory copy, so any other writer (a reindex, a model delete) would have its
+# change silently undone - or undo the scan's. The lock tells them to wait. It is
+# refreshed on every write; one older than SCAN_LOCK_STALE_S is a crashed scan.
+SCAN_LOCK = REPO / ".alpaca-router" / ".settings-scan.lock"
+SCAN_LOCK_STALE_S = 3600  # longer than the 40-minute probe timeout
+
+
+def touch_scan_lock() -> None:
+    try:
+        SCAN_LOCK.write_text(json.dumps({"pid": os.getpid(), "updated": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+        os.chmod(SCAN_LOCK, 0o666)
+    except OSError as e:
+        print(f"[scan] warning: could not write {SCAN_LOCK}: {e}")
+
+
+def release_scan_lock() -> None:
+    with contextlib.suppress(OSError):
+        SCAN_LOCK.unlink()
+
+
+def _exit_on_sigterm(signum, frame):
+    raise SystemExit(143)
+
+
 def write_ini(c):
+    touch_scan_lock()
     with open(INI, "w") as f:
         c.write(f)
     os.chmod(INI, 0o666)
@@ -369,6 +395,13 @@ def read_gguf_shape(model_path: str) -> dict:
                 "head_dim": int(meta.get(f"{arch}.attention.key_length", 0) or 0),
                 "expert_count": int(meta.get(f"{arch}.expert_count", 0) or 0),
                 "has_mtp": int(meta.get(f"{arch}.nextn_predict_layers", 0) or 0) > 0,
+                # Hybrid attention: only every Nth layer keeps a KV cache (the
+                # rest are linear/SSM layers with a small fixed state) ...
+                "full_attention_interval": int(meta.get(f"{arch}.full_attention_interval", 0) or 0),
+                # ... or a sliding-window pattern: all but every Nth layer cache
+                # at most `sliding_window` tokens, whatever the context.
+                "sliding_window": int(meta.get(f"{arch}.attention.sliding_window", 0) or 0),
+                "sliding_window_pattern": int(meta.get(f"{arch}.attention.sliding_window_pattern", 0) or 0),
                 "file_size_mb": round(cand.stat().st_size / 1e6, 1),
             }
         except Exception:
@@ -500,12 +533,39 @@ def ram_available_mb():
 
 
 def kv_bytes_per_token(shape: dict, kv_quant: str) -> float:
-    """Estimated KV cache bytes per token: 2 (K+V) * layers * kv_heads * head_dim * bytes."""
+    """Estimated KV cache bytes per token if EVERY layer cached every token:
+    2 (K+V) * layers * kv_heads * head_dim * bytes. Use kv_cache_mb for a
+    context, which knows hybrid and sliding-window layouts."""
     n_layers = shape.get("n_layers") or 48
     n_head_kv = shape.get("n_head_kv") or 8
     head_dim = shape.get("head_dim") or 128
     bpc = KV_BYTES_PER_ELEM.get(kv_quant, 2.0)
     return 2 * n_layers * n_head_kv * head_dim * bpc
+
+
+def kv_cache_mb(shape: dict, kv_quant: str, ctx: int) -> float:
+    """KV cache MB at `ctx` tokens.
+
+    Counting every layer at full context overestimated hybrid models badly:
+    qwen35/qwen35moe keep a KV cache in one layer of every
+    `full_attention_interval` (4), so qwen3.8-27b at 64K q8 needs ~2.3 GB, not
+    the ~9.3 GB the old estimate charged - which made the scan pick 0 GPU
+    layers and then block even that. Sliding-window models (muse-glimmer: 2048
+    tokens on 3 layers of every 4) cap those layers at the window.
+    """
+    n_layers = int(shape.get("n_layers") or 48)
+    per_layer_token = kv_bytes_per_token(shape, kv_quant) / n_layers
+    interval = int(shape.get("full_attention_interval") or 0)
+    window = int(shape.get("sliding_window") or 0)
+    pattern = int(shape.get("sliding_window_pattern") or 0)
+    if interval > 1:
+        full_layers = -(-n_layers // interval)
+        return per_layer_token * full_layers * ctx / 1e6
+    if window and pattern > 1:
+        full_layers = -(-n_layers // pattern)
+        swa_layers = n_layers - full_layers
+        return per_layer_token * (full_layers * ctx + swa_layers * min(ctx, window)) / 1e6
+    return per_layer_token * n_layers * ctx / 1e6
 
 
 def compute_smart_baseline(
@@ -538,7 +598,7 @@ def compute_smart_baseline(
     weights_per_layer_mb = file_mb / n_layers
     best: tuple[int, str, int] | None = None  # (ngl, kv, est_vram)
     for kv in kv_choices:  # ordered by quality: q8_0 first
-        kv_total_mb = kv_bytes_per_token(shape, kv) * ctx / 1e6
+        kv_total_mb = kv_cache_mb(shape, kv, ctx)
         budget = vram_total * target_frac - kv_total_mb - overhead_mb
         ngl = max(0, min(n_layers, int(budget / weights_per_layer_mb)))
         est = int(ngl * weights_per_layer_mb + kv_total_mb + overhead_mb)
@@ -599,7 +659,7 @@ def escalate_step(settings: dict, shape: dict, is_moe: bool) -> dict | None:
 
 
 def _est_vram_mb(s: dict, shape: dict, ctx: int) -> int:
-    kv_mb = kv_bytes_per_token(shape, s.get("cache-type-k", "q8_0")) * ctx / 1e6
+    kv_mb = kv_cache_mb(shape, s.get("cache-type-k", "q8_0"), ctx)
     try:
         mcache = int(s.get("moe-cache-mib") or 0)
     except (TypeError, ValueError):
@@ -1092,6 +1152,19 @@ def main():
         help="skip evicting sd-server/audio-server models before the scan (default: isolate for clean VRAM)",
     )
     args = ap.parse_args()
+
+    # A kill must still release the lock (finally does not run on SIGTERM).
+    import signal
+
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    touch_scan_lock()
+    try:
+        _scan(args)
+    finally:
+        release_scan_lock()
+
+
+def _scan(args):
 
     c = read_ini()
     if not args.models or args.models.strip().lower() == "all":

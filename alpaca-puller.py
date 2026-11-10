@@ -356,10 +356,34 @@ def create_model_profile(router_path, manifest=None, repo=None, filename=None):
         print(f"Warning: could not create model profile {profile_path}: {e}", file=sys.stderr)
 
 
+SCAN_LOCK_NAME = ".settings-scan.lock"
+SCAN_LOCK_STALE_S = 3600
+
+
+def settings_scan_active(router_dir: Path) -> bool:
+    """True while settings_scan.py owns models.ini (its lock is fresh). The scan
+    rewrites the whole file from memory, so a concurrent writer's change would be
+    silently undone - or would undo the scan's."""
+    lock = Path(router_dir) / SCAN_LOCK_NAME
+    try:
+        return time.time() - lock.stat().st_mtime < SCAN_LOCK_STALE_S
+    except OSError:
+        return False
+
+
 def update_models_ini():
     """Scan all GGUF models in the router directory and regenerate models.ini."""
     router_dir = Path(ROUTER_MODELS_DIR)
     ini_path = router_dir / "models.ini"
+    if settings_scan_active(router_dir):
+        # Skip, never fail: the container's one-shot indexer runs this at
+        # startup, and the stack waits for it to exit 0.
+        print(
+            "Warning: a settings scan is running and owns models.ini; it was NOT regenerated. "
+            "Reindex again when the scan finishes.",
+            file=sys.stderr,
+        )
+        return False
 
     # Load runtime exclusions
     mtp_incompatible = set()

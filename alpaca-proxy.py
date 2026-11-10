@@ -5882,6 +5882,19 @@ async def admin_model_pull(request: Request):
     }
 
 
+SETTINGS_SCAN_LOCK_STALE_S = 3600
+
+
+def settings_scan_active() -> bool:
+    """True while settings_scan.py holds .settings-scan.lock in the router dir
+    (it refreshes the lock on every models.ini write; older = a crashed scan)."""
+    try:
+        age = time.time() - os.path.getmtime(os.path.join(ROUTER_MODELS_DIR, ".settings-scan.lock"))
+    except OSError:
+        return False
+    return age < SETTINGS_SCAN_LOCK_STALE_S
+
+
 @app.post("/admin/models/delete")
 async def admin_model_delete(request: Request):
     """Delete a model and clean up blobs. Body: {\"model\": \"name:tag\"}"""
@@ -5890,6 +5903,13 @@ async def admin_model_delete(request: Request):
         model = body.get("model")
         if not model:
             raise HTTPException(status_code=400, detail="model is required")
+        if settings_scan_active():
+            # The scan rewrites models.ini from memory: a section removed now
+            # would be written back by its next probe.
+            raise HTTPException(
+                status_code=409,
+                detail="a settings scan is running and owns models.ini; delete the model when it finishes",
+            )
 
         manifest_path = manifest_path_for_model(model)
 

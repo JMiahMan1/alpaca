@@ -3592,3 +3592,26 @@ def test_restoring_a_file_that_is_not_json_leaves_the_buffer_empty(history, capl
     alpaca_proxy._load_completed_requests()
     assert alpaca_proxy.completed_requests == []
     assert any("Failed to load" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_model_delete_refuses_while_a_settings_scan_owns_models_ini(tmp_path, monkeypatch):
+    """The scan rewrites models.ini from memory, so a section removed now would
+    be written back by its next probe: the delete must wait, loudly."""
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    (tmp_path / ".settings-scan.lock").write_text('{"pid": 1}')
+    with pytest.raises(HTTPException) as exc:
+        await alpaca_proxy.admin_model_delete(make_request("/admin/models/delete", {"model": "m:latest"}))
+    assert exc.value.status_code == 409
+    assert "settings scan" in exc.value.detail
+
+
+def test_a_stale_scan_lock_does_not_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    lock = tmp_path / ".settings-scan.lock"
+    lock.write_text("{}")
+    assert alpaca_proxy.settings_scan_active()
+    os.utime(lock, (1, 1))  # a crashed scan's lock
+    assert not alpaca_proxy.settings_scan_active()
+    lock.unlink()
+    assert not alpaca_proxy.settings_scan_active()

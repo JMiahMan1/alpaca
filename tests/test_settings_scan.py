@@ -544,3 +544,36 @@ def test_a_dense_models_first_hill_neighbors_are_the_ones_that_matter():
     assert any(n.get("ubatch-size") for n in first3)
     assert any(n.get("spec-type") == "draft-mtp" for n in first3)
     assert neighbors[-1].get("cache-reuse") is not None
+
+
+def test_the_scan_holds_the_lock_while_it_writes_models_ini(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_scan, "INI", tmp_path / "models.ini")
+    monkeypatch.setattr(settings_scan, "SCAN_LOCK", tmp_path / ".settings-scan.lock")
+    c = configparser.ConfigParser(delimiters=("=",))
+    c["m"] = {"ctx-size": "65536"}
+    settings_scan.write_ini(c)
+    assert (tmp_path / ".settings-scan.lock").exists()
+    settings_scan.release_scan_lock()
+    assert not (tmp_path / ".settings-scan.lock").exists()
+    settings_scan.release_scan_lock()  # idempotent
+
+
+def test_kv_cache_counts_only_the_layers_that_keep_one():
+    dense = {"n_layers": 64, "n_head_kv": 4, "head_dim": 256}
+    hybrid = {**dense, "full_attention_interval": 4}  # qwen3.8-27b: 1 KV layer in 4
+    full = settings_scan.kv_cache_mb(dense, "q8_0", 65536)
+    assert settings_scan.kv_cache_mb(hybrid, "q8_0", 65536) == pytest.approx(full / 4)
+    # Sliding window: 3 of 4 layers hold at most 2048 tokens.
+    swa = {"n_layers": 52, "n_head_kv": 2, "head_dim": 128, "sliding_window": 2048, "sliding_window_pattern": 4}
+    per = settings_scan.kv_bytes_per_token(swa, "q8_0") / 52
+    assert settings_scan.kv_cache_mb(swa, "q8_0", 65536) == pytest.approx(per * (13 * 65536 + 39 * 2048) / 1e6)
+    # At a context inside the window it is just every layer.
+    assert settings_scan.kv_cache_mb(swa, "q8_0", 1024) == pytest.approx(per * 52 * 1024 / 1e6)
+
+
+def test_hybrid_baseline_no_longer_starves_qwen38_27b_of_gpu_layers():
+    shape = {"n_layers": 65, "n_head_kv": 4, "head_dim": 256, "file_size_mb": 13100, "full_attention_interval": 4}
+    baseline, _ = settings_scan.compute_smart_baseline(shape, 65536, ["q8_0"], 8188)
+    # Counting every layer's KV put this at 0 GPU layers (then the guard blocked
+    # even that); its old hand profile ran 24 layers at 32K.
+    assert int(baseline["n-gpu-layers"]) >= 15
