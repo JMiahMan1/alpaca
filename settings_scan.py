@@ -375,6 +375,13 @@ def read_gguf_shape(model_path: str) -> dict:
                                 f.read(sl)
                                 total += 8 + sl
                             val = total
+                        elif at in _GGUF_INT_ARRAY_FMT and al <= 8192:
+                            # Per-layer values (head_count_kv, sliding_window_pattern)
+                            # are arrays in gemma4 / lfm2moe; reading only their byte
+                            # size gave "120 KV heads" and a 115 GB KV estimate.
+                            fmt = _GGUF_INT_ARRAY_FMT[at]
+                            raw = f.read(al * struct.calcsize(fmt))
+                            val = list(struct.unpack(f"<{al}{fmt}", raw))
                         else:
                             sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
                             total = al * sizes.get(at, 0)
@@ -388,11 +395,25 @@ def read_gguf_shape(model_path: str) -> dict:
                         meta[k] = val
             if not arch:
                 continue
+            n_layers = int(meta.get(f"{arch}.block_count", 0) or 0)
+            heads_kv = meta.get(f"{arch}.attention.head_count_kv", 0) or 0
+            swa_pattern = meta.get(f"{arch}.attention.sliding_window_pattern", 0) or 0
+            head_dim = int(meta.get(f"{arch}.attention.key_length", 0) or 0)
+            if not head_dim:
+                n_head = meta.get(f"{arch}.attention.head_count", 0) or 0
+                n_head = max(n_head) if isinstance(n_head, list) and n_head else n_head
+                emb = int(meta.get(f"{arch}.embedding_length", 0) or 0)
+                head_dim = emb // int(n_head) if n_head else 0
             return {
                 "arch": arch,
-                "n_layers": int(meta.get(f"{arch}.block_count", 0) or 0),
-                "n_head_kv": int(meta.get(f"{arch}.attention.head_count_kv", 0) or 0),
-                "head_dim": int(meta.get(f"{arch}.attention.key_length", 0) or 0),
+                "n_layers": n_layers,
+                "n_head_kv": max(heads_kv) if isinstance(heads_kv, list) and heads_kv else int(heads_kv),
+                # Per-layer KV heads (0 = a conv/linear layer with no KV cache).
+                "kv_heads_per_layer": heads_kv if isinstance(heads_kv, list) else None,
+                # Per-layer sliding-window flags (gemma4 stores them as bools).
+                "swa_per_layer": [bool(x) for x in swa_pattern] if isinstance(swa_pattern, list) else None,
+                "head_dim": head_dim,
+                "head_dim_swa": int(meta.get(f"{arch}.attention.key_length_swa", 0) or 0),
                 "expert_count": int(meta.get(f"{arch}.expert_count", 0) or 0),
                 "has_mtp": int(meta.get(f"{arch}.nextn_predict_layers", 0) or 0) > 0,
                 # Hybrid attention: only every Nth layer keeps a KV cache (the
@@ -401,7 +422,7 @@ def read_gguf_shape(model_path: str) -> dict:
                 # ... or a sliding-window pattern: all but every Nth layer cache
                 # at most `sliding_window` tokens, whatever the context.
                 "sliding_window": int(meta.get(f"{arch}.attention.sliding_window", 0) or 0),
-                "sliding_window_pattern": int(meta.get(f"{arch}.attention.sliding_window_pattern", 0) or 0),
+                "sliding_window_pattern": 0 if isinstance(swa_pattern, list) else int(swa_pattern),
                 "file_size_mb": round(cand.stat().st_size / 1e6, 1),
             }
         except Exception:
@@ -543,6 +564,9 @@ def kv_bytes_per_token(shape: dict, kv_quant: str) -> float:
     return 2 * n_layers * n_head_kv * head_dim * bpc
 
 
+_GGUF_INT_ARRAY_FMT = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 7: "?", 10: "Q", 11: "q"}
+
+
 def kv_cache_mb(shape: dict, kv_quant: str, ctx: int) -> float:
     """KV cache MB at `ctx` tokens.
 
@@ -554,9 +578,25 @@ def kv_cache_mb(shape: dict, kv_quant: str, ctx: int) -> float:
     tokens on 3 layers of every 4) cap those layers at the window.
     """
     n_layers = int(shape.get("n_layers") or 48)
+    window = int(shape.get("sliding_window") or 0)
+    heads = shape.get("kv_heads_per_layer")
+    swa = shape.get("swa_per_layer")
+    if heads or swa:
+        # Per-layer layout (gemma4, lfm2moe): heads per layer (0 = no KV cache),
+        # sliding layers capped at the window with their own (smaller) head dim.
+        bpc = KV_BYTES_PER_ELEM.get(kv_quant, 2.0)
+        dim, dim_swa = int(shape.get("head_dim") or 128), int(shape.get("head_dim_swa") or 0)
+        total = 0.0
+        for i in range(n_layers):
+            h = heads[i] if heads and i < len(heads) else int(shape.get("n_head_kv") or 8)
+            if not h:
+                continue
+            sliding = bool(swa[i]) if swa and i < len(swa) else False
+            tokens = min(ctx, window) if sliding and window else ctx
+            total += 2 * h * (dim_swa if sliding and dim_swa else dim) * bpc * tokens
+        return total / 1e6
     per_layer_token = kv_bytes_per_token(shape, kv_quant) / n_layers
     interval = int(shape.get("full_attention_interval") or 0)
-    window = int(shape.get("sliding_window") or 0)
     pattern = int(shape.get("sliding_window_pattern") or 0)
     if interval > 1:
         full_layers = -(-n_layers // interval)

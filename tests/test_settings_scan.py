@@ -588,3 +588,70 @@ def test_a_partial_ngl_moe_config_with_offloaded_experts_still_gets_the_full_lay
     done = {**MOE_WORKING, "n-gpu-layers": "40"}
     again = settings_scan.hill_neighbors(done, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=8188)
     assert not [n for n in again if n.get("n-gpu-layers") == "40" and n.get("n-cpu-moe") != done["n-cpu-moe"]]
+
+
+def _write_gguf(path, kv: dict):
+    """Minimal GGUF v3 header with the given metadata (no tensors)."""
+    import struct
+
+    def s(x: str) -> bytes:
+        b = x.encode()
+        return struct.pack("<Q", len(b)) + b
+
+    out = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + struct.pack("<Q", len(kv))
+    for key, val in kv.items():
+        out += s(key)
+        if isinstance(val, str):
+            out += struct.pack("<I", 8) + s(val)
+        elif isinstance(val, list) and val and isinstance(val[0], bool):
+            out += struct.pack("<I", 9) + struct.pack("<I", 7) + struct.pack("<Q", len(val))
+            out += bytes(int(v) for v in val)
+        elif isinstance(val, list):
+            out += struct.pack("<I", 9) + struct.pack("<I", 5) + struct.pack("<Q", len(val))
+            out += struct.pack(f"<{len(val)}i", *val)
+        else:
+            out += struct.pack("<I", 4) + struct.pack("<I", val)
+    path.write_bytes(out)
+
+
+def test_per_layer_arrays_are_read_not_replaced_by_their_byte_size(tmp_path):
+    """gemma4 / lfm2moe store head_count_kv and the sliding pattern per layer.
+    Reading only the byte size gave '120 KV heads' and a 115 GB KV estimate."""
+    gemma = tmp_path / "gemma.gguf"
+    heads = [8, 8, 8, 8, 8, 2] * 5
+    swa = [True, True, True, True, True, False] * 5
+    _write_gguf(
+        gemma,
+        {
+            "general.architecture": "gemma4",
+            "gemma4.block_count": 30,
+            "gemma4.attention.head_count_kv": heads,
+            "gemma4.attention.sliding_window_pattern": swa,
+            "gemma4.attention.key_length": 512,
+            "gemma4.attention.key_length_swa": 256,
+            "gemma4.attention.sliding_window": 1024,
+            "gemma4.expert_count": 128,
+        },
+    )
+    sh = settings_scan.read_gguf_shape(str(gemma))
+    assert sh["kv_heads_per_layer"] == heads and sh["swa_per_layer"] == swa and sh["n_head_kv"] == 8
+    # 25 sliding layers at 1024 tokens (8 heads x 256) + 5 full layers at ctx (2 heads x 512).
+    expect = (25 * 2 * 8 * 256 * 1.0625 * 1024 + 5 * 2 * 2 * 512 * 1.0625 * 65536) / 1e6
+    assert settings_scan.kv_cache_mb(sh, "q8_0", 65536) == pytest.approx(expect)
+
+    lfm = tmp_path / "lfm.gguf"
+    lfm_heads = [0, 0, 0, 8] * 10  # conv layers carry no KV cache
+    _write_gguf(
+        lfm,
+        {
+            "general.architecture": "lfm2moe",
+            "lfm2moe.block_count": 40,
+            "lfm2moe.attention.head_count_kv": lfm_heads,
+            "lfm2moe.attention.head_count": 32,
+            "lfm2moe.embedding_length": 2048,
+            "lfm2moe.expert_count": 64,
+        },
+    )
+    sh = settings_scan.read_gguf_shape(str(lfm))
+    assert sh["head_dim"] == 64  # no key_length: embedding / heads
+    assert settings_scan.kv_cache_mb(sh, "q8_0", 65536) == pytest.approx(10 * 2 * 8 * 64 * 1.0625 * 65536 / 1e6)
