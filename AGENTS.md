@@ -263,8 +263,19 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
   needs p false (it is modus *tollens*), `logic_knights` needs A=knight and B=knave,
   `logic_river` needs the goat brought back, `logic_weigh` needs the 3/3/2 split. The old
   checks passed a restatement of the prompt and failed correct answers phrased unusually.
-  `_assigns_roles()` matches case-sensitively so the subject "A" is not the article "a",
+  `_assigns_roles()` matches subjects case-sensitively so the subject "A" is not the article "a",
   and `_CLAUSE_GAP` keeps the wrong-role guard from reading across "and".
+- **Nov 2026 false-failure review** (the first Quick Benchmark run): `logic_knights` failed EVERY
+  model's correct answer - roles were case-sensitive ("A is a Knight"), and the wrong-role guard read
+  the whole response, so walking through "Case 1: A is a knave ... contradiction" failed it. Roles are
+  now case-insensitive, markdown/conclusion tables are read, and the wrong-role guard only reads the
+  conclusion (after the last therefore/thus/so/conclusion/answer). `frontier_debug_boundary` failed
+  every correct fix for lacking a `def main` the prompt never asks for (the sandbox had already
+  verified the printed `[3, 5]`); `frontier_refactor_anagrams`, `_api_ticket_contract` and
+  `_canvas_signal_lab` had the same kind of trap (unrequested `main`, `isinstance` only, `clearRect`/
+  `fillRect`). `frontier_reasoning_label_swaps` was ill-posed ("without looking", no swap sequence
+  guarantees correct labels) and now says which box holds apples. **Rule for code-test graders: check
+  what the prompt requires, never one way of writing it; the sandbox checks behaviour.**
 
 ### llama.cpp Preset Keys (models.ini)
 - `llama-server --models-preset` **rejects keys that are not its own arguments and the

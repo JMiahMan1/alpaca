@@ -2611,7 +2611,7 @@
       "id": "frontier_reasoning_label_swaps",
       "category": "frontier_diagnostics",
       "label": "Frontier: minimum label swaps",
-      "prompt": "Three boxes are labeled A=Oranges, B=Mixed, C=Apples. Every label is wrong. Without looking inside, you may swap any two labels, and want the minimum number of swaps that guarantees all three labels become correct. What is the minimum number of swaps? Answer with only the final number.",
+      "prompt": "Three boxes are labeled A=Oranges, B=Mixed, C=Apples. Every label is wrong, and you are told that box A actually contains apples. You may swap any two labels. What is the minimum number of swaps that makes all three labels correct? Answer with only the final number.",
       "num_predict": 500,
       "reasoning_budget": 2048,
       "type": "functional",

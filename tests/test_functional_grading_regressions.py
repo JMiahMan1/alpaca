@@ -660,3 +660,65 @@ def test_unparseable_answer_falls_back_to_lenient_search(benchmark):
 )
 def test_logic_graders_check_the_answer(benchmark, test_id, response, correct):
     assert benchmark._verify_functional_response({"id": test_id}, response) is correct
+
+
+# --- Nov 2026 false-failure review: real answers that were marked wrong ---------
+
+_KNIGHTS_EXPLAINED = (
+    "Let's analyze the possibilities.\n### Case 1: A is a Knave\nThen A's statement is false, so B is a Knight. "
+    "But B says they are the same type - false - contradiction.\n### Case 2: A is a Knight\n"
+    "Then B is a Knave, and B's claim is false. Consistent.\n\n## Conclusion\n\n"
+    "| Person | Type |\n|--------|------|\n| **A** | **Knight** |\n| **B** | **Knave** |"
+)
+
+
+@pytest.mark.parametrize(
+    ("response", "correct"),
+    [
+        ("Thus, **A is a Knight** and **B is a Knave**.", True),  # capitalised roles (all four models)
+        (_KNIGHTS_EXPLAINED, True),  # walks through "A is a Knave" before ruling it out; table conclusion
+        ("B must be a knave, since B's claim is false. So A is the knight.", True),
+        ("Suppose A is the knight; that fails. Therefore A is the knave and B is the knight.", False),
+        ("## Conclusion\n| A | Knave |\n| B | Knight |", False),
+    ],
+)
+def test_knights_grader_judges_the_conclusion_not_the_case_analysis(benchmark, response, correct):
+    assert benchmark._verify_functional_response("logic_knights", response) is correct
+
+
+_FIXED_NORMALIZE = (
+    "```python\ndef normalize(values):\n    result = []\n    for value in values:\n"
+    "        if isinstance(value, bool):\n            continue\n"
+    "        if value > 0 and value not in result:\n            result.append(value)\n    return result\n\n"
+    "assert normalize([3, -1, 3, True, 0, 5, 5]) == [3, 5]\nprint(normalize([3, -1, 3, True, 0, 5, 5]))\n```"
+)
+
+
+def test_debug_boundary_does_not_demand_an_unrequested_main(benchmark):
+    assert benchmark._verify_functional_response("frontier_debug_boundary", _FIXED_NORMALIZE)
+    as_type = _FIXED_NORMALIZE.replace("isinstance(value, bool)", "type(value) is bool")
+    assert benchmark._verify_functional_response("frontier_debug_boundary", as_type)
+    no_bool_check = _FIXED_NORMALIZE.replace("        if isinstance(value, bool):\n            continue\n", "")
+    assert not benchmark._verify_functional_response("frontier_debug_boundary", no_bool_check)
+    no_assert = _FIXED_NORMALIZE.replace("assert normalize([3, -1, 3, True, 0, 5, 5]) == [3, 5]\n", "")
+    assert not benchmark._verify_functional_response("frontier_debug_boundary", no_assert)
+
+
+def test_anagram_refactor_accepts_any_hashed_mapping(benchmark):
+    dd = (
+        "from collections import defaultdict\n\ndef group_anagrams(words):\n    groups = defaultdict(list)\n"
+        "    for w in words:\n        groups[tuple(sorted(w))].append(w)\n    return list(groups.values())\n"
+    )
+    assert benchmark._verify_functional_response("frontier_refactor_anagrams", dd)
+    nested = "def group_anagrams(words):\n    groups = []\n    for word in words:\n        for g in groups:\n            pass\n"
+    assert not benchmark._verify_functional_response("frontier_refactor_anagrams", nested)
+
+
+def test_canvas_lab_accepts_arc_drawing_and_onclick(benchmark):
+    page = (
+        "<h1>SIGNAL LAB</h1><canvas id=c onclick='add()'></canvas><script>const x=c.getContext('2d');"
+        "const r=window.devicePixelRatio;function f(){x.beginPath();x.arc(1,1,2,0,7);x.fill();"
+        "requestAnimationFrame(f)}document.onkeydown=e=>{if(e.code==='Space')reset()};f()</script>"
+    )
+    assert benchmark._verify_functional_response("frontier_canvas_signal_lab", page)
+    assert not benchmark._verify_functional_response("frontier_canvas_signal_lab", page.replace("SIGNAL LAB", "LAB"))

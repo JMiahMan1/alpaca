@@ -285,9 +285,11 @@ def test_frontier_dedicated_functional_verifiers():
     assert suite._verify_functional_response(by_id["frontier_debug_boundary"], code.replace("assert", "print")) is False
 
     canvas = (
-        "<canvas id='view'></canvas><script>const c=document.querySelector('canvas');"
+        "<h1>SIGNAL LAB</h1><canvas id='view'></canvas><script>const c=document.querySelector('canvas');"
         "const x=c.getContext('2d');x.clearRect(0,0,1,1);x.fillRect(0,0,2,2);"
-        "document.addEventListener('click',()=>{});function frame(){requestAnimationFrame(frame)}"
+        "document.addEventListener('click',()=>{});"
+        "document.addEventListener('keydown',e=>{if(e.code==='Space')reset()});"
+        "function frame(){requestAnimationFrame(frame)}"
         "const d=devicePixelRatio;frame();</script>"
     )
     assert suite._verify_functional_response(by_id["frontier_canvas_signal_lab"], canvas) is True

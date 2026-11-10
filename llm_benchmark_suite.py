@@ -384,24 +384,40 @@ def _final_span_says(response: str, positives: tuple[str, ...], negatives: tuple
 _CLAUSE_GAP = r"(?:(?!\band\b)[^.\n,;]){0,30}?"
 
 
+_CONCLUSION_RE = re.compile(r"(?i)\b(?:conclusion|therefore|thus|hence|final answer|answer|so)\b")
+
+
 def _assigns_roles(response: str, roles: dict[str, str]) -> bool:
-    """True when the response names each subject as its role and never as another.
+    """True when the response's conclusion names each subject as its role, and
+    never as another.
 
     Written for knights-and-knaves style puzzles, where the graded content is the
-    assignment itself. Matching is case-sensitive on the original response so the
-    subject "A" is not confused with the article "a", and both orders are
-    accepted ("A is the knight" and "the knight is A").
+    assignment itself. Subjects match case-sensitively ("A" is not the article
+    "a"); roles do not ("Knight"). Markdown emphasis and conclusion tables
+    ("| A | Knight |") are read. The wrong-role check looks only at the
+    conclusion - the text after the last "therefore/thus/so/conclusion/answer",
+    else the closing 600 characters - because an explanation walks through the
+    wrong case ("Suppose A is a knave ... contradiction") before ruling it out.
+    The old whole-response check failed every correct, explained answer.
     """
     text = _THINK_TAG_RE.sub("", response or "")
-    all_roles = set(roles.values())
+    text = re.sub(r"[*_`]", "", text)
+    markers = list(_CONCLUSION_RE.finditer(text))
+    tail = text[markers[-1].start() :] if markers else text[-600:]
+
+    def assigns(subject: str, role: str, scope: str, loose: bool = True) -> bool:
+        r = rf"(?i:{re.escape(role)})"
+        verbs = r"(?:is|=|:|must be|has to be)" if loose else r"(?:is|=|:|must be)"
+        forward = re.search(rf"\b{re.escape(subject)}\b\s*{verbs}{_CLAUSE_GAP}\b{r}\b", scope)
+        backward = re.search(rf"\b{r}\b{_CLAUSE_GAP}\b(?:is|=|:)\s*(?:person\s+)?{re.escape(subject)}\b", scope)
+        table = re.search(rf"(?m)^\s*\|?\s*{re.escape(subject)}\s*\|\s*{r}\b", scope)
+        return bool(forward or backward or table)
+
     for subject, role in roles.items():
-        forward = re.search(rf"\b{re.escape(subject)}\b\s*(?:is|=|:|must be|has to be){_CLAUSE_GAP}\b{role}\b", text)
-        backward = re.search(rf"\b{role}\b{_CLAUSE_GAP}\b(?:is|=|:)\s*(?:person\s+)?{re.escape(subject)}\b", text)
-        if not (forward or backward):
+        if not (assigns(subject, role, tail) or assigns(subject, role, text)):
             return False
-        # Reject an answer that also hands the subject a different role.
-        for other in all_roles - {role}:
-            if re.search(rf"\b{re.escape(subject)}\b\s*(?:is|=|:|must be){_CLAUSE_GAP}\b{other}\b", text):
+        for other in set(roles.values()) - {role}:
+            if assigns(subject, other, tail, loose=False):
                 return False
     return True
 
@@ -1904,54 +1920,47 @@ class LLMModelBenchmark:
             return any(x in no_spaces for x in ["set(", "fromkeys("]) or bool(set_comprehension)
 
         elif test_id == "frontier_debug_boundary":
-            return all(
-                token in cleaned
-                for token in (
-                    "def normalize",
-                    "def main",
-                    "assert",
-                    "isinstance",
-                    "bool",
-                    "int",
-                )
+            # The sandbox already checks the printed output ([3, 5]). This checks
+            # what the prompt asked for and output alone cannot show: the
+            # function, a self-check, and an explicit boolean rejection
+            # (isinstance or a type() test both count). It used to demand a
+            # `def main` the prompt never asks for, failing every correct fix.
+            rejects_bool = bool(
+                re.search(r"isinstance\([^)]*\bbool\b", cleaned)
+                or re.search(r"type\([^)]*\)\s*(?:is|==|is not|!=)\s*(?:int|bool)\b", cleaned)
             )
+            return "def normalize" in cleaned and "assert" in cleaned and rejects_bool
         elif test_id == "frontier_refactor_anagrams":
-            return all(
-                token in cleaned
-                for token in (
-                    "def group_anagrams",
-                    "def main",
-                    "dict",
-                    "sorted",
-                    "join",
-                    "values",
-                )
-            )
+            # Output is checked by the sandbox. Here: the function, a hashed key
+            # (sorted letters or a letter count), and a mapping for O(1) lookups -
+            # dict, defaultdict or a {} literal all count. It used to demand
+            # `def main`, join() and values(), none of which the prompt asks for.
+            keyed = any(x in cleaned for x in ("sorted(", "counter(", "tuple(sorted"))
+            mapping = bool(re.search(r"\bdict\b|defaultdict|=\s*\{\s*\}|setdefault\(", cleaned))
+            return "def group_anagrams" in cleaned and keyed and mapping
         elif test_id == "frontier_api_ticket_contract":
-            return all(
-                token in cleaned
-                for token in (
-                    "def create_ticket",
-                    "isinstance",
-                    "bool",
-                    "priority",
-                    "json.dumps",
-                    "201",
-                    "400",
-                )
+            # "not a bool" can be written as isinstance(x, bool) or a type() test.
+            rejects_bool = bool(
+                re.search(r"isinstance\([^)]*\bbool\b", cleaned)
+                or re.search(r"type\([^)]*\)\s*(?:is|==|is not|!=)\s*(?:int|bool)\b", cleaned)
+            )
+            return rejects_bool and all(
+                token in cleaned for token in ("def create_ticket", "priority", "json.dumps", "201", "400")
             )
         elif test_id == "frontier_canvas_signal_lab":
-            return all(
-                token in cleaned
-                for token in (
-                    "<canvas",
-                    "getcontext",
-                    "requestanimationframe",
-                    "addeventlistener",
-                    "clearrect",
-                    "fillrect",
-                    "devicepixelratio",
-                )
+            # What the prompt requires, not one way of drawing it: a 2D canvas,
+            # rAF, devicePixelRatio, a click handler and a Space handler, and the
+            # heading. It used to demand clearRect, fillRect and addEventListener -
+            # particles drawn with arc() or an onclick= handler failed.
+            clicks = any(x in cleaned for x in ("'click'", '"click"', "onclick", "pointerdown", "mousedown"))
+            space = any(x in cleaned for x in ("keydown", "keyup", "onkey")) and any(
+                x in cleaned for x in ("space", "' '", '" "', "keycode === 32", "keycode == 32")
+            )
+            return (
+                all(t in cleaned for t in ("<canvas", "getcontext", "requestanimationframe", "devicepixelratio"))
+                and clicks
+                and space
+                and "signal lab" in cleaned
             )
         elif test_id == "frontier_json_feature_patch":
             try:
@@ -5745,7 +5754,15 @@ class LLMModelBenchmark:
         "life_dad_joke": "v2",
         "uiux_wireframe": "v2",
         "debug_infinite_loop": "v2",
-        "logic_knights": "v2",
+        # v3: conclusion-scoped, case-insensitive roles - v2 failed every correct
+        # explained answer ("A is a Knight"; "Suppose A is a knave ...").
+        "logic_knights": "v3",
+        # v2: graded on what the prompts require - no unrequested `def main`,
+        # isinstance() or particular drawing calls.
+        "frontier_debug_boundary": "v2",
+        "frontier_refactor_anagrams": "v2",
+        "frontier_api_ticket_contract": "v2",
+        "frontier_canvas_signal_lab": "v2",
         "logic_river": "v2",
         "logic_modus": "v2",
         "logic_weigh": "v2",
