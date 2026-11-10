@@ -1474,7 +1474,8 @@ def api_jubilee_rooms():
 @app.route("/api/jubilee/rooms/<code>", methods=["GET"])
 def api_jubilee_room(code):
     stage = request.args.get("stage") in ("1", "true")
-    room = jubilee.get_room(code, request.args.get("player_id"), stage=stage)
+    video = request.args.get("video") in ("1", "true")   # a streamed stage: no sound of its own
+    room = jubilee.get_room(code, request.args.get("player_id"), stage=stage, video=video)
     if room is None:
         return jsonify({"success": False, "error": "room not found"}), 404
     return jsonify({"success": True, "room": _jubilee_room(room)})

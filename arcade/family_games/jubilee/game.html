@@ -63,6 +63,10 @@
     width: 40px; height: 40px; min-width: 40px; min-height: 40px; font-size: 17px; cursor: pointer; display:flex; align-items:center; justify-content:center; }
   .jb-icon.on { border-color: var(--gold); background: rgba(255,200,61,.22); box-shadow: 0 0 12px rgba(255,200,61,.35); }
   .jb-icon:active { transform: scale(.92); }
+  /* The sound is on the TV: a small badge on the speaker button. */
+  .jb-icon.tv { position: relative; }
+  .jb-icon.tv::after { content: "TV"; position: absolute; right: -4px; bottom: -4px; padding: 0 3px; border-radius: 5px;
+    background: var(--gold); color: #1a1033; font-size: 8px; font-weight: 900; line-height: 12px; }
 
   /* board + side panel */
   #jb-main {
@@ -214,7 +218,7 @@
       <div id="jb-dice" aria-hidden="true"></div>
     </div>
     <div id="jb-side">
-      <div id="jb-tvbar" hidden><span>📺 The board is on the TV - this is your hand.</span><button class="jb-btn ghost" id="jb-tv-toggle">Show board here</button></div>
+      <div id="jb-tvbar" hidden><span>📺 The board is on the TV - this is your hand.<span id="jb-tv-sound" hidden> 🔊 Sound too.</span></span><button class="jb-btn ghost" id="jb-tv-toggle">Show board here</button></div>
       <div id="jb-players"></div>
       <div id="jb-action"></div>
       <div id="jb-panel">
@@ -849,7 +853,28 @@ var state = {
   muted: store.get("muted") === "1"
 };
 var soundBtn = $("jb-sound");
-function syncSoundBtn() { soundBtn.textContent = state.muted ? "🔇" : "🔊"; kit.sound.setMuted(state.muted); }
+function syncSoundBtn() { soundBtn.textContent = state.muted ? "🔇" : "🔊"; kit.sound.setMuted(state.muted); syncTvSound(); }
+/* While a TV shows the board, the TV's speakers play the game (jubilee_tv.html)
+   and every phone is silent: board events and this player's own taps alike,
+   so a room of phones never echoes the TV. Haptics and visuals stay. The
+   player's own mute is untouched and comes back into force when the TV goes.
+   A TV that is a video stream (a Roku) carries no sound, so the phones keep it. */
+function tvHasSound(room) { return !!(room && room.stage_connected && room.stage_sound !== false); }
+function syncTvSound() {
+  var tv = tvHasSound(state.room);
+  kit.sound.setSilenced(tv);
+  soundBtn.classList.toggle('tv', tv);
+  soundBtn.setAttribute('aria-label', tv ? 'Sound is playing on the TV' : 'Sound on or off');
+  var hint = $('jb-tv-sound');
+  if (hint) hint.hidden = !tv;
+}
+tap(soundBtn, function () {
+  state.muted = !state.muted;
+  store.set('muted', state.muted ? '1' : '0');
+  kit.sound.unlock();
+  syncSoundBtn();
+  if (state.room && tvHasSound(state.room)) kit.toast('🔊 The sound is on the TV');
+});
 syncSoundBtn();
 
   /* ============ lobby ============ */
@@ -1481,6 +1506,7 @@ syncSoundBtn();
     renderPlayers();
     renderBoardDynamic();
     setHandMode(!!next.stage_connected);
+    syncTvSound();
     renderActions();
     renderTab();
     renderTokensLayer();

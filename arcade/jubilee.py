@@ -2576,6 +2576,9 @@ def _snapshot_unlocked(room: dict[str, Any], player_id: Any = None, stage: bool 
         "last_card": room.get("last_card"),
         # A TV is showing the board: phones become each player's hand.
         "stage_connected": presence.stage_connected(room, now),
+        # ...and whether that TV plays the sound: a live page does, so phones go
+        # quiet; a video stream (headless Chromium sent to a Roku) carries none.
+        "stage_sound": _stage_sound(room, now),
         "log_seq": int(room.get("log_seq") or 0),
         "board": [_space_snapshot(room, i) for i in range(40)],
         "players": players,
@@ -2600,7 +2603,14 @@ def snapshot(room: dict[str, Any], player_id: Any = None, stage: bool = False) -
         return _snapshot_unlocked(room, player_id, stage)
 
 
-def get_room(code: Any, player_id: Any = None, stage: bool = False) -> dict[str, Any] | None:
+def _stage_sound(room: dict[str, Any], now: float) -> bool:
+    """Whether a TV that plays sound (a live page, not a video stream) showed the room just now."""
+    seen = float(room.get("stage_sound_seen_at") or 0)
+    return seen > 0 and now - seen < presence.STAGE_PRESENCE_SECONDS
+
+
+def get_room(code: Any, player_id: Any = None, stage: bool = False,
+             video: bool = False) -> dict[str, Any] | None:
     clean = _clean_code(code)
     with _lock:
         _prune_unlocked(time.time())
@@ -2612,6 +2622,8 @@ def get_room(code: Any, player_id: Any = None, stage: bool = False) -> dict[str,
             _touch(room, seat)
         if stage:
             presence.mark_stage(room)
+            if not video:
+                room["stage_sound_seen_at"] = time.time()
         if room["status"] == "playing":
             _maybe_ai_unlocked(room)
         return _snapshot_unlocked(room, player_id, stage)

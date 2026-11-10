@@ -51,6 +51,9 @@
     let ctx = null;
     let master = null;
     let muted = store("fk:muted") === "1";
+    // Not the player's choice and never saved: a game sets this while another
+    // speaker plays its sound (a TV showing the board), and clears it after.
+    let silenced = false;
     function unlock() {
       if (!ctx) {
         const AC = window.AudioContext || window.webkitAudioContext;
@@ -63,7 +66,7 @@
       if (ctx.state === "suspended") ctx.resume().catch(() => {});
     }
     function tone(freq, dur, opts) {
-      if (!ctx || muted) return;
+      if (!ctx || muted || silenced) return;
       const o = opts || {};
       const t0 = ctx.currentTime + (o.delay || 0);
       const osc = ctx.createOscillator();
@@ -81,7 +84,7 @@
       osc.stop(t0 + dur + 0.02);
     }
     function noise(dur, opts) {
-      if (!ctx || muted) return;
+      if (!ctx || muted || silenced) return;
       const o = opts || {};
       const t0 = ctx.currentTime + (o.delay || 0);
       const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
@@ -132,6 +135,12 @@
         muted = !!on;
         store("fk:muted", muted ? "1" : "0");
         if (master) master.gain.value = muted ? 0 : 0.6;
+      },
+      get silenced() {
+        return silenced;
+      },
+      setSilenced(on) {
+        silenced = !!on;
       },
       _slug: slug,
     };

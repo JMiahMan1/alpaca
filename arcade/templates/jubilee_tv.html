@@ -96,6 +96,11 @@
     background: rgba(13,7,32,.9); color: var(--gold2); border: .025rem solid rgba(255,200,61,.5); border-radius: 99px;
     padding: .08rem .3rem; font-size: .26rem; font-weight: 900; }
   #tv-reconnect.on { display: block; }
+  /* The browser wants a key press before it plays sound (most TVs do not). */
+  #tv-sound { position: absolute; right: .2rem; top: .15rem; z-index: 12; display: none;
+    background: rgba(13,7,32,.9); color: #fecdd3; border: .025rem solid var(--rose); border-radius: 99px;
+    padding: .06rem .25rem; font-size: .2rem; font-weight: 900; }
+  #tv-sound.on { display: block; }
   /* The landing card. */
   #tv-land { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: none; align-items: center; justify-content: center; z-index: 9; pointer-events: none; }
   #tv-land.on { display: flex; }
@@ -282,6 +287,7 @@
     <div id="tv-land"></div>
     <div id="tv-card"></div>
     <div id="tv-reconnect">📡 Reconnecting…</div>
+    <div id="tv-sound">🔊 Press OK for sound</div>
     <div class="foot">SCAN TO PLAY · <b id="tv-code">····</b> · games.sumemail.com</div>
   </div>
 </div>
@@ -405,6 +411,182 @@
     r.ontimeout = function () { cb(null, 0); };
     r.send(body ? JSON.stringify(body) : null);
   }
+  /* ---------- sound: the TV is the room's speaker ----------
+     While this page shows a game the phones are silent (the room reports
+     ``stage_sound``) and the TV plays the board. The sounds are synthesized
+     with WebAudio, as party_tv.html's effects and the family kit's are: no
+     files to fetch. TV browsers (Cast receivers, webOS, Android TV) let a page
+     play without a touch, so it just starts; one that does not is told so on
+     screen ("Press OK") and the first key, click or tap turns it on, the way
+     the party stage does. A streamed stage (headless Chromium sent to a Roku
+     as video) carries no sound: it says so when it polls, and the phones keep
+     theirs. */
+  var STREAMED = /HeadlessChrome/.test(navigator.userAgent || "");
+  var actx = null, master = null, soundOn = false, blockCheck = null;
+  var SFX_VOL = 0.8;   // a living room, across the room from the TV
+  function sfxCtx() {
+    if (STREAMED) return null;
+    if (actx) return actx;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try {
+      actx = new AC();
+      master = actx.createGain(); master.gain.value = SFX_VOL; master.connect(actx.destination);
+    } catch (e) { actx = null; master = null; }
+    return actx;
+  }
+  function wake() {
+    var c = sfxCtx();
+    if (c && c.state === "suspended" && c.resume) {
+      try { var p = c.resume(); if (p && p["catch"]) p["catch"](function () {}); } catch (e) {}
+    }
+    return c;
+  }
+  function checkBlocked() {
+    if (blockCheck) clearTimeout(blockCheck);
+    blockCheck = setTimeout(function () {
+      var el = $("tv-sound");
+      if (el) el.className = soundOn && actx && actx.state === "suspended" ? "on" : "";
+    }, 500);
+  }
+  function unlock() { wake(); checkBlocked(); }
+  document.addEventListener("keydown", unlock);
+  document.addEventListener("click", unlock);
+  document.addEventListener("touchstart", unlock);
+  function tone(freq, dur, type, vol, delay, slide) {
+    var c = actx; if (!c || !master) return;
+    var t0 = c.currentTime + (delay || 0);
+    var o = c.createOscillator(), g = c.createGain();
+    o.type = type || "sine";
+    o.frequency.setValueAtTime(freq, t0);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol || 0.2, t0 + Math.min(0.015, dur / 4));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.05);
+  }
+  function noise(dur, filter, freq, vol, delay) {
+    var c = actx; if (!c || !master || !c.createBuffer) return;
+    var t0 = c.currentTime + (delay || 0);
+    var n = Math.max(1, Math.floor(c.sampleRate * dur)), buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+    for (var i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    var src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    src.buffer = buf; f.type = filter || "lowpass"; f.frequency.value = freq || 1800; g.gain.value = vol || 0.25;
+    src.connect(f); f.connect(g); g.connect(master); src.start(t0);
+  }
+  /* A crowd for the winner: filtered noise in claps (party_tv.html's). */
+  function applause(dur, vol, delay) {
+    var c = actx; if (!c || !master || !c.createBuffer) return;
+    var n = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+    for (var i = 0; i < n; i++) {
+      var t = i / n, env = Math.min(1, t * 6) * Math.min(1, (1 - t) * 2.5);
+      d[i] = (Math.random() * 2 - 1) * env * (Math.random() < 0.004 ? 1 : 0.35);
+    }
+    var src = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain();
+    src.buffer = buf; bp.type = "bandpass"; bp.frequency.value = 1800; bp.Q.value = 0.6; g.gain.value = vol || 0.3;
+    src.connect(bp); bp.connect(g); g.connect(master); src.start(c.currentTime + (delay || 0));
+  }
+  function arp(notes, step, vol, delay) {
+    for (var i = 0; i < notes.length; i++) tone(notes[i], 0.24, "triangle", vol, delay + i * step);
+  }
+  /* The board's sounds: the phone game's (the family kit's presets), voiced
+     for a room. ``d`` is a delay in seconds. */
+  var SFX = {
+    // The dice rattle while they tumble and clack down when they land.
+    dice: function (d) {
+      noise(0.32, "bandpass", 700, 0.5, d);
+      if (RM) return;
+      noise(0.16, "bandpass", 1000, 0.32, d + 0.3);
+      noise(0.1, "bandpass", 850, 0.3, d + 0.52);
+      tone(190, 0.09, "triangle", 0.3, d + (LOWFX ? 0.6 : 0.68), 120);
+    },
+    hop: function (d) { tone(520, 0.12, "sine", 0.3, d, 900); },
+    land: function (d) { tone(520, 0.12, "sine", 0.26, d, 900); tone(110, 0.2, "sine", 0.45, d + 0.04, 50); noise(0.08, "lowpass", 600, 0.18, d + 0.04); },
+    coin: function (d) { tone(988, 0.08, "square", 0.14, d); tone(1319, 0.2, "square", 0.14, d + 0.07); },
+    // A card: out of the deck (whoosh), then it turns over (pop).
+    card: function (d) { noise(0.25, "bandpass", 900, 0.3, d); tone(520, 0.12, "sine", 0.3, d + (RM ? 0 : 0.52), 900); },
+    pay: function (d) { tone(220, 0.2, "sawtooth", 0.16, d, 140); },
+    dungeon: function (d) { noise(0.4, "bandpass", 320, 0.45, d); tone(147, 0.45, "square", 0.07, d + 0.05, 98); },
+    build: function (d) { tone(520, 0.12, "sine", 0.3, d, 900); tone(1318, 0.18, "sine", 0.12, d + 0.08); tone(1568, 0.22, "sine", 0.1, d + 0.16); },
+    bankrupt: function (d) { arp([392, 349.23, 293.66, 220], 0.12, 0.2, d); },
+    win: function (d) { arp([523.25, 659.25, 783.99, 1046.5], 0.09, 0.24, d); tone(1046.5, 0.8, "triangle", 0.2, d + 0.36); applause(2.6, 0.3, d + 0.2); }
+  };
+  /* Only while a game is on screen: never in the lobby or after it has gone. */
+  function playSfx(name, delay) {
+    if (!soundOn || STREAMED) return;
+    var c = wake();
+    checkBlocked();
+    // A suspended context would bank the sounds and play them all at once
+    // when it wakes: a sound that cannot play now is dropped.
+    if (!c || c.state === "suspended") return;
+    try { SFX[name](delay || 0); } catch (e) {}
+  }
+  window.__jbSound = { sfx: SFX, play: playSfx };   // for the browser tests
+  /* A log line's sound (the lines are jubilee.py's). Going to the Dungeon
+     sounds, getting out of it or holding a card for it does not. */
+  function lineSound(line) {
+    if (/is bankrupt/i.test(line)) return "bankrupt";
+    if (/passes Jubilee!/.test(line)) return "coin";
+    if ((/\bpays?\b/i.test(line) && /\$\d/.test(line)) || /renders unto Caesar/.test(line)) return "pay";
+    if (/\bto the Dungeon\b/.test(line)) return "dungeon";
+    if (/\bsells\b/.test(line)) return "";
+    if (/\bbuilds\b|raises buildings/.test(line)) return "build";
+    return "";
+  }
+  /* Rent, taxes and card charges are not logged: a player's cash going down
+     is the payment, unless a line says they spent it (bought, built, bid, a
+     deal). */
+  var SPENDS = /\b(buys|builds|raises buildings|wins the auction|bids|lifts the mortgage|strike a deal|accepts the deal)\b/;
+  function paid(room, lines) {
+    var players = room.players || [];
+    for (var s = 0; s < players.length; s++) {
+      var p = players[s], before = seenCash[s];
+      if (before == null || p.bankrupt || !(Number(p.cash) < before)) continue;
+      var spent = false;
+      for (var i = 0; i < lines.length; i++) {
+        var l = String(lines[i] || "");
+        if (SPENDS.test(l) && l.indexOf(p.name) >= 0) { spent = true; break; }
+      }
+      if (!spent) return true;
+    }
+    return false;
+  }
+  function noteCash(room) {
+    seenCash = [];
+    var players = room.players || [];
+    for (var s = 0; s < players.length; s++) seenCash[s] = Number(players[s].cash);
+  }
+  /* How long until every piece has finished its walk, in seconds: a rent or a
+     pass of Jubilee sounds when the piece gets there, not before it sets off. */
+  function walkSeconds() {
+    var ms = 0, now = window.performance && performance.now ? performance.now() : 0;
+    if (board && board.tokens) for (var seat in board.tokens) {
+      var t = board.tokens[seat], left = t.queue.length * HOP_MS + (t.dur ? Math.max(0, t.dur - (now - t.start)) : 0);
+      if (left > ms) ms = left;
+    }
+    return ms / 1000;
+  }
+  /* New log lines by the server's running count (the log keeps only the last
+     few). The first look at a room plays nothing old. */
+  var seenLogSeq = null, seenCash = [];
+  function logSounds(room) {
+    var seq = room.log_seq;
+    if (seq == null) return;
+    if (seenLogSeq === null || seq < seenLogSeq) { seenLogSeq = seq; noteCash(room); return; }
+    var fresh = seq - seenLogSeq;
+    seenLogSeq = seq;
+    var log = room.log || [], lines = fresh ? log.slice(-Math.min(fresh, log.length)) : [];
+    var kinds = [], done = {}, i;
+    for (i = 0; i < lines.length; i++) {
+      var kind = lineSound(String(lines[i] || ""));
+      if (kind && !done[kind]) { done[kind] = true; kinds.push(kind); }   // one of each per update
+    }
+    if (!done.pay && !done.bankrupt && paid(room, lines)) kinds.push("pay");
+    noteCash(room);
+    var at = walkSeconds();
+    for (i = 0; i < kinds.length; i++) playSfx(kinds[i], at + i * 0.2);
+  }
   var lastSig = "";
   /* The roll and the drawn card, played big on the TV. ``n`` counts each
      one on the server, so the first look at a room shows nothing old. */
@@ -496,12 +678,14 @@
     if (cn !== null && cn !== seenCard) {
       seenCard = cn; seenRoll = rn;
       flyCard(c);
+      playSfx("card");
       return;
     }
     if (rn !== null && rn !== seenRoll) {
       seenRoll = rn;
       var who = room.players && room.players[room.turn] ? room.players[room.turn].name : "";
       showDice(r, true);
+      playSfx("dice");
       fxTurn = room.turn;
       return;
     }
@@ -517,7 +701,7 @@
     var dims = "&vw=" + (window.innerWidth || 0) + "&vh=" + (window.innerHeight || 0)
       + "&sw=" + ((window.screen && screen.width) || 0) + "&sh=" + ((window.screen && screen.height) || 0)
       + "&dpr=" + (window.devicePixelRatio || 1);
-    xhr("GET", "/api/jubilee/rooms/" + encodeURIComponent(PINNED) + "?stage=1" + dims, null, function (d, status) {
+    xhr("GET", "/api/jubilee/rooms/" + encodeURIComponent(PINNED) + "?stage=1" + (STREAMED ? "&video=1" : "") + dims, null, function (d, status) {
       // A network hiccup or a restarting server is not the end of the game:
       // say so and keep trying (rooms survive a restart). Only the server
       // saying the room is gone, a few times running, ends it -- and even then
@@ -539,7 +723,10 @@
       $("tv-round").textContent = room.round || 1;
       $("tv-ruleset").textContent = (room.ruleset || "classic").toUpperCase();
       document.body.className = room.status === "playing" ? "playing" : "";
-      if (room.status === "lobby") { renderLobby(room); lastSig = "lobby"; return; }
+      var was = lastStatus; lastStatus = room.status;
+      soundOn = !STREAMED && (room.status === "playing" || room.status === "finished");
+      if (room.status === "playing" && was !== "playing") wake();   // ready before the first roll
+      if (room.status === "lobby") { seenLogSeq = null; seenCash = []; renderLobby(room); lastSig = "lobby"; return; }
       bigMoments(room);
       var sig = [room.turn, room.phase, room.status, JSON.stringify(room.last_roll), room.pot, room.bank_houses, room.log_seq,
         JSON.stringify(room.players.map(function (p) { return [p.position, p.cash, p.net_worth, p.bankrupt, p.jail, p.houses, p.hotels]; })),
@@ -548,14 +735,19 @@
       if (sig === lastSig) return;
       lastSig = sig;
       if (room.status === "finished") renderFinished(room); else renderGame(room);
+      logSounds(room);
+      if (room.status === "finished" && was === "playing") playSfx("win", walkSeconds() + 0.3);
     });
   }
+  var lastStatus = null;
   function renderNoCode() {
+    soundOn = false;
     $("tv-main").innerHTML = '<div class="lobby"><div><div class="lobbyGlow">JUBILEE!<small>BIBLE LANDS</small></div>'
       + '<div class="codeBig">GAMES.SUMEMAIL.COM</div>'
       + '<div class="joinHow">Open <b>games.sumemail.com/play/family-jubilee</b><br>and create or join a room.</div></div></div>';
   }
   function renderGone() {
+    soundOn = false;
     lastSig = "";
     $("tv-main").innerHTML = '<div class="lobby"><div><div class="lobbyGlow">GAME OVER<small>THE ROOM HAS ENDED</small></div>'
       + '<div class="joinHow">Start a new game at <b>games.sumemail.com/play/family-jubilee</b>.</div></div></div>';
@@ -945,7 +1137,11 @@
       var moving = false, places = {};
       for (var seat in board.tokens) {
         var t = board.tokens[seat];
-        if (t.dur && now - t.start >= t.dur) { t.shown = t.to; t.dur = 0; t.lift = 0; }
+        if (t.dur && now - t.start >= t.dur) {
+          t.shown = t.to; t.dur = 0; t.lift = 0;
+          // Each hop pops; the last one lands; onto Jubilee, the coin.
+          playSfx(t.to === 0 ? "coin" : t.queue.length ? "hop" : "land");
+        }
         if (!t.dur && t.queue.length) { t.from = t.shown; t.to = t.queue.shift(); t.start = now; t.dur = HOP_MS; }
         var pos = t.shown, lift = 0;
         if (t.dur) {
