@@ -277,6 +277,35 @@ Results saved to `data/shared_llm_benchmarks/shared_llm_benchmarks_{timestamp}_{
   guarantees correct labels) and now says which box holds apples. **Rule for code-test graders: check
   what the prompt requires, never one way of writing it; the sandbox checks behaviour.**
 
+### Tuned profiles (llama.cpp b12211, RTX 4060 8 GB, 30 GB RAM) - 2026-11-09
+Measured by `settings_scan.py` (decode tok/s on the long probe; peak VRAM incl. everything on the card)
+and scored by the 27-test Quick Benchmark (thinking off unless noted; re-graded after the false-failure
+fixes). Winners are in models.ini and mirrored to each `.profile.json`; the Model Profiles tab shows
+every config tried ("Settings Scan Results").
+
+| Model | Winning config | Decode tok/s (was) | Peak VRAM | Quick Benchmark |
+|---|---|---|---|---|
+| kwaipilot-kat-coder-v2.5-dev (35B-A3B MoE) | 64K q8 · ngl 40 · n-cpu-moe 37 · moe-cache 2048 MiB / cpu-share 0.5 | **32.2** (13.4 at 64K q4) | 6.4 GB | **22/27 (79)** |
+| qwen3.6-35b-a3b (MoE, MTP) | 64K q8 · ngl 26 · n-cpu-moe 34 · moe-cache 512 / 0.5 · draft-mtp 3 | 25.2 (24.5) | 6.5 GB | 20/27 (73) |
+| ornith-1.5-35b (MoE, MTP) | 64K q8 · ngl 99 · n-cpu-moe 34 · draft-mtp 3 (no room for a cache) | 24.1 (same config) | 7.2 GB | 20/27 (73) |
+| ornith-1.5-9b (dense) | unchanged: 8K q4 · ngl 26 (scan skipped by the thermal stop) | 16.7 in the benchmark | - | 20/27 (75) |
+| gemma-4-26b-a4b (MoE, vision, MTP drafter) | reindex defaults: 98K q4 · n-cpu-moe 40 (scan blocked by the GGUF-array bug, since fixed) | 27.7 in the benchmark | - | 21/27 (76) · vision 7/8 |
+| lfm2.5-24b-a2b (MoE, always thinks) | reindex defaults; profile `thinking=true` | 24.9 in the benchmark | - | 23/27 (84) **with thinking on** |
+| muse-glimmer-30b (dense) | 64K q8 · ngl 14 | 2.3 (was 32K q4 · ngl 24) | 5.2 GB | cut from the benchmark (too slow) |
+| qwen3.8-27b (dense, hybrid attention) | unchanged: 32K f16 · ngl 24 · MTP (scan failed under the old KV over-estimate) | - | - | cut from the benchmark (too slow) |
+| qwen2.5-vl-7b (vision) | unchanged | - | - | vision 7/8 |
+
+- **The MoE layout that wins on this card:** every layer on the GPU, the experts of most layers in RAM
+  (`n-cpu-moe`), and the spare VRAM as an expert cache. It took kat-coder from 13 to 32 tok/s.
+- **Still to re-scan** with the fixed scanner (array parsing, hybrid KV estimate, every-layer-on-GPU
+  candidate for configs that already offload experts): gemma-4, lfm2.5, qwen3.6, ornith-35b,
+  qwen3.8-27b, ornith-9b.
+- **SharedLLM roles (2026-11-09):** assistant, coding, librarian and default = kat-coder (best
+  thinking-off score, fastest, 35B-class, and one model for every text role means no swaps -
+  `max_loaded_models` is 1); vision OCR stays qwen2.5-vl (Gemma 4 ties it at 7/8). Set through the
+  identity settings API the SharedLLM UI uses, mirrored in its `.env`. Previous: assistant/coding
+  qwen3-6-35b-a3b-ud-iq4-nl-mtp, librarian ornith-1-5-9b-q4-k-m, DEFAULT_MODEL ornith:9b-q4_K_M.
+
 ### llama.cpp Preset Keys (models.ini)
 - `llama-server --models-preset` **rejects keys that are not its own arguments and the
   container then crash-loops.** `web/app.py` holds `LLAMA_PRESET_KEYS`; `split_preset_settings()`
