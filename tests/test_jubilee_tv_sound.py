@@ -100,12 +100,16 @@ def test_every_phone_sound_goes_through_the_kit():
     """The gate is in the kit's synth, so it must be the only way a sound is made."""
     js = _strip_js(_game_js())
     assert not re.search(r"AudioContext|new Audio\b|\.play\(\)", js)
-    assert "kit.sound.tone(" not in js
+    # The game's own fanfares (the Herald, the drill, the ram's horn) use the
+    # kit's tone(), which sits behind the same mute/silence gate as play().
+    kit = (Path(__file__).resolve().parents[1] / "arcade" / "family_games" / "_kit" / "kit.js").read_text(encoding="utf-8")
+    tone = kit[kit.index("function tone("):]
+    assert "if (!ctx || muted || silenced) return;" in tone[:200]
     # The player's own taps too: buying, bidding, accepting a deal.
     src = _game_js()
     for where in ("doAction('/buy', {}); kit.sound.play('coin')",
                   "doAction('/auction_bid', { amount: +b.dataset.bid }); kit.sound.play('coin')",
-                  "kit.toast('🤝 Deal done!'); kit.sound.play('coin')"):
+                  "kit.toast('Deal done!'); kit.sound.play('coin')"):
         assert where in src
 
 

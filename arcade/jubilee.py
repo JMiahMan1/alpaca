@@ -83,6 +83,12 @@ try:
     presence = importlib.import_module("presence")
 except ImportError:
     presence = importlib.import_module("arcade.presence")
+# The Sword Drill asks Parable Party's own checked questions (every answer
+# cited to a passage), never a second bank to keep in step.
+try:
+    race_content = importlib.import_module("party_race_content")
+except ImportError:
+    race_content = importlib.import_module("arcade.party_race_content")
 
 # --------------------------------------------------------------------------- #
 # The board
@@ -179,6 +185,33 @@ JUBILEE_ROUND_LIMIT = 12
 MAX_ROUNDS = 100  # Classic and Quick: highest net worth wins after this many full rounds
 QUICK_END_BANKRUPTCIES = 2
 MAX_PLAYERS = 8
+
+#: The Year of Jubilee (Leviticus 25): every this many full rounds the trumpet
+#: sounds -- prisoners go free and the poorest household's land returns to it.
+JUBILEE_EVERY = 7
+JUBILEE_GLEANING = 150
+#: Kingdom victory: the first to hold this many whole colour groups wins.
+KINGDOM_GROUPS = 3
+#: The Sword Drill: everyone answers at once; the fastest right answer wins
+#: the prize, every other right answer the smaller one.
+DRILL_SECONDS = 15.0
+DRILL_PRIZE = 100
+DRILL_RIGHT = 25
+#: A person whose phone has been away this long has a scribe take their turn;
+#: a debt they cannot raise waits longer before the scribe gives up for them.
+STAND_IN_SECONDS = 45.0
+STAND_IN_BANKRUPT_SECONDS = 180.0
+#: Reactions anyone at the table can send to every screen.
+REACTIONS = ("👏", "😂", "😱", "🙏", "🔥", "😭", "🎉", "😤")
+REACTION_GAP_S = 0.8
+REACTION_SHOW_S = 8.0
+
+#: Each colour group's name on the screens (a whole group is a kingdom).
+GROUP_NAMES = {
+    "brown": "the Hometowns", "lightblue": "Galilee", "pink": "the Judean Hills",
+    "orange": "the Cities of the Patriarchs", "red": "Paul's Road", "yellow": "the Greek Churches",
+    "green": "the Churches of Asia", "blue": "Zion",
+}
 
 # --------------------------------------------------------------------------- #
 # The decks - PARABLE (chance) and SCRIPTURE (community chest)
@@ -425,6 +458,24 @@ def _group_owner(room: dict[str, Any], group: str, owner: int) -> bool:
     return all(_prop(room, i)["owner"] == owner for i in _GROUPS[group])
 
 
+def _kingdoms(room: dict[str, Any], seat: int) -> list[str]:
+    """The whole colour groups a seat holds."""
+    return [g for g in _GROUPS if _group_owner(room, g, seat)]
+
+
+def _note_kingdoms(room: dict[str, Any], seat: int | None) -> None:
+    """Announce each colour group a seat has just completed (once per owner)."""
+    if seat is None:
+        return
+    seen = room.setdefault("kingdoms_seen", {})
+    for g in _kingdoms(room, int(seat)):
+        if seen.get(g) == int(seat):
+            continue
+        seen[g] = int(seat)
+        name = room["players"][int(seat)]["name"]
+        _event(room, "kingdom", f"{name} rules {GROUP_NAMES.get(g, g)}!", seat=int(seat), icon="👑")
+
+
 def _group_has_buildings(room: dict[str, Any], group: str) -> bool:
     return any(_prop(room, i)["houses"] > 0 for i in _GROUPS[group])
 
@@ -471,6 +522,14 @@ def _building_count(room: dict[str, Any], seat: int) -> tuple[int, int]:
 
 
 def _rent_for(room: dict[str, Any], index: int, dice: list[int] | None) -> int:
+    rent = _base_rent(room, index, dice)
+    # A feast doubles the rent wherever it is being kept.
+    if rent and room.get("feast") == index:
+        rent *= 2
+    return rent
+
+
+def _base_rent(room: dict[str, Any], index: int, dice: list[int] | None) -> int:
     s = SPACES[index]
     prop = _prop(room, index)
     owner = prop["owner"]
@@ -502,6 +561,152 @@ def _log(room: dict[str, Any], msg: str) -> None:
     room["log_seq"] = int(room.get("log_seq") or 0) + 1
 
 
+# --------------------------------------------------------------------------- #
+# The Herald -- big moments, announced on every screen
+# --------------------------------------------------------------------------- #
+# Each moment's headline is fixed; the Herald's quip under it is drawn from a
+# pool, least recently said in this room first, so a long game never hears
+# the same line twice in a row. Family-friendly, never at Scripture's expense.
+
+HERALD: dict[str, tuple[str, ...]] = {
+    "kingdom": (
+        "Build, build, build - the rents are about to rise.",
+        "A whole kingdom under one roof. The rest of you, tread carefully.",
+        "Every road in that land now leads to one purse.",
+        "Somebody just drew the borders of an empire.",
+        "That colour group has a new king. Long may the rent flow.",
+    ),
+    "hotel": (
+        "No vacancy - and no mercy on the rent.",
+        "The innkeeper of Bethlehem would be proud. Or nervous.",
+        "Room for everyone - at a price.",
+        "A hotel rises. Pilgrims, check your purses.",
+    ),
+    "big_rent": (
+        "Ouch. That will leave a mark on the ledger.",
+        "Somebody check the widow's mite jar.",
+        "A cheerful giver? Maybe not this time.",
+        "The landlord smiles. The traveller does not.",
+        "That is a lot of denarii.",
+    ),
+    "bankrupt": (
+        "The ledger closes. Well played, friend.",
+        "Out of silver, never out of the family.",
+        "Every journey ends somewhere. This one ended here.",
+    ),
+    "jubilee": (
+        "Proclaim liberty throughout all the land!",
+        "The ram's horn sounds - debts released, captives free.",
+        "Fifty years in the Bible, seven rounds on this board. Close enough.",
+    ),
+    "feast": (
+        "Everyone is invited. Everyone pays double.",
+        "Pass the bread. And the rent.",
+        "The music starts, the prices rise.",
+        "A feast to remember - and a rent to dread.",
+    ),
+    "drill": (
+        "Quick on the draw and quicker on the Word.",
+        "Hidden in the heart, ready on the tongue.",
+        "Swords out, Bibles open - what a finish.",
+        "That is how you win a Sword Drill.",
+    ),
+    "pot": (
+        "Rest is rewarded. Sabbath pays.",
+        "The Sabbath pot runneth over.",
+        "Sometimes the best move is to sit down.",
+    ),
+    "doubles3": (
+        "Three doubles? The guards were watching.",
+        "Too lucky by half. Off to the Dungeon.",
+    ),
+    "standin": (
+        "A scribe keeps the seat warm.",
+    ),
+}
+
+
+def _herald(room: dict[str, Any], kind: str) -> str:
+    pool = HERALD.get(kind) or ()
+    if not pool:
+        return ""
+    used = room.setdefault("herald_used", {})
+    order = [int(i) for i in used.get(kind, []) if 0 <= int(i) < len(pool)]
+    fresh = [i for i in range(len(pool)) if i not in order]
+    pick = random.choice(fresh) if fresh else order[0]
+    order = [i for i in order if i != pick] + [pick]
+    used[kind] = order
+    return pool[pick]
+
+
+def _event(room: dict[str, Any], kind: str, title: str, seat: int | None = None,
+           text: str | None = None, icon: str = "") -> None:
+    """A big moment every screen shows as a banner (``n`` counts them all, so
+    a screen plays each one once)."""
+    room["event_seq"] = int(room.get("event_seq") or 0) + 1
+    room.setdefault("events", []).append({
+        "n": room["event_seq"], "kind": kind, "title": title, "icon": icon,
+        "text": _herald(room, kind) if text is None else text,
+        "seat": seat, "at": time.time(),
+    })
+    del room["events"][:-8]
+
+
+# --------------------------------------------------------------------------- #
+# Match stats -- the awards ceremony's raw material
+# --------------------------------------------------------------------------- #
+
+_STAT_KEYS = ("rent_in", "rent_out", "best_rent", "dungeon", "doubles", "laps", "cards",
+              "built", "bought", "deals", "drill_right", "drill_wins", "feasts")
+
+
+def _stats(room: dict[str, Any], seat: int) -> dict[str, Any]:
+    stats = room.setdefault("stats", [])
+    while len(stats) < len(room["players"]):
+        stats.append({k: 0 for k in _STAT_KEYS})
+    return stats[seat]
+
+
+def _stat(room: dict[str, Any], seat: int | None, key: str, amount: int = 1) -> None:
+    if seat is None or not (0 <= int(seat) < len(room["players"])):
+        return
+    s = _stats(room, int(seat))
+    s[key] = int(s.get(key) or 0) + int(amount)
+
+
+#: (stat, title, icon, how the value reads). The ceremony shows each award
+#: whose leader actually did the thing, best first.
+AWARDS = (
+    ("rent_in", "Landlord of the Land", "🏰", "collected ${v} in rent"),
+    ("best_rent", "Biggest Payday", "💰", "one rent of ${v}"),
+    ("built", "Master Builder", "🏗️", "raised {v} buildings"),
+    ("drill_right", "Sword Drill Champion", "⚔️", "{v} right answers"),
+    ("deals", "Dealmaker", "🤝", "struck {v} deals"),
+    ("rent_out", "Most Generous Traveller", "🎁", "paid ${v} in rent"),
+    ("dungeon", "The Paul & Silas Award", "⛓️", "{v} trips to the Dungeon"),
+    ("doubles", "Double Trouble", "🎲", "rolled {v} doubles"),
+    ("laps", "Faithful Pilgrim", "👣", "passed Jubilee! {v} times"),
+    ("feasts", "Host of the Feast", "🍇", "proclaimed {v} feasts"),
+)
+
+
+def _awards(room: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    stats = room.get("stats") or []
+    for key, title, icon, how in AWARDS:
+        best_seat, best = None, 0
+        for seat, _p in enumerate(room["players"]):
+            v = int((stats[seat] if seat < len(stats) else {}).get(key) or 0)
+            if v > best:
+                best_seat, best = seat, v
+        if best_seat is None:
+            continue
+        out.append({"key": key, "title": title, "icon": icon, "seat": best_seat,
+                    "name": room["players"][best_seat]["name"],
+                    "detail": how.format(v=f"{best:,}")})
+    return out[:6]
+
+
 _CARD_REF = re.compile(r"\s*\(([^()]+)\)\s*$")
 _CARD_QUOTE = re.compile(r"“([^”]+)”")
 
@@ -521,10 +726,13 @@ def card_parts(text: str) -> dict[str, str]:
         quote = q.group(1).strip()
         t = (t[: q.start()] + t[q.end():]).strip()
     effect = t.strip(" --").strip()
+    # Only words in quotation marks are a quotation. A card's story line ("Your
+    # figs and wine bring in coin") is its flavor, never set as Scripture.
+    flavor = ""
     if not quote and " - " in effect:
-        quote, effect = (x.strip() for x in effect.split(" - ", 1))
+        flavor, effect = (x.strip() for x in effect.split(" - ", 1))
     effect = effect[:1].upper() + effect[1:]
-    return {"quote": quote, "effect": effect, "ref": ref}
+    return {"quote": quote, "flavor": flavor, "effect": effect, "ref": ref}
 
 
 def _send_to_jail(room: dict[str, Any], seat: int) -> None:
@@ -532,6 +740,7 @@ def _send_to_jail(room: dict[str, Any], seat: int) -> None:
     p["position"] = 10
     p["jail"] = {"turns": 0}
     room["doubles"] = 0
+    _stat(room, seat, "dungeon")
     _log(room, f"{p['name']} is sent to the Dungeon")
 
 
@@ -551,6 +760,14 @@ def _credit(room: dict[str, Any], seat: int, amount: int) -> None:
     p["cash"] = int(p["cash"]) + int(amount)
 
 
+def _rent_stats(room: dict[str, Any], payer: int, owner: int, amount: int) -> None:
+    _stat(room, payer, "rent_out", amount)
+    _stat(room, owner, "rent_in", amount)
+    s = _stats(room, owner)
+    if amount > int(s.get("best_rent") or 0):
+        s["best_rent"] = int(amount)
+
+
 def _charge(room: dict[str, Any], seat: int, amount: int, creditor: int | None,
             reason: str) -> bool:
     """Charge ``seat`` ``amount``. Returns True if paid in full.
@@ -568,6 +785,8 @@ def _charge(room: dict[str, Any], seat: int, amount: int, creditor: int | None,
         p["cash"] -= amount
         if creditor is not None:
             _credit(room, creditor, amount)
+            if reason == "rent":
+                _rent_stats(room, seat, creditor, amount)
         return True
     if rules["ruleset"] in ("familyfun",):
         # The forgiving ruleset: pay what you can, forgive the rest.
@@ -577,6 +796,8 @@ def _charge(room: dict[str, Any], seat: int, amount: int, creditor: int | None,
         p["cash"] = 0
         if creditor is not None:
             _credit(room, creditor, paid)
+            if reason == "rent":
+                _rent_stats(room, seat, creditor, paid)
         _log(room, f"{p['name']} could not cover ${amount} - the scribes forgive the rest")
         return True
     # Not enough cash: the player must raise money (mortgage, sell buildings,
@@ -597,6 +818,7 @@ def _advance(room: dict[str, Any], seat: int, to_index: int, collect_go: bool = 
     if collect_go and (new < old or to_index >= 40):
         salary = GO_SALARY * (2 if room["rules"]["double_go"] else 1)
         p["cash"] += salary
+        _stat(room, seat, "laps")
         _log(room, f"{p['name']} passes Jubilee! and collects ${salary}")
     p["position"] = new
 
@@ -611,6 +833,15 @@ def _maybe_finish(room: dict[str, Any]) -> bool:
         room["winner"] = alive[0] if alive else None
         room["result"] = "last-standing"
         return True
+    if rules.get("kingdom_win"):
+        for s in alive:
+            if len(_kingdoms(room, s)) >= KINGDOM_GROUPS:
+                room["status"] = "finished"
+                room["phase"] = "finished"
+                room["winner"] = s
+                room["result"] = "kingdom"
+                _log(room, f"{room['players'][s]['name']} rules {KINGDOM_GROUPS} kingdoms and wins!")
+                return True
     if rules["ruleset"] == "quick" and room.get("bankruptcies", 0) >= QUICK_END_BANKRUPTCIES:
         room["status"] = "finished"
         room["phase"] = "finished"
@@ -757,6 +988,167 @@ def _apply_card(room: dict[str, Any], seat: int, card: dict[str, Any], dice: lis
         return
 
 
+#: A rent at least this big is a moment every screen announces.
+BIG_RENT = 300
+
+
+def _draw_and_apply(room: dict[str, Any], seat: int, deck: str, dice: list[int] | None) -> None:
+    p = room["players"][seat]
+    card = _draw_card(room, deck)
+    room["card_seq"] = int(room.get("card_seq") or 0) + 1
+    room["last_card"] = {"n": room["card_seq"], "deck": deck, "seat": seat, "player": p["name"],
+                         "text": card["text"], **card_parts(card["text"])}
+    _stat(room, seat, "cards")
+    _log(room, f"{p['name']} draws - {card['text']}")
+    _apply_card(room, seat, card, dice)
+
+
+# --------------------------------------------------------------------------- #
+# Feast Day -- Sabbath Rest lets you proclaim a feast on one of your lands
+# --------------------------------------------------------------------------- #
+
+def _feast_options(room: dict[str, Any], seat: int) -> list[int]:
+    """Lands a seat may keep the feast on: owned, not mortgaged, not already it."""
+    return [i for i, s in enumerate(SPACES)
+            if s and s.get("kind") in ("street", "railroad", "utility")
+            and _prop(room, i)["owner"] == seat and not _prop(room, i)["mortgaged"]
+            and room.get("feast") != i]
+
+
+def _proclaim_feast(room: dict[str, Any], seat: int, index: int | None) -> None:
+    p = room["players"][seat]
+    room["pending"] = None
+    if index is None:
+        _log(room, f"{p['name']} rests without a feast")
+        return
+    room["feast"] = int(index)
+    _stat(room, seat, "feasts")
+    name = SPACES[int(index)]["name"]
+    _log(room, f"{p['name']} proclaims a Feast in {name} - rent there is doubled")
+    _event(room, "feast", f"Feast in {name}! Rent doubles there.", seat=seat, icon="🍇")
+
+
+def _ai_feast_choice(room: dict[str, Any], seat: int, options: list[int]) -> int | None:
+    """The land whose doubled rent would hurt the most (built streets first)."""
+    if not options:
+        return None
+    return max(options, key=lambda i: (_base_rent(room, i, [3, 4]), int(SPACES[i].get("price", 0))))
+
+
+# --------------------------------------------------------------------------- #
+# The Sword Drill -- a Bible question for the whole table at once
+# --------------------------------------------------------------------------- #
+
+def _drill_questions() -> list[dict[str, Any]]:
+    out = [{"id": q["id"], "clue": q["clue"], "options": list(q["options"]), "answer": int(q["answer"]),
+            "note": q.get("note", "")} for q in race_content.QUICK_DRAW]
+    out += [{"id": q["id"], "clue": "True or false? " + q["statement"], "options": ["True", "False"],
+             "answer": 0 if q["true"] else 1, "note": q.get("note", "")} for q in race_content.LIGHTNING]
+    return out
+
+
+_DRILL_BANK = _drill_questions()
+_DRILL_BY_ID = {q["id"]: q for q in _DRILL_BANK}
+#: How often a scribe knows the answer, and how long it takes to say so.
+AI_DRILL_ACCURACY = 0.65
+AI_DRILL_THINK_S = (2.5, 10.0)
+
+
+def _drill_open(room: dict[str, Any], seat: int, dice: list[int] | None) -> None:
+    used = [u for u in room.get("drill_used", []) if u in _DRILL_BY_ID]
+    fresh = [q for q in _DRILL_BANK if q["id"] not in set(used)]
+    if not fresh:
+        used, fresh = [], list(_DRILL_BANK)
+    q = random.choice(fresh)
+    room["drill_used"] = [*used, q["id"]][-len(_DRILL_BANK):]
+    now = time.time()
+    room["drill_seq"] = int(room.get("drill_seq") or 0) + 1
+    plan = {}
+    for s in _active_seats(room):
+        if room["players"][s]["is_ai"]:
+            right = random.random() < AI_DRILL_ACCURACY
+            wrong = [i for i in range(len(q["options"])) if i != q["answer"]]
+            plan[str(s)] = {"choice": q["answer"] if right or not wrong else random.choice(wrong),
+                            "at": now + random.uniform(*AI_DRILL_THINK_S)}
+    room["drill"] = {"n": room["drill_seq"], "qid": q["id"], "seat": seat, "dice": list(dice or []),
+                     "started_at": now, "deadline": now + DRILL_SECONDS, "answers": {}, "ai_plan": plan}
+    room["pending"] = {"kind": "drill"}
+    _log(room, f"Sword Drill! {room['players'][seat]['name']} lands on Scripture - everyone answers")
+
+
+def _drill_waiting_on(room: dict[str, Any], now: float) -> list[int]:
+    """The people still to answer: living, present humans who have not."""
+    d = room.get("drill") or {}
+    answered = d.get("answers") or {}
+    return [s for s in _active_seats(room)
+            if not room["players"][s]["is_ai"] and str(s) not in answered and _human_present(room, s, now)]
+
+
+def _drill_answer_unlocked(room: dict[str, Any], seat: int, choice: int) -> None:
+    d = room.get("drill")
+    if not d:
+        raise ValueError("there is no Sword Drill right now")
+    if room["players"][seat]["bankrupt"]:
+        raise PermissionError("a bankrupt player cannot answer")
+    if str(seat) in d["answers"]:
+        raise ValueError("you have already answered")
+    q = _DRILL_BY_ID[d["qid"]]
+    if not (0 <= choice < len(q["options"])):
+        raise ValueError("no such answer")
+    d["answers"][str(seat)] = {"choice": int(choice), "at": time.time()}
+
+
+def _drill_clock(room: dict[str, Any], now: float) -> bool:
+    """Close the drill once everyone here has answered or time is up."""
+    d = room.get("drill")
+    if not d:
+        return False
+    if now < float(d["deadline"]) and _drill_waiting_on(room, now):
+        return False
+    _drill_close(room, now)
+    return True
+
+
+def _drill_close(room: dict[str, Any], now: float) -> None:
+    d = room.pop("drill")
+    q = _DRILL_BY_ID[d["qid"]]
+    answers = dict(d.get("answers") or {})
+    for k, plan in (d.get("ai_plan") or {}).items():
+        answers.setdefault(k, {"choice": plan["choice"], "at": min(float(plan["at"]), now)})
+    results = []
+    for k, a in answers.items():
+        s = int(k)
+        if not (0 <= s < len(room["players"])) or room["players"][s]["bankrupt"]:
+            continue
+        results.append({"seat": s, "name": room["players"][s]["name"], "choice": int(a["choice"]),
+                        "correct": int(a["choice"]) == q["answer"],
+                        "secs": round(max(0.0, float(a["at"]) - float(d["started_at"])), 1), "prize": 0})
+    results.sort(key=lambda r: (not r["correct"], r["secs"]))
+    winner = None
+    for i, r in enumerate(results):
+        if not r["correct"]:
+            continue
+        r["prize"] = DRILL_PRIZE if i == 0 else DRILL_RIGHT
+        _credit(room, r["seat"], r["prize"])
+        _stat(room, r["seat"], "drill_right")
+        if i == 0:
+            winner = r
+            _stat(room, r["seat"], "drill_wins")
+    room["last_drill"] = {"n": d["n"], "clue": q["clue"], "options": q["options"], "answer": q["answer"],
+                          "note": q["note"], "results": results, "seat": d["seat"]}
+    if winner:
+        _log(room, f"{winner['name']} wins the Sword Drill (+${DRILL_PRIZE})")
+        _event(room, "drill", f"{winner['name']} wins the Sword Drill! +${DRILL_PRIZE}", seat=winner["seat"], icon="⚔️")
+    else:
+        _log(room, f"Nobody knew it: {q['options'][q['answer']]}")
+    room["pending"] = None
+    seat = int(d["seat"])
+    if room["status"] == "playing" and not room["players"][seat]["bankrupt"]:
+        _draw_and_apply(room, seat, "scripture", d.get("dice") or None)
+        _refresh_bonus(room, seat)
+        _maybe_finish(room)
+
+
 def _resolve_landing(room: dict[str, Any], seat: int, dice: list[int] | None) -> None:
     pos = int(room["players"][seat]["position"])
     s = SPACES[pos]
@@ -771,6 +1163,10 @@ def _resolve_landing(room: dict[str, Any], seat: int, dice: list[int] | None) ->
         elif owner != seat:
             rent = _rent_for(room, pos, dice)
             if rent > 0:
+                if rent >= BIG_RENT:
+                    _event(room, "big_rent",
+                           f"{p['name']} pays {room['players'][owner]['name']} ${rent:,} in {s['name']}!",
+                           seat=owner, icon="💸")
                 _charge(room, seat, rent, creditor=owner, reason="rent")
         return
     if kind == "tribute":
@@ -780,13 +1176,12 @@ def _resolve_landing(room: dict[str, Any], seat: int, dice: list[int] | None) ->
     if kind == "offering":
         _charge(room, seat, int(s.get("amount", 100)), None, "tax")
         return
+    if kind == "scripture" and room["rules"].get("sword_drill"):
+        # Everyone answers first; the card is drawn when the drill closes.
+        _drill_open(room, seat, dice)
+        return
     if kind in ("parable", "scripture"):
-        card = _draw_card(room, kind)
-        room["card_seq"] = int(room.get("card_seq") or 0) + 1
-        room["last_card"] = {"n": room["card_seq"], "deck": kind, "seat": seat, "player": p["name"],
-                             "text": card["text"], **card_parts(card["text"])}
-        _log(room, f"{p['name']} draws - {card['text']}")
-        _apply_card(room, seat, card, dice)
+        _draw_and_apply(room, seat, kind, dice)
         return
     if kind == "sabbath":
         if room["rules"]["jackpot"] and int(room["pot"]) > 0:
@@ -794,6 +1189,12 @@ def _resolve_landing(room: dict[str, Any], seat: int, dice: list[int] | None) ->
             p["cash"] = int(p["cash"]) + take
             room["pot"] = 0
             _log(room, f"{p['name']} rests - and gathers the Sabbath pot of ${take}")
+            if take >= 200:
+                _event(room, "pot", f"{p['name']} gathers the Sabbath pot: ${take:,}!", seat=seat, icon="🍯")
+        if room["rules"].get("feast"):
+            options = _feast_options(room, seat)
+            if options:
+                room["pending"] = {"kind": "feast", "options": options}
         return
     if kind == "to_dungeon":
         _send_to_jail(room, seat)
@@ -875,6 +1276,9 @@ def _build_building(room: dict[str, Any], seat: int, index: int) -> str:
         prop["houses"] = int(prop["houses"]) + 1
         room["bank_houses"] = int(room["bank_houses"]) - 1
     p["cash"] = int(p["cash"]) - cost
+    _stat(room, seat, "built")
+    if int(prop["houses"]) == 5:
+        _event(room, "hotel", f"{p['name']} raises a hotel in {s['name']}!", seat=seat, icon="🏨")
     return SPACES[index]["name"]
 
 
@@ -1001,7 +1405,12 @@ def _auction_check_done(room: dict[str, Any]) -> bool:
         prop["houses"] = 0
         p = room["players"][high]
         p["cash"] = int(p["cash"]) - int(a["high_bid"])
+        _stat(room, int(high), "bought")
         _log(room, f"{p['name']} wins the auction - {SPACES[space]['name']} for ${a['high_bid']}")
+        _note_kingdoms(room, int(high))
+        room["auction"] = None
+        _maybe_finish(room)
+        return True
     else:
         _log(room, f"Nobody bid on {SPACES[space]['name']} - it returns to the Bank")
     room["auction"] = None
@@ -1091,6 +1500,9 @@ def _eliminate_player(room: dict[str, Any], seat: int, creditor: int | None) -> 
     p["bankrupt"] = True
     room["bankruptcies"] = int(room.get("bankruptcies", 0)) + 1
     _log(room, f"{p['name']} is bankrupt and leaves the game")
+    _event(room, "bankrupt", f"{p['name']} is bankrupt!", seat=seat, icon="📉")
+    if creditor is not None and not room["players"][creditor]["bankrupt"]:
+        _note_kingdoms(room, creditor)
 
 
 def _pay_debt(room: dict[str, Any], seat: int) -> bool:
@@ -1106,6 +1518,8 @@ def _pay_debt(room: dict[str, Any], seat: int) -> bool:
     creditor = pending.get("creditor")
     if creditor is not None:
         _credit(room, int(creditor), amount)
+        if pending.get("reason") == "rent":
+            _rent_stats(room, seat, int(creditor), amount)
     elif (room["rules"]["jackpot"] and pending.get("reason") in ("tax", "fine", "tribute")):
         # The pot is fed now (not when the debt is raised) so money raised by
         # mortgaging and selling buildings counts toward the Sabbath pot.
@@ -1198,7 +1612,12 @@ def _execute_trade(room: dict[str, Any], trade: dict[str, Any]) -> None:
         _prop(room, i)["owner"] = a
     pa["jail_cards"] = int(pa["jail_cards"]) - int(trade["offer"]["jail_cards"]) + int(trade["ask"]["jail_cards"])
     pb["jail_cards"] = int(pb["jail_cards"]) - int(trade["ask"]["jail_cards"]) + int(trade["offer"]["jail_cards"])
+    _stat(room, a, "deals")
+    _stat(room, b, "deals")
     _log(room, f"{pa['name']} and {pb['name']} strike a deal")
+    _note_kingdoms(room, a)
+    _note_kingdoms(room, b)
+    _maybe_finish(room)
 
 
 def _trade_side_label(room: dict[str, Any], side: dict[str, Any]) -> str:
@@ -1244,11 +1663,19 @@ def _build_rules(payload: dict[str, Any] | None) -> dict[str, Any]:
             return v.lower() in ("1", "true", "yes", "on")
         return bool(v) if v is not None else default
 
+    # The new rules start on where they suit the rulebook: Family Fun gets the
+    # catch-up and table-wide ones, Quick Game the extra way to win. Each can
+    # still be switched either way when the room is opened.
+    family, quick = ruleset == "familyfun", ruleset == "quick"
     rules = {
         "ruleset": ruleset,
         "jackpot": flag("jackpot"),
         "double_go": flag("double_go"),
         "no_auction": flag("no_auction"),
+        "jubilee_year": flag("jubilee_year", family),
+        "feast": flag("feast", family),
+        "sword_drill": flag("sword_drill", family),
+        "kingdom_win": flag("kingdom_win", quick),
     }
     if ruleset == "familyfun":
         rules["jackpot"] = True
@@ -1336,7 +1763,24 @@ def _reset_match(room: dict[str, Any]) -> None:
     room["result"] = None
     room["ai_trade_turn"] = {}
     room["match_no"] = int(room.get("match_no", 1)) + 1
+    _fresh_extras(room)
     room["updated_at"] = time.time()
+
+
+
+def _fresh_extras(room: dict[str, Any]) -> None:
+    """The per-match state the newer rules keep (feast, drill, Herald, stats)."""
+    room["feast"] = None
+    room["drill"] = None
+    room["last_drill"] = None
+    room["jubilees"] = 0
+    room["last_jubilee"] = None
+    room["stats"] = []
+    room["kingdoms_seen"] = {}
+    room["standin_turn"] = None
+    room["events"] = []
+    room["reactions"] = []
+    room["react_at"] = {}
 
 
 def _cancel_trades_for(room: dict[str, Any], seat: int) -> None:
@@ -1481,6 +1925,7 @@ def start_match(code: Any, player_id: Any) -> dict[str, Any]:
         room["phase"] = "turn"
         room["turn"] = 0
         room["turn_counts"] = [0 for _ in room["players"]]
+        _fresh_extras(room)
         _log(room, "The game begins - " + ", ".join(p["name"] for p in room["players"]))
         room["updated_at"] = time.time()
         return {"room": _snapshot_unlocked(room, player_id)}
@@ -1528,6 +1973,10 @@ def leave_room(code: Any, player_id: Any) -> dict[str, Any]:
                 _eliminate_player(room, seat, None)
             _cancel_trades_for(room, seat)
             if room["turn"] == seat and room["status"] == "playing":
+                # What was in front of them goes with them (a drill already
+                # asked of the table still finishes; it skips their card).
+                if room["pending"] and room["pending"].get("kind") != "drill":
+                    room["pending"] = None
                 room["turn"] = _next_seat(room, seat)
                 room["rolled"] = False
                 room["bonus_roll"] = False
@@ -1555,8 +2004,11 @@ def _do_roll(room: dict[str, Any], seat: int) -> tuple[int, int]:
     room["rolled"] = True
     room["doubles"] = int(room["doubles"]) + 1 if is_doubles else 0
     p = room["players"][seat]
+    if is_doubles:
+        _stat(room, seat, "doubles")
     if is_doubles and room["doubles"] >= 3:
         _log(room, f"{p['name']} throws three doubles in a row - to the Dungeon!")
+        _event(room, "doubles3", f"Three doubles! {p['name']} goes to the Dungeon", seat=seat, icon="⛓️")
         _send_to_jail(room, seat)
         room["bonus_roll"] = False
         return d1, d2
@@ -1779,9 +2231,12 @@ def buy(code: Any, player_id: Any) -> dict[str, Any]:
         p["cash"] = int(p["cash"]) - price
         _prop(room, index)["owner"] = seat
         room["pending"] = None
+        _stat(room, seat, "bought")
         _log(room, f"{p['name']} buys {s['name']} for ${price}")
+        _note_kingdoms(room, seat)
         _refresh_bonus(room, seat)
-        _maybe_ai_unlocked(room)
+        if not _maybe_finish(room):
+            _maybe_ai_unlocked(room)
         return {"room": _snapshot_unlocked(room, player_id)}
 
 
@@ -1883,6 +2338,80 @@ def tribute_choice(code: Any, player_id: Any, choice: Any) -> dict[str, Any]:
         _refresh_bonus(room, seat)
         _maybe_ai_unlocked(room)
         _maybe_finish(room)
+        return {"room": _snapshot_unlocked(room, player_id)}
+
+
+def feast(code: Any, player_id: Any, property_index: Any = None) -> dict[str, Any]:
+    """Sabbath Rest: proclaim a feast on one of your lands (rent doubled there
+    until the next feast), or rest without one (``property_index`` None)."""
+    clean = _clean_code(code)
+    with _lock:
+        room = _rooms.get(clean)
+        if room is None:
+            raise KeyError(clean)
+        seat = _find_seat(room, player_id)
+        if seat is None:
+            raise PermissionError("you are not in this room")
+        pending = room["pending"]
+        if not pending or pending.get("kind") != "feast":
+            raise ValueError("there is no feast to proclaim")
+        if seat != room["turn"]:
+            raise PermissionError("only the player at rest may proclaim it")
+        index = None
+        if property_index is not None and property_index != "" and int(property_index) >= 0:
+            index = int(property_index)
+            if index not in _feast_options(room, seat):
+                raise ValueError("the feast must be kept on land you own that is not mortgaged")
+        _touch(room, seat)
+        _proclaim_feast(room, seat, index)
+        _refresh_bonus(room, seat)
+        _maybe_ai_unlocked(room)
+        return {"room": _snapshot_unlocked(room, player_id)}
+
+
+def drill_answer(code: Any, player_id: Any, choice: Any) -> dict[str, Any]:
+    """Answer the Sword Drill: anyone at the table, once, before time is up."""
+    clean = _clean_code(code)
+    with _lock:
+        room = _rooms.get(clean)
+        if room is None:
+            raise KeyError(clean)
+        seat = _find_seat(room, player_id)
+        if seat is None:
+            raise PermissionError("you are not in this room")
+        try:
+            pick = int(choice)
+        except (TypeError, ValueError):
+            raise ValueError("an answer must be a number") from None
+        _touch(room, seat)
+        _drill_answer_unlocked(room, seat, pick)
+        _drill_clock(room, time.time())
+        _maybe_ai_unlocked(room)
+        return {"room": _snapshot_unlocked(room, player_id)}
+
+
+def react(code: Any, player_id: Any, emoji: Any) -> dict[str, Any]:
+    """Send a reaction to every screen (the table's applause and groans)."""
+    clean = _clean_code(code)
+    with _lock:
+        room = _rooms.get(clean)
+        if room is None:
+            raise KeyError(clean)
+        seat = _find_seat(room, player_id)
+        if seat is None:
+            raise PermissionError("you are not in this room")
+        e = str(emoji or "")
+        if e not in REACTIONS:
+            raise ValueError("that reaction is not on the list")
+        now = time.time()
+        last = room.setdefault("react_at", {})
+        if now - float(last.get(str(seat)) or 0) < REACTION_GAP_S:
+            raise ValueError("easy there - one at a time")
+        last[str(seat)] = now
+        _touch(room, seat)
+        room["reaction_seq"] = int(room.get("reaction_seq") or 0) + 1
+        room.setdefault("reactions", []).append({"n": room["reaction_seq"], "seat": seat, "emoji": e, "at": now})
+        del room["reactions"][:-16]
         return {"room": _snapshot_unlocked(room, player_id)}
 
 
@@ -2111,12 +2640,59 @@ def trade_propose(code: Any, player_id: Any, to_seat: Any, offer: Any, ask: Any)
         return {"room": _snapshot_unlocked(room, player_id)}
 
 
+def _owners_after(room: dict[str, Any], trade: dict[str, Any]) -> dict[int, int | None]:
+    owners = {i: _prop(room, i)["owner"] for i in range(40) if SPACES[i].get("kind") in _TRADEABLE_KINDS}
+    for i in trade["offer"]["spaces"]:
+        owners[i] = int(trade["to"])
+    for i in trade["ask"]["spaces"]:
+        owners[i] = int(trade["from"])
+    return owners
+
+
+def _completes_group(owners: dict[int, int | None], index: int, seat: int) -> bool:
+    s = SPACES[index]
+    if s.get("kind") != "street":
+        return False
+    return all(owners.get(i) == seat for i in _GROUPS[s["group"]])
+
+
+def _ai_trade_worth(room: dict[str, Any], trade: dict[str, Any]) -> tuple[int, int]:
+    """What a deal is worth to the scribe it is offered to: (gain, cost).
+
+    Land is not just its price. A street that completes the scribe's colour
+    group is worth far more to it; one that completes the *other* side's group
+    costs it far more, because that is a kingdom (and hotels) handed over. So a
+    scribe swaps for sets, pays up for its missing street, and will not give a
+    monopoly away at face value -- the "almost-human" refusal reviewers liked."""
+    me, them = int(trade["to"]), int(trade["from"])
+    after = _owners_after(room, trade)
+    gain = int(trade["offer"]["cash"]) + 50 * int(trade["offer"]["jail_cards"])
+    cost = int(trade["ask"]["cash"]) + 50 * int(trade["ask"]["jail_cards"])
+    for i in trade["offer"]["spaces"]:
+        price = int(SPACES[i]["price"])
+        gain += price * 2 if _completes_group(after, i, me) else price
+    # A swap that crowns both sides is fair: handing them a kingdom then costs
+    # little extra, since this scribe gets one too.
+    crowned = any(_completes_group(after, i, me) for i in trade["offer"]["spaces"])
+    for i in trade["ask"]["spaces"]:
+        price = int(SPACES[i]["price"])
+        cost += price
+        if _completes_group(after, i, them):
+            cost += price // 4 if crowned else int(price * 1.5) + 25 * len(_GROUPS[SPACES[i]["group"]])
+        s = SPACES[i]
+        if s.get("kind") == "street" and any(_prop(room, j)["owner"] == me for j in _GROUPS[s["group"]] if j != i):
+            cost += price // 4  # breaking up a set it was building
+        elif s.get("kind") == "railroad":
+            cost += 25 * (_count_owned(room, me, "railroad") - 1)
+    return gain, cost
+
+
 def _ai_respond_to_trade(room: dict[str, Any], trade: dict[str, Any]) -> None:
     if trade["status"] != "pending":
         return
-    gain = _trade_value(room, trade["offer"])
-    cost = _trade_value(room, trade["ask"])
-    if gain >= cost:
+    gain, cost = _ai_trade_worth(room, trade)
+    after_cash = int(room["players"][trade["to"]]["cash"]) - int(trade["ask"]["cash"]) + int(trade["offer"]["cash"])
+    if gain >= cost and (after_cash >= 100 or not trade["ask"]["cash"]):
         try:
             _clean_trade_side(trade["offer"], trade["from"], room)
             _clean_trade_side(trade["ask"], trade["to"], room)
@@ -2265,7 +2841,9 @@ def _ai_decide_buy(room: dict[str, Any], seat: int, space: int) -> None:
     if wants:
         p["cash"] = cash_after
         _prop(room, space)["owner"] = seat
+        _stat(room, seat, "bought")
         _log(room, f"{p['name']} buys {s['name']} for ${price}")
+        _note_kingdoms(room, seat)
     else:
         if room["rules"]["no_auction"]:
             _log(room, f"{p['name']} passes on {s['name']} - it returns to the Bank")
@@ -2354,7 +2932,16 @@ def _ai_seek_trade(room: dict[str, Any], seat: int) -> bool:
         if key in last and turns - int(last[key]) < wait:
             continue
         price = int(SPACES[missing]["price"])
-        offer_cash = round((price * 1.5 + 25 * len(members)) / 10.0) * 10
+        # A swap first: when the owner is one short of a group whose missing
+        # street this scribe holds, both get a kingdom -- the fairest deal there is.
+        swap = _swap_for(room, seat, owner, exclude=group)
+        offer_spaces: list[int] = []
+        if swap is not None:
+            offer_spaces = [swap]
+            gap = price - int(SPACES[swap]["price"])
+            offer_cash = max(0, round((gap + 20) / 10.0) * 10)
+        else:
+            offer_cash = round((price * 2.5 + 30 * len(members)) / 10.0) * 10
         if int(p["cash"]) - offer_cash < 300:
             continue
         last[key] = turns
@@ -2362,17 +2949,66 @@ def _ai_seek_trade(room: dict[str, Any], seat: int) -> bool:
             "id": _new_trade_id(),
             "from": seat,
             "to": owner,
-            "offer": {"cash": offer_cash, "spaces": [], "jail_cards": 0},
+            "offer": {"cash": offer_cash, "spaces": offer_spaces, "jail_cards": 0},
             "ask": {"cash": 0, "spaces": [missing], "jail_cards": 0},
             "status": "pending",
             "created_at": time.time(),
         }
         room["trades"].append(trade)
-        _log(room, f"{p['name']} offers {room['players'][owner]['name']} ${offer_cash} for {SPACES[missing]['name']}")
+        _log(room, f"{p['name']} offers {room['players'][owner]['name']} "
+                   f"{_trade_side_label(room, trade['offer'])} for {SPACES[missing]['name']}")
         if not person:
             _ai_respond_to_trade(room, trade)
         return True
     return False
+
+
+def _swap_for(room: dict[str, Any], seat: int, other: int, exclude: str) -> int | None:
+    """A street ``seat`` owns that would complete one of ``other``'s groups."""
+    for group, members in _GROUPS.items():
+        if group == exclude:
+            continue
+        theirs = [i for i in members if _prop(room, i)["owner"] == other]
+        if len(theirs) != len(members) - 1:
+            continue
+        gap = next(i for i in members if _prop(room, i)["owner"] != other)
+        prop = _prop(room, gap)
+        if prop["owner"] == seat and not prop["houses"] and not prop["mortgaged"]:
+            return gap
+    return None
+
+
+def _ai_can_raise(room: dict[str, Any], seat: int, amount: int) -> bool:
+    """Whether selling every building and mortgaging everything would cover ``amount``."""
+    total = int(room["players"][seat]["cash"])
+    for i, s in enumerate(SPACES):
+        if not s or _prop(room, i)["owner"] != seat:
+            continue
+        prop = _prop(room, i)
+        total += int(prop["houses"]) * int(s.get("house_cost", 0)) // 2
+        if not prop["mortgaged"]:
+            total += int(s.get("mortgage", 0))
+    return total >= amount
+
+
+def _ai_unmortgage(room: dict[str, Any], seat: int) -> None:
+    """Lift mortgages once the purse is comfortable, kingdoms first -- mortgaged
+    land collects nothing, and the old scribes forgot it for the whole game."""
+    p = room["players"][seat]
+    mine = [i for i, s in enumerate(SPACES)
+            if s and s.get("kind") in _TRADEABLE_KINDS and _prop(room, i)["owner"] == seat and _prop(room, i)["mortgaged"]]
+    mine.sort(key=lambda i: (not (SPACES[i].get("kind") == "street" and _group_owner(room, SPACES[i]["group"], seat)),
+                             -int(SPACES[i].get("price", 0))))
+    for i in mine:
+        cost = int(SPACES[i]["mortgage"]) + int(int(SPACES[i]["mortgage"]) * 0.1 + 0.5)
+        if int(p["cash"]) - cost < 400:
+            break
+        _unmortgage(room, seat, i)
+        _log(room, f"{p['name']} lifts the mortgage on {SPACES[i]['name']}")
+
+
+def _unowned_count(room: dict[str, Any]) -> int:
+    return sum(1 for i, s in enumerate(SPACES) if s and s.get("kind") in _TRADEABLE_KINDS and _prop(room, i)["owner"] is None)
 
 
 def _ai_build_phase(room: dict[str, Any], seat: int) -> bool:
@@ -2404,7 +3040,13 @@ def _ai_build_phase(room: dict[str, Any], seat: int) -> bool:
     return built
 
 
+def _full_rounds(room: dict[str, Any]) -> int:
+    alive = _active_seats(room)
+    return min((int(room["turn_counts"][s]) for s in alive), default=0)
+
+
 def _advance_turn(room: dict[str, Any], seat: int) -> None:
+    before = _full_rounds(room)
     nxt = _next_seat(room, seat)
     room["turn"] = nxt
     room["turn_counts"][seat] = int(room["turn_counts"][seat]) + 1
@@ -2412,7 +3054,43 @@ def _advance_turn(room: dict[str, Any], seat: int) -> None:
     room["bonus_roll"] = False
     room["doubles"] = 0
     room["last_roll"] = None
+    room["standin_turn"] = None
     room["updated_at"] = time.time()
+    after = _full_rounds(room)
+    if (room["rules"].get("jubilee_year") and room["status"] == "playing"
+            and after > before and after % JUBILEE_EVERY == 0):
+        _year_of_jubilee(room)
+
+
+def _year_of_jubilee(room: dict[str, Any]) -> None:
+    """Leviticus 25: the ram's horn sounds. Every prisoner walks free, and the
+    household with least has its mortgaged land returned and a gleaning."""
+    room["jubilees"] = int(room.get("jubilees") or 0) + 1
+    freed = []
+    for s in _active_seats(room):
+        p = room["players"][s]
+        if p["jail"] is not None:
+            p["jail"] = None
+            freed.append(p["name"])
+    alive = _active_seats(room)
+    poorest = min(alive, key=lambda s: (_net_worth(room, s), int(room["players"][s]["cash"]), s))
+    p = room["players"][poorest]
+    returned = []
+    for i, sp in enumerate(SPACES):
+        if sp and _prop(room, i)["owner"] == poorest and _prop(room, i)["mortgaged"]:
+            _prop(room, i)["mortgaged"] = False
+            returned.append(sp["name"])
+    _credit(room, poorest, JUBILEE_GLEANING)
+    bits = [f"{p['name']} gleans ${JUBILEE_GLEANING}"]
+    if returned:
+        bits.append(f"and gets back {len(returned)} mortgaged land" + ("s" if len(returned) > 1 else ""))
+    if freed:
+        bits.append("· the Dungeon opens: " + ", ".join(freed) + (" walk free" if len(freed) > 1 else " walks free"))
+    _log(room, "The Year of Jubilee! " + " ".join(bits))
+    room["last_jubilee"] = {"n": room["jubilees"], "poorest": poorest, "returned": returned, "freed": freed,
+                            "gleaning": JUBILEE_GLEANING}
+    _event(room, "jubilee", "THE YEAR OF JUBILEE!", seat=poorest, icon="🎺",
+           text=" ".join(bits) + ". " + _herald(room, "jubilee"))
 
 
 #: While a TV shows the game, a computer player waits this long after each
@@ -2428,6 +3106,25 @@ AI_PACE_AFTER_TURN_S = 1.0
 AI_PACE_WHEN = "watched"
 
 
+def _turn_key(room: dict[str, Any]) -> str:
+    return f"{room['turn']}:{sum(int(c) for c in room['turn_counts'])}"
+
+
+def _away_for(room: dict[str, Any], seat: int, now: float) -> float:
+    return now - float(room["players"][seat].get("last_seen") or 0)
+
+
+def _stand_in_due(room: dict[str, Any], seat: int, now: float) -> bool:
+    """A person's phone has been away long enough for a scribe to play their
+    turn (the table must not wait on a phone left in a coat pocket). Only while
+    someone else is at the table to watch -- with nobody here, nothing moves."""
+    p = room["players"][seat]
+    if p.get("is_ai") or p["bankrupt"] or _away_for(room, seat, now) < STAND_IN_SECONDS:
+        return False
+    return any(_human_present(room, s, now) for s in _active_seats(room) if s != seat) \
+        or presence.stage_connected(room, now)
+
+
 def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
     """Let the scribes take their turns (bounded loop). With a TV watching,
     one step at a time at a pace the board can show; otherwise at once."""
@@ -2437,10 +3134,15 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
     paced = presence.stage_connected(room, now) or (
         AI_PACE_WHEN == "watched" and any(presence.player_present(p, now) for p in room["players"] if p))
     moved = _auction_clock(room, now)
+    moved = _drill_clock(room, now) or moved
+    if room["status"] != "playing":
+        return moved
     if paced and now < float(room.get("ai_next_at") or 0):
         return moved
     for _ in range(60):
         progressed = False
+        if room["status"] != "playing" or room.get("drill"):
+            break
         if room["auction"]:
             for seat in _active_seats(room):
                 if room["players"][seat]["is_ai"] and _ai_auction(room, seat):
@@ -2451,7 +3153,12 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
             break
         cur = room["turn"]
         p = room["players"][cur]
-        if p["is_ai"] and not p["bankrupt"]:
+        standin = not p["is_ai"] and _stand_in_due(room, cur, now)
+        if standin and room.get("standin_turn") != _turn_key(room):
+            room["standin_turn"] = _turn_key(room)
+            _log(room, f"{p['name']} is away - a scribe plays the turn")
+            _event(room, "standin", f"{p['name']} is away", seat=cur, icon="📵")
+        if (p["is_ai"] or standin) and not p["bankrupt"]:
             pending = room["pending"]
             if pending:
                 kind = pending["kind"]
@@ -2459,7 +3166,15 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
                     _ai_decide_buy(room, cur, int(pending["space"]))
                 elif kind == "tribute":
                     _ai_decide_tribute(room, cur)
+                elif kind == "feast":
+                    _proclaim_feast(room, cur, _ai_feast_choice(room, cur, pending.get("options") or []))
+                    _refresh_bonus(room, cur)
                 elif kind == "debt":
+                    if standin and not _ai_can_raise(room, cur, int(pending["amount"])) \
+                            and _away_for(room, cur, now) < STAND_IN_BANKRUPT_SECONDS:
+                        # A person's bankruptcy is theirs to declare: wait a
+                        # while longer in case they come back.
+                        break
                     _ai_raise_for_debt(room, cur)
                 else:
                     break
@@ -2468,7 +3183,14 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
                 # The scribes honour the Dungeon: a card if one is held, the
                 # $50 fine when the third attempt is near, else a roll for
                 # doubles - never a free walk.
-                if int(p["jail_cards"]) > 0:
+                # Early on, land is still for sale: get out and buy it. Late,
+                # with rents high, the Dungeon is the safest square on the board.
+                early = _unowned_count(room) >= 8
+                if int(p["jail_cards"]) > 0 and early:
+                    _jail_card_unlocked(room, cur)
+                elif early and int(p["cash"]) >= 250:
+                    _jail_fine_unlocked(room, cur)
+                elif int(p["jail"]["turns"]) >= 2 and int(p["jail_cards"]) > 0:
                     _jail_card_unlocked(room, cur)
                 elif int(p["jail"]["turns"]) >= 2 and int(p["cash"]) >= 50:
                     _jail_fine_unlocked(room, cur)
@@ -2487,9 +3209,18 @@ def _maybe_ai_unlocked(room: dict[str, Any]) -> bool:
                     room["ai_next_at"] = now + AI_PACE_AFTER_ROLL_S + AI_PACE_PER_SPACE_S * spaces
                     return True
             else:
-                _ai_seek_trade(room, cur)
-                if not _ai_build_phase(room, cur):
+                if not standin:
+                    # A stand-in plays only the turn itself (roll, buy what it
+                    # lands on, pay its dues): never a trade, a building or a
+                    # lifted mortgage the person did not choose.
+                    _ai_seek_trade(room, cur)
+                    _ai_unmortgage(room, cur)
+                if standin or not _ai_build_phase(room, cur):
                     _advance_turn(room, cur)
+                    # Turns that only the computer plays must still end the
+                    # match (the round limit, a kingdom, nobody left).
+                    if _maybe_finish(room):
+                        return True
                     if paced:
                         room["ai_next_at"] = now + AI_PACE_AFTER_TURN_S
                         return True
@@ -2554,7 +3285,12 @@ def _snapshot_unlocked(room: dict[str, Any], player_id: Any = None, stage: bool 
             "you": is_you,
             "is_host": i == host,
             "is_turn": i == room["turn"],
+            "kingdoms": len(_kingdoms(room, i)),
+            "away": not p.get("is_ai") and not p["bankrupt"] and room["status"] == "playing"
+                    and now - float(p.get("last_seen") or 0) >= STAND_IN_SECONDS,
         })
+        if room["status"] == "finished":
+            players[-1]["stats"] = dict(_stats(room, i))
 
     you = None
     if seat is not None:
@@ -2610,6 +3346,28 @@ def _snapshot_unlocked(room: dict[str, Any], player_id: Any = None, stage: bool 
         if pending["kind"] == "buy":
             pending["price"] = int(SPACES[int(pending["space"])]["price"])
             pending["name"] = SPACES[int(pending["space"])]["name"]
+        elif pending["kind"] == "feast":
+            pending["choices"] = [{"space": i, "name": SPACES[i]["name"], "rent": _base_rent(room, i, [3, 4]),
+                                   "doubled": _base_rent(room, i, [3, 4]) * 2} for i in pending.get("options") or []]
+
+    drill = None
+    if room.get("drill"):
+        d = room["drill"]
+        q = _DRILL_BY_ID[d["qid"]]
+        mine = d["answers"].get(str(seat)) if seat is not None else None
+        drill = {"n": d["n"], "clue": q["clue"], "options": q["options"], "seat": d["seat"],
+                 "player": room["players"][d["seat"]]["name"],
+                 "ends_in": max(0.0, round(float(d["deadline"]) - now, 1)), "deadline_at": d["deadline"],
+                 "seconds": DRILL_SECONDS, "answered": sorted(int(k) for k in d["answers"]),
+                 "you_answered": int(mine["choice"]) if mine else None,
+                 "prize": DRILL_PRIZE, "right": DRILL_RIGHT}
+
+    rules = room["rules"]
+    jubilee_info = None
+    if rules.get("jubilee_year"):
+        done = _full_rounds(room)
+        jubilee_info = {"every": JUBILEE_EVERY, "after_round": (done // JUBILEE_EVERY + 1) * JUBILEE_EVERY,
+                        "in_rounds": JUBILEE_EVERY - done % JUBILEE_EVERY, "count": int(room.get("jubilees") or 0)}
 
     return {
         "code": room["code"],
@@ -2626,6 +3384,18 @@ def _snapshot_unlocked(room: dict[str, Any], player_id: Any = None, stage: bool 
         "doubles": room["doubles"],
         "last_roll": room["last_roll"],
         "last_card": room.get("last_card"),
+        "feast": room.get("feast"),
+        "feast_name": SPACES[room["feast"]]["name"] if room.get("feast") is not None else None,
+        "drill": drill,
+        "last_drill": room.get("last_drill"),
+        "jubilee": jubilee_info,
+        "last_jubilee": room.get("last_jubilee"),
+        "kingdom_goal": KINGDOM_GROUPS if rules.get("kingdom_win") else None,
+        "event_seq": int(room.get("event_seq") or 0),
+        "events": [dict(e) for e in room.get("events") or []],
+        "reactions": [dict(r) for r in room.get("reactions") or [] if now - float(r["at"]) < REACTION_SHOW_S],
+        "reaction_list": list(REACTIONS),
+        "awards": _awards(room) if room["status"] == "finished" else [],
         # A TV is showing the board: phones become each player's hand.
         "stage_connected": presence.stage_connected(room, now),
         # ...and whether that TV plays the sound: a live page does, so phones go

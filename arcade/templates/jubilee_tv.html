@@ -244,6 +244,7 @@
   .tvCard.scripture .band { background: #1d4ed8; }
   .tvCard .who { margin-top: .16rem; font-size: .2rem; font-weight: 800; color: #6b5b8f; }
   .tvCard .q { margin: .2rem .35rem; font-family: Georgia, serif; font-style: italic; font-size: .38rem; line-height: 1.35; }
+  .tvCard .q.plain { font-family: inherit; font-style: normal; font-weight: 800; }
   .tvCard .ref { font-size: .22rem; font-weight: 900; color: #7a5b16; }
   .tvCard .eff { margin: .22rem .3rem .3rem; padding: .14rem; border-radius: .14rem; background: #fde68a; border: .03rem solid #b45309;
     font-size: .3rem; font-weight: 900; color: #422006; }
@@ -273,6 +274,72 @@
   html.lowfx .tvDicePair.tumbling .tvDie { animation: none; }
   html.lowfx .tvDicePair.landed .tvDie { animation-duration: .2s; }
   html.lowfx .crown { animation-duration: .5s; }
+  /* ---------- Jubilee specials: the Herald, the Sword Drill, the Year of Jubilee, reactions ---------- */
+  #tv-herald { position: absolute; left: 50%; top: .25rem; width: 8.6rem; margin-left: -4.3rem; z-index: 13; pointer-events: none; }
+  .tvHd { display: flex; align-items: center; background: #ffe9a8; color: #1b0f3b; border: .05rem solid #1b0f3b; border-radius: .26rem;
+    padding: .14rem .26rem; box-shadow: 0 .1rem 0 #1b0f3b, 0 .2rem .6rem rgba(0,0,0,.55); animation: tvHdIn .55s cubic-bezier(.2,1.4,.35,1); }
+  .tvHd.out { animation: tvHdOut .35s ease-in forwards; }
+  .tvHd .ic { font-size: .7rem; margin-right: .22rem; line-height: 1; }
+  .tvHd b { display: block; font-size: .4rem; font-weight: 900; line-height: 1.1; }
+  .tvHd small { display: block; font-size: .24rem; font-weight: 800; color: #5b4a8a; margin-top: .03rem; line-height: 1.25; }
+  .tvHd.kingdom { background: #ffd45c; } .tvHd.big_rent, .tvHd.bankrupt, .tvHd.doubles3 { background: #ffc2c2; }
+  .tvHd.feast { background: #e9d5ff; } .tvHd.drill { background: #bfdbfe; }
+  @keyframes tvHdIn { 0% { transform: translateY(-2rem) scale(.9); opacity: 0; } 100% { transform: none; opacity: 1; } }
+  @keyframes tvHdOut { to { transform: translateY(-2rem); opacity: 0; } }
+  #tv-drill { position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 12; display: none; align-items: center; justify-content: center; background: rgba(8,4,30,.62); }
+  #tv-drill.on { display: flex; }
+  .tvDr { width: 10.4rem; background: #fff8e7; color: #1b0f3b; border: .06rem solid #1b0f3b; border-radius: .34rem; overflow: hidden;
+    box-shadow: 0 .14rem 0 #1b0f3b, 0 .3rem 1rem rgba(0,0,0,.6); animation: tvpop .5s cubic-bezier(.2,1.3,.3,1); }
+  .tvDr .band { display: flex; justify-content: space-between; align-items: center; padding: .14rem .3rem; background: #1d4ed8; color: #fff8e7;
+    font-size: .32rem; font-weight: 900; letter-spacing: .25em; }
+  .tvDr .band b { font-size: .5rem; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+  .tvDr .bar { height: .1rem; background: rgba(27,15,59,.12); }
+  .tvDr .bar i { display: block; height: 100%; background: #22c55e; transform-origin: 0 50%; }
+  .tvDr .who { padding: .14rem .3rem 0; font-size: .24rem; font-weight: 900; color: #6b5b8f; letter-spacing: .06em; text-transform: uppercase; }
+  .tvDr .clue { padding: .08rem .3rem .2rem; font-size: .5rem; font-weight: 900; line-height: 1.25; }
+  .tvDr .opts { display: flex; flex-wrap: wrap; padding: 0 .2rem .14rem; }
+  .tvDr .opt { width: 48%; margin: 0 1% .14rem; padding: .14rem .16rem; border-radius: .18rem; border: .045rem solid #1b0f3b; font-size: .38rem; font-weight: 900;
+    box-sizing: border-box; display: flex; align-items: center; }
+  .tvDr .opt i { font-style: normal; display: inline-block; width: .52rem; height: .52rem; line-height: .52rem; text-align: center; border-radius: 50%;
+    background: #1b0f3b; color: #fff8e7; font-size: .3rem; margin-right: .16rem; flex: 0 0 auto; }
+  .tvDr .opt.o0 { background: #fde68a; } .tvDr .opt.o1 { background: #a7f3d0; } .tvDr .opt.o2 { background: #bfdbfe; } .tvDr .opt.o3 { background: #fbcfe8; }
+  .tvDr .opt.right { background: #22c55e; color: #fff; } .tvDr .opt.dim { opacity: .3; }
+  .tvDr .dfoot { padding: 0 .3rem .22rem; font-size: .28rem; font-weight: 800; color: #5b4a8a; text-align: center; min-height: .4rem; }
+  .tvDr .dfoot .tkI { width: .42rem; height: .42rem; vertical-align: -.12rem; }
+  .tvDr .dfoot .r { display: inline-block; margin: .03rem .14rem; }
+  .tvDr .dfoot .r.win { color: #15803d; font-weight: 900; }
+  .tvDr .note { display: block; margin-top: .08rem; font-style: italic; color: #7a5b16; font-size: .24rem; }
+  #tv-jubilee { position: absolute; left: -1rem; right: -1rem; top: -1rem; bottom: -1rem; z-index: 14; display: none; align-items: center; justify-content: center; overflow: hidden;
+    background: radial-gradient(ellipse at 50% 42%, #fff3c4 0%, #ffc83d 38%, #b45309 78%, #451a03 100%); }
+  #tv-jubilee.on { display: flex; }
+  #tv-jubilee .rays { position: absolute; left: 50%; top: 42%; width: 30rem; height: 30rem; margin: -15rem 0 0 -15rem; opacity: .35;
+    background: repeating-conic-gradient(#fff 0deg 6deg, transparent 6deg 18deg); border-radius: 50%; animation: cspin 50s linear infinite; }
+  #tv-jubilee .in { position: relative; text-align: center; color: #3b1d00; width: 11rem; }
+  #tv-jubilee .horn { font-size: 2rem; animation: tvpop .8s cubic-bezier(.2,1.5,.3,1); }
+  #tv-jubilee .t { font-size: 1.05rem; font-weight: 900; color: #fff8e7; letter-spacing: .04em; text-shadow: 0 .07rem 0 #78350f; line-height: 1; }
+  #tv-jubilee .v { font-family: Georgia, serif; font-style: italic; font-size: .4rem; font-weight: 700; margin-top: .2rem; }
+  #tv-jubilee .v small { display: block; font-family: inherit; font-style: normal; font-size: .22rem; letter-spacing: .14em; font-weight: 900; margin-top: .06rem; }
+  #tv-jubilee .w { margin: .3rem auto 0; width: 9rem; padding: .2rem .3rem; border-radius: .24rem; background: rgba(255,248,231,.92); border: .05rem solid #78350f;
+    font-size: .38rem; font-weight: 900; line-height: 1.4; color: #451a03; }
+  #tv-rx { position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 12; pointer-events: none; overflow: hidden; }
+  .tvRx { position: absolute; bottom: -1.2rem; text-align: center; animation: tvRxUp 3.4s ease-out forwards; }
+  .tvRx .e { font-size: .9rem; line-height: 1; }
+  .tvRx .n { font-size: .2rem; font-weight: 900; color: #1b0f3b; padding: .02rem .14rem; border-radius: 99px; }
+  @keyframes tvRxUp { 0% { transform: translateY(0) scale(.6); opacity: 0; } 15% { opacity: 1; transform: translateY(-1.6rem) scale(1.1); } 100% { transform: translateY(-8rem) scale(1); opacity: 0; } }
+  .tvFrame .plr .tag { font-size: .18rem; font-weight: 900; color: #fde68a; }
+  .finBody { display: flex; align-items: flex-start; justify-content: center; }
+  .finish.withAwards .crown { font-size: 1rem; }
+  .finish.withAwards .standings { width: 5.6rem; margin-right: .3rem; }
+  .awards { display: flex; flex-wrap: wrap; justify-content: flex-start; width: 7.6rem; margin-top: .4rem; }
+  .award { width: 3.6rem; margin: .08rem; padding: .12rem .16rem; border-radius: .18rem; background: rgba(255,200,61,.14); border: .025rem solid rgba(255,200,61,.5);
+    text-align: left; animation: tvpop .5s cubic-bezier(.2,1.3,.3,1) both; }
+  .award .ic { font-size: .42rem; } .award b { display: block; font-size: .2rem; color: var(--gold2); letter-spacing: .05em; }
+  .award .nm { font-size: .3rem; font-weight: 900; } .award small { display: block; font-size: .2rem; color: var(--dim); font-weight: 700; }
+  .winWhy { font-size: .3rem; color: var(--gold2); font-weight: 800; margin-top: .06rem; }
+  html.lowfx #tv-jubilee .rays { display: none; }
+  html.lowfx .tvHd, html.lowfx .tvDr { box-shadow: 0 .08rem 0 #1b0f3b; }
+  html.lowfx .tvRx { animation-duration: 2.4s; }
+  @media (prefers-reduced-motion: reduce) { #tv-jubilee .rays { animation: none; } .tvRx { display: none; } }
 </style>
 </head>
 <body>
@@ -286,6 +353,11 @@
     <div id="tv-fx"></div>
     <div id="tv-land"></div>
     <div id="tv-card"></div>
+    <div id="tv-rx"></div>
+    <div id="tv-drill"></div>
+    <div id="tv-herald"></div>
+    <div id="tv-jubilee"><div class="rays"></div><div class="in"><div class="horn">🎺</div><div class="t">THE YEAR OF JUBILEE</div>
+      <div class="v">“Proclaim liberty throughout all the land.”<small>LEVITICUS 25:10</small></div><div class="w" id="tv-jubilee-what"></div></div></div>
     <div id="tv-reconnect">📡 Reconnecting…</div>
     <div id="tv-sound">🔊 Press OK for sound</div>
     <div class="foot">SCAN TO PLAY · <b id="tv-code">····</b> · games.sumemail.com</div>
@@ -513,7 +585,20 @@
     dungeon: function (d) { noise(0.4, "bandpass", 320, 0.45, d); tone(147, 0.45, "square", 0.07, d + 0.05, 98); },
     build: function (d) { tone(520, 0.12, "sine", 0.3, d, 900); tone(1318, 0.18, "sine", 0.12, d + 0.08); tone(1568, 0.22, "sine", 0.1, d + 0.16); },
     bankrupt: function (d) { arp([392, 349.23, 293.66, 220], 0.12, 0.2, d); },
-    win: function (d) { arp([523.25, 659.25, 783.99, 1046.5], 0.09, 0.24, d); tone(1046.5, 0.8, "triangle", 0.2, d + 0.36); applause(2.6, 0.3, d + 0.2); }
+    win: function (d) { arp([523.25, 659.25, 783.99, 1046.5], 0.09, 0.24, d); tone(1046.5, 0.8, "triangle", 0.2, d + 0.36); applause(2.6, 0.3, d + 0.2); },
+    // The Jubilee specials.
+    kingdom: function (d) { arp([523.25, 659.25, 783.99, 1046.5, 1318.5], 0.08, 0.2, d); applause(1.4, 0.2, d + 0.3); },
+    feast: function (d) { arp([392, 493.88, 587.33, 783.99], 0.11, 0.18, d); },
+    drill: function (d) { tone(659.25, 0.12, "square", 0.12, d); tone(880, 0.12, "square", 0.12, d + 0.13); tone(1318.5, 0.25, "square", 0.12, d + 0.26); },
+    tick: function (d) { tone(880, 0.06, "square", 0.08, d); },
+    right: function (d) { arp([659.25, 830.61, 987.77], 0.07, 0.18, d); applause(1.2, 0.18, d + 0.15); },
+    horn: function (d) {
+      tone(196, 0.7, "sawtooth", 0.12, d); tone(392, 0.7, "triangle", 0.08, d);
+      tone(261.63, 0.5, "sawtooth", 0.12, d + 0.55); tone(523.25, 0.5, "triangle", 0.08, d + 0.55);
+      tone(392, 1.2, "sawtooth", 0.13, d + 0.95); tone(783.99, 1.2, "triangle", 0.09, d + 0.95);
+      if (!LOWFX) applause(2.4, 0.25, d + 1.4);
+    },
+    pop: function (d) { tone(700, 0.08, "sine", 0.16, d, 1200); }
   };
   /* Only while a game is on screen: never in the lobby or after it has gone. */
   function playSfx(name, delay) {
@@ -641,9 +726,9 @@
     var host = $("tv-card");
     var front = '<div class="tvCard' + (sc ? ' scripture' : '') + '"><div class="band">' + (sc ? "SCRIPTURE" : "PARABLE") + '</div>'
       + '<div class="who">' + esc(c.player || "") + ' drew</div>'
-      + '<div class="q">' + esc(c.quote ? "\u201c" + c.quote + "\u201d" : (c.effect || c.text || "")) + '</div>'
+      + '<div class="q' + (c.quote ? '' : ' plain') + '">' + esc(c.quote ? "\u201c" + c.quote + "\u201d" : (c.flavor || c.effect || c.text || "")) + '</div>'
       + (c.ref ? '<div class="ref">' + esc(c.ref) + '</div>' : '')
-      + (c.quote && c.effect ? '<div class="eff">' + esc(c.effect) + '</div>' : '<div style="height:.3rem"></div>') + '</div>';
+      + ((c.quote || c.flavor) && c.effect ? '<div class="eff">' + esc(c.effect) + '</div>' : '<div style="height:.3rem"></div>') + '</div>';
     // Low-power: no back face and no 3D turn (an old TV browser draws the
     // flip slowly, and can show a turned face mirrored); the face flies out.
     host.innerHTML = '<div class="flyCard"><div class="flyInner">'
@@ -731,6 +816,7 @@
       if (room.status === "playing" && was !== "playing") wake();   // ready before the first roll
       if (room.status === "lobby") { seenLogSeq = null; seenCash = []; renderLobby(room); lastSig = "lobby"; return; }
       bigMoments(room);
+      specials(room);
       var sig = [room.turn, room.phase, room.status, JSON.stringify(room.last_roll), room.pot, room.bank_houses, room.log_seq,
         JSON.stringify(room.players.map(function (p) { return [p.position, p.cash, p.net_worth, p.bankrupt, p.jail, p.houses, p.hotels]; })),
         JSON.stringify(room.board.map(function (s) { return [s.owner, s.houses, s.mortgaged]; })),
@@ -741,6 +827,130 @@
       logSounds(room);
       if (room.status === "finished" && was === "playing") playSfx("win", walkSeconds() + 0.3);
     });
+  }
+
+  /* ---------- the Jubilee specials: Herald, Sword Drill, Year of Jubilee, reactions ----------
+     Each counts on the server (event_seq, drill n, reaction n), so the first
+     look at a room plays nothing old, and every screen shows each one once. */
+  var skew = 0;
+  function srvNow() { return new Date().getTime() / 1000 + skew; }
+  var hd = { seen: null, queue: [], busy: false };
+  var HD_SOUND = { kingdom: "kingdom", hotel: "build", big_rent: "pay", bankrupt: "bankrupt", feast: "feast", pot: "coin", doubles3: "dungeon" };
+  function heraldIn(room) {
+    var evs = room.events || [], top = room.event_seq || 0, i;
+    if (hd.seen === null || top < hd.seen) { hd.seen = top; return; }
+    for (i = 0; i < evs.length; i++) {
+      var e = evs[i];
+      if (e.n <= hd.seen) continue;
+      if (e.kind === "jubilee") jubileeOn(room, e); else hd.queue.push(e);
+    }
+    hd.seen = top;
+    heraldNext();
+  }
+  function heraldNext() {
+    if (hd.busy || !hd.queue.length) return;
+    var e = hd.queue.shift(), box = $("tv-herald");
+    hd.busy = true;
+    box.innerHTML = '<div class="tvHd ' + esc(e.kind) + '"><div class="ic">' + esc(e.icon || "📯") + '</div><div><b>' + esc(e.title) + '</b>'
+      + (e.text ? '<small>' + esc(e.text) + '</small>' : '') + '</div></div>';
+    if (HD_SOUND[e.kind]) playSfx(HD_SOUND[e.kind], walkSeconds() + 0.1);
+    setTimeout(function () {
+      var el = box.firstChild; if (el) el.className += " out";
+      setTimeout(function () { box.innerHTML = ""; hd.busy = false; heraldNext(); }, 380);
+    }, Math.min(6000, 3200 + String(e.text || "").length * 35));
+  }
+  var jubTimer = null;
+  function jubileeOn(room, e) {
+    var lj = room.last_jubilee || {}, bits = [], who = room.players[lj.poorest];
+    if (who) bits.push(esc(who.name) + " gleans $" + fmt(lj.gleaning || 150) + (lj.returned && lj.returned.length ? " and gets back " + lj.returned.length + " mortgaged land" + (lj.returned.length > 1 ? "s" : "") : ""));
+    if (lj.freed && lj.freed.length) { var f = []; for (var i = 0; i < lj.freed.length; i++) f.push(esc(lj.freed[i])); bits.push("⛓ The Dungeon opens: " + f.join(", ") + (f.length > 1 ? " walk free!" : " walks free!")); }
+    $("tv-jubilee-what").innerHTML = bits.join("<br>") || esc(e.text || "");
+    $("tv-jubilee").className = "on";
+    playSfx("horn", 0.1);
+    if (jubTimer) clearTimeout(jubTimer);
+    jubTimer = setTimeout(function () { $("tv-jubilee").className = ""; }, 7500);
+  }
+  var dr = { n: null, shown: null, tick: null, hide: null, beep: null };
+  var LETTERS = ["A", "B", "C", "D"];
+  function drillCard(d, res) {
+    var opts = "", i, cls;
+    for (i = 0; i < d.options.length; i++) {
+      cls = "opt o" + i + (res ? (i === res.answer ? " right" : " dim") : "");
+      opts += '<div class="' + cls + '"><i>' + LETTERS[i] + '</i>' + esc(d.options[i]) + '</div>';
+    }
+    return '<div class="tvDr"><div class="band"><span>⚔️ SWORD DRILL</span><b id="tv-dr-clock">' + (res ? "✓" : Math.ceil(d.ends_in || 0)) + '</b></div>'
+      + '<div class="bar"><i id="tv-dr-bar"' + (res ? ' style="transform:scaleX(0)"' : '') + '></i></div>'
+      + '<div class="who">' + esc(d.player || "") + ' landed on Scripture · answer on your phone!</div>'
+      + '<div class="clue">' + esc(d.clue) + '</div><div class="opts">' + opts + '</div><div class="dfoot" id="tv-dr-foot"></div></div>';
+  }
+  function drillFoot(room, seats) {
+    var out = "", i, p;
+    for (i = 0; i < seats.length; i++) { p = room.players[seats[i]]; if (p) out += '<span class="r">' + tokenBadge(p.token, seatColor(p.seat), "tkI") + " " + esc(p.name) + '</span>'; }
+    return out ? "Locked in: " + out : "Fastest right answer wins $100 · every right answer $25";
+  }
+  function drillTick() {
+    var d = lastRoom && lastRoom.drill;
+    if (!d || d.n !== dr.n) return;
+    var left = Math.max(0, d.deadline_at - srvNow()), c = $("tv-dr-clock"), b = $("tv-dr-bar");
+    if (c) c.textContent = Math.ceil(left);
+    if (b) b.style.transform = "scaleX(" + (left / (d.seconds || 15)).toFixed(3) + ")";
+    if (left <= 3 && left > 0 && Math.ceil(left) !== dr.beep) { dr.beep = Math.ceil(left); playSfx("tick"); }
+  }
+  function drillIn(room) {
+    var d = room.drill, host = $("tv-drill");
+    if (d) {
+      if (d.n !== dr.n) {
+        dr.n = d.n; dr.beep = null;
+        if (dr.hide) { clearTimeout(dr.hide); dr.hide = null; }
+        host.innerHTML = drillCard(d, null);
+        host.className = "on";
+        playSfx("drill");
+        if (dr.tick) clearInterval(dr.tick);
+        dr.tick = setInterval(drillTick, 250);
+      }
+      var foot = $("tv-dr-foot"), html = drillFoot(room, d.answered || []);
+      if (foot && foot.innerHTML !== html) foot.innerHTML = html;
+      drillTick();
+      return;
+    }
+    if (dr.tick) { clearInterval(dr.tick); dr.tick = null; }
+    var res = room.last_drill;
+    if (res && res.n === dr.n && dr.shown !== res.n && host.className === "on") {
+      dr.shown = res.n;
+      host.innerHTML = drillCard({ options: res.options, clue: res.clue, player: (room.players[res.seat] || {}).name }, res);
+      var rows = "", list = res.results || [], i;
+      for (i = 0; i < list.length; i++) {
+        var r = list[i], p = room.players[r.seat] || {};
+        rows += '<span class="r' + (r.prize >= 100 ? " win" : "") + '">' + tokenBadge(p.token, seatColor(r.seat), "tkI") + " " + esc(r.name) + (r.correct ? " ✔" + (r.prize ? " +$" + r.prize : "") : " ✘") + '</span>';
+      }
+      $("tv-dr-foot").innerHTML = (rows || "Nobody knew it!") + (res.note ? '<span class="note">' + esc(res.note) + '</span>' : "");
+      playSfx(list.length && list[0].correct ? "right" : "pay");
+      dr.hide = setTimeout(function () { host.className = ""; host.innerHTML = ""; }, 6500);
+    } else if (!res || res.n !== dr.n) { host.className = ""; }
+  }
+  var rxSeen = null;
+  function reactionsIn(room) {
+    var list = room.reactions || [], top = list.length ? list[list.length - 1].n : 0, i;
+    if (rxSeen === null) { rxSeen = top; return; }
+    for (i = 0; i < list.length; i++) {
+      var r = list[i];
+      if (r.n <= rxSeen || RM) continue;
+      var p = room.players[r.seat] || {};
+      var el = document.createElement("div");
+      el.className = "tvRx";
+      el.style.left = (6 + Math.random() * 84) + "%";
+      el.innerHTML = '<div class="e">' + esc(r.emoji) + '</div><div class="n" style="background:' + seatColor(r.seat) + '">' + esc(p.name || "") + '</div>';
+      $("tv-rx").appendChild(el);
+      (function (node) { setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, 3500); })(el);
+    }
+    if (top > rxSeen) { rxSeen = top; playSfx("pop"); }
+  }
+  function specials(room) {
+    if (room.server_time) { var k = room.server_time - new Date().getTime() / 1000; skew = skew ? skew * 0.7 + k * 0.3 : k; }
+    lastRoom = room;
+    heraldIn(room);
+    drillIn(room);
+    reactionsIn(room);
   }
   var lastStatus = null;
   function renderNoCode() {
@@ -814,7 +1024,9 @@
      the pieces stand there, so they cover the band, not the name. */
   function inward(i) {
     if (i % 10 === 0) return { x: 0, y: 0 };
-    var g = tileGeom(i), k = D * 0.22;
+    // Just inside the board's middle, beside the square: the big pieces must
+    // never cover a name or a price someone across the room is reading.
+    var g = tileGeom(i), k = D / 2 + 24;
     return g.rot === 0 ? { x: 0, y: -k } : g.rot === 90 ? { x: k, y: 0 } : g.rot === 180 ? { x: 0, y: k } : { x: -k, y: 0 };
   }
   function pathPoint(pos) {
@@ -971,40 +1183,76 @@
     svgEl("stop", { offset: "100%", "stop-color": "#000000", "stop-opacity": ".35" }, gloss);
     svgEl("rect", { x: 0, y: 0, width: BW, height: BH, fill: "url(#parch)", stroke: "#1b0f3b", "stroke-width": 6 }, svg);
     svgEl("rect", { x: D, y: D, width: BW - 2 * D, height: BH - 2 * D, fill: "#1d1145", stroke: "#f5c344", "stroke-width": 4 }, svg);
-    var b = { code: room.code, svg: svg, wrap: wrap, zoom: zoom, own: [], houses: [], mort: [], tokens: {}, shown: {},
+    var b = { code: room.code, svg: svg, wrap: wrap, zoom: zoom, own: [], tint: [], houses: [], mort: [], tokens: {}, shown: {},
       cam: { z: 1, x: BW / 2, y: BH / 2, applied: "" }, focus: null, lastMove: 0 };
     var spaces = room.board || [];
     for (var i = 0; i < 40; i++) {
       var sp = spaces[i]; if (!sp) continue;
-      var c = tileGeom(i), w = c.w, h = c.h;
-      var g = svgEl("g", { transform: "translate(" + c.x.toFixed(1) + " " + c.y.toFixed(1) + ") rotate(" + c.rot + ")" }, svg);
+      var c = tileGeom(i);
       var isCorner = (i === 0 || i === 10 || i === 20 || i === 30);
-      svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: h, fill: isCorner ? "#ffdf9e" : "#fff8e7", stroke: "#1b0f3b", "stroke-width": isCorner ? 3 : 1.5 }, g);
-      if (i === 0) { corner(g, w, h, "JUBILEE!", "COLLECT $200", "go", "#ffb703", "#b45309", c.rot); continue; }
-      if (i === 10) { corner(g, w, h, "DUNGEON", "JUST VISITING", "bars", "#c3b2a0", "#1b0f3b", c.rot); continue; }
-      if (i === 20) { corner(g, w, h, "SABBATH", "FREE PARKING", "candles", "#bde0fe", "#0369a1", c.rot); continue; }
-      if (i === 30) { corner(g, w, h, "SENT TO", "THE DUNGEON", "lock", "#ffc4c4", "#991b1b", c.rot); continue; }
-      // Every space the same way: colour band, picture (if any), the name in
-      // one size, the price in one size. Nothing shrinks to fit; a rare long
-      // word is narrowed a little instead, so the letters stay the same height.
-      var bandColor = KIND_BAND[sp.kind] || GROUP_COLORS[sp.group] || null;
-      if (bandColor) svgEl("rect", { x: -w / 2, y: -h / 2, width: w, height: BAND, fill: bandColor }, g);
-      var art = tileArt(sp);
-      if (art) medallion(g, 0, -h / 2 + BAND + 19, 17, art, bandColor);
-      var priceTxt = sp.kind === "tribute" ? "PAY $" + fmt(sp.flat || 200) : sp.kind === "offering" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
-      var nameTop = art ? -h / 2 + BAND + 38 : -h / 2 + BAND + 4, nameBottom = h / 2 - (priceTxt ? 28 : 6);
-      tileLabel(g, shortName(sp), (nameTop + nameBottom) / 2, w - 8);
-      if (priceTxt) {
-        var pt = svgEl("text", { "class": "tl", "data-maxw": w - 8, x: 0, y: h / 2 - 8, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900,
-          fill: (sp.kind === "tribute" || sp.kind === "offering") ? "#b91c1c" : "#1b0f3b" }, g);
-        pt.textContent = priceTxt;
+      if (isCorner) {
+        // Corners read upright too: the TV is seen from one side of the room.
+        var cg = svgEl("g", { transform: "translate(" + c.x.toFixed(1) + " " + c.y.toFixed(1) + ")" }, svg);
+        svgEl("rect", { x: -c.w / 2, y: -c.h / 2, width: c.w, height: c.h, fill: "#ffdf9e", stroke: "#1b0f3b", "stroke-width": 3 }, cg);
+        if (i === 0) corner(cg, c.w, c.h, "JUBILEE!", "COLLECT $200", "go", "#ffb703", "#b45309", 0);
+        else if (i === 10) corner(cg, c.w, c.h, "DUNGEON", "JUST VISITING", "bars", "#c3b2a0", "#1b0f3b", 0);
+        else if (i === 20) corner(cg, c.w, c.h, "SABBATH", "REST", "candles", "#bde0fe", "#0369a1", 0);
+        else corner(cg, c.w, c.h, "GO TO THE", "DUNGEON", "lock", "#ffc4c4", "#991b1b", 0);
+        continue;
       }
-      // Changing bits, kept for update(): owner, houses, mortgage.
-      b.own[i] = svgEl("circle", { cx: -w / 2 + 15, cy: h / 2 - 15, r: 11, fill: "none", stroke: "none", "stroke-width": 1.6 }, g);
-      b.houses[i] = svgEl("g", { transform: "translate(0 " + (-h / 2 + 5) + ")" }, g);
-      b.mort[i] = svgEl("text", { x: w / 2 - 14, y: h / 2 - 8, "text-anchor": "middle", "font-size": 20, "font-weight": 900, fill: "#c0392b", display: "none" }, g);
-      b.mort[i].textContent = "M";
+      // A side square, drawn upright: the bottom and top rows are tall, the
+      // left and right columns wide. The colour band is on the edge facing
+      // the middle; the picture, the name and the price read normally.
+      var vert = c.rot === 0 || c.rot === 180;
+      var W = vert ? c.w : c.h, H = vert ? c.h : c.w;
+      var g = svgEl("g", { transform: "translate(" + (c.x - W / 2).toFixed(1) + " " + (c.y - H / 2).toFixed(1) + ")" }, svg);
+      svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "#fff8e7" }, g);
+      var ownable = sp.kind === "street" || sp.kind === "railroad" || sp.kind === "utility";
+      if (ownable) b.tint[i] = svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "none" }, g);
+      var bandColor = KIND_BAND[sp.kind] || GROUP_COLORS[sp.group] || "#7c3aed";
+      var bw = (sp.kind === "street" || sp.kind === "railroad" || sp.kind === "utility") ? 24 : 8;
+      var band = c.rot === 0 ? [0, 0, W, bw] : c.rot === 180 ? [0, H - bw, W, bw] : c.rot === 90 ? [W - bw, 0, bw, H] : [0, 0, bw, H];
+      svgEl("rect", { x: band[0], y: band[1], width: band[2], height: band[3], fill: bandColor }, g);
+      var box = c.rot === 0 ? [0, bw, W, H - bw] : c.rot === 180 ? [0, 0, W, H - bw] : c.rot === 90 ? [0, 0, W - bw, H] : [bw, 0, W - bw, H];
+      var art = tileArt(sp);
+      var priceTxt = sp.kind === "tribute" ? "PAY $" + fmt(sp.flat || 200) : sp.kind === "offering" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
+      var priceFill = (sp.kind === "tribute" || sp.kind === "offering") ? "#b91c1c" : "#4b3b78";
+      var mx = box[0] + box[2] / 2;
+      var lg = svgEl("g", {}, g);
+      if (vert) {
+        if (art) medallion(g, mx, box[1] + 19, 13, art, bandColor);
+        var top = box[1] + (art ? 36 : 8), bottom = box[1] + box[3] - (priceTxt ? 30 : 8);
+        lg.setAttribute("transform", "translate(" + mx.toFixed(1) + " 0)");
+        tileLabel(lg, shortName(sp), (top + bottom) / 2, box[2] - 10);
+        if (priceTxt) {
+          var pt = svgEl("text", { "class": "tl", "data-maxw": box[2] - 8, x: mx, y: box[1] + box[3] - 11, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900, fill: priceFill }, g);
+          pt.textContent = priceTxt;
+        }
+      } else {
+        var tx = mx, tw = box[2] - 12;
+        if (art) { medallion(g, box[0] + 24, box[1] + box[3] / 2, 16, art, bandColor); tx = box[0] + 44 + (box[2] - 44) / 2; tw = box[2] - 52; }
+        lg.setAttribute("transform", "translate(" + tx.toFixed(1) + " 0)");
+        tileLabel(lg, shortName(sp), box[1] + box[3] / 2 - (priceTxt ? 11 : 0), tw);
+        if (priceTxt) {
+          var pt2 = svgEl("text", { "class": "tl", "data-maxw": tw, x: tx, y: box[1] + box[3] / 2 + 24, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900, fill: priceFill }, g);
+          pt2.textContent = priceTxt;
+        }
+      }
+      svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "none", stroke: "#1b0f3b", "stroke-width": 1.5 }, g);
+      if (!ownable) continue;
+      // Changing bits, kept for update(): the owner's strip on the outer edge,
+      // houses on the band, the mortgage stamp.
+      var outer = c.rot === 0 ? [0, H - 9, W, 9] : c.rot === 180 ? [0, 0, W, 9] : c.rot === 90 ? [0, 0, 9, H] : [W - 9, 0, 9, H];
+      b.own[i] = svgEl("rect", { x: outer[0], y: outer[1], width: outer[2], height: outer[3], fill: "none" }, g);
+      b.houses[i] = svgEl("g", { transform: "translate(" + (band[0] + band[2] / 2).toFixed(1) + " " + (band[1] + band[3] / 2).toFixed(1) + ")" }, g);
+      b.houses[i].setAttribute("data-vert", vert ? "0" : "1");
+      b.mort[i] = svgEl("g", { display: "none" }, g);
+      svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "rgba(255,255,255,.62)" }, b.mort[i]);
+      var mt = svgEl("text", { x: W / 2, y: H / 2 + 6, "text-anchor": "middle", "font-size": 16, "font-weight": 900, fill: "#c0392b",
+        transform: "rotate(" + (vert ? -60 : -20) + " " + (W / 2) + " " + (H / 2) + ")" }, b.mort[i]);
+      mt.textContent = "MORTGAGED";
     }
+    b.feastLayer = svgEl("g", {}, svg);
     b.tokenLayer = svgEl("g", {}, svg);
     // The middle of the board: HTML over the centre panel.
     var center = document.createElement("div");
@@ -1050,10 +1298,17 @@
       if (w > max) { t.setAttribute("textLength", max); t.setAttribute("lengthAdjust", "spacingAndGlyphs"); }
     }
   }
-  function houseMarks(n, w) {
-    var out = "";
-    if (n === 5) return '<rect x="-18" y="0" width="36" height="16" rx="3" fill="#d32f2f" stroke="#1b0f3b" stroke-width="1.4"/>';
-    for (var k = 0; k < n; k++) out += '<rect x="' + (-n * 13 + k * 26 + 2) + '" y="0" width="22" height="16" rx="3" fill="#2e9e5b" stroke="#1b0f3b" stroke-width="1.2"/>';
+  /* Houses centred on the band: in a row on a horizontal band, a column on a
+     vertical one; a hotel is one red block. */
+  function houseMarks(n, vertBand) {
+    var out = "", k, o;
+    if (n === 5) return vertBand ? '<rect x="-9" y="-17" width="18" height="34" rx="3" fill="#d32f2f" stroke="#1b0f3b" stroke-width="1.4"/>'
+      : '<rect x="-17" y="-9" width="34" height="18" rx="3" fill="#d32f2f" stroke="#1b0f3b" stroke-width="1.4"/>';
+    for (k = 0; k < n; k++) {
+      o = (k - (n - 1) / 2) * 19;
+      out += vertBand ? '<rect x="-8" y="' + (o - 8) + '" width="16" height="16" rx="3" fill="#2e9e5b" stroke="#1b0f3b" stroke-width="1.2"/>'
+        : '<rect x="' + (o - 8) + '" y="-8" width="16" height="16" rx="3" fill="#2e9e5b" stroke="#1b0f3b" stroke-width="1.2"/>';
+    }
     return out;
   }
   function updateBoard(room) {
@@ -1063,10 +1318,29 @@
       var key = [sp.owner, sp.houses, sp.mortgaged].join(",");
       if (board.shown[i] === key) continue;
       board.shown[i] = key;
-      if (sp.owner != null) { board.own[i].setAttribute("fill", seatColor(sp.owner)); board.own[i].setAttribute("stroke", "#1b0f3b"); }
-      else { board.own[i].setAttribute("fill", "none"); board.own[i].setAttribute("stroke", "none"); }
-      board.houses[i].innerHTML = houseMarks(sp.houses || 0);
+      var oc = sp.owner != null ? seatColor(sp.owner) : "none";
+      board.own[i].setAttribute("fill", oc);
+      if (board.tint[i]) { board.tint[i].setAttribute("fill", oc); board.tint[i].setAttribute("fill-opacity", "0.16"); }
+      board.houses[i].innerHTML = houseMarks(sp.houses || 0, board.houses[i].getAttribute("data-vert") === "1");
       board.mort[i].setAttribute("display", sp.mortgaged ? "inline" : "none");
+    }
+    // The feast: a purple garland on its land and the doubled rent.
+    var fk = room.feast == null ? "" : String(room.feast);
+    if (board.feastAt !== fk) {
+      board.feastAt = fk;
+      board.feastLayer.innerHTML = "";
+      if (fk !== "") {
+        var fg = tileGeom(room.feast);
+        var fv = fg.rot === 0 || fg.rot === 180, FW = fv ? fg.w : fg.h, FH = fv ? fg.h : fg.w;
+        svgEl("rect", { x: fg.x - FW / 2 + 3, y: fg.y - FH / 2 + 3, width: FW - 6, height: FH - 6, fill: "rgba(192,132,252,.2)", stroke: "#9333ea", "stroke-width": 7 }, board.feastLayer);
+        // The tag sits just inside the board's middle, beside the colour band,
+        // so it is never cut off at the screen's edge.
+        var inv = fg.rot === 0 ? [0, -1] : fg.rot === 90 ? [1, 0] : fg.rot === 180 ? [0, 1] : [-1, 0];
+        var tag = svgEl("g", { transform: "translate(" + (fg.x + inv[0] * (FW / 2 + 60)).toFixed(1) + " " + (fg.y + inv[1] * (FH / 2 + 20)).toFixed(1) + ")" }, board.feastLayer);
+        svgEl("rect", { x: -54, y: -15, width: 108, height: 30, rx: 15, fill: "#7e22ce", stroke: "#fff8e7", "stroke-width": 3 }, tag);
+        var tt = svgEl("text", { x: 0, y: 7, "text-anchor": "middle", "font-size": 19, "font-weight": 900, fill: "#fff" }, tag);
+        tt.textContent = "FEAST \u00d72";
+      }
     }
   }
   /* ---------- the pieces: hop along the walk ---------- */
@@ -1186,8 +1460,10 @@
       var p = room.players[i];
       var cls = "plr" + (room.turn === p.seat && !p.bankrupt ? " turn" : "") + (p.bankrupt ? " out" : "") + (p.in_jail ? " jail" : "");
       var status = p.bankrupt ? "BANKRUPT" : p.in_jail ? "⛓ In the Dungeon" : "$" + fmt(p.cash) + "<small> · worth $" + fmt(p.net_worth) + "</small>";
+      var tag = p.kingdoms ? '<span class="tag"> 👑' + p.kingdoms + (room.kingdom_goal ? "/" + room.kingdom_goal : "") + '</span>' : "";
+      if (p.away && !p.bankrupt) tag += '<div class="tag">📵 away</div>';
       html += '<div class="' + cls + '"><div class="ring">' + tokenBadge(p.token, seatColor(p.seat)) + '</div>'
-        + '<div class="who"><div class="nm">' + esc(p.name) + (p.is_ai ? ' 🤖' : '') + '</div><div class="st">' + status + '</div></div></div>';
+        + '<div class="who"><div class="nm">' + esc(p.name) + (p.is_ai ? ' 🤖' : '') + '</div><div class="st">' + status + tag + '</div></div></div>';
     }
     return html;
   }
@@ -1208,6 +1484,9 @@
     var many = room.players.length > 5 ? " many" : "";
     var left = '<div class="fLabel">Players</div><div class="players' + many + '">' + playerRows(room) + '</div>';
     var pills = '<span class="pill">ROUND ' + (room.round || 1) + '</span><span class="pill">' + esc((room.ruleset || "classic").toUpperCase()) + '</span>';
+    if (room.jubilee) pills += '<span class="pill">🎺 JUBILEE IN ' + room.jubilee.in_rounds + '</span>';
+    if (room.feast_name) pills += '<span class="pill">🍇 FEAST: ' + esc(room.feast_name) + '</span>';
+    if (room.kingdom_goal) pills += '<span class="pill">👑 ' + room.kingdom_goal + ' KINGDOMS WIN</span>';
     var now = "";
     if (p && room.status === "playing") {
       now += '<div class="cTurn"><div class="ring big">' + tokenBadge(p.token, seatColor(p.seat)) + '</div>'
@@ -1277,9 +1556,9 @@
     }
     updateBoard(room);
     moveTokens(room);
-    var sig = [room.turn, room.round, room.pot, room.bank_houses, room.bank_hotels, room.log_seq, JSON.stringify(room.last_roll),
+    var sig = [room.turn, room.round, room.pot, room.bank_houses, room.bank_hotels, room.log_seq, JSON.stringify(room.last_roll), room.feast,
       JSON.stringify(room.auction), JSON.stringify(room.pending),
-      JSON.stringify(room.players.map(function (p) { return [p.cash, p.net_worth, p.bankrupt, p.in_jail]; }))].join("~");
+      JSON.stringify(room.players.map(function (p) { return [p.cash, p.net_worth, p.bankrupt, p.in_jail, p.kingdoms, p.away]; }))].join("~");
     if (sig !== centerSig) {
       centerSig = sig;
       var parts = centerHtml(room);
@@ -1297,7 +1576,11 @@
     }
   }
   function renderFinished(room) {
-    var sorted = room.players.slice().sort(function (a, b) { return b.net_worth - a.net_worth; });
+    var sorted = room.players.slice().sort(function (a, b) {
+      if (a.seat === room.winner) return -1;
+      if (b.seat === room.winner) return 1;
+      return b.net_worth - a.net_worth;
+    });
     var winner = null;
     for (var i = 0; i < room.players.length; i++) if (room.players[i].seat === room.winner) winner = room.players[i];
     if (!winner) winner = sorted[0];
@@ -1306,7 +1589,16 @@
       var p = sorted[j];
       rows += '<div class="stRow' + (p.seat === winner.seat ? " winner" : "") + '"><div class="rk">' + (j + 1) + '</div><div class="nm">' + tokenBadge(p.token, seatColor(p.seat), "tkI") + ' ' + esc(p.name) + '</div><div class="nw">$' + fmt(p.net_worth) + '</div></div>';
     }
-    $("tv-main").innerHTML = '<div class="finish"><div class="crown">👑</div><div class="winTitle">' + esc(winner.name) + ' WINS THE JUBILEE!</div><div class="standings">' + rows + '</div></div>';
+    var why = { kingdom: "👑 Three kingdoms!", "last-standing": "The last one standing", "quick-game": "Two bankruptcies end the Quick Game",
+      "family-fun-full-rounds": "Twelve full rounds: the richest household wins", "round-limit": "The round limit: the richest household wins" }[room.result] || "";
+    var aw = "", list = room.awards || [];
+    for (var k = 0; k < list.length; k++) {
+      aw += '<div class="award" style="animation-delay:' + (0.6 + k * 0.2).toFixed(1) + 's"><span class="ic">' + esc(list[k].icon) + '</span><b>' + esc(list[k].title) + '</b>'
+        + '<div class="nm">' + esc(list[k].name) + '</div><small>' + esc(list[k].detail) + '</small></div>';
+    }
+    $("tv-main").innerHTML = '<div class="finish' + (aw ? ' withAwards' : '') + '"><div class="crown">👑</div><div class="winTitle">' + esc(winner.name) + ' WINS THE JUBILEE!</div>'
+      + (why ? '<div class="winWhy">' + esc(why) + '</div>' : '')
+      + '<div class="finBody"><div class="standings">' + rows + '</div>' + (aw ? '<div class="awards">' + aw + '</div>' : '') + '</div></div>';
   }
   var pollTimer = null;
   function schedule(ms) { if (pollTimer) clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }

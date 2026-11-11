@@ -355,9 +355,11 @@ def test_rolls_and_cards_carry_counters_so_repeats_still_animate():
 def test_card_parts_split_quote_effect_and_reference():
     parts = jubilee.card_parts("“He opens his hand and satisfies the desire of every living thing.” The bank pays you $200. (Psalm 145:16)")
     assert parts == {"quote": "He opens his hand and satisfies the desire of every living thing.",
-                     "effect": "The bank pays you $200.", "ref": "Psalm 145:16"}
+                     "flavor": "", "effect": "The bank pays you $200.", "ref": "Psalm 145:16"}
     plain = jubilee.card_parts("Your figs and wine bring in coin - the bank pays you $50. (Proverbs 27:18)")
     assert plain["effect"] == "The bank pays you $50." and plain["ref"] == "Proverbs 27:18"
+    # A story line is not a quotation: never set in quotation marks as Scripture.
+    assert plain["quote"] == "" and plain["flavor"] == "Your figs and wine bring in coin"
 
 
 def test_your_view_says_which_streets_you_can_build_on_and_why_not():
@@ -644,7 +646,7 @@ def test_a_scribe_on_the_third_dungeon_turn_pays_instead_of_walking_free(monkeyp
         assert ai["cash"] == 450                  # the $50 due came out of its purse
 
 
-def test_a_scribe_early_in_the_dungeon_rolls_doubles_instead_of_walking_free(monkeypatch):
+def test_a_scribe_late_in_the_game_rolls_for_doubles_instead_of_walking_free(monkeypatch):
     monkeypatch.setattr(jubilee, "AI_PACE_WHEN", "watched")
     made = jubilee.create_room({"name": "Ann"})
     code, pid = made["room"]["code"], made["player_id"]
@@ -653,6 +655,9 @@ def test_a_scribe_early_in_the_dungeon_rolls_doubles_instead_of_walking_free(mon
     seq = iter([0, 1])                             # faces 1 and 2 - no doubles
     monkeypatch.setattr(jubilee.secrets, "randbelow", lambda n: next(seq, 4))
     with jubilee._lock:
+        for i, sp in enumerate(jubilee.SPACES):    # late game: the land is all sold
+            if sp.get("price"):
+                room["props"][i]["owner"] = 0
         room["turn"] = 1
         room["rolled"] = False
         ai = room["players"][1]
@@ -664,6 +669,27 @@ def test_a_scribe_early_in_the_dungeon_rolls_doubles_instead_of_walking_free(mon
         assert ai["jail"] is not None              # a failed roll keeps it inside
         assert int(ai["jail"]["turns"]) == 1
         assert ai["position"] == 10                # and it did not slip free on foot
+
+
+def test_a_scribe_early_in_the_game_pays_its_way_out_to_keep_buying(monkeypatch):
+    monkeypatch.setattr(jubilee, "AI_PACE_WHEN", "watched")
+    seq = iter([0, 1])                             # faces 1 and 2: on to Emmaus (13), for sale
+    monkeypatch.setattr(jubilee.secrets, "randbelow", lambda n: next(seq, 4))
+    made = jubilee.create_room({"name": "Ann"})
+    code, pid = made["room"]["code"], made["player_id"]
+    jubilee.start_match(code, pid)
+    room = jubilee._rooms[code]
+    with jubilee._lock:
+        room["turn"] = 1
+        room["rolled"] = False
+        ai = room["players"][1]
+        ai["jail"] = {"turns": 0}
+        ai["jail_cards"] = 0
+        ai["cash"] = 500
+        ai["position"] = 10
+        jubilee._maybe_ai_unlocked(room)
+        assert ai["jail"] is None
+        assert ai["cash"] <= 450                   # it paid the $50 (and may have bought since)
 
 
 def test_a_scribe_holding_a_dungeon_free_card_plays_it(monkeypatch):

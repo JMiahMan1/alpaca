@@ -207,10 +207,10 @@
     <div class="jb-spacer"></div>
     <div class="jb-chip" id="jb-code" title="Tap to copy the room code">CODE <b id="jb-code-v">····</b></div>
     <div class="jb-chip" id="jb-round">ROUND <b id="jb-round-v">1</b></div>
-    <button class="jb-icon" id="jb-tv" aria-label="Show the board on a TV" title="Show the board on a TV">📺</button>
-    <button class="jb-icon" id="jb-zoom" aria-label="Zoom board to active player" title="Zoom board to active player">🔍</button>
-    <button class="jb-icon" id="jb-sound" aria-label="Sound on or off">🔊</button>
-    <button class="jb-icon" id="jb-leave" aria-label="Leave the game">🚪</button>
+    <button class="jb-icon" id="jb-tv" aria-label="Show the board on a TV" title="Show the board on a TV"></button>
+    <button class="jb-icon" id="jb-zoom" aria-label="Zoom board to active player" title="Zoom board to active player"></button>
+    <button class="jb-icon" id="jb-sound" aria-label="Sound on or off"></button>
+    <button class="jb-icon" id="jb-leave" aria-label="Leave the game"></button>
   </div>
   <div id="jb-main">
     <div id="jb-board-wrap">
@@ -218,7 +218,7 @@
       <div id="jb-dice" aria-hidden="true"></div>
     </div>
     <div id="jb-side">
-      <div id="jb-tvbar" hidden><span>📺 The board is on the TV - this is your hand.<span id="jb-tv-sound" hidden> 🔊 Sound too.</span></span><button class="jb-btn ghost" id="jb-tv-toggle">Show board here</button></div>
+      <div id="jb-tvbar" hidden><span>The board is on the TV - this phone is your hand.<span id="jb-tv-sound" hidden> Sound plays there too.</span></span><button class="jb-btn ghost" id="jb-tv-toggle">Show board here</button></div>
       <div id="jb-players"></div>
       <div id="jb-action"></div>
       <div id="jb-panel">
@@ -405,7 +405,7 @@
 
   /* match end */
   #jb-end { position: fixed; inset: 0; z-index: 30; display: none; flex-direction: column; align-items: center; justify-content: center;
-    background: radial-gradient(120% 90% at 50% -10%, rgba(255,200,61,.28), transparent 55%), rgba(6,3,20,.78); text-align: center; padding: 24px; gap: 10px; }
+    background: radial-gradient(120% 90% at 50% -10%, rgba(255,200,61,.28), transparent 55%), rgba(10,5,30,.96); text-align: center; padding: 24px; gap: 10px; }
   #jb-end.show { display: flex; animation: jb-fadein .4s ease-out; }
   #jb-end .crown { font-size: 84px; animation: jb-crown 1.1s cubic-bezier(.2,1.5,.3,1); filter: drop-shadow(0 8px 24px rgba(255,200,61,.6)); }
   @keyframes jb-crown { 0% { transform: translateY(-140px) rotate(-30deg) scale(.4); opacity: 0; } 70% { transform: translateY(8px) rotate(6deg) scale(1.15); } 100% { transform: none; } }
@@ -546,6 +546,14 @@
           <button class="jb-toggle" data-rule="double_go">Jubilee pays $400</button>
           <button class="jb-toggle" data-rule="no_auction">No auctions</button>
         </div>
+        <label class="jb-label" style="margin-top:10px">Jubilee specials</label>
+        <div class="jb-toggles" id="jb-specials">
+          <button class="jb-toggle sp" data-rule="sword_drill">⚔️ Sword Drill</button>
+          <button class="jb-toggle sp" data-rule="feast">🍇 Feast Day</button>
+          <button class="jb-toggle sp" data-rule="jubilee_year">🎺 Year of Jubilee</button>
+          <button class="jb-toggle sp" data-rule="kingdom_win">👑 Kingdom win</button>
+        </div>
+        <div class="jb-rulehelp" id="jb-rulehelp"></div>
         <button class="jb-btn big" id="jb-create" style="margin-top:14px">Open a room</button>
       </div>
       <div id="jb-join-block">
@@ -567,7 +575,7 @@
         <button class="jb-btn ghost" id="jb-copy" style="margin-top:6px">Copy join link</button>
       </div>
       <div class="jb-players" id="jb-wait-players" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:14px 0"></div>
-      <button class="jb-btn ghost" id="jb-wait-tv" style="margin:4px 0 10px">📺 Show the board on a TV</button>
+      <button class="jb-btn ghost" id="jb-wait-tv" style="margin:4px 0 10px">Show the board on a TV</button>
       <button class="jb-btn big" id="jb-start" style="display:none">Begin the match</button>
       <p class="jb-tag" id="jb-wait-hint" style="font-size:12px;margin-top:10px">Waiting for the host to start…</p>
       <button class="jb-btn ghost" id="jb-wait-leave">Leave room</button>
@@ -583,7 +591,7 @@
 
 <!-- auction banner -->
 <div id="jb-auction" role="dialog" aria-live="polite">
-  <div class="au-top"><span class="au-gavel">🔨</span><div class="au-what"><small>Auction</small><b id="jb-auction-who">-</b></div><div class="au-clock" id="jb-auction-clock">0:25</div></div>
+  <div class="au-top"><span class="au-gavel"><svg class="jb-ui" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M14 4l6 6M11 7l6 6M8.5 9.5l6 6M5 21l7-7"/></svg></span><div class="au-what"><small>Auction</small><b id="jb-auction-who">-</b></div><div class="au-clock" id="jb-auction-clock">0:25</div></div>
   <div class="au-mid"><div class="bid" id="jb-auction-bid">$0</div><div class="au-lead" id="jb-auction-lead">No bids yet</div></div>
   <div id="jb-auction-btns" class="au-btns"></div>
   <button class="jb-btn small coral" id="jb-auction-pass">Pass - I'm out</button>
@@ -605,7 +613,35 @@
 </div>
 
 <!-- match end -->
-<div id="jb-end"><div class="crown">👑</div><h1 id="jb-end-title">Match complete</h1><div class="standings" id="jb-end-standings"></div><button class="jb-btn big" id="jb-end-again">Rematch</button><button class="jb-btn ghost" id="jb-end-leave">Back to the lobby</button></div>
+<div id="jb-end"><div class="crown">👑</div><h1 id="jb-end-title">Match complete</h1><div class="jb-end-sub" id="jb-end-sub"></div><div class="standings" id="jb-end-standings"></div><div class="jb-awards" id="jb-end-awards"></div><button class="jb-btn big" id="jb-end-again">Rematch</button><button class="jb-btn ghost" id="jb-end-leave">Back to the lobby</button></div>
+
+<!-- the Herald: big moments, one banner at a time -->
+<div id="jb-herald" aria-live="polite"></div>
+
+<!-- the Sword Drill: everyone answers at once -->
+<div id="jb-drill" role="dialog" aria-live="assertive" aria-label="Sword Drill">
+  <div class="dr-card">
+    <div class="dr-band"><span>⚔️ SWORD DRILL</span><b id="jb-drill-clock">15</b></div>
+    <div class="dr-bar"><i id="jb-drill-bar"></i></div>
+    <div class="dr-who" id="jb-drill-who"></div>
+    <div class="dr-clue" id="jb-drill-clue"></div>
+    <div class="dr-opts" id="jb-drill-opts"></div>
+    <div class="dr-foot" id="jb-drill-foot"></div>
+  </div>
+</div>
+
+<!-- the Year of Jubilee -->
+<div id="jb-jubilee" role="dialog" aria-live="assertive">
+  <div class="ju-rays"></div>
+  <div class="ju-inner"><div class="ju-horn">🎺</div><div class="ju-title">THE YEAR OF JUBILEE</div>
+    <div class="ju-verse">“Proclaim liberty throughout all the land.” <small>Leviticus 25:10</small></div>
+    <div class="ju-what" id="jb-jubilee-what"></div><div class="ju-tap">Tap to continue</div></div>
+</div>
+
+<!-- reactions -->
+<div id="jb-react-layer" aria-hidden="true"></div>
+<button id="jb-react" aria-label="Send a reaction">😀</button>
+<div id="jb-react-tray" hidden></div>
 
 <style>
   /* dice cubes get their orientation on an inner element so the squash animation can not fight it */
@@ -613,6 +649,221 @@
   .jb-cube { position: absolute; inset: 0; transform-style: preserve-3d; transition: transform 1.05s cubic-bezier(.18,1.36,.32,1.02); }
   body { touch-action: manipulation; }
   button { touch-action: manipulation; }
+</style>
+
+<style>
+  /* ============ Jubilee specials ============ */
+  .jb-rulehelp { min-height: 16px; font-size: 12px; font-weight: 700; color: #e9dfff; line-height: 1.35; margin: 6px 4px 0; text-align: center; }
+  .jb-toggle.sp.on { background: linear-gradient(180deg, var(--gold2), var(--gold)); }
+  .jb-chipx { color: var(--gold2); margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .jb-chipx.soon { color: #fff; animation: jb-pulse 1.2s ease-in-out infinite; }
+  .jb-crowns { font-size: 10px; font-weight: 900; color: #ffe27a; margin-left: 4px; }
+  .jb-away { display: inline-block; font-size: 9px; font-weight: 900; color: #fde68a; background: rgba(250,204,21,.18); border-radius: 99px; padding: 2px 6px; margin-top: 2px; }
+
+  /* the Herald */
+  #jb-herald { position: fixed; left: 50%; top: calc(8px + var(--fk-safe-top)); z-index: 23; width: min(460px, 94vw);
+    transform: translateX(-50%); pointer-events: none; }
+  .hd { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 18px; color: var(--ink);
+    background: linear-gradient(180deg, #fff8e1, #ffe9a8); border: 3px solid var(--ink); box-shadow: 0 7px 0 var(--ink), 0 14px 30px rgba(0,0,0,.45);
+    animation: hd-in .5s cubic-bezier(.2,1.4,.35,1) both; pointer-events: auto; }
+  .hd.out { animation: hd-out .35s ease-in forwards; }
+  .hd .ic { font-size: 34px; line-height: 1; filter: drop-shadow(0 2px 2px rgba(0,0,0,.25)); }
+  .hd .tx { min-width: 0; }
+  .hd b { display: block; font-size: 16px; font-weight: 900; line-height: 1.15; }
+  .hd small { display: block; font-size: 12.5px; font-weight: 800; color: #5b4a8a; line-height: 1.3; margin-top: 2px; }
+  .hd.kingdom { background: linear-gradient(180deg, #fff3c4, #ffc83d); }
+  .hd.big_rent, .hd.bankrupt, .hd.doubles3 { background: linear-gradient(180deg, #ffe4e4, #ffb4b4); }
+  .hd.feast { background: linear-gradient(180deg, #f5e8ff, #d8b4fe); }
+  .hd.drill { background: linear-gradient(180deg, #e0f2fe, #93c5fd); }
+  @keyframes hd-in { from { transform: translateY(-140%) scale(.9); opacity: 0; } }
+  @keyframes hd-out { to { transform: translateY(-140%); opacity: 0; } }
+
+  /* the Sword Drill */
+  #jb-drill { position: fixed; inset: 0; z-index: 25; display: none; align-items: center; justify-content: center; padding: 14px;
+    background: radial-gradient(120% 80% at 50% 20%, rgba(37,99,235,.35), rgba(6,3,20,.82)); }
+  #jb-drill.show { display: flex; animation: jb-fadein .2s ease-out; }
+  .dr-card { width: min(520px, 100%); background: var(--paper); color: var(--ink); border: 3px solid var(--ink); border-radius: 22px; overflow: hidden;
+    box-shadow: 0 10px 0 var(--ink), 0 24px 60px rgba(0,0,0,.6); animation: jb-sheetup .35s cubic-bezier(.2,1.3,.35,1); }
+  .dr-band { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; color: #fff8e7;
+    background: linear-gradient(90deg, #1e40af, #2563eb, #1e40af); font-weight: 900; letter-spacing: .2em; font-size: 14px; }
+  .dr-band b { font-size: 22px; letter-spacing: 0; font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+  .dr-bar { height: 7px; background: rgba(27,15,59,.12); }
+  .dr-bar i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #22c55e, #facc15, #ef4444); transform-origin: 0 50%; }
+  .dr-who { padding: 10px 16px 0; font-size: 12px; font-weight: 900; color: #6b5b8f; letter-spacing: .06em; text-transform: uppercase; }
+  .dr-clue { padding: 6px 16px 12px; font-size: clamp(18px, 4.8vw, 23px); font-weight: 900; line-height: 1.3; }
+  .dr-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; padding: 0 14px 12px; }
+  .dr-opts.two { grid-template-columns: 1fr 1fr; }
+  .dr-opt { min-height: 58px; padding: 10px; border-radius: 14px; border: 3px solid var(--ink); background: #fff; color: var(--ink);
+    font: 900 16px var(--font); cursor: pointer; box-shadow: 0 4px 0 var(--ink); transition: transform .08s, box-shadow .08s; line-height: 1.2; }
+  .dr-opt:nth-child(1) { background: #fde68a; } .dr-opt:nth-child(2) { background: #a7f3d0; }
+  .dr-opt:nth-child(3) { background: #bfdbfe; } .dr-opt:nth-child(4) { background: #fbcfe8; }
+  .dr-opt:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+  .dr-opt[disabled] { cursor: default; }
+  .dr-opt.picked { outline: 4px solid var(--violet); outline-offset: 2px; }
+  .dr-opt.dim { opacity: .38; }
+  .dr-opt.right { background: #22c55e !important; color: #fff; opacity: 1; animation: jb-pulse .9s ease-in-out 2; }
+  .dr-opt.wrong { background: #ef4444 !important; color: #fff; opacity: 1; }
+  .dr-foot { padding: 0 16px 14px; font-size: 13px; font-weight: 800; color: #5b4a8a; text-align: center; min-height: 18px; line-height: 1.4; }
+  .dr-foot .who { display: inline-flex; align-items: center; gap: 4px; margin: 2px 6px; }
+  .dr-foot .who svg { width: 18px; height: 18px; }
+  .dr-foot .note { display: block; margin-top: 6px; font-style: italic; color: #7a5b16; font-weight: 700; }
+  .dr-res { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .dr-res div { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 10px; background: rgba(27,15,59,.05); text-align: left; }
+  .dr-res div.win { background: #dcfce7; }
+  .dr-res svg { width: 26px; height: 26px; flex: 0 0 auto; } .dr-res span { flex: 1; } .dr-res em { font-style: normal; font-variant-numeric: tabular-nums; }
+
+  /* the Year of Jubilee */
+  #jb-jubilee { position: fixed; inset: 0; z-index: 29; display: none; align-items: center; justify-content: center; overflow: hidden; cursor: pointer;
+    background: radial-gradient(90% 70% at 50% 40%, #fff3c4 0%, #ffc83d 35%, #b45309 75%, #451a03 100%); }
+  #jb-jubilee.show { display: flex; animation: jb-fadein .35s ease-out; }
+  .ju-rays { position: absolute; left: 50%; top: 40%; width: 200vmax; height: 200vmax; margin: -100vmax 0 0 -100vmax; opacity: .35;
+    background: repeating-conic-gradient(#fff 0deg 6deg, transparent 6deg 18deg); animation: jb-rayspin 40s linear infinite; }
+  .ju-inner { position: relative; text-align: center; padding: 20px; color: #3b1d00; max-width: 560px; }
+  .ju-horn { font-size: 92px; animation: ju-blow 1.2s cubic-bezier(.2,1.5,.3,1); filter: drop-shadow(0 8px 14px rgba(69,26,3,.45)); }
+  @keyframes ju-blow { 0% { transform: translateX(-60vw) rotate(-30deg) scale(.5); } 70% { transform: rotate(8deg) scale(1.15); } 100% { transform: none; } }
+  .ju-title { font-size: clamp(30px, 8vw, 54px); font-weight: 900; letter-spacing: .04em; line-height: 1; color: #fff8e7;
+    text-shadow: 0 4px 0 #78350f, 0 0 30px rgba(255,255,255,.6); margin-top: 6px; }
+  .ju-verse { margin-top: 12px; font-family: Georgia, serif; font-style: italic; font-size: 18px; font-weight: 700; }
+  .ju-verse small { display: block; font-family: var(--font); font-style: normal; font-size: 12px; font-weight: 900; letter-spacing: .1em; margin-top: 4px; }
+  .ju-what { margin-top: 16px; padding: 12px 16px; border-radius: 16px; background: rgba(255,248,231,.92); border: 3px solid #78350f; font-size: 16px; font-weight: 900; line-height: 1.4; color: #451a03; }
+  .ju-tap { margin-top: 14px; font-size: 12px; font-weight: 900; letter-spacing: .14em; color: #78350f; }
+
+  /* reactions */
+  #jb-react { position: fixed; right: calc(12px + var(--fk-safe-right)); bottom: calc(12px + var(--fk-safe-bottom)); z-index: 19; width: 50px; height: 50px;
+    border-radius: 50%; border: 2px solid rgba(255,200,61,.6); background: rgba(29,17,69,.9); font-size: 26px; cursor: pointer; display: none;
+    box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  body.jb-playing #jb-react { display: block; }
+  #jb-react:active { transform: scale(.9); }
+  #jb-react-tray { position: fixed; right: calc(12px + var(--fk-safe-right)); bottom: calc(70px + var(--fk-safe-bottom)); z-index: 19; display: grid;
+    grid-template-columns: repeat(4, 48px); gap: 6px; padding: 8px; border-radius: 18px; background: rgba(29,17,69,.96); border: 1px solid rgba(255,200,61,.45);
+    box-shadow: 0 10px 30px rgba(0,0,0,.5); animation: jb-sheetup .2s ease-out; }
+  #jb-react-tray[hidden] { display: none; }
+  #jb-react-tray button { width: 48px; height: 48px; font-size: 28px; border: 0; border-radius: 12px; background: rgba(255,255,255,.06); cursor: pointer; }
+  #jb-react-tray button:active { transform: scale(.88); background: rgba(255,200,61,.3); }
+  #jb-react-layer { position: fixed; inset: 0; z-index: 21; pointer-events: none; overflow: hidden; }
+  .rx { position: absolute; bottom: -70px; display: flex; flex-direction: column; align-items: center; animation: rx-up 3.2s cubic-bezier(.3,.7,.4,1) forwards; }
+  .rx .e { font-size: 44px; filter: drop-shadow(0 3px 4px rgba(0,0,0,.4)); }
+  .rx .n { font-size: 11px; font-weight: 900; color: #fff; padding: 1px 7px; border-radius: 99px; margin-top: -2px; }
+  @keyframes rx-up { 0% { transform: translateY(0) scale(.6); opacity: 0; } 12% { opacity: 1; transform: translateY(-14vh) scale(1.1); }
+    100% { transform: translateY(-78vh) translateX(var(--drift, 0)) scale(1); opacity: 0; } }
+
+  /* awards */
+  .jb-end-sub { color: #ffe9a8; font-weight: 800; font-size: 14px; margin-top: -4px; }
+  #jb-end { overflow-y: auto; justify-content: flex-start; padding-top: calc(28px + var(--fk-safe-top)); }
+  .jb-awards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; width: min(520px, 94vw); margin: 0 0 12px; }
+  .jb-award { background: linear-gradient(180deg, rgba(255,200,61,.2), rgba(255,200,61,.06)); border: 1.5px solid rgba(255,200,61,.5); border-radius: 14px;
+    padding: 8px 10px; text-align: left; animation: aw-in .5s cubic-bezier(.2,1.4,.35,1) both; }
+  .jb-award .ic { font-size: 24px; } .jb-award b { display: block; font-size: 12px; color: var(--gold2); letter-spacing: .04em; }
+  .jb-award .nm { font-size: 15px; font-weight: 900; } .jb-award small { display: block; font-size: 11.5px; color: #d9ccff; font-weight: 700; }
+  @keyframes aw-in { from { transform: scale(.6) translateY(20px); opacity: 0; } }
+
+  /* the feast on the board */
+  .jb-feastmark { pointer-events: none; }
+  .jb-feastglow { animation: jb-feastpulse 1.6s ease-in-out infinite; }
+  @keyframes jb-feastpulse { 50% { opacity: .35; } }
+  .jb-feastbtns { display: flex; flex-direction: column; gap: 7px; width: 100%; max-width: 460px; }
+  .jb-feastbtns .jb-btn { width: 100%; text-transform: none; letter-spacing: 0; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
+  .jb-feastbtns .jb-btn small { font-weight: 800; opacity: .8; }
+  @media (prefers-reduced-motion: reduce) { .ju-rays, .jb-feastglow, .rx { animation: none !important; } .rx { display: none; } }
+</style>
+<style>
+  /* ============ interface polish ============ */
+  .jb-ui { width: 20px; height: 20px; display: inline-block; flex: 0 0 auto; vertical-align: -4px; }
+  .jb-icon .jb-ui { width: 20px; height: 20px; }
+  .jb-icon { color: #efe9ff; }
+  .jb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  .jb-btn .jb-ui { width: 1.15em; height: 1.15em; }
+  .jb-chipx .jb-ui { width: 14px; height: 14px; vertical-align: -2px; margin-right: 2px; }
+  .au-gavel .jb-ui { width: 26px; height: 26px; }
+  /* players: a row of equal cards that fit the screen */
+  #jb-players { display: grid; grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); overflow-x: auto; }
+  .jb-player { min-width: 0; padding: 6px 8px 6px 6px; gap: 8px; border-radius: 14px; border: 1.5px solid var(--line); align-items: center; }
+  .jb-player .pinfo { min-width: 0; flex: 1; }
+  .jb-player.turn { border-color: var(--seat); box-shadow: 0 0 0 2px var(--seat), 0 0 18px rgba(255,200,61,.25); background: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.05)); }
+  .jb-player .jb-face-sm { width: 36px; height: 36px; }
+  @media (max-width: 480px) {
+    .jb-player { padding: 5px 6px 5px 5px; gap: 6px; }
+    .jb-player .jb-face-sm { width: 28px; height: 28px; }
+    .jb-pcash { font-size: 14px; } .jb-player .st { font-size: 10px; }
+  }
+  .jb-pname { font-size: 12.5px; font-weight: 900; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: none; }
+  .jb-pcash { font-size: 15px; font-weight: 900; color: var(--gold2); line-height: 1.15; display: flex; align-items: center; gap: 6px; }
+  .jb-player .st { display: block; font-size: 10.5px; font-weight: 800; color: #b9aee0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .jb-player .st.bad { color: #fca5a5; } .jb-player .st.warn { color: #fde68a; }
+  .jb-player .pips { margin-top: 3px; line-height: 1; height: 8px; overflow: hidden; }
+  .jb-player .jb-you, .jb-bot { position: static; top: auto; right: auto; display: inline-block; font-size: 8.5px; font-weight: 900; letter-spacing: .06em; border-radius: 4px; padding: 1px 4px; vertical-align: 2px; }
+  .jb-player .jb-you { background: var(--gold); color: var(--ink); } .jb-bot { background: rgba(255,255,255,.14); color: #d9d0ff; }
+  .jb-crowns { display: inline-flex; align-items: center; gap: 1px; font-size: 11px; color: #ffd45c; }
+  .jb-crowns .jb-ui { width: 12px; height: 12px; }
+  /* My Land */
+  .jb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px; margin-bottom: 10px; }
+  .jb-stats div { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+  .jb-stats small { display: block; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #a99ddb; }
+  .jb-stats b { display: block; font-size: 19px; font-weight: 900; color: var(--gold2); font-variant-numeric: tabular-nums; }
+  .jb-deeds { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .jb-deed { display: flex; flex-direction: column; text-align: left; padding: 0; overflow: hidden; border-radius: 12px; border: 0; cursor: pointer;
+    background: #fffaf0; color: var(--ink); font: inherit; box-shadow: 0 2px 0 rgba(0,0,0,.35); }
+  .jb-deed .band { display: block; height: auto; border: 0; margin: 0; border-radius: 0; padding: 7px 10px; font-size: 13.5px; font-weight: 900; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.45); }
+  .jb-deed .meta { display: flex; justify-content: space-between; gap: 6px; padding: 7px 10px 8px; font-size: 12px; font-weight: 800; color: #4b3b78; }
+  .jb-deed .mtag { color: #b91c1c; display: inline-flex; align-items: center; gap: 3px; } .jb-deed .mtag .jb-ui { width: 12px; height: 12px; }
+  .jb-deed.mortgaged { opacity: .7; }
+  .jb-empty { padding: 14px; border-radius: 12px; border: 1px dashed var(--line); color: #cbb9ff; font-weight: 700; font-size: 13.5px; line-height: 1.45; }
+  .jb-bankline { margin-top: 10px; font-size: 11.5px; font-weight: 800; color: #8f82c2; text-align: center; letter-spacing: .04em; }
+  #jb-tabbody { padding-bottom: 72px; }
+  @media (min-width: 820px) { #jb-tabbody { padding-bottom: 12px; } }
+</style>
+<style>
+  /* ============ dialogs ============ */
+  .jb-sheet h2 .jb-ui { width: 22px; height: 22px; color: #5b21b6; }
+  .dd { border-radius: 16px; overflow: hidden; border: 2px solid var(--ink); background: #fff; box-shadow: 3px 4px 0 var(--ink); }
+  .dd-head { padding: 12px 14px 10px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.45); }
+  .dd-head small { display: block; font-size: 11px; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; opacity: .9; }
+  .dd-head b { display: block; font-size: 24px; font-weight: 900; line-height: 1.1; }
+  .dd-owner { display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 14px; font-weight: 800; color: #4b3b78; border-bottom: 1px solid #ece4f7; }
+  .dd-owner svg { width: 26px; height: 26px; } .dd-owner.forsale { color: #166534; background: #f0fdf4; }
+  .dd-mort { display: flex; align-items: center; gap: 6px; padding: 8px 14px; background: #fef2f2; color: #b91c1c; font-weight: 900; font-size: 13px; }
+  .dd-mort .jb-ui { width: 16px; height: 16px; }
+  .dd-rows { padding: 6px 8px; }
+  .dd-row { display: flex; justify-content: space-between; padding: 6px 8px; border-radius: 8px; font-size: 14px; font-weight: 700; color: #3b2d63; }
+  .dd-row b { font-variant-numeric: tabular-nums; color: var(--ink); }
+  .dd-row.now { background: #fef3c7; box-shadow: inset 0 0 0 2px #f59e0b; font-weight: 900; }
+  .dd-row em { font-style: normal; font-size: 10px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; background: #f59e0b; color: #fff; border-radius: 5px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+  .dd-foot { padding: 8px 14px 12px; font-size: 12.5px; font-weight: 800; color: #6b5b8f; border-top: 1px solid #ece4f7; line-height: 1.5; }
+  /* build & manage */
+  .mg-debt { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; margin: 4px 0 10px; border-radius: 14px; background: #fef2f2; border: 2px solid #fca5a5; }
+  .mg-debt b { font-size: 17px; color: #991b1b; } .mg-debt span { font-size: 13.5px; font-weight: 700; color: #4b3b78; }
+  .mg-debt .mg-warn { color: #991b1b; font-weight: 900; }
+  .mg-set { margin: 10px 0; border-radius: 14px; background: #fff; border: 1.5px solid #e5dcf3; overflow: hidden; }
+  .mg-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #faf6ff; border-bottom: 1px solid #ece4f7; flex-wrap: wrap; }
+  .mg-head b { font-size: 14.5px; } .mg-count { font-size: 12px; font-weight: 900; color: #6b5b8f; }
+  .mg-head small { margin-left: auto; font-size: 11.5px; font-weight: 800; color: #8a7bb0; } .mg-head small.ok { color: #15803d; }
+  .mg-sw { width: 12px; height: 12px; border-radius: 4px; flex: 0 0 auto; }
+  .mg-row { display: flex; align-items: center; gap: 8px 10px; padding: 9px 12px; border-top: 1px solid #f3eefb; flex-wrap: wrap; }
+  .mg-row:first-of-type { border-top: 0; } .mg-row .mg-sw { height: 30px; width: 6px; }
+  .mg-name { flex: 1 1 110px; min-width: 110px; } .mg-name b { display: block; font-size: 14.5px; }
+  .mg-name small { font-size: 12px; font-weight: 800; color: #6b5b8f; } .mg-name .bad { color: #b91c1c; }
+  .mg-acts { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto; }
+  .mg-btn { min-width: 38px; height: 38px; border-radius: 10px; border: 2px solid var(--ink); background: #fff; color: var(--ink); font: 900 20px var(--font); cursor: pointer; line-height: 1; padding: 0 8px; }
+  .mg-btn.add { background: #2ed3b7; display: inline-flex; align-items: center; gap: 4px; } .mg-btn small { font-size: 11px; }
+  .mg-btn[disabled] { opacity: .3; cursor: default; }
+  .mg-dots { display: inline-flex; gap: 2px; } .mg-dots i { width: 7px; height: 12px; border-radius: 2px; background: #e5dcf3; }
+  .mg-dots i.on { background: #16a34a; } .mg-dots i.hotel { width: 10px; } .mg-dots i.hotel.on { background: #dc2626; }
+  .mg-chip { height: 32px; padding: 0 10px; border-radius: 99px; border: 1.5px solid #c9bde6; background: #faf7ff; color: #4b3b78; font: 800 12px var(--font); cursor: pointer; white-space: nowrap; }
+  .mg-chip.lift { background: #fef3c7; border-color: #f59e0b; color: #78350f; }
+  /* the action area's context card */
+  #jb-action { flex-direction: row; }
+  .jb-ctx { flex: 1 1 100%; display: flex; align-items: stretch; gap: 10px; background: #fffaf0; color: var(--ink); border-radius: 14px; overflow: hidden; box-shadow: 0 3px 0 rgba(0,0,0,.35); max-width: 520px; }
+  .jb-ctx .cx-band { width: 10px; flex: 0 0 auto; }
+  .jb-ctx .cx-body { flex: 1 1 auto; padding: 8px 4px 9px 0; min-width: 0; }
+  .jb-ctx small { display: block; font-size: 10.5px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; color: #8a7bb0; }
+  .jb-ctx b { display: block; font-size: 17px; font-weight: 900; line-height: 1.15; }
+  .jb-ctx span { display: block; font-size: 12.5px; font-weight: 700; color: #4b3b78; margin-top: 2px; line-height: 1.35; }
+  .jb-ctx.warn b { color: #991b1b; }
+  .cx-info { flex: 0 0 auto; width: 44px; border: 0; background: transparent; color: #6d28d9; cursor: pointer; }
+  .cx-info .jb-ui { width: 22px; height: 22px; }
+  #jb-action .jb-btn.ghost { color: #fff; }
+  .jb-cardfront .verse.plain { font-family: var(--font); font-style: normal; font-weight: 800; font-size: clamp(16px, 4.2vw, 19px); }
+  .jb-tline i { width: 10px; height: 16px; border-radius: 3px; }
 </style>
 <script>
 (function () {
@@ -640,6 +891,31 @@ var kit = FK.create({
   howTo: ["Roll the dice and buy up the Holy Land.", "Build whole color groups - houses, then hotels.", "Charge rent, trade wisely, dodge the Dungeon.", "Last one solvent wins the Jubilee!"],
   onStart: function () {}
 });
+
+
+/* ---------- the interface's icons: one drawn set (emoji differ on every device) ---------- */
+var UI_ICONS = {
+  tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  zoomIn: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
+  zoomOut: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 11h6"/>',
+  sound: '<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>',
+  mute: '<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M17 9l5 5M22 9l-5 5"/>',
+  leave: '<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M15 16l4-4-4-4M19 12H9"/>',
+  land: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>',
+  trade: '<path d="M7 7h12l-3-3M17 17H5l3 3"/>',
+  die: '<rect x="4" y="4" width="16" height="16" rx="4"/><circle cx="9" cy="9" r="1.3" fill="currentColor"/><circle cx="15" cy="15" r="1.3" fill="currentColor"/><circle cx="15" cy="9" r="1.3" fill="currentColor"/><circle cx="9" cy="15" r="1.3" fill="currentColor"/>',
+  end: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  coins: '<ellipse cx="9" cy="7" rx="6" ry="3"/><path d="M3 7v4c0 1.7 2.7 3 6 3s6-1.3 6-3V7"/><path d="M9 14v3c0 1.7 2.7 3 6 3s6-1.3 6-3v-4c0-1.7-2.7-3-6-3"/>',
+  gavel: '<path d="M14 4l6 6M11 7l6 6M8.5 9.5l6 6M5 21l7-7"/>',
+  crown: '<path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z" fill="currentColor" stroke="none"/>',
+  horn: '<path d="M3 19c7 0 12-4 14-11l2-3"/><path d="M3 19c1-3 3-4 6-4 4 0 6-3 8-7"/><path d="M17.5 4.5l3 2"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>'
+};
+function ui(name, cls) {
+  return '<svg class="jb-ui ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (UI_ICONS[name] || '') + '</svg>';
+}
 
 /* ---------- tiny helpers ---------- */
 function $(id) { return document.getElementById(id); }
@@ -847,7 +1123,8 @@ var state = {
   meSeat: null, busy: false, pollTimer: null,
   endedShown: false, scorePosted: false,
   ruleset: "classic",
-  toggles: { jackpot: false, double_go: false, no_auction: false },
+  toggles: { jackpot: false, double_go: false, no_auction: false,
+             sword_drill: true, feast: true, jubilee_year: true, kingdom_win: false },
   token: "ark",
   tab: "prop",
   hopQueue: [],
@@ -856,7 +1133,7 @@ var state = {
   muted: store.get("muted") === "1"
 };
 var soundBtn = $("jb-sound");
-function syncSoundBtn() { soundBtn.textContent = state.muted ? "🔇" : "🔊"; kit.sound.setMuted(state.muted); syncTvSound(); }
+function syncSoundBtn() { soundBtn.innerHTML = ui(state.muted ? 'mute' : 'sound'); kit.sound.setMuted(state.muted); syncTvSound(); }
 /* While a TV shows the board, the TV's speakers play the game (jubilee_tv.html)
    and every phone is silent: board events and this player's own taps alike,
    so a room of phones never echoes the TV. Haptics and visuals stay. The
@@ -876,9 +1153,11 @@ tap(soundBtn, function () {
   store.set('muted', state.muted ? '1' : '0');
   kit.sound.unlock();
   syncSoundBtn();
-  if (state.room && tvHasSound(state.room)) kit.toast('🔊 The sound is on the TV');
+  if (state.room && tvHasSound(state.room)) kit.toast('The sound is playing on the TV');
 });
 syncSoundBtn();
+$('jb-tv').innerHTML = ui('tv');
+$('jb-leave').innerHTML = ui('leave');
 
   /* ============ lobby ============ */
   function initialsFor(name) {
@@ -907,26 +1186,48 @@ syncSoundBtn();
     }
     $('jb-rulesets').innerHTML = html;
     $('jb-rulesets').querySelectorAll('.jb-ruleset').forEach(function (btn) {
-      tap(btn, function () { state.ruleset = btn.getAttribute('data-rs'); renderRulesets(); renderToggles(); });
+      tap(btn, function () {
+        state.ruleset = btn.getAttribute('data-rs');
+        // Quick Game plays for kingdoms; the others for the long haul.
+        state.toggles.kingdom_win = state.ruleset === 'quick';
+        renderRulesets(); renderToggles();
+      });
     });
   }
 
+  var RULE_HELP = {
+    jackpot: '🍯 Taxes and fines go into a pot. Rest on the Sabbath to collect it all.',
+    double_go: 'Passing Jubilee! pays $400 instead of $200.',
+    no_auction: 'Land nobody buys goes back to the Bank instead of the auction block.',
+    sword_drill: '⚔️ Land on SCRIPTURE and EVERYONE gets a Bible question on their phone. Fastest right answer wins $100, every right answer $25.',
+    feast: '🍇 Rest on the Sabbath to proclaim a feast on one of your lands: its rent doubles until someone moves the feast.',
+    jubilee_year: '🎺 Every 7 rounds the trumpet sounds: everyone in the Dungeon goes free, and the poorest player gets their mortgaged land back plus $150.',
+    kingdom_win: '👑 The first player to own three whole colour groups wins on the spot.'
+  };
+  function showRuleHelp(key) { var h = $('jb-rulehelp'); if (h) h.textContent = RULE_HELP[key] || ''; }
   function renderToggles() {
     var familyFun = state.ruleset === 'familyfun';
     if (familyFun) { state.toggles.jackpot = true; state.toggles.no_auction = true; }
-    $('jb-toggles').querySelectorAll('.jb-toggle').forEach(function (btn) {
+    document.querySelectorAll('#jb-toggles .jb-toggle, #jb-specials .jb-toggle').forEach(function (btn) {
       var key = btn.getAttribute('data-rule');
       btn.classList.toggle('on', !!state.toggles[key]);
       btn.disabled = familyFun && (key === 'jackpot' || key === 'no_auction');
     });
   }
 
-  $('jb-toggles').querySelectorAll('.jb-toggle').forEach(function (btn) {
+  (function () {
+    // The specials remember how this family likes to play.
+    try { var saved = JSON.parse(store.get('specials') || 'null'); if (saved) ['sword_drill', 'feast', 'jubilee_year'].forEach(function (k) { if (typeof saved[k] === 'boolean') state.toggles[k] = saved[k]; }); } catch (e) {}
+  })();
+  document.querySelectorAll('#jb-toggles .jb-toggle, #jb-specials .jb-toggle').forEach(function (btn) {
     tap(btn, function () {
       var key = btn.getAttribute('data-rule');
+      showRuleHelp(key);
       if (btn.disabled) return;
       state.toggles[key] = !state.toggles[key];
+      store.set('specials', JSON.stringify({ sword_drill: state.toggles.sword_drill, feast: state.toggles.feast, jubilee_year: state.toggles.jubilee_year }));
       renderToggles();
+      kit.haptic(10);
     });
   });
 
@@ -947,13 +1248,14 @@ syncSoundBtn();
     var wait = $('jb-lobby-wait');
     wait.style.display = '';  // the stylesheet's layout (a grid on a sideways phone)
     $('jb-share-code').textContent = room.code;
-    $('jb-share-qr').src = '/api/jubilee/rooms/' + room.code + '/join.svg';
+    var qr = '/api/jubilee/rooms/' + room.code + '/join.svg';
+    if ($('jb-share-qr').getAttribute('src') !== qr) $('jb-share-qr').src = qr;   // once, not on every poll
     var chips = '';
     for (var i = 0; i < room.players.length; i++) {
       var p = room.players[i];
       chips += '<div style="text-align:center"><div style="width:44px;height:44px;margin:0 auto">' + tokenBadge(p.token, SEAT_COLORS[i]) + '</div><div style="font-size:13px;font-weight:800">' + esc(p.name) + '</div></div>';
     }
-    $('jb-wait-players').innerHTML = chips;
+    if ($('jb-wait-players').innerHTML !== chips) $('jb-wait-players').innerHTML = chips;
     var isHost = !!(room.you && room.you.is_host);
     $('jb-start').style.display = isHost ? '' : 'none';
     $('jb-wait-hint').textContent = isHost ? 'Everyone in? Start the game.' : 'Waiting for the host to start…';
@@ -984,6 +1286,8 @@ syncSoundBtn();
     var out = await post('/api/jubilee/rooms', {
       name: name, token: state.token, ruleset: state.ruleset,
       jackpot: state.toggles.jackpot, double_go: state.toggles.double_go, no_auction: state.toggles.no_auction,
+      sword_drill: state.toggles.sword_drill, feast: state.toggles.feast,
+      jubilee_year: state.toggles.jubilee_year, kingdom_win: state.toggles.kingdom_win,
       device_id: deviceId, initials: initialsFor(name)
     });
     handleLobbyResponse(out);
@@ -1017,9 +1321,6 @@ syncSoundBtn();
 
   /* ============ board ============ */
   var SVGNS = 'http://www.w3.org/2000/svg';
-  var T = 960 / 11;
-  var CORNER = T; // corner tiles are one tile wide along the edge
-
   function svgEl(tag, attrs, parent) {
     var el = document.createElementNS(SVGNS, tag);
     if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
@@ -1027,21 +1328,62 @@ syncSoundBtn();
     return el;
   }
 
-  function tileCenter(i) {
-    if (i <= 10) return { x: 960 - T / 2 - i * T, y: 960 - T / 2, side: 0 };
-    if (i <= 20) return { x: T / 2, y: 960 - T / 2 - (i - 10) * T, side: 1 };
-    if (i <= 30) return { x: T / 2 + (i - 20) * T, y: T / 2, side: 2 };
-    return { x: 960 - T / 2, y: T / 2 + (i - 30) * T, side: 3 };
+  /* The board's geometry. Corners are deeper than a side square (as on a real
+     board) so their words fit; every square's text reads upright, because a
+     screen is only ever seen from one side. */
+  var C = 128, E = (960 - 2 * C) / 9, BANDW = 22;
+  var T = C;
+  function tileRect(i) {
+    if (i === 0) return { x: 960 - C, y: 960 - C, w: C, h: C, side: 0, corner: true };
+    if (i < 10) return { x: 960 - C - i * E, y: 960 - C, w: E, h: C, side: 0 };
+    if (i === 10) return { x: 0, y: 960 - C, w: C, h: C, side: 1, corner: true };
+    if (i < 20) return { x: 0, y: 960 - C - (i - 10) * E, w: C, h: E, side: 1 };
+    if (i === 20) return { x: 0, y: 0, w: C, h: C, side: 2, corner: true };
+    if (i < 30) return { x: C + (i - 21) * E, y: 0, w: E, h: C, side: 2 };
+    if (i === 30) return { x: 960 - C, y: 0, w: C, h: C, side: 3, corner: true };
+    return { x: 960 - C, y: C + (i - 31) * E, w: C, h: E, side: 3 };
+  }
+  function tileCenter(i) { var r = tileRect(i); return { x: r.x + r.w / 2, y: r.y + r.h / 2, side: r.side }; }
+  /* Where the pieces stand on a square: its inner part (the colour band side),
+     so a piece never covers the name or the price. */
+  var INWARD = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+  function tileAnchor(i) {
+    var r = tileRect(i), cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    if (r.corner) return { x: cx, y: cy };
+    var k = 11;   // on the colour band: clear of the name and the price
+    if (r.side === 0) return { x: cx, y: r.y + k };
+    if (r.side === 1) return { x: r.x + r.w - k, y: cy };
+    if (r.side === 2) return { x: cx, y: r.y + r.h - k };
+    return { x: r.x + k, y: cy };
+  }
+  function anchorAt(pos) {
+    var i0 = ((Math.floor(pos) % 40) + 40) % 40, f = pos - Math.floor(pos);
+    var a = tileAnchor(i0);
+    if (f <= 0.0001) return a;
+    var b = tileAnchor((i0 + 1) % 40);
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+  }
+  /* The k-th of n pieces on one square: side by side along the edge, then a
+     second row further in. Corners hold them in a little grid. */
+  function pieceOffset(i, k, n) {
+    if (n <= 1) return { x: 0, y: 0 };
+    var r = tileRect(i);
+    var col = k % 2, row = Math.floor(k / 2), along = (col - 0.5) * 26;
+    if (r.corner) return { x: along * 1.4, y: (row - (Math.ceil(n / 2) - 1) / 2) * 30 };
+    var inw = INWARD[r.side], alongV = r.side % 2 === 0 ? [1, 0] : [0, 1];
+    return { x: alongV[0] * along + inw[0] * row * 26, y: alongV[1] * along + inw[1] * row * 26 };
   }
 
-  var NAME_FS = 12.5, PRICE_FS = 12.5;
-  var SHORT = { "The King's Highway": "King's Highway", "The Via Maris": "Via Maris", "The Desert Caravan": "Caravan",
-    "The New Jerusalem": "New Jerusalem", "The Tribute": "Tribute", "The Offering": "Offering", "The Lamp": "Lamp",
-    "The Well": "Well", "PARABLE": "Parable", "SCRIPTURE": "Scripture" };
+  var NAME_FS = 13, PRICE_FS = 12.5;
+  var SHORT = { "The King's Highway": "King's Highway", "The Via Maris": "Via Maris", "The Desert Caravan": "Desert Caravan",
+    "The New Jerusalem": "New Jerusalem", "The Tribute": "Tribute", "The Offering": "Offering", "The Lamp": "The Lamp",
+    "The Well": "The Well", "PARABLE": "Parable", "SCRIPTURE": "Scripture", "The Way": "The Way" };
   function shortName(sp) { return sp ? (SHORT[sp.name] || sp.name || '') : '?'; }
-  function tileLabel(g, label, cy, maxW) {
+  /* A name in one or two lines, centred on (cx, cy), at most maxW wide. */
+  function tileLabel(g, label, cx, cy, maxW, fs) {
+    fs = fs || NAME_FS;
     var words = String(label).split(/\s+/).filter(Boolean), lines = [words.join(' ')];
-    if (words.length > 1 && 0.6 * NAME_FS * lines[0].length > maxW) {
+    if (words.length > 1 && 0.58 * fs * lines[0].length > maxW) {
       var best = null;
       for (var k = 1; k < words.length; k++) {
         var cand = [words.slice(0, k).join(' '), words.slice(k).join(' ')];
@@ -1050,13 +1392,12 @@ syncSoundBtn();
       }
       lines = best.lines;
     }
-    var lh = NAME_FS * 1.1;
+    var lh = fs * 1.12;
     for (var li = 0; li < lines.length; li++) {
-      var attrs = { 'data-maxw': maxW, x: 0, y: (cy + (li - (lines.length - 1) / 2) * lh + NAME_FS * 0.36).toFixed(1), 'text-anchor': 'middle',
-        'font-size': NAME_FS, 'font-weight': 900, fill: '#1b0f3b' };
-      if (0.6 * NAME_FS * lines[li].length > maxW) { attrs.textLength = maxW; attrs.lengthAdjust = 'spacingAndGlyphs'; }
-      svgEl('text', attrs, g).textContent = lines[li];
+      svgEl('text', { 'data-maxw': maxW, x: cx.toFixed(1), y: (cy + (li - (lines.length - 1) / 2) * lh + fs * 0.35).toFixed(1), 'text-anchor': 'middle',
+        'font-size': fs, 'font-weight': 800, fill: '#20123f', 'letter-spacing': -0.1 }, g).textContent = lines[li];
     }
+    return lines.length;
   }
   /* The board's icons: one flat, drawn set (not emoji, which every TV and
      phone draws differently), in the space's own colour. 24-unit grid. */
@@ -1112,97 +1453,64 @@ syncSoundBtn();
   function buildBoard() {
     var svg = $('jb-board');
     svg.innerHTML = '';
-    // parchment frame & gradients
     var defs = svgEl('defs', {}, svg);
-    var grad = svgEl('radialGradient', { id: 'jb-paper', cx: '50%', cy: '42%', r: '75%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': '#fffbf0' }, grad);
-    svgEl('stop', { offset: '100%', 'stop-color': '#e4cfa0' }, grad);
-    var medal = svgEl('radialGradient', { id: 'jb-medal', cx: '40%', cy: '35%', r: '70%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': '#fffbea' }, medal);
-    svgEl('stop', { offset: '100%', 'stop-color': '#e9d29a' }, medal);
-    var glossG = svgEl('radialGradient', { id: 'jb-gloss', cx: '35%', cy: '28%', r: '75%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': '#ffffff', 'stop-opacity': '.85' }, glossG);
-    svgEl('stop', { offset: '45%', 'stop-color': '#ffffff', 'stop-opacity': '.12' }, glossG);
-    svgEl('stop', { offset: '100%', 'stop-color': '#000000', 'stop-opacity': '.35' }, glossG);
-    var gold = svgEl('radialGradient', { id: 'jb-gold', cx: '50%', cy: '45%', r: '62%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': '#fff099' }, gold);
-    svgEl('stop', { offset: '60%', 'stop-color': '#f59e0b' }, gold);
-    svgEl('stop', { offset: '100%', 'stop-color': '#b45309' }, gold);
-    var felt = svgEl('radialGradient', { id: 'jb-felt', cx: '50%', cy: '45%', r: '70%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': '#2b1664' }, felt);
-    svgEl('stop', { offset: '65%', 'stop-color': '#1a0d40' }, felt);
-    svgEl('stop', { offset: '100%', 'stop-color': '#100729' }, felt);
-    var sheen = svgEl('linearGradient', { id: 'jb-sheen', x1: '0%', y1: '0%', x2: '0%', y2: '100%' }, defs);
-    svgEl('stop', { offset: '0%', 'stop-color': 'rgba(255,255,255,.38)' }, sheen);
-    svgEl('stop', { offset: '55%', 'stop-color': 'rgba(255,255,255,0)' }, sheen);
-    svgEl('stop', { offset: '100%', 'stop-color': 'rgba(0,0,0,.22)' }, sheen);
+    function grad(id, type, attrs, stops) {
+      var el = svgEl(type, Object.assign({ id: id }, attrs), defs);
+      stops.forEach(function (s) { svgEl('stop', { offset: s[0], 'stop-color': s[1], 'stop-opacity': s[2] == null ? 1 : s[2] }, el); });
+    }
+    grad('jb-paper', 'linearGradient', { x1: 0, y1: 0, x2: 0, y2: 1 }, [['0%', '#fffaf0'], ['100%', '#f6ead0']]);
+    grad('jb-medal', 'radialGradient', { cx: '40%', cy: '35%', r: '70%' }, [['0%', '#fffbea'], ['100%', '#ead6a4']]);
+    grad('jb-gold', 'linearGradient', { x1: 0, y1: 0, x2: 0, y2: 1 }, [['0%', '#fff3b0'], ['45%', '#ffc83d'], ['100%', '#c27803']]);
+    grad('jb-felt', 'radialGradient', { cx: '50%', cy: '42%', r: '75%' }, [['0%', '#33197a'], ['60%', '#1d0f4a'], ['100%', '#120833']]);
+    grad('jb-glow', 'radialGradient', { cx: '50%', cy: '50%', r: '50%' }, [['0%', '#ffc83d', 0.22], ['100%', '#ffc83d', 0]]);
+    grad('jb-cornerGo', 'linearGradient', { x1: 0, y1: 0, x2: 0, y2: 1 }, [['0%', '#fff4cc'], ['100%', '#ffd977']]);
 
-    // Outer beveled mahogany & gold board border
-    svgEl('rect', { x: 0, y: 0, width: 960, height: 960, fill: 'url(#jb-paper)', stroke: '#1b0f3b', 'stroke-width': 10, rx: 10 }, svg);
-    svgEl('rect', { x: 4, y: 4, width: 952, height: 952, fill: 'none', stroke: '#ffc83d', 'stroke-width': 2, rx: 8, opacity: 0.7 }, svg);
+    // The frame: a dark rim, then the squares on cream paper.
+    svgEl('rect', { x: 0, y: 0, width: 960, height: 960, rx: 14, fill: '#20123f' }, svg);
+    svgEl('rect', { x: 3, y: 3, width: 954, height: 954, rx: 12, fill: 'url(#jb-paper)' }, svg);
 
-    // Center tabletop panel
+    // The middle: felt, a soft glow behind the title, the two decks, the news.
     var panel = svgEl('g', {}, svg);
-    svgEl('rect', { x: T, y: T, width: 960 - 2 * T, height: 960 - 2 * T, fill: 'url(#jb-felt)', stroke: '#ffc83d', 'stroke-width': 4, rx: 6 }, panel);
-    svgEl('rect', { x: T + 10, y: T + 10, width: 960 - 2 * T - 20, height: 960 - 2 * T - 20, fill: 'none', stroke: 'rgba(255,200,61,.28)', 'stroke-width': 1.5, 'stroke-dasharray': '8 5', rx: 4 }, panel);
-
-    // Rotating sun rays: the outer group places them, the inner one spins (a CSS
-    // transform on the placed group would replace its translate and throw the rays off-centre).
-    var raysAt = svgEl('g', { transform: 'translate(480,480)' }, panel);
+    var M = 960 - 2 * C;
+    svgEl('rect', { x: C, y: C, width: M, height: M, fill: 'url(#jb-felt)' }, panel);
+    svgEl('rect', { x: C + 12, y: C + 12, width: M - 24, height: M - 24, rx: 10, fill: 'none', stroke: 'rgba(255,200,61,.35)', 'stroke-width': 1.5 }, panel);
+    svgEl('circle', { cx: 480, cy: 400, r: 300, fill: 'url(#jb-glow)' }, panel);
+    var raysAt = svgEl('g', { transform: 'translate(480,400)', opacity: 0.55 }, panel);
     var rays = svgEl('g', { id: 'svg-rays', class: RM ? '' : 'jb-rays' }, raysAt);
-    for (var r = 0; r < 16; r++) {
-      svgEl('path', { d: 'M0,0 L -22,-320 L 22,-320 Z', fill: r % 2 ? 'rgba(255,200,61,.13)' : 'rgba(255,200,61,.05)', transform: 'rotate(' + (r * 22.5) + ')' }, rays);
+    for (var r = 0; r < 24; r++) {
+      svgEl('path', { d: 'M0,0 L -14,-330 L 14,-330 Z', fill: 'rgba(255,200,61,.07)', transform: 'rotate(' + (r * 15) + ')' }, rays);
     }
-
-    // Ornate compass rose medallion in center
-    var comp = svgEl('g', { transform: 'translate(480,480)', opacity: 0.22 }, panel);
-    svgEl('circle', { r: 190, fill: 'none', stroke: '#ffc83d', 'stroke-width': 2 }, comp);
-    svgEl('circle', { r: 145, fill: 'none', stroke: '#ffc83d', 'stroke-width': 1.5, 'stroke-dasharray': '4 6' }, comp);
-    for (var cp = 0; cp < 8; cp++) {
-      svgEl('polygon', { points: '0,-185 14,-35 0,0 -14,-35', fill: cp % 2 ? '#ffc83d' : '#fff8e7', transform: 'rotate(' + (cp * 45) + ')' }, comp);
-    }
-
-    // Angled PARABLE Card Deck (Top-Left of center panel, Monopoly style)
-    var pDeck = svgEl('g', { id: 'svg-deck-parable', transform: 'translate(238,238) rotate(-45)', style: 'cursor:pointer' }, panel);
-    svgEl('rect', { x: -74, y: -48, width: 148, height: 96, rx: 10, fill: 'rgba(0,0,0,.45)', transform: 'translate(5,7)' }, pDeck);
-    svgEl('rect', { x: -72, y: -46, width: 144, height: 92, rx: 10, fill: '#3b1566', stroke: '#ffc83d', 'stroke-width': 2.5, 'stroke-dasharray': '5 3' }, pDeck);
-    svgEl('rect', { x: -64, y: -38, width: 128, height: 76, rx: 8, fill: '#581c87', stroke: '#e9d5ff', 'stroke-width': 2 }, pDeck);
-    svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 28, 'font-weight': 900, fill: '#fde047' }, pDeck).textContent = '📜 ?';
-    svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 3 }, pDeck).textContent = 'PARABLES';
-
-    // Angled SCRIPTURE Card Deck (Bottom-Right of center panel, Monopoly style)
-    var sDeck = svgEl('g', { id: 'svg-deck-scripture', transform: 'translate(722,722) rotate(-45)', style: 'cursor:pointer' }, panel);
-    svgEl('rect', { x: -74, y: -48, width: 148, height: 96, rx: 10, fill: 'rgba(0,0,0,.45)', transform: 'translate(5,7)' }, sDeck);
-    svgEl('rect', { x: -72, y: -46, width: 144, height: 92, rx: 10, fill: '#172554', stroke: '#ffc83d', 'stroke-width': 2.5, 'stroke-dasharray': '5 3' }, sDeck);
-    svgEl('rect', { x: -64, y: -38, width: 128, height: 76, rx: 8, fill: '#1e3a8a', stroke: '#bae6fd', 'stroke-width': 2 }, sDeck);
-    svgEl('text', { x: 0, y: -6, 'text-anchor': 'middle', 'font-size': 26, 'font-weight': 900, fill: '#fde047' }, sDeck).textContent = '✦ 📖';
-    svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 2.5 }, sDeck).textContent = 'SCRIPTURE';
-
-    // Centerpiece Banner & Title
-    var banner = svgEl('g', { transform: 'translate(480,415)' }, panel);
-    svgEl('rect', { x: -245, y: -74, width: 490, height: 112, rx: 22, fill: 'rgba(18,10,46,.82)', stroke: '#ffc83d', 'stroke-width': 3 }, banner);
-    svgEl('rect', { x: -239, y: -68, width: 478, height: 100, rx: 18, fill: 'none', stroke: 'rgba(255,226,122,.4)', 'stroke-width': 1.5 }, banner);
-    var title = svgEl('text', { x: 0, y: -2, 'text-anchor': 'middle', 'font-size': 78, 'font-weight': 900, fill: 'url(#jb-gold)', 'font-family': 'ui-rounded,"SF Pro Rounded",sans-serif', 'letter-spacing': 2, stroke: '#3b1d00', 'stroke-width': 6.5, 'stroke-linejoin': 'round', 'paint-order': 'stroke', style: 'filter:drop-shadow(0 4px 0 #2e1500)' }, banner);
+    var banner = svgEl('g', { transform: 'translate(480,330)' }, panel);
+    var title = svgEl('text', { x: 0, y: 0, 'text-anchor': 'middle', 'font-size': 92, 'font-weight': 900, fill: 'url(#jb-gold)',
+      'letter-spacing': 3, stroke: '#3b1d00', 'stroke-width': 7, 'stroke-linejoin': 'round', 'paint-order': 'stroke',
+      style: 'filter:drop-shadow(0 6px 0 #2a1200)' }, banner);
     title.textContent = 'JUBILEE!';
-    var sub = svgEl('text', { x: 0, y: 26, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 900, fill: '#ffe27a', 'letter-spacing': 7 }, banner);
-    sub.textContent = 'BIBLE LANDS';
+    svgEl('line', { x1: -180, y1: 30, x2: -70, y2: 30, stroke: '#ffc83d', 'stroke-width': 2, opacity: 0.6 }, banner);
+    svgEl('line', { x1: 70, y1: 30, x2: 180, y2: 30, stroke: '#ffc83d', 'stroke-width': 2, opacity: 0.6 }, banner);
+    svgEl('text', { x: 0, y: 36, 'text-anchor': 'middle', 'font-size': 16, 'font-weight': 900, fill: '#ffe27a', 'letter-spacing': 6 }, banner).textContent = 'BIBLE LANDS';
 
-    var pot = svgEl('text', { id: 'svg-pot', x: 480, y: 505, 'text-anchor': 'middle', 'font-size': 23, 'font-weight': 900, fill: '#2ed3b7', style: 'filter:drop-shadow(0 2px 4px rgba(0,0,0,.6))' }, panel);
-    pot.textContent = '';
-    var lastRoll = svgEl('text', { id: 'svg-lastroll', x: 480, y: 540, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 900, fill: '#ffe27a', 'letter-spacing': 1.5 }, panel);
-    lastRoll.textContent = '';
-    var rule = svgEl('text', { id: 'svg-rule', x: 480, y: 568, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 800, fill: '#a99ddb', 'letter-spacing': 2.5 }, panel);
-    rule.textContent = '';
+    // The two decks, side by side, each a card of its own colour.
+    function deck(id, x, label, fill, inner, art, tilt) {
+      var d = svgEl('g', { id: id, transform: 'translate(' + x + ',492) rotate(' + tilt + ')' }, panel);
+      svgEl('rect', { x: -70, y: -46, width: 140, height: 92, rx: 12, fill: 'rgba(0,0,0,.35)', transform: 'translate(4,6)' }, d);
+      svgEl('rect', { x: -70, y: -46, width: 140, height: 92, rx: 12, fill: fill, stroke: '#ffc83d', 'stroke-width': 3 }, d);
+      svgEl('rect', { x: -62, y: -38, width: 124, height: 76, rx: 8, fill: inner, stroke: 'rgba(255,248,231,.55)', 'stroke-width': 1.5 }, d);
+      icon(d, art, 0, -10, 30, '#fde68a');
+      svgEl('text', { x: 0, y: 26, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 2.5 }, d).textContent = label;
+    }
+    deck('svg-deck-parable', 390, 'PARABLES', '#3b1566', '#581c87', 'scroll', -4);
+    deck('svg-deck-scripture', 570, 'SCRIPTURE', '#172554', '#1e3a8a', 'book', 4);
+
+    svgEl('text', { id: 'svg-pot', x: 480, y: 600, 'text-anchor': 'middle', 'font-size': 24, 'font-weight': 900, fill: '#5eead4' }, panel).textContent = '';
+    svgEl('text', { id: 'svg-lastroll', x: 480, y: 636, 'text-anchor': 'middle', 'font-size': 17, 'font-weight': 800, fill: '#ffe27a', 'letter-spacing': 1 }, panel).textContent = '';
+    svgEl('text', { id: 'svg-rule', x: 480, y: 800, 'text-anchor': 'middle', 'font-size': 12.5, 'font-weight': 800, fill: '#a99ddb', 'letter-spacing': 2.5 }, panel).textContent = '';
 
     var spaces = state.room && state.room.board ? state.room.board : null;
     for (var i = 0; i < 40; i++) {
-      var c = tileCenter(i);
-      // The standard board: each side's tiles face out from the middle, the
-      // colour band on the inner edge and the name reading from that side.
-      var rot = c.side * 90;
-      var g = svgEl('g', { transform: 'translate(' + c.x + ',' + c.y + ') rotate(' + rot + ')', class: 'jb-tile', 'data-i': i }, svg);
-      if (i === 0 || i === 10 || i === 20 || i === 30) { drawCorner(g, i); }
-      else { drawTile(g, spaces ? spaces[i] : null, i); }
+      var rc = tileRect(i);
+      var g = svgEl('g', { transform: 'translate(' + rc.x.toFixed(2) + ',' + rc.y.toFixed(2) + ')', class: 'jb-tile', 'data-i': i }, svg);
+      if (rc.corner) drawCorner(g, i, rc);
+      else drawTile(g, spaces ? spaces[i] : null, i, rc);
       tap(g, (function (idx) { return function () { openDeed(idx); }; })(i));
     }
     // Measured in this device's own font: a label wider than its space is
@@ -1213,85 +1521,88 @@ syncSoundBtn();
       try { fw = ft.getComputedTextLength(); } catch (e) {}
       if (fw > fmax) { ft.setAttribute('textLength', fmax); ft.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
     }
-    // Active turn tile highlight & hop trail layer
+    svgEl('g', { id: 'svg-feast', class: 'jb-feastmark' }, svg);
     svgEl('g', { id: 'svg-highlights' }, svg);
-    // Tokens layer
     svgEl('g', { id: 'svg-tokens' }, svg);
-    // Floating board popups (cash deltas)
     svgEl('g', { id: 'svg-popups' }, svg);
   }
 
-  function drawCorner(g, i) {
-    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: i === 0 ? '#fff0c2' : '#fff5dc', stroke: '#1b0f3b', 'stroke-width': 2.2 }, g);
-    svgEl('rect', { x: -T / 2 + 3, y: -T / 2 + 3, width: T - 6, height: T - 6, fill: 'none', stroke: i === 0 ? '#d97706' : '#c9b38c', 'stroke-width': 1.2, rx: 4 }, g);
+  function cornerText(g, text, x, y, fs, fill, weight, ls) {
+    svgEl('text', { x: x, y: y, 'text-anchor': 'middle', 'font-size': fs, 'font-weight': weight || 900, fill: fill || '#20123f', 'letter-spacing': ls || 0.5, 'data-maxw': C - 14 }, g).textContent = text;
+  }
+  function drawCorner(g, i, rc) {
+    var w = rc.w, h = rc.h, cx = w / 2;
+    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: i === 0 ? 'url(#jb-cornerGo)' : i === 10 ? '#efe6d6' : i === 20 ? '#e6f4fd' : '#fde8e8', stroke: '#2b1d4e', 'stroke-width': 1.4 }, g);
     if (i === 0) {
-      svgEl('circle', { cx: 0, cy: -3, r: T * 0.35, fill: 'url(#jb-gold)', stroke: '#1b0f3b', 'stroke-width': 2 }, g);
-      svgEl('text', { x: 0, y: -15, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 900, fill: '#1b0f3b', 'letter-spacing': 0.5 }, g).textContent = 'JUBILEE!';
-      icon(g, 'go', 0, -2, 18, '#1b0f3b');
-      svgEl('rect', { x: -T / 2 + 6, y: 12, width: T - 12, height: 15, rx: 4, fill: '#16a34a', stroke: '#1b0f3b', 'stroke-width': 1.2 }, g);
-      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 10.5, 'font-weight': 900, fill: '#ffffff' }, g).textContent = 'COLLECT $200';
-      svgEl('text', { x: 0, y: 37, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#b45309' }, g).textContent = '◀ PASS HERE';
+      cornerText(g, 'JUBILEE!', cx, 34, 22, '#7c2d12', 900, 1);
+      icon(g, 'go', cx, 66, 40, '#b45309');
+      svgEl('rect', { x: 14, y: 90, width: w - 28, height: 24, rx: 12, fill: '#15803d' }, g);
+      svgEl('text', { x: cx, y: 106.5, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 900, fill: '#fff', 'letter-spacing': 0.5, 'data-maxw': w - 40 }, g).textContent = 'COLLECT $200';
     } else if (i === 10) {
-      // Dungeon cell in inner corner + "Just Visiting" lane
-      svgEl('rect', { x: -T / 2 + 16, y: -T / 2 + 4, width: T - 20, height: T - 22, rx: 4, fill: '#d6cfc2', stroke: '#1b0f3b', 'stroke-width': 1.8 }, g);
-      for (var b = -18; b <= 24; b += 10) {
-        svgEl('line', { x1: b, y1: -T / 2 + 4, x2: b, y2: T / 2 - 18, stroke: '#374151', 'stroke-width': 2 }, g);
-      }
-      icon(g, 'lock', 4, -10, 20, '#1b0f3b');
-      svgEl('text', { x: 4, y: 11, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'DUNGEON';
-      svgEl('text', { x: 0, y: T / 2 - 5, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 900, fill: '#5b4a8a' }, g).textContent = 'JUST VISITING';
+      // The cell in the inner corner; the lane round it is Just Visiting.
+      svgEl('rect', { x: 34, y: 6, width: w - 40, height: h - 40, rx: 8, fill: '#3f3a4f' }, g);
+      for (var b = 48; b < w - 8; b += 14) svgEl('line', { x1: b, y1: 8, x2: b, y2: h - 36, stroke: '#cfc6b4', 'stroke-width': 3, 'stroke-linecap': 'round' }, g);
+      svgEl('rect', { x: 46, y: 36, width: w - 64, height: 22, rx: 5, fill: '#20123f' }, g);
+      cornerText(g, 'DUNGEON', 34 + (w - 40) / 2, 52, 12.5, '#ffe27a', 900, 1.5);
+      cornerText(g, 'JUST VISITING', cx, h - 13, 12, '#5b4a8a', 900, 1.2);
     } else if (i === 20) {
-      svgEl('circle', { cx: 0, cy: -4, r: T * 0.31, fill: '#e0f2fe', stroke: '#0284c7', 'stroke-width': 2 }, g);
-      icon(g, 'candles', 0, -4, 30, '#0369a1');
-      svgEl('text', { x: 0, y: 23, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'SABBATH REST';
-      svgEl('text', { x: 0, y: 35, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 900, fill: '#0369a1' }, g).textContent = 'SANCTUARY';
+      icon(g, 'candles', cx, 46, 48, '#0369a1');
+      cornerText(g, 'SABBATH', cx, 92, 17, '#0c4a6e', 900, 1.5);
+      cornerText(g, 'REST', cx, 112, 13, '#0369a1', 900, 3);
     } else {
-      svgEl('circle', { cx: 0, cy: -5, r: T * 0.31, fill: '#fee2e2', stroke: '#dc2626', 'stroke-width': 2 }, g);
-      icon(g, 'lock', 0, -5, 28, '#991b1b');
-      svgEl('text', { x: 0, y: 22, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#991b1b' }, g).textContent = 'SENT TO';
-      svgEl('text', { x: 0, y: 34, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#1b0f3b' }, g).textContent = 'THE DUNGEON';
+      icon(g, 'lock', cx, 44, 42, '#b91c1c');
+      cornerText(g, 'GO TO THE', cx, 90, 12.5, '#7f1d1d', 900, 1.5);
+      cornerText(g, 'DUNGEON', cx, 110, 17, '#20123f', 900, 1.5);
     }
   }
 
-  function drawTile(g, sp, i) {
+  function drawTile(g, sp, i, rc) {
     var kind = sp ? sp.kind : 'street';
     var isStreet = kind === 'street', isRail = kind === 'railroad', isUtil = kind === 'utility';
-    var isParable = (kind === 'parable' || kind === 'chance');
-    var isScripture = (kind === 'scripture' || kind === 'chest');
-    var isTax = (kind === 'tribute' || kind === 'offering' || kind === 'tax');
-    var bandFill = isStreet ? (GROUP_COLORS[sp.group] || '#888') : (isRail ? '#1e293b' : (isUtil ? '#b45309' : null));
-    var tileFill = '#fff9eb';
-    if (isParable) tileFill = '#f3e8ff';
-    else if (isScripture) tileFill = '#e0f2fe';
-    else if (isTax) tileFill = '#ffe4e6';
-    svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: T, fill: tileFill, stroke: '#1b0f3b', 'stroke-width': 1.6 }, g);
-    if (bandFill) {
-      svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 20, fill: bandFill, stroke: '#1b0f3b', 'stroke-width': 1.6 }, g);
-      svgEl('rect', { x: -T / 2 + 1, y: -T / 2 + 1, width: T - 2, height: 6, fill: 'rgba(255,255,255,.28)' }, g);
-    } else if (isParable || isScripture || isTax) {
-      var topBar = isParable ? '#7c3aed' : isScripture ? '#1d4ed8' : '#dc2626';
-      svgEl('rect', { x: -T / 2, y: -T / 2, width: T, height: 6, fill: topBar }, g);
-    }
-    // The same look as the TV: every space with one name size and one price
-    // size, a short label, and its picture in a medallion. Nothing shrinks to
-    // fit; a rare long word is narrowed a little instead.
+    var isParable = kind === 'parable', isScripture = kind === 'scripture';
+    var isTax = kind === 'tribute' || kind === 'offering';
+    var bandFill = isStreet ? (GROUP_COLORS[sp.group] || '#888') : isRail ? '#2b2f3a' : isUtil ? '#a16207' : null;
+    var tileFill = isParable ? '#f3ecff' : isScripture ? '#e8f2ff' : isTax ? '#fff0ee' : '#fffaf0';
+    var w = rc.w, h = rc.h, s = rc.side, vert = s === 0 || s === 2;
+    var ownable = isStreet || isRail || isUtil;
+    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: tileFill }, g);
+    if (ownable) svgEl('rect', { id: 'own-' + i, x: 0, y: 0, width: w, height: h, fill: 'transparent' }, g);
+    // The colour band on the inner edge (a thin accent for the card and tax squares).
+    var bandW = bandFill ? BANDW : 6;
+    var accent = bandFill || (isParable ? '#7c3aed' : isScripture ? '#2563eb' : '#dc2626');
+    var band = s === 0 ? [0, 0, w, bandW] : s === 2 ? [0, h - bandW, w, bandW] : s === 1 ? [w - bandW, 0, bandW, h] : [0, 0, bandW, h];
+    svgEl('rect', { x: band[0], y: band[1], width: band[2], height: band[3], fill: accent }, g);
+    if (bandFill) svgEl('rect', { x: band[0], y: band[1], width: vert ? band[2] : 6, height: vert ? 6 : band[3], fill: 'rgba(255,255,255,.25)' }, g);
+    // What is left for the words, upright.
+    var box = s === 0 ? [0, bandW, w, h - bandW] : s === 2 ? [0, 0, w, h - bandW] : s === 1 ? [0, 0, w - bandW, h] : [bandW, 0, w - bandW, h];
+    var bx = box[0], by = box[1], bw = box[2], bh = box[3], mid = bx + bw / 2;
     var art = isRail ? (sp.name === 'The Desert Caravan' ? 'caravan' : 'train') : isUtil ? (sp.name === 'The Well' ? 'well' : 'lamp')
       : isParable ? 'scroll' : isScripture ? 'book' : isTax ? (kind === 'tribute' ? 'coin' : 'bowl') : null;
-    var bandTop = bandFill ? 20 : 6;
-    if (art) medallion(g, 0, -T / 2 + bandTop + 15, 12, art, bandFill || (isParable ? '#7c3aed' : isScripture ? '#1d4ed8' : '#c2410c'));
-    var priceLabel = '';
-    if (sp && sp.price) priceLabel = '$' + sp.price;
-    else if (sp && (sp.amount || sp.flat)) priceLabel = 'PAY $' + (sp.amount || sp.flat);
-    var nameTop = art ? -T / 2 + bandTop + 30 : -T / 2 + bandTop + 3, nameBottom = T / 2 - (priceLabel ? 21 : 5);
-    tileLabel(g, shortName(sp), (nameTop + nameBottom) / 2, T - 8);
-    if (priceLabel) {
-      svgEl('text', { 'data-maxw': T - 8, x: 0, y: T / 2 - 7, 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#1b0f3b' }, g).textContent = priceLabel;
+    var priceLabel = sp && sp.price ? '$' + sp.price : sp && (sp.amount || sp.flat) ? 'PAY $' + (sp.amount || sp.flat) : '';
+    var artColor = bandFill || accent;
+    if (vert) {
+      if (art) medallion(g, mid, by + 22, 14, art, artColor);
+      var nameTop = by + (art ? 42 : 8), nameBottom = by + bh - (priceLabel ? 26 : 8);
+      tileLabel(g, shortName(sp), mid, (nameTop + nameBottom) / 2, bw - 8);
+      if (priceLabel) svgEl('text', { 'data-maxw': bw - 6, x: mid, y: by + bh - 11, 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#5b4a8a' }, g).textContent = priceLabel;
+    } else {
+      var textX = mid, textW = bw - 10;
+      if (art) { medallion(g, bx + 21, by + bh / 2, 14, art, artColor); textX = bx + 21 + 16 + (bw - 37) / 2; textW = bw - 44; }
+      var lines = tileLabel(g, shortName(sp), textX, by + bh / 2 - (priceLabel ? 9 : 0), textW);
+      if (priceLabel) svgEl('text', { 'data-maxw': textW, x: textX, y: by + bh / 2 + (lines > 1 ? 22 : 16), 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#5b4a8a' }, g).textContent = priceLabel;
     }
-    // dynamic bits: owner badge, 3D houses/hotel, mortgage stamp
-    if (!(isStreet || isRail || isUtil)) return;   // only land can be owned (no ring over "PAY $200")
-    svgEl('circle', { id: 'own-' + i, cx: -T / 2 + 10, cy: T / 2 - 10, r: 6, fill: 'transparent', stroke: '#1b0f3b', 'stroke-width': 1.5 }, g);
-    svgEl('g', { id: 'hse-' + i }, g);
-    svgEl('text', { id: 'mrg-' + i, x: T / 2 - 11, y: T / 2 - 6, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#dc2626', style: 'display:none' }, g).textContent = 'M';
+    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: 'none', stroke: '#2b1d4e', 'stroke-width': 1.2 }, g);
+    if (!ownable) return;
+    // Owner: a strip of their colour along the outer edge (plus the tint above).
+    var outer = s === 0 ? [0, h - 7, w, 7] : s === 2 ? [0, 0, w, 7] : s === 1 ? [0, 0, 7, h] : [w - 7, 0, 7, h];
+    svgEl('rect', { id: 'ownbar-' + i, x: outer[0], y: outer[1], width: outer[2], height: outer[3], fill: 'transparent' }, g);
+    // Houses sit on the band; a mortgaged deed is greyed and stamped.
+    var hx = vert ? w / 2 : band[0] + bandW / 2, hy = vert ? band[1] + bandW / 2 : h / 2;
+    svgEl('g', { id: 'hse-' + i, transform: 'translate(' + hx.toFixed(1) + ',' + hy.toFixed(1) + ')', 'data-vert': vert ? '0' : '1' }, g);
+    var m = svgEl('g', { id: 'mrg-' + i, style: 'display:none' }, g);
+    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: 'rgba(255,255,255,.62)' }, m);
+    svgEl('text', { x: w / 2, y: h / 2 + 4, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#b91c1c', 'letter-spacing': 1,
+      transform: 'rotate(' + (vert ? -62 : -22) + ' ' + (w / 2) + ' ' + (h / 2) + ')' }, m).textContent = 'MORTGAGED';
   }
 
   function tileCoord(pos) {
@@ -1311,19 +1622,26 @@ syncSoundBtn();
     return { x: rect.left + ((x - vx) / vw) * rect.width, y: rect.top + ((y - vy) / vh) * rect.height };
   }
 
-  function tokenScreenPos(seat) {
-    var board = state.room && state.room.board;
-    if (!board) return null;
-    if (seat >= board.length) return null;
-    var pos = (state.displayedPos[seat] !== undefined) ? state.displayedPos[seat] : state.room.players[seat].position;
-    var c = tileCoord(pos);
-    var k = 0;
-    for (var i = 0; i < seat; i++) {
-      var p2 = (state.displayedPos[i] !== undefined) ? state.displayedPos[i] : state.room.players[i].position;
-      if (Math.round(p2) === Math.round(pos) && !state.room.players[i].bankrupt) k++;
+  /* Where each piece stands right now (a hop slides between squares). */
+  function piecePositions() {
+    var players = state.room.players, pos = [], out = [];
+    for (var i = 0; i < players.length; i++) pos[i] = (state.displayedPos[i] !== undefined) ? state.displayedPos[i] : players[i].position;
+    for (var seat = 0; seat < players.length; seat++) {
+      if (players[seat].bankrupt) { out[seat] = null; continue; }
+      var sq = Math.round(pos[seat]) % 40, k = 0, n = 0;
+      for (var j = 0; j < players.length; j++) {
+        if (players[j].bankrupt || Math.round(pos[j]) % 40 !== sq) continue;
+        if (j < seat) k++;
+        n++;
+      }
+      var a = anchorAt(pos[seat]), off = pieceOffset(sq, k, n);
+      out[seat] = { x: a.x + off.x, y: a.y + off.y };
     }
-    var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 10;
-    return { x: c.x + dx, y: c.y + dy };
+    return out;
+  }
+  function tokenScreenPos(seat) {
+    if (!state.room || !state.room.board || !state.room.players[seat]) return null;
+    return piecePositions()[seat];
   }
 
   /* ============ render ============ */
@@ -1362,7 +1680,7 @@ syncSoundBtn();
         out += '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + GROUP_COLORS[gr] + ';border:1px solid rgba(0,0,0,.5);margin-right:2px" title="' + gr + ' (' + counts[gr] + ')"></span>';
       }
     }
-    return out ? '<div style="margin-top:2px;line-height:1">' + out + '</div>' : '';
+    return out ? '<div class="pips">' + out + '</div>' : '';
   }
 
   function renderPlayers() {
@@ -1371,17 +1689,16 @@ syncSoundBtn();
       var p = room.players[i];
       var me = room.you && (room.you.seat === i);
       var cls = 'jb-player' + (p.is_turn ? ' turn' : '') + (p.bankrupt ? ' out' : '') + (me ? ' me' : '');
-      html += '<div class="' + cls + '" data-seat-card="' + i + '">';
-      html += '<div class="jb-face-sm">' + tokenBadge(p.token, SEAT_COLORS[i]) + (me ? '<span class="jb-you">YOU</span>' : '') + '</div>';
-      html += '<div style="min-width:0;flex:1">';
-      html += '<div class="jb-pname">' + esc(p.name) + (p.is_host ? ' 👑' : '') + (p.is_ai ? ' 🤖' : '') + '</div>';
-      html += '<div class="jb-pcash">$' + fmt(p.cash) + ' <span style="font-size:10px;color:#b9aee0;font-weight:700">· $' + fmt(p.net_worth || p.cash) + '</span></div>';
-      html += playerGroupPips(i);
-      if (p.bankrupt) html += '<div class="jb-jail">BANKRUPT</div>';
-      else if (p.in_jail) html += '<div class="jb-jail">⛓ DUNGEON</div>';
-      html += '</div></div>';
+      var status = p.bankrupt ? '<span class="st bad">Bankrupt</span>' : p.in_jail ? '<span class="st bad">In the Dungeon</span>'
+        : p.away ? '<span class="st warn">Away · a scribe plays</span>' : '<span class="st">worth $' + fmt(p.net_worth || p.cash) + '</span>';
+      html += '<div class="' + cls + '" data-seat-card="' + i + '" style="--seat:' + SEAT_COLORS[i % SEAT_COLORS.length] + '">'
+        + '<div class="jb-face-sm">' + tokenBadge(p.token, SEAT_COLORS[i]) + '</div>'
+        + '<div class="pinfo"><div class="jb-pname">' + esc(p.name) + (me ? ' <span class="jb-you">YOU</span>' : '') + (p.is_ai ? ' <span class="jb-bot">CPU</span>' : '') + '</div>'
+        + '<div class="jb-pcash">$' + fmt(p.cash) + (p.kingdoms ? '<span class="jb-crowns" title="Whole colour groups">' + ui('crown') + p.kingdoms + (room.kingdom_goal ? '/' + room.kingdom_goal : '') + '</span>' : '') + '</div>'
+        + status + playerGroupPips(i) + '</div></div>';
     }
-    $('jb-players').innerHTML = html;
+    if ($('jb-players').innerHTML !== html) $('jb-players').innerHTML = html;
+    $('jb-players').style.setProperty('--n', Math.min(room.players.length, 4));
   }
 
   function house3dSvg(x, y) {
@@ -1407,23 +1724,24 @@ syncSoundBtn();
     if (!room || !room.board) return;
     for (var i = 0; i < 40; i++) {
       var sp = room.board[i];
-      var dot = document.getElementById('own-' + i);
-      var hse = document.getElementById('hse-' + i);
-      var mrg = document.getElementById('mrg-' + i);
-      if (!dot) continue;
-      dot.setAttribute('fill', sp.owner != null ? SEAT_COLORS[sp.owner] : 'transparent');
-      var hh = '';
-      var n = sp.houses || 0;
-      var hy = -T / 2 + 10;
-      if (n === 5) {
-        hh = hotel3dSvg(hy);
-      } else {
-        for (var k = 0; k < n; k++) {
-          hh += house3dSvg(-22 + k * 14.5, hy);
-        }
+      var tint = document.getElementById('own-' + i);
+      if (!tint) continue;
+      var key = [sp.owner, sp.houses, sp.mortgaged].join(',');
+      if (tint.getAttribute('data-k') === key) continue;
+      tint.setAttribute('data-k', key);
+      var col = sp.owner != null ? SEAT_COLORS[sp.owner % SEAT_COLORS.length] : 'transparent';
+      tint.setAttribute('fill', col);
+      tint.setAttribute('fill-opacity', sp.owner != null ? '0.15' : '0');
+      document.getElementById('ownbar-' + i).setAttribute('fill', col);
+      var hse = document.getElementById('hse-' + i), vertBand = hse.getAttribute('data-vert') === '1';
+      var n = sp.houses || 0, hh = '';
+      if (n === 5) hh = '<g transform="scale(' + (vertBand ? 0.72 : 1) + ')">' + hotel3dSvg(0) + '</g>';
+      else for (var k = 0; k < n; k++) {
+        var o = (k - (n - 1) / 2) * 15;
+        hh += vertBand ? house3dSvg(0, o) : house3dSvg(o, 0);
       }
       hse.innerHTML = hh;
-      mrg.style.display = sp.mortgaged ? '' : 'none';
+      document.getElementById('mrg-' + i).style.display = sp.mortgaged ? '' : 'none';
     }
     var potText = room.pot > 0 ? '🍯 SABBATH JACKPOT  $' + fmt(room.pot) : '';
     var potEl = document.getElementById('svg-pot');
@@ -1433,13 +1751,30 @@ syncSoundBtn();
       var lr = rollOf(room);
       if (lr) {
         var d1 = lr.d1, d2 = lr.d2;
-        rollEl.textContent = '🎲 LAST ROLL: ' + d1 + ' + ' + d2 + ' = ' + (d1 + d2) + (d1 === d2 ? ' (DOUBLES!)' : '');
+        rollEl.textContent = 'LAST ROLL  ' + d1 + ' + ' + d2 + ' = ' + (d1 + d2) + (d1 === d2 ? '  ·  DOUBLES' : '');
       } else {
         rollEl.textContent = '';
       }
     }
+    var feastEl = document.getElementById('svg-feast');
+    if (feastEl) {
+      var fk = room.feast == null ? '' : String(room.feast);
+      if (feastEl.getAttribute('data-at') !== fk) {
+        feastEl.setAttribute('data-at', fk);
+        if (fk === '') feastEl.innerHTML = '';
+        else {
+          // A purple frame on the square and a tag just inside the board's middle.
+          var fr = tileRect(room.feast), inw = INWARD[fr.side];
+          var tx = fr.x + fr.w / 2 + inw[0] * (fr.w / 2 + 26), ty = fr.y + fr.h / 2 + inw[1] * (fr.h / 2 + 22);
+          feastEl.innerHTML = '<rect class="jb-feastglow" x="' + (fr.x + 2) + '" y="' + (fr.y + 2) + '" width="' + (fr.w - 4) + '" height="' + (fr.h - 4) +
+            '" rx="4" fill="rgba(168,85,247,.16)" stroke="#9333ea" stroke-width="5"/>' +
+            '<g transform="translate(' + tx.toFixed(1) + ',' + ty.toFixed(1) + ')"><rect x="-40" y="-13" width="80" height="26" rx="13" fill="#7e22ce" stroke="#fff8e7" stroke-width="2"/>' +
+            '<text y="5" text-anchor="middle" font-size="13" font-weight="900" fill="#fff" letter-spacing=".5">FEAST ×2</text></g>';
+        }
+      }
+    }
     var ruleEl = document.getElementById('svg-rule');
-    if (ruleEl) ruleEl.textContent = (state.room.ruleset || 'classic').toUpperCase() + ' RULES · BANK: 🏠 ' + (room.bank_houses != null ? room.bank_houses : 32) + '  🏨 ' + (room.bank_hotels != null ? room.bank_hotels : 12);
+    if (ruleEl) ruleEl.textContent = (state.room.ruleset || 'classic').toUpperCase() + ' RULES  ·  BANK  ' + (room.bank_houses != null ? room.bank_houses : 32) + ' HOUSES  ·  ' + (room.bank_hotels != null ? room.bank_hotels : 12) + ' HOTELS';
 
   }
 
@@ -1451,53 +1786,39 @@ syncSoundBtn();
     var turnPlayer = room.players && room.players[room.turn];
     if (!turnPlayer || turnPlayer.bankrupt || room.status !== 'playing') { if (hl.firstChild) hl.innerHTML = ''; return; }
     var pos = (state.displayedPos[room.turn] !== undefined) ? state.displayedPos[room.turn] : turnPlayer.position;
-    var tc = tileCoord(pos);
+    var rc = tileRect(Math.round(pos) % 40);
     var pulse = RM ? 0.85 : 0.55 + 0.35 * Math.sin((t || 0) / 260);
     var col = SEAT_COLORS[room.turn % SEAT_COLORS.length];
-    hl.innerHTML = '<rect x="' + (tc.x - T / 2 + 2).toFixed(1) + '" y="' + (tc.y - T / 2 + 2).toFixed(1) + '" width="' + (T - 4) + '" height="' + (T - 4) +
-      '" rx="7" fill="' + col + '" fill-opacity="' + (pulse * 0.16).toFixed(3) + '" stroke="' + col + '" stroke-width="4" stroke-opacity="' + pulse.toFixed(3) + '"/>';
+    hl.innerHTML = '<rect x="' + (rc.x + 2).toFixed(1) + '" y="' + (rc.y + 2).toFixed(1) + '" width="' + (rc.w - 4).toFixed(1) + '" height="' + (rc.h - 4).toFixed(1) +
+      '" rx="5" fill="' + col + '" fill-opacity="' + (pulse * 0.14).toFixed(3) + '" stroke="' + col + '" stroke-width="4" stroke-opacity="' + pulse.toFixed(3) + '"/>';
   }
 
   function renderTokensLayer() {
     var g = document.getElementById('svg-tokens');
     if (!g || !state.room) return;
-    var html = '';
-    var players = state.room.players;
-    var posAt = [];
-    for (var i = 0; i < players.length; i++) {
-      posAt[i] = (state.displayedPos[i] !== undefined) ? state.displayedPos[i] : players[i].position;
-    }
+    var html = '', players = state.room.players, at = piecePositions();
     for (var seat = 0; seat < players.length; seat++) {
-      var p = players[seat];
-      if (p.bankrupt) continue;
-      var pos = posAt[seat];
-      var c = tileCoord(pos);
-      var k = 0;
-      for (var j = 0; j < seat; j++) {
-        var pj = players[j];
-        if (!pj.bankrupt && Math.round(posAt[j]) === Math.round(pos)) k++;
-      }
-      var dx = (k % 2) * 22 - 11, dy = Math.floor(k / 2) * 20 - 6;
-      var lift = (state.hopAnim && state.hopAnim.seat === seat) ? (state.hopAnim.lift || 0) : 0;
-      var squash = (state.hopAnim && state.hopAnim.seat === seat) ? (state.hopAnim.squash || 1) : 1;
-      var x = c.x + dx, y = c.y + dy;
-      var isTurn = state.room.turn === seat;
-      var shadowR = Math.max(6, 14 - lift * 0.22);
-      html += '<g transform="translate(' + x + ',' + y + ')">';
-      if (isTurn) {
-        html += '<circle r="19" fill="none" stroke="#ffc83d" stroke-width="2.5" stroke-dasharray="5 3" opacity="0.9"/>';
-      }
-      html += '<ellipse cx="0" cy="4" rx="' + shadowR + '" ry="' + (shadowR * 0.55) + '" fill="rgba(0,0,0,.42)"/>';
-      html += '<g transform="translate(0,' + (-lift) + ') scale(' + (2 - squash) + ',' + squash + ')">' +
-        '<g transform="translate(0,-3)">' + pieceMarkup(p.token, SEAT_COLORS[seat], 14) + '</g>' +
-        '</g></g>';
+      var p = players[seat], c = at[seat];
+      if (!c) continue;
+      var hop = state.hopAnim && state.hopAnim.seat === seat;
+      var lift = hop ? (state.hopAnim.lift || 0) : 0, squash = hop ? (state.hopAnim.squash || 1) : 1;
+      var shadowR = Math.max(6, 15 - lift * 0.22);
+      html += '<g transform="translate(' + c.x.toFixed(1) + ',' + c.y.toFixed(1) + ')">';
+      if (state.room.turn === seat) html += '<circle r="21" fill="none" stroke="#ffc83d" stroke-width="3" stroke-dasharray="5 3"/>';
+      html += '<ellipse cx="0" cy="5" rx="' + shadowR + '" ry="' + (shadowR * 0.5) + '" fill="rgba(20,10,40,.4)"/>';
+      html += '<g transform="translate(0,' + (-lift) + ') scale(' + (2 - squash) + ',' + squash + ')"><g transform="translate(0,-3)">' + pieceMarkup(p.token, SEAT_COLORS[seat], 15) + '</g></g></g>';
     }
     g.innerHTML = html;
   }
 
   function renderHeader() {
-    $('jb-code-v').textContent = state.room ? state.room.code : '····';
-    $('jb-round-v').textContent = state.room ? state.room.round : 1;
+    var room = state.room;
+    $('jb-code-v').textContent = room ? room.code : '····';
+    var j = room && room.status === 'playing' ? room.jubilee : null;
+    var chip = '' + (room ? room.round : 1);
+    if (j) chip += '<span class="jb-chipx' + (j.in_rounds <= 1 ? ' soon' : '') + '" title="Rounds until the Year of Jubilee">' + ui('horn') + j.in_rounds + '</span>';
+    if ($('jb-round-v').innerHTML !== chip) $('jb-round-v').innerHTML = chip;
+    document.body.classList.toggle('jb-playing', !!(room && room.status === 'playing'));
   }
 
   function applyState(next) {
@@ -1514,10 +1835,15 @@ syncSoundBtn();
     renderTab();
     renderTokensLayer();
     diffFx(state.prevRoom, next);
-    if (next.status === 'finished' && !state.endedShown) {
-      state.endedShown = true;
-      showEnd(next);
-    }
+    renderSpecials(state.prevRoom, next);
+    // The waiting room follows the room: new arrivals appear on every phone,
+    // and it gets out of the way on every phone when the host starts (it used
+    // to stay up on the guests' phones over the game).
+    if (next.status === 'lobby') showWaiting(next);
+    else if ($('jb-lobby').classList.contains('show') && $('jb-lobby-wait').style.display !== 'none') $('jb-lobby').classList.remove('show');
+    // showEnd() sets endedShown itself: setting it here first meant the end
+    // card never appeared.
+    if (next.status === 'finished' && !state.endedShown) showEnd(next);
   }
 
   /* TV mode: while a TV shows the board (the stage polls the room), each phone
@@ -1601,10 +1927,13 @@ syncSoundBtn();
     } else if (tv.loading) {
       list = '<div class="jb-tvstatus">🔎 Looking for TVs in your home…</div>';
     } else {
-      list = '<div class="jb-tvstatus err">No TVs found.' + (tv.error ? '<div style="font-weight:700;font-size:12px;margin-top:6px">' + esc(tv.error) + '</div>' : '') + '</div>';
+      // A server-setup message (which environment variable is missing) means
+      // nothing to a player: say what they can do instead.
+      var tvWhy = tv.error && !/_URL|_SECRET|unavailable/.test(tv.error) ? tv.error : (tv.error ? 'TV casting is not set up on this game server.' : '');
+      list = '<div class="jb-tvstatus err">No TVs found.' + (tvWhy ? '<div style="font-weight:700;font-size:12px;margin-top:6px">' + esc(tvWhy) + '</div>' : '') + '</div>';
     }
     var stageUrl = location.origin + '/jubilee/tv/' + encodeURIComponent(tvCode());
-    openSheet('<h2>📺 Show on a TV</h2>' +
+    openSheet('<h2>' + ui('tv') + ' Show on a TV</h2>' +
       '<div class="jb-card" style="font-size:14px">The TV shows the board, the dice and the cards. Each phone becomes that player\'s hand: money, land, trades and buying.</div>' +
       (tv.status ? '<div class="jb-tvstatus ' + (tv.status.kind === 'ok' ? 'ok' : tv.status.kind === 'error' ? 'err' : '') + '">' + esc(tv.status.text) + '</div>' : '') +
       list +
@@ -1671,41 +2000,74 @@ syncSoundBtn();
   tap($('jb-tv'), openTvSheet);
   tap($('jb-wait-tv'), openTvSheet);
 
+  var GROUP_LABEL = { brown: 'The Hometowns', lightblue: 'Galilee', pink: 'The Judean Hills', orange: 'Cities of the Patriarchs',
+    red: "Paul's Road", yellow: 'The Greek Churches', green: 'The Churches of Asia', blue: 'Zion' };
+  function groupMembers(sp) { return state.room.board.filter(function (o) { return o.kind === 'street' && o.group === sp.group; }); }
+  function ownsSet(sp, seat) { return sp.kind === 'street' && groupMembers(sp).every(function (o) { return o.owner === seat; }); }
+  function ownedOfKind(kind, seat) { return state.room.board.filter(function (o) { return o.kind === kind && o.owner === seat; }).length; }
+  /* A title deed as players know it: the colour header, who owns it, the
+     whole rent ladder with the rent charged right now highlighted. */
   function deedHtml(sp) {
-    var bandColor = sp.kind === 'street' ? (GROUP_COLORS[sp.group] || '#888') : (sp.kind === 'railroad' ? '#1b0f3b' : (sp.kind === 'utility' ? '#b45309' : '#7c5cff'));
-    var rows = '';
+    var room = state.room, owner = sp.owner != null ? room.players[sp.owner] : null;
+    var rows = [], cur = -1;
     if (sp.kind === 'street' && sp.rents) {
-      var labels = ['Base rent', 'With 1 house', 'With 2 houses', 'With 3 houses', 'With 4 houses', 'With a hotel'];
-      for (var i = 0; i < 6 && i < sp.rents.length; i++) rows += '<tr><td>' + labels[i] + '</td><td>$' + sp.rents[i] + '</td></tr>';
-      rows += '<tr><td>Unimproved, group complete</td><td>2× rent</td></tr>';
-      rows += '<tr><td>House cost</td><td>$' + sp.house_cost + '</td></tr>';
-    } else if (sp.kind === 'railroad' && sp.rents) {
-      var counts = ['1 owned', '2 owned', '3 owned', '4 owned'];
-      for (var j = 0; j < 4; j++) rows += '<tr><td>Rent with ' + counts[j] + '</td><td>$' + sp.rents[j] + '</td></tr>';
+      var full = owner && ownsSet(sp, sp.owner);
+      rows = [['Rent', sp.rents[0]], ['Whole set, no houses', sp.rents[0] * 2], ['With 1 house', sp.rents[1]], ['With 2 houses', sp.rents[2]],
+        ['With 3 houses', sp.rents[3]], ['With 4 houses', sp.rents[4]], ['With a hotel', sp.rents[5]]];
+      if (owner) cur = sp.houses ? sp.houses + 1 : full ? 1 : 0;
+    } else if (sp.kind === 'railroad') {
+      rows = [['Own 1 road', 25], ['Own 2 roads', 50], ['Own 3 roads', 100], ['Own all 4', 200]];
+      if (owner) cur = Math.max(0, ownedOfKind('railroad', sp.owner) - 1);
     } else if (sp.kind === 'utility') {
-      rows += '<tr><td>Rent (1 owned)</td><td>4× dice</td></tr><tr><td>Rent (both owned)</td><td>10× dice</td></tr>';
+      rows = [['Own 1', '4 × dice'], ['Own both', '10 × dice']];
+      if (owner) cur = Math.max(0, ownedOfKind('utility', sp.owner) - 1);
     }
-    var html = '<div class="jb-deed"><div class="band" style="background:' + bandColor + '"></div>';
-    html += '<div class="pname">' + esc(sp.name) + '</div>';
-    if (sp.sub) html += '<div style="color:#6b5b8f;font-weight:800;font-size:13px">' + esc(sp.sub) + '</div>';
-    html += '<table>' + rows;
-    if (sp.mortgage) html += '<tr><td class="mort">Mortgage value</td><td class="mort">$' + sp.mortgage + '</td></tr>';
-    if (sp.price) html += '<tr><td>Price</td><td>$' + sp.price + '</td></tr>';
-    html += '</table></div>';
-    if (sp.mortgaged) html += '<div style="text-align:center;color:#b91c1c;font-weight:900;margin-top:8px">MORTGAGED - no rent collected</div>';
-    return html;
+    var who = owner ? '<div class="dd-owner">' + tokenBadge(owner.token, SEAT_COLORS[sp.owner]) + '<span>Owned by <b>' + esc(owner.name) + '</b>'
+        + (sp.kind === 'street' && ownsSet(sp, sp.owner) ? ' · whole set' : '') + '</span></div>'
+      : sp.price ? '<div class="dd-owner forsale">For sale · <b>$' + fmt(sp.price) + '</b></div>' : '';
+    var table = rows.map(function (r, i) {
+      return '<div class="dd-row' + (i === cur ? ' now' : '') + '"><span>' + r[0] + (i === cur ? ' <em>now</em>' : '') + '</span><b>' + (typeof r[1] === 'number' ? '$' + fmt(r[1]) : r[1]) + '</b></div>';
+    }).join('');
+    var foot = [];
+    if (sp.house_cost) foot.push('Houses $' + sp.house_cost + ' each · hotel $' + sp.house_cost + ' more');
+    if (sp.mortgage) foot.push('Mortgage value $' + sp.mortgage);
+    return '<div class="dd"><div class="dd-head" style="background:' + spaceColor(sp) + '"><small>' + (sp.kind === 'street' ? esc(GROUP_LABEL[sp.group] || 'Title deed') : sp.kind === 'railroad' ? 'Road' : 'Utility') + '</small>'
+      + '<b>' + esc(sp.name) + '</b></div>' + who
+      + (sp.mortgaged ? '<div class="dd-mort">' + ui('lock') + ' Mortgaged: no rent until it is lifted</div>' : '')
+      + '<div class="dd-rows">' + table + '</div>'
+      + (foot.length ? '<div class="dd-foot">' + foot.join('<br>') + '</div>' : '') + '</div>';
   }
+  /* A square that is not land: what it does, in a sentence. */
+  var SPACE_HELP = {
+    parable: 'Draw a Parable card and do what it says.',
+    scripture: 'Draw a Scripture card. With the Sword Drill on, everyone first races to answer a Bible question.',
+    tribute: 'Pay the Tribute: $200, or 10% of everything you are worth, whichever you choose.',
+    offering: 'Give $100 to the Bank.',
+    go: 'Collect $200 every time you pass.',
+    dungeon: 'Just visiting, unless you were sent here. Roll doubles, pay $50, or use a card to get out.',
+    sabbath: 'Rest. With the Sabbath pot on, collect every tax and fine paid so far; with Feast Day on, proclaim a feast.',
+    to_dungeon: 'Go straight to the Dungeon. Do not pass Jubilee!'
+  };
 
   function openDeed(i) {
     var sp = state.room && state.room.board[i];
     if (!sp) return;
-    var me = meSeat(), owner = sp.owner, theirs = owner != null && owner !== me && state.room.status === 'playing'
-      && state.room.players[owner] && !state.room.players[owner].bankrupt;
-    openSheet('<h2>📜 Title Deed <small>' + esc(sp.name) + '</small></h2>' + deedHtml(sp) +
-      '<div class="jb-row" style="margin-top:12px">' + (theirs ? '<button class="jb-btn teal" id="jb-deed-trade">🤝 Ask ' + esc(state.room.players[owner].name) + ' to trade</button>' : '')
+    var me = meSeat(), owner = sp.owner, room = state.room;
+    if (!(sp.kind === 'street' || sp.kind === 'railroad' || sp.kind === 'utility')) {
+      openSheet('<h2>' + esc(sp.name) + '</h2><div class="jb-card">' + esc(SPACE_HELP[sp.kind] || '') + '</div>'
+        + '<div class="jb-row" style="margin-top:12px"><button class="jb-btn ghost" id="jb-deed-close">Close</button></div>');
+      tap($('jb-deed-close'), closeSheet);
+      return;
+    }
+    var theirs = owner != null && owner !== me && room.status === 'playing' && room.players[owner] && !room.players[owner].bankrupt;
+    var mine = owner === me && room.status === 'playing' && room.turn === me;
+    openSheet(deedHtml(sp) + '<div class="jb-row" style="margin-top:12px">'
+      + (theirs ? '<button class="jb-btn teal" id="jb-deed-trade">' + ui('trade') + ' Offer ' + esc(room.players[owner].name) + ' a trade</button>' : '')
+      + (mine ? '<button class="jb-btn teal" id="jb-deed-manage">' + ui('land') + ' Build &amp; manage</button>' : '')
       + '<button class="jb-btn ghost" id="jb-deed-close">Close</button></div>');
     tap($('jb-deed-close'), closeSheet);
     if (theirs) tap($('jb-deed-trade'), function () { openTrade({ to: owner, get: sp.i }); });
+    if (mine) tap($('jb-deed-manage'), function () { openManage(false); });
   }
 
   /* The color a space wears: its street group, or the railroad / utility tone. */
@@ -1716,55 +2078,93 @@ syncSoundBtn();
     return '#7c5cff';
   }
 
-  function propertyRowHtml(sp) {
+  /* What selling every building and mortgaging every deed would raise. */
+  function raisable() {
+    var total = 0;
+    mySpaces().forEach(function (sp) {
+      total += (sp.houses === 5 ? 5 : sp.houses || 0) * Math.floor((sp.house_cost || 0) / 2);
+      if (!sp.mortgaged) total += sp.mortgage || 0;
+    });
+    return total;
+  }
+  function houseDots(n) {
+    var out = '';
+    for (var k = 1; k <= 4; k++) out += '<i class="' + (n === 5 || n >= k ? 'on' : '') + '"></i>';
+    return out + '<i class="hotel' + (n === 5 ? ' on' : '') + '"></i>';
+  }
+  function manageRow(sp) {
     var room = state.room, you = (room && room.you) || {};
     var why = you.build && Object.prototype.hasOwnProperty.call(you.build, String(sp.i)) ? you.build[String(sp.i)] : null;
     var street = sp.kind === 'street';
-    var buildOk = street && why === '';
+    var buildOk = street && why === '' && !sp.mortgaged;
     var sellOk = street && sp.houses > 0 && (you.sellable || []).indexOf(sp.i) !== -1;
-    var groupHasHouses = street && room && groupBuilt(room, sp);
-    var built = sp.houses === 5 ? '🏨 Hotel' : (sp.houses ? Array(sp.houses + 1).join('🏠') + ' ' + sp.houses + ' house' + (sp.houses > 1 ? 's' : '') : 'No houses yet');
-    var line = street ? built + (sp.houses < 5 && sp.house_cost ? ' · next ' + (sp.houses === 4 ? 'hotel' : 'house') + ' $' + sp.house_cost : '')
-      : (sp.kind === 'railroad' ? 'Road' : 'Utility');
-    var note = '';
-    if (sp.mortgaged) note = 'Mortgaged: no rent until you lift it.';
-    else if (street && why) note = why.charAt(0).toUpperCase() + why.slice(1) + '.';
-    var btns = '';
-    if (street && !sp.mortgaged) btns += '<button class="jb-btn small teal" data-build="' + sp.i + '"' + (buildOk ? '' : ' disabled aria-disabled="true"') + '>🏠 Build $' + (sp.house_cost || 0) + '</button>';
-    if (street && sp.houses) btns += '<button class="jb-btn small coral" data-sell="' + sp.i + '"' + (sellOk ? '' : ' disabled aria-disabled="true"') + '>Sell a house</button>';
-    if (sp.mortgaged) btns += '<button class="jb-btn small" data-lift="' + sp.i + '">Lift mortgage $' + Math.ceil(sp.mortgage * 1.1) + '</button>';
-    else if (!groupHasHouses) btns += '<button class="jb-btn small ghost" data-mortgage="' + sp.i + '">Mortgage +$' + sp.mortgage + '</button>';
-    else if (!sp.houses) note = note || 'Sell the houses on this colour before mortgaging.';
-    return '<div class="jb-card jb-landrow2">' +
-      '<div class="lr-top"><span class="jb-swatch" style="background:' + spaceColor(sp) + '"></span>' +
-      '<div class="lr-name"><b>' + esc(sp.name) + '</b><small>' + line + '</small></div></div>' +
-      (note ? '<div class="jb-why">' + esc(note) + '</div>' : '') +
-      '<div class="lr-btns">' + btns + '</div></div>';
-  }
-
-
-  function openManage(debtMode) {
-    var my = mySpaces();
-    var rows = my.map(propertyRowHtml).join('');
-    var debtHtml = '';
-    if (debtMode && state.room.pending && state.room.pending.kind === 'debt') {
-      var d = state.room.pending;
-      debtHtml = '<div class="jb-card" style="border-color:#dc2626"><b>⚖ Debt: $' + fmt(d.amount) + '</b> - ' + esc(d.reason || 'you owe') + (d.creditor != null ? ' to ' + esc(state.room.players[d.creditor].name) : ' to the Bank') +
-        '<div style="font-size:12px;color:#6b5b8f;font-weight:800;margin:6px 0">Raise money by mortgaging or selling, then pay - or declare bankruptcy.</div>' +
-        '<div class="jb-row"><button class="jb-btn" id="jb-debt-pay">Pay $' + fmt(d.amount) + '</button>' +
-        '<button class="jb-btn coral" id="jb-debt-bankrupt">Declare bankruptcy</button></div></div>';
+    var groupHasHouses = street && groupBuilt(room, sp);
+    var rentNow = street && sp.rents ? sp.rents[Math.min(sp.houses || 0, 5)] * (!sp.houses && ownsSet(sp, sp.owner) ? 2 : 1) : null;
+    var sub = sp.mortgaged ? '<span class="bad">Mortgaged</span>' : street ? 'Rent $' + fmt(rentNow) : sp.kind === 'railroad' ? 'Road' : 'Utility';
+    var acts = '';
+    if (street && !sp.mortgaged && (sp.houses || ownsSet(sp, sp.owner))) {
+      acts += (sp.houses ? '<button class="mg-btn" data-sell="' + sp.i + '"' + (sellOk ? '' : ' disabled') + ' aria-label="Sell a building">−</button>' : '')
+        + '<span class="mg-dots">' + houseDots(sp.houses || 0) + '</span>'
+        + '<button class="mg-btn add" data-build="' + sp.i + '"' + (buildOk ? '' : ' disabled') + ' aria-label="Build">+<small>$' + sp.house_cost + '</small></button>';
     }
-    openSheet('<h2>🔨 My Land <small>' + my.length + ' owned</small></h2>' + debtHtml + (rows || '<div class="jb-card">No land yet - buy what you land on!</div>') +
-      '<div class="jb-row" style="margin-top:12px"><button class="jb-btn ghost" id="jb-manage-close">Done</button></div>');
+    if (sp.mortgaged) acts += '<button class="mg-chip lift" data-lift="' + sp.i + '">Lift $' + Math.ceil(sp.mortgage * 1.1) + '</button>';
+    else if (!groupHasHouses) acts += '<button class="mg-chip" data-mortgage="' + sp.i + '">Mortgage +$' + sp.mortgage + '</button>';
+    return '<div class="mg-row"><span class="mg-sw" style="background:' + spaceColor(sp) + '"></span>'
+      + '<div class="mg-name"><b>' + esc(sp.name) + '</b><small>' + sub + '</small></div><div class="mg-acts">' + acts + '</div></div>';
+  }
+  /* Build & manage: your land by colour set, each set saying whether it can
+     be built on, each deed one row: rent now, houses, + / − and mortgage. */
+  function openManage(debtMode) {
+    var room = state.room, me = meSeat(), my = mySpaces(), cash = (room.players[me] || {}).cash || 0;
+    var html = '<h2>' + ui('land') + ' Build &amp; manage</h2>';
+    var d = room.pending && room.pending.kind === 'debt' && room.turn === me ? room.pending : null;
+    if (d) {
+      var short = Math.max(0, d.amount - cash), can = raisable();
+      html += '<div class="mg-debt"><b>You owe ' + (d.creditor != null ? esc(room.players[d.creditor].name) : 'the Bank') + ' $' + fmt(d.amount) + '</b>'
+        + '<span>' + (short ? 'You have $' + fmt(cash) + ' · raise $' + fmt(short) + ' more by selling houses or mortgaging below.' : 'You have enough. Pay it now.') + '</span>'
+        + (short ? '' : '<button class="jb-btn" id="jb-debt-pay">Pay $' + fmt(d.amount) + '</button>')
+        + (short > can ? '<span class="mg-warn">Even selling everything raises only $' + fmt(can) + '.</span><button class="jb-btn coral" id="jb-debt-bankrupt">Declare bankruptcy…</button>' : '')
+        + '</div>';
+    }
+    var sets = {}, order = [];
+    my.forEach(function (sp) {
+      var k = sp.kind === 'street' ? sp.group : sp.kind;
+      if (!sets[k]) { sets[k] = []; order.push(k); }
+      sets[k].push(sp);
+    });
+    if (!my.length) html += '<div class="jb-card">No land yet. Buy what you land on.</div>';
+    order.forEach(function (k) {
+      var list = sets[k], first = list[0], street = first.kind === 'street';
+      var total = street ? groupMembers(first).length : first.kind === 'railroad' ? 4 : 2;
+      var full = street && ownsSet(first, me);
+      var title = street ? GROUP_LABEL[k] || k : k === 'railroad' ? 'Roads' : 'Utilities';
+      var note = street ? (full ? 'Whole set: you can build' : 'Own all ' + total + ' to build') : 'Rent grows with each one you own';
+      html += '<div class="mg-set"><div class="mg-head"><span class="mg-sw" style="background:' + spaceColor(first) + '"></span><b>' + esc(title) + '</b>'
+        + '<span class="mg-count">' + list.length + '/' + total + '</span><small' + (full ? ' class="ok"' : '') + '>' + note + '</small></div>'
+        + list.map(manageRow).join('') + '</div>';
+    });
+    html += '<div class="jb-row" style="margin-top:12px"><button class="jb-btn ghost" id="jb-manage-close">Done</button></div>';
+    openSheet(html);
+    $('jb-sheet').setAttribute('data-kind', 'manage');
     tap($('jb-manage-close'), closeSheet);
-    $('jb-sheet').querySelectorAll('[data-build]:not([disabled])').forEach(function (b) { tap(b, function () { doAction('/build', { property_index: +b.getAttribute('data-build'), count: 1 }); closeSheet(); }); });
-    $('jb-sheet').querySelectorAll('[data-sell]:not([disabled])').forEach(function (b) { tap(b, function () { doAction('/sell_building', { property_index: +b.getAttribute('data-sell'), count: 1 }); closeSheet(); }); });
-    $('jb-sheet').querySelectorAll('[data-mortgage]').forEach(function (b) { tap(b, function () { doAction('/mortgage', { property_index: +b.getAttribute('data-mortgage') }); closeSheet(); }); });
-    $('jb-sheet').querySelectorAll('[data-lift]').forEach(function (b) { tap(b, function () { doAction('/unmortgage', { property_index: +b.getAttribute('data-lift') }); closeSheet(); }); });
-    var payBtn = $('jb-debt-pay');
-    if (payBtn) tap(payBtn, function () { doAction('/pay_debt', {}); closeSheet(); });
-    var bankBtn = $('jb-debt-bankrupt');
-    if (bankBtn) tap(bankBtn, function () { doAction('/declare_bankruptcy', {}); closeSheet(); });
+    function act(path, body) { doAction(path, body).then(function (o) { if (o && o.success && $('jb-sheet').getAttribute('data-kind') === 'manage') openManage(debtMode); }); }
+    $('jb-sheet').querySelectorAll('[data-build]:not([disabled])').forEach(function (b) { tap(b, function () { kit.sound.play('pop'); act('/build', { property_index: +b.getAttribute('data-build'), count: 1 }); }); });
+    $('jb-sheet').querySelectorAll('[data-sell]:not([disabled])').forEach(function (b) { tap(b, function () { act('/sell_building', { property_index: +b.getAttribute('data-sell'), count: 1 }); }); });
+    $('jb-sheet').querySelectorAll('[data-mortgage]').forEach(function (b) { tap(b, function () { act('/mortgage', { property_index: +b.getAttribute('data-mortgage') }); }); });
+    $('jb-sheet').querySelectorAll('[data-lift]').forEach(function (b) { tap(b, function () { act('/unmortgage', { property_index: +b.getAttribute('data-lift') }); }); });
+    if ($('jb-debt-pay')) tap($('jb-debt-pay'), function () { doAction('/pay_debt', {}); closeSheet(); });
+    if ($('jb-debt-bankrupt')) tap($('jb-debt-bankrupt'), confirmBankruptcy);
+  }
+  /* Bankruptcy is never one tap: say what it means, then ask. */
+  function confirmBankruptcy() {
+    var room = state.room, d = room.pending || {};
+    var to = d.creditor != null ? room.players[d.creditor].name : 'the Bank';
+    openSheet('<h2>Declare bankruptcy?</h2><div class="jb-card">You owe $' + fmt(d.amount || 0) + ' and cannot raise it. Your buildings are sold, '
+      + 'and your land and money go to ' + esc(to) + '. You leave the game, but you can stay and watch.</div>'
+      + '<div class="jb-row" style="margin-top:12px"><button class="jb-btn ghost" id="jb-bk-no">Go back</button>'
+      + '<button class="jb-btn coral" id="jb-bk-yes">Yes, declare bankruptcy</button></div>');
+    tap($('jb-bk-no'), function () { openManage(true); });
+    tap($('jb-bk-yes'), function () { doAction('/declare_bankruptcy', {}); closeSheet(); });
   }
 
   /* ============ shake to roll ============
@@ -1811,28 +2211,6 @@ syncSoundBtn();
     });
   }
 
-  function openBuySheet(sp) {
-    openSheet('<h2>🏷️ For Sale! <small>' + esc(sp.name) + '</small></h2>' + deedHtml(sp) +
-      '<div class="jb-row" style="margin-top:10px">' +
-      '<button class="jb-btn big" id="jb-buy-yes">Buy - $' + fmt(sp.price) + '</button>' +
-      '<button class="jb-btn coral" id="jb-buy-no">Send to Auction</button>' +
-      '</div>');
-    tap($('jb-buy-yes'), function () { doAction('/buy', {}); closeSheet(); });
-    tap($('jb-buy-no'), function () { doAction('/decline', {}); closeSheet(); });
-  }
-
-  function openTributeSheet(p) {
-    var pct = Math.round(0.1 * (state.room.players[meSeat()].net_worth || 0));
-    openSheet('<h2>💸 The Tribute <small>Matthew 22:21</small></h2>' +
-      '<div class="jb-card">Render unto Caesar: <b>a flat $' + p.flat + '</b>, or <b>10% of your net worth = $' + fmt(pct) + '</b>. Your choice.</div>' +
-      '<div class="jb-row" style="margin-top:10px">' +
-      '<button class="jb-btn" id="jb-tribute-flat">Flat $' + p.flat + '</button>' +
-      '<button class="jb-btn teal" id="jb-tribute-pct">10% - $' + fmt(pct) + '</button>' +
-      '</div>');
-    tap($('jb-tribute-flat'), function () { doAction('/tribute_choice', { choice: 'flat' }); closeSheet(); });
-    tap($('jb-tribute-pct'), function () { doAction('/tribute_choice', { choice: 'percent' }); closeSheet(); });
-  }
-
   /* ---------- Trades ---------- */
   /* ============ trading ============
      Pick who to trade with, tap the deeds that change hands, nudge the cash,
@@ -1853,8 +2231,8 @@ syncSoundBtn();
       var sp = room.board[i] || {};
       return '<div class="jb-tline"><i style="background:' + spaceColor(sp) + '"></i>' + esc(sp.name || 'Land') + (sp.mortgaged ? ' <small>(mortgaged)</small>' : '') + '</div>';
     });
-    if (side.cash) bits.push('<div class="jb-tline cash">💰 $' + fmt(side.cash) + '</div>');
-    if (side.jail_cards) bits.push('<div class="jb-tline">🗝️ ' + side.jail_cards + ' Dungeon-free card' + (side.jail_cards > 1 ? 's' : '') + '</div>');
+    if (side.cash) bits.push('<div class="jb-tline cash"><i style="background:#16a34a"></i>$' + fmt(side.cash) + ' cash</div>');
+    if (side.jail_cards) bits.push('<div class="jb-tline"><i style="background:#3f3a4f"></i>' + side.jail_cards + ' get-out card' + (side.jail_cards > 1 ? 's' : '') + '</div>');
     return bits.join('') || '<div class="jb-tline none">Nothing</div>';
   }
   function dealValue(room, side) {
@@ -1874,11 +2252,11 @@ syncSoundBtn();
     function draw() {
       room = state.room;
       var my = room.players[me] || {}, them = room.players[deal.to] || {};
-      var h = '<h2>🤝 Make a deal</h2>';
+      var h = '<h2>' + ui('trade') + ' Make a deal</h2>';
       h += '<div class="jb-tlabel">1 · Trade with</div><div class="jb-twho">';
       opponents.forEach(function (s) {
         var p = room.players[s];
-        h += '<button class="jb-twhob' + (s === deal.to ? ' on' : '') + '" data-twho="' + s + '">' + tokenBadge(p.token, SEAT_COLORS[s]) + '<b>' + esc(p.name) + (p.is_ai ? ' 🤖' : '') + '</b><small>$' + fmt(p.cash) + '</small></button>';
+        h += '<button class="jb-twhob' + (s === deal.to ? ' on' : '') + '" data-twho="' + s + '">' + tokenBadge(p.token, SEAT_COLORS[s]) + '<b>' + esc(p.name) + '</b><small>$' + fmt(p.cash) + (p.is_ai ? ' · CPU' : '') + '</small></button>';
       });
       h += '</div>';
       var mine = room.board.filter(function (sp) { return sp.owner === me; });
@@ -1910,7 +2288,7 @@ syncSoundBtn();
         + '<b>$' + fmt(val) + '</b><button data-tcash="' + which + '" data-d="10"' + (val + 10 > max ? ' disabled' : '') + '>+10</button><button data-tcash="' + which + '" data-d="50"' + (val + 50 > max ? ' disabled' : '') + '>+50</button></div>';
     }
     function cardToggle(which, val, max) {
-      return '<button class="jb-tcard' + (val ? ' on' : '') + '" data-tcard="' + which + '" data-max="' + max + '">🗝️ Dungeon-free card' + (val ? ' ✓' : '') + '</button>';
+      return '<button class="jb-tcard' + (val ? ' on' : '') + '" data-tcard="' + which + '" data-max="' + max + '">Get-out card' + (val ? ' ✓' : '') + '</button>';
     }
     function side(which) {
       var picked = deal[which], spaces = [];
@@ -1948,7 +2326,7 @@ syncSoundBtn();
   function lastTradeAnswer(room, name) {
     var log = room.log || [];
     for (var i = log.length - 1; i >= Math.max(0, log.length - 4); i--) {
-      if (log[i].indexOf(name + ' accepts the deal') === 0) return '🤝 ' + name + ' accepted!';
+      if (log[i].indexOf(name + ' accepts the deal') === 0) return name + ' accepted your deal!';
       if (log[i].indexOf(name + ' declines the deal') === 0) return name + ' said no to that deal';
     }
     return 'Offer answered';
@@ -1960,15 +2338,15 @@ syncSoundBtn();
     var who = esc(forMe ? t.from_name : t.to_name);
     var youGet = forMe ? t.offer : t.ask, youGive = forMe ? t.ask : t.offer;
     return '<div class="jb-toffer">'
-      + '<div class="jb-toffer-h">' + (forMe ? '📨 <b>' + who + '</b> offers you a deal' : '⏳ Waiting for <b>' + who + '</b>') + '</div>'
+      + '<div class="jb-toffer-h">' + (forMe ? '<b>' + who + '</b> offers you a deal' : 'Waiting for <b>' + who + '</b> to answer') + '</div>'
       + '<div class="jb-tcols"><div class="jb-tcol get"><div class="jb-tlabel">You get</div>' + dealLines(room, youGet) + '</div>'
       + '<div class="jb-tcol give"><div class="jb-tlabel">You give</div>' + dealLines(room, youGive) + '</div></div>'
-      + (forMe ? '<div class="jb-row"><button class="jb-btn teal" data-taccept="' + t.id + '">✓ Accept</button><button class="jb-btn coral" data-treject="' + t.id + '">✗ Decline</button></div>'
+      + (forMe ? '<div class="jb-row"><button class="jb-btn ghost" data-treject="' + t.id + '">Decline</button><button class="jb-btn teal" data-taccept="' + t.id + '">Accept</button></div>'
                : '<div class="jb-row"><button class="jb-btn ghost" data-tcancel="' + t.id + '">Take back offer</button></div>')
       + '</div>';
   }
   function wireOffers(root) {
-    root.querySelectorAll('[data-taccept]').forEach(function (b) { tap(b, function () { doAction('/trade/accept', { trade_id: b.dataset.taccept }).then(function (o) { if (o && o.success) { kit.toast('🤝 Deal done!'); kit.sound.play('coin'); closeOfferSheet(); } }); }); });
+    root.querySelectorAll('[data-taccept]').forEach(function (b) { tap(b, function () { doAction('/trade/accept', { trade_id: b.dataset.taccept }).then(function (o) { if (o && o.success) { kit.toast('Deal done!'); kit.sound.play('coin'); closeOfferSheet(); } }); }); });
     root.querySelectorAll('[data-treject]').forEach(function (b) { tap(b, function () { doAction('/trade/reject', { trade_id: b.dataset.treject }).then(function () { closeOfferSheet(); }); }); });
     root.querySelectorAll('[data-tcancel]').forEach(function (b) { tap(b, function () { doAction('/trade/cancel', { trade_id: b.dataset.tcancel }); }); });
   }
@@ -1993,9 +2371,9 @@ syncSoundBtn();
     var fresh = trades.filter(function (t) { return t.to === me && !seenOffers[t.id]; });
     if (!fresh.length) return;
     fresh.forEach(function (t) { seenOffers[t.id] = true; });
-    if ($('jb-sheet-shade').classList.contains('show')) { kit.toast('📨 ' + fresh[0].from_name + ' sent you an offer - see Trades'); return; }
+    if ($('jb-sheet-shade').classList.contains('show')) { kit.toast(fresh[0].from_name + ' sent you an offer - see Trades'); return; }
     var t = fresh[0];
-    openSheet('<h2>🤝 A deal for you</h2>' + offerHtml(room, t, me));
+    openSheet('<h2>' + ui('trade') + ' A deal for you</h2>' + offerHtml(room, t, me));
     $('jb-sheet').setAttribute('data-kind', 'offer');
     $('jb-sheet').setAttribute('data-offer', t.id);
     wireOffers($('jb-sheet'));
@@ -2003,30 +2381,25 @@ syncSoundBtn();
   }
 
   /* ---------- Tabs ---------- */
+  /* My Land: the purse at a glance, then every deed as a card (tap one for
+     its rent table). The same on every screen size. */
   function renderPropTab() {
     var room = state.room, me = meSeat();
-    var lines = [];
-    if (document.body.classList.contains('jb-hand')) {
-      var mine = room.players[me] || {};
-      lines.push('<div class="jb-purse"><b>$' + fmt(mine.cash || 0) + '</b><span>Net worth $' + fmt(mine.net_worth || 0) +
-        '<br>' + mySpaces().length + ' deeds' + (mine.jail_cards ? ' · ' + mine.jail_cards + ' get-out card' + (mine.jail_cards > 1 ? 's' : '') : '') + '</span></div>');
-      var deeds = mySpaces().map(function (sp) {
-        var built = sp.houses === 5 ? '🏨 Hotel' : (sp.houses ? Array(sp.houses + 1).join('🏠') : (sp.kind === 'street' ? 'No buildings' : sp.kind === 'railroad' ? 'Road' : 'Utility'));
-        var rent = sp.rents && sp.kind === 'street' ? ' · rent $' + fmt(sp.rents[Math.min(sp.houses || 0, sp.rents.length - 1)]) : '';
-        return '<div class="jb-deed' + (sp.mortgaged ? ' mortgaged' : '') + '" data-deed="' + sp.i + '">' +
-          '<div class="band" style="background:' + spaceColor(sp) + '">' + esc(sp.name) + '</div>' +
-          '<div class="meta">' + built + rent + (sp.mortgaged ? '<br>Mortgaged' : '') + '</div></div>';
-      }).join('');
-      lines.push(deeds ? '<div class="jb-deeds">' + deeds + '</div>' : '<div class="jb-trade-item" style="color:#b9aee0;border:none">No land yet - buy what you land on!</div>');
-      return lines.join('');
-    }
-    lines.push('<div class="jb-trade-sum" style="display:block;text-align:left;line-height:1.5">Net worth: <b>$' + fmt((room.players[me] || {}).net_worth || 0) + '</b> · Houses left in bank: <b>' + fmt(room.bank_houses) + '</b> · Hotels: <b>' + fmt(room.bank_hotels) + '</b></div>');
-    mySpaces().forEach(function (sp) {
-      var built = sp.houses === 5 ? '🏨' : (sp.houses ? Array(sp.houses + 1).join('🏠') : '');
-      lines.push('<div class="jb-trade-item" style="border:none;border-bottom:1px solid rgba(255,255,255,.08);border-radius:0"><span class="jb-swatch" style="min-height:18px;width:10px;background:' + spaceColor(sp) + '"></span><span style="flex:1">' + esc(sp.name) + '</span><span>' + built + '</span><span style="color:' + (sp.mortgaged ? '#ff9f9f' : '#ffc83d') + '">' + (sp.mortgaged ? 'MORTGAGED' : '$' + fmt(sp.price)) + '</span></div>');
+    var mine = room.players[me] || {}, deeds = mySpaces();
+    var html = '<div class="jb-stats"><div><small>Cash</small><b>$' + fmt(mine.cash || 0) + '</b></div>'
+      + '<div><small>Net worth</small><b>$' + fmt(mine.net_worth || 0) + '</b></div>'
+      + '<div><small>Deeds</small><b>' + deeds.length + '</b></div>'
+      + (mine.jail_cards ? '<div><small>Get-out cards</small><b>' + mine.jail_cards + '</b></div>' : '') + '</div>';
+    if (!deeds.length) return html + '<div class="jb-empty">No land yet. Buy what you land on, and own a whole colour group to start building.</div>';
+    html += '<div class="jb-deeds">';
+    deeds.forEach(function (sp) {
+      var built = sp.houses === 5 ? 'Hotel' : sp.houses ? sp.houses + (sp.houses > 1 ? ' houses' : ' house') : sp.kind === 'street' ? 'No buildings' : sp.kind === 'railroad' ? 'Road' : 'Utility';
+      var rent = sp.kind === 'street' && sp.rents ? 'Rent $' + fmt(sp.rents[Math.min(sp.houses || 0, 5)]) : '';
+      html += '<button class="jb-deed' + (sp.mortgaged ? ' mortgaged' : '') + '" data-deed="' + sp.i + '">'
+        + '<span class="band" style="background:' + spaceColor(sp) + '">' + esc(sp.name) + '</span>'
+        + '<span class="meta"><span>' + built + '</span>' + (sp.mortgaged ? '<span class="mtag">' + ui('lock') + ' Mortgaged</span>' : rent ? '<span>' + rent + '</span>' : '') + '</span></button>';
     });
-    if (!mySpaces().length) lines.push('<div class="jb-trade-item" style="color:#b9aee0;border:none">No land yet - claim some!</div>');
-    return lines.join('');
+    return html + '</div><div class="jb-bankline">Bank: ' + fmt(room.bank_houses) + ' houses · ' + fmt(room.bank_hotels) + ' hotels left</div>';
   }
 
   function renderTradesTab() {
@@ -2038,7 +2411,7 @@ syncSoundBtn();
     mine.forEach(function (t) { html += offerHtml(room, t, me); });
     sent.forEach(function (t) { html += offerHtml(room, t, me); });
     if (!html) html = '<div class="jb-tempty dark">No offers right now.</div>';
-    if (room.status === 'playing') html += '<button class="jb-btn teal" id="jb-tab-newtrade" style="margin-top:8px">🤝 Make a deal</button>';
+    if (room.status === 'playing') html += '<button class="jb-btn teal" id="jb-tab-newtrade" style="margin-top:8px">' + ui('trade') + ' Make a deal</button>';
     return html;
   }
 
@@ -2130,17 +2503,39 @@ syncSoundBtn();
 
     if (p && myTurn) {
       if (p.kind === 'buy') {
-        html = '<button class="jb-btn big" id="jb-act-buy">Buy - $' + fmt(p.price) + '</button>'
-          + '<button class="jb-btn coral" id="jb-act-auction">Send to Auction</button>';
+        var bsp = room.board[p.space] || {};
+        var setN = bsp.kind === 'street' ? groupMembers(bsp).length : 0;
+        var have = bsp.kind === 'street' ? groupMembers(bsp).filter(function (o) { return o.owner === me; }).length : 0;
+        html = '<div class="jb-ctx"><span class="cx-band" style="background:' + spaceColor(bsp) + '"></span><div class="cx-body"><small>For sale</small><b>' + esc(bsp.name || p.name) + '</b>'
+          + '<span>$' + fmt(p.price) + (bsp.rents ? ' · rent $' + bsp.rents[0] : '') + ' · you have $' + fmt(my.cash || 0)
+          + (setN ? ' · you own ' + have + ' of ' + setN : '') + '</span></div><button class="cx-info" data-deedinfo="' + p.space + '" aria-label="See the deed">' + ui('info') + '</button></div>'
+          + '<button class="jb-btn big" id="jb-act-buy"' + ((my.cash || 0) < p.price ? ' disabled' : '') + '>Buy for $' + fmt(p.price) + '</button>'
+          + '<button class="jb-btn ghost" id="jb-act-auction">' + (room.rules && room.rules.no_auction ? 'Leave it' : 'Auction it') + '</button>';
       } else if (p.kind === 'tribute') {
-        html = '<button class="jb-btn gold big" id="jb-act-flat">Pay Flat $' + fmt(p.flat) + '</button>'
-          + '<button class="jb-btn gold big" id="jb-act-pct">Pay 10% ($' + fmt(p.percent) + ')</button>';
+        var cheap = p.percent < p.flat;
+        html = '<div class="jb-ctx"><span class="cx-band" style="background:#c2410c"></span><div class="cx-body"><small>The Tribute</small><b>Render unto Caesar</b>'
+          + '<span>Pay a flat $' + fmt(p.flat) + ', or 10% of what you are worth: $' + fmt(p.percent) + '.</span></div></div>'
+          + '<button class="jb-btn' + (cheap ? ' ghost' : ' big') + '" id="jb-act-flat">Pay $' + fmt(p.flat) + '</button>'
+          + '<button class="jb-btn' + (cheap ? ' big' : ' ghost') + '" id="jb-act-pct">Pay 10% · $' + fmt(p.percent) + '</button>';
+      } else if (p.kind === 'feast') {
+        html = '<div class="jb-ctx"><span class="cx-band" style="background:#7e22ce"></span><div class="cx-body"><small>Sabbath Rest</small><b>Proclaim a feast</b>'
+          + '<span>Rent doubles on the land you choose, until someone else moves the feast.</span></div></div><div class="jb-feastbtns">';
+        (p.choices || []).forEach(function (c) {
+          html += '<button class="jb-btn" data-feast="' + c.space + '"><span>' + esc(c.name) + '</span><small>rent $' + fmt(c.rent) + ' → $' + fmt(c.doubled) + '</small></button>';
+        });
+        html += '<button class="jb-btn ghost" data-feast="-1">Just rest</button></div>';
+      } else if (p.kind === 'drill') {
+        html = '<div class="jb-waitingchip">⚔️ Sword Drill - answer on the card!</div>';
       } else if (p.kind === 'debt') {
-        var canPay = (my.cash || 0) >= p.amount;
-        html = '<button class="jb-btn big" id="jb-act-manage">⚖ Pay / Raise Funds - $' + fmt(p.amount) + '</button>'
-          + '<button class="jb-btn coral" id="jb-act-bankrupt">Bankruptcy</button>';
-        html += '<div class="jb-hint">' + (canPay ? 'Tap Pay when you have the cash!' : 'Raise cash by mortgaging or selling buildings. Tap to manage your land.') + '</div>';
+        var canPay = (my.cash || 0) >= p.amount, shortBy = p.amount - (my.cash || 0);
+        var toWho = p.creditor != null ? room.players[p.creditor].name : 'the Bank';
+        html = '<div class="jb-ctx warn"><span class="cx-band" style="background:#dc2626"></span><div class="cx-body"><small>You owe ' + esc(toWho) + '</small><b>$' + fmt(p.amount) + '</b>'
+          + '<span>' + (canPay ? 'You have $' + fmt(my.cash || 0) + '. Pay it to carry on.' : 'You have $' + fmt(my.cash || 0) + '. Raise $' + fmt(shortBy) + ' more: sell houses or mortgage land.') + '</span></div></div>'
+          + (canPay ? '<button class="jb-btn big" id="jb-act-pay">Pay $' + fmt(p.amount) + '</button>'
+                    : '<button class="jb-btn big" id="jb-act-manage">' + ui('coins') + ' Raise money</button>');
       }
+    } else if (p && p.kind === 'drill') {
+      html = '<div class="jb-waitingchip">⚔️ Sword Drill!</div>';
     } else if (room.auction && room.auction.high_bidder !== undefined) {
       var a = room.auction;
       renderAuctionBar(a);
@@ -2151,20 +2546,22 @@ syncSoundBtn();
         var inJail = !!my.in_jail;
         if (!room.rolled) {
           if (inJail) {
-            html += '<button class="jb-btn big" id="jb-act-roll">🎲 Roll for Doubles</button>';
-            html += '<button class="jb-btn" id="jb-act-fine">Pay $50</button>';
-            if ((my.jail_cards || 0) > 0) html += '<button class="jb-btn" id="jb-act-card">Get-Out Card (' + my.jail_cards + ')</button>';
+            html += '<div class="jb-ctx"><span class="cx-band" style="background:#3f3a4f"></span><div class="cx-body"><small>In the Dungeon · try ' + ((my.jail_turns || 0) + 1) + ' of 3</small><b>Roll doubles to walk out free</b>'
+              + '<span>Or pay $50' + ((my.jail_cards || 0) ? ', or use your get-out card' : '') + ' and roll as normal.' + ((my.jail_turns || 0) >= 2 ? ' Last try: if it fails, you pay $50.' : '') + '</span></div></div>';
+            html += '<button class="jb-btn big" id="jb-act-roll">' + ui('die') + ' Roll for doubles</button>';
+            html += '<button class="jb-btn ghost" id="jb-act-fine">Pay $50</button>';
+            if ((my.jail_cards || 0) > 0) html += '<button class="jb-btn ghost" id="jb-act-card">Use get-out card</button>';
           } else {
-            html += '<button class="jb-btn big" id="jb-act-roll">🎲 Roll the Dice</button>';
+            html += '<button class="jb-btn big" id="jb-act-roll">' + ui('die') + ' Roll the dice</button>';
           }
-          html += '<div class="jb-row jb-actions-secondary"><button class="jb-btn ghost" id="jb-act-manage">🔨 Manage</button>'
-            + '<button class="jb-btn ghost" id="jb-act-trade">🤝 Trade</button></div>';
+          html += '<div class="jb-row jb-actions-secondary"><button class="jb-btn ghost" id="jb-act-manage">' + ui('land') + ' Build &amp; manage</button>'
+            + '<button class="jb-btn ghost" id="jb-act-trade">' + ui('trade') + ' Trade</button></div>';
         } else if (room.bonus_roll) {
-          html += '<button class="jb-btn big" id="jb-act-roll">🎲 Bonus Roll!</button>';
+          html += '<button class="jb-btn big" id="jb-act-roll">' + ui('die') + ' Doubles! Roll again</button>';
         } else {
-          html += '<button class="jb-btn teal big" id="jb-act-end">End Turn</button>'
-            + '<div class="jb-row jb-actions-secondary"><button class="jb-btn ghost" id="jb-act-manage">🔨 Manage</button>'
-            + '<button class="jb-btn ghost" id="jb-act-trade">🤝 Trade</button></div>';
+          html += '<button class="jb-btn teal big" id="jb-act-end">End turn ' + ui('end') + '</button>'
+            + '<div class="jb-row jb-actions-secondary"><button class="jb-btn ghost" id="jb-act-manage">' + ui('land') + ' Build &amp; manage</button>'
+            + '<button class="jb-btn ghost" id="jb-act-trade">' + ui('trade') + ' Trade</button></div>';
         }
       } else {
         var cur = room.players[room.turn];
@@ -2179,11 +2576,15 @@ syncSoundBtn();
     (function wire() {
       var b;
       if ((b = $('jb-act-buy'))) tap(b, function () { doAction('/buy', {}); kit.sound.play('coin'); });
+      $('jb-action').querySelectorAll('[data-feast]').forEach(function (fb) {
+        tap(fb, function () { var v = +fb.getAttribute('data-feast'); doAction('/feast', { property: v >= 0 ? v : null }); if (v >= 0) kit.sound.play('combo', 3); });
+      });
       if ((b = $('jb-act-auction'))) tap(b, function () { doAction('/decline', {}); });
       if ((b = $('jb-act-flat'))) tap(b, function () { doAction('/tribute_choice', { choice: 'flat' }); });
       if ((b = $('jb-act-pct'))) tap(b, function () { doAction('/tribute_choice', { choice: 'percent' }); });
       if ((b = $('jb-act-manage'))) tap(b, function () { openManage(p && p.kind === 'debt'); });
-      if ((b = $('jb-act-bankrupt'))) tap(b, function () { doAction('/declare_bankruptcy', {}); });
+      if ((b = $('jb-act-pay'))) tap(b, function () { doAction('/pay_debt', {}); });
+      $('jb-action').querySelectorAll('[data-deedinfo]').forEach(function (ib) { tap(ib, function () { openDeed(+ib.getAttribute('data-deedinfo')); }); });
       shake.onShake = null;
       if ((b = $('jb-act-roll'))) {
         var rollNow = function () { shake.onShake = null; doAction(inJailVar() ? '/jail_roll' : '/roll', {}); };
@@ -2313,7 +2714,7 @@ syncSoundBtn();
   var SMALL = Math.min(window.innerWidth || 0, window.innerHeight || 0) < 600;
   var savedZoom = store.get('zoom');
   var zoom = { on: savedZoom === '1' || (!savedZoom && SMALL), cx: 480, cy: 480, s: 960 };
-  function syncZoomBtn() { var b = $('jb-zoom'); if (b) b.classList.toggle('on', zoom.on); }
+  function syncZoomBtn() { var b = $('jb-zoom'); if (b) { b.classList.toggle('on', zoom.on); b.innerHTML = ui(zoom.on ? 'zoomOut' : 'zoomIn'); b.title = zoom.on ? 'Show the whole board' : 'Follow the moving piece'; } }
   syncZoomBtn();
   tap($('jb-zoom'), function () {
     zoom.on = !zoom.on;
@@ -2443,7 +2844,13 @@ syncSoundBtn();
   var cardTimer = null;
   function showCard(card, delay) {
     if (!card) return;
-    window.setTimeout(function () { revealCard(card); }, Math.max(0, delay || 0));
+    var tries = 0;
+    function go() {
+      // A Scripture card follows its Sword Drill: wait for the drill's card to go.
+      if ($('jb-drill').classList.contains('show') && tries++ < 14) { window.setTimeout(go, 500); return; }
+      revealCard(card);
+    }
+    window.setTimeout(go, Math.max(0, delay || 0));
   }
   function revealCard(card) {
     var deck = card.deck === 'scripture' ? 'scripture' : 'parable';
@@ -2454,10 +2861,13 @@ syncSoundBtn();
     $('jb-cardback-label').textContent = deck === 'scripture' ? 'SCRIPTURE' : 'PARABLES';
     $('jb-card-kind').textContent = deck === 'scripture' ? '✦ Scripture ✦' : '📜 A Parable';
     $('jb-card-who').textContent = (card.player || 'Someone') + ' drew';
-    $('jb-card-verse').textContent = card.quote ? '“' + card.quote + '”' : (card.effect || card.text || '');
+    // A Scripture quotation is set as one; a card's story line is not.
+    $('jb-card-verse').textContent = card.quote ? '“' + card.quote + '”' : (card.flavor || card.effect || card.text || '');
+    $('jb-card-verse').classList.toggle('plain', !card.quote);
     $('jb-card-ref').textContent = card.ref || '';
-    $('jb-card-effect').textContent = card.quote ? (card.effect || '') : '';
-    $('jb-card-effect').style.display = card.quote && card.effect ? '' : 'none';
+    var showEffect = (card.quote || card.flavor) && card.effect;
+    $('jb-card-effect').textContent = showEffect ? card.effect : '';
+    $('jb-card-effect').style.display = showEffect ? '' : 'none';
     // Start where the deck sits on the board.
     var start = 'translate(0px, 40vh) rotate(-45deg) scale(.3) rotateY(0deg)';
     var deckEl = document.getElementById('svg-deck-' + deck);
@@ -2494,6 +2904,219 @@ syncSoundBtn();
     window.setTimeout(function () { host.classList.remove('show'); c3.style.opacity = '1'; }, 380);
   }
 
+
+  /* ============ Jubilee specials: the Sword Drill, the Herald, reactions ============ */
+  /* Server time vs this phone's clock, so every screen counts down together. */
+  var clockSkew = 0;
+  function serverNow() { return Date.now() / 1000 + clockSkew; }
+  function noteServerTime(room) {
+    if (room && room.server_time) {
+      var skew = room.server_time - Date.now() / 1000;
+      clockSkew = clockSkew ? clockSkew * 0.7 + skew * 0.3 : skew;
+    }
+  }
+
+  /* The Sword Drill: a question for the whole table. It opens on every phone
+     at once; the card shows who has locked in, then the right answer, the
+     winner and the verse it comes from. */
+  var drill = { n: null, shownResult: null, timer: null, picked: null, hideTimer: null };
+  function drillTick() {
+    var d = state.room && state.room.drill;
+    if (!d || d.n !== drill.n) return;
+    var left = Math.max(0, d.deadline_at - serverNow());
+    $('jb-drill-clock').textContent = Math.ceil(left);
+    $('jb-drill-bar').style.transform = 'scaleX(' + (left / (d.seconds || 15)).toFixed(3) + ')';
+    if (left <= 3 && left > 0 && Math.ceil(left) !== drill.lastBeep) { drill.lastBeep = Math.ceil(left); kit.sound.tone(880, 0.07, { type: 'square', vol: 0.12 }); }
+  }
+  function drillWho(seats) {
+    var room = state.room, out = '';
+    (seats || []).forEach(function (s) {
+      var p = room.players[s]; if (!p) return;
+      out += '<span class="who">' + tokenBadge(p.token, SEAT_COLORS[s]) + esc(p.name) + '</span>';
+    });
+    return out;
+  }
+  function renderDrill(prev, room) {
+    var d = room.drill, host = $('jb-drill');
+    if (d) {
+      if (d.n !== drill.n) {
+        drill.n = d.n; drill.picked = d.you_answered; drill.lastBeep = null;
+        if (drill.hideTimer) { clearTimeout(drill.hideTimer); drill.hideTimer = null; }
+        $('jb-drill-who').textContent = (d.player || 'Someone') + ' landed on Scripture - everyone answers!';
+        $('jb-drill-clue').textContent = d.clue;
+        var opts = $('jb-drill-opts');
+        opts.className = 'dr-opts' + (d.options.length === 2 ? ' two' : '');
+        opts.innerHTML = d.options.map(function (o, i) { return '<button class="dr-opt" data-opt="' + i + '">' + esc(o) + '</button>'; }).join('');
+        opts.querySelectorAll('[data-opt]').forEach(function (b) {
+          tap(b, function () {
+            if (drill.picked != null || meSeat() == null || (state.room.players[meSeat()] || {}).bankrupt) return;
+            drill.picked = +b.getAttribute('data-opt');
+            paintDrillPicks();
+            kit.haptic(20); kit.sound.play('tap');
+            doAction('/drill', { choice: drill.picked });
+          });
+        });
+        host.classList.add('show');
+        kit.sound.play('start'); kit.haptic([30, 40, 30]);
+        if (drill.timer) clearInterval(drill.timer);
+        drill.timer = setInterval(drillTick, 200);
+      }
+      if (d.you_answered != null) drill.picked = d.you_answered;
+      paintDrillPicks();
+      var waiting = d.answered && d.answered.length ? 'Locked in: ' + drillWho(d.answered) : 'Fastest right answer wins $' + d.prize + ' · every right answer $' + d.right;
+      if ($('jb-drill-foot').innerHTML !== waiting) $('jb-drill-foot').innerHTML = waiting;
+      drillTick();
+      return;
+    }
+    if (drill.timer) { clearInterval(drill.timer); drill.timer = null; }
+    var res = room.last_drill;
+    if (res && drill.n === res.n && drill.shownResult !== res.n && host.classList.contains('show')) {
+      drill.shownResult = res.n;
+      showDrillResult(res);
+    } else if (!res || drill.n !== res.n) {
+      host.classList.remove('show');
+    }
+  }
+  function paintDrillPicks() {
+    $('jb-drill-opts').querySelectorAll('[data-opt]').forEach(function (b) {
+      var i = +b.getAttribute('data-opt');
+      b.disabled = drill.picked != null;
+      b.classList.toggle('picked', drill.picked === i);
+      b.classList.toggle('dim', drill.picked != null && drill.picked !== i);
+    });
+  }
+  function showDrillResult(res) {
+    var me = meSeat(), mine = null;
+    $('jb-drill-opts').querySelectorAll('[data-opt]').forEach(function (b) {
+      var i = +b.getAttribute('data-opt');
+      b.disabled = true;
+      b.classList.remove('dim');
+      b.classList.toggle('right', i === res.answer);
+      b.classList.toggle('wrong', i !== res.answer && drill.picked === i);
+      if (i !== res.answer && drill.picked !== i) b.classList.add('dim');
+    });
+    $('jb-drill-clock').textContent = '✓';
+    $('jb-drill-bar').style.transform = 'scaleX(0)';
+    var rows = (res.results || []).map(function (r) {
+      if (r.seat === me) mine = r;
+      var p = state.room.players[r.seat] || {};
+      return '<div class="' + (r.prize === res.results[0].prize && r.prize >= 100 ? 'win' : '') + '">' + tokenBadge(p.token, SEAT_COLORS[r.seat]) +
+        '<span>' + esc(r.name) + (r.correct ? ' ✔' : ' ✘') + '</span><em>' + (r.correct ? r.secs + 's' : '') + (r.prize ? ' · +$' + r.prize : '') + '</em></div>';
+    }).join('');
+    $('jb-drill-foot').innerHTML = (rows ? '<div class="dr-res">' + rows + '</div>' : 'Nobody answered this time.') + (res.note ? '<span class="note">' + esc(res.note) + '</span>' : '');
+    if (mine && mine.correct) {
+      kit.sound.play(mine.prize >= 100 ? 'win' : 'coin'); kit.haptic([20, 30, 20]);
+      var r = $('jb-drill').querySelector('.dr-card').getBoundingClientRect();
+      if (mine.prize >= 100) goldBurst(r.left + r.width / 2, r.top + 40);
+    } else if (mine) { kit.sound.play('bad'); }
+    drill.hideTimer = setTimeout(function () { $('jb-drill').classList.remove('show'); }, 5200);
+  }
+  tap($('jb-drill'), function (e) {
+    if (e.target === $('jb-drill') && !(state.room && state.room.drill)) $('jb-drill').classList.remove('show');
+  });
+
+  /* The Herald: each new big moment drops in from the top, one at a time. */
+  var herald = { seen: null, queue: [], busy: false };
+  var HERALD_SOUND = {
+    kingdom: function () { [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach(function (f, i) { kit.sound.tone(f, 0.2, { type: 'triangle', vol: 0.18, delay: i * 0.08 }); }); },
+    hotel: function () { kit.sound.play('combo', 4); },
+    big_rent: function () { kit.sound.play('bad'); kit.sound.tone(146, 0.4, { type: 'sawtooth', vol: 0.1, delay: 0.15, slide: 90 }); },
+    bankrupt: function () { kit.sound.play('lose'); },
+    feast: function () { [392, 493.9, 587.3, 784].forEach(function (f, i) { kit.sound.tone(f, 0.16, { type: 'triangle', vol: 0.16, delay: i * 0.11 }); }); },
+    drill: function () {},
+    pot: function () { kit.sound.play('coin'); kit.sound.play('coin'); },
+    doubles3: function () { kit.sound.play('bad'); }
+  };
+  function heraldEvents(room) {
+    var evs = room.events || [];
+    var top = room.event_seq || 0;
+    if (herald.seen === null || top < herald.seen) { herald.seen = top; return; }   // nothing old on the first look
+    evs.forEach(function (e) {
+      if (e.n <= herald.seen) return;
+      if (e.kind === 'jubilee') showJubilee(e);
+      else herald.queue.push(e);
+    });
+    herald.seen = top;
+    nextHerald();
+  }
+  function nextHerald() {
+    if (herald.busy || !herald.queue.length) return;
+    var e = herald.queue.shift();
+    herald.busy = true;
+    var box = $('jb-herald');
+    box.innerHTML = '<div class="hd ' + esc(e.kind) + '"><div class="ic">' + esc(e.icon || '📯') + '</div><div class="tx"><b>' + esc(e.title) + '</b>' + (e.text ? '<small>' + esc(e.text) + '</small>' : '') + '</div></div>';
+    var mine = e.seat != null && e.seat === meSeat();
+    try { (HERALD_SOUND[e.kind] || function () {})(); } catch (err) {}
+    if (mine && (e.kind === 'kingdom' || e.kind === 'hotel' || e.kind === 'pot')) {
+      kit.haptic([30, 30, 60]);
+      kit.fx.burst(innerWidth / 2, 70, ['#ffc83d', '#ffe27a', '#fff8e7', '#c084fc'], 40, { speed: 320, lift: 120, life: 1.2, size: 6, shape: 'star' });
+    }
+    var hold = Math.min(5200, 2600 + (e.text || '').length * 30);
+    setTimeout(function () {
+      var el = box.firstChild; if (el) el.classList.add('out');
+      setTimeout(function () { box.innerHTML = ''; herald.busy = false; nextHerald(); }, 360);
+    }, hold);
+  }
+
+  /* The Year of Jubilee: the whole screen, a ram's horn, then back to play. */
+  var jubileeTimer = null;
+  function showJubilee(e) {
+    var lj = (state.room && state.room.last_jubilee) || {};
+    var bits = [];
+    var who = state.room && state.room.players[lj.poorest];
+    if (who) bits.push(esc(who.name) + ' gleans $' + fmt(lj.gleaning || 150) + (lj.returned && lj.returned.length ? ' and gets back ' + lj.returned.length + ' mortgaged land' + (lj.returned.length > 1 ? 's' : '') : ''));
+    if (lj.freed && lj.freed.length) bits.push('⛓ The Dungeon opens: ' + lj.freed.map(esc).join(', ') + (lj.freed.length > 1 ? ' walk free!' : ' walks free!'));
+    $('jb-jubilee-what').innerHTML = bits.join('<br>') || esc(e.text || '');
+    $('jb-jubilee').classList.add('show');
+    // A ram's horn: a low swell into a bright call.
+    [[196, 0.7, 0], [261.6, 0.5, 0.55], [392, 1.1, 0.95]].forEach(function (n) { kit.sound.tone(n[0], n[1], { type: 'sawtooth', vol: 0.12, delay: n[2] }); kit.sound.tone(n[0] * 2, n[1], { type: 'triangle', vol: 0.08, delay: n[2] }); });
+    kit.haptic([60, 40, 60, 40, 120]);
+    kit.fx.burst(innerWidth / 2, innerHeight * 0.4, ['#fff8e7', '#ffc83d', '#ffe27a', '#f59e0b'], 120, { speed: 560, lift: 300, life: 2, size: 7, shape: 'star' });
+    if (jubileeTimer) clearTimeout(jubileeTimer);
+    jubileeTimer = setTimeout(function () { $('jb-jubilee').classList.remove('show'); }, 7000);
+  }
+  tap($('jb-jubilee'), function () { $('jb-jubilee').classList.remove('show'); });
+
+  /* Reactions: a tray of eight, floating up every screen with your name. */
+  var reactSeen = null;
+  (function buildTray() {
+    var list = ['👏', '😂', '😱', '🙏', '🔥', '😭', '🎉', '😤'];
+    $('jb-react-tray').innerHTML = list.map(function (e) { return '<button data-rx="' + e + '">' + e + '</button>'; }).join('');
+    $('jb-react-tray').querySelectorAll('[data-rx]').forEach(function (b) {
+      tap(b, function () {
+        $('jb-react-tray').hidden = true;
+        kit.haptic(12);
+        doAction('/react', { emoji: b.getAttribute('data-rx') });
+      });
+    });
+    tap($('jb-react'), function () { $('jb-react-tray').hidden = !$('jb-react-tray').hidden; kit.haptic(8); });
+  })();
+  function floatReaction(r) {
+    var p = state.room.players[r.seat] || {};
+    var el = document.createElement('div');
+    el.className = 'rx';
+    el.style.left = (8 + Math.random() * 78) + '%';
+    el.style.setProperty('--drift', ((Math.random() - 0.5) * 80).toFixed(0) + 'px');
+    el.innerHTML = '<div class="e">' + esc(r.emoji) + '</div><div class="n" style="background:' + SEAT_COLORS[r.seat % SEAT_COLORS.length] + ';color:#1b0f3b">' + esc(p.name || '') + '</div>';
+    $('jb-react-layer').appendChild(el);
+    setTimeout(function () { el.remove(); }, 3300);
+  }
+  function renderReactions(room) {
+    var list = room.reactions || [];
+    var top = list.length ? list[list.length - 1].n : 0;
+    if (reactSeen === null) { reactSeen = top; return; }
+    list.forEach(function (r) { if (r.n > reactSeen && !RM) floatReaction(r); });
+    if (top > reactSeen) { reactSeen = top; kit.sound.play('pop', 1.4); }
+  }
+
+  function renderSpecials(prev, room) {
+    noteServerTime(room);
+    renderDrill(prev, room);
+    heraldEvents(room);
+    renderReactions(room);
+    if (room.status !== 'playing') { $('jb-react-tray').hidden = true; }
+  }
+
   /* ---------- Polling ---------- */
   function startPolling() {
     stopPolling();
@@ -2525,16 +3148,28 @@ syncSoundBtn();
   function showEnd(room) {
     if (state.endedShown) return;
     state.endedShown = true;
-    var standings = (room.players || []).slice().sort(function (a, b) { return (b.net_worth || 0) - (a.net_worth || 0); });
+    var standings = (room.players || []).slice().sort(function (a, b) {
+      if (a.seat === room.winner) return -1;
+      if (b.seat === room.winner) return 1;
+      return (b.net_worth || 0) - (a.net_worth || 0);
+    });
     var winner = standings[0] || {};
     $('jb-end-title').textContent = (winner.name || 'Someone') + ' wins the Jubilee!';
     var html = '';
     standings.forEach(function (p, i) {
       html += '<div class="jb-standrow' + (i === 0 ? ' winner' : '') + '"><div class="rank">' + (i + 1) + '</div>'
-        + '<div class="nm">' + esc(p.name) + (p.is_ai ? ' <span style="color:#b9aee0">·scribe</span>' : '') + '</div>'
+        + '<div class="nm">' + esc(p.name) + (p.is_ai ? ' <span class="jb-bot">CPU</span>' : '') + '</div>'
         + '<div class="nw">$' + fmt(p.net_worth || 0) + '</div></div>';
     });
     $('jb-end-standings').innerHTML = html;
+    var why = { kingdom: '👑 ' + (winner.name || '') + ' rules three kingdoms!', 'last-standing': 'The last one standing.',
+      'quick-game': 'Two bankruptcies end the Quick Game.', 'family-fun-full-rounds': 'Twelve full rounds - the richest household wins.',
+      'round-limit': 'The round limit - the richest household wins.' }[room.result] || '';
+    $('jb-end-sub').textContent = why;
+    $('jb-end-awards').innerHTML = (room.awards || []).map(function (a, i) {
+      return '<div class="jb-award" style="animation-delay:' + (0.5 + i * 0.18).toFixed(2) + 's"><span class="ic">' + esc(a.icon) + '</span><b>' + esc(a.title) + '</b>' +
+        '<div class="nm">' + esc(a.name) + '</div><small>' + esc(a.detail) + '</small></div>';
+    }).join('');
     $('jb-end').classList.add('show');
     // celebrate
     var r = $('jb-board-wrap').getBoundingClientRect();
@@ -2597,6 +3232,9 @@ syncSoundBtn();
     state.room = null; state.prevRoom = null; state.code = ''; state.pid = ''; state.meSeat = null;
     state.endedShown = false; state.scorePosted = false; state.hopQueue = []; state.hopAnim = null; state.displayedPos = [];
     popups = [];
+    herald.seen = null; herald.queue = []; reactSeen = null; drill.n = null;
+    $('jb-drill').classList.remove('show'); $('jb-jubilee').classList.remove('show');
+    document.body.classList.remove('jb-playing');
     $('jb-end').classList.remove('show');
     $('jb-auction').classList.remove('show');
     showLobbyMain();

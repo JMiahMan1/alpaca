@@ -642,6 +642,51 @@ other fails the build.
 - Tests: `tests/test_checkers.py` (rules, AI, rooms, the HTTP surface, the Parable Party reuse, and
   that the shipped page passes the mobile contract).
 
+### Jubilee! (`arcade/jubilee.py`, `arcade/family_games/jubilee/`, `templates/jubilee_tv.html`)
+- The Bible-lands property game: classic rules, three rulesets, scribe AI, phones + a TV stage. The
+  **Jubilee specials** (Nov 2026) came from studying the top-rated digital versions of the genre
+  (Monopoly Plus / 2024, Business Tour, Monopoly GO, Madness): what reviewers praised was less waiting
+  between turns, a catch-up mechanic, a "hot spot" space, alternative wins, a narrator, AI that values
+  sets. Each is a room rule (`_build_rules`); Family Fun starts with the first three, Quick with
+  Kingdom win, Classic with none unless the lobby turns them on (the lobby turns the first three on).
+  - `sword_drill`: landing on SCRIPTURE opens a 15 s question **for every phone at once** (the
+    `pending` kind `"drill"` blocks the turn; `room["drill"]` holds the answer and the scribes' planned
+    answers and is **never** copied into a snapshot). Fastest right answer +$100, other right answers
+    +$25, then the Scripture card is drawn. Questions are Parable Party's checked `QUICK_DRAW` +
+    `LIGHTNING` banks (every answer cited), least recently used per room. It closes early once every
+    *present* human has answered.
+  - `feast`: Sabbath Rest offers a feast on one of your unmortgaged lands (`pending` `"feast"`); rent
+    there doubles (`_rent_for` = `_base_rent` × 2) until the next feast moves it.
+  - `jubilee_year`: every 7 full rounds (`_advance_turn`), Lev. 25: prisoners go free; the poorest
+    household's mortgages are lifted and it gleans $150. (Lifting *everyone's* mortgages was rejected:
+    mortgage-everything-then-wait is a money printer.)
+  - `kingdom_win`: 3 whole colour groups win on the spot (`_maybe_finish`).
+- **The Herald** (`_event`): big moments (kingdom, hotel, rent ≥ $300, bankrupt, feast, drill win,
+  pot, three doubles, the Jubilee) go to `room["events"]` with `event_seq`; phones and the TV show each
+  once as a banner, with a quip from `HERALD` drawn least-recently-said. **Reactions** (`/react`, eight
+  emoji, rate-limited) float up every screen. **Awards** (`AWARDS`, from `room["stats"]`) close a match.
+- **Stand-ins:** a person whose phone has been away `STAND_IN_SECONDS` has a scribe play *only the
+  turn* (roll, buy, pay; never trade/build/unmortgage), and only while someone else or a TV is
+  watching. A debt the stand-in cannot raise waits `STAND_IN_BANKRUPT_SECONDS` before bankruptcy.
+- **Scribes value sets** (`_ai_trade_worth`): a street that completes the *other* side's group costs
+  them ~2.5× its price, unless the deal crowns them too (then swaps go through); they offer swaps
+  first, lift mortgages when comfortable, and leave the Dungeon early in the game but sit tight late.
+- Rooms persist as JSON (`presence.save_rooms_once`), so every new room field must be
+  JSON-serialisable with **string** dict keys (`test_a_room_with_every_new_rule_in_play_still_saves_as_json`).
+- **Board layout (phone and TV): every square's text is upright** (a screen is seen from one side; the
+  old copy of a physical board left the top row upside down). Corners are deeper than side squares,
+  the colour band faces the middle, owners show as a tint plus a strip on the outer edge (never colour
+  alone: the deed sheet names them), and pieces stand on the band (phone) or just inside the middle
+  (TV) so they never cover a name or price. Interface icons are one inline-SVG set (`UI_ICONS`/`ui()`),
+  not emoji. Dialog rules from the genre research: the deed highlights the rent charged now; Buy,
+  Tribute, debt and the Dungeon show a context card above the buttons; bankruptcy is only offered when
+  selling everything cannot cover the debt, and asks to confirm.
+- The TV page is ES5 (no `=>`, `let`, template strings) and its `.foot` class is the page footer
+  (hidden in play): give new elements their own class names.
+- Fixed with the specials: guests' phones stayed on the waiting room after the host started; the
+  phone end card never appeared (`applyState` set `endedShown` before `showEnd` checked it); computer-only
+  turns never checked the round limit. `tests/test_jubilee_features.py` covers the specials.
+
 ### Party games on the TV (`arcade/party.py`, `/tv`, SharedLLM `tv_stage`)
 - **The TV runs the game's stage page; it is never sent audio or a picture of it.** `/tv/<CODE>`
   (`arcade/templates/party_tv.html`) is a hands-free big-screen view: it polls the room as the stage

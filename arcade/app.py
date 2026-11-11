@@ -1660,6 +1660,21 @@ def api_jubilee_leave(code):
     body = request.get_json(silent=True) or {}
     return _jubilee_call(lambda: jubilee.leave_room(code, body.get("player_id")))
 
+@app.route("/api/jubilee/rooms/<code>/feast", methods=["POST"])
+def api_jubilee_feast(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.feast(code, body.get("player_id"), body.get("property")))
+
+@app.route("/api/jubilee/rooms/<code>/drill", methods=["POST"])
+def api_jubilee_drill(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.drill_answer(code, body.get("player_id"), body.get("choice")))
+
+@app.route("/api/jubilee/rooms/<code>/react", methods=["POST"])
+def api_jubilee_react(code):
+    body = request.get_json(silent=True) or {}
+    return _jubilee_call(lambda: jubilee.react(code, body.get("player_id"), body.get("emoji")))
+
 # --- Multiplayer Party Room API ("Parable Party") + TV Cast View ---
 
 

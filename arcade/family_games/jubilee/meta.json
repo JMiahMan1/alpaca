@@ -1,7 +1,7 @@
 {
   "title": "Jubilee!",
   "tagline": "A Bible-story property game for the whole family!",
-  "description": "Buy Bible lands from Bethlehem to the New Jerusalem, build houses and hotels, charge rent, and dodge the Dungeon. A full property-trading board game with Bible-story places and players, for phones and the TV. Classic rules with family rule options, scribe AI opponents, room codes for friends, and a big-screen TV stage.",
+  "description": "Buy Bible lands from Bethlehem to the New Jerusalem, build houses and hotels, charge rent, and dodge the Dungeon. Everyone plays on every turn: a Sword Drill Bible question pops up on every phone, a Feast doubles the rent on one land, and every seventh round the Year of Jubilee frees the captives and lifts up the poorest household. Classic, Family Fun and Quick rules, smart scribe opponents, emoji reactions, an awards ceremony, and a big-screen TV stage.",
   "emoji": "🎺",
   "art": {
     "from": "#6d28d9",
@@ -17,8 +17,10 @@
   "higher_is_better": true,
   "how_to": [
     "Open on your phone in Jarvis (or cast /jubilee/tv to a big screen) and join the 4-letter Family Room Code!",
-    "Roll the dice and buy Bible lands. Own a whole colour group to build houses and hotels and charge bigger rents.",
-    "Land on PARABLE or SCRIPTURE for a card. Three doubles in a row sends you to the Dungeon.",
-    "Pass Jubilee! to collect $200. Last family standing wins - or highest net worth when the rounds run out!"
+    "Roll, buy Bible lands, and own a whole colour group (a kingdom) to build houses and hotels.",
+    "Land on SCRIPTURE and everyone races to answer a Sword Drill question: fastest right answer wins $100.",
+    "Rest on the Sabbath to proclaim a Feast: rent doubles on the land you choose.",
+    "Every 7 rounds the Year of Jubilee sounds: captives go free and the poorest player gets a fresh start.",
+    "Last family standing wins - or three kingdoms, or the richest when the rounds run out!"
   ]
 }
