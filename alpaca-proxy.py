@@ -2301,7 +2301,7 @@ async def embed(request: Request):
     try:
         resolved = await ensure_model(model_name)
         backend_model = resolved["backend_model"]
-        if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0)):
+        if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name):
             await release_request_queued(queued_backend)
             queued_backend = None
             raise HTTPException(status_code=503, detail="No llama-server slots available within timeout")
@@ -2519,7 +2519,9 @@ async def openai_chat_completions(request: Request):
                     # different model (which would force a swap + thrash). Model
                     # switching is still permitted when no slots are taken (idle)
                     # or the request targets the same already-loaded model.
-                    slot_ok = await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0))
+                    slot_ok = await wait_for_slot(
+                        backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name
+                    )
                     if not slot_ok:
                         await release_request_queued(queued_backend)
                         complete_active_request(
@@ -2787,7 +2789,9 @@ async def openai_completions(request: Request):
                     # Shared queue: only admit this request once a slot on its own
                     # model is available, so it never lands on a slot serving a
                     # different model (which would force a swap + thrash).
-                    slot_ok = await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0))
+                    slot_ok = await wait_for_slot(
+                        backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name
+                    )
                     if not slot_ok:
                         await release_request_queued(queued_backend)
                         complete_active_request(
@@ -3024,7 +3028,7 @@ async def openai_embeddings(request: Request):
                         }
                     },
                 )
-            if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0)):
+            if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name):
                 await release_request_queued(queued_backend)
                 queued_backend = None
                 return JSONResponse(
@@ -6857,6 +6861,52 @@ async def wait_for_llama_server_or_restart(timeout=300.0):
     return False
 
 
+async def router_model_state(backend_model: str) -> str:
+    """The router's view of one model: "loaded", "loading", "unloaded", "failed" or "unknown".
+
+    Reads ``/models``, which never loads anything. Model-scoped endpoints (``/slots?model=``,
+    ``/health?model=``, ``/props?model=``) make the router *autoload* the model they name, so
+    nothing that merely watches a model may call them unless this says "loaded": on 2026-11-11 a
+    telemetry poll for the model being swapped out reloaded it beside the new one, and the new
+    one died of a CUDA OOM. "failed" is the router's ``failed: true`` (the instance exited).
+    """
+    if client_httpx is None:
+        return "unknown"
+    try:
+        resp = await client_httpx.get(f"{LLAMA_SERVER_URL}/models", timeout=httpx.Timeout(3.0))
+        if resp.status_code != 200:
+            return "unknown"
+        for model in resp.json().get("data", []):
+            if model.get("id") == backend_model:
+                status = model.get("status") or {}
+                value = str(status.get("value") or "").lower()
+                if value not in ("loaded", "loading") and status.get("failed"):
+                    return "failed"
+                return value or "unknown"
+        return "unloaded"
+    except Exception as exc:
+        logger.debug(f"router_model_state({backend_model}) failed: {exc}")
+        return "unknown"
+
+
+async def await_load_settled(backend_model: str, grace: float) -> str:
+    """Wait until a just-requested load has finished one way or the other.
+
+    The router's ``load`` action returns as soon as the instance is *spawned*, so a 35B model
+    "loads successfully" in 0.2 s and can still die of an OOM 15 s later. Returns the settled
+    state ("loaded", "failed", "unloaded"), "loading" if ``grace`` ran out, or "unknown".
+    """
+    deadline = asyncio.get_event_loop().time() + grace
+    state = "unknown"
+    while True:
+        state = await router_model_state(backend_model)
+        if state != "loading":
+            return state
+        if asyncio.get_event_loop().time() >= deadline:
+            return state
+        await asyncio.sleep(1.0)
+
+
 async def is_child_model_healthy(backend_model: str) -> bool:
     """Check if the child model status on the router is 'loaded' or 'loading' and verified functional."""
     if os.getenv("PYTEST_CURRENT_TEST"):
@@ -8162,13 +8212,26 @@ async def _ensure_model_impl(
 
     # Load succeeded - check for OOM or startup crash (post-load verification)
     preset_info = get_model_preset_info(backend_model)
-    logger.info(f"Model {backend_model} loaded successfully{preset_info}. Checking for OOM or startup crash...")
-    await asyncio.sleep(1.0)
+    logger.info(f"Model {backend_model} load started{preset_info}. Waiting for it to finish (OOM/crash check)...")
     oom_detected = False
     crash_detected = False
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        settled = "unknown"
+    else:
+        _large_load = is_model_over_9b(backend_model, resolved.get("manifest") if resolved else None)
+        settled = await await_load_settled(backend_model, grace=360.0 if _large_load else 120.0)
+    if settled in ("failed", "unloaded"):
+        crash_detected = True
+        logger.warning(f"Crash detected: model {backend_model} exited while loading ({settled}). Triggering recovery.")
+    elif settled == "loaded":
+        logger.info(f"Model {backend_model} finished loading.")
+    elif settled == "loading":
+        logger.warning(f"Model {backend_model} is still loading after the grace period; continuing.")
 
     # Check health for all models to detect startup crashes
-    if not await is_child_model_healthy(backend_model):
+    if crash_detected:
+        pass
+    elif not await is_child_model_healthy(backend_model):
         crash_detected = True
         logger.warning(
             f"Crash detected: model {backend_model} is not running or failed after load. Triggering recovery."
@@ -8444,8 +8507,15 @@ async def _ensure_model_impl(
     }
 
 
-async def wait_for_slot(backend_model: str, timeout: float = 120.0) -> bool:
-    """Wait for a slot on the *requested* model to become available.
+async def wait_for_slot(
+    backend_model: str,
+    timeout: float = 120.0,
+    *,
+    model_name: str | None = None,
+    options: dict | None = None,
+    reloads: int = 3,
+) -> bool:
+    """Queue a request until a slot on the *requested* model is free.
 
     Model-aware admission: an open slot is only usable by a request for the
     same model. This prevents a request from being admitted to a slot that
@@ -8456,22 +8526,57 @@ async def wait_for_slot(backend_model: str, timeout: float = 120.0) -> bool:
     serves that one model, so two requests for the same model run in parallel on
     separate slots while a request for a different model waits for the swap.
 
-    Returns True if a slot for ``backend_model`` opened, False on timeout.
+    ``/slots?model=`` is only polled while the router reports the model loaded: that endpoint
+    autoloads the model it names, outside the swap logic, beside whatever else is resident.
+
+    **A dead model does not fail the request; the request stays queued.** If the model's
+    instance exits while we wait (the router reports it failed or unloaded) and ``model_name``
+    is given, it is reloaded through ``ensure_model`` and the request keeps waiting. Time spent
+    reloading does not count against ``timeout`` (that is the queue budget, and a 35B load can
+    take most of it); a reload that raises is retried after a back-off. ``reloads`` caps the
+    attempts so a model that dies on every load ends in a 503 instead of a crash loop. Without
+    ``model_name`` a failed model returns False at once instead of sitting out the timeout.
+
+    Returns True if a slot for ``backend_model`` opened, False on timeout or a dead model.
     """
     if not backend_model:
         # No specific model to scope to; nothing to wait on.
         return True
-    start = asyncio.get_event_loop().time()
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
     delay = 0.1
     max_delay = 1.0
+    attempt = 0
     while True:
-        slots = await _fetch_model_slots(backend_model)
-        # An open slot is one that is not currently processing.
-        if slots and not all(s.get("is_processing", False) for s in slots):
-            return True
-        elapsed = asyncio.get_event_loop().time() - start
-        if elapsed >= timeout:
-            logger.warning(f"Timeout waiting for slot on {backend_model} after {elapsed:.0f}s")
+        state = await router_model_state(backend_model)
+        if state in ("loaded", "unknown"):
+            slots = await _fetch_model_slots(backend_model)
+            # An open slot is one that is not currently processing.
+            if slots and not all(s.get("is_processing", False) for s in slots):
+                return True
+        elif state == "failed" or (state == "unloaded" and model_name):
+            if not model_name:
+                logger.warning(f"Model {backend_model} failed to load; not waiting out the slot timeout.")
+                return False
+            if attempt >= reloads:
+                logger.error(f"Model {backend_model} is still {state} after {attempt} reload(s); giving up.")
+                return False
+            attempt += 1
+            logger.warning(
+                f"Model {backend_model} is {state} while a request waits for a slot; "
+                f"reloading it (attempt {attempt}/{reloads}). The request stays queued."
+            )
+            reload_started = loop.time()
+            try:
+                backend_model = (await ensure_model(model_name, options=options))["backend_model"]
+            except Exception as exc:
+                logger.error(f"Reload {attempt}/{reloads} of {model_name} failed: {exc}")
+                await asyncio.sleep(min(5.0 * attempt, 15.0))
+            deadline += loop.time() - reload_started
+            delay = 0.1
+            continue
+        if loop.time() >= deadline:
+            logger.warning(f"Timeout waiting for slot on {backend_model} after the {timeout:.0f}s queue budget")
             return False
         await asyncio.sleep(delay)
         delay = min(delay * 1.5, max_delay)
@@ -8674,7 +8779,9 @@ async def chat(request: Request):
 
         # Queue-and-wait: if all llama-server slots are busy, wait for one to open
         wait_timeout = body.get("queue_timeout", 120.0)
-        slot_available = await wait_for_slot(resolved_backend, timeout=wait_timeout)
+        slot_available = await wait_for_slot(
+            resolved_backend, timeout=wait_timeout, model_name=model_name, options=body.get("options")
+        )
     except Exception as e:
         # Never leak the queued count or the tracked request on load/pre-dispatch
         # failures (e.g. unresolvable model) - otherwise the request stays in the
@@ -9085,7 +9192,12 @@ async def generate(request: Request):
             # Shared queue: only proceed once a slot on this (same) model is
             # available, so the request never runs on a slot serving a different
             # model (which would force a swap + thrash).
-            if not await wait_for_slot(resolved_backend, timeout=body.get("queue_timeout", 120.0)):
+            if not await wait_for_slot(
+                resolved_backend,
+                timeout=body.get("queue_timeout", 120.0),
+                model_name=model_name,
+                options=body.get("options"),
+            ):
                 # Timeout - release the queued counter so the count doesn't
                 # leak when the generator exits without ever acquiring a slot.
                 await release_request_queued(queued_backend)
@@ -9275,7 +9387,12 @@ async def generate(request: Request):
         # Shared queue: only admit once a slot on this (same) model is available.
         # The request's queued count is released right after this point (on
         # success) or here (on timeout).
-        if not await wait_for_slot(resolved_backend, timeout=body.get("queue_timeout", 120.0)):
+        if not await wait_for_slot(
+            resolved_backend,
+            timeout=body.get("queue_timeout", 120.0),
+            model_name=model_name,
+            options=body.get("options"),
+        ):
             # Timeout - release the queued counter so it doesn't leak.
             if queued_backend:
                 await release_request_queued(queued_backend)

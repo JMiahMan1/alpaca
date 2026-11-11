@@ -886,6 +886,7 @@ other fails the build.
 | A cloned voice sounds buzzy, "singing" or like it has an echo | A base voice far from the profile's `median_f0_hz` forces `correct_pitch` to phase-vocoder the whole render | Omit `voice` so the server pairs one within `PAIRING_MAX_SEMITONES`, or pin it on the profile |
 | A narration changes voice from sentence to sentence | `voice_conversion` is called per sentence and samples its latent, so each sentence got a different draw | `convert` now seeds and forks the generator; `clone_seed: null` to opt out |
 | `clone_seed: 1.5` is accepted and behaves like `1` | `int()` truncates | Reject non-integral values; a seed the caller did not mean is worse than no seed |
+| A request 503s with `queue_timeout` right after a model swap | `/slots?model=X` (and `/health`/`/props?model=`) make the router AUTOLOAD X: a telemetry poll for the outgoing model reloaded it beside the incoming one, which OOM'd while loading; the proxy had called the load "successful" 0.2 s after spawn and waited 121 s on a dead model | Only poll model-scoped endpoints when `/models` says that model is `loaded` (`router_model_state`); the proxy waits for the load to settle (`await_load_settled`) and `wait_for_slot` reloads a dead model while the request stays queued (≤3 reloads, reload time not charged to `queue_timeout`) |
 | Sphinx: ruff reformatted 28 unrelated lines | `ruff check --fix .` on a whole source tree | Scope `--fix` to new files; check `git diff` immediately after |
 
 ## Testing

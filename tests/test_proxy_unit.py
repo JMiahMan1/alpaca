@@ -3641,3 +3641,82 @@ def test_generate_images_and_plain_messages():
     assert alpaca_proxy.openai_messages(plain) == plain  # untouched without images
     already = [{"role": "user", "content": "x", "images": ["data:image/webp;base64,AAAA"]}]
     assert alpaca_proxy.openai_messages(already)[0]["content"][1]["image_url"]["url"] == "data:image/webp;base64,AAAA"
+
+
+# --------------------------------------------------------------------------- #
+# Queue-and-wait through a model that dies (2026-11-11: kat-coder OOM'd while   #
+# loading because a telemetry poll autoloaded the outgoing model beside it).   #
+# --------------------------------------------------------------------------- #
+
+
+def _scripted_states(monkeypatch, states):
+    seq = iter(states)
+    last = {"v": states[-1]}
+
+    async def fake_state(_backend):
+        last["v"] = next(seq, last["v"])
+        return last["v"]
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", fake_state)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_a_queued_request_reloads_a_model_that_died_and_keeps_waiting(monkeypatch):
+    _scripted_states(monkeypatch, ["loading", "failed", "loaded"])
+    ensure = AsyncMock(return_value={"backend_model": "kat--latest"})
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    ok = await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest", options={"num_ctx": 4096})
+    assert ok is True
+    ensure.assert_awaited_once_with("kat:latest", options={"num_ctx": 4096})
+
+
+@pytest.mark.asyncio
+async def test_slots_are_never_polled_for_a_model_the_router_has_not_loaded(monkeypatch):
+    """/slots?model=X autoloads X beside whatever is resident."""
+    _scripted_states(monkeypatch, ["loading", "loading", "unloaded"])
+    fetch = AsyncMock(return_value=[])
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", fetch)
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=0.0) is False
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_dies_on_every_load_gives_up_after_the_reload_cap(monkeypatch):
+    _scripted_states(monkeypatch, ["failed"])
+    ensure = AsyncMock(return_value={"backend_model": "kat--latest"})
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=60.0, model_name="kat:latest", reloads=3) is False
+    assert ensure.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_a_reload_that_raises_is_retried_instead_of_failing_the_request(monkeypatch):
+    _scripted_states(monkeypatch, ["failed", "failed", "loaded"])
+    ensure = AsyncMock(side_effect=[RuntimeError("llama-server restarting"), {"backend_model": "kat--latest"}])
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest") is True
+    assert ensure.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_without_a_model_name_a_failed_model_returns_at_once(monkeypatch):
+    _scripted_states(monkeypatch, ["failed"])
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=120.0) is False
+
+
+@pytest.mark.asyncio
+async def test_router_model_state_reads_the_failed_flag(monkeypatch):
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {
+        "data": [
+            {"id": "kat--latest", "status": {"value": "unloaded", "failed": True, "exit_code": 1}},
+            {"id": "vl--7b", "status": {"value": "loaded"}},
+        ]
+    }
+    monkeypatch.setattr(alpaca_proxy, "client_httpx", MagicMock(get=AsyncMock(return_value=resp)))
+    assert await alpaca_proxy.router_model_state("kat--latest") == "failed"
+    assert await alpaca_proxy.router_model_state("vl--7b") == "loaded"
+    assert await alpaca_proxy.router_model_state("absent--x") == "unloaded"

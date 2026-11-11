@@ -204,6 +204,10 @@ def _runtime(name="qwen3.6-35b-a3b:q4_k_m", backend="qwen3.6-35b-a3b--q4_k_m"):
     return FakeResponse(200, {"loaded_models": [{"name": name, "backend_model": backend}]})
 
 
+def _router(model="qwen3.6-35b-a3b--q4_k_m", status="loaded"):
+    return FakeResponse(200, {"data": [{"id": model, "status": {"value": status}}]})
+
+
 PROPS = FakeResponse(200, {"model_path": "/router-models/x.gguf", "n_ctx": 32768, "n_gpu_layers": 33, "flash_attn": True})
 
 
@@ -244,6 +248,21 @@ async def test_slots_are_skipped_entirely_when_backend_model_is_none(monkeypatch
     assert m["total_slots"] == 0 and m["model_alias"] == "m"
 
 
+@pytest.mark.parametrize("router_status", ["unloaded", "loading", None])
+@pytest.mark.asyncio
+async def test_slots_are_not_polled_unless_the_router_reports_that_model_loaded(monkeypatch, router_status):
+    """/slots?model=X makes the router AUTOLOAD X. Mid-swap the proxy's runtime still names the
+    outgoing model; polling it reloaded that model beside the incoming one, which then OOM'd."""
+    monkeypatch.setenv("PROXY_URL", "http://proxy:11434")
+    routes = {"/admin/runtime": _runtime(backend="qwen2.5-vl--7b"), "/props": PROPS, "/slots": FakeResponse(200, [{}])}
+    if router_status is not None:
+        routes["/models"] = _router(model="qwen2.5-vl--7b", status=router_status)
+    client = FakeClient(routes)
+    m = await tm.get_llama_server_metrics(client)
+    assert not any("/slots" in url for url, _ in client.calls)
+    assert m["total_slots"] == 0
+
+
 @pytest.mark.asyncio
 async def test_slots_are_requested_with_the_backend_model_id_underscores_intact(monkeypatch):
     monkeypatch.setenv("PROXY_URL", "http://proxy:11434")
@@ -252,6 +271,7 @@ async def test_slots_are_requested_with_the_backend_model_id_underscores_intact(
             "/admin/runtime": _runtime(backend="qwen3.6-35b-a3b--q4_k_m"),
             "/props": PROPS,
             "/slots": FakeResponse(200, [{"state": 0, "n_past": 0}, {"state": 0, "n_past": 0}]),
+            "/models": _router(),
         }
     )
     await tm.get_llama_server_metrics(client)
@@ -268,7 +288,7 @@ async def test_slot_activity_and_token_accounting(monkeypatch):
         {"state": 1, "n_past": 2000},  # no flag, non-idle state
         {"state": 0, "n_past": 500},  # idle
     ]
-    client = FakeClient({"/admin/runtime": _runtime(), "/props": PROPS, "/slots": FakeResponse(200, slots)})
+    client = FakeClient({"/admin/runtime": _runtime(), "/props": PROPS, "/slots": FakeResponse(200, slots), "/models": _router()})
     m = await tm.get_llama_server_metrics(client)
     assert m["total_slots"] == 3
     assert m["active_slots"] == 2
@@ -280,7 +300,7 @@ async def test_slot_activity_and_token_accounting(monkeypatch):
 @pytest.mark.asyncio
 async def test_kv_percent_is_zero_without_a_context_or_without_slots(monkeypatch):
     monkeypatch.setenv("PROXY_URL", "http://proxy:11434")
-    client = FakeClient({"/admin/runtime": _runtime(), "/props": FakeResponse(200, {"n_ctx": 0}), "/slots": FakeResponse(200, [{}])})
+    client = FakeClient({"/admin/runtime": _runtime(), "/props": FakeResponse(200, {"n_ctx": 0}), "/slots": FakeResponse(200, [{}]), "/models": _router()})
     m = await tm.get_llama_server_metrics(client)
     assert m["kv_cache_used_pct"] == 0.0  # no divide by zero
 

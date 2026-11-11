@@ -189,6 +189,20 @@ async def get_gpu_metrics():
     return gpus
 
 
+async def _router_model_loaded(client: httpx.AsyncClient, backend_model: str) -> bool:
+    """True only if llama-server's router reports ``backend_model`` as loaded right now."""
+    try:
+        resp = await client.get(f"{LLAMA_SERVER_URL}/models", timeout=2.0)
+        if resp.status_code != 200:
+            return False
+        for model in resp.json().get("data", []):
+            if model.get("id") == backend_model:
+                return (model.get("status") or {}).get("value") == "loaded"
+    except Exception as e:
+        logger.debug(f"Could not reach llama-server /models: {e}")
+    return False
+
+
 async def get_llama_server_metrics(client: httpx.AsyncClient):
     """Retrieve runtime settings and slot utilization from llama-server."""
     props = {}
@@ -230,7 +244,13 @@ async def get_llama_server_metrics(client: httpx.AsyncClient):
         else:
             model_alias = "system_idle"
 
-    # 2. Fetch slots (for context usage tracking)
+    # 2. Fetch slots (for context usage tracking).
+    # /slots?model= makes the router AUTOLOAD the model it names. The proxy's runtime still names
+    # the old model for a moment during a swap, so on 2026-11-11 this poll reloaded qwen2.5-vl
+    # beside the incoming kat-coder, which then died of a CUDA OOM. Only ask about a model the
+    # router reports as loaded (/models never loads anything).
+    if backend_model and not await _router_model_loaded(client, backend_model):
+        backend_model = None
     if backend_model:
         try:
             slots_url = f"{LLAMA_SERVER_URL}/slots"
