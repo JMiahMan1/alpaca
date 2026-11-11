@@ -687,6 +687,23 @@ other fails the build.
   selling everything cannot cover the debt, and asks to confirm.
 - The TV page is ES5 (no `=>`, `let`, template strings) and its `.foot` class is the page footer
   (hidden in play): give new elements their own class names.
+- **Lobby (Nov 2026):** rulebook as a three-way switch with its description under it; house rules and specials
+  fold behind "House rules & specials (N on)" so "Open a room" is on the first screen of every phone (open by
+  default only on big screens). The overlay scrolls from the top: `align-items/justify-content: center` on a
+  scrolling flex box pushed the logo out of reach on short phones; the card uses `margin: auto` instead.
+  **The create route must forward every rule flag** (`JUBILEE_RULE_FLAGS` in `app.py`): it used to pass only
+  the three house rules, so every room got its rulebook's defaults whatever the lobby showed
+  (`test_every_rule_the_lobby_sends_reaches_the_room`). An invite link opened by a phone with no name asks for
+  one first (code filled in) instead of joining as "Player".
+- **The board starts zoomed in on every screen** (the owner's choice; `zoomv2` in localStorage remembers a
+  "whole board" tap). Portrait tablets use the stacked phone layout (the side-by-side one is for landscape or
+  ≥1100 px wide).
+- **Robustness:** `applyState` ignores a snapshot for any room but the current one (a poll in flight when
+  the player left used to be drawn over the next room) and draws each part in its own try/catch, so one error
+  cannot leave a board without its action bar. Phone script errors are posted to `/api/jubilee/client_error`
+  and appear in `docker logs alpaca-arcade` as `[jubilee client error]`. Leaving clears the card reveal, any
+  sheet and the action bar. A TV with no room, or whose room has ended, follows the newest live Jubilee room
+  (`GET /api/jubilee/rooms?live=1`) instead of sitting on "Game over".
 - Fixed with the specials: guests' phones stayed on the waiting room after the host started; the
   phone end card never appeared (`applyState` set `endedShown` before `showEnd` checked it); computer-only
   turns never checked the round limit. `tests/test_jubilee_features.py` covers the specials.

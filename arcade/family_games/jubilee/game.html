@@ -365,7 +365,7 @@
   #jb-auction .au-what small { display: block; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #6b4e00; }
   #jb-auction .au-what b { display: block; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #jb-auction .au-clock { font-size: 18px; font-variant-numeric: tabular-nums; background: var(--ink); color: #ffe9a8; border-radius: 999px; padding: 4px 12px; }
-  #jb-auction .au-clock.hurry { background: #d32f2f; color: #fff; animation: jb-pulse .8s ease-in-out infinite; }
+  #jb-auction .au-clock.hurry { background: #d32f2f; color: #fff; animation: jb-throb .8s ease-in-out infinite; }
   #jb-auction .au-mid { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   #jb-auction .bid { font-size: 34px; font-variant-numeric: tabular-nums; }
   #jb-auction .au-lead { font-size: 15px; text-align: right; }
@@ -373,7 +373,7 @@
   #jb-auction .au-btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
   #jb-auction .au-btns .jb-btn { font-size: 15px; padding: 10px 4px; box-shadow: 0 4px 0 #1b0f3b; }
   #jb-auction .au-note { grid-column: 1 / -1; text-align: center; font-size: 15px; padding: 8px; border-radius: 12px; background: rgba(27,15,59,.08); }
-  @keyframes jb-pulse { 50% { transform: scale(1.08); } }
+  @keyframes jb-throb { 50% { transform: scale(1.08); } }
 
   /* drawn card (flies from its deck, flips, waits for a tap) */
   #jb-cardreveal { position: fixed; inset: 0; z-index: 24; display: none; align-items: center; justify-content: center;
@@ -426,19 +426,36 @@
 
   /* lobby */
   #jb-lobby {
-    position: fixed; inset: 0; z-index: 26; display: none; align-items: center; justify-content: center; overflow-y: auto;
+    position: fixed; inset: 0; z-index: 26; display: none; flex-direction: column; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
     background: radial-gradient(130% 90% at 50% -10%, #3b1d7a 0%, var(--deep) 62%);
     padding: calc(14px + var(--fk-safe-top)) 14px calc(14px + var(--fk-safe-bottom));
   }
   #jb-lobby.show { display: flex; }
   #jb-lobby-wait { display: block; }
-  .jb-lobbycard { width: min(480px, 100%); text-align: center; }
+  /* margin:auto centres the card while it fits and lets it scroll from the top when it does not
+     (align-items/justify-content:center pushed the logo above the reachable area on short phones). */
+  .jb-lobbycard { width: min(480px, 100%); text-align: center; margin: auto; flex: 0 0 auto; }
+  #jb-lobby .jb-label { color: #b6a3f0; text-align: center; }
+  .jb-lsec { margin-top: 14px; }
+  .jb-lsec > .jb-label { margin-bottom: 7px; }
+  .jb-rulesets.seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0; text-align: center; }
+  .jb-rulesets.seg .jb-ruleset { display: block; padding: 10px 4px; text-align: center; border-radius: 13px; }
+  .jb-rulesets.seg .jb-ruleset b { display: block; font-size: 14px; line-height: 1.15; white-space: nowrap; }
+  .jb-rsdesc { min-height: 2.7em; margin: 7px 6px 0; color: #d9cffc; font-size: 12.5px; font-weight: 700; line-height: 1.35; }
+  .jb-more { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 8px 0 0; padding: 9px 12px;
+    font: 800 13px var(--font); color: #efe8ff; background: rgba(255,255,255,.05); border: 1px dashed var(--line); border-radius: 12px; cursor: pointer; }
+  .jb-more .sum { color: var(--gold2); font-weight: 900; }
+  .jb-more .chev { transition: transform .2s; display: inline-block; }
+  .jb-more[aria-expanded="true"] .chev { transform: rotate(180deg); }
+  #jb-more-body { padding: 4px 0 2px; }
+  #jb-more-body[hidden] { display: none; }
+  .jb-lsub { font-size: 10.5px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; color: #9c8ad6; margin: 10px 0 6px; }
   .jb-biglogo { font-size: 54px; font-weight: 900; line-height: .95; letter-spacing: .01em; color: var(--gold);
     text-shadow: 0 4px 0 #4a2c00, 0 0 42px rgba(255,200,61,.4); margin: 4px 0 2px; animation: jb-logoGlow 2.6s ease-in-out infinite; }
   @keyframes jb-logoGlow { 0%,100% { text-shadow: 0 4px 0 #4a2c00, 0 0 30px rgba(255,200,61,.35); } 50% { text-shadow: 0 4px 0 #4a2c00, 0 0 64px rgba(255,200,61,.65); } }
   .jb-biglogo small { display:block; font-size: 13px; letter-spacing: .42em; color: var(--gold2); margin-top: 8px; font-weight: 800; }
   .jb-tag { color: #cbb9ff; font-weight: 700; margin: 10px 0 16px; }
-  .jb-tokenrow { display: grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap: 6px; margin: 10px 0; }
+  .jb-tokenrow { display: grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap: 6px; margin: 0; padding: 4px; max-width: 440px; margin-inline: auto; }
   .jb-token { aspect-ratio: 1; font-size: 22px; border-radius: 14px; border: 2px solid var(--line); background: rgba(255,255,255,.06);
     cursor: pointer; display:flex; align-items:center; justify-content:center; transition: all .15s; padding: 0; }
   .jb-token.on { border-color: var(--gold); background: rgba(255,200,61,.22); transform: scale(1.14); box-shadow: 0 0 18px rgba(255,200,61,.45); }
@@ -447,7 +464,7 @@
   .jb-ruleset { display:flex; gap: 10px; align-items: flex-start; border: 2px solid var(--line); border-radius: 14px; padding: 10px 12px; cursor: pointer; background: rgba(255,255,255,.05); }
   .jb-ruleset.on { border-color: var(--gold); background: rgba(255,200,61,.12); }
   .jb-ruleset { color: #fff8e7; font: inherit; text-align: left; width: 100%; }
-  .jb-ruleset b { font-size: 14px; flex: 0 0 76px; color: #fff8e7; }
+  .jb-ruleset b { font-size: 14px; flex: 0 0 96px; color: #fff8e7; }
   .jb-ruleset.on b { color: var(--gold); }
   .jb-ruleset small { display:block; flex: 1 1 auto; color: #cfc4f2; font-weight: 700; font-size: 11.5px; line-height: 1.35; }
   .jb-toggles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 6px 0 2px; }
@@ -460,9 +477,9 @@
 
   /* responsive: tablets, desktops, TVs, and landscape phones */
   @media (min-width: 680px) and (orientation: portrait) {
-    #jb-board-wrap { width: min(calc(100vw - 24px), 54dvh, 620px); }
+    #jb-board-wrap { width: min(calc(100vw - 24px), 58dvh, 720px); }
   }
-  @media (min-width: 820px) and (min-height: 500px), (orientation: landscape) and (min-width: 580px) {
+  @media (orientation: landscape) and (min-width: 580px), (min-width: 1100px) {
     #jb-main { flex-direction: row; justify-content: center; align-items: stretch; gap: 14px; }
     #jb-board-wrap { width: min(calc(100dvh - 76px), calc(100vw - 340px), 760px); align-self: center; }
     #jb-side { flex: 1 1 0; min-width: 300px; max-width: 440px; justify-content: space-between; }
@@ -494,14 +511,18 @@
     .jb-biglogo { font-size: 40px; }
     .jb-biglogo small { margin-top: 5px; font-size: 11px; }
     .jb-tag { margin: 6px 0 8px; font-size: 13px; }
-    .jb-rulesets { gap: 6px; margin: 8px 0; }
-    .jb-ruleset { padding: 7px 10px; border-radius: 12px; }
-    .jb-ruleset small { font-size: 11px; line-height: 1.3; }
+    .jb-lsec { margin-top: 10px; }
+    .jb-rulesets.seg .jb-ruleset { padding: 8px 4px; }
+    .jb-rsdesc { font-size: 12px; margin-top: 5px; }
     .jb-toggle { padding: 6px 10px; }
     #jb-create { margin-top: 10px !important; }
     .jb-or { margin: 10px 0 5px !important; }
     .jb-qr { width: 128px; height: 128px; }
     .jb-roomcode { font-size: 38px; }
+  }
+  @media (max-width: 359px) {
+    .jb-rulesets.seg .jb-ruleset b { font-size: 12.5px; }
+    .jb-rulesets.seg { gap: 5px; }
   }
   @media (max-height: 660px) {
     .jb-tag { display: none; }
@@ -510,9 +531,9 @@
   }
   @media (orientation: landscape) and (max-height: 560px) {
     .jb-lobbycard { width: min(880px, 100%); }
-    #jb-lobby-main { display: grid; grid-template-columns: 1fr 1.1fr; column-gap: 22px; align-items: start; }
+    #jb-lobby-main { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; align-items: start; }
     #jb-lobby-main > * { grid-column: 1; }
-    #jb-lobby-main > #jb-create-block { grid-column: 2; grid-row: 1 / span 12; }
+    #jb-lobby-main > #jb-create-block { grid-column: 2; grid-row: 1 / span 12; margin-top: 0; }
     #jb-lobby-main .jb-tag { display: none; }
     .jb-biglogo { font-size: 30px; }
     #jb-lobby-wait { display: grid; grid-template-columns: auto 1fr; column-gap: 22px; align-items: center; text-align: center; }
@@ -532,47 +553,55 @@
       <div class="jb-biglogo">JUBILEE!<small>BIBLE LANDS</small></div>
       <p class="jb-tag">A Bible-story property game - roll the dice, buy the lands, build your estate.</p>
 
-      <label class="jb-label" for="jb-name">Your name</label>
-      <input class="jb-field" id="jb-name" maxlength="20" placeholder="e.g. Grandma" autocomplete="off">
+      <div class="jb-lsec">
+        <label class="jb-label" for="jb-name">Your name</label>
+        <input class="jb-field" id="jb-name" maxlength="20" placeholder="e.g. Grandma" autocomplete="off" enterkeyhint="done">
+      </div>
+      <div class="jb-lsec">
+        <label class="jb-label">Choose your piece</label>
+        <div class="jb-tokenrow" id="jb-tokens"></div>
+      </div>
 
-      <label class="jb-label" style="margin-top:14px">Choose your piece</label>
-      <div class="jb-tokenrow" id="jb-tokens"></div>
-
-      <div id="jb-create-block">
-        <label class="jb-label" style="margin-top:6px">Rulebook</label>
-        <div class="jb-rulesets" id="jb-rulesets"></div>
-        <div class="jb-toggles" id="jb-toggles">
-          <button class="jb-toggle" data-rule="jackpot">Sabbath pot 🍯</button>
-          <button class="jb-toggle" data-rule="double_go">Jubilee pays $400</button>
-          <button class="jb-toggle" data-rule="no_auction">No auctions</button>
+      <div id="jb-create-block" class="jb-lsec">
+        <label class="jb-label">Host a game</label>
+        <div class="jb-rulesets seg" id="jb-rulesets" role="radiogroup" aria-label="Rulebook"></div>
+        <p class="jb-rsdesc" id="jb-rsdesc"></p>
+        <button class="jb-more" id="jb-more" aria-expanded="false" aria-controls="jb-more-body">House rules &amp; specials <span class="sum" id="jb-more-sum"></span><span class="chev">▾</span></button>
+        <div id="jb-more-body" hidden>
+          <div class="jb-lsub">House rules</div>
+          <div class="jb-toggles" id="jb-toggles">
+            <button class="jb-toggle" data-rule="jackpot">Sabbath pot 🍯</button>
+            <button class="jb-toggle" data-rule="double_go">Jubilee pays $400</button>
+            <button class="jb-toggle" data-rule="no_auction">No auctions</button>
+          </div>
+          <div class="jb-lsub">Jubilee specials</div>
+          <div class="jb-toggles" id="jb-specials">
+            <button class="jb-toggle sp" data-rule="sword_drill">⚔️ Sword Drill</button>
+            <button class="jb-toggle sp" data-rule="feast">🍇 Feast Day</button>
+            <button class="jb-toggle sp" data-rule="jubilee_year">🎺 Year of Jubilee</button>
+            <button class="jb-toggle sp" data-rule="kingdom_win">👑 Kingdom win</button>
+          </div>
+          <div class="jb-rulehelp" id="jb-rulehelp">Tap a rule to see what it does.</div>
         </div>
-        <label class="jb-label" style="margin-top:10px">Jubilee specials</label>
-        <div class="jb-toggles" id="jb-specials">
-          <button class="jb-toggle sp" data-rule="sword_drill">⚔️ Sword Drill</button>
-          <button class="jb-toggle sp" data-rule="feast">🍇 Feast Day</button>
-          <button class="jb-toggle sp" data-rule="jubilee_year">🎺 Year of Jubilee</button>
-          <button class="jb-toggle sp" data-rule="kingdom_win">👑 Kingdom win</button>
-        </div>
-        <div class="jb-rulehelp" id="jb-rulehelp"></div>
         <button class="jb-btn big" id="jb-create" style="margin-top:14px">Open a room</button>
       </div>
       <div id="jb-join-block">
-        <div class="jb-or" style="text-align:center;color:#cbb9ff;font-weight:900;letter-spacing:.2em;margin:14px 0 6px">- OR JOIN -</div>
+        <div class="jb-or" style="text-align:center;color:#cbb9ff;font-weight:900;letter-spacing:.2em;margin:16px 0 8px">- OR JOIN A ROOM -</div>
         <div class="jb-row" style="display:flex;gap:8px">
-          <input class="jb-field" id="jb-code-in" maxlength="8" placeholder="CODE" style="text-transform:uppercase;letter-spacing:.25em;text-align:center;font-size:22px" autocomplete="off">
+          <input class="jb-field" id="jb-code-in" maxlength="8" placeholder="CODE" style="text-transform:uppercase;letter-spacing:.25em;text-align:center;font-size:22px;min-width:0" autocomplete="off" autocapitalize="characters" enterkeyhint="go">
           <button class="jb-btn teal" id="jb-join" style="flex:0 0 auto;width:auto;padding:0 22px">Join</button>
         </div>
       </div>
-      <div class="jb-err" id="jb-lobby-err"></div>
+      <div class="jb-err" id="jb-lobby-err" role="alert"></div>
     </div>
 
     <div id="jb-lobby-wait" style="display:none">
       <div class="jb-biglogo" style="font-size:40px">ROOM OPEN</div>
-      <p class="jb-tag">Share the code - friends join at games.sumemail.com/join/jubilee</p>
+      <p class="jb-tag">Friends scan the code below, or type it into Join on their phone.</p>
       <div class="jb-share">
         <div class="jb-roomcode" id="jb-share-code">····</div>
         <img class="jb-qr" id="jb-share-qr" alt="Join QR code">
-        <button class="jb-btn ghost" id="jb-copy" style="margin-top:6px">Copy join link</button>
+        <button class="jb-btn ghost" id="jb-copy" style="margin-top:6px">Copy invite link</button>
       </div>
       <div class="jb-players" id="jb-wait-players" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:14px 0"></div>
       <button class="jb-btn ghost" id="jb-wait-tv" style="margin:4px 0 10px">Show the board on a TV</button>
@@ -733,6 +762,7 @@
     border-radius: 50%; border: 2px solid rgba(255,200,61,.6); background: rgba(29,17,69,.9); font-size: 26px; cursor: pointer; display: none;
     box-shadow: 0 6px 18px rgba(0,0,0,.45); }
   body.jb-playing #jb-react { display: block; }
+  body.jb-playing.jb-deciding #jb-react { display: none; }
   #jb-react:active { transform: scale(.9); }
   #jb-react-tray { position: fixed; right: calc(12px + var(--fk-safe-right)); bottom: calc(70px + var(--fk-safe-bottom)); z-index: 19; display: grid;
     grid-template-columns: repeat(4, 48px); gap: 6px; padding: 8px; border-radius: 18px; background: rgba(29,17,69,.96); border: 1px solid rgba(255,200,61,.45);
@@ -1003,6 +1033,20 @@ function api(path, opts) {
     .then(function (res) { return res.json().catch(function () { return { success: false, error: "network error" }; }); });
 }
 function post(path, body) { return api(path, { method: "POST", body: JSON.stringify(body || {}) }); }
+/* Script errors go to the arcade log: a phone that stops drawing is otherwise
+   invisible from the server. A handful per page, never the player's id. */
+var reportedErrors = 0;
+function reportError(where, err) {
+  try {
+    if (reportedErrors >= 6) return;
+    reportedErrors++;
+    var room = (typeof state !== 'undefined' && state.room) ? (state.room.code + ' ' + state.room.status + ' ' + (state.room.rules && state.room.rules.ruleset)) : '';
+    fetch('/api/jubilee/client_error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ where: where, message: String((err && err.message) || err), stack: String((err && err.stack) || '').slice(0, 400), room: room, ua: navigator.userAgent }) }).catch(function () {});
+  } catch (e) {}
+}
+window.addEventListener('error', function (e) { reportError('window', e.error || e.message); });
+window.addEventListener('unhandledrejection', function (e) { reportError('promise', e.reason); });
 
 /* ---------- shared constants ---------- */
 var TOKENS = [
@@ -1114,7 +1158,7 @@ function tokenDefs() {
 var SEAT_COLORS = ["#ffc83d", "#ff6b6b", "#2ed3b7", "#7dd3fc", "#c084fc", "#fb923c", "#34d399", "#f472b6"];
 var GROUP_COLORS = { brown: "#8c5a3b", lightblue: "#6fd3e7", pink: "#d63384", orange: "#f7871f", red: "#d32f2f", yellow: "#f2c230", green: "#2e9e5b", blue: "#1d4ed8" };
 var RULESETS = [
-  { id: "classic", name: "Classic", desc: "King James rules: auctions, buildings, mortgages, rent. House rules below." },
+  { id: "classic", name: "Classic", desc: "The full game: auctions, buildings, mortgages and rent. Change the house rules below." },
   { id: "familyfun", name: "Family Fun", desc: "Debts are forgiven, the Sabbath pot is on, twelve full rounds - highest net worth wins." },
   { id: "quick", name: "Quick Game", desc: "Two bankruptcies end the match. Shorter game, same rules otherwise." }
 ];
@@ -1182,7 +1226,8 @@ $('jb-leave').innerHTML = ui('leave');
     var html = '';
     for (var i = 0; i < RULESETS.length; i++) {
       var r = RULESETS[i];
-      html += '<button class="jb-ruleset' + (r.id === state.ruleset ? ' on' : '') + '" data-rs="' + r.id + '"><b>' + esc(r.name) + '</b><small>' + esc(r.desc) + '</small></button>';
+      html += '<button class="jb-ruleset' + (r.id === state.ruleset ? ' on' : '') + '" data-rs="' + r.id + '" role="radio" aria-checked="' + (r.id === state.ruleset) + '"><b>' + esc(r.name) + '</b></button>';
+      if (r.id === state.ruleset) $('jb-rsdesc').textContent = r.desc;
     }
     $('jb-rulesets').innerHTML = html;
     $('jb-rulesets').querySelectorAll('.jb-ruleset').forEach(function (btn) {
@@ -1213,7 +1258,16 @@ $('jb-leave').innerHTML = ui('leave');
       btn.classList.toggle('on', !!state.toggles[key]);
       btn.disabled = familyFun && (key === 'jackpot' || key === 'no_auction');
     });
+    var on = ['sword_drill', 'feast', 'jubilee_year', 'kingdom_win', 'jackpot', 'double_go', 'no_auction'].filter(function (k) { return state.toggles[k]; }).length;
+    $('jb-more-sum').textContent = on ? on + ' on' : 'all off';
   }
+  // House rules fold away on a phone so "Open a room" is on the first screen; a tall screen shows them.
+  function setMore(open) {
+    $('jb-more').setAttribute('aria-expanded', open ? 'true' : 'false');
+    $('jb-more-body').hidden = !open;
+  }
+  setMore(window.innerHeight >= 980 && window.innerWidth >= 700);
+  tap($('jb-more'), function () { setMore($('jb-more-body').hidden); kit.haptic(8); });
 
   (function () {
     // The specials remember how this family likes to play.
@@ -1232,6 +1286,10 @@ $('jb-leave').innerHTML = ui('leave');
   });
 
   var nameInput = $('jb-name');
+  nameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); } });
+  $('jb-code-in').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); $('jb-code-in').blur(); $('jb-join').dispatchEvent(new Event('pointerdown', { cancelable: true })); }
+  });
   nameInput.value = launchName || store.get('name') || '';
   nameInput.addEventListener('input', function () { store.set('name', nameInput.value.trim()); });
 
@@ -1824,20 +1882,21 @@ $('jb-leave').innerHTML = ui('leave');
   }
 
   function applyState(next) {
-    state.prevRoom = state.room;
+    // A late answer for a room this phone has left (a poll in flight when it
+    // left, or an action's reply) must never be drawn over the new room.
+    if (!next || !state.code || (next.code && next.code !== state.code)) return;
+    state.prevRoom = (state.room && state.room.code === next.code) ? state.room : null;
     state.room = next;
-    meSeat(); // touch
-    buildBoardIfNeeded();
-    renderHeader();
-    renderPlayers();
-    renderBoardDynamic();
-    setHandMode(!!next.stage_connected);
-    syncTvSound();
-    renderActions();
-    renderTab();
-    renderTokensLayer();
-    diffFx(state.prevRoom, next);
-    renderSpecials(state.prevRoom, next);
+    // Each part draws on its own: one that throws is reported and the rest,
+    // the action bar above all, still draw (one error used to leave a board
+    // with no Roll button, poll after poll).
+    [['board', buildBoardIfNeeded], ['header', renderHeader], ['players', renderPlayers], ['boardDynamic', renderBoardDynamic],
+     ['hand', function () { setHandMode(!!next.stage_connected); syncTvSound(); }],
+     ['actions', renderActions], ['tab', renderTab], ['tokens', renderTokensLayer],
+     ['fx', function () { diffFx(state.prevRoom, next); }], ['specials', function () { renderSpecials(state.prevRoom, next); }]
+    ].forEach(function (step) {
+      try { step[1](); } catch (e) { reportError('applyState.' + step[0], e); if (window.console) console.error(e); }
+    });
     // The waiting room follows the room: new arrivals appear on every phone,
     // and it gets out of the way on every phone when the host starts (it used
     // to stay up on the guests' phones over the game).
@@ -2503,6 +2562,7 @@ $('jb-leave').innerHTML = ui('leave');
     var p = room.pending;
     if (!room.auction) hideAuctionBar();
 
+    document.body.classList.toggle('jb-deciding', !!(p && myTurn));
     if (p && myTurn) {
       if (p.kind === 'buy') {
         var bsp = room.board[p.space] || {};
@@ -2710,17 +2770,18 @@ $('jb-leave').innerHTML = ui('leave');
   }
 
   /* Follow-cam: on small screens the board can zoom to the active token. */
-  /* Phones start zoomed in on whoever is moving (the full board's tile names
-     are too small to read at phone width); a tap on 🔍 shows the whole board,
-     and that choice is remembered. */
+  /* Every screen starts zoomed in on whoever is moving (the owner's choice: it
+     reads best and keeps the action close); a tap on the magnifier shows the
+     whole board, and that choice is remembered. The key is 'zoomv2' so a
+     "whole board" saved before zoom became the default does not linger. */
   var SMALL = Math.min(window.innerWidth || 0, window.innerHeight || 0) < 600;
-  var savedZoom = store.get('zoom');
-  var zoom = { on: savedZoom === '1' || (!savedZoom && SMALL), cx: 480, cy: 480, s: 960 };
+  var savedZoom = store.get('zoomv2');
+  var zoom = { on: savedZoom !== '0', cx: 480, cy: 480, s: 960 };
   function syncZoomBtn() { var b = $('jb-zoom'); if (b) { b.classList.toggle('on', zoom.on); b.innerHTML = ui(zoom.on ? 'zoomOut' : 'zoomIn'); b.title = zoom.on ? 'Show the whole board' : 'Follow the moving piece'; } }
   syncZoomBtn();
   tap($('jb-zoom'), function () {
     zoom.on = !zoom.on;
-    store.set('zoom', zoom.on ? '1' : '0');
+    store.set('zoomv2', zoom.on ? '1' : '0');
     syncZoomBtn();
     kit.haptic(10);
   });
@@ -2754,7 +2815,7 @@ $('jb-leave').innerHTML = ui('leave');
       var seat = state.hopAnim ? state.hopAnim.seat : state.room.turn;
       var p = camTarget(seat);
       if (p) {
-        ts = SMALL ? 420 : 520;
+        ts = SMALL ? 420 : 600;
         tx = Math.max(ts / 2, Math.min(960 - ts / 2, p.x));
         ty = Math.max(ts / 2, Math.min(960 - ts / 2, p.y));
       }
@@ -3132,9 +3193,11 @@ $('jb-leave').innerHTML = ui('leave');
   var pollFails = 0;
   function poll() {
     if (!state.code) return;
-    fetch('/api/jubilee/rooms/' + encodeURIComponent(state.code) + '?player_id=' + encodeURIComponent(state.pid), { cache: 'no-store' })
+    var asked = state.code;
+    fetch('/api/jubilee/rooms/' + encodeURIComponent(asked) + '?player_id=' + encodeURIComponent(state.pid), { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (out) {
+        if (state.code !== asked) return;   // left (or moved rooms) while this was in flight
         if (!out || !out.success || !out.room) {
           pollFails++;
           if (pollFails >= 5) { stopPolling(); leaveToLobby('That room has ended.'); }
@@ -3236,6 +3299,12 @@ $('jb-leave').innerHTML = ui('leave');
     popups = [];
     herald.seen = null; herald.queue = []; reactSeen = null; drill.n = null;
     $('jb-drill').classList.remove('show'); $('jb-jubilee').classList.remove('show');
+    // Nothing from the last game may stay over the next one.
+    if (cardTimer) { window.clearTimeout(cardTimer); cardTimer = null; }
+    $('jb-cardreveal').classList.remove('show', 'dim');
+    closeSheet();
+    $('jb-action').innerHTML = '';
+    document.body.classList.remove('jb-hand', 'jb-deciding');
     document.body.classList.remove('jb-playing');
     $('jb-end').classList.remove('show');
     $('jb-auction').classList.remove('show');
@@ -3291,7 +3360,14 @@ $('jb-leave').innerHTML = ui('leave');
   requestAnimationFrame(frame);
 
   // auto-join from #room=CODE
-  if (launchRoom) {
+  if (launchRoom && !store.get('pid:' + launchRoom) && !(launchName || store.get('name'))) {
+    // A friend's first visit by invite link: name and piece first, code filled in.
+    showLobbyMain();
+    $('jb-code-in').value = launchRoom;
+    $('jb-lobby-err').textContent = '';
+    var jl = document.querySelector('.jb-or'); if (jl) jl.textContent = '- JOIN ROOM ' + launchRoom + ' -';
+    window.setTimeout(function () { try { nameInput.focus(); } catch (e) {} }, 300);
+  } else if (launchRoom) {
     var stored = store.get('pid:' + launchRoom);
     post('/api/jubilee/rooms', { code: launchRoom, player_id: stored || '', name: launchName || store.get('name') || '', device_id: deviceId, initials: initialsFor(launchName || store.get('name') || '') })
       // The same path as the Join button: a room still gathering opens on its

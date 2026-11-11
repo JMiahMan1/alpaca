@@ -781,8 +781,25 @@
     // when the turn passes.
     if (fxTurn !== null && room.turn !== fxTurn) { fxTurn = null; clearDice(); }
   }
+  /* A TV with no room of its own, or whose room has ended, follows the newest
+     live Jubilee room, so a new game shows up without casting again. */
+  function followLive(fallback) {
+    xhr("GET", "/api/jubilee/rooms?live=1", null, function (d) {
+      var rooms = (d && d.success && d.rooms) || [], i, next = "";
+      for (i = 0; i < rooms.length; i++) { if (rooms[i].code && rooms[i].code !== PINNED) { next = rooms[i].code; break; } }
+      if (next) {
+        PINNED = next; GONE = 0; FAILS = 0; lastSig = ""; lastStatus = null;
+        seenLogSeq = null; seenCash = []; seenRoll = null;
+        try { if (window.history && history.replaceState) history.replaceState(null, "", "/jubilee/tv/" + next); } catch (e) {}
+        schedule(50);
+        return;
+      }
+      fallback();
+      schedule(5000);
+    });
+  }
   function poll() {
-    if (!PINNED) { renderNoCode(); return; }
+    if (!PINNED) { followLive(renderNoCode); return; }
     // The screen's real size rides along (TVs differ: overscan, a Cast page
     // drawn at 720p, browser zoom), so the layout can be fitted to what a TV
     // actually shows.
@@ -796,8 +813,8 @@
       // the page keeps looking, slowly, in case it comes back.
       if (status === 404 || (d && d.success === false && status && status < 500)) {
         GONE += 1; FAILS = 0; reconnecting(false);
-        if (GONE >= 3) renderGone();
-        schedule(GONE >= 3 ? 10000 : POLL_MS);
+        if (GONE >= 3) { followLive(renderGone); return; }
+        schedule(POLL_MS);
         return;
       }
       if (!d || !d.success) {

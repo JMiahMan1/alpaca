@@ -463,3 +463,39 @@ def test_http_feast_drill_and_react(client, monkeypatch):
     _land_on_scripture(monkeypatch, code, pid, room)
     r = client.post(f"/api/jubilee/rooms/{code}/drill", json={"player_id": dad, "choice": 0})
     assert r.status_code == 200 and r.get_json()["room"]["drill"]["answered"] == [1]
+
+
+@pytest.mark.parametrize("ruleset", ["classic", "familyfun", "quick"])
+def test_every_rule_the_lobby_sends_reaches_the_room(client, ruleset):
+    # The create route used to forward only the three house rules, so the
+    # specials the lobby showed as on were silently replaced by the defaults.
+    flags = {"sword_drill": True, "feast": False, "jubilee_year": True, "kingdom_win": True,
+             "double_go": True}
+    r = client.post("/api/jubilee/rooms", json={"name": "Mum", "ruleset": ruleset, **flags})
+    rules = jubilee._rooms[r.get_json()["room"]["code"]]["rules"]
+    assert rules["ruleset"] == ruleset
+    for k, v in flags.items():
+        assert rules[k] is v, k
+    flipped = {k: not v for k, v in flags.items()}
+    r = client.post("/api/jubilee/rooms", json={"name": "Dad", "ruleset": ruleset, **flipped})
+    rules = jubilee._rooms[r.get_json()["room"]["code"]]["rules"]
+    for k, v in flipped.items():
+        assert rules[k] is v, k
+
+
+@pytest.mark.parametrize("ruleset", ["classic", "familyfun", "quick"])
+def test_every_ruleset_starts_and_the_host_can_roll(client, ruleset):
+    r = client.post("/api/jubilee/rooms", json={"name": "Mum", "ruleset": ruleset}).get_json()
+    pid, code = r["player_id"], r["room"]["code"]
+    snap = client.post(f"/api/jubilee/rooms/{code}/start", json={"player_id": pid}).get_json()["room"]
+    assert snap["status"] == "playing" and snap["turn"] == 0 and len(snap["players"]) == 3
+    rolled = client.post(f"/api/jubilee/rooms/{code}/roll", json={"player_id": pid})
+    assert rolled.status_code == 200 and rolled.get_json()["room"]["last_roll"]
+
+
+def test_live_rooms_list_and_client_errors(client):
+    r = client.post("/api/jubilee/rooms", json={"name": "Mum"}).get_json()
+    live = client.get("/api/jubilee/rooms?live=1").get_json()["rooms"]
+    assert any(x["code"] == r["room"]["code"] for x in live)
+    for _ in range(40):
+        assert client.post("/api/jubilee/client_error", json={"where": "t", "message": "boom"}).status_code == 200

@@ -1437,6 +1437,22 @@ def _jubilee_call(fn):
     out.setdefault("success", True)
     return jsonify(out)
 
+JUBILEE_RULE_FLAGS = ("jackpot", "double_go", "no_auction", "sword_drill", "feast", "jubilee_year", "kingdom_win")
+_jubilee_client_errors: list[float] = []
+
+@app.route("/api/jubilee/client_error", methods=["POST"])
+def api_jubilee_client_error():
+    """A phone's script error, written to the arcade log (a page that stops
+    drawing is otherwise invisible from the server). Capped at 30 a minute."""
+    now = time.time()
+    _jubilee_client_errors[:] = [t for t in _jubilee_client_errors if now - t < 60]
+    if len(_jubilee_client_errors) < 30:
+        _jubilee_client_errors.append(now)
+        body = request.get_json(silent=True) or {}
+        msg = " | ".join(str(body.get(k) or "")[:400] for k in ("where", "message", "stack", "room", "ua"))
+        print(f"[jubilee client error] {msg}", flush=True)
+    return jsonify({"success": True})
+
 @app.route("/jubilee/tv", methods=["GET"])
 @app.route("/jubilee/tv/<code>", methods=["GET"])
 def jubilee_tv_page(code: str = ""):
@@ -1455,6 +1471,10 @@ def jubilee_join_page(code: str):
 @app.route("/api/jubilee/rooms", methods=["GET", "POST"])
 def api_jubilee_rooms():
     if request.method == "GET":
+        # ?live=1: lobby or mid-game rooms with someone present, newest first
+        # (what a TV with no room of its own follows).
+        if request.args.get("live") in ("1", "true"):
+            return jsonify({"success": True, "rooms": jubilee.live_rooms()})
         return jsonify({"success": True, "rooms": jubilee.list_open_rooms()})
     body = request.get_json(silent=True) or {}
     payload = {
@@ -1464,10 +1484,11 @@ def api_jubilee_rooms():
         "ruleset": body.get("ruleset"),
         "device_id": body.get("device_id"),
         "initials": body.get("initials"),
-        "jackpot": body.get("jackpot"),
-        "double_go": body.get("double_go"),
-        "no_auction": body.get("no_auction"),
     }
+    # Every room rule the lobby offers. The specials used to be dropped here, so
+    # a room always got its rulebook's defaults whatever the lobby showed.
+    for rule in JUBILEE_RULE_FLAGS:
+        payload[rule] = body.get(rule)
     code = body.get("code")
     return _jubilee_call(lambda: jubilee.join_room(code, payload) if code else jubilee.create_room(payload))
 
