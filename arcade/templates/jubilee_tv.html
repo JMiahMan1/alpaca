@@ -160,8 +160,8 @@
   .cPills .pill { font-size: .2rem; margin: 0 .05rem; }
   .cDeck { position: absolute; width: 2rem; height: 1.3rem; border-radius: .16rem; border: .03rem dashed #ffc83d;
     box-shadow: .06rem .08rem 0 rgba(0,0,0,.45); transform: rotate(-12deg); }
-  .cDeck.parable { left: .45rem; top: .55rem; background: #3b1566; }
-  .cDeck.scripture { right: .45rem; bottom: .5rem; background: #172554; }
+  .cDeck.scripture { left: .45rem; top: .55rem; background: #172554; }
+  .cDeck.parable { right: .45rem; bottom: .5rem; background: #3b1566; }
   .cDeck .dInner { position: absolute; left: .1rem; right: .1rem; top: .1rem; bottom: .1rem; border-radius: .1rem; border: .025rem solid rgba(255,255,255,.55);
     display: flex; flex-direction: column; align-items: center; justify-content: center; }
   .cDeck.parable .dInner { background: #581c87; }
@@ -1026,7 +1026,7 @@
     if (i % 10 === 0) return { x: 0, y: 0 };
     // Just inside the board's middle, beside the square: the big pieces must
     // never cover a name or a price someone across the room is reading.
-    var g = tileGeom(i), k = D / 2 + 24;
+    var g = tileGeom(i), k = D / 2 + 4;
     return g.rot === 0 ? { x: 0, y: -k } : g.rot === 90 ? { x: k, y: 0 } : g.rot === 180 ? { x: 0, y: k } : { x: -k, y: 0 };
   }
   function pathPoint(pos) {
@@ -1126,7 +1126,7 @@
     icon(g, art, x, y, r * 1.45, color);
   }
   /* One look for every space. */
-  var NAME_FS = 16, PRICE_FS = 16, BAND = 20;
+  var NAME_FS = 15.5, PRICE_FS = 17, BAND = 20;
   var KIND_BAND = { railroad: "#1f2937", utility: "#374151", parable: "#7c3aed", scripture: "#1d4ed8", tribute: "#c2410c", offering: "#c2410c" };
   var SHORT = { "The King's Highway": "King's Highway", "The Via Maris": "Via Maris", "The Desert Caravan": "Caravan",
     "The New Jerusalem": "New Jerusalem", "The Tribute": "Tribute", "The Offering": "Offering", "The Lamp": "Lamp",
@@ -1161,6 +1161,47 @@
     }
   }
   var board = null;   // { code, svg, own: [], houses: [], mort: [], tokens: {}, center }
+  var INK = "#1a1426", PAPER = "#fbf4e2";
+  function ctext(g, text, x, y, fs, ls, rot) {
+    var a = { x: x, y: y, "text-anchor": "middle", "font-size": fs, "font-weight": 900, fill: INK, "letter-spacing": ls == null ? 0.6 : ls };
+    if (rot) a.transform = "rotate(" + rot + " " + x + " " + y + ")";
+    svgEl("text", a, g).textContent = text;
+  }
+  /* The corners, on the diagonal facing out, as on the classic board. */
+  function classicCorner(svg, i, c) {
+    var s = c.w, hh = s / 2;
+    var g = svgEl("g", { transform: "translate(" + (c.x - hh).toFixed(1) + " " + (c.y - hh).toFixed(1) + ")" }, svg);
+    svgEl("rect", { x: 0, y: 0, width: s, height: s, fill: PAPER, stroke: INK, "stroke-width": 2.5 }, g);
+    if (i === 10) {
+      var lane = 32, cs = s - lane;
+      svgEl("rect", { x: lane, y: 0, width: cs, height: cs, fill: "#f08a24", stroke: INK, "stroke-width": 2.5 }, g);
+      var cell = svgEl("g", { transform: "translate(" + (lane + cs / 2) + " " + (cs / 2) + ") rotate(45)" }, g);
+      svgEl("rect", { x: -16, y: -16, width: 32, height: 32, fill: PAPER, stroke: INK, "stroke-width": 2 }, cell);
+      for (var bx = -10; bx <= 10; bx += 5) svgEl("line", { x1: bx, y1: -16, x2: bx, y2: 16, stroke: INK, "stroke-width": 2 }, cell);
+      ctext(cell, "IN THE", 0, -21, 8.5, 0.8);
+      ctext(cell, "DUNGEON", 0, 28, 9.5, 0.8);
+      ctext(g, "VISITING", lane + cs / 2, s - 10, 13, 2);
+      ctext(g, "JUST", lane / 2 + 5, cs / 2, 13, 2, 90);
+      return;
+    }
+    var d = svgEl("g", { transform: "translate(" + hh + " " + hh + ") rotate(" + (-45 + (i / 10) * 90) + ")" }, g);
+    if (i === 0) {
+      ctext(d, "COLLECT $200", 0, -29, 11, 1);
+      ctext(d, "AS YOU PASS", 0, -16, 10, 1);
+      var t = svgEl("text", { x: 0, y: 10, "text-anchor": "middle", "font-size": 22, "font-weight": 900, fill: "#c8102e", stroke: INK, "stroke-width": 1.2, "paint-order": "stroke" }, d);
+      t.textContent = "JUBILEE!";
+      svgEl("path", { d: "M " + (s - 14) + " " + (s - 21) + " H 38 V " + (s - 29) + " L 13 " + (s - 16) + " L 38 " + (s - 3) + " V " + (s - 11) + " H " + (s - 14) + " Z",
+        fill: "#c8102e", stroke: INK, "stroke-width": 1.5, "stroke-linejoin": "round" }, g);
+    } else if (i === 20) {
+      ctext(d, "SABBATH", 0, -22, 14, 1.5);
+      icon(d, "candles", 0, 4, 30, "#0369a1");
+      ctext(d, "REST", 0, 35, 14, 2.5);
+    } else {
+      ctext(d, "GO TO THE", 0, -22, 11.5, 1.2);
+      icon(d, "lock", 0, 3, 28, "#b91c1c");
+      ctext(d, "DUNGEON", 0, 35, 14, 1.2);
+    }
+  }
   function buildBoard(room) {
     var wrap = document.createElement("div");
     wrap.className = "tvBoard";
@@ -1181,7 +1222,7 @@
     svgEl("stop", { offset: "0%", "stop-color": "#ffffff", "stop-opacity": ".85" }, gloss);
     svgEl("stop", { offset: "45%", "stop-color": "#ffffff", "stop-opacity": ".12" }, gloss);
     svgEl("stop", { offset: "100%", "stop-color": "#000000", "stop-opacity": ".35" }, gloss);
-    svgEl("rect", { x: 0, y: 0, width: BW, height: BH, fill: "url(#parch)", stroke: "#1b0f3b", "stroke-width": 6 }, svg);
+    svgEl("rect", { x: 0, y: 0, width: BW, height: BH, fill: PAPER, stroke: INK, "stroke-width": 7 }, svg);
     svgEl("rect", { x: D, y: D, width: BW - 2 * D, height: BH - 2 * D, fill: "#1d1145", stroke: "#f5c344", "stroke-width": 4 }, svg);
     var b = { code: room.code, svg: svg, wrap: wrap, zoom: zoom, own: [], tint: [], houses: [], mort: [], tokens: {}, shown: {},
       cam: { z: 1, x: BW / 2, y: BH / 2, applied: "" }, focus: null, lastMove: 0 };
@@ -1189,67 +1230,46 @@
     for (var i = 0; i < 40; i++) {
       var sp = spaces[i]; if (!sp) continue;
       var c = tileGeom(i);
-      var isCorner = (i === 0 || i === 10 || i === 20 || i === 30);
-      if (isCorner) {
-        // Corners read upright too: the TV is seen from one side of the room.
-        var cg = svgEl("g", { transform: "translate(" + c.x.toFixed(1) + " " + c.y.toFixed(1) + ")" }, svg);
-        svgEl("rect", { x: -c.w / 2, y: -c.h / 2, width: c.w, height: c.h, fill: "#ffdf9e", stroke: "#1b0f3b", "stroke-width": 3 }, cg);
-        if (i === 0) corner(cg, c.w, c.h, "JUBILEE!", "COLLECT $200", "go", "#ffb703", "#b45309", 0);
-        else if (i === 10) corner(cg, c.w, c.h, "DUNGEON", "JUST VISITING", "bars", "#c3b2a0", "#1b0f3b", 0);
-        else if (i === 20) corner(cg, c.w, c.h, "SABBATH", "REST", "candles", "#bde0fe", "#0369a1", 0);
-        else corner(cg, c.w, c.h, "GO TO THE", "DUNGEON", "lock", "#ffc4c4", "#991b1b", 0);
-        continue;
-      }
-      // A side square, drawn upright: the bottom and top rows are tall, the
-      // left and right columns wide. The colour band is on the edge facing
-      // the middle; the picture, the name and the price read normally.
-      var vert = c.rot === 0 || c.rot === 180;
-      var W = vert ? c.w : c.h, H = vert ? c.h : c.w;
-      var g = svgEl("g", { transform: "translate(" + (c.x - W / 2).toFixed(1) + " " + (c.y - H / 2).toFixed(1) + ")" }, svg);
-      svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "#fff8e7" }, g);
+      if (i % 10 === 0) { classicCorner(svg, i, c); continue; }
+      // A side square, laid out as on the classic board: drawn as a bottom-row
+      // square and turned to face out from its own side. Colour band on the
+      // inner edge, the name in capitals under it, the price at the outer edge.
+      var w = c.w, h = c.h, x0 = -w / 2, y0 = -h / 2, BANDH = 28;
+      var g = svgEl("g", { transform: "translate(" + c.x.toFixed(1) + " " + c.y.toFixed(1) + ") rotate(" + c.rot + ")" }, svg);
+      svgEl("rect", { x: x0, y: y0, width: w, height: h, fill: PAPER }, g);
       var ownable = sp.kind === "street" || sp.kind === "railroad" || sp.kind === "utility";
-      if (ownable) b.tint[i] = svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "none" }, g);
-      var bandColor = KIND_BAND[sp.kind] || GROUP_COLORS[sp.group] || "#7c3aed";
-      var bw = (sp.kind === "street" || sp.kind === "railroad" || sp.kind === "utility") ? 24 : 8;
-      var band = c.rot === 0 ? [0, 0, W, bw] : c.rot === 180 ? [0, H - bw, W, bw] : c.rot === 90 ? [W - bw, 0, bw, H] : [0, 0, bw, H];
-      svgEl("rect", { x: band[0], y: band[1], width: band[2], height: band[3], fill: bandColor }, g);
-      var box = c.rot === 0 ? [0, bw, W, H - bw] : c.rot === 180 ? [0, 0, W, H - bw] : c.rot === 90 ? [0, 0, W - bw, H] : [bw, 0, W - bw, H];
-      var art = tileArt(sp);
-      var priceTxt = sp.kind === "tribute" ? "PAY $" + fmt(sp.flat || 200) : sp.kind === "offering" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
-      var priceFill = (sp.kind === "tribute" || sp.kind === "offering") ? "#b91c1c" : "#4b3b78";
-      var mx = box[0] + box[2] / 2;
+      if (ownable) b.tint[i] = svgEl("rect", { x: x0, y: y0, width: w, height: h, fill: "none" }, g);
+      var nm = sp.kind === "parable" ? "PARABLE" : sp.kind === "scripture" ? "SCRIPTURE" : shortName(sp).toUpperCase();
       var lg = svgEl("g", {}, g);
-      if (vert) {
-        if (art) medallion(g, mx, box[1] + 19, 13, art, bandColor);
-        var top = box[1] + (art ? 36 : 8), bottom = box[1] + box[3] - (priceTxt ? 30 : 8);
-        lg.setAttribute("transform", "translate(" + mx.toFixed(1) + " 0)");
-        tileLabel(lg, shortName(sp), (top + bottom) / 2, box[2] - 10);
-        if (priceTxt) {
-          var pt = svgEl("text", { "class": "tl", "data-maxw": box[2] - 8, x: mx, y: box[1] + box[3] - 11, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900, fill: priceFill }, g);
-          pt.textContent = priceTxt;
-        }
+      if (sp.kind === "street") {
+        svgEl("rect", { x: x0, y: y0, width: w, height: BANDH, fill: GROUP_COLORS[sp.group] || "#888", stroke: INK, "stroke-width": 2 }, g);
+        tileLabel(lg, nm, y0 + BANDH + 24, w - 10);
       } else {
-        var tx = mx, tw = box[2] - 12;
-        if (art) { medallion(g, box[0] + 24, box[1] + box[3] / 2, 16, art, bandColor); tx = box[0] + 44 + (box[2] - 44) / 2; tw = box[2] - 52; }
-        lg.setAttribute("transform", "translate(" + tx.toFixed(1) + " 0)");
-        tileLabel(lg, shortName(sp), box[1] + box[3] / 2 - (priceTxt ? 11 : 0), tw);
-        if (priceTxt) {
-          var pt2 = svgEl("text", { "class": "tl", "data-maxw": tw, x: tx, y: box[1] + box[3] / 2 + 24, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900, fill: priceFill }, g);
-          pt2.textContent = priceTxt;
-        }
+        tileLabel(lg, nm, y0 + 22, w - 10);
       }
-      svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "none", stroke: "#1b0f3b", "stroke-width": 1.5 }, g);
+      if (sp.kind === "parable") {
+        var q = svgEl("text", { x: 0, y: 30, "text-anchor": "middle", "font-size": 58, "font-weight": 900, fill: "#7c3aed", stroke: INK, "stroke-width": 1.6,
+          "paint-order": "stroke", "font-family": "Georgia, serif" }, g);
+        q.textContent = "?";
+      } else if (sp.kind !== "street") {
+        var art = tileArt(sp);
+        if (art) medallion(g, 0, 8, 22, art, sp.kind === "railroad" ? "#334155" : sp.kind === "utility" ? "#a16207" : sp.kind === "scripture" ? "#1d4ed8" : "#b91c1c");
+      }
+      var priceTxt = sp.kind === "tribute" ? "PAY $" + fmt(sp.flat || 200) : sp.kind === "offering" ? "PAY $" + fmt(sp.amount || 100) : sp.price ? "$" + sp.price : null;
+      if (priceTxt) {
+        var pt = svgEl("text", { "class": "tl", "data-maxw": w - 8, x: 0, y: h / 2 - 11, "text-anchor": "middle", "font-size": PRICE_FS, "font-weight": 900,
+          fill: (sp.kind === "tribute" || sp.kind === "offering") ? "#b91c1c" : INK }, g);
+        pt.textContent = priceTxt;
+      }
+      svgEl("rect", { x: x0, y: y0, width: w, height: h, fill: "none", stroke: INK, "stroke-width": 2 }, g);
       if (!ownable) continue;
       // Changing bits, kept for update(): the owner's strip on the outer edge,
       // houses on the band, the mortgage stamp.
-      var outer = c.rot === 0 ? [0, H - 9, W, 9] : c.rot === 180 ? [0, 0, W, 9] : c.rot === 90 ? [0, 0, 9, H] : [W - 9, 0, 9, H];
-      b.own[i] = svgEl("rect", { x: outer[0], y: outer[1], width: outer[2], height: outer[3], fill: "none" }, g);
-      b.houses[i] = svgEl("g", { transform: "translate(" + (band[0] + band[2] / 2).toFixed(1) + " " + (band[1] + band[3] / 2).toFixed(1) + ")" }, g);
-      b.houses[i].setAttribute("data-vert", vert ? "0" : "1");
+      b.own[i] = svgEl("rect", { x: x0 + 1, y: h / 2 - 9, width: w - 2, height: 8, fill: "none" }, g);
+      b.houses[i] = svgEl("g", { transform: "translate(0 " + (y0 + (sp.kind === "street" ? BANDH / 2 : 14)) + ")" }, g);
       b.mort[i] = svgEl("g", { display: "none" }, g);
-      svgEl("rect", { x: 0, y: 0, width: W, height: H, fill: "rgba(255,255,255,.62)" }, b.mort[i]);
-      var mt = svgEl("text", { x: W / 2, y: H / 2 + 6, "text-anchor": "middle", "font-size": 16, "font-weight": 900, fill: "#c0392b",
-        transform: "rotate(" + (vert ? -60 : -20) + " " + (W / 2) + " " + (H / 2) + ")" }, b.mort[i]);
+      svgEl("rect", { x: x0, y: y0, width: w, height: h, fill: "rgba(255,255,255,.62)" }, b.mort[i]);
+      var mt = svgEl("text", { x: 0, y: 6, "text-anchor": "middle", "font-size": 15, "font-weight": 900, fill: "#c0392b", transform: "rotate(-60)" }, b.mort[i]);
       mt.textContent = "MORTGAGED";
     }
     b.feastLayer = svgEl("g", {}, svg);
@@ -1321,7 +1341,7 @@
       var oc = sp.owner != null ? seatColor(sp.owner) : "none";
       board.own[i].setAttribute("fill", oc);
       if (board.tint[i]) { board.tint[i].setAttribute("fill", oc); board.tint[i].setAttribute("fill-opacity", "0.16"); }
-      board.houses[i].innerHTML = houseMarks(sp.houses || 0, board.houses[i].getAttribute("data-vert") === "1");
+      board.houses[i].innerHTML = houseMarks(sp.houses || 0, false);
       board.mort[i].setAttribute("display", sp.mortgaged ? "inline" : "none");
     }
     // The feast: a purple garland on its land and the doubled rent.

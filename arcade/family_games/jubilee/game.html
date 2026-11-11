@@ -1392,7 +1392,7 @@ $('jb-leave').innerHTML = ui('leave');
       }
       lines = best.lines;
     }
-    var lh = fs * 1.12;
+    var lh = fs * 1.15;
     for (var li = 0; li < lines.length; li++) {
       svgEl('text', { 'data-maxw': maxW, x: cx.toFixed(1), y: (cy + (li - (lines.length - 1) / 2) * lh + fs * 0.35).toFixed(1), 'text-anchor': 'middle',
         'font-size': fs, 'font-weight': 800, fill: '#20123f', 'letter-spacing': -0.1 }, g).textContent = lines[li];
@@ -1450,6 +1450,11 @@ $('jb-leave').innerHTML = ui('leave');
     'PARABLE': '❔', 'SCRIPTURE': '✦'
   };
 
+  /* The board, laid out as the classic board is: every side faces out from
+     the middle (read from its own edge), the colour band on the inner edge,
+     the name in capitals under it, the price at the outer edge. Corners are
+     drawn on the diagonal; the name plate runs corner to corner. */
+  var INK = '#1a1426', PAPER = '#fbf4e2', PAPER2 = '#f3e7c8';
   function buildBoard() {
     var svg = $('jb-board');
     svg.innerHTML = '';
@@ -1458,63 +1463,54 @@ $('jb-leave').innerHTML = ui('leave');
       var el = svgEl(type, Object.assign({ id: id }, attrs), defs);
       stops.forEach(function (s) { svgEl('stop', { offset: s[0], 'stop-color': s[1], 'stop-opacity': s[2] == null ? 1 : s[2] }, el); });
     }
-    grad('jb-paper', 'linearGradient', { x1: 0, y1: 0, x2: 0, y2: 1 }, [['0%', '#fffaf0'], ['100%', '#f6ead0']]);
     grad('jb-medal', 'radialGradient', { cx: '40%', cy: '35%', r: '70%' }, [['0%', '#fffbea'], ['100%', '#ead6a4']]);
     grad('jb-gold', 'linearGradient', { x1: 0, y1: 0, x2: 0, y2: 1 }, [['0%', '#fff3b0'], ['45%', '#ffc83d'], ['100%', '#c27803']]);
-    grad('jb-felt', 'radialGradient', { cx: '50%', cy: '42%', r: '75%' }, [['0%', '#33197a'], ['60%', '#1d0f4a'], ['100%', '#120833']]);
-    grad('jb-glow', 'radialGradient', { cx: '50%', cy: '50%', r: '50%' }, [['0%', '#ffc83d', 0.22], ['100%', '#ffc83d', 0]]);
-    grad('jb-cornerGo', 'linearGradient', { x1: 0, y1: 0, x2: 0, y2: 1 }, [['0%', '#fff4cc'], ['100%', '#ffd977']]);
+    grad('jb-centre', 'radialGradient', { cx: '50%', cy: '50%', r: '70%' }, [['0%', '#fdf8ea'], ['100%', PAPER2]]);
+    grad('jb-plate', 'linearGradient', { x1: 0, y1: 0, x2: 0, y2: 1 }, [['0%', '#e0283f'], ['100%', '#a80f24']]);
 
-    // The frame: a dark rim, then the squares on cream paper.
-    svgEl('rect', { x: 0, y: 0, width: 960, height: 960, rx: 14, fill: '#20123f' }, svg);
-    svgEl('rect', { x: 3, y: 3, width: 954, height: 954, rx: 12, fill: 'url(#jb-paper)' }, svg);
+    // The board: one sheet of parchment with a heavy black edge.
+    svgEl('rect', { x: 0, y: 0, width: 960, height: 960, rx: 10, fill: INK }, svg);
+    svgEl('rect', { x: 4, y: 4, width: 952, height: 952, rx: 7, fill: PAPER }, svg);
 
-    // The middle: felt, a soft glow behind the title, the two decks, the news.
+    // The middle: plain parchment, the two card spaces and the name plate.
     var panel = svgEl('g', {}, svg);
     var M = 960 - 2 * C;
-    svgEl('rect', { x: C, y: C, width: M, height: M, fill: 'url(#jb-felt)' }, panel);
-    svgEl('rect', { x: C + 12, y: C + 12, width: M - 24, height: M - 24, rx: 10, fill: 'none', stroke: 'rgba(255,200,61,.35)', 'stroke-width': 1.5 }, panel);
-    svgEl('circle', { cx: 480, cy: 400, r: 300, fill: 'url(#jb-glow)' }, panel);
-    var raysAt = svgEl('g', { transform: 'translate(480,400)', opacity: 0.55 }, panel);
-    var rays = svgEl('g', { id: 'svg-rays', class: RM ? '' : 'jb-rays' }, raysAt);
-    for (var r = 0; r < 24; r++) {
-      svgEl('path', { d: 'M0,0 L -14,-330 L 14,-330 Z', fill: 'rgba(255,200,61,.07)', transform: 'rotate(' + (r * 15) + ')' }, rays);
+    svgEl('rect', { x: C, y: C, width: M, height: M, fill: 'url(#jb-centre)', stroke: INK, 'stroke-width': 2.5 }, panel);
+    function deck(id, x, y, rot, label, fill, inner, art) {
+      var d = svgEl('g', { id: id, transform: 'translate(' + x + ',' + y + ') rotate(' + rot + ')' }, panel);
+      svgEl('rect', { x: -86, y: -54, width: 172, height: 108, rx: 10, fill: 'none', stroke: INK, 'stroke-width': 2, 'stroke-dasharray': '7 5' }, d);
+      svgEl('rect', { x: -74, y: -44, width: 148, height: 88, rx: 9, fill: fill, stroke: INK, 'stroke-width': 2 }, d);
+      svgEl('rect', { x: -66, y: -36, width: 132, height: 72, rx: 6, fill: inner, stroke: 'rgba(255,248,231,.55)', 'stroke-width': 1.5 }, d);
+      icon(d, art, 0, -9, 30, '#fde68a');
+      svgEl('text', { x: 0, y: 25, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 2.5 }, d).textContent = label;
     }
-    var banner = svgEl('g', { transform: 'translate(480,330)' }, panel);
-    var title = svgEl('text', { x: 0, y: 0, 'text-anchor': 'middle', 'font-size': 92, 'font-weight': 900, fill: 'url(#jb-gold)',
-      'letter-spacing': 3, stroke: '#3b1d00', 'stroke-width': 7, 'stroke-linejoin': 'round', 'paint-order': 'stroke',
-      style: 'filter:drop-shadow(0 6px 0 #2a1200)' }, banner);
-    title.textContent = 'JUBILEE!';
-    svgEl('line', { x1: -180, y1: 30, x2: -70, y2: 30, stroke: '#ffc83d', 'stroke-width': 2, opacity: 0.6 }, banner);
-    svgEl('line', { x1: 70, y1: 30, x2: 180, y2: 30, stroke: '#ffc83d', 'stroke-width': 2, opacity: 0.6 }, banner);
-    svgEl('text', { x: 0, y: 36, 'text-anchor': 'middle', 'font-size': 16, 'font-weight': 900, fill: '#ffe27a', 'letter-spacing': 6 }, banner).textContent = 'BIBLE LANDS';
-
-    // The two decks, side by side, each a card of its own colour.
-    function deck(id, x, label, fill, inner, art, tilt) {
-      var d = svgEl('g', { id: id, transform: 'translate(' + x + ',492) rotate(' + tilt + ')' }, panel);
-      svgEl('rect', { x: -70, y: -46, width: 140, height: 92, rx: 12, fill: 'rgba(0,0,0,.35)', transform: 'translate(4,6)' }, d);
-      svgEl('rect', { x: -70, y: -46, width: 140, height: 92, rx: 12, fill: fill, stroke: '#ffc83d', 'stroke-width': 3 }, d);
-      svgEl('rect', { x: -62, y: -38, width: 124, height: 76, rx: 8, fill: inner, stroke: 'rgba(255,248,231,.55)', 'stroke-width': 1.5 }, d);
-      icon(d, art, 0, -10, 30, '#fde68a');
-      svgEl('text', { x: 0, y: 26, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 2.5 }, d).textContent = label;
-    }
-    deck('svg-deck-parable', 390, 'PARABLES', '#3b1566', '#581c87', 'scroll', -4);
-    deck('svg-deck-scripture', 570, 'SCRIPTURE', '#172554', '#1e3a8a', 'book', 4);
-
-    svgEl('text', { id: 'svg-pot', x: 480, y: 600, 'text-anchor': 'middle', 'font-size': 24, 'font-weight': 900, fill: '#5eead4' }, panel).textContent = '';
-    svgEl('text', { id: 'svg-lastroll', x: 480, y: 636, 'text-anchor': 'middle', 'font-size': 17, 'font-weight': 800, fill: '#ffe27a', 'letter-spacing': 1 }, panel).textContent = '';
-    svgEl('text', { id: 'svg-rule', x: 480, y: 800, 'text-anchor': 'middle', 'font-size': 12.5, 'font-weight': 800, fill: '#a99ddb', 'letter-spacing': 2.5 }, panel).textContent = '';
+    // Scripture where the classic board keeps its chest, Parables where it keeps Chance.
+    deck('svg-deck-scripture', 322, 322, 135, 'SCRIPTURE', '#172554', '#1e3a8a', 'book');
+    deck('svg-deck-parable', 638, 638, -45, 'PARABLES', '#3b1566', '#581c87', 'scroll');
+    var plate = svgEl('g', { transform: 'translate(480,480) rotate(-45)' }, panel);
+    svgEl('rect', { x: -232, y: -58, width: 464, height: 116, rx: 10, fill: INK }, plate);
+    svgEl('rect', { x: -226, y: -52, width: 452, height: 104, rx: 7, fill: 'url(#jb-plate)', stroke: '#fff8e7', 'stroke-width': 3 }, plate);
+    svgEl('text', { x: 0, y: 18, 'text-anchor': 'middle', 'font-size': 76, 'font-weight': 900, fill: '#fff8e7', 'letter-spacing': 3,
+      stroke: INK, 'stroke-width': 6, 'stroke-linejoin': 'round', 'paint-order': 'stroke' }, plate).textContent = 'JUBILEE!';
+    svgEl('text', { x: 0, y: 44, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 900, fill: '#ffe27a', 'letter-spacing': 7 }, plate).textContent = 'BIBLE LANDS';
+    // What is happening, along the same diagonal under the plate.
+    svgEl('text', { id: 'svg-pot', x: 0, y: 98, 'text-anchor': 'middle', 'font-size': 22, 'font-weight': 900, fill: '#0f766e' }, plate).textContent = '';
+    svgEl('text', { id: 'svg-lastroll', x: 0, y: 128, 'text-anchor': 'middle', 'font-size': 16, 'font-weight': 900, fill: '#5b4a8a', 'letter-spacing': 1 }, plate).textContent = '';
+    svgEl('text', { id: 'svg-rule', x: 0, y: -84, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 900, fill: '#8a7a5a', 'letter-spacing': 2.5 }, plate).textContent = '';
 
     var spaces = state.room && state.room.board ? state.room.board : null;
     for (var i = 0; i < 40; i++) {
-      var rc = tileRect(i);
-      var g = svgEl('g', { transform: 'translate(' + rc.x.toFixed(2) + ',' + rc.y.toFixed(2) + ')', class: 'jb-tile', 'data-i': i }, svg);
-      if (rc.corner) drawCorner(g, i, rc);
-      else drawTile(g, spaces ? spaces[i] : null, i, rc);
+      var rc = tileRect(i), g;
+      if (rc.corner) {
+        g = svgEl('g', { transform: 'translate(' + rc.x.toFixed(2) + ',' + rc.y.toFixed(2) + ')', class: 'jb-tile', 'data-i': i }, svg);
+        drawCorner(g, i, rc);
+      } else {
+        // Drawn as a bottom-row square, then turned to face out from its side.
+        g = svgEl('g', { transform: 'translate(' + (rc.x + rc.w / 2).toFixed(2) + ',' + (rc.y + rc.h / 2).toFixed(2) + ') rotate(' + (rc.side * 90) + ')', class: 'jb-tile', 'data-i': i }, svg);
+        drawTile(g, spaces ? spaces[i] : null, i);
+      }
       tap(g, (function (idx) { return function () { openDeed(idx); }; })(i));
     }
-    // Measured in this device's own font: a label wider than its space is
-    // narrowed to fit, never cut.
     var fitList = svg.querySelectorAll('text[data-maxw]');
     for (var fi = 0; fi < fitList.length; fi++) {
       var ft = fitList[fi], fmax = +ft.getAttribute('data-maxw'), fw = 0;
@@ -1527,82 +1523,88 @@ $('jb-leave').innerHTML = ui('leave');
     svgEl('g', { id: 'svg-popups' }, svg);
   }
 
-  function cornerText(g, text, x, y, fs, fill, weight, ls) {
-    svgEl('text', { x: x, y: y, 'text-anchor': 'middle', 'font-size': fs, 'font-weight': weight || 900, fill: fill || '#20123f', 'letter-spacing': ls || 0.5, 'data-maxw': C - 14 }, g).textContent = text;
+  function ctext(g, text, x, y, fs, fill, ls, maxW, rot) {
+    var a = { x: x, y: y, 'text-anchor': 'middle', 'font-size': fs, 'font-weight': 900, fill: fill || INK, 'letter-spacing': ls == null ? 0.6 : ls };
+    if (maxW) a['data-maxw'] = maxW;
+    if (rot) a.transform = 'rotate(' + rot + ' ' + x + ' ' + y + ')';
+    svgEl('text', a, g).textContent = text;
   }
+  /* The four corners, each read on the diagonal facing out, as on the classic board. */
   function drawCorner(g, i, rc) {
-    var w = rc.w, h = rc.h, cx = w / 2;
-    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: i === 0 ? 'url(#jb-cornerGo)' : i === 10 ? '#efe6d6' : i === 20 ? '#e6f4fd' : '#fde8e8', stroke: '#2b1d4e', 'stroke-width': 1.4 }, g);
+    var s = C, h = s / 2;
+    svgEl('rect', { x: 0, y: 0, width: s, height: s, fill: PAPER, stroke: INK, 'stroke-width': 2 }, g);
+    var diag = -45 + (i / 10) * 90;
+    if (i === 10) {
+      // The Dungeon: the cell fills the inner part; Just Visiting is the lane
+      // round its two outer sides.
+      var lane = 34;
+      svgEl('rect', { x: lane, y: 0, width: s - lane, height: s - lane, fill: '#f08a24', stroke: INK, 'stroke-width': 2 }, g);
+      var cell = svgEl('g', { transform: 'translate(' + (lane + (s - lane) / 2) + ',' + ((s - lane) / 2) + ') rotate(45)' }, g);
+      svgEl('rect', { x: -17, y: -17, width: 34, height: 34, fill: '#fbf4e2', stroke: INK, 'stroke-width': 2 }, cell);
+      for (var bx = -11; bx <= 11; bx += 5.5) svgEl('line', { x1: bx, y1: -17, x2: bx, y2: 17, stroke: INK, 'stroke-width': 2 }, cell);
+      ctext(cell, 'IN THE', 0, -24, 9, INK, 1.2);
+      ctext(cell, 'DUNGEON', 0, 32, 10.5, INK, 1.2);
+      ctext(g, 'VISITING', lane + (s - lane) / 2, s - 11, 12, INK, 2);
+      ctext(g, 'JUST', lane / 2 + 4, (s - lane) / 2, 12, INK, 2, null, 90);
+      return;
+    }
+    var d = svgEl('g', { transform: 'translate(' + h + ',' + h + ') rotate(' + diag + ')' }, g);
     if (i === 0) {
-      cornerText(g, 'JUBILEE!', cx, 34, 22, '#7c2d12', 900, 1);
-      icon(g, 'go', cx, 66, 40, '#b45309');
-      svgEl('rect', { x: 14, y: 90, width: w - 28, height: 24, rx: 12, fill: '#15803d' }, g);
-      svgEl('text', { x: cx, y: 106.5, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 900, fill: '#fff', 'letter-spacing': 0.5, 'data-maxw': w - 40 }, g).textContent = 'COLLECT $200';
-    } else if (i === 10) {
-      // The cell in the inner corner; the lane round it is Just Visiting.
-      svgEl('rect', { x: 34, y: 6, width: w - 40, height: h - 40, rx: 8, fill: '#3f3a4f' }, g);
-      for (var b = 48; b < w - 8; b += 14) svgEl('line', { x1: b, y1: 8, x2: b, y2: h - 36, stroke: '#cfc6b4', 'stroke-width': 3, 'stroke-linecap': 'round' }, g);
-      svgEl('rect', { x: 46, y: 36, width: w - 64, height: 22, rx: 5, fill: '#20123f' }, g);
-      cornerText(g, 'DUNGEON', 34 + (w - 40) / 2, 52, 12.5, '#ffe27a', 900, 1.5);
-      cornerText(g, 'JUST VISITING', cx, h - 13, 12, '#5b4a8a', 900, 1.2);
+      ctext(d, 'COLLECT $200', 0, -30, 10, INK, 1);
+      ctext(d, 'AS YOU PASS', 0, -18, 9, INK, 1);
+      svgEl('text', { x: 0, y: 10, 'text-anchor': 'middle', 'font-size': 21, 'font-weight': 900, fill: '#c8102e', stroke: INK, 'stroke-width': 1.2,
+        'letter-spacing': 1, 'paint-order': 'stroke' }, d).textContent = 'JUBILEE!';
+      // The arrow along the outer edge points the way the pieces travel.
+      svgEl('path', { d: 'M ' + (s - 14) + ' ' + (s - 22) + ' H 40 V ' + (s - 30) + ' L 14 ' + (s - 17) + ' L 40 ' + (s - 4) + ' V ' + (s - 12) + ' H ' + (s - 14) + ' Z',
+        fill: '#c8102e', stroke: INK, 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, g);
     } else if (i === 20) {
-      icon(g, 'candles', cx, 46, 48, '#0369a1');
-      cornerText(g, 'SABBATH', cx, 92, 17, '#0c4a6e', 900, 1.5);
-      cornerText(g, 'REST', cx, 112, 13, '#0369a1', 900, 3);
+      ctext(d, 'SABBATH', 0, -22, 13, INK, 1.5);
+      icon(d, 'candles', 0, 4, 30, '#0369a1');
+      ctext(d, 'REST', 0, 34, 13, INK, 2.5);
     } else {
-      icon(g, 'lock', cx, 44, 42, '#b91c1c');
-      cornerText(g, 'GO TO THE', cx, 90, 12.5, '#7f1d1d', 900, 1.5);
-      cornerText(g, 'DUNGEON', cx, 110, 17, '#20123f', 900, 1.5);
+      ctext(d, 'GO TO THE', 0, -22, 10.5, INK, 1.2);
+      icon(d, 'lock', 0, 3, 28, '#b91c1c');
+      ctext(d, 'DUNGEON', 0, 34, 13, INK, 1.2);
     }
   }
 
-  function drawTile(g, sp, i, rc) {
+  /* One side square, drawn as a bottom-row square centred on 0,0 (E wide,
+     C deep); buildBoard turns it to face its own side. */
+  function drawTile(g, sp, i) {
     var kind = sp ? sp.kind : 'street';
     var isStreet = kind === 'street', isRail = kind === 'railroad', isUtil = kind === 'utility';
-    var isParable = kind === 'parable', isScripture = kind === 'scripture';
-    var isTax = kind === 'tribute' || kind === 'offering';
-    var bandFill = isStreet ? (GROUP_COLORS[sp.group] || '#888') : isRail ? '#2b2f3a' : isUtil ? '#a16207' : null;
-    var tileFill = isParable ? '#f3ecff' : isScripture ? '#e8f2ff' : isTax ? '#fff0ee' : '#fffaf0';
-    var w = rc.w, h = rc.h, s = rc.side, vert = s === 0 || s === 2;
+    var isParable = kind === 'parable', isScripture = kind === 'scripture', isTax = kind === 'tribute' || kind === 'offering';
     var ownable = isStreet || isRail || isUtil;
-    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: tileFill }, g);
-    if (ownable) svgEl('rect', { id: 'own-' + i, x: 0, y: 0, width: w, height: h, fill: 'transparent' }, g);
-    // The colour band on the inner edge (a thin accent for the card and tax squares).
-    var bandW = bandFill ? BANDW : 6;
-    var accent = bandFill || (isParable ? '#7c3aed' : isScripture ? '#2563eb' : '#dc2626');
-    var band = s === 0 ? [0, 0, w, bandW] : s === 2 ? [0, h - bandW, w, bandW] : s === 1 ? [w - bandW, 0, bandW, h] : [0, 0, bandW, h];
-    svgEl('rect', { x: band[0], y: band[1], width: band[2], height: band[3], fill: accent }, g);
-    if (bandFill) svgEl('rect', { x: band[0], y: band[1], width: vert ? band[2] : 6, height: vert ? 6 : band[3], fill: 'rgba(255,255,255,.25)' }, g);
-    // What is left for the words, upright.
-    var box = s === 0 ? [0, bandW, w, h - bandW] : s === 2 ? [0, 0, w, h - bandW] : s === 1 ? [0, 0, w - bandW, h] : [bandW, 0, w - bandW, h];
-    var bx = box[0], by = box[1], bw = box[2], bh = box[3], mid = bx + bw / 2;
-    var art = isRail ? (sp.name === 'The Desert Caravan' ? 'caravan' : 'train') : isUtil ? (sp.name === 'The Well' ? 'well' : 'lamp')
-      : isParable ? 'scroll' : isScripture ? 'book' : isTax ? (kind === 'tribute' ? 'coin' : 'bowl') : null;
-    var priceLabel = sp && sp.price ? '$' + sp.price : sp && (sp.amount || sp.flat) ? 'PAY $' + (sp.amount || sp.flat) : '';
-    var artColor = bandFill || accent;
-    if (vert) {
-      if (art) medallion(g, mid, by + 22, 14, art, artColor);
-      var nameTop = by + (art ? 42 : 8), nameBottom = by + bh - (priceLabel ? 26 : 8);
-      tileLabel(g, shortName(sp), mid, (nameTop + nameBottom) / 2, bw - 8);
-      if (priceLabel) svgEl('text', { 'data-maxw': bw - 6, x: mid, y: by + bh - 11, 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#5b4a8a' }, g).textContent = priceLabel;
+    var w = E, h = C, x0 = -w / 2, y0 = -h / 2, BAND = 30;
+    svgEl('rect', { x: x0, y: y0, width: w, height: h, fill: PAPER }, g);
+    if (ownable) svgEl('rect', { id: 'own-' + i, x: x0, y: y0, width: w, height: h, fill: 'transparent' }, g);
+    var name = shortName(sp).toUpperCase();
+    var price = sp && sp.price ? '$' + sp.price : sp && (sp.amount || sp.flat) ? 'PAY $' + (sp.amount || sp.flat) : '';
+    if (isStreet) {
+      svgEl('rect', { x: x0, y: y0, width: w, height: BAND, fill: GROUP_COLORS[sp.group] || '#888', stroke: INK, 'stroke-width': 1.6 }, g);
+      tileLabel(g, name, 0, y0 + BAND + 22, w - 8, 10.5);
     } else {
-      var textX = mid, textW = bw - 10;
-      if (art) { medallion(g, bx + 21, by + bh / 2, 14, art, artColor); textX = bx + 21 + 16 + (bw - 37) / 2; textW = bw - 44; }
-      var lines = tileLabel(g, shortName(sp), textX, by + bh / 2 - (priceLabel ? 9 : 0), textW);
-      if (priceLabel) svgEl('text', { 'data-maxw': textW, x: textX, y: by + bh / 2 + (lines > 1 ? 22 : 16), 'text-anchor': 'middle', 'font-size': PRICE_FS, 'font-weight': 900, fill: isTax ? '#b91c1c' : '#5b4a8a' }, g).textContent = priceLabel;
+      tileLabel(g, isParable ? 'PARABLE' : isScripture ? 'SCRIPTURE' : name, 0, y0 + 20, w - 8, 10.5);
     }
-    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: 'none', stroke: '#2b1d4e', 'stroke-width': 1.2 }, g);
+    if (isParable) {
+      svgEl('text', { x: 0, y: 30, 'text-anchor': 'middle', 'font-size': 66, 'font-weight': 900, fill: '#7c3aed', stroke: INK, 'stroke-width': 1.5,
+        'paint-order': 'stroke', 'font-family': 'Georgia, serif' }, g).textContent = '?';
+    } else if (isScripture) {
+      medallion(g, 0, 10, 23, 'book', '#1d4ed8');
+    } else if (isRail || isUtil || isTax) {
+      var art = isRail ? (sp.name === 'The Desert Caravan' ? 'caravan' : 'train') : isUtil ? (sp.name === 'The Well' ? 'well' : 'lamp') : (kind === 'tribute' ? 'coin' : 'bowl');
+      medallion(g, 0, 10, 23, art, isRail ? '#334155' : isUtil ? '#a16207' : '#b91c1c');
+    }
+    if (price) svgEl('text', { 'data-maxw': w - 6, x: 0, y: h / 2 - 10, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 900, fill: isTax ? '#b91c1c' : INK, 'letter-spacing': 0.4 }, g).textContent = price;
+    svgEl('rect', { x: x0, y: y0, width: w, height: h, fill: 'none', stroke: INK, 'stroke-width': 1.6 }, g);
     if (!ownable) return;
-    // Owner: a strip of their colour along the outer edge (plus the tint above).
-    var outer = s === 0 ? [0, h - 7, w, 7] : s === 2 ? [0, 0, w, 7] : s === 1 ? [0, 0, 7, h] : [w - 7, 0, 7, h];
-    svgEl('rect', { id: 'ownbar-' + i, x: outer[0], y: outer[1], width: outer[2], height: outer[3], fill: 'transparent' }, g);
-    // Houses sit on the band; a mortgaged deed is greyed and stamped.
-    var hx = vert ? w / 2 : band[0] + bandW / 2, hy = vert ? band[1] + bandW / 2 : h / 2;
-    svgEl('g', { id: 'hse-' + i, transform: 'translate(' + hx.toFixed(1) + ',' + hy.toFixed(1) + ')', 'data-vert': vert ? '0' : '1' }, g);
+    // Owner: a strip of their colour along the outer edge (with the tint above).
+    svgEl('rect', { id: 'ownbar-' + i, x: x0 + 1, y: h / 2 - 7, width: w - 2, height: 6, fill: 'transparent' }, g);
+    // Houses stand on the colour band; a mortgaged deed is greyed and stamped.
+    svgEl('g', { id: 'hse-' + i, transform: 'translate(0,' + (y0 + (isStreet ? BAND / 2 + 1 : 14)) + ')', 'data-vert': '0' }, g);
     var m = svgEl('g', { id: 'mrg-' + i, style: 'display:none' }, g);
-    svgEl('rect', { x: 0, y: 0, width: w, height: h, fill: 'rgba(255,255,255,.62)' }, m);
-    svgEl('text', { x: w / 2, y: h / 2 + 4, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#b91c1c', 'letter-spacing': 1,
-      transform: 'rotate(' + (vert ? -62 : -22) + ' ' + (w / 2) + ' ' + (h / 2) + ')' }, m).textContent = 'MORTGAGED';
+    svgEl('rect', { x: x0, y: y0, width: w, height: h, fill: 'rgba(255,255,255,.62)' }, m);
+    svgEl('text', { x: 0, y: 4, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#b91c1c', 'letter-spacing': 1, transform: 'rotate(-62)' }, m).textContent = 'MORTGAGED';
   }
 
   function tileCoord(pos) {

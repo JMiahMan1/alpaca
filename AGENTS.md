@@ -673,11 +673,15 @@ other fails the build.
   first, lift mortgages when comfortable, and leave the Dungeon early in the game but sit tight late.
 - Rooms persist as JSON (`presence.save_rooms_once`), so every new room field must be
   JSON-serialisable with **string** dict keys (`test_a_room_with_every_new_rule_in_play_still_saves_as_json`).
-- **Board layout (phone and TV): every square's text is upright** (a screen is seen from one side; the
-  old copy of a physical board left the top row upside down). Corners are deeper than side squares,
-  the colour band faces the middle, owners show as a tint plus a strip on the outer edge (never colour
-  alone: the deed sheet names them), and pieces stand on the band (phone) or just inside the middle
-  (TV) so they never cover a name or price. Interface icons are one inline-SVG set (`UI_ICONS`/`ui()`),
+- **Board layout (phone and TV) follows the classic board exactly**: each side faces out from the middle
+  (bottom row upright, left column turned 90°, top row upside down, right column −90°), colour band on
+  the inner edge with a black rule, name in capitals under it, picture in the middle (Parable = a big
+  "?", like Chance), price at the outer edge; corners drawn on the diagonal (Collect $200 with the red
+  arrow along the edge; the Dungeon cell in the inner part with JUST / VISITING on the outer lane), the
+  red name plate corner to corner, Scripture's card space top-left and Parables' bottom-right. An
+  "upright text everywhere" redesign was tried and rejected by the owner: do not turn the sides upright.
+  Owners show as a tint plus a strip on the outer edge (never colour alone: the deed sheet names them);
+  pieces stand on the colour band (phone) or the inner edge (TV). Interface icons are one inline-SVG set (`UI_ICONS`/`ui()`),
   not emoji. Dialog rules from the genre research: the deed highlights the rent charged now; Buy,
   Tribute, debt and the Dungeon show a context card above the buttons; bankruptcy is only offered when
   selling everything cannot cover the debt, and asks to confirm.
