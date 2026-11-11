@@ -690,6 +690,17 @@ AWARDS = (
 )
 
 
+_SINGULAR = {"answers": "answer", "buildings": "building", "deals": "deal", "trips": "trip",
+             "doubles": "double", "times": "time", "feasts": "feast"}
+
+
+def _one(how: str, n: int) -> str:
+    """'1 right answers' reads wrong: a count of one takes the singular."""
+    if n != 1:
+        return how
+    return " ".join(_SINGULAR.get(w, w) for w in how.split(" "))
+
+
 def _awards(room: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     stats = room.get("stats") or []
@@ -703,7 +714,7 @@ def _awards(room: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         out.append({"key": key, "title": title, "icon": icon, "seat": best_seat,
                     "name": room["players"][best_seat]["name"],
-                    "detail": how.format(v=f"{best:,}")})
+                    "detail": _one(how, best).format(v=f"{best:,}")})
     return out[:6]
 
 

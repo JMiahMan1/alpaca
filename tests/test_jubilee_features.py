@@ -499,3 +499,13 @@ def test_live_rooms_list_and_client_errors(client):
     assert any(x["code"] == r["room"]["code"] for x in live)
     for _ in range(40):
         assert client.post("/api/jubilee/client_error", json={"where": "t", "message": "boom"}).status_code == 200
+
+
+def test_an_award_for_one_reads_in_the_singular():
+    _code, _pids, room = _game({"ruleset": "familyfun"}, humans=1)
+    with jubilee._lock:
+        jubilee._stat(room, 0, "drill_right", 1)
+        jubilee._stat(room, 1, "dungeon", 2)
+        details = {a["key"]: a["detail"] for a in jubilee._awards(room)}
+    assert details["drill_right"] == "1 right answer"
+    assert details["dungeon"] == "2 trips to the Dungeon"

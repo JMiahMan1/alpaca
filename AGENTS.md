@@ -698,6 +698,11 @@ other fails the build.
 - **The board starts zoomed in on every screen** (the owner's choice; `zoomv2` in localStorage remembers a
   "whole board" tap). Portrait tablets use the stacked phone layout (the side-by-side one is for landscape or
   ≥1100 px wide).
+- **Android bars:** the Jarvis app runs the game edge to edge and passes the status/nav bar sizes as
+  `?safe=top,right,bottom,left` (→ `--fk-safe-*`). Every overlay pads by them (lobby, sheets, auction, card,
+  drill, Jubilee, end), the board is sized from `--jb-vh` (the screen less those bars), never raw `dvh`, and
+  the top bar drops the logo below 520 px so the leave button stays on screen. Checked by driving every screen
+  at 412×915 (39/48), 360×740 (24/48) and landscape (24,48,0,39) and failing anything under a bar.
 - **Robustness:** `applyState` ignores a snapshot for any room but the current one (a poll in flight when
   the player left used to be drawn over the next room) and draws each part in its own try/catch, so one error
   cannot leave a board without its action bar. Phone script errors are posted to `/api/jubilee/client_error`
