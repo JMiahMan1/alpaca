@@ -419,6 +419,21 @@ card with llama-server and sd-server. Ten minutes of bed is the one thing it doe
   180 s request returns 200 with 30 s of audio. The only tell is
   `meta.duration_s < meta.requested_duration_s`; the render route warns when it sees that.
 
+### Piper voices (`POST /api/tts` with `voice: "piper:<name>"`)
+- So Jarvis can send every voice it uses here, the audio server also speaks Piper (`piper-tts==1.8.0`,
+  pinned in `Dockerfile.audio`, onnxruntime on the CPU; it never touches the GPU, Kokoro or `_lock`).
+- Voice files are `<name>.onnx` + `<name>.onnx.json` in `PIPER_VOICES_DIR` (container
+  `/data/voices/piper`, bind-mounted read-only from `${PIPER_VOICES_HOST_DIR:-./data/piper-voices}`).
+  A `.onnx` without its `.json` is not listed. Each voice loads once and stays cached.
+- Same response shape as Kokoro (`meta.engine = "piper"`, `meta.voice = "piper:<name>"`); the WAV is at
+  the voice's own rate (22050 Hz for medium voices), never resampled. `speed` maps to `length_scale`.
+- Text goes through `tts_text` like Kokoro (scripture, dates, lexicon replacements); misaki IPA links
+  `[word](/ipa/)` are reduced to the word, since Piper would read them aloud.
+- A blend containing a piper voice, or any `clone*` parameter with one, is a 400. An unknown name is a
+  400 listing the voices that exist. A missing package or directory is a 503; Kokoro is unaffected.
+- `/health` lists them under `piper.voices`, not `tts.voices`: that list feeds the podcast mixer, which
+  works at Kokoro's 24 kHz.
+
 ### Base-voice pairing (`voice_clone.py` → `POST /api/tts`, `PATCH /api/voices/{pid}`)
 - **The base voice is a pitch decision, and every wrong one is audible.** `correct_pitch` runs a
   phase vocoder over the *whole* render to slide it onto the profile's `median_f0_hz`. A base

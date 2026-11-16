@@ -19,6 +19,8 @@ Endpoints:
   GET  /health        -> status, loaded models, VRAM usage, voice list
   POST /api/tts       -> {text, voice?, speed?, sentence_pause_s?, paragraph_pause_s?, normalize?} -> wav b64
                          voice may blend several, e.g. "am_michael,am_fenrir"
+                         voice "piper:<name>" speaks with Piper from PIPER_VOICES_DIR
+                           (CPU, the voice's own sample rate; no blends, no clone)
                          normalize (default true) runs tts_text + audio/tts_lexicon.json
                          clone=<voice id>, clone_tau?, clone_seed? re-timbres Kokoro into a custom voice
                            clone_seed pins the converter's latent draw so every sentence
@@ -44,6 +46,7 @@ import base64
 import io
 import logging
 import os
+import re
 import time
 import wave
 
@@ -102,6 +105,110 @@ KOKORO_VOICES = [
 #: pitch could not be measured. Kept as an explicit constant so the fallback is
 #: visible in the response meta rather than arriving as a surprise.
 DEFAULT_BASE_VOICE = "af_heart"
+
+# --------------------------------------------------------------------------- #
+# Piper voices                                                                 #
+# --------------------------------------------------------------------------- #
+#
+# `voice: "piper:<name>"` speaks with Piper (piper-tts, onnxruntime on the CPU)
+# from `<name>.onnx` + `<name>.onnx.json` in PIPER_VOICES_DIR, so Jarvis can send
+# every voice it uses here, not only Kokoro ones. Piper needs no GPU and never
+# touches the Kokoro pipeline or its lock. The WAV is at the voice's own rate
+# (22050 Hz for "medium" voices); nothing resamples it.
+
+PIPER_PREFIX = "piper:"
+PIPER_VOICES_DIR = os.getenv("PIPER_VOICES_DIR", os.path.join(voice_clone.VOICES_DIR, "piper"))
+_piper_voices: dict[str, object] = {}  # name -> loaded PiperVoice, loaded once
+_piper_lock = asyncio.Lock()
+
+
+class PiperUnavailable(RuntimeError):
+    """Piper cannot run here: the package or the voices directory is missing."""
+
+
+def _piper_names() -> list[str]:
+    """Model names in PIPER_VOICES_DIR with both the .onnx and its .onnx.json."""
+    try:
+        files = set(os.listdir(PIPER_VOICES_DIR))
+    except OSError:
+        return []
+    return sorted(f[: -len(".onnx")] for f in files if f.endswith(".onnx") and f + ".json" in files)
+
+
+def _piper_status() -> dict:
+    try:
+        import piper  # noqa: F401
+
+        package_error = None
+    except Exception as exc:
+        package_error = f"piper-tts is not installed: {exc}"
+    dir_ok = os.path.isdir(PIPER_VOICES_DIR)
+    return {
+        "engine": "piper",
+        "available": package_error is None and dir_ok,
+        "voices_dir": PIPER_VOICES_DIR,
+        "voices": [PIPER_PREFIX + n for n in _piper_names()],
+        "loaded": sorted(PIPER_PREFIX + n for n in _piper_voices),
+        "error": package_error or (None if dir_ok else f"Piper voices directory {PIPER_VOICES_DIR} does not exist"),
+    }
+
+
+def _load_piper(name: str):
+    """The cached PiperVoice for `name`; raises PiperUnavailable / KeyError."""
+    cached = _piper_voices.get(name)
+    if cached is not None:
+        return cached
+    try:
+        from piper import PiperVoice
+    except Exception as exc:
+        raise PiperUnavailable(f"piper-tts is not installed: {exc}") from exc
+    if not os.path.isdir(PIPER_VOICES_DIR):
+        raise PiperUnavailable(f"Piper voices directory {PIPER_VOICES_DIR} does not exist")
+    if name not in _piper_names():
+        raise KeyError(name)
+    model = os.path.join(PIPER_VOICES_DIR, name + ".onnx")
+    voice = PiperVoice.load(model, config_path=model + ".json")
+    _piper_voices[name] = voice
+    logger.info(f"[audio] Piper voice loaded: {name}")
+    return voice
+
+
+def _piper_synth(voice, text: str, speed: float):
+    """Synthesize one piece of text; returns (float32 samples, sample_rate).
+
+    piper-tts 1.3+ has `synthesize_wav(text, wav_file, syn_config)`; older
+    releases wrote the WAV from `synthesize(text, wav_file, length_scale=...)`.
+    Either way the WAV header carries the voice's native rate.
+    """
+    import numpy as np
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        if hasattr(voice, "synthesize_wav"):
+            syn_config = None
+            if speed != 1.0:
+                from piper import SynthesisConfig
+
+                syn_config = SynthesisConfig(length_scale=1.0 / speed)
+            voice.synthesize_wav(text, wf, syn_config=syn_config)
+        else:
+            kwargs = {} if speed == 1.0 else {"length_scale": 1.0 / speed}
+            voice.synthesize(text, wf, **kwargs)
+    buf.seek(0)
+    with wave.open(buf, "rb") as wf:
+        sr = wf.getframerate()
+        frames = wf.readframes(wf.getnframes())
+    return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0, sr
+
+
+# Kokoro's misaki pronunciation links, "[word](/ipa/)": Piper would read the
+# brackets and IPA aloud, so it gets the plain word.
+_MISAKI_LINK = re.compile(r"\[([^\[\]]+)\]\(/[^)]*/\)")
+
+
+def _piper_text(text: str) -> str:
+    return _MISAKI_LINK.sub(r"\1", text)
+
 
 MUSIC_PRESETS = [
     "lo-fi hip hop beat with warm vinyl crackle, mellow keys, relaxed drums",
@@ -316,6 +423,9 @@ async def health():
             "loaded": _state["tts"] is not None,
             "voices": KOKORO_VOICES,
         },
+        # Kept apart from tts.voices: those are the 24 kHz Kokoro voices the
+        # podcast mixer offers; a Piper voice speaks at its own rate.
+        "piper": _piper_status(),
         "clone": {
             "engine": "openvoice-v2",
             "loaded": voice_clone.loaded(),
@@ -550,7 +660,14 @@ async def api_tts(request: Request):
     # the absence of `voice` is recorded rather than defaulted away.
     voice_given = "voice" in data
     voice = str(data.get("voice") or "").replace(" ", "")
-    unknown = [v for v in voice.split(",") if v not in KOKORO_VOICES] if voice else []
+    piper_parts = [v for v in voice.split(",") if v.startswith(PIPER_PREFIX)] if voice else []
+    if piper_parts and voice != piper_parts[0]:
+        return JSONResponse(
+            {"error": f"a Piper voice cannot be blended: '{voice}' mixes {', '.join(piper_parts)} "
+                      "with other voices; send one piper:<name> on its own"},
+            status_code=400,
+        )
+    unknown = [v for v in voice.split(",") if v not in KOKORO_VOICES] if voice and not piper_parts else []
     if voice_given and not voice:
         # An explicitly empty voice is a mistake worth reporting. The absence of
         # the key is not, because that is how a clone asks the server to pair.
@@ -591,6 +708,19 @@ async def api_tts(request: Request):
         text = tts_text.normalize(text)
     # Optional custom voice: Kokoro speaks, OpenVoice re-timbres each sentence.
     clone_id = str(data.get("clone") or "").strip()
+    if piper_parts:
+        clone_keys = [k for k in ("clone", "clone_tau", "clone_seed", "clone_highband_hz", "clone_unit")
+                      if data.get(k) is not None]
+        if clone_keys:
+            return JSONResponse(
+                {"error": f"{', '.join(clone_keys)} cannot be used with a Piper voice: "
+                          "custom voices are converted from Kokoro voices"},
+                status_code=400,
+            )
+        return await _tts_piper(
+            piper_parts[0][len(PIPER_PREFIX):], text, speed, sentence_pause, paragraph_pause,
+            group_chars, peak_normalize, normalized,
+        )
     clone_meta = None
     clone_tau = float(data.get("clone_tau", voice_clone.DEFAULT_TAU))
     # Keep the base voice's own audio above this frequency (voice_clone.band_blend).
@@ -827,6 +957,94 @@ async def api_tts(request: Request):
         }
     except Exception as e:
         logger.exception("TTS generation failed")
+        return JSONResponse({"error": f"TTS generation failed: {e}"}, status_code=500)
+
+
+async def _tts_piper(name: str, text: str, speed: float, sentence_pause: float, paragraph_pause: float,
+                     group_chars: int, peak_normalize: bool, normalized: bool):
+    """POST /api/tts for `voice: "piper:<name>"`; same response shape as Kokoro."""
+    t0 = time.perf_counter()
+    try:
+        async with _piper_lock:
+            pv = await asyncio.to_thread(_load_piper, name)
+    except PiperUnavailable as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+    except KeyError:
+        known = [PIPER_PREFIX + n for n in _piper_names()]
+        return JSONResponse(
+            {"error": f"unknown voice '{PIPER_PREFIX}{name}'; Piper voices in {PIPER_VOICES_DIR}: "
+                      f"{', '.join(known) or 'none'}",
+             "piper_voices": known},
+            status_code=400,
+        )
+    except Exception as exc:
+        logger.exception("Piper voice load failed")
+        return JSONResponse({"error": f"Piper voice '{name}' failed to load: {exc}"}, status_code=503)
+
+    try:
+        import numpy as np
+
+        spoken_text = _piper_text(text)
+        sr = 0
+        pieces: list = []
+        n_chunks = 0
+        # One voice object is not safe to share across threads, so a voice
+        # synthesizes one request at a time. Piper is far faster than real time.
+        async with _piper_lock:
+            for paragraph in tts_text.paragraphs(spoken_text):
+                units = (
+                    tts_text.phrase_groups(paragraph, group_chars)
+                    if group_chars
+                    else tts_text.sentences(paragraph)
+                )
+                spoken: list = []
+                for sentence in units:
+                    audio, sr = await asyncio.to_thread(_piper_synth, pv, sentence, speed)
+                    audio = _trim_and_fade(audio, sr)
+                    if audio.size == 0:
+                        continue
+                    if spoken:
+                        spoken.append(np.zeros(int(sentence_pause * sr), dtype=np.float32))
+                    spoken.append(audio)
+                    n_chunks += 1
+                if not spoken:
+                    continue
+                if pieces:
+                    pieces.append(np.zeros(int(paragraph_pause * sr), dtype=np.float32))
+                pieces.append(np.concatenate(spoken))
+        if not pieces:
+            return JSONResponse({"error": "TTS produced no audio"}, status_code=502)
+        pad = np.zeros(int(0.15 * sr), dtype=np.float32)
+        merged = np.concatenate([pad, *pieces, pad])
+        elapsed = time.perf_counter() - t0
+        duration = len(merged) / float(sr)
+        wav = await asyncio.to_thread(_wav_bytes, merged, sr, peak_normalize)
+        return {
+            "audio_b64": base64.b64encode(wav).decode("ascii"),
+            "mime": "audio/wav",
+            "meta": {
+                "engine": "piper",
+                "model": name,
+                "voice": PIPER_PREFIX + name,
+                "speed": speed,
+                "duration_s": round(duration, 2),
+                "sample_rate": sr,
+                "elapsed_s": round(elapsed, 2),
+                "rtf": round(elapsed / max(duration, 1e-6), 4),
+                "chars": len(spoken_text),
+                "chunks": n_chunks,
+                "sentence_pause_s": sentence_pause,
+                "paragraph_pause_s": paragraph_pause,
+                "group_chars": group_chars,
+                "clone_unit": None,
+                "peak_normalized": peak_normalize,
+                "normalized": normalized,
+                "clone": None,
+                "checks": None,
+            },
+        }
+    except Exception as e:
+        logger.exception("Piper generation failed")
         return JSONResponse({"error": f"TTS generation failed: {e}"}, status_code=500)
 
 

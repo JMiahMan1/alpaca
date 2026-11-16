@@ -362,12 +362,17 @@ services:
       - TTS_MODEL_ID=hexgrad/Kokoro-82M
       - MUSIC_MODEL_ID=facebook/musicgen-small
       - HUGGING_FACE_TOKEN=${HUGGING_FACE_TOKEN:-}
+      # Piper voices for "piper:<name>": <name>.onnx + <name>.onnx.json.
+      - PIPER_VOICES_DIR=/data/voices/piper
     volumes:
       - audio-models:/cache/huggingface
       # Lexicon edits (or a git pull) apply on the next request, no rebuild.
       - ./audio:/app/audio:ro
       # Custom voice profiles (recordings + speaker embeddings).
       - audio-voices:/data/voices
+      # Piper voice models, dropped in on the host (PIPER_VOICES_HOST_DIR in .env
+      # to keep them elsewhere). Read once per voice, then cached in memory.
+      - ${PIPER_VOICES_HOST_DIR:-./data/piper-voices}:/data/voices/piper:ro
     deploy:
       resources:
         limits:
