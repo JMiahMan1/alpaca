@@ -3720,3 +3720,71 @@ async def test_router_model_state_reads_the_failed_flag(monkeypatch):
     assert await alpaca_proxy.router_model_state("kat--latest") == "failed"
     assert await alpaca_proxy.router_model_state("vl--7b") == "loaded"
     assert await alpaca_proxy.router_model_state("absent--x") == "unloaded"
+
+
+# --------------------------------------------------------------------------- home model
+
+
+@pytest.fixture
+def home_model(monkeypatch):
+    """A home model configured, the server quiet, and the router holding ``resident``."""
+    state = {"resident": ["qwen2.5-vl--7b"], "loaded": []}
+    monkeypatch.setattr(alpaca_proxy, "HOME_MODEL", "chat-model")
+    monkeypatch.setattr(alpaca_proxy, "HOME_MODEL_RETURN_S", 60.0)
+    monkeypatch.setattr(alpaca_proxy, "HOME_MODEL_AFTER_BENCHMARK_S", 1800.0)
+    monkeypatch.setattr(alpaca_proxy, "active_requests", {})
+    monkeypatch.setattr(alpaca_proxy, "settings_scan_active", lambda: False)
+    monkeypatch.setattr(alpaca_proxy, "resolve_router_model",
+                        AsyncMock(return_value={"backend_model": "chat-model--latest"}))
+
+    async def resident():
+        return list(state["resident"])
+
+    async def ensure(name, *a, **k):
+        state["loaded"].append(name)
+
+    monkeypatch.setattr(alpaca_proxy, "_router_resident_ids", resident)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    alpaca_proxy.note_inference_activity(now=1000.0, source="shared-llm/app")
+    return state
+
+
+@pytest.mark.asyncio
+async def test_the_home_model_comes_back_once_the_server_is_quiet(home_model):
+    assert await alpaca_proxy.home_model_return_once(now=1030.0) == "recent"
+    assert await alpaca_proxy.home_model_return_once(now=1100.0) == "returned"
+    assert home_model["loaded"] == ["chat-model"]
+
+
+@pytest.mark.asyncio
+async def test_the_home_model_never_loads_into_an_empty_card_or_over_itself(home_model):
+    home_model["resident"] = []
+    assert await alpaca_proxy.home_model_return_once(now=1100.0) == "empty"
+    home_model["resident"] = ["chat-model--latest"]
+    assert await alpaca_proxy.home_model_return_once(now=1100.0) == "home"
+    assert home_model["loaded"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_home_model_waits_for_work_in_flight_images_and_scans(home_model, monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "active_requests", {"qwen2.5-vl--7b": 1})
+    assert await alpaca_proxy.home_model_return_once(now=1100.0) == "busy"
+    monkeypatch.setattr(alpaca_proxy, "active_requests", {})
+    async with alpaca_proxy.sd_execution_lock:
+        assert await alpaca_proxy.home_model_return_once(now=1100.0) == "image"
+    monkeypatch.setattr(alpaca_proxy, "settings_scan_active", lambda: True)
+    assert await alpaca_proxy.home_model_return_once(now=1100.0) == "scan"
+    assert home_model["loaded"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_benchmark_gets_a_long_quiet_before_the_home_model_returns(home_model):
+    alpaca_proxy.note_inference_activity(now=1000.0, source="shared-llm/benchmark")
+    assert await alpaca_proxy.home_model_return_once(now=1600.0) == "recent"
+    assert await alpaca_proxy.home_model_return_once(now=3000.0) == "returned"
+
+
+@pytest.mark.asyncio
+async def test_no_home_model_means_the_feature_is_off(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "HOME_MODEL", "")
+    assert await alpaca_proxy.home_model_return_once() == "off"

@@ -306,6 +306,14 @@ every config tried ("Settings Scan Results").
   identity settings API the SharedLLM UI uses, mirrored in its `.env`. Previous: assistant/coding
   qwen3-6-35b-a3b-ud-iq4-nl-mtp, librarian ornith-1-5-9b-q4-k-m, DEFAULT_MODEL ornith:9b-q4_K_M.
 
+### Home model (`PROXY_HOME_MODEL`)
+- The card holds one model, so a vision job (Guardian's image check) or a benchmark swaps the
+  household's chat model out and the next question waits out a reload (24 s on 2026-11-15). With
+  `PROXY_HOME_MODEL` set (in `.env`; empty = off), `home_model_return_loop` loads it back once the
+  server has been quiet for `PROXY_HOME_MODEL_RETURN_S` (60) - or 30 min after benchmark traffic
+  (`X-Request-Source` containing "benchmark"), so a run is not made to swap back and forth. It never
+  loads into an empty card, over requests in flight, during an image generation or a settings scan.
+
 ### llama.cpp Preset Keys (models.ini)
 - `llama-server --models-preset` **rejects keys that are not its own arguments and the
   container then crash-loops.** `web/app.py` holds `LLAMA_PRESET_KEYS`; `split_preset_settings()`

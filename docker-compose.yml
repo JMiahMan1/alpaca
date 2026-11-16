@@ -116,6 +116,11 @@ services:
       # (queue_timeout). A negative keep-alive means "forever" in
       # apply_keep_alive_policy().
       OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:--1}"
+      # The household's chat model, loaded back once the server has been quiet
+      # for PROXY_HOME_MODEL_RETURN_S after another model (vision, a benchmark)
+      # displaced it. Empty = off. See "home model" in alpaca-proxy.py.
+      PROXY_HOME_MODEL: "${PROXY_HOME_MODEL:-}"
+      PROXY_HOME_MODEL_RETURN_S: "${PROXY_HOME_MODEL_RETURN_S:-60}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

@@ -1940,12 +1940,18 @@ async def lifespan(app: FastAPI):
 
     # Start SD VRAM tracking background task
     sd_poll_task = asyncio.create_task(sd_vram_poll_loop())
+    home_task = asyncio.create_task(home_model_return_loop()) if HOME_MODEL else None
+    if HOME_MODEL:
+        logger.info(f"[home-model] {HOME_MODEL} returns after {HOME_MODEL_RETURN_S:.0f}s of quiet")
 
     yield
 
-    sd_poll_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await sd_poll_task
+    for task in (sd_poll_task, home_task):
+        if task is None:
+            continue
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     for task in list(model_unload_tasks.values()):
         task.cancel()
@@ -2092,6 +2098,8 @@ async def log_requests(request: Request, call_next):
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
+    if request.url.path in INFERENCE_PATHS:
+        note_inference_activity(source=request_source)
 
     if DEBUG_LOGGING or response.status_code >= 400:
         log_func = logger.error if response.status_code >= 400 else logger.info
@@ -6640,6 +6648,87 @@ async def restore_models_on_recovery():
         task.add_done_callback(handle_background_task_result)
     except Exception as e:
         logger.error(f"Failed to auto-load {last_model} on recovery: {e}")
+
+
+# --------------------------------------------------------------------------- home model
+#
+# The card holds one model at a time (max_loaded_models = 1), so a vision job (Guardian's
+# image check, OCR) or a benchmark swaps the household's chat model out, and the next
+# question then waits out a full reload: on 2026-11-15 a spoken question waited 24 s for it.
+# With PROXY_HOME_MODEL set, once the server has been quiet for PROXY_HOME_MODEL_RETURN_S
+# and some OTHER model holds the card, the home model is loaded back. It never loads into an
+# empty card (keep-alive expiry unloaded it on purpose), never while anything is in flight,
+# while an image is being generated, or while settings_scan.py owns models.ini.
+
+#: The household's chat model (a router id or public name). Read once, at start; unset = off.
+HOME_MODEL = os.getenv("PROXY_HOME_MODEL", "").strip()
+HOME_MODEL_RETURN_S = float(os.getenv("PROXY_HOME_MODEL_RETURN_S", "60"))
+HOME_MODEL_POLL_S = 15.0
+#: A benchmark pauses for minutes between calls (grading, sandbox runs); the home model waits
+#: this long after benchmark traffic, so a run is not made to swap models back and forth.
+HOME_MODEL_AFTER_BENCHMARK_S = float(os.getenv("PROXY_HOME_MODEL_AFTER_BENCHMARK_S", "1800"))
+#: Requests that run a model; their end is the last time the server was busy.
+INFERENCE_PATHS = frozenset({
+    "/api/chat", "/api/generate", "/api/embed", "/api/embeddings",
+    "/v1/chat/completions", "/v1/completions", "/v1/embeddings",
+})
+_last_inference_at = time.time()
+_last_inference_was_benchmark = False
+
+
+def note_inference_activity(now: float | None = None, source: str | None = None) -> None:
+    global _last_inference_at, _last_inference_was_benchmark
+    _last_inference_at = time.time() if now is None else now
+    if source is not None:
+        _last_inference_was_benchmark = "benchmark" in source
+
+
+async def _router_resident_ids() -> list[str]:
+    """Ids of the models the router has loaded or is loading (reads /models, which loads nothing)."""
+    if client_httpx is None:
+        return []
+    resp = await client_httpx.get(ROUTER_MODELS_URL, timeout=httpx.Timeout(3.0))
+    if resp.status_code != 200:
+        return []
+    return [m.get("id", "") for m in resp.json().get("data", [])
+            if router_entry_status(m) in ("loaded", "loading")]
+
+
+async def home_model_return_once(now: float | None = None) -> str:
+    """One check; returns what it decided (for the log and the tests)."""
+    if not HOME_MODEL:
+        return "off"
+    now = time.time() if now is None else now
+    if any(v > 0 for v in active_requests.values()):
+        return "busy"
+    quiet = HOME_MODEL_AFTER_BENCHMARK_S if _last_inference_was_benchmark else HOME_MODEL_RETURN_S
+    if now - _last_inference_at < quiet:
+        return "recent"
+    if sd_execution_lock.locked():
+        return "image"
+    if settings_scan_active():
+        return "scan"
+    home = (await resolve_router_model(HOME_MODEL, reload=False))["backend_model"]
+    resident = await _router_resident_ids()
+    if home in resident:
+        return "home"
+    if not resident:
+        return "empty"
+    logger.info(f"[home-model] {', '.join(resident)} displaced {home}; the server is quiet, loading it back")
+    await ensure_model(HOME_MODEL)
+    note_inference_activity()
+    return "returned"
+
+
+async def home_model_return_loop() -> None:
+    while True:
+        await asyncio.sleep(HOME_MODEL_POLL_S)
+        try:
+            await home_model_return_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # a failed check must not end the loop
+            logger.warning(f"[home-model] check failed: {exc}")
 
 
 async def wait_for_llama_server(timeout=300.0):
