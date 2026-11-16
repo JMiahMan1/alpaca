@@ -57,6 +57,10 @@ logger = logging.getLogger("audio_server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 IDLE_UNLOAD_S = int(os.getenv("AUDIO_IDLE_UNLOAD_S", "180"))
+#: How long Kokoro may sit idle before it is unloaded; 0 keeps it loaded. Jarvis speaks every
+#: voice reply here, and a cold load costs ~15 s, so its host sets 0. Kokoro holds well under
+#: 1 GB. The OpenVoice cloner still leaves after IDLE_UNLOAD_S.
+TTS_IDLE_UNLOAD_S = int(os.getenv("AUDIO_TTS_IDLE_UNLOAD_S", str(IDLE_UNLOAD_S)))
 DEVICE = os.getenv("AUDIO_DEVICE", "cuda")
 TTS_MODEL_ID = os.getenv("TTS_MODEL_ID", "hexgrad/Kokoro-82M")
 MUSIC_MODEL_ID = os.getenv("MUSIC_MODEL_ID", "facebook/musicgen-small")
@@ -255,9 +259,15 @@ async def _idle_unload_once() -> None:
     now = time.time()
     for name in ("tts", "music"):
         active = _state[name] is not None or (name == "tts" and voice_clone.loaded())
-        if active and now - _state["last_used"][name] > IDLE_UNLOAD_S:  # type: ignore[index]
-            logger.info(f"[audio] idle timeout ({IDLE_UNLOAD_S}s) -> unloading {name}")
+        limit = TTS_IDLE_UNLOAD_S if name == "tts" else IDLE_UNLOAD_S
+        idle = now - _state["last_used"][name]  # type: ignore[index]
+        if active and limit > 0 and idle > limit:
+            logger.info(f"[audio] idle timeout ({limit}s) -> unloading {name}")
             await _unload_model(name)
+        elif name == "tts" and voice_clone.loaded() and idle > IDLE_UNLOAD_S:
+            # Kokoro stays; the much larger cloner does not.
+            voice_clone.unload()
+            logger.info(f"[audio] idle timeout ({IDLE_UNLOAD_S}s) -> unloaded the voice cloner, kept kokoro")
     if (
         _state.get("music_cpu") is not None
         and not _state.get("music_busy")

@@ -350,6 +350,9 @@ services:
       # and idle models are unloaded after this many seconds so llama-server
       # gets its VRAM back on an 8 GB card.
       - AUDIO_IDLE_UNLOAD_S=180
+      # Kokoro alone (well under 1 GB) stays loaded: Jarvis speaks every voice
+      # reply here, and a cold load costs ~15 s. 0 = never unload it.
+      - AUDIO_TTS_IDLE_UNLOAD_S=${AUDIO_TTS_IDLE_UNLOAD_S:-0}
       - AUDIO_DEVICE=cuda
       - TTS_MODEL_ID=hexgrad/Kokoro-82M
       - MUSIC_MODEL_ID=facebook/musicgen-small

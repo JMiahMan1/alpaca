@@ -1114,3 +1114,31 @@ def test_the_idle_unloader_survives_a_failed_sweep(monkeypatch):
     with pytest.raises(_Stop):
         asyncio.run(audio._idle_unloader())
     assert calls["sweep"] == 2
+
+
+@pytest.mark.asyncio
+async def test_kokoro_kept_loaded_when_its_idle_limit_is_zero_but_the_cloner_still_leaves(monkeypatch):
+    monkeypatch.setattr(audio, "TTS_IDLE_UNLOAD_S", 0)
+    monkeypatch.setattr(audio, "IDLE_UNLOAD_S", 180)
+    audio._state["tts"] = object()
+    audio._state["music"] = None
+    audio._state["last_used"]["tts"] = 0.0
+    unloaded, cloner = [], []
+    monkeypatch.setattr(audio, "_unload_model", AsyncMock(side_effect=lambda n: unloaded.append(n)))
+    monkeypatch.setattr(audio.voice_clone, "loaded", lambda: True)
+    monkeypatch.setattr(audio.voice_clone, "unload", lambda: cloner.append(True))
+    await audio._idle_unload_once()
+    assert unloaded == [] and cloner == [True]
+
+
+@pytest.mark.asyncio
+async def test_kokoro_unloads_after_its_own_idle_limit(monkeypatch):
+    monkeypatch.setattr(audio, "TTS_IDLE_UNLOAD_S", 60)
+    audio._state["tts"] = object()
+    audio._state["music"] = None
+    audio._state["last_used"]["tts"] = 0.0
+    unloaded = []
+    monkeypatch.setattr(audio, "_unload_model", AsyncMock(side_effect=lambda n: unloaded.append(n)))
+    monkeypatch.setattr(audio.voice_clone, "loaded", lambda: False)
+    await audio._idle_unload_once()
+    assert unloaded == ["tts"]
