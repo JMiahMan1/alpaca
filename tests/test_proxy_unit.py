@@ -3924,10 +3924,7 @@ def test_only_the_latest_system_prompt_of_each_model_is_kept(keeper):
 async def test_proxy_multi_gpu_telemetry_and_co_resident_sd_flag(monkeypatch):
     async def fake_exec(*args, **_kwargs):
         q = " ".join(args)
-        if "temperature.gpu" in q:
-            out = b"42\n68\n"
-        else:
-            out = b"8188, 4000, 4188\n16384, 8000, 8384\n"
+        out = b"42\n68\n" if "temperature.gpu" in q else b"8188, 4000, 4188\n16384, 8000, 8384\n"
 
         class Proc:
             returncode = 0
