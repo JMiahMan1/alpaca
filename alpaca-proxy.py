@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.request
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
@@ -1943,10 +1943,11 @@ async def lifespan(app: FastAPI):
     home_task = asyncio.create_task(home_model_return_loop()) if HOME_MODEL else None
     if HOME_MODEL:
         logger.info(f"[home-model] {HOME_MODEL} returns after {HOME_MODEL_RETURN_S:.0f}s of quiet")
+    keeper_task = asyncio.create_task(prompt_keeper_loop()) if PROMPT_KEEPER else None
 
     yield
 
-    for task in (sd_poll_task, home_task):
+    for task in (sd_poll_task, home_task, keeper_task):
         if task is None:
             continue
         task.cancel()
@@ -2100,6 +2101,8 @@ async def log_requests(request: Request, call_next):
     duration = time.time() - start_time
     if request.url.path in INFERENCE_PATHS:
         note_inference_activity(source=request_source)
+        if not is_prompt_keeper_request(request):
+            mark_kept_prompts_stale()
 
     if DEBUG_LOGGING or response.status_code >= 400:
         log_func = logger.error if response.status_code >= 400 else logger.info
@@ -2481,6 +2484,7 @@ async def openai_chat_completions(request: Request):
     global client_httpx
     body = await request.json()
     apply_thinking_to_body(body, getattr(request.state, "request_source", None))
+    note_long_system_prompt("/v1/chat/completions", body, request)
     started_ns = now_ns()
     model_name = body.get("model", "")
     online_rejection = _online_model_rejection(model_name)
@@ -6731,6 +6735,135 @@ async def home_model_return_loop() -> None:
             logger.warning(f"[home-model] check failed: {exc}")
 
 
+# ---------------------------------------------------------------- prompt keeper
+# Hybrid models (kat-coder, qwen3.5/3.6: recurrent layers with full attention every
+# few layers) cannot reuse an arbitrary cached prefix: llama-server can only roll a
+# slot back to a saved context checkpoint at or before the point where the new prompt
+# differs, and it leaves one checkpoint near the end of each prompt. A new voice
+# question shares its long fixed system prompt (persona + tool guide, ~3,800 tokens)
+# with the last one but not the time, the retrieved context or the question, so that
+# checkpoint lies past the shared part and the whole prompt was read again: 27 s per
+# spoken question on 2026-11-17 (4,700 tokens at 180 tok/s).
+#
+# The keeper replays a recently seen long system prompt with a one-character
+# question once the server is quiet. Its checkpoint lands just before the end of the
+# system prompt, so the next question rolls back to it and reads only its own part
+# (measured: 27 s -> about 7 s). The replay is the caller's own request (same path,
+# model, options, thinking and request source), so it renders the same tokens. It is
+# skipped while anything runs, never loads a model, and saves no conversation file.
+# llama-server needs ``checkpoint-min-step`` well under the prompt's length (512 in
+# models.ini) or the replay's checkpoint is not created next to an older one.
+
+#: Off with PROXY_PROMPT_KEEPER=0. Read once, at start.
+PROMPT_KEEPER = os.getenv("PROXY_PROMPT_KEEPER", "1").strip() != "0"
+#: Only system prompts this long are worth a slot checkpoint.
+PROMPT_KEEPER_MIN_CHARS = int(os.getenv("PROXY_PROMPT_KEEPER_MIN_CHARS", "6000"))
+#: Quiet needed before a replay, so it never delays a question in a conversation.
+PROMPT_KEEPER_IDLE_S = float(os.getenv("PROXY_PROMPT_KEEPER_IDLE_S", "8"))
+PROMPT_KEEPER_POLL_S = 5.0
+PROMPT_KEEPER_MAX = 3
+#: Marks the keeper's own replays (not counted as work that needs a re-warm).
+PROMPT_KEEPER_HEADER = "x-alpaca-prompt-keeper"
+_kept_prompts: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def is_prompt_keeper_request(request) -> bool:
+    return bool(request.headers.get(PROMPT_KEEPER_HEADER))
+
+
+def mark_kept_prompts_stale() -> None:
+    """Other model work may have replaced the slot's checkpoints: re-warm once quiet."""
+    for entry in _kept_prompts.values():
+        entry["stale"] = True
+
+
+def note_long_system_prompt(path: str, body: dict, request) -> None:
+    """Remember a chat request's long system prompt (as sent, after the proxy's own changes)."""
+    if not PROMPT_KEEPER or is_prompt_keeper_request(request):
+        return
+    messages = body.get("messages") or []
+    first = messages[0] if messages and isinstance(messages[0], dict) else {}
+    text = first.get("content") if first.get("role") == "system" else None
+    if not isinstance(text, str) or len(text) < PROMPT_KEEPER_MIN_CHARS:
+        return
+    import hashlib
+
+    model = str(body.get("model") or "")
+    key = hashlib.sha256(f"{path}\0{model}\0{text}".encode()).hexdigest()[:16]
+    replay = {k: v for k, v in body.items() if k not in ("messages", "stream")}
+    replay["messages"] = [first, {"role": "user", "content": "."}]
+    replay["stream"] = False
+    if path == "/api/chat":
+        replay["options"] = {**(body.get("options") or {}), "num_predict": 1}
+    else:
+        replay.pop("max_completion_tokens", None)
+        replay["max_tokens"] = 1
+    _kept_prompts[key] = {
+        "path": path,
+        "model": model,
+        "chars": len(text),
+        "source": str(getattr(request.state, "request_source", "") or ""),
+        "body": replay,
+        "stale": True,
+    }
+    _kept_prompts.move_to_end(key)
+    while len(_kept_prompts) > PROMPT_KEEPER_MAX:
+        _kept_prompts.popitem(last=False)
+
+
+async def prompt_keeper_once(now: float | None = None) -> str:
+    """One check; returns what it decided (for the log and the tests)."""
+    if not PROMPT_KEEPER or not _kept_prompts:
+        return "nothing"
+    now = time.time() if now is None else now
+    if any(v > 0 for v in active_requests.values()):
+        return "busy"
+    if now - _last_inference_at < PROMPT_KEEPER_IDLE_S:
+        return "recent"
+    if sd_execution_lock.locked():
+        return "image"
+    if settings_scan_active():
+        return "scan"
+    stale = [key for key in reversed(_kept_prompts) if _kept_prompts[key]["stale"]]
+    if not stale:
+        return "warm"
+    resident = await _router_resident_ids()
+    for key in stale:
+        entry = _kept_prompts[key]
+        backend = (await resolve_router_model(entry["model"], reload=False))["backend_model"]
+        if backend not in resident:
+            continue  # never load a model just to warm it; the next request marks it again
+        headers = {PROMPT_KEEPER_HEADER: "1"}
+        if entry["source"]:
+            headers["x-request-source"] = entry["source"]
+        started = time.time()
+        resp = await client_httpx.post(
+            f"http://127.0.0.1:11434{entry['path']}", json=entry["body"], headers=headers,
+            timeout=httpx.Timeout(180.0),
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[prompt-keeper] replay for {entry['model']} answered HTTP {resp.status_code}")
+            return "failed"
+        entry["stale"] = False
+        logger.info(
+            f"[prompt-keeper] kept a {entry['chars']}-character system prompt warm for {entry['model']} "
+            f"({time.time() - started:.1f}s)"
+        )
+        return "warmed"
+    return "not-loaded"
+
+
+async def prompt_keeper_loop() -> None:
+    while True:
+        await asyncio.sleep(PROMPT_KEEPER_POLL_S)
+        try:
+            await prompt_keeper_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # a failed replay must not end the loop
+            logger.warning(f"[prompt-keeper] check failed: {exc}")
+
+
 async def wait_for_llama_server(timeout=300.0):
     start_time = time.time()
     logger.info("Waiting for llama-server to become responsive...")
@@ -8817,6 +8950,10 @@ def prune_slots_cache(max_files: int = 15):
 async def chat(request: Request):
     body = await request.json()
     apply_voice_thinking_default(body, request.state)
+    note_long_system_prompt("/api/chat", body, request)
+    # The keeper's replay leaves its checkpoint in the slot; a conversation file of a
+    # one-character question would only cost a few hundred MB of disk per replay.
+    keep_conversation = not is_prompt_keeper_request(request)
     model_name = body.get("model")
     online_rejection = _online_model_rejection(model_name)
     if online_rejection is not None:
@@ -9054,7 +9191,7 @@ async def chat(request: Request):
                         current_payload["messages"] = openai_messages(body.get("messages", []))
 
             # Save the new slot cache checkpoint
-            if full_response_content:
+            if full_response_content and keep_conversation:
                 new_messages = [*list(messages), {"role": "assistant", "content": full_response_content}]
                 new_prefix_hash = get_prefix_hash(model_name, new_messages, options=body.get("options"))
                 slot_id = await find_slot_for_request(resolved_backend, new_messages)
@@ -9208,7 +9345,7 @@ async def chat(request: Request):
         )
 
         # Save the new slot cache checkpoint
-        if client_message and client_message.get("content"):
+        if client_message and client_message.get("content") and keep_conversation:
             new_messages = [*list(messages), client_message]
             new_prefix_hash = get_prefix_hash(model_name, new_messages, options=body.get("options"))
             slot_id = await find_slot_for_request(resolved_backend, new_messages)

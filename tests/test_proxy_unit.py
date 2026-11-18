@@ -3788,3 +3788,126 @@ async def test_a_benchmark_gets_a_long_quiet_before_the_home_model_returns(home_
 async def test_no_home_model_means_the_feature_is_off(monkeypatch):
     monkeypatch.setattr(alpaca_proxy, "HOME_MODEL", "")
     assert await alpaca_proxy.home_model_return_once() == "off"
+
+
+# --------------------------------------------------------------------------- prompt keeper
+
+
+class _KeeperRequest:
+    """Just what the keeper reads from a request: its headers and its source."""
+
+    def __init__(self, keeper: bool = False, source: str = "shared-llm/app"):
+        self.headers = {alpaca_proxy.PROMPT_KEEPER_HEADER: "1"} if keeper else {}
+        self.state = type("State", (), {"request_source": source})()
+
+
+_LONG_SYSTEM = "You are Jarvis. " + "Tool guide line. " * 600
+
+
+@pytest.fixture
+def keeper(monkeypatch):
+    """The keeper on, the server quiet, the chat model resident, and replays recorded."""
+    state = {"resident": ["chat-model--latest"], "posts": []}
+    monkeypatch.setattr(alpaca_proxy, "PROMPT_KEEPER", True)
+    monkeypatch.setattr(alpaca_proxy, "_kept_prompts", alpaca_proxy.OrderedDict())
+    monkeypatch.setattr(alpaca_proxy, "active_requests", {})
+    monkeypatch.setattr(alpaca_proxy, "settings_scan_active", lambda: False)
+    monkeypatch.setattr(alpaca_proxy, "resolve_router_model",
+                        AsyncMock(return_value={"backend_model": "chat-model--latest"}))
+
+    async def resident():
+        return list(state["resident"])
+
+    class Client:
+        async def post(self, url, json=None, headers=None, timeout=None):
+            state["posts"].append({"url": url, "json": json, "headers": headers})
+            return type("Resp", (), {"status_code": 200})()
+
+    monkeypatch.setattr(alpaca_proxy, "_router_resident_ids", resident)
+    monkeypatch.setattr(alpaca_proxy, "client_httpx", Client())
+    alpaca_proxy.note_inference_activity(now=1000.0, source="shared-llm/app")
+    return state
+
+
+def _voice_question(minute: str) -> dict:
+    return {
+        "model": "chat-model", "stream": True, "think": False, "options": {"num_predict": 300, "temperature": 0.2},
+        "messages": [{"role": "system", "content": _LONG_SYSTEM},
+                     {"role": "user", "content": f"[Context] 8:{minute} PM\n[Question] lights on"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_long_system_prompt_is_replayed_once_the_server_is_quiet(keeper):
+    alpaca_proxy.note_long_system_prompt("/api/chat", _voice_question("01"), _KeeperRequest(source="voice/assistant"))
+    assert await alpaca_proxy.prompt_keeper_once(now=1003.0) == "recent"
+    assert await alpaca_proxy.prompt_keeper_once(now=1010.0) == "warmed"
+    [post] = keeper["posts"]
+    assert post["url"].endswith("/api/chat")
+    # The caller's own request, with a one-character question and one token to generate.
+    assert post["json"]["messages"] == [{"role": "system", "content": _LONG_SYSTEM}, {"role": "user", "content": "."}]
+    assert post["json"]["stream"] is False and post["json"]["think"] is False
+    assert post["json"]["options"] == {"num_predict": 1, "temperature": 0.2}
+    assert post["headers"] == {alpaca_proxy.PROMPT_KEEPER_HEADER: "1", "x-request-source": "voice/assistant"}
+    # Warm until other work runs.
+    assert await alpaca_proxy.prompt_keeper_once(now=1020.0) == "warm"
+    alpaca_proxy.mark_kept_prompts_stale()
+    assert await alpaca_proxy.prompt_keeper_once(now=1030.0) == "warmed"
+
+
+@pytest.mark.asyncio
+async def test_the_same_system_prompt_is_kept_once_and_short_ones_not_at_all(keeper):
+    alpaca_proxy.note_long_system_prompt("/api/chat", _voice_question("01"), _KeeperRequest())
+    alpaca_proxy.note_long_system_prompt("/api/chat", _voice_question("02"), _KeeperRequest())
+    short = {"model": "chat-model", "messages": [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}]}
+    alpaca_proxy.note_long_system_prompt("/api/chat", short, _KeeperRequest())
+    no_system = {"model": "chat-model", "messages": [{"role": "user", "content": _LONG_SYSTEM}]}
+    alpaca_proxy.note_long_system_prompt("/api/chat", no_system, _KeeperRequest())
+    assert len(alpaca_proxy._kept_prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_keepers_own_replay_is_not_recorded(keeper):
+    alpaca_proxy.note_long_system_prompt("/api/chat", _voice_question("01"), _KeeperRequest(keeper=True))
+    assert len(alpaca_proxy._kept_prompts) == 0
+    assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "nothing"
+
+
+@pytest.mark.asyncio
+async def test_an_openai_request_is_replayed_with_max_tokens(keeper):
+    body = {"model": "chat-model", "max_tokens": 400, "messages": _voice_question("01")["messages"]}
+    alpaca_proxy.note_long_system_prompt("/v1/chat/completions", body, _KeeperRequest())
+    assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "warmed"
+    assert keeper["posts"][0]["json"]["max_tokens"] == 1
+    assert keeper["posts"][0]["url"].endswith("/v1/chat/completions")
+
+
+@pytest.mark.asyncio
+async def test_the_keeper_waits_for_work_images_scans_and_never_loads_a_model(keeper, monkeypatch):
+    alpaca_proxy.note_long_system_prompt("/api/chat", _voice_question("01"), _KeeperRequest())
+    monkeypatch.setattr(alpaca_proxy, "active_requests", {"chat-model--latest": 1})
+    assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "busy"
+    monkeypatch.setattr(alpaca_proxy, "active_requests", {})
+    async with alpaca_proxy.sd_execution_lock:
+        assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "image"
+    monkeypatch.setattr(alpaca_proxy, "settings_scan_active", lambda: True)
+    assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "scan"
+    monkeypatch.setattr(alpaca_proxy, "settings_scan_active", lambda: False)
+    keeper["resident"] = ["qwen2.5-vl--7b"]  # another model holds the card
+    assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "not-loaded"
+    assert keeper["posts"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_keeper_can_be_switched_off(keeper, monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "PROMPT_KEEPER", False)
+    alpaca_proxy.note_long_system_prompt("/api/chat", _voice_question("01"), _KeeperRequest())
+    assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "nothing"
+
+
+def test_only_a_few_system_prompts_are_kept(keeper):
+    for i in range(alpaca_proxy.PROMPT_KEEPER_MAX + 2):
+        body = _voice_question("01")
+        body["messages"][0] = {"role": "system", "content": f"{i} " + _LONG_SYSTEM}
+        alpaca_proxy.note_long_system_prompt("/api/chat", body, _KeeperRequest())
+    assert len(alpaca_proxy._kept_prompts) == alpaca_proxy.PROMPT_KEEPER_MAX

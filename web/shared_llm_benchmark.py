@@ -161,6 +161,7 @@ _CANONICAL_TOOLS = {
     "calendarrequest",
     "noterequest",
     "timerrequest",
+    "todolistrequest",
     "talkrequest",
     "websearchrequest",
     "webreadrequest",

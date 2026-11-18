@@ -314,6 +314,25 @@ every config tried ("Settings Scan Results").
   (`X-Request-Source` containing "benchmark"), so a run is not made to swap back and forth. It never
   loads into an empty card, over requests in flight, during an image generation or a settings scan.
 
+### Prompt keeper (`PROXY_PROMPT_KEEPER`, on by default)
+- **Why:** kat-coder and the qwen3.5/3.6 MoEs are hybrid (recurrent layers), so llama-server cannot reuse an
+  arbitrary cached prefix: it rolls a slot back only to a saved context checkpoint at or before the first token
+  that differs, and it leaves one checkpoint near the end of each prompt. Jarvis's voice questions share a long
+  fixed system prompt (persona + tool guide, ~3,800 tokens) but not the rest, so every spoken question re-read
+  the whole prompt: 27 s on 2026-11-17 (4,700 tokens at 180 tok/s).
+- **What:** the chat handlers remember the last `PROMPT_KEEPER_MAX` (3) system prompts of at least
+  `PROXY_PROMPT_KEEPER_MIN_CHARS` (6000) characters, as sent (after the proxy's thinking defaults). Any other
+  inference marks them stale; once the server has been quiet for `PROXY_PROMPT_KEEPER_IDLE_S` (8 s) the keeper
+  replays the caller's own request with the question "." and one token, through the proxy itself (header
+  `x-alpaca-prompt-keeper`, the caller's request source). Its checkpoint lands just before the end of the system
+  prompt, so the next question reads only its own part: measured 27 s -> about 7 s. It never loads a model,
+  waits for work in flight, images and settings scans, and saves no conversation file for its replay.
+- **Needs in models.ini** for the model it serves: `checkpoint-min-step = 512` (the default 8192 refuses a new
+  checkpoint near an older one, so the replay's checkpoint is never made) and `ctx-checkpoints = 8` (every
+  conversation file holds all of a slot's checkpoints, ~63 MiB each for kat-coder; 16 made 650 MB files).
+- **The caller's side:** the system message must be the same for every question. SharedLLM sends the time, the
+  speaker, the voice satellite's note and the retrieved context with the question, not in the system message.
+
 ### llama.cpp Preset Keys (models.ini)
 - `llama-server --models-preset` **rejects keys that are not its own arguments and the
   container then crash-loops.** `web/app.py` holds `LLAMA_PRESET_KEYS`; `split_preset_settings()`
