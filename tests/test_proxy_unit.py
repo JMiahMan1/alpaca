@@ -3905,9 +3905,16 @@ async def test_the_keeper_can_be_switched_off(keeper, monkeypatch):
     assert await alpaca_proxy.prompt_keeper_once(now=1100.0) == "nothing"
 
 
-def test_only_a_few_system_prompts_are_kept(keeper):
+def test_only_the_latest_system_prompt_of_each_model_is_kept(keeper):
+    first = _voice_question("01")
+    alpaca_proxy.note_long_system_prompt("/api/chat", first, _KeeperRequest())
+    newer = _voice_question("02")
+    newer["messages"][0] = {"role": "system", "content": "Another persona. " + _LONG_SYSTEM}
+    alpaca_proxy.note_long_system_prompt("/api/chat", newer, _KeeperRequest())
+    [entry] = alpaca_proxy._kept_prompts.values()
+    assert entry["body"]["messages"][0]["content"].startswith("Another persona.")
     for i in range(alpaca_proxy.PROMPT_KEEPER_MAX + 2):
         body = _voice_question("01")
-        body["messages"][0] = {"role": "system", "content": f"{i} " + _LONG_SYSTEM}
+        body["model"] = f"model-{i}"
         alpaca_proxy.note_long_system_prompt("/api/chat", body, _KeeperRequest())
     assert len(alpaca_proxy._kept_prompts) == alpaca_proxy.PROMPT_KEEPER_MAX

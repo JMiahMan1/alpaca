@@ -6756,11 +6756,12 @@ async def home_model_return_loop() -> None:
 
 #: Off with PROXY_PROMPT_KEEPER=0. Read once, at start.
 PROMPT_KEEPER = os.getenv("PROXY_PROMPT_KEEPER", "1").strip() != "0"
-#: Only system prompts this long are worth a slot checkpoint.
+#: Only system prompts this long are worth a slot checkpoint. One is kept per model.
 PROMPT_KEEPER_MIN_CHARS = int(os.getenv("PROXY_PROMPT_KEEPER_MIN_CHARS", "6000"))
 #: Quiet needed before a replay, so it never delays a question in a conversation.
 PROMPT_KEEPER_IDLE_S = float(os.getenv("PROXY_PROMPT_KEEPER_IDLE_S", "8"))
 PROMPT_KEEPER_POLL_S = 5.0
+#: Models whose latest long system prompt is kept.
 PROMPT_KEEPER_MAX = 3
 #: Marks the keeper's own replays (not counted as work that needs a re-warm).
 PROMPT_KEEPER_HEADER = "x-alpaca-prompt-keeper"
@@ -6789,7 +6790,13 @@ def note_long_system_prompt(path: str, body: dict, request) -> None:
     import hashlib
 
     model = str(body.get("model") or "")
-    key = hashlib.sha256(f"{path}\0{model}\0{text}".encode()).hexdigest()[:16]
+    # One prompt per model: the most recent. Two prompts take turns in the same slot,
+    # and warming one throws away the other's checkpoint (measured: a replay of an
+    # older prompt undid the voice prompt's warm-up seconds after it was made).
+    key = hashlib.sha256(model.encode()).hexdigest()[:16]
+    if key in _kept_prompts and _kept_prompts[key]["text_hash"] == hashlib.sha256(text.encode()).hexdigest():
+        _kept_prompts.move_to_end(key)
+        return
     replay = {k: v for k, v in body.items() if k not in ("messages", "stream")}
     replay["messages"] = [first, {"role": "user", "content": "."}]
     replay["stream"] = False
@@ -6802,6 +6809,7 @@ def note_long_system_prompt(path: str, body: dict, request) -> None:
         "path": path,
         "model": model,
         "chars": len(text),
+        "text_hash": hashlib.sha256(text.encode()).hexdigest(),
         "source": str(getattr(request.state, "request_source", "") or ""),
         "body": replay,
         "stale": True,

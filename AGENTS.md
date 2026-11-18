@@ -320,8 +320,9 @@ every config tried ("Settings Scan Results").
   that differs, and it leaves one checkpoint near the end of each prompt. Jarvis's voice questions share a long
   fixed system prompt (persona + tool guide, ~3,800 tokens) but not the rest, so every spoken question re-read
   the whole prompt: 27 s on 2026-11-17 (4,700 tokens at 180 tok/s).
-- **What:** the chat handlers remember the last `PROMPT_KEEPER_MAX` (3) system prompts of at least
-  `PROXY_PROMPT_KEEPER_MIN_CHARS` (6000) characters, as sent (after the proxy's thinking defaults). Any other
+- **What:** the chat handlers remember, per model, the latest system prompt of at least
+  `PROXY_PROMPT_KEEPER_MIN_CHARS` (6000) characters, as sent (after the proxy's thinking defaults). Only one per
+  model: two prompts take turns in the same slot, and warming one throws away the other's checkpoint. Any other
   inference marks them stale; once the server has been quiet for `PROXY_PROMPT_KEEPER_IDLE_S` (8 s) the keeper
   replays the caller's own request with the question "." and one token, through the proxy itself (header
   `x-alpaca-prompt-keeper`, the caller's request source). Its checkpoint lands just before the end of the system
