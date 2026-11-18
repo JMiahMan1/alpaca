@@ -40,11 +40,13 @@ alpaca_proxy.find_slot_for_request = AsyncMock(return_value=0)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_router_models_dir():
-    """Restore ROUTER_MODELS_DIR and SD config readers after every test."""
+def _isolate_router_models_dir(tmp_path, monkeypatch):
+    """Restore ROUTER_MODELS_DIR and isolate proxy persistence files per test."""
     saved_dir = alpaca_proxy.ROUTER_MODELS_DIR
     saved_active = alpaca_proxy.get_active_model_config
     saved_last = alpaca_proxy.get_last_model_config
+    monkeypatch.setattr(alpaca_proxy, "_COMPLETED_REQUESTS_PATH", str(tmp_path / "completed_requests.json"))
+    monkeypatch.setattr(alpaca_proxy, "MODEL_ERRORS_FILE", str(tmp_path / "model_errors.jsonl"))
     yield
     alpaca_proxy.ROUTER_MODELS_DIR = saved_dir
     alpaca_proxy.get_active_model_config = saved_active
@@ -3944,3 +3946,17 @@ async def test_proxy_multi_gpu_telemetry_and_co_resident_sd_flag(monkeypatch):
     monkeypatch.setattr(alpaca_proxy, "PROXY_CO_RESIDENT_SD", True)
     await alpaca_proxy.ensure_sd_unloaded()
     unload_called.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_root_status_and_sse_line_parser():
+    resp = await alpaca_proxy.root_status()
+    assert resp.status_code == 200
+    assert resp.body == b"Ollama is running"
+
+    assert alpaca_proxy._parse_sse_json_line("") is None
+    assert alpaca_proxy._parse_sse_json_line(": keepalive") is None
+    assert alpaca_proxy._parse_sse_json_line("event: message") is None
+    assert alpaca_proxy._parse_sse_json_line("data: ") is None
+    assert alpaca_proxy._parse_sse_json_line("data: [DONE]") is None
+    assert alpaca_proxy._parse_sse_json_line('data: {"choices": []}') == {"choices": []}

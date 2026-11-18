@@ -371,6 +371,37 @@ def settings_scan_active(router_dir: Path) -> bool:
         return False
 
 
+# Profile overlay keys consumed by the proxy/web/SD harnesses rather than
+# llama-server's --models-preset parser (which rejects unknown keys and crash-loops).
+_HARNESS_ONLY_PROFILE_KEYS = frozenset(
+    {
+        "model",
+        "thinking",
+        "think",
+        "reasoning-mode",
+        "model_family",
+        "extra_args",
+        "extra-args",
+        "vae",
+        "clip_l",
+        "t5xxl",
+        "llm",
+        "llm_vision",
+        "llm-vision",
+        "llm_vision_path",
+        "gpu_layers",
+        "n_gpu_layers",
+        "n_cpu_moe",
+        "mlock",
+        "no-mmap",
+    }
+)
+
+
+def _is_harness_only_profile_key(key: str) -> bool:
+    return key in _HARNESS_ONLY_PROFILE_KEYS or key.startswith("bench-verified")
+
+
 def update_models_ini():
     """Scan all GGUF models in the router directory and regenerate models.ini."""
     router_dir = Path(ROUTER_MODELS_DIR)
@@ -465,7 +496,11 @@ def update_models_ini():
                     # link we cannot follow from here keeps its existing section.
                     if existing_ini.has_section(entry.stem):
                         content.append(f"[{entry.stem}]")
-                        content.extend(f"{k} = {v}" for k, v in existing_ini[entry.stem].items())
+                        content.extend(
+                            f"{k} = {v}"
+                            for k, v in existing_ini[entry.stem].items()
+                            if not _is_harness_only_profile_key(k)
+                        )
                         content.append("")
                         kept_unresolved.append(entry.stem)
                     continue
@@ -603,20 +638,16 @@ def update_models_ini():
                     model_settings["spec-draft-n-max"] = "0"
 
                 if profile:
-                    # Sanitize legacy keys the current llama-server preset
-                    # parser hard-fails on: --mlock/--no-mmap were removed in
-                    # favor of --load-mode, and bench-verified* moved to the
-                    # .alpaca-router/bench-verified.json sidecar.
-                    drop_keys = {"mlock", "no-mmap"}
+                    # Strip harness-only overlay keys (thinking, SD paths,
+                    # bench-verified*, legacy mlock/no-mmap) that llama-server's
+                    # --models-preset parser rejects and crash-loops on.
                     unpin = False
                     for k, v in profile.items():
-                        if k == "model":
-                            continue
-                        if k in drop_keys:
+                        if k in ("mlock", "no-mmap"):
                             if str(v).lower() == "false":
                                 unpin = True
                             continue
-                        if k.startswith("bench-verified"):
+                        if _is_harness_only_profile_key(k):
                             continue
                         model_settings[k] = str(v)
                     if unpin and "load-mode" not in model_settings:

@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 # Precise logging setup with memory buffer
 LOG_BUFFER = deque(maxlen=1000)
@@ -5162,6 +5162,12 @@ async def admin_sd_unload():
 
 
 # Management API
+@app.get("/")
+async def root_status():
+    """Ollama-compatible root probe (clients such as SharedLLM poll GET /)."""
+    return PlainTextResponse("Ollama is running")
+
+
 @app.get("/health")
 @app.get("/healthz")
 async def health_check():
@@ -8968,6 +8974,20 @@ def prune_slots_cache(max_files: int = 15):
         logger.warning(f"Error pruning slots cache: {e}")
 
 
+def _parse_sse_json_line(raw_line: str) -> dict | None:
+    """Parse one SSE/NDJSON line from llama-server, ignoring keepalives and [DONE]."""
+    line = raw_line.strip()
+    if not line or line.startswith(":") or "[DONE]" in line:
+        return None
+    if line.startswith("data:"):
+        line = line[5:].strip()
+        if not line or "[DONE]" in line:
+            return None
+    elif line.startswith(("event:", "id:", "retry:")):
+        return None
+    return json.loads(line)
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()
@@ -9097,12 +9117,10 @@ async def chat(request: Request):
                         resp.raise_for_status()
                         in_thinking = False
                         async for line in resp.aiter_lines():
-                            if not line or "[DONE]" in line:
-                                continue
-                            if line.startswith("data: "):
-                                line = line[6:]
                             try:
-                                data = json.loads(line)
+                                data = _parse_sse_json_line(line)
+                                if data is None:
+                                    continue
                                 choice = (data.get("choices") or [{}])[0]
                                 message = chat_message_from_choice(choice)
                                 if message:
@@ -9497,12 +9515,10 @@ async def generate(request: Request):
                         resp.raise_for_status()
                         in_thinking = False
                         async for line in resp.aiter_lines():
-                            if not line or "[DONE]" in line:
-                                continue
-                            if line.startswith("data: "):
-                                line = line[6:]
                             try:
-                                data = json.loads(line)
+                                data = _parse_sse_json_line(line)
+                                if data is None:
+                                    continue
                                 response_chunk = ""
                                 thinking_chunk = None
                                 if use_chat_backend:

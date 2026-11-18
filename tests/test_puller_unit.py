@@ -447,3 +447,27 @@ def test_update_models_ini_skips_while_a_settings_scan_owns_it(monkeypatch, tmp_
     assert "[scanning--latest]" in ini.read_text()  # untouched
     os.utime(router / ".settings-scan.lock", (1, 1))  # stale: a crashed scan
     assert alpaca_puller.update_models_ini() is not False
+
+
+def test_update_models_ini_never_writes_thinking_from_profile_json(monkeypatch, tmp_path):
+    """Regression: profile overlays store harness-only keys like `thinking`;
+    writing them into models.ini makes llama-server reject presets with 500."""
+    router = tmp_path / "router"
+    router.mkdir()
+    blob = tmp_path / "model.gguf"
+    blob.write_bytes(b"NOTGGUF")
+    (router / "lfm2.5--q4.gguf").symlink_to(blob)
+    (router / "lfm2.5--q4.profile.json").write_text(
+        json.dumps({"ctx-size": "65536", "cache-reuse": "256", "thinking": "true", "extra_args": "--foo"})
+    )
+    monkeypatch.setattr(alpaca_puller, "ROUTER_MODELS_DIR", str(router))
+    alpaca_puller.update_models_ini()
+
+    import configparser
+
+    cp = configparser.ConfigParser(delimiters=("=",))
+    cp.read(router / "models.ini")
+    assert cp.has_section("lfm2.5--q4")
+    assert cp["lfm2.5--q4"]["ctx-size"] == "65536"
+    assert "thinking" not in cp["lfm2.5--q4"]
+    assert "extra_args" not in cp["lfm2.5--q4"]
