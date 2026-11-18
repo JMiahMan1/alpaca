@@ -13,7 +13,7 @@ Alpaca is an LLM model management, benchmarking, and telemetry dashboard for loc
 - **Web dashboard** with SocketIO for live status updates, an arcade, and a sandbox
 
 ## Architecture & Services (Docker Compose)
-The project runs 7 Docker services defined in `docker-compose.yml`:
+The project's main Docker services, defined in `docker-compose.yml`:
 
 | Service | Image | Role | Network | Port |
 |---------|-------|------|---------|------|
@@ -24,6 +24,7 @@ The project runs 7 Docker services defined in `docker-compose.yml`:
 | `alpaca-web` | `Dockerfile.web` (Flask/SocketIO) | Web dashboard, benchmark runner, podcast mixing | Compose network | 5000 |
 | `alpaca-telemetry` | `Dockerfile.proxy` (async daemon) | Polls metrics, writes telemetry logs | Compose network | - |
 | `alpaca-indexer` | `Dockerfile.proxy` (one-shot) | Model reindexing at startup | Compose network | - |
+| `whisper` | `rhasspy/wyoming-whisper` (CPU) | Speech-to-text for Jarvis's voice (SharedLLM tries it before the server's own Whisper) | Compose network | 10300 |
 
 **Which files need a rebuild, not a restart:** `web/`, `llm_benchmark_suite.py`, `online_providers.py`,
 `analyzer.py`, `sandbox_exec.py`, `benchmark_tests.json`, `manuscript_rubric.py`, `alpaca-puller.py`

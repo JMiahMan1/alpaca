@@ -383,6 +383,30 @@ services:
               count: all
               capabilities: [gpu]
 
+  whisper:
+    # Speech-to-text for Jarvis's voice on this machine's CPU (no GPU: the card is
+    # full with the chat model). SharedLLM's execution proxy tries this first
+    # (VOICE_STT_UPSTREAM=<this host>:10300,127.0.0.1:10300) and falls back to the
+    # server's own Whisper. Same image, model and settings as the server's; Whisper
+    # small takes 1.4 s here against 3.1 s on the server's N150 (2026-11-18).
+    image: rhasspy/wyoming-whisper:3.8.1
+    container_name: alpaca-whisper
+    restart: unless-stopped
+    ports:
+      - "10300:10300"
+    environment:
+      - TZ=${TZ:-UTC}
+    command:
+      - --uri=tcp://0.0.0.0:10300
+      - --model=${WHISPER_MODEL:-small-int8}
+      - --language=${WHISPER_LANGUAGE:-en}
+      - --beam-size=${WHISPER_BEAM_SIZE:-2}
+      # 8 of the 16 threads: the chat model keeps MoE experts on this CPU too.
+      - --cpu-threads=${WHISPER_CPU_THREADS:-8}
+      - --data-dir=/data
+    volumes:
+      - ./data/whisper:/data
+
 volumes:
   audio-models:
   audio-voices:
