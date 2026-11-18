@@ -52,6 +52,7 @@ services:
       - ./llama-server-entrypoint.sh:/scripts/llama-server-entrypoint.sh:ro
     environment:
       TZ: ${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
       # Reasoning-budget control for reasoning models (Qwen3 MoE etc.).
       # --reasoning-budget is a llama.cpp server-startup flag (NOT per-request):
       # it caps the thinking phase so the model cannot spend the whole
@@ -116,6 +117,8 @@ services:
       # (queue_timeout). A negative keep-alive means "forever" in
       # apply_keep_alive_policy().
       OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:--1}"
+      MAX_LOADED_MODELS: "${MAX_LOADED_MODELS:-1}"
+      PROXY_CO_RESIDENT_SD: "${PROXY_CO_RESIDENT_SD:-false}"
       # The household's chat model, loaded back once the server has been quiet
       # for PROXY_HOME_MODEL_RETURN_S after another model (vision, a benchmark)
       # displaced it. Empty = off. See "home model" in alpaca-proxy.py.
@@ -265,6 +268,7 @@ services:
       - "8081:8081"
     environment:
       - TZ=${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       # Cap sd.cpp CPU threads so CPU-bound diffusion doesn't peg every core
       # and thermally shut down weak-cooled hosts. Tune to your thermals.
       - SD_CPU_THREADS=6
@@ -351,6 +355,7 @@ services:
       - "8082:8082"
     environment:
       - TZ=${TZ:-UTC}  # host zone from .env, so timestamps are local, not UTC
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       # Models load lazily on first request; the OTHER model is evicted first
       # and idle models are unloaded after this many seconds so llama-server
       # gets its VRAM back on an 8 GB card.

@@ -147,18 +147,29 @@ def thermal_exceeded(temps: dict) -> tuple[bool, str]:
     return False, ""
 
 
-def gpu_temp_c() -> int | None:
+def _nvidia_smi_ints(field: str) -> list[int]:
+    """Query one integer field per GPU from nvidia-smi, returning [] on failure."""
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
-        return int(out.stdout.strip().splitlines()[0])
+        vals: list[int] = []
+        for line in out.stdout.splitlines():
+            tok = line.strip().split()
+            if tok:
+                vals.append(int(tok[0]))
+        return vals
     except Exception:
-        return None
+        return []
+
+
+def gpu_temp_c() -> int | None:
+    vals = _nvidia_smi_ints("temperature.gpu")
+    return max(vals) if vals else None
 
 
 # Share of a MoE layer's weights that are expert FFNs (Qwen3-30B-A3B class:
@@ -489,30 +500,24 @@ def _gguf_skip_value(f, vt: int) -> bool:
         return False
 
 
-def vram_mb():
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return int(out.stdout.strip().split()[0])
-    except Exception:
-        return 0
+def gpu_vram_totals_mb() -> list[int]:
+    """Per-GPU total VRAM in MiB as reported by nvidia-smi."""
+    return _nvidia_smi_ints("memory.total")
 
 
-def vram_total_mb():
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return int(out.stdout.strip().split()[0])
-    except Exception:
-        return 0
+def gpu_count() -> int:
+    """Number of NVIDIA GPUs visible to nvidia-smi."""
+    return len(gpu_vram_totals_mb())
+
+
+def vram_mb() -> int:
+    """Total VRAM currently used across all visible GPUs in MiB."""
+    return sum(_nvidia_smi_ints("memory.used"))
+
+
+def vram_total_mb() -> int:
+    """Total VRAM capacity across all visible GPUs in MiB."""
+    return sum(gpu_vram_totals_mb())
 
 
 def llama_server_vram_mb() -> int:
@@ -666,6 +671,12 @@ def label_for(s: dict) -> str:
         label += f" mcache={s['moe-cache-mib']}"
         if s.get("moe-cache-cpu-share"):
             label += f"/{s['moe-cache-cpu-share']}"
+    if s.get("split-mode"):
+        label += f" split={s['split-mode']}"
+    if s.get("tensor-split"):
+        label += f" ts={s['tensor-split']}"
+    if s.get("main-gpu") not in (None, ""):
+        label += f" mgpu={s['main-gpu']}"
     if s.get("ubatch-size"):
         label += f" ub={s['ubatch-size']}"
     if s.get("spec-type"):
@@ -720,6 +731,9 @@ MANAGED_KEYS = (
     "n-cpu-moe",
     "moe-cache-mib",
     "moe-cache-cpu-share",
+    "split-mode",
+    "tensor-split",
+    "main-gpu",
     "ubatch-size",
     "batch-size",
     "spec-type",
@@ -787,6 +801,7 @@ def hill_neighbors(
     section: dict | None = None,
     target_frac: float = VRAM_TARGET_FRAC,
     measured_vram_mb: int | None = None,
+    gpu_vrams: list[int] | None = None,
 ) -> list[dict]:
     """Ordered upgrade variants of a working baseline (faster if they fit).
 
@@ -889,6 +904,26 @@ def hill_neighbors(
     ruv = dict(settings)
     ruv["cache-reuse"] = alt_reuse
     out.append(ruv)
+
+    # Multi-GPU layer placement: only offered when >1 GPU is present so single-GPU
+    # behavior and profiles stay untouched.
+    gvs = gpu_vram_totals_mb() if gpu_vrams is None else gpu_vrams
+    if len(gvs) > 1 and sum(gvs) > 0:
+        total_gvs = sum(gvs)
+        prop_ts = ",".join(f"{v / total_gvs:.2f}" for v in gvs)
+        splits = [prop_ts]
+        # On an asymmetric 2-GPU rig (e.g., 8 GB Ada + 16 GB Pascal), also test
+        # shifting a slightly larger share onto GPU 0 (faster Ada core/PCIE1).
+        if len(gvs) == 2 and gvs[0] < gvs[1]:
+            splits.append("0.40,0.60")
+        for ts in dict.fromkeys(splits):
+            if settings.get("split-mode") != "layer" or settings.get("tensor-split") != ts:
+                mg = dict(settings)
+                mg["split-mode"] = "layer"
+                mg["main-gpu"] = str(settings.get("main-gpu") if settings.get("main-gpu") not in (None, "") else "0")
+                mg["tensor-split"] = ts
+                out.append(mg)
+
     return [n for n in out if label_for(n) != label_for(settings)]
 
 

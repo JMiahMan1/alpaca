@@ -212,7 +212,7 @@ def analyze_telemetry(
     ram_pcts = [p["system"]["ram_used_pct"] for p in points]
     cpu_pcts = [p["system"]["cpu_util_pct"] for p in points]
 
-    # GPU parsing (focusing on primary GPU 0)
+    # GPU parsing: preserve single-GPU behavior verbatim, aggregate on multi-GPU
     gpu_pcts = []
     vram_pcts = []
     vram_used_mbs = []
@@ -220,12 +220,23 @@ def analyze_telemetry(
 
     for p in points:
         gpus = p.get("gpus", [])
-        if gpus:
+        if len(gpus) == 1:
             primary_gpu = gpus[0]
             gpu_pcts.append(primary_gpu.get("gpu_util_pct", 0.0))
             vram_pcts.append(primary_gpu.get("vram_used_pct", 0.0))
             vram_used_mbs.append(primary_gpu.get("vram_used_mb", 0))
             vram_totals.append(primary_gpu.get("vram_total_mb", 0))
+        elif gpus:
+            gpu_pcts.append(max(g.get("gpu_util_pct", 0.0) for g in gpus))
+            used_mb = sum(g.get("vram_used_mb", 0) for g in gpus)
+            total_mb = sum(g.get("vram_total_mb", 0) for g in gpus)
+            vram_used_mbs.append(used_mb)
+            vram_totals.append(total_mb)
+            vram_pcts.append(
+                round(used_mb / total_mb * 100.0, 1)
+                if total_mb > 0
+                else max(g.get("vram_used_pct", 0.0) for g in gpus)
+            )
         else:
             gpu_pcts.append(0.0)
             vram_pcts.append(0.0)

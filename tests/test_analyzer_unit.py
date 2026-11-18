@@ -624,3 +624,18 @@ def test_a_healthy_model_still_lists_an_issue_entry(telemetry):
     collapse the card."""
     telemetry("m", [_point(20.0) for _ in range(3)])
     assert analyzer.analyze_telemetry("m")["detected_issues"] == ["No resource utilization issues detected."]
+
+
+def test_analyze_telemetry_aggregates_multi_gpu_metrics(telemetry, workdir):
+    point = _point(30.0)
+    point["gpus"] = [
+        {"gpu_util_pct": 20.0, "vram_used_pct": 50.0, "vram_used_mb": 4096, "vram_total_mb": 8192},
+        {"gpu_util_pct": 75.0, "vram_used_pct": 50.0, "vram_used_mb": 8192, "vram_total_mb": 16384},
+    ]
+    telemetry("m", [point for _ in range(3)])
+    out = analyzer.analyze_telemetry("m")
+    summary = out["metrics_summary"]
+    assert summary["vram"]["total_mb"] == 24576
+    assert summary["vram"]["headroom_mb"] == 12288
+    assert summary["vram"]["max_pct"] == 50.0
+    assert summary["gpu_util_pct"]["max"] == 75.0

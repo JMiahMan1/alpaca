@@ -3918,3 +3918,32 @@ def test_only_the_latest_system_prompt_of_each_model_is_kept(keeper):
         body["model"] = f"model-{i}"
         alpaca_proxy.note_long_system_prompt("/api/chat", body, _KeeperRequest())
     assert len(alpaca_proxy._kept_prompts) == alpaca_proxy.PROMPT_KEEPER_MAX
+
+
+@pytest.mark.asyncio
+async def test_proxy_multi_gpu_telemetry_and_co_resident_sd_flag(monkeypatch):
+    async def fake_exec(*args, **_kwargs):
+        q = " ".join(args)
+        if "temperature.gpu" in q:
+            out = b"42\n68\n"
+        else:
+            out = b"8188, 4000, 4188\n16384, 8000, 8384\n"
+
+        class Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return out, b""
+
+        return Proc()
+
+    monkeypatch.setattr(alpaca_proxy.asyncio, "create_subprocess_exec", fake_exec)
+    assert await alpaca_proxy._get_gpu_temp_c() == 68
+    assert await alpaca_proxy._get_gpu_vram_telemetry() == (24572, 12000, 12572)
+
+    unload_called = AsyncMock()
+    monkeypatch.setattr(alpaca_proxy, "_unload_sd_now", unload_called)
+    monkeypatch.setattr(alpaca_proxy, "active_sd_model", "qwen-image")
+    monkeypatch.setattr(alpaca_proxy, "PROXY_CO_RESIDENT_SD", True)
+    await alpaca_proxy.ensure_sd_unloaded()
+    unload_called.assert_not_awaited()

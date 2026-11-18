@@ -655,3 +655,38 @@ def test_per_layer_arrays_are_read_not_replaced_by_their_byte_size(tmp_path):
     sh = settings_scan.read_gguf_shape(str(lfm))
     assert sh["head_dim"] == 64  # no key_length: embedding / heads
     assert settings_scan.kv_cache_mb(sh, "q8_0", 65536) == pytest.approx(10 * 2 * 8 * 64 * 1.0625 * 65536 / 1e6)
+
+
+def test_vram_and_temp_helpers_aggregate_across_multiple_gpus(monkeypatch):
+    def fake_run(cmd, **_kwargs):
+        q = cmd[1]
+        if "memory.total" in q:
+            stdout = "8188\n16384\n"
+        elif "memory.used" in q:
+            stdout = "1200\n3400\n"
+        elif "temperature.gpu" in q:
+            stdout = "43\n67\n"
+        else:
+            stdout = ""
+        return type("Proc", (), {"stdout": stdout})()
+
+    monkeypatch.setattr(settings_scan.subprocess, "run", fake_run)
+    assert settings_scan.gpu_vram_totals_mb() == [8188, 16384]
+    assert settings_scan.gpu_count() == 2
+    assert settings_scan.vram_total_mb() == 24572
+    assert settings_scan.vram_mb() == 4600
+    assert settings_scan.gpu_temp_c() == 67
+
+
+def test_hill_neighbors_adds_layer_split_only_when_multi_gpu():
+    single = settings_scan.hill_neighbors(
+        MOE_WORKING, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=8188, gpu_vrams=[8188]
+    )
+    assert not any(n.get("split-mode") for n in single)
+
+    dual = settings_scan.hill_neighbors(
+        MOE_WORKING, MOE_SHAPE, is_moe=True, ctx=65536, vram_total=24572, gpu_vrams=[8188, 16384]
+    )
+    splits = [n for n in dual if n.get("split-mode") == "layer"]
+    assert [s["tensor-split"] for s in splits] == ["0.33,0.67", "0.40,0.60"]
+    assert all(s["main-gpu"] == "0" for s in splits)

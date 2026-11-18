@@ -360,6 +360,9 @@ ENGINE_STARTUP_TIMEOUT_SECONDS = int(os.getenv("ENGINE_STARTUP_TIMEOUT_SECONDS",
 API_VERSION = os.getenv("API_VERSION", "0.3.1")
 DEFAULT_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
 MAX_LOADED_MODELS = int(os.getenv("MAX_LOADED_MODELS", "1"))
+# On single-GPU 8 GB setups LLM and SD cannot share VRAM; enable on multi-GPU
+# hosts where they reside on separate cards or total VRAM comfortably fits both.
+PROXY_CO_RESIDENT_SD = os.getenv("PROXY_CO_RESIDENT_SD", "").strip().lower() in ("1", "true", "yes", "on")
 ROUTER_MODELS_URL = f"{LLAMA_SERVER_URL}/models"
 ROUTER_MODELS_DIR = os.getenv("ROUTER_MODELS_DIR", "/router-models")
 LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS = float(os.getenv("LLAMA_SERVER_CONNECT_TIMEOUT_SECONDS", "60"))
@@ -4391,7 +4394,7 @@ async def ensure_sd_model_loaded(requested_model: str) -> str:
 
     # Use backend_swap_lock to atomicize model swaps and prevent concurrent swaps/evictions
     async with backend_swap_lock:
-        if llama_active is not None:
+        if llama_active is not None and not PROXY_CO_RESIDENT_SD:
             # Wait until there are no active OR queued LLM requests. Queued
             # requests have been admitted (and may be mid-load / mid-queue) but
             # are not yet in-flight; evicting their model now would force a
@@ -5070,7 +5073,9 @@ async def _get_gpu_temp_c() -> int | None:
         )
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
-            return int(stdout.decode().strip().splitlines()[0])
+            temps = [int(line.strip()) for line in stdout.decode().splitlines() if line.strip()]
+            if temps:
+                return max(temps)
     except Exception as e:
         logger.debug(f"GPU temp query failed: {e}")
     return None
@@ -5084,7 +5089,7 @@ async def admin_temps():
 
 
 async def _get_gpu_vram_telemetry() -> tuple[int, int, int]:
-    """Queries GPU VRAM metrics from nvidia-smi on llama-server."""
+    """Queries aggregated GPU VRAM metrics across visible GPUs from llama-server."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -5098,11 +5103,18 @@ async def _get_gpu_vram_telemetry() -> tuple[int, int, int]:
         )
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
-            lines = stdout.decode().strip().split("\n")
-            if lines and lines[0]:
-                parts = [p.strip() for p in lines[0].split(",")]
+            lines = [line.strip() for line in stdout.decode().splitlines() if line.strip()]
+            totals = []
+            for line in lines:
+                parts = [p.strip() for p in line.split(",")]
                 if len(parts) == 3:
-                    return int(parts[0]), int(parts[1]), int(parts[2])
+                    totals.append((int(parts[0]), int(parts[1]), int(parts[2])))
+            if totals:
+                return (
+                    sum(t[0] for t in totals),
+                    sum(t[1] for t in totals),
+                    sum(t[2] for t in totals),
+                )
     except Exception as e:
         logger.debug(f"Failed to query VRAM metrics: {e}")
     return 8192, 0, 8192  # Default fallback if query fails
@@ -7753,6 +7765,8 @@ async def ensure_sd_unloaded():
     Also runs on the ensure_model early-return so LLM and SD never co-resident
     on the 8 GB card (shared VRAM starves the Qwen VAE decode).
     """
+    if PROXY_CO_RESIDENT_SD:
+        return
     while True:
         async with active_sd_requests_lock:
             while active_sd_requests > 0:
