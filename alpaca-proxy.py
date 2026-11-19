@@ -667,7 +667,15 @@ def sanitize_prompt(text: str) -> str:
     return text
 
 
-def register_active_request(request_id, model, req_type, payload, request_source="unknown", client_ip="unknown"):
+def register_active_request(
+    request_id,
+    model,
+    req_type,
+    payload,
+    request_source="unknown",
+    client_ip="unknown",
+    prompt_keeper=False,
+):
     prompt_str = ""
     if "messages" in payload:
         msgs = payload["messages"]
@@ -682,19 +690,23 @@ def register_active_request(request_id, model, req_type, payload, request_source
 
     prompt_str = sanitize_prompt(prompt_str)
 
+    entry = {
+        "request_id": request_id,
+        "model": model,
+        "type": req_type,
+        "started_at": time.time(),
+        "prompt": prompt_str,
+        "thinking": "",
+        "response": "",
+        "request_source": request_source,
+        "client_ip": client_ip,
+        "client_host": resolve_client_host(client_ip),
+    }
+    if prompt_keeper:
+        entry["prompt_keeper"] = True
+
     with active_request_details_lock:
-        active_request_details[request_id] = {
-            "request_id": request_id,
-            "model": model,
-            "type": req_type,
-            "started_at": time.time(),
-            "prompt": prompt_str,
-            "thinking": "",
-            "response": "",
-            "request_source": request_source,
-            "client_ip": client_ip,
-            "client_host": resolve_client_host(client_ip),
-        }
+        active_request_details[request_id] = entry
 
 
 def update_active_request_progress(request_id, response_chunk=None, thinking_chunk=None):
@@ -2507,6 +2519,7 @@ async def openai_chat_completions(request: Request):
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
+        prompt_keeper=is_prompt_keeper_request(request),
     )
     # Admit into the shared request queue (paired with release_request_queued in
     # the finally blocks below and on the early-return paths).
@@ -9014,6 +9027,7 @@ async def chat(request: Request):
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
+        prompt_keeper=is_prompt_keeper_request(request),
     )
 
     # Ensure model is loaded and healthy (triggers recovery if crashed/dead).

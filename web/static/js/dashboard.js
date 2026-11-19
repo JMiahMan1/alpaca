@@ -3375,14 +3375,13 @@ document.addEventListener('DOMContentLoaded', () => {
         let filteredCompleted = completedList;
         
         if (query) {
-            filteredActive = activeList.filter(req => 
-                (req.model || '').toLowerCase().includes(query) || 
-                (req.prompt || '').toLowerCase().includes(query)
-            );
-            filteredCompleted = completedList.filter(req => 
-                (req.model || '').toLowerCase().includes(query) || 
-                (req.prompt || '').toLowerCase().includes(query)
-            );
+            const matchesRequestQuery = (req) =>
+                (req.model || '').toLowerCase().includes(query) ||
+                (req.prompt || '').toLowerCase().includes(query) ||
+                (req.request_source || '').toLowerCase().includes(query) ||
+                (req.prompt_keeper && ('warmup prompt-keeper'.includes(query)));
+            filteredActive = activeList.filter(matchesRequestQuery);
+            filteredCompleted = completedList.filter(matchesRequestQuery);
         }
 
         // Render Active Requests
@@ -3473,6 +3472,18 @@ document.addEventListener('DOMContentLoaded', () => {
             div.style.borderLeft = '3px solid rgba(139, 92, 246, 0.7)';
         }
 
+        // Prompt-keeper KV-cache warmup marker: clearly distinguish 1-token cache
+        // keepalive replays from normal user requests so single-token output isn't
+        // mistaken for a truncated reply.
+        const warmupBadge = document.createElement('span');
+        if (req.prompt_keeper) {
+            warmupBadge.className = 'badge';
+            warmupBadge.style.cssText = 'font-size:0.6rem; padding:0.1rem 0.35rem; background:rgba(56,189,248,0.16); color:#7dd3fc; border:1px solid rgba(56,189,248,0.45);';
+            warmupBadge.textContent = 'WARMUP';
+            warmupBadge.title = 'Prompt-keeper KV-cache warmup (1-token replay)';
+            div.style.borderLeft = '3px solid rgba(56, 189, 248, 0.6)';
+        }
+
         // Failed request marker: red FAILED chip + accent border so empty-output
         // rows are instantly recognizable as errors, with the reason in the inspector.
         const failedBadge = document.createElement('span');
@@ -3495,8 +3506,13 @@ document.addEventListener('DOMContentLoaded', () => {
             timeSpan.textContent = `${req.duration_seconds || 0}s`;
         }
 
-        headerDiv.appendChild(typeBadge);
-        if (!isActive && req.error) headerDiv.appendChild(failedBadge);
+        const badgeGroup = document.createElement('div');
+        badgeGroup.style.cssText = 'display:flex; align-items:center; gap:0.3rem; flex-wrap:wrap;';
+        badgeGroup.appendChild(typeBadge);
+        if (req.prompt_keeper) badgeGroup.appendChild(warmupBadge);
+        if (!isActive && req.error) badgeGroup.appendChild(failedBadge);
+
+        headerDiv.appendChild(badgeGroup);
         headerDiv.appendChild(timeSpan);
 
         const modelDiv = document.createElement('div');
@@ -3514,7 +3530,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const originSpan = document.createElement('span');
         originSpan.style.color = '#38bdf8';
         originSpan.style.fontWeight = '500';
-        originSpan.textContent = `Origin: ${req.request_source || 'unknown'}`;
+        const originLabel = req.prompt_keeper
+            ? (req.request_source && req.request_source !== 'unknown'
+                ? `prompt-keeper (${req.request_source})`
+                : 'prompt-keeper')
+            : (req.request_source || 'unknown');
+        originSpan.textContent = `Origin: ${originLabel}`;
         
         const metricsSpan = document.createElement('span');
         if (req.tps) {
@@ -3663,8 +3684,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const initiatedEl = document.getElementById('inspect-initiated');
         if (initiatedEl) initiatedEl.textContent = formatInitiatedTime(req.started_at);
         
-        if (typeEl) typeEl.textContent = req.type;
-        if (originEl) originEl.textContent = req.request_source || 'unknown';
+        if (typeEl) typeEl.textContent = req.prompt_keeper ? `${req.type || 'unknown'} · warmup` : req.type;
+        if (originEl) {
+            originEl.textContent = req.prompt_keeper
+                ? (req.request_source && req.request_source !== 'unknown'
+                    ? `prompt-keeper (${req.request_source})`
+                    : 'prompt-keeper')
+                : (req.request_source || 'unknown');
+        }
+        const warmupNoteEl = document.getElementById('inspect-warmup-note');
+        if (warmupNoteEl) {
+            warmupNoteEl.classList.toggle('d-none', !req.prompt_keeper);
+        }
         if (ipEl) ipEl.textContent = req.client_ip || 'unknown';
         const clientHostEl = document.getElementById('inspect-client-host');
         const hostIpsEl = document.getElementById('inspect-host-ip');
@@ -3900,15 +3931,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 return s.length > max ? `${s.slice(0, max)}... [truncated]` : s;
             };
             const ctx = requestsServerContext || {};
+            const copyOrigin = req.prompt_keeper
+                ? (req.request_source && req.request_source !== 'unknown'
+                    ? `prompt-keeper (${req.request_source})`
+                    : 'prompt-keeper')
+                : (req.request_source || 'unknown');
             const lines = [
                 `Request ID: ${req.request_id}`,
-                `Type: ${req.type}`,
+                `Type: ${req.prompt_keeper ? `${req.type} (warmup, num_predict=1)` : req.type}`,
                 `Model: ${req.model || '-'}`,
                 `Initiated: ${formatInitiatedTime(req.started_at)}`,
                 req.completed_at
                     ? `Duration: ${req.duration_seconds}s (Finished)`
                     : `Duration: ${Math.round(Date.now() / 1000 - (req.started_at || 0))}s (Active)`,
-                `Origin: ${req.request_source || 'unknown'}`,
+                `Origin: ${copyOrigin}`,
                 `Client Host: ${req.client_host || '-'}`,
                 `Client IP: ${req.client_ip || '-'}`,
                 `Host IPs: ${(Array.isArray(ctx.host_ips) ? ctx.host_ips.join(', ') : '') || '-'}`,

@@ -3922,6 +3922,37 @@ def test_only_the_latest_system_prompt_of_each_model_is_kept(keeper):
     assert len(alpaca_proxy._kept_prompts) == alpaca_proxy.PROMPT_KEEPER_MAX
 
 
+def test_register_active_request_tags_prompt_keeper_warmups(monkeypatch, tmp_path):
+    monkeypatch.setattr(alpaca_proxy, "active_request_details", {})
+    monkeypatch.setattr(alpaca_proxy, "completed_requests", [])
+    monkeypatch.setattr(alpaca_proxy, "_COMPLETED_REQUESTS_PATH", str(tmp_path / "completed_requests.json"))
+
+    alpaca_proxy.register_active_request(
+        "warmup-1",
+        "chat-model",
+        "ollama_chat",
+        {"messages": [{"role": "system", "content": _LONG_SYSTEM}, {"role": "user", "content": "."}]},
+        request_source="shared-llm/app",
+        client_ip="127.0.0.1",
+        prompt_keeper=True,
+    )
+    alpaca_proxy.register_active_request(
+        "normal-1",
+        "chat-model",
+        "ollama_chat",
+        {"messages": [{"role": "user", "content": "hi"}]},
+        request_source="shared-llm/app",
+        client_ip="127.0.0.1",
+    )
+
+    assert alpaca_proxy.active_request_details["warmup-1"]["prompt_keeper"] is True
+    assert "prompt_keeper" not in alpaca_proxy.active_request_details["normal-1"]
+
+    completed = alpaca_proxy.complete_active_request("warmup-1", final_response="I", completion_tokens=1)
+    assert completed["prompt_keeper"] is True
+    assert alpaca_proxy._for_persistence(completed)["prompt_keeper"] is True
+
+
 @pytest.mark.asyncio
 async def test_proxy_multi_gpu_telemetry_and_co_resident_sd_flag(monkeypatch):
     async def fake_exec(*args, **_kwargs):

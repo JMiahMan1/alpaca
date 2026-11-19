@@ -2521,6 +2521,9 @@
                                         <div class="modal-section-title" style="color:var(--color-success); margin-bottom: 0;">Model Output Response</div>
                                         <button id="btn-copy-response" class="btn btn-secondary btn-xs btn-ghost">📋 Copy</button>
                                     </div>
+                                    <div id="inspect-warmup-note" class="d-none" style="margin-bottom: 0.45rem; padding: 0.45rem 0.65rem; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.35); background: rgba(56, 189, 248, 0.08); color: #bae6fd; font-size: 0.72rem; line-height: 1.4;">
+                                        🔥 <strong>KV-cache warmup (prompt-keeper)</strong> — internal 1-token replay (<code>num_predict=1</code>) to keep this system prompt hot in cache; single-token output is intentional.
+                                    </div>
                                     <pre id="inspect-response" class="code-display-block" style="background:#030712; border-color:rgba(16,185,129,0.15); max-height: 250px;"></pre>
                                 </div>
                             </div>

@@ -453,3 +453,12 @@ def test_music_prompt_is_dark_like_every_other_textarea():
 def test_empty_ratings_box_and_trend_placeholders():
     assert ".test-preview-ratings:empty" in _CSS
     assert 'id="general-trend-empty"' in _INDEX and 'id="shared-trend-empty"' in _INDEX
+
+
+def test_request_monitor_tags_prompt_keeper_warmups():
+    js = (Path(__file__).resolve().parents[1] / "web" / "static" / "js" / "dashboard.js").read_text(encoding="utf-8")
+    assert 'id="inspect-warmup-note"' in _INDEX
+    assert "req.prompt_keeper" in js
+    assert "warmupBadge.textContent = 'WARMUP'" in js
+    assert "prompt-keeper (" in js
+    assert "inspect-warmup-note" in js
