@@ -44,9 +44,11 @@
           {% if has_screenshot %}
           <img id="code-hero" class="code-screenshot" src="/game/{{ card.slug }}/screenshot.png" alt="{{ card.title }} gameplay screenshot">
           {% endif %}
-          <button id="btn-play-live" class="arcade-btn" type="button">▶ Play</button>
-          <button id="btn-sound-live" class="arcade-btn" type="button" title="Game sound">🔊 Sound</button>
-          <button id="btn-stop-live" class="arcade-btn" type="button" disabled>Stop</button>
+          <div class="code-controls">
+            <button id="btn-play-live" class="arcade-btn" type="button">▶ Play</button>
+            <button id="btn-sound-live" class="arcade-btn" type="button" title="Game sound">🔊 Sound</button>
+            <button id="btn-stop-live" class="arcade-btn" type="button" disabled>Stop</button>
+          </div>
           <div id="live-status" class="form-msg" role="status"></div>
           <iframe id="live-frame" title="{{ card.title }} live sandbox" allowfullscreen allow="fullscreen" style="display:none;"></iframe>
           <details class="under-screen">
@@ -167,7 +169,7 @@
         <span class="muted rating-count"></span>
       </div>
       <div class="rate-buttons" role="group" aria-label="Rate this game">
-        {% for n in [1,2,3,4,5] %}<button type="button" data-stars="{{ n }}">★</button>{% endfor %}
+        {% for n in [1,2,3,4,5] %}<button type="button" data-stars="{{ n }}" aria-label="Rate {{ n }} out of 5 stars">★</button>{% endfor %}
       </div>
       <div id="rate-msg" class="form-msg"></div>
     </div>

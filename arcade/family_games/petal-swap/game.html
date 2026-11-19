@@ -54,6 +54,8 @@
   let specialsMade = 0;
   let msIdx = 0;
   let selected = null;
+  let kbdCursor = null;
+  let hoverCell = null;
   let drag = null;
   let idleT = 0;
   let hint = null;
@@ -681,6 +683,7 @@
     down(p) {
       idleT = 0;
       hint = null;
+      kbdCursor = null;
       if (phase !== "idle") return;
       const cell = cellAt(p);
       if (!cell) { selected = null; return; }
@@ -722,6 +725,58 @@
     },
   });
 
+  // Desktop mouse hover + keyboard controls (Arrows/WASD move cursor; Enter/Space picks flower, then Arrow swaps)
+  document.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse" || phase !== "idle" || kit.state !== "playing" || !view) {
+      hoverCell = null;
+      return;
+    }
+    const r = view.canvas.getBoundingClientRect();
+    hoverCell = cellAt({ x: e.clientX - r.left, y: e.clientY - r.top });
+    view.canvas.style.cursor = hoverCell ? "pointer" : "";
+  });
+  window.addEventListener("keydown", (e) => {
+    if (kit.state !== "playing" || phase !== "idle") return;
+    const dirs = {
+      ArrowLeft: [0, -1], a: [0, -1], A: [0, -1],
+      ArrowRight: [0, 1], d: [0, 1], D: [0, 1],
+      ArrowUp: [-1, 0], w: [-1, 0], W: [-1, 0],
+      ArrowDown: [1, 0], s: [1, 0], S: [1, 0],
+    };
+    const mv = dirs[e.key];
+    if (mv) {
+      e.preventDefault();
+      idleT = 0;
+      hint = null;
+      if (!kbdCursor) {
+        kbdCursor = selected ? { r: selected.r, c: selected.c } : { r: 3, c: 3 };
+        return;
+      }
+      if (selected && selected.r === kbdCursor.r && selected.c === kbdCursor.c) {
+        const target = { r: selected.r + mv[0], c: selected.c + mv[1] };
+        const from = selected;
+        selected = null;
+        if (inB(target.r, target.c)) {
+          kbdCursor = target;
+          trySwap(from, target);
+        }
+      } else {
+        kbdCursor = { r: (kbdCursor.r + mv[0] + N) % N, c: (kbdCursor.c + mv[1] + N) % N };
+      }
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (!kbdCursor) kbdCursor = { r: 3, c: 3 };
+      if (selected && selected.r === kbdCursor.r && selected.c === kbdCursor.c) {
+        selected = null;
+      } else {
+        selected = { r: kbdCursor.r, c: kbdCursor.c };
+        kit.sound.tone(720, 0.06, { type: "triangle", vol: 0.12 });
+      }
+    }
+  });
+
   /* ---------------- update ---------------- */
   function landTick() {
     if (clock - lastLand < 0.07) return;
@@ -733,6 +788,10 @@
     const x = L.bx + (p.px + 0.5) * L.cs, y = L.by + (p.py + 0.5) * L.cs;
     const n = RM ? 2 : 6;
     const cols = p.kind === RB ? ["#ff4d6d", "#ffd23f", "#5ccf4a", "#3a86ff", "#9b5de5"] : [COLORS[p.kind], LIGHT[p.kind]];
+    if (p.sp || p.kind === RB) {
+      kit.fx.ring(x, y, p.kind === RB ? "#fff3b0" : COLORS[p.kind], L.cs * 1.45, { width: 4.5, life: 0.42 });
+      kit.fx.burst(x, y, cols, 10, { shape: "spark", speed: L.cs * 4.2, size: 4, gravity: 180, life: 0.55 });
+    }
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const s = L.cs * (1.5 + Math.random() * 2.5);
@@ -1479,6 +1538,28 @@
     FK.roundRect(ctx, L.bx, L.by, L.size, L.size, L.rad);
     ctx.clip();
     const cs = L.cs;
+    if (phase === "idle") {
+      if (hoverCell && (!selected || hoverCell.r !== selected.r || hoverCell.c !== selected.c)) {
+        const { x, y } = cellXY(hoverCell.r, hoverCell.c);
+        ctx.save();
+        FK.roundRect(ctx, x - cs / 2 + 2, y - cs / 2 + 2, cs - 4, cs - 4, cs * 0.24);
+        ctx.fillStyle = "rgba(255,255,255,0.22)";
+        ctx.fill();
+        ctx.restore();
+      }
+      if (kbdCursor && (!selected || kbdCursor.r !== selected.r || kbdCursor.c !== selected.c)) {
+        const { x, y } = cellXY(kbdCursor.r, kbdCursor.c);
+        const pul = 0.65 + 0.35 * Math.sin(rclock * 7);
+        ctx.save();
+        FK.roundRect(ctx, x - cs / 2 + 2, y - cs / 2 + 2, cs - 4, cs - 4, cs * 0.24);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = `rgba(255, 240, 120, ${pul})`;
+        ctx.shadowColor = "#ffd23f";
+        ctx.shadowBlur = 10;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
     if (selected && phase === "idle") {
       const { x, y } = cellXY(selected.r, selected.c);
       const pul = 0.5 + 0.5 * Math.sin(rclock * 6);

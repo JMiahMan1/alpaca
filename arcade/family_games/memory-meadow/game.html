@@ -95,6 +95,8 @@
   let backCache = null;
   const faceCache = new Map();
   let timeEls = null;
+  let focusIdx = -1;
+  let hoverIdx = -1;
 
   /* ---------------- layout ---------------- */
   function insets() {
@@ -482,6 +484,10 @@
       kit.haptic(22);
       const mx = (a.x + b.x) / 2;
       const my = (a.y + b.y) / 2;
+      kit.fx.ring(a.x, a.y, a.ring || "#ffd23f", Math.max(a.w, a.h) * 0.72, { width: 4, life: 0.45 });
+      kit.fx.ring(b.x, b.y, b.ring || "#ffd23f", Math.max(b.w, b.h) * 0.72, { width: 4, life: 0.45 });
+      kit.fx.burst(a.x, a.y, ["#ffd23f", a.ring || "#fff", "#ffffff"], 8, { shape: "spark", speed: 180, size: 4, gravity: 140, life: 0.55 });
+      kit.fx.burst(b.x, b.y, ["#ffd23f", b.ring || "#fff", "#ffffff"], 8, { shape: "spark", speed: 180, size: 4, gravity: 140, life: 0.55 });
       kit.fx.text(mx, my - a.h * 0.3, `+${pts}`, { color: "#fff36b", size: clamp(a.w * 0.38, 22, 40) });
       if (streak >= 2) {
         kit.fx.text(mx, my + a.h * 0.15, `🔥 x${streak}`, { color: "#ffb347", size: clamp(a.w * 0.3, 18, 32), life: 1.1 });
@@ -502,9 +508,51 @@
   kit.pointer(null, {
     down(p) {
       if (phase !== "play") return;
+      focusIdx = -1;
       const c = cardAt(p.x, p.y);
       if (c) tapCard(c);
     },
+  });
+
+  // Desktop / keyboard + mouse hover ergonomics
+  document.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse" || phase !== "play" || kit.state !== "playing" || !view) {
+      hoverIdx = -1;
+      return;
+    }
+    const r = view.canvas.getBoundingClientRect();
+    const c = cardAt(e.clientX - r.left, e.clientY - r.top);
+    hoverIdx = c && c.state === "down" ? c.id : -1;
+    view.canvas.style.cursor = hoverIdx >= 0 ? "pointer" : "";
+  });
+  window.addEventListener("keydown", (e) => {
+    if (kit.state !== "playing" || phase !== "play" || !layout || !cards.length) return;
+    const cols = layout.cols, rows = layout.rows;
+    const dirs = {
+      ArrowLeft: [0, -1], a: [0, -1], A: [0, -1],
+      ArrowRight: [0, 1], d: [0, 1], D: [0, 1],
+      ArrowUp: [-1, 0], w: [-1, 0], W: [-1, 0],
+      ArrowDown: [1, 0], s: [1, 0], S: [1, 0],
+    };
+    const mv = dirs[e.key];
+    if (mv) {
+      e.preventDefault();
+      if (focusIdx < 0 || focusIdx >= cards.length) {
+        const firstDown = cards.findIndex((c) => c.state === "down");
+        focusIdx = firstDown >= 0 ? firstDown : 0;
+      } else {
+        const r = Math.floor(focusIdx / cols);
+        const col = focusIdx % cols;
+        const nr = (r + mv[0] + rows) % rows;
+        const nc = (col + mv[1] + cols) % cols;
+        focusIdx = Math.min(cards.length - 1, nr * cols + nc);
+      }
+      return;
+    }
+    if ((e.key === "Enter" || e.key === " ") && focusIdx >= 0 && focusIdx < cards.length) {
+      e.preventDefault();
+      tapCard(cards[focusIdx]);
+    }
   });
 
   /* ---------------- level clear ---------------- */
@@ -796,6 +844,20 @@
       sg.addColorStop(dir > 0 ? 1 : 0, `rgba(0,0,0,${0.42 * mid})`);
       ctx.fillStyle = sg;
       ctx.fill();
+    }
+    const isFocused = phase === "play" && (c.id === focusIdx || (c.id === hoverIdx && c.state === "down"));
+    if (isFocused) {
+      const pul = 0.65 + 0.35 * Math.sin(clock * 7);
+      ctx.save();
+      roundRect(ctx, -w / 2 - 3, -h / 2 - 3, w + 6, h + 6, r + 3);
+      ctx.lineWidth = c.id === focusIdx ? 3.5 : 2.5;
+      ctx.strokeStyle = c.id === focusIdx ? `rgba(255, 240, 120, ${pul})` : "rgba(255, 255, 255, 0.75)";
+      if (c.id === focusIdx) {
+        ctx.shadowColor = "#ffd23f";
+        ctx.shadowBlur = 12;
+      }
+      ctx.stroke();
+      ctx.restore();
     }
     ctx.restore();
   }

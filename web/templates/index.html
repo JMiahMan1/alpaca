@@ -27,6 +27,7 @@
                 </div>
             </div>
             <div class="status-badge-container">
+                <button id="desktop-sidebar-toggle" class="desktop-sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar" title="Toggle pipeline controls sidebar">☰ Hide Controls</button>
                 <div id="connection-status-badge" class="badge badge-danger">
                     <span class="badge-dot"></span> Socket Offline
                 </div>
@@ -39,21 +40,21 @@
             </div>
         </header>
 
-        <!-- Mobile controls toggle (visible <=640px via CSS) -->
+        <!-- Mobile & tablet controls toggle (visible <=1024px via CSS) -->
         <button id="mobile-controls-toggle" class="mobile-controls-toggle" type="button" aria-expanded="true" aria-controls="sidebar">☰ Hide Controls</button>
 
         <!-- Main Navigation Tabs -->
-        <div class="main-tabs">
-            <button id="tab-btn-monitor" class="nav-tab active">⚡ System Monitor</button>
-            <button id="tab-btn-general" class="nav-tab">🎯 General Benchmarks</button>
-            <button id="tab-btn-shared" class="nav-tab">⚙️ SharedLLM Benchmarks</button>
-            <button id="tab-btn-tests" class="nav-tab">🧪 Test Browser</button>
-            <button id="tab-btn-profiles" class="nav-tab">🔧 Model Profiles</button>
-            <button id="tab-btn-requests" class="nav-tab">🔍 Request Monitor</button>
-            <button id="tab-btn-sd" class="nav-tab">🎨 Image Studio</button>
-            <button id="tab-btn-audio" class="nav-tab">🎵 Audio Studio</button>
-            <button id="tab-btn-podcast" class="nav-tab">🎙️ Podcast Studio</button>
-            <button id="tab-btn-docs" class="nav-tab">📖 API Docs</button>
+        <div class="main-tabs" role="tablist" aria-label="Dashboard views">
+            <button id="tab-btn-monitor" class="nav-tab active" role="tab" aria-selected="true">⚡ System Monitor</button>
+            <button id="tab-btn-general" class="nav-tab" role="tab" aria-selected="false">🎯 General Benchmarks</button>
+            <button id="tab-btn-shared" class="nav-tab" role="tab" aria-selected="false">⚙️ SharedLLM Benchmarks</button>
+            <button id="tab-btn-tests" class="nav-tab" role="tab" aria-selected="false">🧪 Test Browser</button>
+            <button id="tab-btn-profiles" class="nav-tab" role="tab" aria-selected="false">🔧 Model Profiles</button>
+            <button id="tab-btn-requests" class="nav-tab" role="tab" aria-selected="false">🔍 Request Monitor</button>
+            <button id="tab-btn-sd" class="nav-tab" role="tab" aria-selected="false">🎨 Image Studio</button>
+            <button id="tab-btn-audio" class="nav-tab" role="tab" aria-selected="false">🎵 Audio Studio</button>
+            <button id="tab-btn-podcast" class="nav-tab" role="tab" aria-selected="false">🎙️ Podcast Studio</button>
+            <button id="tab-btn-docs" class="nav-tab" role="tab" aria-selected="false">📖 API Docs</button>
         </div>
 
         <!-- Main Dashboard Grid -->
@@ -108,8 +109,8 @@
                     </div>
                     
                     <div class="control-group">
-                        <div class="flex-space" style="margin-bottom: 0.35rem;">
-                            <span class="control-label">Target Models</span>
+                        <div class="kv-row" style="margin-bottom: 0.35rem;">
+                            <span class="control-label" style="margin-bottom: 0;">Target Models</span>
                             <div class="quick-select">
                                 <span id="btn-select-all" class="qs-all" title="Select all models">All</span>
                                 <span id="btn-select-new" class="qs-new" title="Select all newly added models awaiting benchmarks">🆕 New</span>
@@ -135,8 +136,8 @@
                     </div>
 
                     <div class="control-group">
-                        <div class="flex-space" style="margin-bottom: 0.5rem;">
-                            <span class="control-label">Target Tests (General Run only)</span>
+                        <div class="kv-row" style="margin-bottom: 0.5rem;">
+                            <span class="control-label" style="margin-bottom: 0;">Target Tests (General Run only)</span>
                             <div class="quick-select">
                                 <span id="btn-select-all-tests" class="qs-all">All</span>
                                 <span id="btn-deselect-all-tests" class="qs-none">None</span>
@@ -148,8 +149,8 @@
                     </div>
 
                     <div class="control-group">
-                        <div class="flex-space" style="margin-bottom: 0.5rem;">
-                            <span class="control-label">Benchmark Groups (General Run only)</span>
+                        <div class="kv-row" style="margin-bottom: 0.5rem;">
+                            <span class="control-label" style="margin-bottom: 0;">Benchmark Groups (General Run only)</span>
                             <div class="quick-select">
                                 <span id="btn-select-all-groups" class="qs-all">All</span>
                                 <span id="btn-deselect-all-groups" class="qs-none">None</span>
@@ -162,8 +163,8 @@
                     </div>
 
                     <div class="control-group">
-                        <div class="flex-space" style="margin-bottom: 0.5rem;">
-                            <span class="control-label">Target Tests (SharedLLM Run only)</span>
+                        <div class="kv-row" style="margin-bottom: 0.5rem;">
+                            <span class="control-label" style="margin-bottom: 0;">Target Tests (SharedLLM Run only)</span>
                             <div class="quick-select">
                                 <span id="btn-select-all-shared-tests" class="qs-all">All</span>
                                 <span id="btn-deselect-all-shared-tests" class="qs-none">None</span>
@@ -175,8 +176,8 @@
                     </div>
 
                     <div class="control-group">
-                        <div class="flex-space" style="margin-bottom: 0.5rem;">
-                            <span class="control-label">Multi-Step Agentic Workflows (MultiStep Run only)</span>
+                        <div class="kv-row" style="margin-bottom: 0.5rem;">
+                            <span class="control-label" style="margin-bottom: 0;">Multi-Step Agentic Workflows (MultiStep Run only)</span>
                             <div class="quick-select">
                                 <span id="btn-select-all-multistep-workflows" class="qs-all">All</span>
                                 <span id="btn-deselect-all-multistep-workflows" class="qs-none">None</span>
@@ -201,14 +202,16 @@
                         </label>
                     </div>
 
-                    <div class="control-group grid-3" style="margin-bottom: 0.5rem;">
-                        <button id="btn-run" class="btn btn-primary btn-sm">▶ Run General</button>
-                        <button id="btn-run-frontier-all" class="btn btn-secondary btn-sm btn-slate" title="Run Frontier Diagnostics across every discovered local, proxy, and online model">▶ Run Frontier All</button>
-                        <button id="btn-run-quick" class="btn btn-secondary btn-sm btn-slate" title="Run the 27-test all-round Quick Benchmark on the selected models">⚡ Quick Benchmark</button>
-                        <button id="btn-run-vision" class="btn btn-secondary btn-sm btn-slate" title="Run the image-input tests on the selected models (models without a vision projector are skipped, not failed)">👁 Run Vision</button>
-                        <button id="btn-run-outdated" class="btn btn-primary btn-sm btn-amber" title="Re-run only benchmarks whose test definitions have changed since the last run">⚠ Run Outdated</button>
-                        <button id="btn-run-shared" class="btn btn-primary btn-sm btn-cyan">⚙ Run SharedLLM</button>
-                        <button id="btn-run-multistep" class="btn btn-primary btn-sm btn-cyan" title="Run multi-turn agentic workflows (e.g. Glider 2026 house odyssey)">🛩 Run MultiStep</button>
+                    <div class="control-group" style="margin-bottom: 0.5rem;">
+                        <button id="btn-run" class="btn btn-primary" style="margin-bottom: 0.5rem;">▶ Run General</button>
+                        <div class="grid-2">
+                            <button id="btn-run-quick" class="btn btn-secondary btn-sm btn-slate" title="Run the 27-test all-round Quick Benchmark on the selected models">⚡ Quick Benchmark</button>
+                            <button id="btn-run-outdated" class="btn btn-primary btn-sm btn-amber" title="Re-run only benchmarks whose test definitions have changed since the last run">⚠ Run Outdated</button>
+                            <button id="btn-run-frontier-all" class="btn btn-secondary btn-sm btn-slate" title="Run Frontier Diagnostics across every discovered local, proxy, and online model">▶ Frontier All</button>
+                            <button id="btn-run-vision" class="btn btn-secondary btn-sm btn-slate" title="Run the image-input tests on the selected models (models without a vision projector are skipped, not failed)">👁 Run Vision</button>
+                            <button id="btn-run-shared" class="btn btn-primary btn-sm btn-cyan">⚙ Run SharedLLM</button>
+                            <button id="btn-run-multistep" class="btn btn-primary btn-sm btn-cyan" title="Run multi-turn agentic workflows (e.g. Glider 2026 house odyssey)">🛩 Run MultiStep</button>
+                        </div>
                     </div>
                     <div class="control-group">
                         <button id="btn-cancel" class="btn btn-danger btn-sm" disabled>■ Cancel Run</button>
@@ -245,7 +248,7 @@
                             <span><strong>Active Model:</strong> <span id="status-model">-</span></span>
                             <span><strong>Current Test:</strong> <span id="status-test">-</span></span>
                         </div>
-                        <div class="current-status-detail" style="text-align: right;">
+                        <div class="current-status-detail progress-status-right">
                             <span><strong>Category:</strong> <span id="status-category" style="text-transform: capitalize;">-</span></span>
                         </div>
                     </div>
@@ -325,26 +328,26 @@
                                 <span id="loaded-model-sync-badge" class="badge badge-warning d-none" style="font-size:0.65rem; background-color: var(--color-warning); color: black;">Out of Sync</span>
                             </div>
                             <div style="display:flex; flex-direction:column; gap:0.5rem; justify-content:center; min-height:100px;">
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Model Name</span>
                                     <strong id="loaded-model-name" style="font-size:0.9rem; color:white;">None</strong>
                                 </div>
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Active Requests</span>
                                     <div style="display:flex; gap:0.5rem; align-items:center;">
                                         <span id="loaded-model-requests" class="monitor-list-item-badge">0</span>
                                         <span style="font-size:0.7rem; color:var(--text-muted);">Peak: <strong id="loaded-model-peak-requests" style="color:white;">0</strong></span>
                                     </div>
                                 </div>
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Total Requests (Session)</span>
                                     <span id="loaded-model-total-requests" style="font-size:0.8rem; color:white;">0</span>
                                 </div>
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Context Limit</span>
                                     <span id="loaded-model-context" style="font-size:0.8rem; color:white;">-</span>
                                 </div>
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Cache TTL / Expiry</span>
                                     <span id="loaded-model-ttl" style="font-size:0.8rem; color:var(--color-warning);">-</span>
                                 </div>
@@ -357,19 +360,19 @@
                         <div class="card">
                             <div class="card-title">Endpoint Stats (All-time)</div>
                             <div style="display:flex; flex-direction:column; gap:0.5rem; justify-content:center; min-height:100px;">
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Total Requests</span>
                                     <strong id="proxy-total-requests" style="font-size:0.85rem; color:white;">0</strong>
                                 </div>
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Average Latency</span>
                                     <span id="proxy-avg-latency" style="font-size:0.85rem; color:white;">0 ms</span>
                                 </div>
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Tokens Prompted</span>
                                     <span id="proxy-prompt-tokens" style="font-size:0.85rem; color:white;">0</span>
                                 </div>
-                                <div class="flex-space">
+                                <div class="kv-row">
                                     <span style="font-size:0.75rem; color:var(--text-muted);">Tokens Generated</span>
                                     <span id="proxy-gen-tokens" style="font-size:0.85rem; color:white;">0</span>
                                 </div>
@@ -886,7 +889,7 @@
                                     </thead>
                                     <tbody id="shared-detailed-results-body">
                                         <tr class="empty-state">
-                                            <td colspan="6">Start a SharedLLM task benchmark run or select a saved SharedLLM report.</td>
+                                            <td colspan="7">Start a SharedLLM task benchmark run or select a saved SharedLLM report.</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -1354,43 +1357,43 @@
                                      </div>
                                  </form>
                              </div><!-- /card -->
-
-                             <!-- Thermal Watchdog settings card -->
-                             <div class="card" style="border-left: 4px solid #f97316;">
-                                 <h3 style="color: white; font-size: 1.1rem; margin-bottom: 0.75rem; display:flex; align-items:center; gap:0.5rem;">
-                                     <span>🌡️ Thermal Watchdog</span>
-                                     <span id="thermal-watchdog-live" style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;"></span>
-                                 </h3>
-                                 <p style="color:var(--text-muted); font-size:0.78rem; margin-bottom:0.75rem;">
-                                     Protects benchmark runs from thermal shutdowns (CPU Tctl via lm-sensors, GPU via nvidia-smi).
-                                     Generation pauses at the throttle temperature, aborts at the abort temperature, and each test
-                                     waits below the resume temperature before starting. Turn the watchdog off at your own risk.
-                                 </p>
-                                 <div style="display:flex; flex-wrap:wrap; gap:1rem; align-items:end;">
-                                     <div style="display:flex; align-items:center; gap:0.5rem;">
-                                         <input type="checkbox" id="thermal-watchdog-enabled" style="width:1rem; height:1rem;">
-                                         <label for="thermal-watchdog-enabled" style="font-size:0.85rem;">Watchdog enabled</label>
-                                     </div>
-                                     <div>
-                                         <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Abort °C</label>
-                                         <input type="number" step="0.5" id="thermal-watchdog-abort" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                     </div>
-                                     <div>
-                                         <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Throttle °C</label>
-                                         <input type="number" step="0.5" id="thermal-watchdog-throttle" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                     </div>
-                                     <div>
-                                         <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Resume °C</label>
-                                         <input type="number" step="0.5" id="thermal-watchdog-resume" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                     </div>
-                                     <div>
-                                         <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Poll (s)</label>
-                                         <input type="number" id="thermal-watchdog-poll" min="1" max="60" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
-                                     </div>
-                                     <button id="btn-save-thermal" type="button" class="btn btn-primary">💾 Save</button>
-                                 </div>
-                             </div><!-- /card thermal -->
                           </div><!-- /grid-2 -->
+
+                          <!-- Thermal Watchdog settings card (full width below profiles editor) -->
+                          <div class="card" style="border-left: 4px solid #f97316; margin-top: 1.5rem;">
+                              <h3 style="color: white; font-size: 1.1rem; margin-bottom: 0.75rem; display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                                  <span>🌡️ Thermal Watchdog</span>
+                                  <span id="thermal-watchdog-live" style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;"></span>
+                              </h3>
+                              <p style="color:var(--text-muted); font-size:0.78rem; margin-bottom:0.75rem;">
+                                  Protects benchmark runs from thermal shutdowns (CPU Tctl via lm-sensors, GPU via nvidia-smi).
+                                  Generation pauses at the throttle temperature, aborts at the abort temperature, and each test
+                                  waits below the resume temperature before starting. Turn the watchdog off at your own risk.
+                              </p>
+                              <div style="display:flex; flex-wrap:wrap; gap:1rem; align-items:end;">
+                                  <div style="display:flex; align-items:center; gap:0.5rem;">
+                                      <input type="checkbox" id="thermal-watchdog-enabled" style="width:1rem; height:1rem;">
+                                      <label for="thermal-watchdog-enabled" style="font-size:0.85rem;">Watchdog enabled</label>
+                                  </div>
+                                  <div>
+                                      <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Abort °C</label>
+                                      <input type="number" step="0.5" id="thermal-watchdog-abort" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                  </div>
+                                  <div>
+                                      <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Throttle °C</label>
+                                      <input type="number" step="0.5" id="thermal-watchdog-throttle" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                  </div>
+                                  <div>
+                                      <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Resume °C</label>
+                                      <input type="number" step="0.5" id="thermal-watchdog-resume" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                  </div>
+                                  <div>
+                                      <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem;">Poll (s)</label>
+                                      <input type="number" id="thermal-watchdog-poll" min="1" max="60" class="form-control" style="width:6rem; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.8rem;">
+                                  </div>
+                                  <button id="btn-save-thermal" type="button" class="btn btn-primary btn-auto">💾 Save</button>
+                              </div>
+                          </div><!-- /card thermal -->
                   </div><!-- /view-profiles -->
 
                  <!-- VIEW 4.5: IMAGE STUDIO (Stable Diffusion) -->
@@ -1428,9 +1431,9 @@
                                     <option value="">Loading models...</option>
                                 </select>
                             </div>
-                            <div style="display:flex; gap:0.5rem; align-items:center;">
-                                <button id="sd-load-btn" class="btn btn-primary">⬇️ Load Model</button>
-                                <button id="sd-unload-btn" class="btn btn-secondary btn-slate">⏏️ Unload</button>
+                            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                                <button id="sd-load-btn" class="btn btn-primary btn-auto">⬇️ Load Model</button>
+                                <button id="sd-unload-btn" class="btn btn-secondary btn-slate btn-auto">⏏️ Unload</button>
                             </div>
                             <div id="sd-status" style="font-size:0.78rem; font-weight:500; color:#38bdf8; background:rgba(56, 189, 248, 0.1); padding:0.35rem 0.75rem; border-radius:6px; border:1px solid rgba(56, 189, 248, 0.2); min-width:140px; text-align:center;">Idle.</div>
                         </div>
@@ -1485,7 +1488,7 @@
                                         </div>
                                     </div>
 
-                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                    <div class="form-grid-2">
                                         <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Dimensions (WxH)</label>
                                             <select id="sd-gen-size-preset" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem 0.6rem; border-radius:8px; font-size:0.8rem; margin-bottom:0.25rem;">
@@ -1530,7 +1533,7 @@
                                             <span style="font-size:0.7rem; color:#94a3b8;">▼</span>
                                         </summary>
                                         <div id="sd-gen-caps-note" style="font-size:0.68rem; color:#64748b; margin-top:0.5rem;">Reading engine capabilities...</div>
-                                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-top:0.6rem;">
+                                        <div class="form-grid-3" style="margin-top:0.6rem;">
                                             <div>
                                                 <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Sampling Algorithm</label>
                                                 <select id="sd-gen-sampler" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
@@ -1554,7 +1557,7 @@
                                             </div>
                                         </div>
 
-                                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-top:0.6rem;">
+                                        <div class="form-grid-3" style="margin-top:0.6rem;">
                                             <div>
                                                 <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">CLIP Skip</label>
                                                 <input type="number" id="sd-gen-clip-skip" min="0" max="12" placeholder="Engine default" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
@@ -1571,7 +1574,7 @@
                                                 <input type="checkbox" id="sd-gen-hires-enable" style="accent-color:#a855f7;">
                                                 <span>🔍 Highres Fix - render at the size above, then upscale and refine</span>
                                             </label>
-                                            <div id="sd-gen-hires-inputs" style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:0.75rem; margin-top:0.5rem; opacity:0.5;">
+                                            <div id="sd-gen-hires-inputs" class="form-grid-4" style="margin-top:0.5rem; opacity:0.5;">
                                                 <div>
                                                     <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.7rem; color:#e2e8f0;">Upscaler</label>
                                                     <select id="sd-gen-hires-upscaler" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
@@ -1594,8 +1597,8 @@
                                         </div>
                                     </details>
 
-                                    <div style="display:flex; gap:0.75rem; align-items:center; margin-top:0.25rem;">
-                                        <button id="sd-gen-btn" class="btn btn-primary btn-blue">🎨 Generate Image</button>
+                                    <div style="display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap; margin-top:0.25rem;">
+                                        <button id="sd-gen-btn" class="btn btn-primary btn-blue btn-auto">🎨 Generate Image</button>
                                         <div id="sd-gen-status" style="font-size:0.78rem; color:#94a3b8; min-height:1.2rem;"></div>
                                     </div>
                                 </div>
@@ -1610,7 +1613,7 @@
                                     <span style="font-size:0.75rem; color:#94a3b8;">Design event & promotional flyers with clear headline text control</span>
                                 </div>
                                 <div style="display:flex; flex-direction:column; gap:0.85rem;">
-                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                    <div class="form-grid-2">
                                         <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Category Theme & Preset</label>
                                             <select id="sd-flyer-preset-select" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
@@ -1633,7 +1636,7 @@
                                         </div>
                                     </div>
 
-                                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem;">
+                                    <div class="form-grid-3">
                                         <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.75rem; font-weight:600; color:#e2e8f0;">Main Title / Headline</label>
                                             <input type="text" id="sd-flyer-headline" value="SUMMER MUSIC FESTIVAL 2026" placeholder="e.g. GRAND OPENING" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
@@ -1650,7 +1653,7 @@
 
                                     <!-- QR Code Integration Box -->
                                     <div style="background:#090d16; padding:0.75rem; border-radius:8px; border:1px solid rgba(168, 85, 247, 0.3);">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.4rem;">
                                             <label class="control-label" style="font-size:0.78rem; font-weight:600; color:#c084fc; margin:0; display:flex; align-items:center; gap:0.4rem;">
                                                 <span>📱 Embed Scannable QR Code</span>
                                             </label>
@@ -1659,7 +1662,7 @@
                                             </label>
                                         </div>
                                         
-                                        <div id="sd-flyer-qr-inputs" style="display:grid; grid-template-columns: 2fr 1fr 1fr; gap:0.75rem; margin-top:0.35rem;">
+                                        <div id="sd-flyer-qr-inputs" class="form-grid-qr" style="margin-top:0.35rem;">
                                             <div>
                                                 <label class="control-label" style="font-size:0.7rem; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Target URL / Text</label>
                                                 <input type="text" id="sd-flyer-qr-url" value="https://example.com/tickets" placeholder="e.g. https://mywebsite.com/event" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem 0.6rem; border-radius:6px; font-size:0.78rem;">
@@ -1692,8 +1695,8 @@
                                         </div>
                                     </div>
 
-                                    <div style="display:flex; gap:0.75rem; justify-content:space-between; align-items:center; margin-top:0.25rem;">
-                                        <button id="sd-flyer-gen-btn" class="btn btn-primary btn-sky">🚀 Generate Flyer Image</button>
+                                    <div style="display:flex; gap:0.75rem; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-top:0.25rem;">
+                                        <button id="sd-flyer-gen-btn" class="btn btn-primary btn-sky btn-auto">🚀 Generate Flyer Image</button>
                                         <div id="sd-flyer-status" style="font-size:0.78rem; color:#94a3b8;">Ready to synthesize flyer.</div>
                                     </div>
                                 </div>
@@ -1736,7 +1739,7 @@
                                             <span id="sd-recipe-capability" style="font-size:0.7rem; color:#94a3b8; border:1px solid rgba(148,163,184,0.3); border-radius:12px; padding:0.2rem 0.5rem;">any model</span>
                                         </div>
 
-                                        <div style="display:grid; grid-template-columns:minmax(220px, 1fr) minmax(220px, 1fr); gap:0.75rem;">
+                                        <div class="form-grid-2">
                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
                                                 <span>1 &middot; The photo to edit</span>
                                                 <input id="sd-recipe-photo" type="file" accept="image/*" style="width:100%; font-size:0.7rem; color:#94a3b8;">
@@ -1772,8 +1775,8 @@
                                             </label>
                                         </div>
                                         <div style="display:flex; align-items:center; gap:0.65rem; flex-wrap:wrap;">
-                                            <button id="sd-recipe-btn" type="button" class="btn btn-primary" style="background:#7e22ce; border-color:#a855f7;" disabled>Pick what to change</button>
-                                            <button id="sd-recipe-clear-btn" type="button" class="btn btn-secondary btn-slate">Clear</button>
+                                            <button id="sd-recipe-btn" type="button" class="btn btn-primary btn-auto" style="background:#7e22ce; border-color:#a855f7;" disabled>Pick what to change</button>
+                                            <button id="sd-recipe-clear-btn" type="button" class="btn btn-secondary btn-slate btn-auto">Clear</button>
                                             <div id="sd-recipe-status" style="font-size:0.75rem; color:#94a3b8; min-height:1.1rem;"></div>
                                         </div>
                                     </div>
@@ -1782,14 +1785,14 @@
                                     <div>
                                         <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Quick Actions <span style="font-weight:400; color:#94a3b8;">(face swap & merge need 2+ images)</span></label>
                                         <div style="display:flex; flex-wrap:wrap; gap:0.4rem;">
-                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Swap the face from the second image onto the person in the first image. Keep the first image's pose, body, clothing, hair style, and background. Match skin tone, lighting, and camera angle exactly. Natural photographic result, no artifacts.">🙂 Face Swap</button>
-                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Merge all input images into one cohesive scene. Combine the subjects naturally with consistent lighting, perspective, and scale. Keep faces and identities intact. Photorealistic composite.">🖼️ Merge Images</button>
-                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Replace the background of the first image with the setting from the second image. Keep the foreground subject from the first image unchanged, with matching lighting and shadows.">🌄 Swap Background</button>
-                                            <button type="button" class="btn btn-secondary sd-edit-quick" data-prompt="Place the main subject from the second image into the first image's scene. Match lighting, perspective, and scale. Keep both faces and identities consistent.">🧩 Composite</button>
+                                            <button type="button" class="btn btn-secondary btn-sm sd-edit-quick" data-prompt="Swap the face from the second image onto the person in the first image. Keep the first image's pose, body, clothing, hair style, and background. Match skin tone, lighting, and camera angle exactly. Natural photographic result, no artifacts.">🙂 Face Swap</button>
+                                            <button type="button" class="btn btn-secondary btn-sm sd-edit-quick" data-prompt="Merge all input images into one cohesive scene. Combine the subjects naturally with consistent lighting, perspective, and scale. Keep faces and identities intact. Photorealistic composite.">🖼️ Merge Images</button>
+                                            <button type="button" class="btn btn-secondary btn-sm sd-edit-quick" data-prompt="Replace the background of the first image with the setting from the second image. Keep the foreground subject from the first image unchanged, with matching lighting and shadows.">🌄 Swap Background</button>
+                                            <button type="button" class="btn btn-secondary btn-sm sd-edit-quick" data-prompt="Place the main subject from the second image into the first image's scene. Match lighting, perspective, and scale. Keep both faces and identities consistent.">🧩 Composite</button>
                                         </div>
                                     </div>
 
-                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                                    <div class="form-grid-2">
                                         <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.78rem; font-weight:600; color:#e2e8f0;">Photo Retouch Preset</label>
                                             <select id="sd-photo-preset-select" class="form-control" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:8px; font-size:0.8rem;">
@@ -1834,7 +1837,7 @@
                                         </div>
                                     </div>
 
-                                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem;">
+                                    <div class="form-grid-3">
                                         <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.2rem; font-size:0.72rem; color:#94a3b8;">Steps</label>
                                             <input type="number" id="sd-edit-steps" value="20" min="1" max="50" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.78rem;" title="Lower = faster multi-image edits on 8GB VRAM">
@@ -1849,8 +1852,8 @@
                                         </div>
                                     </div>
 
-                                    <div style="display:flex; gap:0.75rem; align-items:center; margin-top:0.25rem;">
-                                        <button id="sd-edit-btn" class="btn btn-primary btn-green">✨ Edit & Enhance Photo</button>
+                                    <div style="display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap; margin-top:0.25rem;">
+                                        <button id="sd-edit-btn" class="btn btn-primary btn-green btn-auto">✨ Edit & Enhance Photo</button>
                                         <div id="sd-edit-status" style="font-size:0.78rem; color:#94a3b8; min-height:1.2rem;"></div>
                                     </div>
                                 </div>
@@ -1864,7 +1867,7 @@
                                     <span style="color:white; font-weight:600; font-size:0.95rem; display:flex; align-items:center; gap:0.5rem;">✏️ Interactive Canvas Text & Typography Studio</span>
                                     <span style="font-size:0.75rem; color:#94a3b8;">Overlay 100% sharp vector typography & badges onto any graphic</span>
                                 </div>
-                                <div style="display:grid; grid-template-columns: 1fr 340px; gap:1.25rem;">
+                                <div class="studio-split">
                                     <!-- Canvas Viewport -->
                                     <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; background:#090d16; border:2px dashed rgba(255,255,255,0.1); border-radius:10px; padding:1rem; min-height:400px; position:relative;">
                                         <canvas id="sd-text-canvas" style="max-width:100%; max-height:540px; border-radius:8px; box-shadow: 0 12px 30px rgba(0,0,0,0.6);"></canvas>
@@ -1944,7 +1947,7 @@
                                     <strong>Seeding an image twice does not animate it.</strong> A still model has no memory of the previous frame, so a second seed gives you a second unrelated picture, not the next frame. Motion here is <em>programmatic</em> - the code moves a real camera over the image, crossfades two stills, or plays a sprite sheet back in order. That is why one generation is enough, and why the result is reproducible.
                                 </div>
 
-                                <div style="display:grid; grid-template-columns: 1fr 340px; gap:1.25rem;">
+                                <div class="studio-split">
                                     <!-- Left: source images + preview -->
                                     <div style="display:flex; flex-direction:column; gap:0.85rem;">
                                         <div>
@@ -2086,19 +2089,19 @@
                                         </div>
                                     </div>
 
-                                    <div style="display:flex; gap:0.75rem; align-items:center; margin-top:0.25rem;">
-                                        <button id="sd-ocr-run-btn" class="btn btn-primary btn-magenta">🔍 Extract Text & Layout</button>
+                                    <div style="display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap; margin-top:0.25rem;">
+                                        <button id="sd-ocr-run-btn" class="btn btn-primary btn-magenta btn-auto">🔍 Extract Text & Layout</button>
                                         <div id="sd-ocr-status" style="font-size:0.78rem; color:#94a3b8;">Ready to analyze document.</div>
                                     </div>
 
                                     <!-- OCR Results Panel -->
                                     <div id="sd-ocr-results-container" class="d-none" style="background:#090d16; padding:1rem; border-radius:8px; border:1px solid rgba(168, 85, 247, 0.3); margin-top:0.5rem;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.5rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:0.5rem;">
                                             <span style="font-size:0.85rem; font-weight:600; color:#c084fc;">✨ Extracted Document Structure</span>
                                             <button id="sd-ocr-transfer-btn" class="btn btn-blue btn-sm">📥 Transfer Text to Flyer Creator</button>
                                         </div>
                                         
-                                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-bottom:0.85rem;">
+                                        <div class="form-grid-3" style="margin-bottom:0.85rem;">
                                             <div>
                                                 <label class="control-label" style="font-size:0.7rem; color:#94a3b8;">Extracted Headline</label>
                                                 <input type="text" id="sd-ocr-res-headline" readonly style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
@@ -2126,8 +2129,8 @@
                     <!-- PANEL 5: Picture-to-Text Prompt Generator Studio -->
                     <div id="sd-panel-promptgen" class="sd-mode-panel d-none" style="margin-top:1.25rem;">
                         <div class="card" style="background:#0f172a; border:1px solid rgba(168, 85, 247, 0.2);">
-                            <h4 style="margin:0 0 1rem 0; font-size:1.05rem; font-weight:700; color:#e2e8f0; display:flex; align-items:center; justify-content:space-between;">
-                                <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <h4 style="margin:0 0 1rem 0; font-size:1.05rem; font-weight:700; color:#e2e8f0; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;">
+                                <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
                                     <span>🎨 Image-to-Prompt Assistant</span>
                                     <span style="font-size:0.7rem; background:rgba(168, 85, 247, 0.15); color:#c084fc; padding:0.2rem 0.6rem; border-radius:12px; font-weight:600;">Vision AI + Prompt Engineering</span>
                                 </div>
@@ -2137,7 +2140,7 @@
                                 </label>
                             </h4>
 
-                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.25rem;">
+                            <div class="form-grid-2" style="gap:1.25rem;">
                                 <!-- Left Column: Upload & Description -->
                                 <div>
                                     <label class="control-label" style="display:block; margin-bottom:0.35rem; font-size:0.8rem; font-weight:600; color:#e2e8f0;">1. Upload Target Image</label>
@@ -2176,7 +2179,7 @@
                                         <textarea id="sd-promptgen-changes" rows="3" placeholder="e.g. Change her hair to neon purple, replace background with a futuristic cyberpunk city at night with neon reflections..." style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.5rem; border-radius:8px; font-size:0.8rem; line-height:1.4; resize:vertical;"></textarea>
                                     </div>
 
-                                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.6rem;">
+                                    <div class="form-grid-3" style="gap:0.6rem;">
                                         <div>
                                             <label class="control-label" style="display:block; margin-bottom:0.25rem; font-size:0.72rem; font-weight:600; color:#e2e8f0;">Synthesis Model</label>
                                             <select id="sd-promptgen-synth-model" style="width:100%; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
@@ -2256,7 +2259,7 @@
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap:1rem;" class="audio-studio-grid">
+                    <div class="audio-studio-grid">
                         <!-- TTS pane -->
                         <div class="card" style="border-left:4px solid #34d399;">
                             <h3 style="font-size:0.95rem; margin-bottom:0.6rem; display:flex; align-items:center; gap:0.4rem;">🗣️ Text-to-Speech <span style="font-weight:400; font-size:0.7rem; color:#94a3b8;">Kokoro-82M · 24 kHz</span></h3>
@@ -2370,7 +2373,7 @@
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap:1rem;" class="podcast-studio-grid">
+                    <div class="podcast-studio-grid">
                         <!-- Hosts pane -->
                         <div class="card" style="border-left:4px solid #a78bfa;">
                             <h3 style="font-size:0.95rem; margin-bottom:0.6rem; display:flex; align-items:center; gap:0.4rem;">🎭 Hosts &amp; Bed <span style="font-weight:400; font-size:0.7rem; color:#94a3b8;">Kokoro pairs · 24 kHz</span></h3>
@@ -2436,10 +2439,10 @@
                         </div>
                     </div>
 
-                    <div class="grid-2" style="grid-template-columns: 1fr 2fr; gap: 1.5rem; display: grid;">
+                    <div class="grid-2 master-detail-grid">
                         
                         <!-- Left pane: Requests List -->
-                        <div class="card" style="min-height: 400px; display: flex; flex-direction: column; max-height: 700px;">
+                        <div class="card mobile-unbounded-card" style="min-height: 400px; display: flex; flex-direction: column; max-height: 700px;">
                             <div class="card-title" style="margin-bottom: 0.5rem; flex-shrink: 0;">Requests Buffer</div>
                             
                             <!-- Search, Timezone & Clear Controls -->
@@ -2468,7 +2471,7 @@
                         </div>
 
                         <!-- Right pane: Inspector Details -->
-                        <div class="card" style="display: flex; flex-direction: column; max-height: 700px; overflow-y: auto;">
+                        <div class="card mobile-unbounded-card" style="display: flex; flex-direction: column; max-height: 700px; overflow-y: auto;">
                             <div class="card-title" style="margin-bottom: 1rem; flex-shrink: 0;">Request Inspector</div>
                             
                             <div id="request-inspector-empty" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--text-muted); padding: 3rem 0;">
@@ -2538,10 +2541,10 @@
                         </div>
                     </div>
 
-                    <div class="grid-2" style="grid-template-columns: 1fr 2fr; gap: 1.5rem; display: grid;">
+                    <div class="grid-2 master-detail-grid">
                         
                         <!-- Left pane: Endpoint Categories Menu -->
-                        <div class="card" style="min-height: 550px; display: flex; flex-direction: column; max-height: 75vh;">
+                        <div class="card mobile-unbounded-card" style="min-height: 550px; display: flex; flex-direction: column; max-height: 75vh;">
                             <div class="card-title" style="margin-bottom: 1rem; flex-shrink: 0;">Endpoints Menu</div>
                             <div style="display: flex; flex-direction: column; gap: 0.5rem; overflow-y: auto; padding-right: 0.25rem;">
                                 
@@ -2640,7 +2643,7 @@
                         </div>
 
                         <!-- Right pane: Documentation Details -->
-                        <div class="card" style="min-height: 550px; display: flex; flex-direction: column; overflow-y: auto; max-height: 75vh; padding: 1.5rem;">
+                        <div class="card mobile-unbounded-card" style="min-height: 550px; display: flex; flex-direction: column; overflow-y: auto; max-height: 75vh; padding: 1.5rem;">
                             
                             <!-- API: POST /api/chat -->
                             <div id="doc-api-chat" class="doc-detail-pane">
@@ -2970,7 +2973,7 @@
     </div>
 
     <!-- Modal for viewing prompt and response payloads -->
-    <div id="modal-overlay" class="modal-overlay">
+    <div id="modal-overlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-container">
             <div class="modal-header">
                 <div id="modal-title" class="modal-title">Evaluation Payloads</div>
@@ -2994,8 +2997,8 @@
     </div>
 
     <!-- Test Preview Overlay -->
-    <div id="test-preview-overlay" class="modal-overlay">
-        <div class="modal-container modal-xl" style="max-width: 900px; width: 94%;">
+    <div id="test-preview-overlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="test-preview-title">
+        <div class="modal-container modal-xl">
             <div class="modal-header">
                 <div id="test-preview-title" class="modal-title">Test Preview</div>
                 <button id="test-preview-close" class="modal-close">&times;</button>
@@ -3021,7 +3024,7 @@
     </div>
 
     <!-- Screenshot Lightbox Overlay -->
-    <div id="screenshot-lightbox" class="modal-overlay" style="z-index: 11000;">
+    <div id="screenshot-lightbox" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Rendered output preview" style="z-index: 11000;">
         <div class="modal-container" style="max-width: 92%; width: auto;">
             <div class="modal-header">
                 <div class="modal-title">Rendered Output</div>
@@ -3052,7 +3055,7 @@
     </div>
 
     <!-- Search & Pull Models Overlay -->
-    <div id="search-pull-overlay" class="modal-overlay" style="z-index: 9999;">
+    <div id="search-pull-overlay" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Find and pull models" style="z-index: 9999;">
         <div class="modal-container" style="max-width: 820px; width: 90%;">
             <div class="modal-header">
                 <div class="modal-title">🔍 Find &amp; Pull Models</div>
@@ -3060,9 +3063,9 @@
             </div>
             <div class="modal-body" style="display:flex; flex-direction:column; gap:0.75rem; max-height: 80vh; overflow-y: auto;">
                 <!-- Search bar row -->
-                <div style="display:flex; gap:0.5rem; align-items:center;">
-                    <input type="text" id="model-search-query" placeholder="Search models (e.g. qwen, llama, flux, sdxl)..." style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.5rem 0.75rem; border-radius:6px; font-size:0.85rem;">
-                    <button id="btn-run-model-search" class="btn btn-primary">Search</button>
+                <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                    <input type="text" id="model-search-query" placeholder="Search models (e.g. qwen, llama, flux, sdxl)..." style="flex:1; min-width:180px; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.5rem 0.75rem; border-radius:6px; font-size:0.85rem;">
+                    <button id="btn-run-model-search" class="btn btn-primary btn-auto">Search</button>
                 </div>
                 <!-- Filter row -->
                 <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
@@ -3126,7 +3129,7 @@
     </div>
 
     <!-- API Keys & Provider Settings Overlay -->
-    <div id="api-keys-modal" class="modal-overlay" style="z-index: 9999;">
+    <div id="api-keys-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Settings and providers" style="z-index: 9999;">
         <div class="modal-container" style="max-width: 650px; width: 90%;">
             <div class="modal-header">
                 <div class="modal-title">⚙️ Settings &amp; Providers</div>
@@ -3402,16 +3405,16 @@
                 </div>
 
                 <!-- Actions -->
-                <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:0.5rem;">
-                    <button id="btn-cancel-api-keys" class="btn btn-slate">Cancel</button>
-                    <button id="btn-save-api-keys" class="btn btn-primary">💾 Save Credentials</button>
+                <div style="display:flex; justify-content:flex-end; gap:0.75rem; flex-wrap:wrap; margin-top:0.5rem;">
+                    <button id="btn-cancel-api-keys" class="btn btn-slate btn-auto">Cancel</button>
+                    <button id="btn-save-api-keys" class="btn btn-primary btn-auto">💾 Save Credentials</button>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Live Online Models Explorer Overlay -->
-    <div id="online-models-modal" class="modal-overlay" style="z-index: 9999;">
+    <div id="online-models-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Live online models explorer" style="z-index: 9999;">
         <div class="modal-container" style="max-width: 900px; width: 92%;">
             <div class="modal-header">
                 <div class="modal-title">🌐 Live Online Models Explorer</div>
@@ -3476,13 +3479,13 @@
                 </div>
 
                 <!-- Bottom Footer Actions -->
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem; border-top:1px solid var(--border-color); padding-top:0.75rem;">
+                <div class="modal-footer-row" style="margin-top:0.5rem; border-top:1px solid var(--border-color); padding-top:0.75rem;">
                     <div style="font-size:0.72rem; color:var(--text-muted);">
                         Selected models will appear directly in your Target Models sidebar.
                     </div>
-                    <div style="display:flex; gap:0.75rem;">
-                        <button id="btn-cancel-online-models" class="btn btn-slate">Cancel</button>
-                        <button id="btn-save-online-selection" class="btn btn-primary">✅ Save Benchmark Selection</button>
+                    <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                        <button id="btn-cancel-online-models" class="btn btn-slate btn-auto">Cancel</button>
+                        <button id="btn-save-online-selection" class="btn btn-primary btn-auto">✅ Save Benchmark Selection</button>
                     </div>
                 </div>
             </div>
@@ -3496,26 +3499,51 @@
     <!-- Frontend logic script -->
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
     <script>
-    // Mobile: collapsible pipeline controls (timeless, no hardcoded breakpoint in JS)
+    // Responsive collapsible pipeline controls: mobile/tablet (<=1024px) & desktop (>1024px)
     (function() {
-        const btn = document.getElementById('mobile-controls-toggle');
+        const mobileBtn = document.getElementById('mobile-controls-toggle');
+        const desktopBtn = document.getElementById('desktop-sidebar-toggle');
         const sidebar = document.getElementById('sidebar');
-        if (!btn || !sidebar) return;
-        const mq = window.matchMedia('(max-width: 640px)');
-        function setCollapsed(collapsed) {
+        const grid = document.querySelector('.dashboard-grid');
+        if (!sidebar) return;
+
+        const mq = window.matchMedia('(max-width: 1024px)');
+        function setMobileCollapsed(collapsed) {
             sidebar.classList.toggle('collapsed', collapsed);
-            btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-            btn.textContent = collapsed ? '☰ Show Controls' : '☰ Hide Controls';
+            if (mobileBtn) {
+                mobileBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+                mobileBtn.textContent = collapsed ? '☰ Show Controls' : '☰ Hide Controls';
+            }
             try { localStorage.setItem('alpaca-mobile-controls-collapsed', collapsed ? '1' : '0'); } catch(e) {}
         }
-        let saved = null;
-        try { saved = localStorage.getItem('alpaca-mobile-controls-collapsed'); } catch(e) {}
-        if (mq.matches && saved === null) setCollapsed(true);
-        else if (saved === '1') setCollapsed(true);
-        else if (saved === '0') setCollapsed(false);
-        btn.addEventListener('click', () => setCollapsed(!sidebar.classList.contains('collapsed')));
-        // keep button label in sync on resize
-        mq.addEventListener ? mq.addEventListener('change', () => {}) : window.addEventListener('resize', () => {});
+        function setDesktopHidden(hidden) {
+            if (grid) grid.classList.toggle('sidebar-hidden', hidden);
+            if (desktopBtn) {
+                desktopBtn.setAttribute('aria-expanded', hidden ? 'false' : 'true');
+                desktopBtn.textContent = hidden ? '☰ Show Controls' : '☰ Hide Controls';
+            }
+            try { localStorage.setItem('alpaca-desktop-sidebar-hidden', hidden ? '1' : '0'); } catch(e) {}
+        }
+        function syncLayout() {
+            let savedMob = null;
+            let savedDesk = null;
+            try {
+                savedMob = localStorage.getItem('alpaca-mobile-controls-collapsed');
+                savedDesk = localStorage.getItem('alpaca-desktop-sidebar-hidden');
+            } catch(e) {}
+            if (mq.matches) {
+                if (grid) grid.classList.remove('sidebar-hidden');
+                setMobileCollapsed(savedMob === null ? true : savedMob === '1');
+            } else {
+                sidebar.classList.remove('collapsed');
+                setDesktopHidden(savedDesk === '1');
+            }
+        }
+        syncLayout();
+        if (mobileBtn) mobileBtn.addEventListener('click', () => setMobileCollapsed(!sidebar.classList.contains('collapsed')));
+        if (desktopBtn) desktopBtn.addEventListener('click', () => setDesktopHidden(!(grid && grid.classList.contains('sidebar-hidden'))));
+        if (mq.addEventListener) mq.addEventListener('change', syncLayout);
+        else window.addEventListener('resize', syncLayout);
     })();
     </script>
 </body>

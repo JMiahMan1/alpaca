@@ -7,12 +7,15 @@
 <!-- @family-kit -->
 <style>
   html, body { background: #eaf8dc; }
+  #bb-safe { position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
+    padding: var(--fk-safe-top) var(--fk-safe-right) var(--fk-safe-bottom) var(--fk-safe-left); }
   #fk-hud .fk-pill { white-space: nowrap; flex: 0 1 auto; min-width: 0; }
   .bb-line { margin-top: 6px; font-size: 13px; opacity: 0.8; }
 </style>
 </head>
 <body>
 <div id="fk-stage"></div>
+<div id="bb-safe"></div>
 <script>
 (function () {
   "use strict";
@@ -320,6 +323,8 @@
       const pts = Math.round(base * mult);
       gained += pts;
       const centre = cellCentre(r + 1, c + 1);
+      kit.fx.ring(centre.x, centre.y, lines >= 2 ? "#ffe066" : "#7dffb0", L.cell * (lines >= 2 ? 2.8 : 2.1), { width: lines >= 2 ? 5 : 3.5, life: 0.45 });
+      kit.fx.burst(centre.x, centre.y, ["#ffe066", "#7dffb0", "#ff7fb5", "#ffffff"], lines >= 2 ? 18 : 10, { shape: "spark", speed: 220, size: 4.5, gravity: 240, life: 0.65 });
       kit.fx.text(centre.x, centre.y - 10, `+${pts}`, { color: "#fff", size: 26 });
       if (g.combo > 1) kit.toast(`Combo ×${g.combo}!`, "#ffe066");
       else if (lines >= 2) kit.toast(lines >= 3 ? "Wonderful!" : "Double bloom!", "#ffe066");
@@ -492,29 +497,46 @@
     layout();
   }
 
+  const safeEl = document.getElementById("bb-safe");
+  const hudEl = document.getElementById("fk-hud");
+  function insets() {
+    const cs = safeEl ? getComputedStyle(safeEl) : null;
+    return {
+      t: cs ? parseFloat(cs.paddingTop) || 0 : 0,
+      r: cs ? parseFloat(cs.paddingRight) || 0 : 0,
+      b: cs ? parseFloat(cs.paddingBottom) || 0 : 0,
+      l: cs ? parseFloat(cs.paddingLeft) || 0 : 0,
+    };
+  }
+
   function layout() {
-    const top = 72;
+    const ins = insets();
+    const hudBottom = hudEl ? hudEl.getBoundingClientRect().bottom : 0;
+    const top = Math.max(72 + ins.t, hudBottom + 8);
+    const bot = ins.b;
     const portrait = H / W > 1.12;
     const pad = 14;
+    const availW = W - ins.l - ins.r;
+    const availH = H - top - bot;
     if (portrait) {
-      const cell = Math.floor(Math.min((W - pad * 2) / N, (H - top - 250) / N, 64));
+      const cell = Math.floor(Math.min((availW - pad * 2) / N, (availH - 220) / N, 64));
       L.cell = Math.max(24, cell);
-      L.bx = Math.round((W - L.cell * N) / 2);
-      L.by = top + Math.max(4, Math.round((H - top - 250 - L.cell * N) * 0.35));
-      const ty = L.by + L.cell * N + 14;
-      const sw = (W - pad * 2 - 3 * 8) / 4;
-      const sh = Math.min(sw, 120, H - ty - 80);
-      L.slots = [0, 1, 2, 3].map((i) => ({ x: pad + i * (sw + 8), y: ty, w: sw, h: sh }));
+      L.bx = Math.round(ins.l + (availW - L.cell * N) / 2);
+      L.by = top + Math.max(4, Math.round((availH - 220 - L.cell * N) * 0.35));
+      const ty = L.by + L.cell * N + 12;
+      const sw = (availW - pad * 2 - 3 * 8) / 4;
+      const sh = Math.min(sw, 116, H - bot - ty - 74);
+      L.slots = [0, 1, 2, 3].map((i) => ({ x: ins.l + pad + i * (sw + 8), y: ty, w: sw, h: sh }));
       const by = ty + sh + 10;
-      const bw = (W - pad * 2 - 3 * 8) / 4;
-      L.buttons = ["rotate", "bomb", "shuffle", "undo"].map((k, i) => ({ k, x: pad + i * (bw + 8), y: by, w: bw, h: Math.max(48, Math.min(58, H - by - 14)) }));
+      const bw = (availW - pad * 2 - 3 * 8) / 4;
+      L.buttons = ["rotate", "bomb", "shuffle", "undo"].map((k, i) => ({ k, x: ins.l + pad + i * (bw + 8), y: by, w: bw, h: Math.max(46, Math.min(56, H - bot - by - 10)) }));
     } else {
-      const cell = Math.floor(Math.min((H - top - 16) / N, (W * 0.56) / N, 64));
+      const cell = Math.floor(Math.min((availH - 16) / N, (availW * 0.56) / N, 64));
       L.cell = Math.max(22, cell);
-      const panelW = Math.min(360, W - L.cell * N - pad * 3);
+      const panelW = Math.min(360, availW - L.cell * N - pad * 3);
       const total = L.cell * N + pad + panelW;
-      L.bx = Math.round((W - total) / 2);
-      L.by = top + Math.round((H - top - L.cell * N - 10) / 2);
+      L.bx = Math.round(ins.l + (availW - total) / 2);
+      L.by = top + Math.round((availH - L.cell * N - 10) / 2);
       const px = L.bx + L.cell * N + pad;
       const sw = (panelW - 8) / 2;
       const sh = Math.min(sw, (L.cell * N - 66) / 2 - 4);
@@ -587,9 +609,26 @@
     drag.x = p.x;
     drag.y = p.y;
     const o = dragOrigin(drag);
-    const r = Math.round((o.y - L.by) / L.cell);
-    const c = Math.round((o.x - L.bx) / L.cell);
-    drag.target = fits(g.board, drag.piece.cells, r, c) ? { r, c } : null;
+    const fr = (o.y - L.by) / L.cell;
+    const fc = (o.x - L.bx) / L.cell;
+    const r0 = Math.round(fr);
+    const c0 = Math.round(fc);
+    if (fits(g.board, drag.piece.cells, r0, c0)) {
+      drag.target = { r: r0, c: c0 };
+    } else {
+      // Gentle magnetic snap on touch screens: if the finger is within 0.65 cells
+      // of a valid gap, snap smoothly to the nearest legal placement.
+      let best = null, bestD = 0.65;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = r0 + dr, cc = c0 + dc;
+          if (!fits(g.board, drag.piece.cells, rr, cc)) continue;
+          const dist = Math.hypot(rr - fr, cc - fc);
+          if (dist < bestD) { bestD = dist; best = { r: rr, c: cc }; }
+        }
+      }
+      drag.target = best;
+    }
   }
 
   function onUp(p) {

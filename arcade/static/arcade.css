@@ -260,9 +260,18 @@ body > * { position: relative; z-index: 1; }
   50% { box-shadow: 0 0 34px rgba(255, 210, 62, 0.7), 0 0 100px rgba(255, 45, 149, 0.4), inset 0 0 30px rgba(0, 0, 0, 0.6); }
 }
 
-/* Sticky score rail on wide screens. */
+/* Sticky score rail on wide screens; 2-col grid on tablets below 1000px. */
 @media (min-width: 1001px) {
   .score-pane { position: sticky; top: 1rem; }
+}
+@media (min-width: 641px) and (max-width: 1000px) {
+  .score-pane {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    align-items: start;
+  }
+  .score-pane .pane-block { margin-bottom: 0; }
 }
 /* Modern viewport units so mobile browser chrome doesn't clip the screen. */
 .screen iframe { height: 76vh; }
@@ -434,6 +443,7 @@ body.arcade-embed .screen iframe {
 
 /* Code-kind games (pygame / desktop apps): screenshot + source + download. */
 .code-game { display: flex; flex-direction: column; gap: 0.7rem; padding: 0.8rem; }
+.code-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.6rem; }
 /* .screen zeroes line-height for pixel-perfect game frames - restore readable
    text rhythm inside the code-game branch or every line paints over the last. */
 .screen .code-game { line-height: 1.45; }
@@ -625,13 +635,16 @@ height - full-size two-row bar would eat a third of a 390px viewport. */
 
 @media (max-width: 640px) {
   .player-wrap { padding: 0.9rem 0.75rem 2.2rem; }
-  .stat-grid { grid-template-columns: minmax(0, 1fr); gap: 0.55rem; }
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem; }
   .stat-card, .trophy { min-width: 0; overflow-wrap: anywhere; }
   .stat-num { font-size: 1.3rem; }
-  .trophy-grid { grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
+  .trophy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
   .record-table { font-size: 0.76rem; min-width: 540px; }
   .record-table th, .record-table td { padding: 0.45rem 0.35rem; }
   #live-frame { height: auto; aspect-ratio: 4 / 3; min-height: 0; }
+}
+@media (max-width: 359px) {
+  .stat-grid, .trophy-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

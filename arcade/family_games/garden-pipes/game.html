@@ -409,6 +409,8 @@
 
   /* ---------------- Board state ---------------- */
   let T = 0; // animation clock (s)
+  let focusCell = -1;
+  let hoverCell = -1;
   const FILL = RM ? 0.08 : 0.22; // seconds to fill one cell
   const STEP = RM ? 0.03 : 0.09; // delay per cell along the flow
   const ROT = RM ? 0.07 : 0.2;
@@ -587,6 +589,7 @@
 
   function tapAt(x, y) {
     if (phase !== "play" || !cur) return;
+    focusCell = -1;
     const b = cur, L = b.L;
     const col = Math.floor((x - L.bx) / L.cell), row = Math.floor((y - L.by) / L.cell);
     if (col < 0 || row < 0 || col >= b.cols || row >= b.rows) return;
@@ -1147,7 +1150,8 @@
           kit.sound.tone(784 * Math.pow(2, k / 6), 0.25, { type: "triangle", vol: 0.12, delay: 0.05 });
           const p = cellCenter(b, f);
           const st = b.cells[f].style;
-          kit.fx.burst(p.x, p.y, [st.petal, "#ffffff", "#b9f0ff"], 10, { speed: 120, size: 4, gravity: 150, life: 0.6 });
+          kit.fx.ring(p.x, p.y, "#7be3ff", b.L.cell * 0.85, { width: 4, life: 0.5 });
+          kit.fx.burst(p.x, p.y, [st.petal, "#ffffff", "#b9f0ff"], 12, { shape: "spark", speed: 145, size: 4, gravity: 150, life: 0.65 });
         }
         b.bloom[f] = Math.min(1, b.bloom[f] + dt * (RM ? 6 : 2.2));
       } else {
@@ -1219,6 +1223,23 @@
       g.fillStyle = `rgba(255,245,170,${a * 0.22})`;
       roundRect(g, x + 2, y + 2, s - 4, s - 4, s * 0.2);
       g.fill();
+    }
+    // keyboard focus & desktop mouse hover highlight
+    if (b === cur && phase === "play") {
+      for (const [idx, isKbd] of [[hoverCell, false], [focusCell, true]]) {
+        if (idx < 0 || idx >= b.cells.length) continue;
+        if (!isKbd && idx === focusCell) continue;
+        if (!isKbd && b.cells[idx].t !== "pipe") continue;
+        const x = P + (idx % b.cols) * s, y = P + ((idx / b.cols) | 0) * s;
+        const pul = 0.72 + 0.28 * Math.sin(T * 6);
+        g.save();
+        g.strokeStyle = isKbd ? `rgba(255, 240, 130, ${pul})` : "rgba(255, 255, 255, 0.55)";
+        g.lineWidth = isKbd ? 3.5 : 2;
+        if (isKbd) { g.shadowColor = "#ffe86b"; g.shadowBlur = 10; }
+        roundRect(g, x + 3, y + 3, s - 6, s - 6, s * 0.18);
+        g.stroke();
+        g.restore();
+      }
     }
     g.restore();
     // garden label under the board
@@ -1306,6 +1327,56 @@
     if (old) layout(old);
   });
   kit.pointer(null, { down: (p) => tapAt(p.x, p.y) });
+  // Desktop mouse hover + keyboard navigation (Arrows / WASD + Space/Enter)
+  document.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse" || phase !== "play" || kit.state !== "playing" || !cur || !view) {
+      hoverCell = -1;
+      return;
+    }
+    const r = view.canvas.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    const L = cur.L;
+    const col = Math.floor((x - L.bx) / L.cell), row = Math.floor((y - L.by) / L.cell);
+    if (col >= 0 && row >= 0 && col < cur.cols && row < cur.rows) {
+      const idx = row * cur.cols + col;
+      hoverCell = cur.cells[idx].t === "pipe" ? idx : -1;
+    } else {
+      hoverCell = -1;
+    }
+    view.canvas.style.cursor = hoverCell >= 0 ? "pointer" : "";
+  });
+  window.addEventListener("keydown", (e) => {
+    if (kit.state !== "playing" || phase !== "play" || !cur) return;
+    const b = cur;
+    const dirs = {
+      ArrowLeft: [0, -1], a: [0, -1], A: [0, -1],
+      ArrowRight: [0, 1], d: [0, 1], D: [0, 1],
+      ArrowUp: [-1, 0], w: [-1, 0], W: [-1, 0],
+      ArrowDown: [1, 0], s: [1, 0], S: [1, 0],
+    };
+    const mv = dirs[e.key];
+    if (mv) {
+      e.preventDefault();
+      if (focusCell < 0 || focusCell >= b.cells.length) {
+        const firstPipe = b.cells.findIndex((c) => c.t === "pipe");
+        focusCell = firstPipe >= 0 ? firstPipe : 0;
+      } else {
+        const r = (focusCell / b.cols) | 0;
+        const c = focusCell % b.cols;
+        const nr = (r + mv[0] + b.rows) % b.rows;
+        const nc = (c + mv[1] + b.cols) % b.cols;
+        focusCell = nr * b.cols + nc;
+      }
+      return;
+    }
+    if ((e.key === "Enter" || e.key === " ") && focusCell >= 0 && focusCell < b.cells.length) {
+      e.preventDefault();
+      const idx = focusCell;
+      const p = cellCenter(b, idx);
+      tapAt(p.x, p.y);
+      focusCell = idx;
+    }
+  });
   cur = makeBoard(1); // a garden behind the title card
   kit.run(update, render);
 

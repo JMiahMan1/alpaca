@@ -214,6 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tabBtnSd.classList.remove('active');
         tabBtnAudio.classList.remove('active');
         tabBtnPodcast.classList.remove('active');
+        document.querySelectorAll('.main-tabs .nav-tab').forEach(btn => btn.setAttribute('aria-selected', 'false'));
 
         // Hide views
         viewMonitor.classList.add('d-none');
@@ -275,6 +276,13 @@ document.addEventListener('DOMContentLoaded', () => {
             tabBtnPodcast.classList.add('active');
             viewPodcast.classList.remove('d-none');
             loadPodcastStatus();
+        }
+        const activeBtn = document.querySelector('.main-tabs .nav-tab.active');
+        if (activeBtn) {
+            activeBtn.setAttribute('aria-selected', 'true');
+            if (typeof activeBtn.scrollIntoView === 'function' && window.matchMedia && window.matchMedia('(max-width: 1024px)').matches) {
+                activeBtn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+            }
         }
         document.dispatchEvent(new CustomEvent('tabChanged', { detail: tabName }));
     }
@@ -2264,26 +2272,37 @@ document.addEventListener('DOMContentLoaded', () => {
         if (docsMenuSetup) return;
         docsMenuSetup = true;
 
-        document.querySelectorAll('.doc-menu-item').forEach(item => {
-            item.addEventListener('click', () => {
-                // Deactivate all menu items
-                document.querySelectorAll('.doc-menu-item').forEach(mi => {
-                    mi.classList.remove('active');
-                    mi.style.borderColor = 'var(--border-color)';
-                });
-                // Activate selected menu item
-                item.classList.add('active');
-                item.style.borderColor = 'var(--color-primary)';
+        const activateDocItem = (item) => {
+            document.querySelectorAll('.doc-menu-item').forEach(mi => {
+                mi.classList.remove('active');
+                mi.style.borderColor = 'var(--border-color)';
+                mi.setAttribute('aria-current', 'false');
+            });
+            item.classList.add('active');
+            item.style.borderColor = 'var(--color-primary)';
+            item.setAttribute('aria-current', 'true');
 
-                // Hide all details panes
-                document.querySelectorAll('.doc-detail-pane').forEach(pane => {
-                    pane.classList.add('d-none');
-                });
-                // Show matching details pane
-                const targetId = item.getAttribute('data-target');
-                const targetPane = document.getElementById(targetId);
-                if (targetPane) {
-                    targetPane.classList.remove('d-none');
+            document.querySelectorAll('.doc-detail-pane').forEach(pane => {
+                pane.classList.add('d-none');
+            });
+            const targetId = item.getAttribute('data-target');
+            const targetPane = document.getElementById(targetId);
+            if (targetPane) {
+                targetPane.classList.remove('d-none');
+                if (typeof targetPane.scrollIntoView === 'function' && window.matchMedia && window.matchMedia('(max-width: 900px)').matches) {
+                    targetPane.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }
+        };
+
+        document.querySelectorAll('.doc-menu-item').forEach(item => {
+            item.setAttribute('tabindex', '0');
+            item.setAttribute('role', 'button');
+            item.addEventListener('click', () => activateDocItem(item));
+            item.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    activateDocItem(item);
                 }
             });
         });
@@ -2503,6 +2522,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         });
+
+        // Adapt Chart.js legends for narrow mobile viewports so legends don't crush bars
+        const applyResponsiveCharts = () => {
+            const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+            const charts = [tpsChart, ttftChart, categoryChart, sharedLatencyChart, sharedAstChart];
+            charts.forEach(ch => {
+                if (!ch || !ch.options || !ch.options.plugins || !ch.options.plugins.legend) return;
+                ch.options.plugins.legend.position = narrow ? 'bottom' : 'top';
+                ch.options.plugins.legend.labels = {
+                    ...(ch.options.plugins.legend.labels || {}),
+                    boxWidth: narrow ? 8 : 11,
+                    padding: narrow ? 6 : 9,
+                    font: { size: narrow ? 10 : 11 },
+                };
+                ch.update('none');
+            });
+        };
+        applyResponsiveCharts();
+        if (window.matchMedia) {
+            const chartMq = window.matchMedia('(max-width: 640px)');
+            if (chartMq.addEventListener) chartMq.addEventListener('change', applyResponsiveCharts);
+        }
     }
 
     // Modal Control - supports thinking models with <think>...</think> blocks
@@ -3220,27 +3261,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showToast(message, type = 'info', opts = {}) {
+        let stack = document.getElementById('alpaca-toast-stack');
+        if (!stack) {
+            stack = document.createElement('div');
+            stack.id = 'alpaca-toast-stack';
+            stack.setAttribute('aria-live', 'polite');
+            document.body.appendChild(stack);
+        }
         const toast = document.createElement('div');
-        const colors = {
-            success: { bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.3)', color: '#6ee7b7' },
-            error: { bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.3)', color: '#fca5a5' },
-            info: { bg: 'rgba(59, 130, 246, 0.15)', border: 'rgba(59, 130, 246, 0.3)', color: '#93c5fd' }
-        };
-        const c = colors[type] || colors.info;
-        Object.assign(toast.style, {
-            position: 'fixed', bottom: '1rem', right: '1rem', padding: '0.6rem 1rem',
-            background: c.bg, border: `1px solid ${c.border}`, borderRadius: '8px',
-            color: c.color, fontSize: '0.8rem', zIndex: '10000',
-            fontFamily: 'system-ui, sans-serif', boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-            display: 'flex', alignItems: 'center', gap: '0.75rem', maxWidth: 'min(92vw, 420px)'
-        });
+        const kind = type === 'success' || type === 'error' ? type : 'info';
+        toast.className = `alpaca-toast toast-${kind}`;
+        toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
         const msgSpan = document.createElement('span');
         msgSpan.textContent = message;
         msgSpan.style.wordBreak = 'break-word';
         toast.appendChild(msgSpan);
         if (opts.actionLabel && typeof opts.onAction === 'function') {
             const actBtn = document.createElement('button');
-            actBtn.className = 'btn btn-sm btn-ghost';
+            actBtn.className = 'btn btn-sm btn-ghost btn-auto';
             actBtn.textContent = opts.actionLabel;
             actBtn.style.flex = '0 0 auto';
             actBtn.addEventListener('click', () => { opts.onAction(); dismissToast(); });
@@ -3251,11 +3289,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (dismissed) return;
             dismissed = true;
             toast.style.opacity = '0';
-            toast.style.transition = 'opacity 0.3s ease';
-            setTimeout(() => toast.remove(), 300);
+            toast.style.transform = 'translateY(6px)';
+            setTimeout(() => toast.remove(), 260);
         }
-        document.body.appendChild(toast);
-        setTimeout(dismissToast, opts.duration || 3000);
+        stack.appendChild(toast);
+        setTimeout(dismissToast, opts.duration || 3200);
     }
 
 
@@ -3413,6 +3451,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (detailsEl) detailsEl.classList.remove('d-none');
             
             updateInspectorDetails(req);
+            if (detailsEl && typeof detailsEl.scrollIntoView === 'function' && window.matchMedia && window.matchMedia('(max-width: 900px)').matches) {
+                detailsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
         });
 
         const headerDiv = document.createElement('div');
@@ -6202,8 +6243,52 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (e.target === overlay) closeTestPreview();
             });
         }
+        // Close whichever modal/overlay is topmost on Escape, and lock body scroll while any modal is open
+        const syncModalScrollLock = () => {
+            if (!document.body) return;
+            const anyOpen = !!document.querySelector('.modal-overlay.open, #sandbox-terminal-overlay.open');
+            document.body.classList.toggle('modal-open', anyOpen);
+        };
+        if (typeof MutationObserver !== 'undefined' && document.body) {
+            const mo = new MutationObserver(syncModalScrollLock);
+            document.querySelectorAll('.modal-overlay, #sandbox-terminal-overlay').forEach((el) => {
+                mo.observe(el, { attributes: true, attributeFilter: ['class'] });
+            });
+        }
+        document.querySelectorAll('.quick-select span').forEach(el => {
+            el.setAttribute('tabindex', '0');
+            el.setAttribute('role', 'button');
+            el.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    el.click();
+                }
+            });
+        });
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeTestPreview();
+            if (e.key !== 'Escape') return;
+            const lightbox = document.getElementById('screenshot-lightbox');
+            if (lightbox && lightbox.classList.contains('open')) {
+                lightbox.classList.remove('open');
+                return;
+            }
+            const term = document.getElementById('sandbox-terminal-overlay');
+            if (term && term.classList.contains('open')) {
+                term.classList.remove('open');
+                return;
+            }
+            const tp = document.getElementById('test-preview-overlay');
+            if (tp && tp.classList.contains('open')) {
+                closeTestPreview();
+                return;
+            }
+            for (const id of ['online-models-modal', 'api-keys-modal', 'search-pull-overlay', 'modal-overlay']) {
+                const el = document.getElementById(id);
+                if (el && el.classList.contains('open')) {
+                    el.classList.remove('open');
+                    return;
+                }
+            }
         });
     })();
 
@@ -7613,7 +7698,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 runLink.textContent = '▶ Run code';
                 runLink.style.marginLeft = '0.6rem';
                 runLink.addEventListener('click', () => {
-                    if (!test.response) { alert('No response to run.'); return; }
+                    if (!test.response) { showToast('No response to run.', 'error'); return; }
                     openResponseRunner(test.response, test.test_label, test.thinking);
                 });
                 tdView.appendChild(runLink);
@@ -8558,7 +8643,9 @@ document.addEventListener('DOMContentLoaded', () => {
                             : `<span style="background:rgba(59,130,246,0.2);color:#60a5fa;padding:1px 6px;border-radius:4px;font-size:0.65rem;font-weight:600;">💬 Text LLM</span>`;
 
                         const card = document.createElement('div');
-                        card.style.cssText = `background:var(--card-bg);border:1px solid var(--border-color);border-radius:8px;padding:0.85rem;cursor:pointer;transition:border-color 0.2s,box-shadow 0.2s;`;
+                        card.setAttribute('tabindex', '0');
+                        card.setAttribute('role', 'button');
+                        card.style.cssText = `background:var(--bg-card);border:1px solid var(--border-color);border-radius:8px;padding:0.85rem;cursor:pointer;transition:border-color 0.2s,box-shadow 0.2s;`;
                         card.innerHTML = `
                             <div style="font-size:0.72rem;font-weight:600;color:${isDefault ? '#f59e0b' : 'var(--color-primary)'};margin-bottom:0.5rem;word-break:break-all;line-height:1.3;">${label}</div>
                             <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:0.5rem;">${backendBadge}${specBadge}${flashBadge}</div>
@@ -8569,14 +8656,21 @@ document.addEventListener('DOMContentLoaded', () => {
                                 ${s['cache-type-v'] ? `<span style="color:var(--text-muted);">KV-V</span><span style="color:white;">${s['cache-type-v']}</span>` : ''}
                                 ${s['n-cpu-moe'] ? `<span style="color:var(--text-muted);">MoE CPU</span><span style="color:white;">${s['n-cpu-moe']}</span>` : ''}
                             </div>`;
-                        card.addEventListener('mouseenter', () => { card.style.borderColor = 'var(--color-primary)'; card.style.boxShadow = '0 0 0 1px var(--color-primary)33'; });
+                        card.addEventListener('mouseenter', () => { card.style.borderColor = 'var(--color-primary)'; card.style.boxShadow = '0 0 0 1px rgba(139, 92, 246, 0.35)'; });
                         card.addEventListener('mouseleave', () => { card.style.borderColor = 'var(--border-color)'; card.style.boxShadow = 'none'; });
-                        card.addEventListener('click', () => {
+                        const selectProfileCard = () => {
                             select.value = section;
                             select.dispatchEvent(new Event('change'));
                             // Scroll to editor
                             const form = document.getElementById('profile-edit-form');
                             if (form) form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        };
+                        card.addEventListener('click', selectProfileCard);
+                        card.addEventListener('keydown', (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                selectProfileCard();
+                            }
                         });
                         cardsGrid.appendChild(card);
                     });
@@ -10229,7 +10323,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (searchResultsContainer) {
-                searchResultsContainer.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem; padding: 0.25rem; max-height: 350px; overflow-y: auto;';
+                searchResultsContainer.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 1rem; padding: 0.25rem; max-height: 350px; overflow-y: auto;';
                 searchResultsContainer.innerHTML = '';
 
                 results.forEach(item => {
@@ -10425,7 +10519,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (hfFilesList) {
-                hfFilesList.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0.75rem; padding: 0.25rem; max-height: 250px; overflow-y: auto;';
+                hfFilesList.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 0.75rem; padding: 0.25rem; max-height: 250px; overflow-y: auto;';
                 hfFilesList.innerHTML = '';
                 tags.forEach(entry => {
                     // Backend returns enriched objects {tag, size, size_bytes};
@@ -10543,7 +10637,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (hfFilesList) {
-                hfFilesList.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0.75rem; padding: 0.25rem; max-height: 250px; overflow-y: auto;';
+                hfFilesList.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 0.75rem; padding: 0.25rem; max-height: 250px; overflow-y: auto;';
                 hfFilesList.innerHTML = '';
 
                 files.forEach(file => {

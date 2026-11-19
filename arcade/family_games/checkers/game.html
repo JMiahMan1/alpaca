@@ -30,11 +30,15 @@
     background: linear-gradient(135deg, var(--fk-accent), var(--fk-accent-2)); color: #fff;
     font-family: inherit; font-size: 19px; font-weight: 900; cursor: pointer;
     box-shadow: 0 8px 0 rgba(0,0,0,.18), 0 12px 26px rgba(0,0,0,.35);
-    transition: transform .08s ease;
+    transition: transform .1s ease, filter .15s ease, background .15s ease;
   }
+  .ck-btn:hover { filter: brightness(1.07); transform: translateY(-1px); }
+  .ck-btn:focus-visible, .ck-inputs input:focus-visible { outline: 3px solid #ffd98a; outline-offset: 2px; }
   .ck-btn:active { transform: translateY(3px) scale(.98); }
   .ck-btn.ck-alt { background: rgba(255,255,255,.14); box-shadow: none; color: #fff; }
+  .ck-btn.ck-alt:hover { background: rgba(255,255,255,.22); filter: none; }
   .ck-btn.ck-ghost { background: transparent; box-shadow: none; color: #f2d9c6; font-size: 16px; min-height: 46px; }
+  .ck-btn.ck-ghost:hover { background: rgba(255,255,255,.08); filter: none; }
   .ck-code {
     margin: 18px auto 4px; font-size: 58px; font-weight: 900; letter-spacing: .16em;
     font-variant-numeric: tabular-nums; color: #ffd98a; text-shadow: 0 3px 0 rgba(0,0,0,.35);
@@ -535,7 +539,8 @@
       const cap = anim.captures[i];
       if (cap != null) {
         const { x, y } = squareCenter(cap);
-        kit.fx.burst(x, y, ["#ffd24a", "#ff8a5c", "#ffe7b8"], 8, { size: 5, speed: 180 });
+        kit.fx.ring(x, y, "#ffd24a", boardRect.sq * 0.72, { width: 4, life: 0.4 });
+        kit.fx.burst(x, y, ["#ffd24a", "#ff8a5c", "#ffe7b8"], 12, { shape: "spark", size: 5, speed: 190 });
         kit.sound.play("tap");
         kit.haptic(10);
       }
@@ -597,35 +602,56 @@
         ctx.fillRect(x0 + c * sq, y0 + r * sq, sq, sq);
       }
     }
-    // legal destinations for the selected piece
+    // legal destinations for the selected piece (gentle pulse so tap targets stand out)
     if (selected != null && state) {
       const dests = (state.legal || []).filter((m) => m.path[0] === selected);
+      const pulse = 1 + (RM ? 0 : 0.08 * Math.sin(clock * 6));
       for (const m of dests) {
         const idx = m.path[m.path.length - 1];
         const { x, y } = squareCenter(idx);
         if (m.captures.length) {
           ctx.beginPath();
-          ctx.arc(x, y, sq * 0.26, 0, Math.PI * 2);
+          ctx.arc(x, y, sq * 0.26 * pulse, 0, Math.PI * 2);
           ctx.lineWidth = Math.max(3, sq * 0.09);
           ctx.strokeStyle = "rgba(255, 210, 74, .95)";
           ctx.stroke();
         } else {
           ctx.beginPath();
-          ctx.arc(x, y, sq * 0.18, 0, Math.PI * 2);
-          ctx.fillStyle = "rgba(255, 210, 74, .85)";
+          ctx.arc(x, y, sq * 0.18 * pulse, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(255, 210, 74, .88)";
           ctx.fill();
         }
       }
     }
     // pieces
     const board = anim ? anim.from : (state ? state.board : null);
+    // Movable pieces halo on your turn (bright gold when a compulsory jump is required)
+    const movable = new Set();
+    let mustJump = false;
+    if (!anim && state && state.status === "playing" && state.turn === myColor && state.legal) {
+      for (const m of state.legal) {
+        movable.add(m.path[0]);
+        if (m.captures && m.captures.length) mustJump = true;
+      }
+    }
     if (board) {
       const litSet = anim ? new Set(anim.lit.map((i) => anim.captures[i])) : null;
+      const hintPulse = 0.55 + (RM ? 0.35 : 0.35 * Math.sin(clock * 5));
       for (let i = 0; i < 64; i++) {
         const p = board[i];
         if (p === 0) continue;
         if (anim && i === anim.path[0]) continue;        // the mover is drawn separately
         if (litSet && litSet.has(i)) continue;           // captured, already popped
+        if (selected == null && movable.has(i)) {
+          const { x, y } = squareCenter(i);
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(x, y, sq * 0.43, 0, Math.PI * 2);
+          ctx.lineWidth = mustJump ? Math.max(3, sq * 0.065) : Math.max(2, sq * 0.04);
+          ctx.strokeStyle = mustJump ? `rgba(255, 210, 74, ${hintPulse})` : `rgba(255, 240, 200, ${hintPulse * 0.65})`;
+          ctx.stroke();
+          ctx.restore();
+        }
         drawPiece(ctx, i, p, 1);
       }
       if (anim) drawMovingPiece(ctx);

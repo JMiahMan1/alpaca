@@ -17,19 +17,25 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body {
             height: 100%;
+            height: 100dvh;
             background: var(--bg-primary);
             color: var(--text-primary);
             font-family: system-ui, sans-serif;
             overflow: hidden;
         }
+        body {
+            display: flex;
+            flex-direction: column;
+        }
         #launcher-toolbar {
             display: flex;
             align-items: center;
-            gap: 0.6rem;
+            gap: 0.5rem;
             padding: 0.5rem 0.9rem;
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border-color);
             flex-wrap: wrap;
+            flex: 0 0 auto;
         }
         #launcher-toolbar .brand {
             font-weight: 600;
@@ -37,18 +43,33 @@
             margin-right: 0.5rem;
             white-space: nowrap;
         }
-        #launcher-toolbar button {
-            background: rgba(56, 189, 248, 0.12);
+        #launcher-toolbar button,
+        #launcher-panel button {
+            background: rgba(56, 189, 248, 0.14);
             color: var(--text-primary);
-            border: 1px solid var(--border-color);
+            border: 1px solid rgba(56, 189, 248, 0.25);
             border-radius: 8px;
             padding: 0.35rem 0.8rem;
             font-size: 0.8rem;
+            font-weight: 600;
             cursor: pointer;
             white-space: nowrap;
+            transition: background 0.15s ease, border-color 0.15s ease;
         }
-        #launcher-toolbar button:hover {
-            background: rgba(56, 189, 248, 0.25);
+        #launcher-toolbar button:hover,
+        #launcher-panel button:hover {
+            background: rgba(56, 189, 248, 0.28);
+            border-color: rgba(56, 189, 248, 0.45);
+        }
+        #launcher-toolbar button:focus-visible,
+        #launcher-panel button:focus-visible,
+        #launcher-panel input:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+        #launcher-panel button {
+            align-self: flex-start;
+            min-height: 36px;
         }
         #launcher-status {
             margin-left: auto;
@@ -62,7 +83,8 @@
         }
         #launcher-main {
             display: flex;
-            height: calc(100% - 46px);
+            flex: 1 1 auto;
+            min-height: 0;
         }
         #vnc-frame-wrap {
             flex: 1 1 auto;
@@ -87,6 +109,39 @@
             flex-direction: column;
             gap: 0.6rem;
             overflow-y: auto;
+        }
+        #launcher-panel.panel-hidden {
+            display: none;
+        }
+        @media (max-width: 960px) {
+            #launcher-main {
+                flex-direction: column;
+            }
+            #vnc-frame-wrap {
+                padding: 0.5rem;
+                min-height: 45vh;
+            }
+            #launcher-panel {
+                flex: 0 0 auto;
+                max-width: none;
+                width: 100%;
+                max-height: 42dvh;
+                border-left: none;
+                border-top: 1px solid var(--border-color);
+            }
+            #launcher-toolbar button,
+            #launcher-panel button {
+                min-height: 40px;
+            }
+            #launcher-panel input {
+                font-size: 16px;
+            }
+            #launcher-status {
+                flex: 1 1 100%;
+                max-width: none;
+                text-align: left;
+                margin-left: 0;
+            }
         }
         #launcher-panel h3 {
             font-size: 0.8rem;
@@ -173,6 +228,7 @@
         <button id="btn-stop">⏹ Stop UI</button>
         <button id="btn-close">✕ Close</button>
         <button id="btn-sound">🔇 Muted</button>
+        <button id="btn-toggle-panel" type="button" aria-expanded="true" aria-controls="launcher-panel">🧰 Panel</button>
         <!-- Game audio side-channel (noVNC is video-only): the sandbox streams
         game sound as MP3 via /serve/audio/<id>. No controls attribute - the
         Sound button toggles playback. Hidden ancestors never block audio. -->
@@ -959,6 +1015,24 @@
         document.getElementById('btn-close').addEventListener('click', () => {
             window.close();
         });
+
+        const panelEl = document.getElementById('launcher-panel');
+        const btnTogglePanel = document.getElementById('btn-toggle-panel');
+        if (panelEl && btnTogglePanel) {
+            const setPanelVisible = (visible) => {
+                panelEl.classList.toggle('panel-hidden', !visible);
+                btnTogglePanel.setAttribute('aria-expanded', visible ? 'true' : 'false');
+                btnTogglePanel.textContent = visible ? '🧰 Hide Panel' : '🧰 Show Panel';
+            };
+            if (window.matchMedia && window.matchMedia('(max-width: 960px)').matches) {
+                setPanelVisible(false);
+            } else {
+                setPanelVisible(true);
+            }
+            btnTogglePanel.addEventListener('click', () => {
+                setPanelVisible(panelEl.classList.contains('panel-hidden'));
+            });
+        }
 
         // Arcade fullscreen channel: the arcade play page wraps this launcher
         // in a fullscreen overlay with its own bottom key bar, so it tells

@@ -419,6 +419,7 @@
         starCount++;
         const val = 10;
         bonus += val;
+        kit.fx.ring(s.x, s.y, "#ffe14d", R * 2.8, { width: 3.5, life: 0.38 });
         kit.fx.burst(s.x, s.y, ["#ffe14d", "#fff6b0", "#ffb84d"], 12, { speed: 200, size: 4, shape: "star", gravity: 200 });
         kit.fx.text(s.x, s.y - R, "+" + val, { color: "#ffe66b", size: Math.round(clamp(U * 0.06, 20, 32)) });
         kit.sound.play("coin");
@@ -434,6 +435,8 @@
         b.alive = false;
         P.balloon = 2.1;
         bonus += 25;
+        kit.fx.ring(P.x, P.y, "#ff9ec4", R * 3.6, { width: 4, life: 0.45 });
+        kit.fx.burst(P.x, P.y, ["#ff9ec4", "#ffd166", "#8ce9ff", "#ffffff"], 16, { shape: "spark", speed: 220, size: 4, gravity: 120, life: 0.6 });
         kit.fx.text(P.x, P.y - R * 2, "Up, up! +25", { color: "#ff9ec4", size: Math.round(clamp(U * 0.055, 18, 30)) });
         kit.sound.play("whoosh");
         kit.sound.tone(500, 0.6, { type: "triangle", slide: 1200, vol: 0.18 });

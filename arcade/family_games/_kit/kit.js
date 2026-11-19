@@ -146,10 +146,11 @@
     };
   }
 
-  /* ---------- Particles + floating text ---------- */
+  /* ---------- Particles, shockwave rings + floating text ---------- */
   function createFx() {
     let fontFamily = "";
     const parts = [];
+    const rings = [];
     const texts = [];
     return {
       burst(x, y, color, count, opts) {
@@ -173,6 +174,19 @@
           });
         }
       },
+      ring(x, y, color, maxRadius, opts) {
+        if (reducedMotion) return;
+        const o = opts || {};
+        rings.push({
+          x, y,
+          color: color || "#ffffff",
+          r0: o.from || 8,
+          r1: maxRadius || 56,
+          width: o.width || 4,
+          life: 0,
+          max: o.life || 0.42,
+        });
+      },
       text(x, y, str, opts) {
         const o = opts || {};
         texts.push({ x, y, str, life: 0, max: o.life || 0.9, color: o.color || "#fff", size: o.size || 24 });
@@ -187,6 +201,11 @@
           p.y += p.vy * dt;
           p.rot += p.spin * dt;
         }
+        for (let i = rings.length - 1; i >= 0; i--) {
+          const r = rings[i];
+          r.life += dt;
+          if (r.life >= r.max) rings.splice(i, 1);
+        }
         for (let i = texts.length - 1; i >= 0; i--) {
           const t = texts[i];
           t.life += dt;
@@ -194,6 +213,19 @@
         }
       },
       draw(ctx) {
+        for (const r of rings) {
+          const k = clamp(r.life / r.max, 0, 1);
+          const ek = easeOutCubic(k);
+          const rad = lerp(r.r0, r.r1, ek);
+          ctx.save();
+          ctx.globalAlpha = (1 - k) * 0.85;
+          ctx.strokeStyle = r.color;
+          ctx.lineWidth = Math.max(1, r.width * (1 - k * 0.65));
+          ctx.beginPath();
+          ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
         for (const p of parts) {
           const k = 1 - p.life / p.max;
           ctx.globalAlpha = clamp(k * 1.4, 0, 1);
@@ -203,6 +235,19 @@
             ctx.translate(p.x, p.y);
             ctx.rotate(p.rot);
             starPath(ctx, 0, 0, p.r * 1.4, p.r * 0.6, 5);
+            ctx.fill();
+            ctx.restore();
+          } else if (p.shape === "spark") {
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(Math.atan2(p.vy, p.vx));
+            const len = Math.max(p.r * 2.2, Math.hypot(p.vx, p.vy) * 0.035);
+            ctx.beginPath();
+            ctx.moveTo(len, 0);
+            ctx.lineTo(0, p.r * 0.45);
+            ctx.lineTo(-len * 0.7, 0);
+            ctx.lineTo(0, -p.r * 0.45);
+            ctx.closePath();
             ctx.fill();
             ctx.restore();
           } else if (p.shape === "square") {
@@ -227,8 +272,8 @@
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.lineWidth = Math.max(3, t.size / 6);
-          ctx.strokeStyle = "rgba(30, 15, 70, 0.55)";
-          const y = t.y - k * 40;
+          ctx.strokeStyle = "rgba(24, 12, 58, 0.68)";
+          const y = t.y - k * 42;
           ctx.strokeText(t.str, t.x, y);
           ctx.fillStyle = t.color;
           ctx.fillText(t.str, t.x, y);
@@ -237,10 +282,11 @@
       },
       clear() {
         parts.length = 0;
+        rings.length = 0;
         texts.length = 0;
       },
       get count() {
-        return parts.length + texts.length;
+        return parts.length + rings.length + texts.length;
       },
     };
   }
@@ -622,9 +668,24 @@
     // Only a hidden page pauses. "blur" fires inside the family app's nested
     // frames on ordinary taps, which paused games mid-move.
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" || e.key === "p") {
+      const tag = e.target && e.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable)) return;
+      if (e.key === "Escape" || e.key === "p" || e.key === "P") {
         if (state === "playing") pause();
         else if (state === "paused") resume();
+      } else if (e.key === "m" || e.key === "M") {
+        sound.unlock();
+        sound.setMuted(!sound.muted);
+        renderSound();
+        if (!sound.muted) sound.play("tap");
+      } else if ((e.key === "Enter" || e.key === " ") && tag !== "BUTTON") {
+        if (state === "title") {
+          const go = overlay.querySelector('[data-fk="go"]');
+          if (go && !go.disabled) { e.preventDefault(); startRun(); }
+        } else if (state === "over") {
+          const again = overlay.querySelector('[data-fk="again"]');
+          if (again && !again.disabled) { e.preventDefault(); startRun(); }
+        }
       }
     });
     // No long-press menus, pinch zoom or double-tap zoom inside the game.
