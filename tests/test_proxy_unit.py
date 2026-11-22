@@ -4116,7 +4116,7 @@ async def test_router_unloaded_but_vram_still_held_is_not_released(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_oom_while_the_old_model_is_still_releasing_is_not_a_crash(monkeypatch, swap_env):
-    events, script = swap_env["events"], swap_env["script"]
+    script = swap_env["script"]
     monkeypatch.setattr(alpaca_proxy, "SWAP_RELEASE_TIMEOUT_S", 0.0)
     script["states"]["vl--7b"] = ["loaded", "loaded", "unloaded"]  # still resident when the wait gives up
     script["vram"] = [None]
@@ -4186,9 +4186,9 @@ async def test_reset_learned_state_clears_step_downs_safe_settings_mtp_and_crash
         "cleared": {"vram_downgrades": 73, "crashed": True, "mtp_incompatible": True, "safe_settings": True},
     }
     assert json.loads(downgrades.read_text()) == {"kat--latest": {"count": 2}}
-    assert alpaca_proxy.SAFE_SETTINGS_MODELS == {"other--x"}
-    assert alpaca_proxy.MTP_INCOMPATIBLE_MODELS == set()
-    assert alpaca_proxy.crashed_models == {}
+    assert {"other--x"} == alpaca_proxy.SAFE_SETTINGS_MODELS
+    assert not alpaca_proxy.MTP_INCOMPATIBLE_MODELS
+    assert not alpaca_proxy.crashed_models
     save_safe.assert_called_once()
     save_mtp.assert_called_once()
 
