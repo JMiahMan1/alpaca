@@ -529,3 +529,148 @@ async def test_queue_wait_endpoint_respects_local_queued_and_active_counts(monke
     alpaca_proxy.active_requests.clear()
     res3 = await alpaca_proxy.queue_wait(_make_request("/api/queue/wait", {"timeout": 0.5}))
     assert res3["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_is_child_model_healthy_accepts_503_no_slot_and_busy_loaded_model(monkeypatch):
+    """HTTP 503 'no slot available' or active in-flight traffic must never look unhealthy."""
+    backend = "kat--busy"
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    models_resp = MagicMock(status_code=200)
+    models_resp.json.return_value = {
+        "data": [{"id": backend, "status": {"value": "loaded", "args": ["--port", "18080"]}}]
+    }
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(return_value=models_resp)
+    monkeypatch.setattr(alpaca_proxy, "client_httpx", fake_client)
+
+    # 1. With active_requests > 0, loaded child is immediately healthy without probing /health.
+    alpaca_proxy.active_requests[backend] = 2
+    assert await alpaca_proxy.is_child_model_healthy(backend) is True
+    alpaca_proxy.active_requests.clear()
+
+    # 2. With active_requests == 0, HTTP 503 'no slot available' from /health is still healthy.
+    health_503 = MagicMock(status_code=503)
+    health_503.json.return_value = {"error": {"code": 503, "message": "no slot available"}}
+
+    class _ProbeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None):
+            return health_503
+
+    monkeypatch.setattr(alpaca_proxy.httpx, "AsyncClient", _ProbeClient)
+    assert await alpaca_proxy.is_child_model_healthy(backend) is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_impl_skips_restart_when_other_requests_are_active(monkeypatch):
+    """_ensure_model_impl must never restart llama-server while other requests hold slots."""
+    backend = "kat--in-flight"
+    alpaca_proxy.active_requests[backend] = 2  # 1 from ensure_model + 1 real active caller
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=False))
+    restart_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(alpaca_proxy, "restart_llama_server", restart_mock)
+    monkeypatch.setattr(alpaca_proxy, "record_model_loaded", AsyncMock())
+
+    resolved = {
+        "model_name": "kat",
+        "backend_model": backend,
+        "entry": {"id": backend, "status": {"value": "loaded"}},
+        "router_models": [{"id": backend, "status": {"value": "loaded"}}],
+        "manifest_path": None,
+        "manifest": None,
+    }
+    res = await alpaca_proxy._ensure_model_impl("kat", resolved=resolved)
+    assert res["backend_model"] == backend
+    restart_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_slot_evicts_disconnected_client_immediately(monkeypatch):
+    """A disconnected client must leave the queue immediately instead of sitting for 120s."""
+    backend = "kat--disc"
+    alpaca_proxy._slot_capacity_cache[backend] = 1
+    alpaca_proxy.active_requests[backend] = 1
+    alpaca_proxy.queued_requests[backend] = 1
+
+    disconnected = False
+
+    async def is_disconnected():
+        return disconnected
+
+    async def flip():
+        nonlocal disconnected
+        await asyncio.sleep(0.05)
+        disconnected = True
+
+    flipper = asyncio.create_task(flip())
+    t0 = asyncio.get_running_loop().time()
+    ok = await alpaca_proxy.wait_for_slot(
+        backend,
+        timeout=30.0,
+        queued_backend=backend,
+        is_disconnected=is_disconnected,
+    )
+    elapsed = asyncio.get_running_loop().time() - t0
+    await flipper
+
+    assert ok is False
+    assert elapsed < 2.0
+    assert not alpaca_proxy._prune_slot_waiters(backend)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_slot_reconciles_drifted_active_requests(monkeypatch):
+    """If active_requests ever drifts >= slot_capacity while llama-server is idle, wait_for_slot self-heals."""
+    backend = "kat--drift"
+    alpaca_proxy._slot_capacity_cache[backend] = 2
+    alpaca_proxy.active_requests[backend] = 2  # Simulated permanent leak!
+    alpaca_proxy._last_slot_admit_ts[backend] = 0.0  # Old admission (past grace window)
+    alpaca_proxy.queued_requests[backend] = 1
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", AsyncMock(return_value="loaded"))
+    monkeypatch.setattr(
+        alpaca_proxy,
+        "_fetch_model_slots",
+        AsyncMock(return_value=[{"id": 0, "is_processing": False}, {"id": 1, "is_processing": False}]),
+    )
+
+    reservation = {"activated": False, "backend_model": backend}
+    ok = await alpaca_proxy.wait_for_slot(
+        backend,
+        timeout=5.0,
+        queued_backend=backend,
+        reservation=reservation,
+        reconcile_interval=0.02,
+        reconcile_grace=0.0,
+    )
+    assert ok is True
+    assert reservation["activated"] is True
+    assert alpaca_proxy.active_requests[backend] == 1
+    assert alpaca_proxy.queued_requests[backend] == 0
+
+
+@pytest.mark.asyncio
+async def test_slot_lease_background_task_is_idempotent_and_prevents_handoff_leak():
+    """Calling _SlotLease.release from BackgroundTask and/or generator finally releases exactly once."""
+    backend = "kat--lease"
+    alpaca_proxy.active_requests[backend] = 1
+    lease = alpaca_proxy._SlotLease("req-1", active_backend=backend)
+
+    # First release (e.g. client disconnected before stream_proxy started -> BackgroundTask runs).
+    await lease.release()
+    assert alpaca_proxy.active_requests[backend] == 0
+
+    # Second release (e.g. generator finally ALSO runs) must be a no-op (never underflows or double-releases).
+    alpaca_proxy.active_requests[backend] = 1  # Another peer took the slot
+    await lease.release()
+    assert alpaca_proxy.active_requests[backend] == 1

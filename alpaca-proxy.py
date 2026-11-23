@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 # Precise logging setup with memory buffer
 LOG_BUFFER = deque(maxlen=1000)
@@ -438,6 +439,8 @@ _CURRENT_REQUEST_PRIORITY: contextvars.ContextVar[int] = contextvars.ContextVar(
 _slot_waiters: dict[str, list[list[Any]]] = {}
 # Last known total llama-server slot count per backend_model (from /slots).
 _slot_capacity_cache: dict[str, int] = {}
+# Monotonic timestamp of most recent active slot admission per backend_model.
+_last_slot_admit_ts: dict[str, float] = {}
 # Count of requests blocked waiting to acquire router_model_lock, keyed by backend_model.
 # Subtracted from queued_requests in _ensure_model_impl's swap drain wait so a request
 # waiting for router_model_lock cannot deadlock the holder waiting for queued_requests == 0.
@@ -655,6 +658,54 @@ async def _notify_active_lock_safe() -> None:
             active_requests_lock.notify_all()
 
 
+class _SlotLease:
+    """Idempotent queue/active slot lease for StreamingResponse handoffs.
+
+    In Starlette, if a client disconnects before the response body iterator
+    starts, an async generator's ``finally:`` block never runs. Attaching
+    ``BackgroundTask(lease.release)`` to ``StreamingResponse`` AND calling
+    ``await lease.release()`` inside the generator's ``finally:`` guarantees the
+    slot/queued count is released exactly once on every exit path.
+    """
+
+    def __init__(
+        self,
+        request_id: str,
+        *,
+        queued_backend: str | None = None,
+        active_backend: str | None = None,
+    ) -> None:
+        self.request_id = request_id
+        self.queued_backend = queued_backend
+        self.active_backend = active_backend
+        self.released = False
+
+    def mark_activated(self, backend_model: str | None) -> None:
+        self.queued_backend = None
+        self.active_backend = backend_model
+
+    def release_sync(self, *, complete_request: bool = True) -> bool:
+        if self.released:
+            return False
+        self.released = True
+        released = False
+        if self.queued_backend:
+            _release_queued_sync(self.queued_backend)
+            self.queued_backend = None
+            released = True
+        if self.active_backend:
+            _release_active_slot_sync(self.active_backend)
+            self.active_backend = None
+            released = True
+        if complete_request:
+            complete_active_request(self.request_id)
+        return released
+
+    async def release(self, *, complete_request: bool = True) -> None:
+        if self.release_sync(complete_request=complete_request):
+            await _notify_active_lock_safe()
+
+
 def _track_active(backend_model: str, delta: int) -> None:
     """Single writer for the in-flight counter, so peak/total cannot drift.
 
@@ -665,6 +716,7 @@ def _track_active(backend_model: str, delta: int) -> None:
     current = max(0, active_requests.get(backend_model, 0) + delta)
     active_requests[backend_model] = current
     if delta > 0:
+        _last_slot_admit_ts[backend_model] = time.monotonic()
         peak_active_requests[backend_model] = max(peak_active_requests.get(backend_model, 0), current)
         total_requests_processed[backend_model] = total_requests_processed.get(backend_model, 0) + 1
     elif delta < 0:
@@ -2619,6 +2671,7 @@ async def embed(request: Request):
             priority=priority,
             queued_backend=queued_backend,
             reservation=reservation,
+            is_disconnected=request.is_disconnected,
         ):
             _release_queued_sync(queued_backend)
             queued_backend = None
@@ -2858,6 +2911,7 @@ async def openai_chat_completions(request: Request):
                             queued_backend=queued_backend,
                             reservation=reservation,
                             is_prompt_keeper=is_keeper,
+                            is_disconnected=request.is_disconnected,
                         )
                         if not slot_ok:
                             _release_queued_sync(queued_backend)
@@ -2904,8 +2958,11 @@ async def openai_chat_completions(request: Request):
                             },
                         )
                 if stream:
+                    if await request.is_disconnected():
+                        return Response(status_code=499)
+                    _lease = _SlotLease(request_id, active_backend=backend_model if admitted else None)
 
-                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _admitted=admitted):
+                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _lease=_lease):
                         stream_started = False
                         try:
                             for s_attempt in range(max_retries):
@@ -2972,9 +3029,7 @@ async def openai_chat_completions(request: Request):
                                     await asyncio.sleep(2.0)
                         finally:
                             req_data = complete_active_request(request_id)
-                            if _admitted and _bm:
-                                _release_active_slot_sync(_bm)
-                                await _notify_active_lock_safe()
+                            await _lease.release(complete_request=False)
                             p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                             c_toks = req_data.get("completion_tokens", 0) if req_data else 0
                             with suppress(BaseException):
@@ -2986,7 +3041,11 @@ async def openai_chat_completions(request: Request):
                                 )
 
                     stream_handed_off = True
-                    return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+                    return StreamingResponse(
+                        stream_proxy(),
+                        media_type="text/event-stream",
+                        background=BackgroundTask(_lease.release),
+                    )
                 else:
                     try:
                         resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
@@ -3160,6 +3219,7 @@ async def openai_completions(request: Request):
                             priority=priority,
                             queued_backend=queued_backend,
                             reservation=reservation,
+                            is_disconnected=request.is_disconnected,
                         )
                         if not slot_ok:
                             _release_queued_sync(queued_backend)
@@ -3206,8 +3266,11 @@ async def openai_completions(request: Request):
                             },
                         )
                 if stream:
+                    if await request.is_disconnected():
+                        return Response(status_code=499)
+                    _lease = _SlotLease(request_id, active_backend=backend_model if admitted else None)
 
-                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _admitted=admitted):
+                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _lease=_lease):
                         stream_started = False
                         try:
                             for s_attempt in range(max_retries):
@@ -3271,9 +3334,7 @@ async def openai_completions(request: Request):
                                     await asyncio.sleep(2.0)
                         finally:
                             req_data = complete_active_request(request_id)
-                            if _admitted and _bm:
-                                _release_active_slot_sync(_bm)
-                                await _notify_active_lock_safe()
+                            await _lease.release(complete_request=False)
                             p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
                             c_toks = req_data.get("completion_tokens", 0) if req_data else 0
                             with suppress(BaseException):
@@ -3285,7 +3346,11 @@ async def openai_completions(request: Request):
                                 )
 
                     stream_handed_off = True
-                    return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+                    return StreamingResponse(
+                        stream_proxy(),
+                        media_type="text/event-stream",
+                        background=BackgroundTask(_lease.release),
+                    )
                 else:
                     try:
                         resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
@@ -3435,6 +3500,7 @@ async def openai_embeddings(request: Request):
                 priority=priority,
                 queued_backend=queued_backend,
                 reservation=reservation,
+                is_disconnected=request.is_disconnected,
             ):
                 _release_queued_sync(queued_backend)
                 queued_backend = None
@@ -7596,12 +7662,13 @@ async def is_child_model_healthy(backend_model: str) -> bool:
                     if status == "loading":
                         return True
                     if status == "loaded":
+                        # When the proxy already has in-flight inference on this loaded backend,
+                        # trust the router's 'loaded' status instead of probing /health (which
+                        # returns HTTP 503 'no slot available' or stalls during CPU-offloaded MoE
+                        # prefill, previously causing false restarts and router_model_lock pileups).
+                        if active_requests.get(backend_model, 0) > 0:
+                            return True
                         # Probe the child's /health endpoint directly via HTTP.
-                        # Previously this used `docker exec curl` which blocked for
-                        # up to 3 s during active inference (CPU-bound child), causing
-                        # this function to return False and pushing every concurrent
-                        # request through the exclusive router_model_lock - serialising
-                        # all traffic even when a free slot was available.
                         args = model.get("status", {}).get("args", [])
                         try:
                             port_idx = args.index("--port")
@@ -7616,10 +7683,17 @@ async def is_child_model_healthy(backend_model: str) -> bool:
                                     f"{LLAMA_SERVER_URL.rstrip('/')}/health",
                                     params={"model": backend_model},
                                 )
-                            if health_resp.status_code == 200:
-                                res = health_resp.json()
-                                if res.get("status") in ("ok", "no slot available"):
-                                    # "no slot available" still means the child is alive and running
+                            if health_resp.status_code in (200, 503):
+                                try:
+                                    res = health_resp.json()
+                                except Exception:
+                                    res = {}
+                                status_str = str(res.get("status") or "").lower()
+                                err_obj = res.get("error") if isinstance(res.get("error"), dict) else {}
+                                err_msg = str(err_obj.get("message") or res.get("error") or "").lower()
+                                if status_str in ("ok", "no slot available", "loading"):
+                                    return True
+                                if "no slot" in err_msg or "loading" in err_msg:
                                     return True
                             logger.warning(f"Health probe to child port {port} returned HTTP {health_resp.status_code}")
                         except Exception as e:
@@ -8540,6 +8614,20 @@ async def _ensure_model_impl(
                 "manifest": resolved["manifest"],
             }
         else:
+            other_active = max(0, active_requests.get(backend_model, 0) - 1)
+            if other_active > 0:
+                logger.warning(
+                    f"Model {backend_model} health probe failed while {other_active} other active request(s) are "
+                    f"in flight; skipping llama-server restart so active jobs are not killed."
+                )
+                mark_model_loaded(model_name)
+                await record_model_loaded(model_name)
+                return {
+                    "model_name": model_name,
+                    "backend_model": backend_model,
+                    "manifest_path": resolved["manifest_path"],
+                    "manifest": resolved["manifest"],
+                }
             logger.warning(
                 f"Model {backend_model} is marked as loaded, but active health check failed! Triggering restart and reload recovery..."
             )
@@ -9234,6 +9322,9 @@ async def wait_for_slot(
     queued_backend: str | None = None,
     reservation: dict[str, Any] | None = None,
     is_prompt_keeper: bool = False,
+    is_disconnected: Any = None,
+    reconcile_interval: float = 3.0,
+    reconcile_grace: float = 5.0,
 ) -> bool:
     """Queue a request in priority-FIFO order until a slot on ``backend_model`` is free.
 
@@ -9277,15 +9368,32 @@ async def wait_for_slot(
     attempt = 0
     current_backend = backend_model
     own_queued = 1 if queued_backend else 0
+    last_reconcile = loop.time()
+    drift_strikes = 0
     entry = _enqueue_slot_waiter(current_backend, priority, is_prompt_keeper)
+
+    async def _client_gone() -> bool:
+        if is_disconnected is None:
+            return False
+        try:
+            return bool(await is_disconnected())
+        except Exception:
+            return False
+
     try:
         while True:
+            if await _client_gone():
+                logger.info(f"Client disconnected while waiting in queue for {current_backend}; evicting waiter.")
+                return False
             if is_prompt_keeper and _has_non_keeper_work(current_backend, own_queued=own_queued):
                 logger.info(f"[prompt-keeper] Yielding queued slot wait on {current_backend} to real traffic.")
                 return False
 
             # Wait until this entry is the highest-priority live waiter at the head of the queue.
             while not _is_head_waiter(current_backend, entry):
+                if await _client_gone():
+                    logger.info(f"Client disconnected while waiting in queue for {current_backend}; evicting waiter.")
+                    return False
                 if is_prompt_keeper and _has_non_keeper_work(current_backend, own_queued=own_queued):
                     logger.info(f"[prompt-keeper] Yielding queued slot wait on {current_backend} to real traffic.")
                     return False
@@ -9303,10 +9411,39 @@ async def wait_for_slot(
 
             # Head waiter fast-path: if we already know this model's slot capacity and
             # local in-flight requests already fill every slot, wait on our wakeup event
-            # instead of hammering /slots.
+            # instead of hammering /slots — but periodically reconcile against real
+            # llama-server /slots so a drifted counter can NEVER permanently deadlock
+            # the queue.
             cached_cap = _slot_capacity_cache.get(current_backend)
             in_flight = active_requests.get(current_backend, 0)
             if cached_cap is not None and in_flight >= cached_cap:
+                now_loop = loop.time()
+                since_admit = time.monotonic() - _last_slot_admit_ts.get(current_backend, 0.0)
+                if (now_loop - last_reconcile) >= reconcile_interval and since_admit >= reconcile_grace:
+                    last_reconcile = now_loop
+                    reconcile_state = await router_model_state(current_backend)
+                    if reconcile_state in ("loaded", "unknown"):
+                        r_slots = await _fetch_model_slots(current_backend)
+                        if r_slots:
+                            r_total = len(r_slots)
+                            _slot_capacity_cache[current_backend] = r_total
+                            r_free = sum(1 for s in r_slots if not s.get("is_processing", False))
+                            r_busy = max(0, r_total - r_free)
+                            cur_in_flight = active_requests.get(current_backend, 0)
+                            cur_since_admit = time.monotonic() - _last_slot_admit_ts.get(current_backend, 0.0)
+                            if cur_in_flight > r_busy and cur_since_admit >= reconcile_grace:
+                                drift_strikes += 1
+                                if drift_strikes >= 2:
+                                    logger.warning(
+                                        f"[slot-reconcile] Clamped drifted active_requests for {current_backend} "
+                                        f"from {cur_in_flight} to server_busy={r_busy} (total={r_total}, free={r_free})"
+                                    )
+                                    active_requests[current_backend] = r_busy
+                                    drift_strikes = 0
+                                    _notify_slot_waiters(current_backend)
+                                    continue
+                            else:
+                                drift_strikes = 0
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     logger.warning(
@@ -9320,6 +9457,7 @@ async def wait_for_slot(
                 with suppress(TimeoutError):
                     await asyncio.wait_for(entry[4].wait(), timeout=min(remaining, max_delay))
                 continue
+            drift_strikes = 0
 
             state = await router_model_state(current_backend)
             if state in ("loaded", "unknown"):
@@ -9617,6 +9755,7 @@ async def chat(request: Request):
             queued_backend=_queued_backend,
             reservation=reservation,
             is_prompt_keeper=is_keeper,
+            is_disconnected=request.is_disconnected,
         )
         if not slot_available:
             _release_queued_sync(_queued_backend)
@@ -9662,6 +9801,7 @@ async def chat(request: Request):
     # Capture the already-resolved backend for use inside stream_proxy via closure.
     _resolved_for_stream = resolved
     _resolved_backend_for_stream = resolved_backend
+    _chat_lease = _SlotLease(request_id, active_backend=resolved_backend if admitted else None)
 
     async def stream_proxy():
         resolved_backend = _resolved_backend_for_stream
@@ -9866,15 +10006,20 @@ async def chat(request: Request):
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
             complete_active_request(request_id, final_response=full_response_content or None)
-            if resolved_backend:
-                _release_active_slot_sync(resolved_backend)
+            if await _chat_lease.release(complete_request=False) or resolved_backend:
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
                 )
-                await _notify_active_lock_safe()
 
     if should_stream(body):
-        return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
+        if await request.is_disconnected():
+            await _chat_lease.release()
+            return Response(status_code=499)
+        return StreamingResponse(
+            stream_proxy(),
+            media_type="application/x-ndjson",
+            background=BackgroundTask(_chat_lease.release),
+        )
 
     # Keep the already-admitted resolved_backend so the finally block ALWAYS
     # releases our active slot (resetting it to None previously leaked active_requests
@@ -10033,9 +10178,10 @@ async def generate(request: Request):
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
     )
-    # Admit into the shared request queue (paired with synchronous cleanup in
-    # the finally blocks below).
+    # Admit into the shared request queue (paired with idempotent _SlotLease
+    # cleanup in both stream_proxy finally AND StreamingResponse BackgroundTask).
     queued_backend = await mark_request_queued(model_name)
+    _gen_lease = _SlotLease(request_id, queued_backend=queued_backend)
 
     async def stream_proxy():
         nonlocal queued_backend
@@ -10056,10 +10202,10 @@ async def generate(request: Request):
                 priority=priority,
                 queued_backend=queued_backend,
                 reservation=reservation,
+                is_disconnected=request.is_disconnected,
             ):
-                _release_queued_sync(queued_backend)
+                await _gen_lease.release()
                 queued_backend = None
-                await _notify_active_lock_safe()
                 yield (
                     f"data: {json.dumps({'error': {'message': 'No llama-server slots available within timeout', 'type': 'rate_limit_error', 'code': 'queue_timeout'}})}\n\n"
                 )
@@ -10072,6 +10218,7 @@ async def generate(request: Request):
                 await activate_queued_request(queued_backend, resolved_backend)
                 queued_backend = None
             admitted = True
+            _gen_lease.mark_activated(resolved_backend)
 
             load_duration = now_ns() - load_started_ns
 
@@ -10225,22 +10372,22 @@ async def generate(request: Request):
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
             complete_active_request(request_id)
-            released = False
-            if queued_backend:
-                _release_queued_sync(queued_backend)
-                queued_backend = None
-                released = True
+            await _gen_lease.release(complete_request=False)
+            queued_backend = None
             if resolved_backend and admitted:
-                _release_active_slot_sync(resolved_backend)
                 logger.info(
                     f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
                 )
-                released = True
-            if released:
-                await _notify_active_lock_safe()
 
     if should_stream(body):
-        return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
+        if await request.is_disconnected():
+            await _gen_lease.release()
+            return Response(status_code=499)
+        return StreamingResponse(
+            stream_proxy(),
+            media_type="application/x-ndjson",
+            background=BackgroundTask(_gen_lease.release),
+        )
 
     resolved_backend = None
     admitted = False
@@ -10259,6 +10406,7 @@ async def generate(request: Request):
             priority=priority,
             queued_backend=queued_backend,
             reservation=reservation,
+            is_disconnected=request.is_disconnected,
         ):
             if queued_backend:
                 _release_queued_sync(queued_backend)
