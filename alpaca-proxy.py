@@ -2973,10 +2973,10 @@ async def openai_chat_completions(request: Request):
                                         if resp.status_code != 200:
                                             err_body = await resp.aread()
                                             err_msg = err_body.decode(errors="ignore")
-                                            if s_attempt < max_retries - 1 and (
-                                                "loading" in err_msg
-                                                or "error" in err_msg
-                                                or resp.status_code in (502, 503, 504)
+                                            if (
+                                                s_attempt < max_retries - 1
+                                                and resp.status_code >= 500
+                                                and ("loading" in err_msg.lower() or resp.status_code in (502, 503, 504))
                                             ):
                                                 logger.warning(
                                                     f"Upstream stream returned status {resp.status_code}. Retrying recovery/load..."
@@ -3279,10 +3279,10 @@ async def openai_completions(request: Request):
                                         if resp.status_code != 200:
                                             err_body = await resp.aread()
                                             err_msg = err_body.decode(errors="ignore")
-                                            if s_attempt < max_retries - 1 and (
-                                                "loading" in err_msg
-                                                or "error" in err_msg
-                                                or resp.status_code in (502, 503, 504)
+                                            if (
+                                                s_attempt < max_retries - 1
+                                                and resp.status_code >= 500
+                                                and ("loading" in err_msg.lower() or resp.status_code in (502, 503, 504))
                                             ):
                                                 logger.warning(
                                                     f"Upstream stream returned status {resp.status_code}. Retrying recovery/load..."
