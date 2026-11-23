@@ -1,6 +1,9 @@
 import asyncio
 import base64
+import contextvars
+import heapq
 import ipaddress
+import itertools
 import json
 import logging
 import os
@@ -388,6 +391,269 @@ peak_active_requests: dict[str, int] = {}
 total_requests_processed: dict[str, int] = {}
 active_requests_lock = asyncio.Condition()
 
+# Priority-FIFO slot admission queue & bounded backpressure.
+# Canonical scale matching SharedLLM's services/gateway/messaging.py (higher = more urgent):
+#   CRITICAL (200) > HIGH (100) > NORMAL (50) > LOW (0) > KEEPER (-10)
+PRIORITY_KEEPER = -10     # Prompt-keeper warmups (yields immediately to all real traffic)
+PRIORITY_LOW = 0          # Background Raven missions, trainer, benchmarks, coding agents
+PRIORITY_NORMAL = 50      # Standard interactive chat, librarian queries
+PRIORITY_HIGH = 100       # Voice commands, home automation, quick control
+PRIORITY_CRITICAL = 200   # Emergency (SOS, security alerts)
+
+PRIORITY_NAMES = {
+    PRIORITY_KEEPER: "KEEPER",
+    PRIORITY_LOW: "LOW",
+    PRIORITY_NORMAL: "NORMAL",
+    PRIORITY_HIGH: "HIGH",
+    PRIORITY_CRITICAL: "CRITICAL",
+}
+
+MAX_QUEUE_DEPTH = max(1, int(os.getenv("PROXY_MAX_QUEUE_DEPTH", "32")))
+HIGH_PRIORITY_QUEUE_RESERVE = max(1, int(os.getenv("PROXY_HIGH_PRIORITY_QUEUE_RESERVE", "8")))
+
+_CRITICAL_PRIORITY_SOURCES = ("emergency", "/sos", "shared-llm/critical", "security-alert")
+_HIGH_PRIORITY_SOURCES = ("voice/", "shared-llm/voice", "homehub/voice", "alexa", "echo")
+_LOW_PRIORITY_SOURCES = (
+    "shared-llm/raven",
+    "shared-llm/trainer",
+    "benchmark",
+    "trainer",
+    "training",
+    "batch",
+    "background",
+    "cron",
+    "indexer",
+    "opencode",
+    "cline",
+    "eval",
+)
+
+_slot_waiter_seq = itertools.count()
+# Per-task request priority inherited by ensure_model / swap drain without changing call signatures.
+_CURRENT_REQUEST_PRIORITY: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "_CURRENT_REQUEST_PRIORITY", default=PRIORITY_NORMAL
+)
+# Per-backend min-heap of [-priority, seq, cancelled_flag, is_prompt_keeper, asyncio.Event].
+# Negating priority matches SharedLLM's ZSET score (-priority * 1e9 + ts): higher priority first, FIFO ties.
+_slot_waiters: dict[str, list[list[Any]]] = {}
+# Last known total llama-server slot count per backend_model (from /slots).
+_slot_capacity_cache: dict[str, int] = {}
+# Count of requests blocked waiting to acquire router_model_lock, keyed by backend_model.
+# Subtracted from queued_requests in _ensure_model_impl's swap drain wait so a request
+# waiting for router_model_lock cannot deadlock the holder waiting for queued_requests == 0.
+_waiting_for_router_lock: dict[str, int] = {}
+
+
+def priority_label(priority: int) -> str:
+    """Human-readable tier name matching SharedLLM's PRIORITY_NAMES."""
+    if priority >= PRIORITY_CRITICAL:
+        return "CRITICAL"
+    if priority >= PRIORITY_HIGH:
+        return "HIGH"
+    if priority >= PRIORITY_NORMAL:
+        return "NORMAL"
+    if priority >= PRIORITY_LOW:
+        return "LOW"
+    return "KEEPER"
+
+
+def resolve_request_priority(request: Request | None, body: dict | None = None) -> int:
+    """Resolve scheduling priority (higher = more urgent, matching SharedLLM's messaging.py)."""
+    resolved = PRIORITY_NORMAL
+    if request is not None and is_prompt_keeper_request(request):
+        resolved = PRIORITY_KEEPER
+        _CURRENT_REQUEST_PRIORITY.set(resolved)
+        return resolved
+    raw = None
+    if request is not None:
+        raw = request.headers.get("x-priority") or request.headers.get("x-alpaca-priority")
+    if raw is None and isinstance(body, dict):
+        raw = body.get("priority")
+    if raw is not None:
+        val = str(raw).strip().lower()
+        if val in ("critical", "emergency", "sos"):
+            resolved = PRIORITY_CRITICAL
+            _CURRENT_REQUEST_PRIORITY.set(resolved)
+            return resolved
+        if val in ("high", "urgent", "voice", "interactive"):
+            resolved = PRIORITY_HIGH
+            _CURRENT_REQUEST_PRIORITY.set(resolved)
+            return resolved
+        if val in ("normal", "default", "medium"):
+            resolved = PRIORITY_NORMAL
+            _CURRENT_REQUEST_PRIORITY.set(resolved)
+            return resolved
+        if val in ("low", "background", "batch", "bulk", "raven", "trainer"):
+            resolved = PRIORITY_LOW
+            _CURRENT_REQUEST_PRIORITY.set(resolved)
+            return resolved
+        if val in ("keeper", "warmup"):
+            resolved = PRIORITY_KEEPER
+            _CURRENT_REQUEST_PRIORITY.set(resolved)
+            return resolved
+        try:
+            resolved = max(PRIORITY_KEEPER, min(PRIORITY_CRITICAL, int(val)))
+            _CURRENT_REQUEST_PRIORITY.set(resolved)
+            return resolved
+        except ValueError:
+            pass
+    source = str(getattr(getattr(request, "state", None), "request_source", "") or "").lower()
+    if any(tok in source for tok in _CRITICAL_PRIORITY_SOURCES):
+        resolved = PRIORITY_CRITICAL
+    elif any(tok in source for tok in _HIGH_PRIORITY_SOURCES):
+        resolved = PRIORITY_HIGH
+    elif any(tok in source for tok in _LOW_PRIORITY_SOURCES):
+        resolved = PRIORITY_LOW
+    _CURRENT_REQUEST_PRIORITY.set(resolved)
+    return resolved
+
+
+def _prune_slot_waiters(backend_model: str) -> list[list[Any]]:
+    """Pop cancelled entries from the front of the per-model priority heap."""
+    heap = _slot_waiters.get(backend_model)
+    if not heap:
+        return []
+    while heap and heap[0][2]:
+        heapq.heappop(heap)
+    if not heap:
+        _slot_waiters.pop(backend_model, None)
+        return []
+    return heap
+
+
+def _notify_slot_waiters(backend_model: str | None = None) -> None:
+    """Synchronously wake the head waiter(s) so they re-evaluate slot availability immediately."""
+    targets = [backend_model] if backend_model else list(_slot_waiters.keys())
+    for bm in targets:
+        heap = _prune_slot_waiters(bm)
+        if heap:
+            heap[0][4].set()
+
+
+def _enqueue_slot_waiter(backend_model: str, priority: int, is_prompt_keeper: bool = False) -> list[Any]:
+    """Insert a waiter into the per-model priority-FIFO min-heap and wake the head if changed."""
+    entry: list[Any] = [-priority, next(_slot_waiter_seq), False, is_prompt_keeper, asyncio.Event()]
+    heap = _slot_waiters.setdefault(backend_model, [])
+    prev_head = _prune_slot_waiters(backend_model)
+    prev_head_entry = prev_head[0] if prev_head else None
+    heapq.heappush(heap, entry)
+    if heap[0] is entry:
+        entry[4].set()
+        if prev_head_entry is not None and prev_head_entry is not entry:
+            prev_head_entry[4].set()
+    return entry
+
+
+def _is_head_waiter(backend_model: str, entry: list[Any]) -> bool:
+    """Return True if ``entry`` is currently the highest-priority live waiter for ``backend_model``."""
+    heap = _prune_slot_waiters(backend_model)
+    return bool(heap and heap[0] is entry)
+
+
+def _queued_blocking_swap(other_id: str, caller_priority: int) -> int:
+    """Count queued requests on ``other_id`` that should finish before ``caller_priority`` swaps it out.
+
+    * Normal/low callers wait for all non-router-blocked queued requests on ``other_id``
+      so back-to-back requests for the loaded model do not thrash.
+    * High/critical callers (voice, emergency) only wait for equal-or-higher-priority
+      waiters on ``other_id`` so an urgent household request never stalls behind queued
+      background/benchmark/coding work on another model.
+    """
+    eff_q = max(0, queued_requests.get(other_id, 0) - _waiting_for_router_lock.get(other_id, 0))
+    if eff_q == 0:
+        return 0
+    if caller_priority < PRIORITY_HIGH:
+        return eff_q
+    heap = _slot_waiters.get(other_id) or []
+    live_waiters = [item for item in heap if not item[2]]
+    if not live_waiters:
+        # Queued requests exist that haven't entered _slot_waiters yet; be conservative only if none known low
+        return 0
+    return sum(1 for item in live_waiters if (-item[0]) >= caller_priority)
+
+
+def _has_non_keeper_work(backend_model: str | None = None, *, own_queued: int = 0) -> bool:
+    """Return True when real (non-prompt-keeper) inference work is active or waiting."""
+    if any(v > 0 for v in active_requests.values()):
+        return True
+    keeper_in_heaps = 0
+    for bm, heap in list(_slot_waiters.items()):
+        for item in heap:
+            if item[2]:
+                continue
+            if item[3]:
+                keeper_in_heaps += 1
+            elif not backend_model or bm == backend_model:
+                return True
+    return _total_queued_count() > max(own_queued, keeper_in_heaps)
+
+
+def _total_queued_count() -> int:
+    """Total number of requests currently queued across all local models."""
+    return sum(max(0, v) for v in queued_requests.values())
+
+
+def _check_queue_admission(priority: int, is_prompt_keeper: bool = False) -> tuple[bool, str]:
+    """Check whether a newly arriving request may enter the queue.
+
+    Returns ``(True, "")`` if admitted, or ``(False, reason_code)`` to reject
+    immediately with HTTP 503 + Retry-After before consuming memory or sockets.
+    """
+    if is_prompt_keeper and _has_non_keeper_work():
+        return False, "prompt_keeper_deferred"
+    queued = _total_queued_count()
+    reserve = 0
+    if priority >= PRIORITY_CRITICAL:
+        reserve = HIGH_PRIORITY_QUEUE_RESERVE * 2
+    elif priority >= PRIORITY_HIGH:
+        reserve = HIGH_PRIORITY_QUEUE_RESERVE
+    limit = MAX_QUEUE_DEPTH + reserve
+    if queued >= limit:
+        return False, "queue_full"
+    return True, ""
+
+
+def _queue_rejected_response(reason: str, *, openai_format: bool = True) -> JSONResponse:
+    """Build a consistent HTTP 503 backpressure response with Retry-After."""
+    if reason == "prompt_keeper_deferred":
+        msg = "Prompt-keeper warmup deferred while real requests are active or queued"
+        retry_after = "10"
+    else:
+        msg = f"Alpaca request queue is full (max {MAX_QUEUE_DEPTH}); retry shortly"
+        retry_after = "5"
+    if openai_format:
+        content: dict[str, Any] = {
+            "error": {
+                "message": msg,
+                "type": "rate_limit_error",
+                "param": "model",
+                "code": reason,
+            }
+        }
+    else:
+        content = {"error": msg, "status": reason}
+    return JSONResponse(status_code=503, content=content, headers={"Retry-After": retry_after})
+
+
+def _release_queued_sync(backend: str | None) -> None:
+    """Synchronously decrement queued_requests and wake waiters (immune to CancelledError)."""
+    if backend:
+        queued_requests[backend] = max(0, queued_requests.get(backend, 0) - 1)
+        _notify_slot_waiters(backend)
+
+
+def _release_active_slot_sync(backend_model: str | None) -> None:
+    """Synchronously release an in-flight slot and wake the next queued waiter (immune to CancelledError)."""
+    if backend_model:
+        _track_active(backend_model, -1)
+
+
+async def _notify_active_lock_safe() -> None:
+    """Best-effort notify_all on active_requests_lock without failing on cancellation."""
+    with suppress(BaseException):
+        async with active_requests_lock:
+            active_requests_lock.notify_all()
+
 
 def _track_active(backend_model: str, delta: int) -> None:
     """Single writer for the in-flight counter, so peak/total cannot drift.
@@ -401,6 +667,8 @@ def _track_active(backend_model: str, delta: int) -> None:
     if delta > 0:
         peak_active_requests[backend_model] = max(peak_active_requests.get(backend_model, 0), current)
         total_requests_processed[backend_model] = total_requests_processed.get(backend_model, 0) + 1
+    elif delta < 0:
+        _notify_slot_waiters(backend_model)
 
 
 async def mark_request_queued(model_name: str | None) -> str | None:
@@ -430,9 +698,8 @@ async def mark_request_queued(model_name: str | None) -> str | None:
 async def release_request_queued(backend: str | None) -> None:
     """Release a request previously admitted via :func:`mark_request_queued`."""
     if backend:
-        async with active_requests_lock:
-            queued_requests[backend] = max(0, queued_requests.get(backend, 0) - 1)
-            active_requests_lock.notify_all()
+        _release_queued_sync(backend)
+        await _notify_active_lock_safe()
 
 
 async def activate_queued_request(queued_backend: str | None, backend_model: str) -> None:
@@ -448,17 +715,15 @@ async def acquire_slot(
     model_name: str,
     body: dict,
     default_timeout: float = 120.0,
+    *,
+    priority: int = PRIORITY_NORMAL,
+    queued_backend: str | None = None,
+    is_prompt_keeper: bool = False,
 ) -> tuple[str | None, float | None]:
-    """Resolve model, acquire a slot, and release the queued count.
+    """Resolve model, acquire a slot atomically, and release the queued count.
 
     Returns ``(backend_model, load_start_ns)`` on success or ``(None, None)``
     when no slot is available within the timeout window.
-
-    This helper encapsulates the ``ensure_model`` → ``wait_for_slot`` →
-    ``release_request_queued`` sequence used by all four entry-points so that
-        * the queued count is released *immediately* after the slot is confirmed
-          (enabling cross-model swaps during the request lifetime), and
-        * both OpenAI and Ollama endpoints share the same admission logic.
     """
     if not model_name:
         return None, None
@@ -468,10 +733,22 @@ async def acquire_slot(
     except HTTPException:
         raise
     timeout = body.get("queue_timeout", default_timeout)
-    slot_ok = await wait_for_slot(backend_model, timeout=timeout)
+    reservation: dict[str, Any] = {"activated": False, "backend_model": backend_model}
+    slot_ok = await wait_for_slot(
+        backend_model,
+        timeout=timeout,
+        model_name=model_name,
+        priority=priority,
+        queued_backend=queued_backend or backend_model,
+        reservation=reservation,
+        is_prompt_keeper=is_prompt_keeper,
+    )
     if not slot_ok:
         return None, None
-    await activate_queued_request(backend_model, backend_model)
+    if not reservation.get("activated"):
+        await activate_queued_request(queued_backend or backend_model, backend_model)
+    else:
+        backend_model = reservation.get("backend_model") or backend_model
     return backend_model, None
 
 
@@ -1943,7 +2220,10 @@ def get_model_info(model_name):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global client_httpx, client_sd_httpx
-    client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
+    client_httpx = httpx.AsyncClient(
+        timeout=upstream_timeout(),
+        limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+    )
     client_sd_httpx = httpx.AsyncClient(
         timeout=httpx.Timeout(600.0, connect=10.0),
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
@@ -2321,18 +2601,35 @@ async def embed(request: Request):
         raise HTTPException(status_code=400, detail="input is required")
 
     started_ns = now_ns()
+    priority = resolve_request_priority(request, body)
+    admit_ok, reject_reason = _check_queue_admission(priority)
+    if not admit_ok:
+        return _queue_rejected_response(reject_reason, openai_format=False)
     queued_backend = await mark_request_queued(model_name)
     backend_model = None
     admitted = False
     try:
         resolved = await ensure_model(model_name)
         backend_model = resolved["backend_model"]
-        if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name):
-            await release_request_queued(queued_backend)
+        reservation: dict[str, Any] = {"activated": False, "backend_model": backend_model}
+        if not await wait_for_slot(
+            backend_model,
+            timeout=body.get("queue_timeout", 120.0),
+            model_name=model_name,
+            priority=priority,
+            queued_backend=queued_backend,
+            reservation=reservation,
+        ):
+            _release_queued_sync(queued_backend)
             queued_backend = None
+            await _notify_active_lock_safe()
             raise HTTPException(status_code=503, detail="No llama-server slots available within timeout")
-        await activate_queued_request(queued_backend, backend_model)
-        queued_backend = None
+        if reservation.get("activated"):
+            backend_model = reservation.get("backend_model") or backend_model
+            queued_backend = None
+        else:
+            await activate_queued_request(queued_backend, backend_model)
+            queued_backend = None
         admitted = True
 
         llama_payload = {
@@ -2377,11 +2674,11 @@ async def embed(request: Request):
             raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}") from e
     finally:
         if queued_backend:
-            await release_request_queued(queued_backend)
+            _release_queued_sync(queued_backend)
         if backend_model and admitted:
-            async with active_requests_lock:
-                _track_active(backend_model, -1)
-                active_requests_lock.notify_all()
+            _release_active_slot_sync(backend_model)
+        if queued_backend or (backend_model and admitted):
+            await _notify_active_lock_safe()
 
 
 @app.post("/api/embeddings")
@@ -2512,6 +2809,12 @@ async def openai_chat_completions(request: Request):
         import uuid
 
         request_id = str(uuid.uuid4())[:8]
+    is_keeper = is_prompt_keeper_request(request)
+    priority = resolve_request_priority(request, body)
+    admit_ok, reject_reason = _check_queue_admission(priority, is_prompt_keeper=is_keeper)
+    if not admit_ok:
+        return _queue_rejected_response(reject_reason, openai_format=True)
+
     register_active_request(
         request_id,
         model_name,
@@ -2519,263 +2822,291 @@ async def openai_chat_completions(request: Request):
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
-        prompt_keeper=is_prompt_keeper_request(request),
+        prompt_keeper=is_keeper,
     )
-    # Admit into the shared request queue (paired with release_request_queued in
-    # the finally blocks below and on the early-return paths).
-    queued_backend = await mark_request_queued(model_name)
+    queued_backend = None
+    admitted = False
+    stream_handed_off = False
     max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # Resolve model if provided (inside the retry loop!)
-            if model_name:
-                try:
-                    # Wake-on-LAN auto-load: if both backends are completely idle and the
-                    # requested model is not currently loaded, log the intercept trigger.
-                    async with vram_monitoring_lock:
-                        _llm_idle = active_llama_model is None
-                    _req_idle = not any(c > 0 for c in active_requests.values())
-                    if _llm_idle and _req_idle and attempt == 0:
-                        logger.info(
-                            f"[AUTO-LOAD] Idle intercept \u2014 chat request received for '{model_name}'. "
-                            f"Triggering auto-load (Wake-on-LAN)."
+    try:
+        queued_backend = await mark_request_queued(model_name)
+        for attempt in range(max_retries):
+            try:
+                # Resolve model if provided (inside the retry loop!)
+                if model_name:
+                    try:
+                        # Wake-on-LAN auto-load: if both backends are completely idle and the
+                        # requested model is not currently loaded, log the intercept trigger.
+                        async with vram_monitoring_lock:
+                            _llm_idle = active_llama_model is None
+                        _req_idle = not any(c > 0 for c in active_requests.values())
+                        if _llm_idle and _req_idle and attempt == 0:
+                            logger.info(
+                                f"[AUTO-LOAD] Idle intercept \u2014 chat request received for '{model_name}'. "
+                                f"Triggering auto-load (Wake-on-LAN)."
+                            )
+                        resolved = await ensure_model(model_name)
+                        backend_model = resolved["backend_model"]
+                        # Shared priority-FIFO queue: atomically reserve a slot on this
+                        # model so concurrent arrivals never stampede llama-server.
+                        reservation: dict[str, Any] = {"activated": False, "backend_model": backend_model}
+                        slot_ok = await wait_for_slot(
+                            backend_model,
+                            timeout=body.get("queue_timeout", 120.0),
+                            model_name=model_name,
+                            priority=priority,
+                            queued_backend=queued_backend,
+                            reservation=reservation,
+                            is_prompt_keeper=is_keeper,
                         )
-                    resolved = await ensure_model(model_name)
-                    backend_model = resolved["backend_model"]
-                    # Shared queue: only admit this request once a slot on its own
-                    # model is available, so it never lands on a slot serving a
-                    # different model (which would force a swap + thrash). Model
-                    # switching is still permitted when no slots are taken (idle)
-                    # or the request targets the same already-loaded model.
-                    slot_ok = await wait_for_slot(
-                        backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name
-                    )
-                    if not slot_ok:
-                        await release_request_queued(queued_backend)
-                        complete_active_request(
-                            request_id, error="No llama-server slots available within timeout (queue_timeout)"
-                        )
+                        if not slot_ok:
+                            _release_queued_sync(queued_backend)
+                            queued_backend = None
+                            await _notify_active_lock_safe()
+                            complete_active_request(
+                                request_id, error="No llama-server slots available within timeout (queue_timeout)"
+                            )
+                            return JSONResponse(
+                                status_code=503,
+                                content={
+                                    "error": {
+                                        "message": "No llama-server slots available within timeout",
+                                        "type": "rate_limit_error",
+                                        "param": "model",
+                                        "code": "queue_timeout",
+                                    }
+                                },
+                                headers={"Retry-After": "5"},
+                            )
+                        if reservation.get("activated"):
+                            backend_model = reservation.get("backend_model") or backend_model
+                            queued_backend = None
+                        else:
+                            await activate_queued_request(queued_backend, backend_model)
+                            queued_backend = None
+                        admitted = True
+                        body["model"] = backend_model
+                    except HTTPException as e:
+                        # Client errors (like 404 Not Found) should fail immediately
+                        _release_queued_sync(queued_backend)
+                        queued_backend = None
+                        await _notify_active_lock_safe()
+                        complete_active_request(request_id, error=f"Model resolution failed: {e.detail}")
                         return JSONResponse(
-                            status_code=503,
+                            status_code=e.status_code,
                             content={
                                 "error": {
-                                    "message": "No llama-server slots available within timeout",
-                                    "type": "rate_limit_error",
+                                    "message": f"Model resolution failed: {e.detail}",
+                                    "type": "invalid_request_error",
                                     "param": "model",
-                                    "code": "queue_timeout",
+                                    "code": "model_not_found",
                                 }
                             },
                         )
-                    await activate_queued_request(queued_backend, backend_model)
+                if stream:
+
+                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _admitted=admitted):
+                        stream_started = False
+                        try:
+                            for s_attempt in range(max_retries):
+                                try:
+                                    async with _cl.stream(
+                                        "POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body
+                                    ) as resp:
+                                        if resp.status_code != 200:
+                                            err_body = await resp.aread()
+                                            err_msg = err_body.decode(errors="ignore")
+                                            if s_attempt < max_retries - 1 and (
+                                                "loading" in err_msg
+                                                or "error" in err_msg
+                                                or resp.status_code in (502, 503, 504)
+                                            ):
+                                                logger.warning(
+                                                    f"Upstream stream returned status {resp.status_code}. Retrying recovery/load..."
+                                                )
+                                                await ensure_model(model_name)
+                                                continue
+                                            record_active_request_error(
+                                                request_id, f"Upstream error {resp.status_code}: {err_msg}"
+                                            )
+                                            yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
+                                            return
+
+                                        stream_started = True
+                                        async for line in resp.aiter_lines():
+                                            if line and line.startswith("data: "):
+                                                try:
+                                                    payload_str = line[6:].strip()
+                                                    if payload_str and payload_str != "[DONE]":
+                                                        payload_json = json.loads(payload_str)
+                                                        choices = payload_json.get("choices")
+                                                        if choices and isinstance(choices, list) and len(choices) > 0:
+                                                            delta = choices[0].get("delta")
+                                                            if delta:
+                                                                update_active_request_progress(
+                                                                    request_id,
+                                                                    response_chunk=delta.get("content"),
+                                                                    thinking_chunk=delta.get("reasoning_content")
+                                                                    or delta.get("thinking"),
+                                                                )
+                                                except Exception:
+                                                    pass
+                                                yield f"{line}\n\n"
+                                        return
+                                except httpx.RequestError as exc:
+                                    if stream_started or s_attempt == max_retries - 1:
+                                        record_active_request_error(request_id, f"Upstream connection lost: {exc}")
+                                        yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
+                                        if stream_started:
+                                            # Mid-stream crash: stream is lost but kick off background
+                                            # recovery now so the next request doesn't pay cold-start cost
+                                            logger.warning(
+                                                f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
+                                            )
+                                            task = asyncio.create_task(_ensure_model_skip_swap(model_name))
+                                            task.set_name(f"midstream-recovery-chat-{model_name}")
+                                            task.add_done_callback(handle_background_task_result)
+                                        return
+                                    logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
+                                    await ensure_model(model_name)
+                                    await asyncio.sleep(2.0)
+                        finally:
+                            req_data = complete_active_request(request_id)
+                            if _admitted and _bm:
+                                _release_active_slot_sync(_bm)
+                                await _notify_active_lock_safe()
+                            p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                            c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                            with suppress(BaseException):
+                                await record_metrics(
+                                    "/v1/chat/completions",
+                                    (now_ns() - started_ns) / 1e6,
+                                    prompt_tokens=p_toks,
+                                    gen_tokens=c_toks,
+                                )
+
+                    stream_handed_off = True
+                    return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+                else:
+                    try:
+                        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
+                        if resp.status_code != 200:
+                            err_msg = resp.text
+                            if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
+                                logger.warning(
+                                    f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
+                                )
+                                await ensure_model(model_name)
+                                continue
+                            upstream_type = None
+                            extra_fields = {}
+                            try:
+                                upstream_err = resp.json()
+                                if "error" in upstream_err:
+                                    err_obj = upstream_err["error"]
+                                    upstream_type = err_obj.get("type")
+                                    err_msg = err_obj.get("message", err_msg)
+                                    for field in ("n_prompt_tokens", "n_ctx"):
+                                        if field in err_obj:
+                                            extra_fields[field] = err_obj[field]
+                            except Exception:
+                                pass
+                            log_model_error(
+                                model=model_name,
+                                message=err_msg,
+                                http_status=resp.status_code,
+                                upstream_type=upstream_type,
+                                extra=extra_fields if extra_fields else None,
+                            )
+                            await record_metrics("/v1/chat/completions", 0, error=True)
+                            record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
+                            return JSONResponse(
+                                status_code=resp.status_code,
+                                content={
+                                    "error": {
+                                        "message": err_msg,
+                                        "type": "invalid_request_error",
+                                        "code": resp.status_code,
+                                    }
+                                },
+                            )
+                        data = resp.json()
+                        prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                        gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+                        try:
+                            choices = data.get("choices", [])
+                            if choices and len(choices) > 0:
+                                message_obj = choices[0].get("message", {})
+                                content_val = message_obj.get("content")
+                                thinking_val = message_obj.get("reasoning_content") or message_obj.get("thinking")
+                                complete_active_request(
+                                    request_id,
+                                    final_response=content_val,
+                                    final_thinking=thinking_val,
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=gen_tokens,
+                                )
+                        except Exception:
+                            pass
+                        latency = (now_ns() - started_ns) / 1e6
+                        await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
+                        return JSONResponse(data)
+                    finally:
+                        if admitted and backend_model:
+                            _release_active_slot_sync(backend_model)
+                            admitted = False
+                            await _notify_active_lock_safe()
+            except httpx.RequestError as exc:
+                if attempt == max_retries - 1:
+                    logger.error(
+                        f"Chat completions proxy failed after {max_retries} attempts due to connection error: {exc}"
+                    )
+                    await record_metrics("/v1/chat/completions", 0, error=True)
+                    _release_queued_sync(queued_backend)
                     queued_backend = None
-                    body["model"] = backend_model
-                except HTTPException as e:
-                    # Client errors (like 404 Not Found) should fail immediately
-                    await release_request_queued(queued_backend)
-                    complete_active_request(request_id, error=f"Model resolution failed: {e.detail}")
+                    await _notify_active_lock_safe()
+                    complete_active_request(request_id, error=f"Upstream request failed: {exc}")
                     return JSONResponse(
-                        status_code=e.status_code,
+                        status_code=502,
                         content={
                             "error": {
-                                "message": f"Model resolution failed: {e.detail}",
-                                "type": "invalid_request_error",
-                                "param": "model",
-                                "code": "model_not_found",
+                                "message": f"Upstream request failed: {exc}",
+                                "type": "api_error",
+                                "code": "bad_gateway",
                             }
                         },
                     )
-            if stream:
-
-                async def stream_proxy(_bm=backend_model, _cl=client_httpx):
-                    stream_started = False
-                    try:
-                        for s_attempt in range(max_retries):
-                            try:
-                                async with _cl.stream(
-                                    "POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body
-                                ) as resp:
-                                    if resp.status_code != 200:
-                                        err_body = await resp.aread()
-                                        err_msg = err_body.decode(errors="ignore")
-                                        if s_attempt < max_retries - 1 and (
-                                            "loading" in err_msg
-                                            or "error" in err_msg
-                                            or resp.status_code in (502, 503, 504)
-                                        ):
-                                            logger.warning(
-                                                f"Upstream stream returned status {resp.status_code}. Retrying recovery/load..."
-                                            )
-                                            await ensure_model(model_name)
-                                            continue
-                                        record_active_request_error(
-                                            request_id, f"Upstream error {resp.status_code}: {err_msg}"
-                                        )
-                                        yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
-                                        return
-
-                                    stream_started = True
-                                    async for line in resp.aiter_lines():
-                                        if line and line.startswith("data: "):
-                                            try:
-                                                payload_str = line[6:].strip()
-                                                if payload_str and payload_str != "[DONE]":
-                                                    payload_json = json.loads(payload_str)
-                                                    choices = payload_json.get("choices")
-                                                    if choices and isinstance(choices, list) and len(choices) > 0:
-                                                        delta = choices[0].get("delta")
-                                                        if delta:
-                                                            update_active_request_progress(
-                                                                request_id,
-                                                                response_chunk=delta.get("content"),
-                                                                thinking_chunk=delta.get("reasoning_content")
-                                                                or delta.get("thinking"),
-                                                            )
-                                            except Exception:
-                                                pass
-                                            yield f"{line}\n\n"
-                                    return
-                            except httpx.RequestError as exc:
-                                if stream_started or s_attempt == max_retries - 1:
-                                    record_active_request_error(request_id, f"Upstream connection lost: {exc}")
-                                    yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
-                                    if stream_started:
-                                        # Mid-stream crash: stream is lost but kick off background
-                                        # recovery now so the next request doesn't pay cold-start cost
-                                        logger.warning(
-                                            f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
-                                        )
-                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
-                                        task.set_name(f"midstream-recovery-chat-{model_name}")
-                                        task.add_done_callback(handle_background_task_result)
-                                    return
-                                logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
-                                await ensure_model(model_name)
-                                await asyncio.sleep(2.0)
-                    finally:
-                        # Clear the detailed tracking entry FIRST (synchronous, cannot be
-                        # interrupted by a client disconnect / task cancellation). This is the
-                        # fix for "Active Requests" entries that get stuck on "counting":
-                        # when the client disconnects, Starlette cancels the streaming
-                        # generator and any `await` in this finally can raise CancelledError,
-                        # aborting the rest of the block. Running the sync cleanup up front
-                        # guarantees the entry is always removed.
-                        req_data = complete_active_request(request_id)
-                        async with active_requests_lock:
-                            _track_active(_bm, -1)
-                            active_requests_lock.notify_all()
-                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
-                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
-                        with suppress(BaseException):
-                            await record_metrics(
-                                "/v1/chat/completions",
-                                (now_ns() - started_ns) / 1e6,
-                                prompt_tokens=p_toks,
-                                gen_tokens=c_toks,
-                            )
-
-                return StreamingResponse(stream_proxy(), media_type="text/event-stream")
-            else:
-                try:
-                    resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
-                    if resp.status_code != 200:
-                        err_msg = resp.text
-                        if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
-                            logger.warning(
-                                f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
-                            )
-                            await ensure_model(model_name)
-                            continue
-                        upstream_type = None
-                        extra_fields = {}
-                        try:
-                            upstream_err = resp.json()
-                            if "error" in upstream_err:
-                                err_obj = upstream_err["error"]
-                                upstream_type = err_obj.get("type")
-                                err_msg = err_obj.get("message", err_msg)
-                                # Capture structured context fields if present
-                                for field in ("n_prompt_tokens", "n_ctx"):
-                                    if field in err_obj:
-                                        extra_fields[field] = err_obj[field]
-                        except Exception:
-                            pass
-                        log_model_error(
-                            model=model_name,
-                            message=err_msg,
-                            http_status=resp.status_code,
-                            upstream_type=upstream_type,
-                            extra=extra_fields if extra_fields else None,
-                        )
-                        await record_metrics("/v1/chat/completions", 0, error=True)
-                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
-                        return JSONResponse(
-                            status_code=resp.status_code,
-                            content={
-                                "error": {
-                                    "message": err_msg,
-                                    "type": "invalid_request_error",
-                                    "code": resp.status_code,
-                                }
-                            },
-                        )
-                    data = resp.json()
-                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
-                    try:
-                        choices = data.get("choices", [])
-                        if choices and len(choices) > 0:
-                            message_obj = choices[0].get("message", {})
-                            content_val = message_obj.get("content")
-                            thinking_val = message_obj.get("reasoning_content") or message_obj.get("thinking")
-                            complete_active_request(
-                                request_id,
-                                final_response=content_val,
-                                final_thinking=thinking_val,
-                                prompt_tokens=prompt_tokens,
-                                completion_tokens=gen_tokens,
-                            )
-                    except Exception:
-                        pass
-                    latency = (now_ns() - started_ns) / 1e6
-                    await record_metrics("/v1/chat/completions", latency, prompt_tokens, gen_tokens)
-                    return JSONResponse(data)
-                finally:
-                    # Clear the detailed tracking entry FIRST (synchronous, cannot be
-                    # interrupted by a client disconnect / task cancellation). See the
-                    # chat-stream finally for the full rationale.
-                    complete_active_request(request_id)
-                    async with active_requests_lock:
-                        _track_active(backend_model, -1)
-                        active_requests_lock.notify_all()
-        except httpx.RequestError as exc:
-            if attempt == max_retries - 1:
-                logger.error(
-                    f"Chat completions proxy failed after {max_retries} attempts due to connection error: {exc}"
+                logger.warning(
+                    f"Connection lost during completions request: {exc}. Waiting for llama-server recovery..."
                 )
-                await record_metrics("/v1/chat/completions", 0, error=True)
-                await release_request_queued(queued_backend)
-                complete_active_request(request_id, error=f"Upstream request failed: {exc}")
-                return JSONResponse(
-                    status_code=502,
-                    content={
-                        "error": {
-                            "message": f"Upstream request failed: {exc}",
-                            "type": "api_error",
-                            "code": "bad_gateway",
-                        }
-                    },
-                )
-            logger.warning(
-                f"Connection lost during completions request: {exc}. Flushing client pool and waiting for llama-server recovery..."
-            )
-            old_client = client_httpx
-            client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
-            task = asyncio.create_task(old_client.aclose())
-            task.set_name("close-old-client-chat")
-            task.add_done_callback(handle_background_task_result)
+                if not any(v > 0 for v in active_requests.values()):
+                    old_client = client_httpx
+                    client_httpx = httpx.AsyncClient(
+                        timeout=upstream_timeout(),
+                        limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+                    )
+                    task = asyncio.create_task(old_client.aclose())
+                    task.set_name("close-old-client-chat")
+                    task.add_done_callback(handle_background_task_result)
 
-            await wait_for_llama_server_or_restart(timeout=60.0)
-            await ensure_model(model_name)
+                await wait_for_llama_server_or_restart(timeout=60.0)
+                if queued_backend is None and model_name:
+                    queued_backend = await mark_request_queued(model_name)
+                await ensure_model(model_name)
+    finally:
+        if not stream_handed_off:
+            complete_active_request(request_id)
+            released = False
+            if queued_backend:
+                _release_queued_sync(queued_backend)
+                queued_backend = None
+                released = True
+            if admitted and backend_model:
+                _release_active_slot_sync(backend_model)
+                admitted = False
+                released = True
+            if released:
+                await _notify_active_lock_safe()
 
 
 @app.post("/v1/completions")
@@ -2795,6 +3126,11 @@ async def openai_completions(request: Request):
         import uuid
 
         request_id = str(uuid.uuid4())[:8]
+    priority = resolve_request_priority(request, body)
+    admit_ok, reject_reason = _check_queue_admission(priority)
+    if not admit_ok:
+        return _queue_rejected_response(reject_reason, openai_format=True)
+
     register_active_request(
         request_id,
         model_name,
@@ -2803,226 +3139,256 @@ async def openai_completions(request: Request):
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
     )
-    # Admit into the shared request queue (paired with release_request_queued in
-    # the finally blocks below and on the early-return paths).
-    queued_backend = await mark_request_queued(model_name)
+    queued_backend = None
+    admitted = False
+    stream_handed_off = False
     max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # Resolve model if provided (inside the retry loop!)
-            if model_name:
-                try:
-                    resolved = await ensure_model(model_name)
-                    backend_model = resolved["backend_model"]
-                    # Shared queue: only admit this request once a slot on its own
-                    # model is available, so it never lands on a slot serving a
-                    # different model (which would force a swap + thrash).
-                    slot_ok = await wait_for_slot(
-                        backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name
-                    )
-                    if not slot_ok:
-                        await release_request_queued(queued_backend)
-                        complete_active_request(
-                            request_id, error="No llama-server slots available within timeout (queue_timeout)"
+    try:
+        queued_backend = await mark_request_queued(model_name)
+        for attempt in range(max_retries):
+            try:
+                # Resolve model if provided (inside the retry loop!)
+                if model_name:
+                    try:
+                        resolved = await ensure_model(model_name)
+                        backend_model = resolved["backend_model"]
+                        reservation: dict[str, Any] = {"activated": False, "backend_model": backend_model}
+                        slot_ok = await wait_for_slot(
+                            backend_model,
+                            timeout=body.get("queue_timeout", 120.0),
+                            model_name=model_name,
+                            priority=priority,
+                            queued_backend=queued_backend,
+                            reservation=reservation,
                         )
+                        if not slot_ok:
+                            _release_queued_sync(queued_backend)
+                            queued_backend = None
+                            await _notify_active_lock_safe()
+                            complete_active_request(
+                                request_id, error="No llama-server slots available within timeout (queue_timeout)"
+                            )
+                            return JSONResponse(
+                                status_code=503,
+                                content={
+                                    "error": {
+                                        "message": "No llama-server slots available within timeout",
+                                        "type": "rate_limit_error",
+                                        "param": "model",
+                                        "code": "queue_timeout",
+                                    }
+                                },
+                                headers={"Retry-After": "5"},
+                            )
+                        if reservation.get("activated"):
+                            backend_model = reservation.get("backend_model") or backend_model
+                            queued_backend = None
+                        else:
+                            await activate_queued_request(queued_backend, backend_model)
+                            queued_backend = None
+                        admitted = True
+                        body["model"] = backend_model
+                    except HTTPException as e:
+                        # Client errors (like 404 Not Found) should fail immediately
+                        _release_queued_sync(queued_backend)
+                        queued_backend = None
+                        await _notify_active_lock_safe()
+                        complete_active_request(request_id, error=f"Model resolution failed: {e.detail}")
                         return JSONResponse(
-                            status_code=503,
+                            status_code=e.status_code,
                             content={
                                 "error": {
-                                    "message": "No llama-server slots available within timeout",
-                                    "type": "rate_limit_error",
+                                    "message": f"Model resolution failed: {e.detail}",
+                                    "type": "invalid_request_error",
                                     "param": "model",
-                                    "code": "queue_timeout",
+                                    "code": "model_not_found",
                                 }
                             },
                         )
-                    await activate_queued_request(queued_backend, backend_model)
+                if stream:
+
+                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _admitted=admitted):
+                        stream_started = False
+                        try:
+                            for s_attempt in range(max_retries):
+                                try:
+                                    async with _cl.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
+                                        if resp.status_code != 200:
+                                            err_body = await resp.aread()
+                                            err_msg = err_body.decode(errors="ignore")
+                                            if s_attempt < max_retries - 1 and (
+                                                "loading" in err_msg
+                                                or "error" in err_msg
+                                                or resp.status_code in (502, 503, 504)
+                                            ):
+                                                logger.warning(
+                                                    f"Upstream stream returned status {resp.status_code}. Retrying recovery/load..."
+                                                )
+                                                await ensure_model(model_name)
+                                                continue
+                                            record_active_request_error(
+                                                request_id, f"Upstream error {resp.status_code}: {err_msg}"
+                                            )
+                                            yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
+                                            return
+
+                                        stream_started = True
+                                        async for line in resp.aiter_lines():
+                                            if line and line.startswith("data: "):
+                                                try:
+                                                    payload_str = line[6:].strip()
+                                                    if payload_str and payload_str != "[DONE]":
+                                                        payload_json = json.loads(payload_str)
+                                                        choices = payload_json.get("choices")
+                                                        if choices and isinstance(choices, list) and len(choices) > 0:
+                                                            text_val = choices[0].get("text")
+                                                            thinking_val = choices[0].get("thinking") or choices[0].get(
+                                                                "reasoning_content"
+                                                            )
+                                                            update_active_request_progress(
+                                                                request_id,
+                                                                response_chunk=text_val,
+                                                                thinking_chunk=thinking_val,
+                                                            )
+                                                except Exception:
+                                                    pass
+                                                yield f"{line}\n\n"
+                                        return
+                                except httpx.RequestError as exc:
+                                    if stream_started or s_attempt == max_retries - 1:
+                                        record_active_request_error(request_id, f"Upstream connection lost: {exc}")
+                                        yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
+                                        if stream_started:
+                                            logger.warning(
+                                                f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
+                                            )
+                                            task = asyncio.create_task(_ensure_model_skip_swap(model_name))
+                                            task.set_name(f"midstream-recovery-completions-{model_name}")
+                                            task.add_done_callback(handle_background_task_result)
+                                        return
+                                    logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
+                                    await ensure_model(model_name)
+                                    await asyncio.sleep(2.0)
+                        finally:
+                            req_data = complete_active_request(request_id)
+                            if _admitted and _bm:
+                                _release_active_slot_sync(_bm)
+                                await _notify_active_lock_safe()
+                            p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
+                            c_toks = req_data.get("completion_tokens", 0) if req_data else 0
+                            with suppress(BaseException):
+                                await record_metrics(
+                                    "/v1/completions",
+                                    (now_ns() - started_ns) / 1e6,
+                                    prompt_tokens=p_toks,
+                                    gen_tokens=c_toks,
+                                )
+
+                    stream_handed_off = True
+                    return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+                else:
+                    try:
+                        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
+                        if resp.status_code != 200:
+                            err_msg = resp.text
+                            if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
+                                logger.warning(
+                                    f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
+                                )
+                                await ensure_model(model_name)
+                                continue
+                            try:
+                                upstream_err = resp.json()
+                                if "error" in upstream_err:
+                                    err_msg = upstream_err["error"].get("message", err_msg)
+                            except Exception:
+                                pass
+                            await record_metrics("/v1/completions", 0, error=True)
+                            record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
+                            return JSONResponse(
+                                status_code=resp.status_code,
+                                content={
+                                    "error": {
+                                        "message": err_msg,
+                                        "type": "invalid_request_error",
+                                        "code": resp.status_code,
+                                    }
+                                },
+                            )
+                        data = resp.json()
+                        prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                        gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
+                        try:
+                            choices = data.get("choices", [])
+                            if choices and len(choices) > 0:
+                                content_val = choices[0].get("text")
+                                thinking_val = choices[0].get("thinking") or choices[0].get("reasoning_content")
+                                complete_active_request(
+                                    request_id,
+                                    final_response=content_val,
+                                    final_thinking=thinking_val,
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=gen_tokens,
+                                )
+                        except Exception:
+                            pass
+                        latency = (now_ns() - started_ns) / 1e6
+                        await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
+                        return JSONResponse(data)
+                    finally:
+                        if admitted and backend_model:
+                            _release_active_slot_sync(backend_model)
+                            admitted = False
+                            await _notify_active_lock_safe()
+            except httpx.RequestError as exc:
+                if attempt == max_retries - 1:
+                    logger.error(f"Completions proxy failed after {max_retries} attempts due to connection error: {exc}")
+                    await record_metrics("/v1/completions", 0, error=True)
+                    _release_queued_sync(queued_backend)
                     queued_backend = None
-                    body["model"] = backend_model
-                except HTTPException as e:
-                    # Client errors (like 404 Not Found) should fail immediately
-                    await release_request_queued(queued_backend)
-                    complete_active_request(request_id, error=f"Model resolution failed: {e.detail}")
+                    await _notify_active_lock_safe()
+                    complete_active_request(request_id, error=f"Upstream request failed: {exc}")
                     return JSONResponse(
-                        status_code=e.status_code,
+                        status_code=502,
                         content={
                             "error": {
-                                "message": f"Model resolution failed: {e.detail}",
-                                "type": "invalid_request_error",
-                                "param": "model",
-                                "code": "model_not_found",
+                                "message": f"Upstream request failed: {exc}",
+                                "type": "api_error",
+                                "code": "bad_gateway",
                             }
                         },
                     )
-            if stream:
-
-                async def stream_proxy(_bm=backend_model, _cl=client_httpx):
-                    stream_started = False
-                    try:
-                        for s_attempt in range(max_retries):
-                            try:
-                                async with _cl.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
-                                    if resp.status_code != 200:
-                                        err_body = await resp.aread()
-                                        err_msg = err_body.decode(errors="ignore")
-                                        if s_attempt < max_retries - 1 and (
-                                            "loading" in err_msg
-                                            or "error" in err_msg
-                                            or resp.status_code in (502, 503, 504)
-                                        ):
-                                            logger.warning(
-                                                f"Upstream stream returned status {resp.status_code}. Retrying recovery/load..."
-                                            )
-                                            await ensure_model(model_name)
-                                            continue
-                                        record_active_request_error(
-                                            request_id, f"Upstream error {resp.status_code}: {err_msg}"
-                                        )
-                                        yield f"data: {json.dumps({'error': {'message': err_msg, 'type': 'invalid_request_error', 'code': resp.status_code}})}\n\n"
-                                        return
-
-                                    stream_started = True
-                                    async for line in resp.aiter_lines():
-                                        if line and line.startswith("data: "):
-                                            try:
-                                                payload_str = line[6:].strip()
-                                                if payload_str and payload_str != "[DONE]":
-                                                    payload_json = json.loads(payload_str)
-                                                    choices = payload_json.get("choices")
-                                                    if choices and isinstance(choices, list) and len(choices) > 0:
-                                                        text_val = choices[0].get("text")
-                                                        thinking_val = choices[0].get("thinking") or choices[0].get(
-                                                            "reasoning_content"
-                                                        )
-                                                        update_active_request_progress(
-                                                            request_id,
-                                                            response_chunk=text_val,
-                                                            thinking_chunk=thinking_val,
-                                                        )
-                                            except Exception:
-                                                pass
-                                            yield f"{line}\n\n"
-                                    return
-                            except httpx.RequestError as exc:
-                                if stream_started or s_attempt == max_retries - 1:
-                                    record_active_request_error(request_id, f"Upstream connection lost: {exc}")
-                                    yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
-                                    if stream_started:
-                                        # Mid-stream crash: stream is lost but kick off background
-                                        # recovery now so the next request doesn't pay cold-start cost
-                                        logger.warning(
-                                            f"Mid-stream crash detected ({exc}). Triggering background server recovery..."
-                                        )
-                                        task = asyncio.create_task(_ensure_model_skip_swap(model_name))
-                                        task.set_name(f"midstream-recovery-completions-{model_name}")
-                                        task.add_done_callback(handle_background_task_result)
-                                    return
-                                logger.warning(f"Connection lost during stream init: {exc}. Retrying recovery/load...")
-                                await ensure_model(model_name)
-                                await asyncio.sleep(2.0)
-                    finally:
-                        # Clear the detailed tracking entry FIRST (synchronous, cannot be
-                        # interrupted by a client disconnect / task cancellation). See the
-                        # chat-stream finally for the full rationale.
-                        req_data = complete_active_request(request_id)
-                        async with active_requests_lock:
-                            _track_active(_bm, -1)
-                            active_requests_lock.notify_all()
-                        p_toks = req_data.get("prompt_tokens", 0) if req_data else 0
-                        c_toks = req_data.get("completion_tokens", 0) if req_data else 0
-                        with suppress(BaseException):
-                            await record_metrics(
-                                "/v1/completions",
-                                (now_ns() - started_ns) / 1e6,
-                                prompt_tokens=p_toks,
-                                gen_tokens=c_toks,
-                            )
-
-                return StreamingResponse(stream_proxy(), media_type="text/event-stream")
-            else:
-                try:
-                    resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
-                    if resp.status_code != 200:
-                        err_msg = resp.text
-                        if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
-                            logger.warning(
-                                f"Upstream returned error status {resp.status_code}. Retrying recovery/load..."
-                            )
-                            await ensure_model(model_name)
-                            continue
-                        try:
-                            upstream_err = resp.json()
-                            if "error" in upstream_err:
-                                err_msg = upstream_err["error"].get("message", err_msg)
-                        except Exception:
-                            pass
-                        await record_metrics("/v1/completions", 0, error=True)
-                        record_active_request_error(request_id, f"Upstream error {resp.status_code}: {err_msg}")
-                        return JSONResponse(
-                            status_code=resp.status_code,
-                            content={
-                                "error": {
-                                    "message": err_msg,
-                                    "type": "invalid_request_error",
-                                    "code": resp.status_code,
-                                }
-                            },
-                        )
-                    data = resp.json()
-                    prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-                    gen_tokens = data.get("usage", {}).get("completion_tokens", 0)
-                    try:
-                        choices = data.get("choices", [])
-                        if choices and len(choices) > 0:
-                            content_val = choices[0].get("text")
-                            thinking_val = choices[0].get("thinking") or choices[0].get("reasoning_content")
-                            complete_active_request(
-                                request_id,
-                                final_response=content_val,
-                                final_thinking=thinking_val,
-                                prompt_tokens=prompt_tokens,
-                                completion_tokens=gen_tokens,
-                            )
-                    except Exception:
-                        pass
-                    latency = (now_ns() - started_ns) / 1e6
-                    await record_metrics("/v1/completions", latency, prompt_tokens, gen_tokens)
-                    return JSONResponse(data)
-                finally:
-                    # Clear the detailed tracking entry FIRST (synchronous, cannot be
-                    # interrupted by a client disconnect / task cancellation). See the
-                    # chat-stream finally for the full rationale.
-                    complete_active_request(request_id)
-                    async with active_requests_lock:
-                        _track_active(backend_model, -1)
-                        active_requests_lock.notify_all()
-        except httpx.RequestError as exc:
-            if attempt == max_retries - 1:
-                logger.error(f"Completions proxy failed after {max_retries} attempts due to connection error: {exc}")
-                await record_metrics("/v1/completions", 0, error=True)
-                await release_request_queued(queued_backend)
-                complete_active_request(request_id, error=f"Upstream request failed: {exc}")
-                return JSONResponse(
-                    status_code=502,
-                    content={
-                        "error": {
-                            "message": f"Upstream request failed: {exc}",
-                            "type": "api_error",
-                            "code": "bad_gateway",
-                        }
-                    },
+                logger.warning(
+                    f"Connection lost during completions request: {exc}. Waiting for llama-server recovery..."
                 )
-            logger.warning(
-                f"Connection lost during completions request: {exc}. Flushing client pool and waiting for llama-server recovery..."
-            )
-            old_client = client_httpx
-            client_httpx = httpx.AsyncClient(timeout=upstream_timeout())
-            task = asyncio.create_task(old_client.aclose())
-            task.set_name("close-old-client-completions")
-            task.add_done_callback(handle_background_task_result)
+                if not any(v > 0 for v in active_requests.values()):
+                    old_client = client_httpx
+                    client_httpx = httpx.AsyncClient(
+                        timeout=upstream_timeout(),
+                        limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+                    )
+                    task = asyncio.create_task(old_client.aclose())
+                    task.set_name("close-old-client-completions")
+                    task.add_done_callback(handle_background_task_result)
 
-            await wait_for_llama_server_or_restart(timeout=60.0)
-            await ensure_model(model_name)
+                await wait_for_llama_server_or_restart(timeout=60.0)
+                if queued_backend is None and model_name:
+                    queued_backend = await mark_request_queued(model_name)
+                await ensure_model(model_name)
+    finally:
+        if not stream_handed_off:
+            complete_active_request(request_id)
+            released = False
+            if queued_backend:
+                _release_queued_sync(queued_backend)
+                queued_backend = None
+                released = True
+            if admitted and backend_model:
+                _release_active_slot_sync(backend_model)
+                admitted = False
+                released = True
+            if released:
+                await _notify_active_lock_safe()
 
 
 @app.post("/v1/embeddings")
@@ -3034,6 +3400,11 @@ async def openai_embeddings(request: Request):
     online_rejection = _online_model_rejection(model_name)
     if online_rejection is not None:
         return online_rejection
+
+    priority = resolve_request_priority(request, body)
+    admit_ok, reject_reason = _check_queue_admission(priority)
+    if not admit_ok:
+        return _queue_rejected_response(reject_reason, openai_format=True)
 
     queued_backend = await mark_request_queued(model_name)
     backend_model = None
@@ -3056,9 +3427,18 @@ async def openai_embeddings(request: Request):
                         }
                     },
                 )
-            if not await wait_for_slot(backend_model, timeout=body.get("queue_timeout", 120.0), model_name=model_name):
-                await release_request_queued(queued_backend)
+            reservation: dict[str, Any] = {"activated": False, "backend_model": backend_model}
+            if not await wait_for_slot(
+                backend_model,
+                timeout=body.get("queue_timeout", 120.0),
+                model_name=model_name,
+                priority=priority,
+                queued_backend=queued_backend,
+                reservation=reservation,
+            ):
+                _release_queued_sync(queued_backend)
                 queued_backend = None
+                await _notify_active_lock_safe()
                 return JSONResponse(
                     status_code=503,
                     content={
@@ -3068,9 +3448,15 @@ async def openai_embeddings(request: Request):
                             "code": "queue_timeout",
                         }
                     },
+                    headers={"Retry-After": "5"},
                 )
-            await activate_queued_request(queued_backend, backend_model)
-            queued_backend = None
+            if reservation.get("activated"):
+                backend_model = reservation.get("backend_model") or backend_model
+                body["model"] = backend_model
+                queued_backend = None
+            else:
+                await activate_queued_request(queued_backend, backend_model)
+                queued_backend = None
             admitted = True
 
         try:
@@ -3124,12 +3510,15 @@ async def openai_embeddings(request: Request):
                 },
             )
     finally:
+        released = False
         if queued_backend:
-            await release_request_queued(queued_backend)
+            _release_queued_sync(queued_backend)
+            released = True
         if backend_model and admitted:
-            async with active_requests_lock:
-                _track_active(backend_model, -1)
-                active_requests_lock.notify_all()
+            _release_active_slot_sync(backend_model)
+            released = True
+        if released:
+            await _notify_active_lock_safe()
 
 
 # Global state for VRAM tracking
@@ -4266,6 +4655,8 @@ async def _evict_llama_vram() -> None:
 
     async with active_requests_lock:
         active_requests.clear()
+        _slot_capacity_cache.clear()
+        _notify_slot_waiters()
         active_requests_lock.notify_all()
 
     logger.info("Restarting llama-server to release VRAM for SD model...")
@@ -5731,11 +6122,28 @@ async def admin_runtime():
         if current_time - entry["start_time"] <= MODEL_LOADING_TIMEOUT:
             loading.append({"name": name, "elapsed_seconds": int(current_time - entry["start_time"])})
 
+    waiters_summary = {}
+    for bm, heap in list(_slot_waiters.items()):
+        live = [item for item in heap if not item[2]]
+        if live:
+            waiters_summary[public_model_name(bm)] = {
+                "total": len(live),
+                "critical": sum(1 for item in live if (-item[0]) >= PRIORITY_CRITICAL),
+                "high": sum(1 for item in live if PRIORITY_HIGH <= (-item[0]) < PRIORITY_CRITICAL),
+                "normal": sum(1 for item in live if PRIORITY_NORMAL <= (-item[0]) < PRIORITY_HIGH),
+                "low": sum(1 for item in live if PRIORITY_LOW <= (-item[0]) < PRIORITY_NORMAL),
+                "keeper": sum(1 for item in live if (-item[0]) < PRIORITY_LOW),
+            }
+
     return {
         "loaded_models": loaded,
         "loading_models": loading,
         "active_requests": active,
         "queued_requests": queued,
+        "queue_depth": _total_queued_count(),
+        "max_queue_depth": MAX_QUEUE_DEPTH,
+        "slot_capacity": {public_model_name(k): v for k, v in _slot_capacity_cache.items()},
+        "slot_waiters": waiters_summary,
         "model_expiry_timers": expiry_info,
         "max_loaded_models": MAX_LOADED_MODELS,
         "default_keep_alive": DEFAULT_KEEP_ALIVE,
@@ -6380,6 +6788,8 @@ async def admin_vram_clear():
         # 2. Force reset active requests counter to prevent stuck locks
         async with active_requests_lock:
             active_requests.clear()
+            _slot_capacity_cache.clear()
+            _notify_slot_waiters()
             active_requests_lock.notify_all()
 
         # 3. Always trigger a docker restart on llama-server to guarantee 100% VRAM release
@@ -6734,7 +7144,9 @@ async def home_model_return_once(now: float | None = None) -> str:
     if not HOME_MODEL:
         return "off"
     now = time.time() if now is None else now
-    if any(v > 0 for v in active_requests.values()):
+    if any(v > 0 for v in active_requests.values()) or _total_queued_count() > 0 or any(
+        any(not item[2] for item in heap) for heap in _slot_waiters.values()
+    ):
         return "busy"
     quiet = HOME_MODEL_AFTER_BENCHMARK_S if _last_inference_was_benchmark else HOME_MODEL_RETURN_S
     if now - _last_inference_at < quiet:
@@ -6855,7 +7267,9 @@ async def prompt_keeper_once(now: float | None = None) -> str:
     if not PROMPT_KEEPER or not _kept_prompts:
         return "nothing"
     now = time.time() if now is None else now
-    if any(v > 0 for v in active_requests.values()):
+    if any(v > 0 for v in active_requests.values()) or _total_queued_count() > 0 or any(
+        any(not item[2] for item in heap) for heap in _slot_waiters.values()
+    ):
         return "busy"
     if now - _last_inference_at < PROMPT_KEEPER_IDLE_S:
         return "recent"
@@ -7850,7 +8264,14 @@ def _online_model_rejection(model_name: str) -> JSONResponse | None:
     )
 
 
-async def ensure_model(model_name: str, options: dict | None = None, skip_swap: bool = False):
+async def ensure_model(
+    model_name: str,
+    options: dict | None = None,
+    skip_swap: bool = False,
+    *,
+    priority: int | None = None,
+):
+    effective_priority = _CURRENT_REQUEST_PRIORITY.get() if priority is None else priority
     # Online models are handled by the benchmark/web layer directly via the
     # online_providers module.  If one of their identifiers somehow reaches the
     # proxy (e.g. a misconfigured client) we reject it immediately instead of
@@ -7912,23 +8333,47 @@ async def ensure_model(model_name: str, options: dict | None = None, skip_swap: 
         logger.warning(f"Lock-free status check failed: {e}")
 
     await ensure_sd_unloaded()
-    async with router_model_lock:
-        mark_model_loading(model_name)
-        resolved = await resolve_router_model(model_name, reload=True)
-        backend_model = resolved["backend_model"]
+    # Track that this request is waiting to acquire router_model_lock so a peer
+    # currently holding router_model_lock for a model swap does not deadlock
+    # waiting for our own queued_requests count to drop to zero.
+    _wait_backend: str | None = None
+    try:
+        _pre = await resolve_router_model(model_name, reload=False)
+        _wait_backend = _pre.get("backend_model")
+    except Exception:
+        _wait_backend = None
+    if _wait_backend:
+        _waiting_for_router_lock[_wait_backend] = _waiting_for_router_lock.get(_wait_backend, 0) + 1
+        await _notify_active_lock_safe()
+    try:
+        async with router_model_lock:
+            if _wait_backend:
+                _waiting_for_router_lock[_wait_backend] = max(0, _waiting_for_router_lock.get(_wait_backend, 0) - 1)
+                _wait_backend = None
+            mark_model_loading(model_name)
+            resolved = await resolve_router_model(model_name, reload=True)
+            backend_model = resolved["backend_model"]
 
-        async with active_requests_lock:
-            _track_active(backend_model, 1)
-        try:
-            return await _ensure_model_impl(model_name, options, resolved, skip_swap)
-        finally:
             async with active_requests_lock:
-                _track_active(backend_model, -1)
-                active_requests_lock.notify_all()
+                _track_active(backend_model, 1)
+            try:
+                return await _ensure_model_impl(model_name, options, resolved, skip_swap, priority=effective_priority)
+            finally:
+                _release_active_slot_sync(backend_model)
+                await _notify_active_lock_safe()
+    finally:
+        if _wait_backend:
+            _waiting_for_router_lock[_wait_backend] = max(0, _waiting_for_router_lock.get(_wait_backend, 0) - 1)
+            await _notify_active_lock_safe()
 
 
 async def _ensure_model_impl(
-    model_name: str, options: dict | None = None, resolved: dict | None = None, skip_swap: bool = False
+    model_name: str,
+    options: dict | None = None,
+    resolved: dict | None = None,
+    skip_swap: bool = False,
+    *,
+    priority: int = PRIORITY_NORMAL,
 ):
     if skip_swap:
         # During mid-stream crash recovery, don't try to load the crashed model.
@@ -7980,32 +8425,38 @@ async def _ensure_model_impl(
                 is_crashed = crashed_models.get(other_id, False)
 
                 if not is_crashed:
-                    # Wait for active requests (in-flight) AND queued requests on
-                    # the model we are about to unload. A queued request has
-                    # already been admitted but not yet gone in-flight; swapping
-                    # its model away would force a reload and thrash the queue.
+                    # Wait for active requests (in-flight) AND priority-blocking queued
+                    # requests on the model we are about to unload, excluding peers
+                    # blocked on router_model_lock (to prevent deadlock) and low-priority
+                    # waiters when a HIGH/CRITICAL request needs the swap.
                     async with active_requests_lock:
                         deadline = asyncio.get_event_loop().time() + 180.0  # 180s max wait
-                        while active_requests.get(other_id, 0) > 0 or queued_requests.get(other_id, 0) > 0:
+                        while (
+                            active_requests.get(other_id, 0) > 0
+                            or _queued_blocking_swap(other_id, priority) > 0
+                        ):
                             remaining = deadline - asyncio.get_event_loop().time()
+                            eff_q = _queued_blocking_swap(other_id, priority)
                             if remaining <= 0:
                                 logger.warning(
-                                    f"Timeout waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish. Forcing unload."
+                                    f"Timeout waiting for {active_requests.get(other_id, 0)} active / {eff_q} queued requests on {other_id} to finish. Forcing unload."
                                 )
                                 break
                             logger.info(
-                                f"Waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
+                                f"Waiting for {active_requests.get(other_id, 0)} active / {eff_q} queued requests on {other_id} to finish before unloading ({remaining:.0f}s remaining)."
                             )
                             try:
                                 await asyncio.wait_for(active_requests_lock.wait(), timeout=remaining)
                             except TimeoutError:
-                                if active_requests.get(other_id, 0) > 0 or queued_requests.get(other_id, 0) > 0:
+                                eff_q = _queued_blocking_swap(other_id, priority)
+                                if active_requests.get(other_id, 0) > 0 or eff_q > 0:
                                     logger.warning(
-                                        f"Timeout waiting for {active_requests.get(other_id, 0)} active / {queued_requests.get(other_id, 0)} queued requests on {other_id} to finish. Forcing unload."
+                                        f"Timeout waiting for {active_requests.get(other_id, 0)} active / {eff_q} queued requests on {other_id} to finish. Forcing unload."
                                     )
                                 break
 
                 logger.info(f"Unloading backend model {other_id} before loading {backend_model}")
+                _slot_capacity_cache.pop(other_id, None)
                 try:
                     await post_router_model_action("unload", other_id)
                     await record_model_unloaded_by_backend_id(other_id)
@@ -8031,41 +8482,41 @@ async def _ensure_model_impl(
             f"Model {backend_model} is currently loading "
             f"(large={_large}, grace={_load_grace}s). Waiting for load to finish..."
         )
-        _proceed = False
         for _ in range(_load_grace):
             await asyncio.sleep(1.0)
-            # If a request is already in-flight or queued for this model, it is
-            # genuinely being used: do NOT force-unload it. Let the caller
-            # proceed and rely on llama-server's own internal queueing.
-            async with active_requests_lock:
-                if active_requests.get(backend_model, 0) > 0 or queued_requests.get(backend_model, 0) > 0:
-                    logger.info(
-                        f"Model {backend_model} has in-flight/queued requests; proceeding without further load-wait."
-                    )
-                    _proceed = True
-                    break
             try:
                 resolved = await resolve_router_model(model_name, reload=True)
                 entry = resolved["entry"]
-                if router_entry_status(entry) == "loaded":
+                st_now = router_entry_status(entry)
+                if st_now == "loaded":
                     logger.info(f"Model {backend_model} finished loading successfully.")
                     status = "loaded"
                     break
+                if st_now != "loading":
+                    status = st_now
+                    break
             except Exception as poll_exc:
                 logger.warning(f"Error polling model loading status: {poll_exc}")
-        if _proceed:
-            return {
-                "model_name": model_name,
-                "backend_model": backend_model,
-                "manifest_path": resolved.get("manifest_path"),
-                "manifest": resolved.get("manifest"),
-            }
         if status == "loading":
-            # Grace period elapsed with no active/queued request and still not
+            # Only skip force-unload if OTHER requests (beyond ensure_model's own
+            # temporary active count of 1) are actively using this backend.
+            other_active = max(0, active_requests.get(backend_model, 0) - 1)
+            if other_active > 0:
+                logger.info(
+                    f"Model {backend_model} still loading after {_load_grace}s with {other_active} other active request(s); skipping force-unload."
+                )
+                return {
+                    "model_name": model_name,
+                    "backend_model": backend_model,
+                    "manifest_path": resolved.get("manifest_path"),
+                    "manifest": resolved.get("manifest"),
+                }
+            # Grace period elapsed with no other active request and still not
             # loaded. Treat as a stuck load and force a reload.
             logger.warning(
                 f"Model {backend_model} did not finish loading after {_load_grace}s. Force-unloading and retrying..."
             )
+            _slot_capacity_cache.pop(backend_model, None)
             with suppress(Exception):
                 await post_router_model_action("unload", backend_model)
             await asyncio.sleep(2.0)
@@ -8528,6 +8979,8 @@ async def _ensure_model_impl(
             # and need to be retried, not waited on forever
             async with active_requests_lock:
                 active_requests[backend_model] = 0
+                _slot_capacity_cache.pop(backend_model, None)
+                _notify_slot_waiters(backend_model)
                 active_requests_lock.notify_all()
                 logger.info(f"Cleared active_requests for crashed model {backend_model}")
 
@@ -8777,17 +9230,29 @@ async def wait_for_slot(
     model_name: str | None = None,
     options: dict | None = None,
     reloads: int = 3,
+    priority: int = PRIORITY_NORMAL,
+    queued_backend: str | None = None,
+    reservation: dict[str, Any] | None = None,
+    is_prompt_keeper: bool = False,
 ) -> bool:
-    """Queue a request until a slot on the *requested* model is free.
+    """Queue a request in priority-FIFO order until a slot on ``backend_model`` is free.
 
-    Model-aware admission: an open slot is only usable by a request for the
-    same model. This prevents a request from being admitted to a slot that
-    belongs to a different (currently loaded) model, which would force an
-    unnecessary model swap and thrash the queue.
-
-    With a single model resident in VRAM (``MAX_LOADED_MODELS == 1``) every slot
-    serves that one model, so two requests for the same model run in parallel on
-    separate slots while a request for a different model waits for the swap.
+    Model-aware, stampede-proof admission:
+    * Waiters for ``backend_model`` form a per-model priority-FIFO min-heap
+      (``(priority, arrival_seq)``). Higher-priority traffic (voice/interactive)
+      jumps ahead of normal and low-priority (coding/trainer/benchmark/keeper)
+      requests; ties break strictly FIFO.
+    * **Only the head waiter** polls ``llama-server``'s ``/slots?model=`` endpoint,
+      eliminating polling storms under bursts.
+    * Slot availability combines ``llama-server``'s reported free slots with the
+      proxy's own local ``active_requests[backend_model]`` count:
+      ``effective_free = min(server_free, max(0, server_total - in_flight))``.
+    * When ``reservation`` is supplied, the head waiter atomically decrements
+      ``queued_requests`` and increments ``active_requests`` **without yielding**
+      before returning ``True``, closing the TOCTOU window where N concurrent
+      waiters could all observe 1 free slot and stampede ``llama-server``.
+    * Prompt-keeper warmups yield immediately if any real request is active or
+      waiting.
 
     ``/slots?model=`` is only polled while the router reports the model loaded: that endpoint
     autoloads the model it names, outside the swap logic, beside whatever else is resident.
@@ -8800,49 +9265,130 @@ async def wait_for_slot(
     attempts so a model that dies on every load ends in a 503 instead of a crash loop. Without
     ``model_name`` a failed model returns False at once instead of sitting out the timeout.
 
-    Returns True if a slot for ``backend_model`` opened, False on timeout or a dead model.
+    Returns True if a slot for ``backend_model`` opened, False on timeout, yield, or dead model.
     """
     if not backend_model:
         # No specific model to scope to; nothing to wait on.
         return True
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    delay = 0.1
-    max_delay = 1.0
+    delay = 0.05
+    max_delay = 0.5
     attempt = 0
-    while True:
-        state = await router_model_state(backend_model)
-        if state in ("loaded", "unknown"):
-            slots = await _fetch_model_slots(backend_model)
-            # An open slot is one that is not currently processing.
-            if slots and not all(s.get("is_processing", False) for s in slots):
-                return True
-        elif state == "failed" or (state == "unloaded" and model_name):
-            if not model_name:
-                logger.warning(f"Model {backend_model} failed to load; not waiting out the slot timeout.")
+    current_backend = backend_model
+    own_queued = 1 if queued_backend else 0
+    entry = _enqueue_slot_waiter(current_backend, priority, is_prompt_keeper)
+    try:
+        while True:
+            if is_prompt_keeper and _has_non_keeper_work(current_backend, own_queued=own_queued):
+                logger.info(f"[prompt-keeper] Yielding queued slot wait on {current_backend} to real traffic.")
                 return False
-            if attempt >= reloads:
-                logger.error(f"Model {backend_model} is still {state} after {attempt} reload(s); giving up.")
+
+            # Wait until this entry is the highest-priority live waiter at the head of the queue.
+            while not _is_head_waiter(current_backend, entry):
+                if is_prompt_keeper and _has_non_keeper_work(current_backend, own_queued=own_queued):
+                    logger.info(f"[prompt-keeper] Yielding queued slot wait on {current_backend} to real traffic.")
+                    return False
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    logger.warning(
+                        f"Timeout waiting in priority queue for {current_backend} after the {timeout:.0f}s queue budget"
+                    )
+                    return False
+                entry[4].clear()
+                if _is_head_waiter(current_backend, entry):
+                    break
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(entry[4].wait(), timeout=min(remaining, max_delay))
+
+            # Head waiter fast-path: if we already know this model's slot capacity and
+            # local in-flight requests already fill every slot, wait on our wakeup event
+            # instead of hammering /slots.
+            cached_cap = _slot_capacity_cache.get(current_backend)
+            in_flight = active_requests.get(current_backend, 0)
+            if cached_cap is not None and in_flight >= cached_cap:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    logger.warning(
+                        f"Timeout waiting for slot on {current_backend} after the {timeout:.0f}s queue budget "
+                        f"(in_flight={in_flight}/{cached_cap})"
+                    )
+                    return False
+                entry[4].clear()
+                if active_requests.get(current_backend, 0) < _slot_capacity_cache.get(current_backend, 0):
+                    continue
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(entry[4].wait(), timeout=min(remaining, max_delay))
+                continue
+
+            state = await router_model_state(current_backend)
+            if state in ("loaded", "unknown"):
+                slots = await _fetch_model_slots(current_backend)
+                if slots:
+                    server_total = len(slots)
+                    _slot_capacity_cache[current_backend] = server_total
+                    server_free = sum(1 for s in slots if not s.get("is_processing", False))
+                    if is_prompt_keeper and _has_non_keeper_work(current_backend, own_queued=own_queued):
+                        logger.info(f"[prompt-keeper] Yielding slot admission on {current_backend} to real traffic.")
+                        return False
+                    # If a higher-priority request arrived while we were querying /slots, let it go first!
+                    if not _is_head_waiter(current_backend, entry):
+                        continue
+                    in_flight = active_requests.get(current_backend, 0)
+                    effective_free = min(server_free, max(0, server_total - in_flight))
+                    if effective_free > 0:
+                        # ATOMIC reservation: no `await` between checking effective_free
+                        # and claiming active_requests, eliminating the TOCTOU stampede.
+                        if reservation is not None:
+                            if queued_backend:
+                                queued_requests[queued_backend] = max(0, queued_requests.get(queued_backend, 0) - 1)
+                            _track_active(current_backend, 1)
+                            reservation["activated"] = True
+                            reservation["backend_model"] = current_backend
+                        return True
+            elif state == "failed" or (state == "unloaded" and model_name):
+                if not model_name:
+                    logger.warning(f"Model {current_backend} failed to load; not waiting out the slot timeout.")
+                    return False
+                if attempt >= reloads:
+                    logger.error(f"Model {current_backend} is still {state} after {attempt} reload(s); giving up.")
+                    return False
+                attempt += 1
+                logger.warning(
+                    f"Model {current_backend} is {state} while a request waits for a slot; "
+                    f"reloading it (attempt {attempt}/{reloads}). The request stays queued."
+                )
+                _slot_capacity_cache.pop(current_backend, None)
+                reload_started = loop.time()
+                try:
+                    new_backend = (await ensure_model(model_name, options=options))["backend_model"]
+                    if new_backend and new_backend != current_backend:
+                        entry[2] = True
+                        _notify_slot_waiters(current_backend)
+                        current_backend = new_backend
+                        entry = _enqueue_slot_waiter(current_backend, priority, is_prompt_keeper)
+                except Exception as exc:
+                    logger.error(f"Reload {attempt}/{reloads} of {model_name} failed: {exc}")
+                    await asyncio.sleep(min(5.0 * attempt, 15.0))
+                deadline += loop.time() - reload_started
+                delay = 0.05
+                continue
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning(f"Timeout waiting for slot on {current_backend} after the {timeout:.0f}s queue budget")
                 return False
-            attempt += 1
-            logger.warning(
-                f"Model {backend_model} is {state} while a request waits for a slot; "
-                f"reloading it (attempt {attempt}/{reloads}). The request stays queued."
-            )
-            reload_started = loop.time()
+            entry[4].clear()
+            sleep_for = min(delay, remaining)
             try:
-                backend_model = (await ensure_model(model_name, options=options))["backend_model"]
-            except Exception as exc:
-                logger.error(f"Reload {attempt}/{reloads} of {model_name} failed: {exc}")
-                await asyncio.sleep(min(5.0 * attempt, 15.0))
-            deadline += loop.time() - reload_started
-            delay = 0.1
-            continue
-        if loop.time() >= deadline:
-            logger.warning(f"Timeout waiting for slot on {backend_model} after the {timeout:.0f}s queue budget")
-            return False
-        await asyncio.sleep(delay)
-        delay = min(delay * 1.5, max_delay)
+                await asyncio.wait_for(entry[4].wait(), timeout=sleep_for)
+                delay = 0.05
+            except TimeoutError:
+                delay = min(delay * 1.5, max_delay)
+    finally:
+        # Purely synchronous cleanup: immune to asyncio.CancelledError on client disconnect.
+        entry[2] = True
+        _notify_slot_waiters(current_backend)
 
 
 SLOTS_CACHE_DIR = os.getenv("SLOTS_CACHE_DIR", "/slots-cache")
@@ -9006,13 +9552,16 @@ async def chat(request: Request):
     body = await request.json()
     apply_voice_thinking_default(body, request.state)
     note_long_system_prompt("/api/chat", body, request)
-    # The keeper's replay leaves its checkpoint in the slot; a conversation file of a
-    # one-character question would only cost a few hundred MB of disk per replay.
-    keep_conversation = not is_prompt_keeper_request(request)
+    is_keeper = is_prompt_keeper_request(request)
+    keep_conversation = not is_keeper
     model_name = body.get("model")
     online_rejection = _online_model_rejection(model_name)
     if online_rejection is not None:
         return online_rejection
+    priority = resolve_request_priority(request, body)
+    admit_ok, reject_reason = _check_queue_admission(priority, is_prompt_keeper=is_keeper)
+    if not admit_ok:
+        return _queue_rejected_response(reject_reason, openai_format=False)
     keep_alive = effective_keep_alive(body.get("keep_alive"))
 
     request_id = getattr(request.state, "request_id", None)
@@ -9027,7 +9576,7 @@ async def chat(request: Request):
         body,
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
-        prompt_keeper=is_prompt_keeper_request(request),
+        prompt_keeper=is_keeper,
     )
 
     # Ensure model is loaded and healthy (triggers recovery if crashed/dead).
@@ -9044,50 +9593,73 @@ async def chat(request: Request):
     # Admit this request into the shared queue: mark it "queued" for its target
     # backend model so a concurrent request for a *different* model waits
     # (rather than swapping this model away) during the load/queue window.
-    # Released when the request finishes (see stream_proxy / non-stream finally
-    # and the queue-timeout path below).
     _queued_backend = await mark_request_queued(model_name)
+    resolved = None
+    resolved_backend = None
+    admitted = False
+    prefix_hash = None
+    messages = body.get("messages", [])
 
     try:
         resolved = await ensure_model(model_name, options=body.get("options"))
         resolved_backend = resolved["backend_model"]
 
-        # Restore slot cache if available (Turn K prefix is up to Turn K-1 assistant response)
-        prefix_hash = None
-        messages = body.get("messages", [])
+        # Queue-and-wait in priority-FIFO order and atomically claim an active slot
+        # BEFORE touching slot KV cache or dispatching to llama-server.
+        wait_timeout = body.get("queue_timeout", 120.0)
+        reservation: dict[str, Any] = {"activated": False, "backend_model": resolved_backend}
+        slot_available = await wait_for_slot(
+            resolved_backend,
+            timeout=wait_timeout,
+            model_name=model_name,
+            options=body.get("options"),
+            priority=priority,
+            queued_backend=_queued_backend,
+            reservation=reservation,
+            is_prompt_keeper=is_keeper,
+        )
+        if not slot_available:
+            _release_queued_sync(_queued_backend)
+            _queued_backend = None
+            await _notify_active_lock_safe()
+            complete_active_request(request_id, error="No llama-server slots available within timeout (queue_timeout)")
+            return JSONResponse(
+                {"error": "No llama-server slots available within timeout", "status": "queue_timeout"},
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
+
+        if reservation.get("activated"):
+            resolved_backend = reservation.get("backend_model") or resolved_backend
+            _queued_backend = None
+        else:
+            await activate_queued_request(_queued_backend, resolved_backend)
+            _queued_backend = None
+        admitted = True
+
+        # Restore slot cache AFTER acquiring an idle slot so we never clobber
+        # another in-flight request's slot.
         if len(messages) > 1:
             prefix_hash = get_prefix_hash(model_name, messages[:-1], options=body.get("options"))
             await restore_slot_cache(resolved_backend, prefix_hash)
-
-        # Queue-and-wait: if all llama-server slots are busy, wait for one to open
-        wait_timeout = body.get("queue_timeout", 120.0)
-        slot_available = await wait_for_slot(
-            resolved_backend, timeout=wait_timeout, model_name=model_name, options=body.get("options")
-        )
-    except Exception as e:
-        # Never leak the queued count or the tracked request on load/pre-dispatch
-        # failures (e.g. unresolvable model) - otherwise the request stays in the
-        # Active Requests list forever.
-        await release_request_queued(_queued_backend)
+    except BaseException as e:
+        # Never leak queued/active slot counts or Active Requests entries on ANY
+        # failure or client disconnect (including asyncio.CancelledError).
+        released = False
+        if _queued_backend:
+            _release_queued_sync(_queued_backend)
+            _queued_backend = None
+            released = True
+        if admitted and resolved_backend:
+            _release_active_slot_sync(resolved_backend)
+            admitted = False
+            released = True
         complete_active_request(request_id, error=f"Model load/dispatch failed: {e}")
+        if released:
+            await _notify_active_lock_safe()
         raise
-    if not slot_available:
-        await release_request_queued(_queued_backend)
-        complete_active_request(request_id, error="No llama-server slots available within timeout (queue_timeout)")
-        return JSONResponse(
-            {"error": "No llama-server slots available within timeout", "status": "queue_timeout"},
-            status_code=503,
-        )
-
-    await activate_queued_request(_queued_backend, resolved_backend)
-    _queued_backend = None
 
     # Capture the already-resolved backend for use inside stream_proxy via closure.
-    # DO NOT call ensure_model() again inside stream_proxy - it was already called
-    # above to verify the model is loaded and a slot is available. A second call
-    # acquires router_model_lock unnecessarily and serializes cross-endpoint requests
-    # (e.g. an OpenAI client + an Ollama client targeting the same model) through a
-    # single exclusive lock even when both slots are free.
     _resolved_for_stream = resolved
     _resolved_backend_for_stream = resolved_backend
 
@@ -9180,6 +9752,9 @@ async def chat(request: Request):
                     httpx.HTTPStatusError,
                     httpx.RequestError,
                 ) as e:
+                    # Never restart llama-server on HTTP 4xx client errors (e.g. prompt > n_ctx).
+                    if isinstance(e, httpx.HTTPStatusError) and 400 <= e.response.status_code < 500:
+                        raise
                     attempt += 1
                     if attempt >= max_attempts:
                         logger.error(f"Stream failed after {attempt} attempts: {e}")
@@ -9290,26 +9865,23 @@ async def chat(request: Request):
             record_active_request_error(request_id, f"Stream failed: {e}")
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
-            if resolved_backend:
-                async with active_requests_lock:
-                    _track_active(resolved_backend, -1)
-                    logger.info(
-                        f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                    )
-                    active_requests_lock.notify_all()
             complete_active_request(request_id, final_response=full_response_content or None)
+            if resolved_backend:
+                _release_active_slot_sync(resolved_backend)
+                logger.info(
+                    f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
+                )
+                await _notify_active_lock_safe()
 
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
 
-    resolved_backend = None
+    # Keep the already-admitted resolved_backend so the finally block ALWAYS
+    # releases our active slot (resetting it to None previously leaked active_requests
+    # if anything failed before assignment).
     try:
         started_ns = now_ns()
-        load_started_ns = now_ns()
-        resolved = await ensure_model(model_name, options=body.get("options"))
-        resolved_backend = resolved["backend_model"]
-
-        load_duration = now_ns() - load_started_ns
+        load_duration = 0
         payload = build_chat_payload(body, resolved_backend)
 
         attempt = 0
@@ -9327,6 +9899,8 @@ async def chat(request: Request):
                 resp.raise_for_status()
                 break
             except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                if isinstance(e, httpx.HTTPStatusError) and 400 <= e.response.status_code < 500:
+                    raise
                 attempt += 1
                 if attempt >= max_attempts:
                     raise
@@ -9335,6 +9909,7 @@ async def chat(request: Request):
                 await wait_for_llama_server_or_restart()
                 resolved = await ensure_model(model_name, options=body.get("options"))
                 resolved_backend = resolved["backend_model"]
+                payload["model"] = resolved_backend
                 if prefix_hash:
                     await restore_slot_cache(resolved_backend, prefix_hash)
 
@@ -9420,14 +9995,13 @@ async def chat(request: Request):
         record_active_request_error(request_id, f"Upstream llama-server request failed: {e}")
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
-        if resolved_backend:
-            async with active_requests_lock:
-                _track_active(resolved_backend, -1)
-                logger.info(
-                    f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                )
-                active_requests_lock.notify_all()
         complete_active_request(request_id)
+        if resolved_backend:
+            _release_active_slot_sync(resolved_backend)
+            logger.info(
+                f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
+            )
+            await _notify_active_lock_safe()
 
 
 @app.post("/api/generate")
@@ -9437,6 +10011,10 @@ async def generate(request: Request):
     online_rejection = _online_model_rejection(model_name)
     if online_rejection is not None:
         return online_rejection
+    priority = resolve_request_priority(request, body)
+    admit_ok, reject_reason = _check_queue_admission(priority)
+    if not admit_ok:
+        return _queue_rejected_response(reject_reason, openai_format=False)
     use_chat_backend = should_generate_via_chat(body)
     apply_voice_thinking_default(body, request.state)
     endpoint = "/v1/chat/completions" if use_chat_backend else "/completion"
@@ -9455,8 +10033,8 @@ async def generate(request: Request):
         request_source=getattr(request.state, "request_source", "unknown"),
         client_ip=get_client_ip(request),
     )
-    # Admit into the shared request queue (paired with release_request_queued in
-    # the finally blocks below and on the early-return paths).
+    # Admit into the shared request queue (paired with synchronous cleanup in
+    # the finally blocks below).
     queued_backend = await mark_request_queued(model_name)
 
     async def stream_proxy():
@@ -9469,25 +10047,30 @@ async def generate(request: Request):
             resolved = await ensure_model(model_name, options=body.get("options"))
             resolved_backend = resolved["backend_model"]
 
-            # Shared queue: only proceed once a slot on this (same) model is
-            # available, so the request never runs on a slot serving a different
-            # model (which would force a swap + thrash).
+            reservation: dict[str, Any] = {"activated": False, "backend_model": resolved_backend}
             if not await wait_for_slot(
                 resolved_backend,
                 timeout=body.get("queue_timeout", 120.0),
                 model_name=model_name,
                 options=body.get("options"),
+                priority=priority,
+                queued_backend=queued_backend,
+                reservation=reservation,
             ):
-                # Timeout - release the queued counter so the count doesn't
-                # leak when the generator exits without ever acquiring a slot.
-                await release_request_queued(queued_backend)
+                _release_queued_sync(queued_backend)
+                queued_backend = None
+                await _notify_active_lock_safe()
                 yield (
                     f"data: {json.dumps({'error': {'message': 'No llama-server slots available within timeout', 'type': 'rate_limit_error', 'code': 'queue_timeout'}})}\n\n"
                 )
                 return
 
-            await activate_queued_request(queued_backend, resolved_backend)
-            queued_backend = None
+            if reservation.get("activated"):
+                resolved_backend = reservation.get("backend_model") or resolved_backend
+                queued_backend = None
+            else:
+                await activate_queued_request(queued_backend, resolved_backend)
+                queued_backend = None
             admitted = True
 
             load_duration = now_ns() - load_started_ns
@@ -9589,6 +10172,9 @@ async def generate(request: Request):
                     httpx.HTTPStatusError,
                     httpx.RequestError,
                 ) as e:
+                    # Never restart llama-server on HTTP 4xx client errors (e.g. prompt > n_ctx).
+                    if isinstance(e, httpx.HTTPStatusError) and 400 <= e.response.status_code < 500:
+                        raise
                     attempt += 1
                     if attempt >= max_attempts:
                         logger.error(f"Stream failed after {attempt} attempts: {e}")
@@ -9639,17 +10225,19 @@ async def generate(request: Request):
             yield json.dumps({"error": str(e)}) + "\n"
         finally:
             complete_active_request(request_id)
+            released = False
+            if queued_backend:
+                _release_queued_sync(queued_backend)
+                queued_backend = None
+                released = True
             if resolved_backend and admitted:
-                # Only decrement the active counter - the queued-slot was
-                # released right after wait_for_slot returned (see stream setup
-                # above), so it is already 0 here.
-                with suppress(BaseException):
-                    async with active_requests_lock:
-                        _track_active(resolved_backend, -1)
-                        logger.info(
-                            f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                        )
-                        active_requests_lock.notify_all()
+                _release_active_slot_sync(resolved_backend)
+                logger.info(
+                    f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
+                )
+                released = True
+            if released:
+                await _notify_active_lock_safe()
 
     if should_stream(body):
         return StreamingResponse(stream_proxy(), media_type="application/x-ndjson")
@@ -9662,28 +10250,35 @@ async def generate(request: Request):
         resolved = await ensure_model(model_name, options=body.get("options"))
         resolved_backend = resolved["backend_model"]
 
-        # Shared queue: only admit once a slot on this (same) model is available.
-        # The request's queued count is released right after this point (on
-        # success) or here (on timeout).
+        reservation: dict[str, Any] = {"activated": False, "backend_model": resolved_backend}
         if not await wait_for_slot(
             resolved_backend,
             timeout=body.get("queue_timeout", 120.0),
             model_name=model_name,
             options=body.get("options"),
+            priority=priority,
+            queued_backend=queued_backend,
+            reservation=reservation,
         ):
-            # Timeout - release the queued counter so it doesn't leak.
             if queued_backend:
-                await release_request_queued(queued_backend)
+                _release_queued_sync(queued_backend)
+                queued_backend = None
+                await _notify_active_lock_safe()
             return JSONResponse(
                 status_code=503,
                 content={
                     "error": "No llama-server slots available within timeout",
                     "status": "queue_timeout",
                 },
+                headers={"Retry-After": "5"},
             )
 
-        await activate_queued_request(queued_backend, resolved_backend)
-        queued_backend = None
+        if reservation.get("activated"):
+            resolved_backend = reservation.get("backend_model") or resolved_backend
+            queued_backend = None
+        else:
+            await activate_queued_request(queued_backend, resolved_backend)
+            queued_backend = None
         admitted = True
 
         load_duration = now_ns() - load_started_ns
@@ -9721,6 +10316,8 @@ async def generate(request: Request):
                 resp.raise_for_status()
                 break
             except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                if isinstance(e, httpx.HTTPStatusError) and 400 <= e.response.status_code < 500:
+                    raise
                 attempt += 1
                 if attempt >= max_attempts:
                     raise
@@ -9801,17 +10398,19 @@ async def generate(request: Request):
         raise HTTPException(status_code=502, detail=f"Upstream llama-server request failed: {e}") from e
     finally:
         complete_active_request(request_id)
+        released = False
+        if queued_backend:
+            _release_queued_sync(queued_backend)
+            queued_backend = None
+            released = True
         if resolved_backend and admitted:
-            # Only decrement the active counter - the queued-slot was
-            # released right after wait_for_slot returned (see above), so it is
-            # already 0 here.
-            with suppress(BaseException):
-                async with active_requests_lock:
-                    _track_active(resolved_backend, -1)
-                    logger.info(
-                        f"In-flight request finished for {resolved_backend}. Active: {active_requests[resolved_backend]}"
-                    )
-                    active_requests_lock.notify_all()
+            _release_active_slot_sync(resolved_backend)
+            logger.info(
+                f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
+            )
+            released = True
+        if released:
+            await _notify_active_lock_safe()
 
 
 @app.get("/api/tags")
@@ -9969,12 +10568,26 @@ async def ps():
             }
         )
 
-    # Add slot/busy info from llama-server
+    # Add slot/busy info from llama-server, adjusted for proxy-local active & queued
+    # work so external clients polling /api/ps never stampede during the TOCTOU window.
     slot_info = await get_llama_server_slots()
 
     # Add active request counts per model (convert backend -- IDs to public : names)
     async with active_requests_lock:
         current_active = {public_model_name(k): v for k, v in active_requests.items()}
+        total_active = sum(max(0, v) for v in active_requests.values())
+        total_queued = _total_queued_count()
+        has_waiters = any(any(not item[2] for item in heap) for heap in _slot_waiters.values())
+
+    if slot_info:
+        eff_avail = max(0, min(slot_info["available"], slot_info["total"] - total_active))
+        if total_queued > 0 or has_waiters:
+            eff_avail = 0
+        slot_info = {
+            "total": slot_info["total"],
+            "busy": max(slot_info["busy"], slot_info["total"] - eff_avail),
+            "available": eff_avail,
+        }
 
     result = {"models": models}
     if slot_info:
@@ -10000,7 +10613,16 @@ async def queue_wait(request: Request):
 
     while True:
         slot_info = await get_llama_server_slots()
-        if slot_info and slot_info["available"] > 0:
+        total_active = sum(max(0, v) for v in active_requests.values())
+        total_queued = _total_queued_count()
+        has_waiters = any(any(not item[2] for item in heap) for heap in _slot_waiters.values())
+        if (
+            slot_info
+            and slot_info["available"] > 0
+            and total_active < slot_info["total"]
+            and total_queued == 0
+            and not has_waiters
+        ):
             return {
                 "status": "ready",
                 "slots": slot_info,
