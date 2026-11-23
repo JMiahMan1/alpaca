@@ -47,6 +47,10 @@ def _isolate_router_models_dir(tmp_path, monkeypatch):
     saved_last = alpaca_proxy.get_last_model_config
     monkeypatch.setattr(alpaca_proxy, "_COMPLETED_REQUESTS_PATH", str(tmp_path / "completed_requests.json"))
     monkeypatch.setattr(alpaca_proxy, "MODEL_ERRORS_FILE", str(tmp_path / "model_errors.jsonl"))
+    # Queue and loading state is global; a test that leaves an entry behind must not make
+    # the next one think another model is busy (wait_for_slot defers to other models' work).
+    for name in ("active_requests", "queued_requests", "model_loading", "_slot_waiters"):
+        monkeypatch.setattr(alpaca_proxy, name, type(getattr(alpaca_proxy, name))())
     yield
     alpaca_proxy.ROUTER_MODELS_DIR = saved_dir
     alpaca_proxy.get_active_model_config = saved_active
@@ -3701,6 +3705,65 @@ async def test_a_reload_that_raises_is_retried_instead_of_failing_the_request(mo
     monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
     assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest") is True
     assert ensure.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_swapped_out_model_waits_for_the_other_models_work_before_swapping_back(monkeypatch):
+    """2026-11-23: a coding agent's waiter reloaded kat-coder 5 s after Guardian's vision model
+    loaded, before Guardian's queued request ran, so the household waited behind the agent."""
+    states = iter(["unloaded"] * 50)
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", AsyncMock(side_effect=lambda _b: next(states, "loaded")))
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 1)
+    pauses = {"n": 0}
+
+    async def fake_sleep(_s):
+        pauses["n"] += 1
+        if pauses["n"] == 3:  # the vision request is admitted and finishes
+            alpaca_proxy.queued_requests["vl--7b"] = 0
+
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", fake_sleep)
+    seen_busy = []
+
+    async def ensure(name, options=None):
+        seen_busy.append(alpaca_proxy._other_model_work("kat--latest", "kat:latest"))
+        return {"backend_model": "kat--latest"}
+
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    states = iter(["unloaded", "unloaded", "unloaded", "unloaded", "loaded"])
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest") is True
+    assert pauses["n"] >= 3
+    assert seen_busy == [None]  # reloaded only once the vision model's work was done
+
+
+@pytest.mark.asyncio
+async def test_a_swap_back_is_deferred_only_for_a_bounded_time(monkeypatch):
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(alpaca_proxy, "SWAP_BACK_DEFER_S", 3.0)
+    monkeypatch.setitem(alpaca_proxy.active_requests, "vl--7b", 1)  # never finishes
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest") is True
+    ensure.assert_awaited_once()
+
+
+def test_other_model_work_ignores_the_models_own_requests(monkeypatch):
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "kat--latest", 2)
+    monkeypatch.setitem(alpaca_proxy.active_requests, "kat--latest", 1)
+    assert alpaca_proxy._other_model_work("kat--latest", "kat:latest") is None
+    monkeypatch.setitem(alpaca_proxy.model_loading, "vl:7b", {"start_time": 0, "backend_model": None})
+    assert alpaca_proxy._other_model_work("kat--latest", "kat:latest") == "vl:7b"
 
 
 @pytest.mark.asyncio

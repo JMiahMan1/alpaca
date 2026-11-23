@@ -9311,6 +9311,36 @@ async def _ensure_model_impl(
     }
 
 
+def _other_model_work(backend_model: str, model_name: str | None) -> str | None:
+    """Name another model that is loading, running or has requests waiting, else None.
+
+    The card holds one model. A request queued for a model that was swapped out
+    must not swap it straight back while the model that replaced it still has
+    work: on 2026-11-23 a coding agent's waiter reloaded kat-coder five seconds
+    after Guardian's vision model loaded, before Guardian's queued request ran,
+    and the household's request waited behind the agent.
+    """
+    own_public = public_model_name(model_name) if model_name else None
+    for public in list(model_loading):
+        if public != own_public:
+            return public
+    for bm, n in list(active_requests.items()):
+        if bm != backend_model and n > 0:
+            return bm
+    for bm, n in list(queued_requests.items()):
+        if bm != backend_model and n > 0:
+            return bm
+    for bm, heap in list(_slot_waiters.items()):
+        if bm != backend_model and any(not item[2] for item in heap):
+            return bm
+    return None
+
+
+#: How long a waiter defers reloading its swapped-out model to another model's work
+#: before reloading anyway (so two models can never wait on each other forever).
+SWAP_BACK_DEFER_S = float(os.getenv("PROXY_SWAP_BACK_DEFER_S", "300"))
+
+
 async def wait_for_slot(
     backend_model: str,
     timeout: float = 120.0,
@@ -9366,6 +9396,8 @@ async def wait_for_slot(
     delay = 0.05
     max_delay = 0.5
     attempt = 0
+    deferred_s = 0.0
+    defer_logged = False
     current_backend = backend_model
     own_queued = 1 if queued_backend else 0
     last_reconcile = loop.time()
@@ -9488,6 +9520,20 @@ async def wait_for_slot(
                 if not model_name:
                     logger.warning(f"Model {current_backend} failed to load; not waiting out the slot timeout.")
                     return False
+                busy = _other_model_work(current_backend, model_name)
+                if busy and deferred_s < SWAP_BACK_DEFER_S:
+                    if not defer_logged:
+                        logger.info(
+                            f"Model {current_backend} is {state} while {busy} has work; this request waits "
+                            f"for it instead of swapping back (up to {SWAP_BACK_DEFER_S:.0f}s)."
+                        )
+                        defer_logged = True
+                    pause = min(1.0, max_delay)
+                    await asyncio.sleep(pause)
+                    deferred_s += pause
+                    deadline += pause  # waiting for another model's turn is not this request's queue time
+                    continue
+                defer_logged = False
                 if attempt >= reloads:
                     logger.error(f"Model {current_backend} is still {state} after {attempt} reload(s); giving up.")
                     return False
