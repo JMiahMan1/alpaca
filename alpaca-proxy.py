@@ -6026,6 +6026,79 @@ async def admin_vram_recommendations():
     return JSONResponse({"recommendations": _vram_downgrade_recommendations()})
 
 
+# What a model's crash history has taught the proxy, and the reset for it. The learned state is
+# only ever written by load failures, so a run of false crashes (2026-11-22: swaps that loaded
+# the next model before the old one had released its VRAM) leaves it polluted for good. It is
+# never cleared automatically: startup must not forget a genuine lesson.
+LEARNED_STATE_KINDS = ("vram_downgrades", "safe_settings", "mtp_incompatible", "crashed")
+
+
+def reset_learned_model_state(backend_model: str, kinds: list[str] | tuple[str, ...] | None = None) -> dict:
+    """Forget what load failures taught the proxy about one model. Returns what was cleared.
+
+    ``kinds`` picks from ``LEARNED_STATE_KINDS`` (default: all): the VRAM step-down record in
+    ``.vram-downgrades.json``, the safe-settings mark, the MTP-incompatible mark, and the
+    in-memory crashed flag. The next load uses the model's own models.ini settings again.
+    """
+    chosen = list(LEARNED_STATE_KINDS if kinds is None else kinds)
+    unknown = [k for k in chosen if k not in LEARNED_STATE_KINDS]
+    if unknown:
+        raise ValueError(f"unknown state kind(s) {unknown}; choose from {list(LEARNED_STATE_KINDS)}")
+    cleared: dict[str, object] = {}
+    if "vram_downgrades" in chosen:
+        path = os.path.join(ROUTER_MODELS_DIR, _VRAM_DOWNGRADES_FILE)
+        if os.path.exists(path):
+            with open(path) as f:
+                data = json.load(f)
+            prev = data.pop(backend_model, None)
+            if prev is not None:
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp, path)
+                cleared["vram_downgrades"] = int(prev.get("count", 0)) if isinstance(prev, dict) else True
+    if "crashed" in chosen and crashed_models.pop(backend_model, None) is not None:
+        cleared["crashed"] = True
+    if "mtp_incompatible" in chosen and backend_model in MTP_INCOMPATIBLE_MODELS:
+        MTP_INCOMPATIBLE_MODELS.discard(backend_model)
+        save_mtp_incompatible_models()
+        cleared["mtp_incompatible"] = True
+    if "safe_settings" in chosen and backend_model in SAFE_SETTINGS_MODELS:
+        SAFE_SETTINGS_MODELS.discard(backend_model)
+        save_safe_settings_models()
+        cleared["safe_settings"] = True
+    logger.info(f"Reset learned load state for {backend_model}: {cleared or 'nothing was recorded'}")
+    return cleared
+
+
+@app.post("/admin/models/reset-learned-state")
+async def admin_reset_learned_state(request: Request):
+    """Clear a model's learned VRAM step-downs, safe settings, MTP mark and crashed flag.
+
+    Body: ``{"model": "<router id or name:tag>", "kinds": [...]}`` (``kinds`` optional, default
+    every kind in ``LEARNED_STATE_KINDS``). Never run automatically.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    model = (body or {}).get("model")
+    if not model or not isinstance(model, str):
+        raise HTTPException(status_code=400, detail="model is required")
+    kinds = body.get("kinds")
+    if kinds is not None and not (isinstance(kinds, list) and all(isinstance(k, str) for k in kinds)):
+        raise HTTPException(status_code=400, detail=f"kinds must be a list drawn from {list(LEARNED_STATE_KINDS)}")
+    backend_model = model
+    # A model that no longer resolves can still have stale records under the id given.
+    with suppress(Exception):
+        backend_model = (await resolve_router_model(model, reload=False))["backend_model"]
+    try:
+        cleared = reset_learned_model_state(backend_model, kinds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"model": backend_model, "cleared": cleared})
+
+
 @app.get("/admin/system")
 async def admin_system():
     """System information: GPU memory, RAM, CPU, disk usage."""
@@ -8071,6 +8144,113 @@ async def await_load_settled(backend_model: str, grace: float) -> str:
         await asyncio.sleep(1.0)
 
 
+# --------------------------------------------------------------------------- swap release wait
+# The router's ``unload`` action returns before the outgoing instance has exited and CUDA has
+# given its memory back. Loading the next model at once on an 8 GB card OOMs it, which used to
+# be recorded as a crash of the *new* model (restart, step-down, safe settings): by 2026-11-22
+# qwen2.5-vl--7b had 73 step-downs, most from swaps. So a swap waits until the old model is
+# really gone: the router no longer has it resident AND GPU memory used is back near the idle
+# baseline (or, before a baseline is known, has fallen and stopped falling).
+SWAP_RELEASE_TIMEOUT_S = float(os.getenv("PROXY_SWAP_RELEASE_TIMEOUT_S", "30"))
+SWAP_RELEASE_POLL_S = float(os.getenv("PROXY_SWAP_RELEASE_POLL_S", "0.5"))
+# Used VRAM within this much of the idle baseline counts as released.
+SWAP_IDLE_VRAM_SLACK_MIB = int(os.getenv("PROXY_SWAP_IDLE_VRAM_SLACK_MIB", "512"))
+# Without a baseline: used VRAM must have fallen at least this far below the pre-unload
+# reading and held still (two readings within SWAP_VRAM_STABLE_MIB) to count as released.
+SWAP_MIN_RELEASE_DROP_MIB = int(os.getenv("PROXY_SWAP_MIN_RELEASE_DROP_MIB", "512"))
+SWAP_VRAM_STABLE_MIB = 64
+# Lowest GPU memory used seen after a release (sd-server or the display may hold some).
+_idle_vram_used_mib: int | None = None
+
+
+async def _get_gpu_vram_used_mib() -> int | None:
+    """GPU memory used (MiB, summed over GPUs) from nvidia-smi in llama-server, or None.
+
+    Unlike ``_get_gpu_vram_telemetry`` this never invents a fallback: a swap must not take a
+    made-up 0 MiB as proof that the card is free.
+    """
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "llama-server",
+            "nvidia-smi",
+            "--query-gpu=memory.used",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        if proc.returncode == 0:
+            values = [int(line.strip()) for line in stdout.decode().splitlines() if line.strip()]
+            if values:
+                return sum(values)
+    except Exception as e:
+        logger.debug(f"nvidia-smi memory.used failed: {e}")
+    return None
+
+
+async def wait_for_models_released(
+    backend_models: list[str], before_used_mib: int | None, timeout: float | None = None
+) -> bool:
+    """Wait until every model in ``backend_models`` has left the router and the GPU.
+
+    Released means ``router_model_state`` is neither "loaded" nor "loading" for any of them, and
+    GPU memory used is within ``SWAP_IDLE_VRAM_SLACK_MIB`` of the idle baseline, or (no baseline
+    yet) has fallen ``SWAP_MIN_RELEASE_DROP_MIB`` below ``before_used_mib`` and held still for
+    two readings. When GPU memory cannot be read, the router's word is all there is. Returns
+    False when ``timeout`` (default ``PROXY_SWAP_RELEASE_TIMEOUT_S``) runs out first.
+    """
+    global _idle_vram_used_mib
+    if not backend_models:
+        return True
+    limit = SWAP_RELEASE_TIMEOUT_S if timeout is None else timeout
+    loop = asyncio.get_event_loop()
+    started = loop.time()
+    deadline = started + limit
+    previous_used: int | None = None
+    states: dict[str, str] = {}
+    used: int | None = None
+    names = ", ".join(backend_models)
+    while True:
+        states = {m: await router_model_state(m) for m in backend_models}
+        resident = any(s in ("loaded", "loading") for s in states.values())
+        used = await _get_gpu_vram_used_mib()
+        if not resident:
+            if used is None:
+                if any(s == "unknown" for s in states.values()):
+                    logger.warning(f"Cannot confirm that {names} released its memory (router and nvidia-smi unreadable).")
+                return True
+            baseline = _idle_vram_used_mib
+            near_idle = baseline is not None and used <= baseline + SWAP_IDLE_VRAM_SLACK_MIB
+            dropped_and_still = (
+                before_used_mib is not None
+                and used <= before_used_mib - SWAP_MIN_RELEASE_DROP_MIB
+                and previous_used is not None
+                and abs(used - previous_used) <= SWAP_VRAM_STABLE_MIB
+            )
+            if near_idle or dropped_and_still:
+                if baseline is None or used < baseline:
+                    _idle_vram_used_mib = used
+                logger.info(
+                    f"Previous model(s) {names} released ({used} MiB used, idle baseline "
+                    f"{_idle_vram_used_mib} MiB) after {loop.time() - started:.1f}s."
+                )
+                return True
+        previous_used = used
+        if loop.time() >= deadline:
+            logger.warning(
+                f"Timed out after {limit:.0f}s waiting for {names} to release GPU memory "
+                f"(router: {states}, used {used} MiB, idle baseline {_idle_vram_used_mib} MiB, "
+                f"before unload {before_used_mib} MiB). Loading anyway; an OOM in this load will not "
+                "be counted against the new model."
+            )
+            return False
+        await asyncio.sleep(SWAP_RELEASE_POLL_S)
+
+
 async def is_child_model_healthy(backend_model: str) -> bool:
     """Check if the child model status on the router is 'loaded' or 'loading' and verified functional."""
     if os.getenv("PYTEST_CURRENT_TEST"):
@@ -8864,6 +9044,58 @@ async def ensure_model(
             await _notify_active_lock_safe()
 
 
+async def _verify_started_load(backend_model: str, resolved: dict | None, meta) -> tuple[bool, bool]:
+    """After a router ``load``: wait for it to settle, then return ``(crash_detected, oom_detected)``.
+
+    A crash is the instance exiting while loading or failing its health check; an OOM is a dense
+    model that came up with ``n_gpu_layers=0``.
+    """
+    oom_detected = False
+    crash_detected = False
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        settled = "unknown"
+    else:
+        _large_load = is_model_over_9b(backend_model, resolved.get("manifest") if resolved else None)
+        settled = await await_load_settled(backend_model, grace=360.0 if _large_load else 120.0)
+    if settled in ("failed", "unloaded"):
+        crash_detected = True
+        logger.warning(f"Crash detected: model {backend_model} exited while loading ({settled}). Triggering recovery.")
+    elif settled == "loaded":
+        logger.info(f"Model {backend_model} finished loading.")
+    elif settled == "loading":
+        logger.warning(f"Model {backend_model} is still loading after the grace period; continuing.")
+
+    # Check health for all models to detect startup crashes
+    if crash_detected:
+        pass
+    elif not await is_child_model_healthy(backend_model):
+        crash_detected = True
+        logger.warning(
+            f"Crash detected: model {backend_model} is not running or failed after load. Triggering recovery."
+        )
+    elif not is_model_moe(backend_model, meta):
+        # For <= 9B models, if it's running, we also check if it OOM'ed to CPU (n_gpu_layers=0)
+        try:
+            if client_httpx is None:
+                logger.debug("client_httpx not initialized; skipping OOM check")
+                oom_detected = False
+            else:
+                # Query the child process's props directly inside the llama-server container
+                props = await get_child_model_props(backend_model)
+                actual_gpu_layers = props.get("n_gpu_layers", -1)
+                if actual_gpu_layers == 0:
+                    oom_detected = True
+                    logger.warning(
+                        f"OOM detected: model {backend_model} loaded with n_gpu_layers=0 "
+                        f"(expected -1). Triggering OOM recovery."
+                    )
+        except Exception:
+            logger.exception("OOM detection failed")
+            oom_detected = False
+
+    return crash_detected, oom_detected
+
+
 async def _ensure_model_impl(
     model_name: str,
     options: dict | None = None,
@@ -8912,7 +9144,17 @@ async def _ensure_model_impl(
         except Exception as e:
             logger.warning(f"Failed to read n-gpu-layers preset from models.ini: {e}")
 
+    # Models this call asked the router to unload, and whether their memory came back before
+    # the load below started. An OOM in a load that overlapped a release is the swap's fault,
+    # not the new model's, and must not feed its crash/step-down/safe-settings state.
+    swapped_out: list[str] = []
+    release_incomplete = False
+    vram_before_swap: int | None = None
     if MAX_LOADED_MODELS == 1 and not skip_swap:
+        if any(
+            o.get("id") != backend_model and router_entry_status(o) == "loaded" for o in router_models
+        ):
+            vram_before_swap = await _get_gpu_vram_used_mib()
         for other in router_models:
             other_id = other.get("id")
             other_status = router_entry_status(other)
@@ -8957,6 +9199,7 @@ async def _ensure_model_impl(
                 try:
                     await post_router_model_action("unload", other_id)
                     await record_model_unloaded_by_backend_id(other_id)
+                    swapped_out.append(other_id)
                 except RouterManagementUnsupported:
                     logger.warning("Router unload endpoint unavailable; relying on router autoload behavior.")
                     break
@@ -8964,8 +9207,12 @@ async def _ensure_model_impl(
                     if is_ignorable_router_unload_error(exc) or not await router_model_is_still_resident(other_id):
                         logger.info(f"Router ignored unload for {other_id}: {exc}")
                         await record_model_unloaded_by_backend_id(other_id)
+                        swapped_out.append(other_id)
                         continue
                     raise
+        if swapped_out:
+            logger.info(f"Waiting for {', '.join(swapped_out)} to release GPU memory before loading {backend_model}")
+            release_incomplete = not await wait_for_models_released(swapped_out, vram_before_swap)
 
     # If already loading, wait transparently for it to finish loading
     status = router_entry_status(entry)
@@ -9191,7 +9438,21 @@ async def _ensure_model_impl(
                         _record_vram_downgrade(backend_model, budget, n_gpu_layers_preset)
 
     try:
-        await post_router_model_action("load", load_payload)
+        try:
+            await post_router_model_action("load", load_payload)
+        except (httpx.RequestError, httpx.HTTPStatusError) as overlap_exc:
+            if not release_incomplete:
+                raise
+            # Refused while the swapped-out model still held its memory: not this model's
+            # fault, so no MTP/safe-settings escalation. Wait for the release, retry once; a
+            # second failure (card now free) goes through the normal handling below.
+            release_incomplete = False
+            logger.warning(
+                f"Load of {backend_model} failed while {', '.join(swapped_out)} was still releasing GPU "
+                f"memory ({overlap_exc}); not counted against this model. Waiting for the release and retrying once."
+            )
+            await wait_for_models_released([*swapped_out, backend_model], vram_before_swap)
+            await post_router_model_action("load", load_payload)
     except RouterManagementUnsupported:
         logger.warning("Router load endpoint unavailable; relying on request-time model autoload.")
         await record_model_loaded(model_name)
@@ -9438,48 +9699,30 @@ async def _ensure_model_impl(
     # Load succeeded - check for OOM or startup crash (post-load verification)
     preset_info = get_model_preset_info(backend_model)
     logger.info(f"Model {backend_model} load started{preset_info}. Waiting for it to finish (OOM/crash check)...")
-    oom_detected = False
-    crash_detected = False
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        settled = "unknown"
-    else:
-        _large_load = is_model_over_9b(backend_model, resolved.get("manifest") if resolved else None)
-        settled = await await_load_settled(backend_model, grace=360.0 if _large_load else 120.0)
-    if settled in ("failed", "unloaded"):
-        crash_detected = True
-        logger.warning(f"Crash detected: model {backend_model} exited while loading ({settled}). Triggering recovery.")
-    elif settled == "loaded":
-        logger.info(f"Model {backend_model} finished loading.")
-    elif settled == "loading":
-        logger.warning(f"Model {backend_model} is still loading after the grace period; continuing.")
+    crash_detected, oom_detected = await _verify_started_load(backend_model, resolved, meta)
 
-    # Check health for all models to detect startup crashes
-    if crash_detected:
-        pass
-    elif not await is_child_model_healthy(backend_model):
-        crash_detected = True
+    if (oom_detected or crash_detected) and release_incomplete:
+        # This load started while the model swapped out above was still giving its memory back
+        # (the release wait timed out), so the OOM says nothing about this model's settings.
+        # Do not mark it crashed, step its VRAM down or put it on safe settings: wait for the
+        # release to finish and try the same load once more. Only a failure with the card
+        # otherwise free goes on to the crash recovery below.
+        release_incomplete = False
         logger.warning(
-            f"Crash detected: model {backend_model} is not running or failed after load. Triggering recovery."
+            f"Load of {backend_model} failed while {', '.join(swapped_out)} was still releasing GPU memory; "
+            "not counted as a crash of this model. Waiting for the release and retrying once."
         )
-    elif not is_model_moe(backend_model, meta):
-        # For <= 9B models, if it's running, we also check if it OOM'ed to CPU (n_gpu_layers=0)
+        with suppress(Exception):
+            await post_router_model_action("unload", backend_model)
+        await wait_for_models_released([*swapped_out, backend_model], vram_before_swap)
         try:
-            if client_httpx is None:
-                logger.debug("client_httpx not initialized; skipping OOM check")
-                oom_detected = False
-            else:
-                # Query the child process's props directly inside the llama-server container
-                props = await get_child_model_props(backend_model)
-                actual_gpu_layers = props.get("n_gpu_layers", -1)
-                if actual_gpu_layers == 0:
-                    oom_detected = True
-                    logger.warning(
-                        f"OOM detected: model {backend_model} loaded with n_gpu_layers=0 "
-                        f"(expected -1). Triggering OOM recovery."
-                    )
-        except Exception:
-            logger.exception("OOM detection failed")
-            oom_detected = False
+            await post_router_model_action("load", load_payload)
+            crash_detected, oom_detected = await _verify_started_load(backend_model, resolved, meta)
+        except (httpx.RequestError, httpx.HTTPStatusError) as overlap_retry_exc:
+            logger.warning(f"Retried load of {backend_model} after the release failed: {overlap_retry_exc}")
+            crash_detected = True
+        if not (crash_detected or oom_detected):
+            logger.info(f"Model {backend_model} loaded on the retry once the previous model had released.")
 
     if oom_detected or crash_detected:
         try:

@@ -4058,6 +4058,223 @@ async def test_root_status_and_sse_line_parser():
     assert alpaca_proxy._parse_sse_json_line('data: {"choices": []}') == {"choices": []}
 
 
+# --------------------------------------------------------------------------- swap release wait
+# 2026-11-22: a swap loaded the next model while the old one still held its VRAM, the load
+# OOM'd, and the new model was recorded as crashed (73 step-downs for qwen2.5-vl--7b).
+
+
+def _swap_resolved(backend="tiny--latest", other="vl--7b"):
+    return {
+        "model_name": "tiny:latest",
+        "backend_model": backend,
+        "entry": {"id": backend, "status": {"value": "unloaded"}},
+        "manifest_path": "/tmp/manifest",
+        "manifest": make_manifest(digest="sha256:tiny"),
+        "router_models": [
+            {"id": other, "status": {"value": "loaded"}},
+            {"id": backend, "status": {"value": "unloaded"}},
+        ],
+    }
+
+
+@pytest.fixture
+def swap_env(monkeypatch):
+    """ensure_model with one other model loaded; router state and VRAM are scripted per test."""
+    events: list[tuple] = []
+    script = {"states": {"vl--7b": ["unloaded"], "tiny--latest": ["unloaded"]}, "vram": [None]}
+
+    async def fake_state(backend):
+        seq = script["states"].setdefault(backend, ["unloaded"])
+        value = seq.pop(0) if len(seq) > 1 else seq[0]
+        events.append(("state", backend, value))
+        return value
+
+    async def fake_vram():
+        seq = script["vram"]
+        value = seq.pop(0) if len(seq) > 1 else seq[0]
+        events.append(("vram", value))
+        return value
+
+    async def fake_action(action, payload):
+        events.append((action, payload if isinstance(payload, str) else payload.get("model")))
+        failures = script.get("fail_loads", 0)
+        if action == "load" and failures:
+            script["fail_loads"] = failures - 1
+            raise httpx.RequestError("cudaMalloc failed: out of memory")
+
+    action = AsyncMock(side_effect=fake_action)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", REAL_ENSURE_MODEL)
+    monkeypatch.setattr(alpaca_proxy, "resolve_router_model", AsyncMock(return_value=_swap_resolved()))
+    monkeypatch.setattr(alpaca_proxy, "post_router_model_action", action)
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", fake_state)
+    monkeypatch.setattr(alpaca_proxy, "_get_gpu_vram_used_mib", fake_vram)
+    monkeypatch.setattr(alpaca_proxy, "_idle_vram_used_mib", None)
+    monkeypatch.setattr(alpaca_proxy, "client_httpx", None)
+    monkeypatch.setattr(alpaca_proxy, "is_child_model_healthy", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "restart_llama_server", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "wait_for_llama_server_or_restart", AsyncMock(return_value=True))
+    monkeypatch.setattr(alpaca_proxy, "MTP_INCOMPATIBLE_MODELS", set())
+    monkeypatch.setattr(alpaca_proxy, "SAFE_SETTINGS_MODELS", set())
+    monkeypatch.setattr(alpaca_proxy, "crashed_models", {})
+    monkeypatch.setattr(alpaca_proxy, "save_mtp_incompatible_models", MagicMock())
+    monkeypatch.setattr(alpaca_proxy, "save_safe_settings_models", MagicMock())
+    monkeypatch.setattr(alpaca_proxy, "_record_vram_downgrade", MagicMock())
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", AsyncMock())
+    return {"events": events, "script": script, "action": action}
+
+
+def _load_calls(events):
+    return [i for i, e in enumerate(events) if e[0] == "load"]
+
+
+@pytest.mark.asyncio
+async def test_a_swap_waits_for_router_unloaded_and_vram_drop_before_loading(swap_env):
+    events, script = swap_env["events"], swap_env["script"]
+    script["states"]["vl--7b"] = ["loaded", "unloaded"]
+    # before the unload, still resident, freed, freed and holding still
+    script["vram"] = [7000, 7000, 1300, 1250]
+
+    await alpaca_proxy.ensure_model("tiny:latest")
+
+    unload_at = events.index(("unload", "vl--7b"))
+    first_load = _load_calls(events)[0]
+    vram_reads = [i for i, e in enumerate(events) if e[0] == "vram"]
+    assert unload_at < first_load
+    # the load came only after the router said unloaded and the reading that held still
+    assert ("state", "vl--7b", "unloaded") in events[unload_at:first_load]
+    assert vram_reads[-1] < first_load and events[vram_reads[-1]] == ("vram", 1250)
+    assert alpaca_proxy._idle_vram_used_mib == 1250
+
+
+@pytest.mark.asyncio
+async def test_a_known_idle_baseline_releases_as_soon_as_vram_is_back_near_it(monkeypatch, swap_env):
+    events, script = swap_env["events"], swap_env["script"]
+    monkeypatch.setattr(alpaca_proxy, "_idle_vram_used_mib", 1000)
+    script["states"]["vl--7b"] = ["unloaded"]
+    script["vram"] = [7000, 6800, 1400]
+
+    await alpaca_proxy.ensure_model("tiny:latest")
+
+    first_load = _load_calls(events)[0]
+    assert events[first_load - 1] == ("vram", 1400)
+
+
+@pytest.mark.asyncio
+async def test_the_release_wait_times_out_and_says_so(monkeypatch, caplog):
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", AsyncMock(return_value="loaded"))
+    monkeypatch.setattr(alpaca_proxy, "_get_gpu_vram_used_mib", AsyncMock(return_value=7000))
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", AsyncMock())
+    with caplog.at_level("WARNING"):
+        released = await alpaca_proxy.wait_for_models_released(["vl--7b"], 7000, timeout=0.0)
+    assert released is False
+    assert "Timed out after 0s waiting for vl--7b to release GPU memory" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_router_unloaded_but_vram_still_held_is_not_released(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", AsyncMock(return_value="unloaded"))
+    monkeypatch.setattr(alpaca_proxy, "_get_gpu_vram_used_mib", AsyncMock(return_value=6900))
+    monkeypatch.setattr(alpaca_proxy, "_idle_vram_used_mib", 1000)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", AsyncMock())
+    assert await alpaca_proxy.wait_for_models_released(["vl--7b"], 7000, timeout=0.0) is False
+
+
+@pytest.mark.asyncio
+async def test_an_oom_while_the_old_model_is_still_releasing_is_not_a_crash(monkeypatch, swap_env):
+    script = swap_env["script"]
+    monkeypatch.setattr(alpaca_proxy, "SWAP_RELEASE_TIMEOUT_S", 0.0)
+    script["states"]["vl--7b"] = ["loaded", "loaded", "unloaded"]  # still resident when the wait gives up
+    script["vram"] = [None]
+    alpaca_proxy.is_child_model_healthy.side_effect = [False, True]  # died of the OOM, then fine
+
+    resolved = await alpaca_proxy.ensure_model("tiny:latest")
+
+    assert resolved["backend_model"] == "tiny--latest"
+    assert "tiny--latest" not in alpaca_proxy.crashed_models
+    assert "tiny--latest" not in alpaca_proxy.MTP_INCOMPATIBLE_MODELS
+    assert "tiny--latest" not in alpaca_proxy.SAFE_SETTINGS_MODELS
+    alpaca_proxy._record_vram_downgrade.assert_not_called()
+    alpaca_proxy.restart_llama_server.assert_not_awaited()
+    loads = [swap_env["action"].await_args_list[i] for i in range(swap_env["action"].await_count)]
+    load_payloads = [c.args[1] for c in loads if c.args[0] == "load"]
+    assert len(load_payloads) == 2 and load_payloads[0] == load_payloads[1]
+
+
+@pytest.mark.asyncio
+async def test_a_load_refused_while_the_old_model_is_releasing_is_retried_not_escalated(monkeypatch, swap_env):
+    script = swap_env["script"]
+    monkeypatch.setattr(alpaca_proxy, "SWAP_RELEASE_TIMEOUT_S", 0.0)
+    script["states"]["vl--7b"] = ["loaded", "unloaded"]
+    script["fail_loads"] = 1
+
+    await alpaca_proxy.ensure_model("tiny:latest")
+
+    assert "tiny--latest" not in alpaca_proxy.MTP_INCOMPATIBLE_MODELS
+    assert "tiny--latest" not in alpaca_proxy.SAFE_SETTINGS_MODELS
+    assert len(_load_calls(swap_env["events"])) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_oom_with_the_card_free_is_still_a_crash(swap_env):
+    script = swap_env["script"]
+    script["states"]["vl--7b"] = ["unloaded"]
+    script["vram"] = [None]  # router says gone; nothing else to wait for
+    alpaca_proxy.is_child_model_healthy.side_effect = [False, True]
+
+    await alpaca_proxy.ensure_model("tiny:latest")
+
+    assert alpaca_proxy.crashed_models.get("tiny--latest") is True
+    assert "tiny--latest" in alpaca_proxy.MTP_INCOMPATIBLE_MODELS
+    alpaca_proxy.restart_llama_server.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reset_learned_state_clears_step_downs_safe_settings_mtp_and_crash(tmp_path, monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    downgrades = tmp_path / alpaca_proxy._VRAM_DOWNGRADES_FILE
+    downgrades.write_text(json.dumps({"vl--7b": {"count": 73, "recommend": True}, "kat--latest": {"count": 2}}))
+    monkeypatch.setattr(alpaca_proxy, "SAFE_SETTINGS_MODELS", {"vl--7b", "other--x"})
+    monkeypatch.setattr(alpaca_proxy, "MTP_INCOMPATIBLE_MODELS", {"vl--7b"})
+    monkeypatch.setattr(alpaca_proxy, "crashed_models", {"vl--7b": True})
+    save_safe, save_mtp = MagicMock(), MagicMock()
+    monkeypatch.setattr(alpaca_proxy, "save_safe_settings_models", save_safe)
+    monkeypatch.setattr(alpaca_proxy, "save_mtp_incompatible_models", save_mtp)
+    monkeypatch.setattr(alpaca_proxy, "resolve_router_model", AsyncMock(return_value={"backend_model": "vl--7b"}))
+
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"model": "qwen2.5-vl:7b"})
+    resp = await alpaca_proxy.admin_reset_learned_state(request)
+    body = json.loads(resp.body)
+
+    assert body == {
+        "model": "vl--7b",
+        "cleared": {"vram_downgrades": 73, "crashed": True, "mtp_incompatible": True, "safe_settings": True},
+    }
+    assert json.loads(downgrades.read_text()) == {"kat--latest": {"count": 2}}
+    assert {"other--x"} == alpaca_proxy.SAFE_SETTINGS_MODELS
+    assert not alpaca_proxy.MTP_INCOMPATIBLE_MODELS
+    assert not alpaca_proxy.crashed_models
+    save_safe.assert_called_once()
+    save_mtp.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reset_learned_state_can_pick_kinds_and_rejects_unknown_ones(tmp_path, monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    monkeypatch.setattr(alpaca_proxy, "SAFE_SETTINGS_MODELS", {"vl--7b"})
+    monkeypatch.setattr(alpaca_proxy, "crashed_models", {"vl--7b": True})
+    monkeypatch.setattr(alpaca_proxy, "save_safe_settings_models", MagicMock())
+    assert alpaca_proxy.reset_learned_model_state("vl--7b", ["safe_settings"]) == {"safe_settings": True}
+    assert alpaca_proxy.crashed_models == {"vl--7b": True}
+    with pytest.raises(ValueError):
+        alpaca_proxy.reset_learned_model_state("vl--7b", ["everything"])
+    request = MagicMock()
+    request.json = AsyncMock(return_value={})
+    with pytest.raises(HTTPException) as err:
+        await alpaca_proxy.admin_reset_learned_state(request)
+    assert err.value.status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # Pre-emption: HIGH/CRITICAL voice traffic interrupts LOW background work
 # ---------------------------------------------------------------------------

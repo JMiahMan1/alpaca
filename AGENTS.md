@@ -315,6 +315,27 @@ every config tried ("Settings Scan Results").
   (`X-Request-Source` containing "benchmark"), so a run is not made to swap back and forth. It never
   loads into an empty card, over requests in flight, during an image generation or a settings scan.
 
+### Model swaps wait for the old model's VRAM (`PROXY_SWAP_RELEASE_TIMEOUT_S`)
+- **Why:** the router's `unload` returns before the outgoing instance has exited and CUDA has its memory
+  back. Loading the next model at once OOM'd it on the 8 GB card, the proxy called that a crash of the *new*
+  model (restart, VRAM step-down, safe settings), and every swap cost about a minute. By 2026-11-22
+  qwen2.5-vl--7b had 73 step-downs, most of them from swaps, and always loaded on degraded settings.
+- **What:** after unloading, `_ensure_model_impl` calls `wait_for_models_released`: the old model must be
+  neither `loaded` nor `loading` in `/models` AND GPU memory used (`_get_gpu_vram_used_mib`, nvidia-smi in
+  llama-server, never a made-up fallback) must be within `PROXY_SWAP_IDLE_VRAM_SLACK_MIB` (512) of the idle
+  baseline, or, before a baseline is learned, have fallen `PROXY_SWAP_MIN_RELEASE_DROP_MIB` (512) below the
+  pre-unload reading and held still for two polls (`PROXY_SWAP_RELEASE_POLL_S`, 0.5 s). The baseline is the
+  lowest reading seen at a release. Unreadable VRAM falls back to the router's word. The wait gives up after
+  `PROXY_SWAP_RELEASE_TIMEOUT_S` (30 s) with a warning and loads anyway.
+- **An OOM in a load that started after that timeout is not the new model's fault:** no crashed flag, no
+  MTP/safe-settings escalation, no step-down, no restart. The proxy waits for the release again and retries
+  the same load once; only a failure with the card otherwise free goes through the normal crash recovery.
+- **Resetting learned state** (never automatic, not even at startup): `POST /admin/models/reset-learned-state`
+  with `{"model": "qwen2.5-vl--7b"}` clears the model's `.vram-downgrades.json` entry, safe-settings mark,
+  MTP-incompatible mark and crashed flag (pick some with `"kinds": ["vram_downgrades", "safe_settings",
+  "mtp_incompatible", "crashed"]`). The response lists what was cleared. Clearing a safe-settings or MTP mark
+  rewrites models.ini through `update_models_ini` (skipped while a settings scan holds its lock).
+
 ### Prompt keeper (`PROXY_PROMPT_KEEPER`, on by default)
 - **Why:** kat-coder and the qwen3.5/3.6 MoEs are hybrid (recurrent layers), so llama-server cannot reuse an
   arbitrary cached prefix: it rolls a slot back only to a saved context checkpoint at or before the first token
@@ -949,6 +970,7 @@ other fails the build.
 | A narration changes voice from sentence to sentence | `voice_conversion` is called per sentence and samples its latent, so each sentence got a different draw | `convert` now seeds and forks the generator; `clone_seed: null` to opt out |
 | `clone_seed: 1.5` is accepted and behaves like `1` | `int()` truncates | Reject non-integral values; a seed the caller did not mean is worse than no seed |
 | A request 503s with `queue_timeout` right after a model swap | `/slots?model=X` (and `/health`/`/props?model=`) make the router AUTOLOAD X: a telemetry poll for the outgoing model reloaded it beside the incoming one, which OOM'd while loading; the proxy had called the load "successful" 0.2 s after spawn and waited 121 s on a dead model | Only poll model-scoped endpoints when `/models` says that model is `loaded` (`router_model_state`); the proxy waits for the load to settle (`await_load_settled`) and `wait_for_slot` reloads a dead model while the request stays queued (≤3 reloads, reload time not charged to `queue_timeout`) |
+| Every swap logs "Crash detected ... exited while loading" and a VRAM step-down for the incoming model | The router's `unload` returns before the old instance has freed its VRAM; the new load OOM'd and was counted as the new model's crash | `wait_for_models_released` (router unloaded + VRAM back near idle, 30 s cap); an OOM after that cap is retried, not recorded. Clear polluted state with `POST /admin/models/reset-learned-state` |
 | Sphinx: ruff reformatted 28 unrelated lines | `ruff check --fix .` on a whole source tree | Scope `--fix` to new files; check `git diff` immediately after |
 
 ## Testing
