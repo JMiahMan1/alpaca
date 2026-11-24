@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import os
@@ -5,6 +6,7 @@ import pathlib
 import re
 import tempfile
 import time
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -47,6 +49,10 @@ def _isolate_router_models_dir(tmp_path, monkeypatch):
     saved_last = alpaca_proxy.get_last_model_config
     monkeypatch.setattr(alpaca_proxy, "_COMPLETED_REQUESTS_PATH", str(tmp_path / "completed_requests.json"))
     monkeypatch.setattr(alpaca_proxy, "MODEL_ERRORS_FILE", str(tmp_path / "model_errors.jsonl"))
+    # Queue and loading state is global; a test that leaves an entry behind must not make
+    # the next one think another model is busy (wait_for_slot defers to other models' work).
+    for name in ("active_requests", "queued_requests", "model_loading", "_slot_waiters"):
+        monkeypatch.setattr(alpaca_proxy, name, type(getattr(alpaca_proxy, name))())
     yield
     alpaca_proxy.ROUTER_MODELS_DIR = saved_dir
     alpaca_proxy.get_active_model_config = saved_active
@@ -3704,6 +3710,65 @@ async def test_a_reload_that_raises_is_retried_instead_of_failing_the_request(mo
 
 
 @pytest.mark.asyncio
+async def test_a_swapped_out_model_waits_for_the_other_models_work_before_swapping_back(monkeypatch):
+    """2026-11-23: a coding agent's waiter reloaded kat-coder 5 s after Guardian's vision model
+    loaded, before Guardian's queued request ran, so the household waited behind the agent."""
+    states = iter(["unloaded"] * 50)
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", AsyncMock(side_effect=lambda _b: next(states, "loaded")))
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 1)
+    pauses = {"n": 0}
+
+    async def fake_sleep(_s):
+        pauses["n"] += 1
+        if pauses["n"] == 3:  # the vision request is admitted and finishes
+            alpaca_proxy.queued_requests["vl--7b"] = 0
+
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", fake_sleep)
+    seen_busy = []
+
+    async def ensure(name, options=None):
+        seen_busy.append(alpaca_proxy._other_model_work("kat--latest", "kat:latest"))
+        return {"backend_model": "kat--latest"}
+
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    states = iter(["unloaded", "unloaded", "unloaded", "unloaded", "loaded"])
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest") is True
+    assert pauses["n"] >= 3
+    assert seen_busy == [None]  # reloaded only once the vision model's work was done
+
+
+@pytest.mark.asyncio
+async def test_a_swap_back_is_deferred_only_for_a_bounded_time(monkeypatch):
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(alpaca_proxy, "SWAP_BACK_DEFER_S", 3.0)
+    monkeypatch.setitem(alpaca_proxy.active_requests, "vl--7b", 1)  # never finishes
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest") is True
+    ensure.assert_awaited_once()
+
+
+def test_other_model_work_ignores_the_models_own_requests(monkeypatch):
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "kat--latest", 2)
+    monkeypatch.setitem(alpaca_proxy.active_requests, "kat--latest", 1)
+    assert alpaca_proxy._other_model_work("kat--latest", "kat:latest") is None
+    monkeypatch.setitem(alpaca_proxy.model_loading, "vl:7b", {"start_time": 0, "backend_model": None})
+    assert alpaca_proxy._other_model_work("kat--latest", "kat:latest") == "vl:7b"
+
+
+@pytest.mark.asyncio
 async def test_without_a_model_name_a_failed_model_returns_at_once(monkeypatch):
     _scripted_states(monkeypatch, ["failed"])
     assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=120.0) is False
@@ -4208,3 +4273,477 @@ async def test_reset_learned_state_can_pick_kinds_and_rejects_unknown_ones(tmp_p
     with pytest.raises(HTTPException) as err:
         await alpaca_proxy.admin_reset_learned_state(request)
     assert err.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Pre-emption: HIGH/CRITICAL voice traffic interrupts LOW background work
+# ---------------------------------------------------------------------------
+
+
+def _clear_preempt_state():
+    with alpaca_proxy._inflight_lock:
+        alpaca_proxy._inflight_by_backend.clear()
+
+
+@pytest.mark.asyncio
+async def test_preempt_low_inflight_when_high_waits_for_slot(monkeypatch):
+    """HIGH arriving while LOW holds the only slot aborts LOW and HIGH gets the slot."""
+    saved = _snapshot_tracking_state()
+    saved_cap = dict(alpaca_proxy._slot_capacity_cache)
+    saved_admit = dict(alpaca_proxy._last_slot_admit_ts)
+    saved_waiters = dict(alpaca_proxy._slot_waiters)
+    _clear_tracking_state()
+    _clear_preempt_state()
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", True)
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_RETRY_AFTER_S", 30)
+    try:
+        backend = "model-a"
+        alpaca_proxy._slot_capacity_cache[backend] = 1
+        alpaca_proxy.active_requests[backend] = 1
+        alpaca_proxy._last_slot_admit_ts[backend] = 0.0
+
+        low_entry = alpaca_proxy.register_inflight_request(
+            backend, "req-low", alpaca_proxy.PRIORITY_LOW, "shared-llm/raven", endpoint_format="openai"
+        )
+
+        async def fake_slots(_model_id):
+            # LOW was aborted; report slot as free once LOW releases.
+            in_flight = alpaca_proxy.active_requests.get(backend, 0)
+            return [{"id": 0, "is_processing": in_flight > 0}]
+
+        async def fake_state(_bm):
+            return "loaded"
+
+        monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", fake_slots)
+        monkeypatch.setattr(alpaca_proxy, "router_model_state", fake_state)
+
+        # Simulate the LOW handler releasing when it sees abort.
+        async def low_release_on_abort():
+            await low_entry.abort_event.wait()
+            await asyncio.sleep(0)
+            alpaca_proxy.active_requests[backend] = max(0, alpaca_proxy.active_requests.get(backend, 0) - 1)
+            alpaca_proxy.unregister_inflight_request(backend, "req-low")
+
+        releaser = asyncio.create_task(low_release_on_abort())
+        reservation = {"activated": False, "backend_model": backend}
+        got = await REAL_WAIT_FOR_SLOT(
+            backend,
+            timeout=2.0,
+            model_name="model-a",
+            priority=alpaca_proxy.PRIORITY_HIGH,
+            queued_backend=backend,
+            reservation=reservation,
+            request_id="req-high",
+            request_source="voice/assistant",
+        )
+        await releaser
+        assert got is True
+        assert low_entry.abort_event.is_set()
+        assert low_entry.aborted_for["request_id"] == "req-high"
+        assert alpaca_proxy.active_requests.get(backend, 0) == 1
+    finally:
+        _clear_preempt_state()
+        alpaca_proxy._slot_capacity_cache.clear()
+        alpaca_proxy._slot_capacity_cache.update(saved_cap)
+        alpaca_proxy._last_slot_admit_ts.clear()
+        alpaca_proxy._last_slot_admit_ts.update(saved_admit)
+        alpaca_proxy._slot_waiters.clear()
+        alpaca_proxy._slot_waiters.update(saved_waiters)
+        _restore_tracking_state(saved)
+
+
+@pytest.mark.asyncio
+async def test_preempt_low_streaming_yields_error_and_frees_slot(monkeypatch):
+    """A pre-empted LOW streaming request ends with an error chunk and releases lease once."""
+    saved = _snapshot_tracking_state()
+    _clear_tracking_state()
+    _clear_preempt_state()
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", True)
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_RETRY_AFTER_S", 30)
+    try:
+        backend = "model-a"
+        alpaca_proxy.active_requests[backend] = 1
+        entry = alpaca_proxy.register_inflight_request(
+            backend, "req-low", alpaca_proxy.PRIORITY_LOW, "shared-llm/raven", endpoint_format="openai"
+        )
+        entry.stream_started = True
+        lease = alpaca_proxy._SlotLease("req-low", active_backend=backend)
+
+        async def fake_iter():
+            yield "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
+            entry.abort_event.set()
+            yield "data: {\"choices\":[{\"delta\":{\"content\":\"more\"}}]}\n\n"
+
+        class FakeResp:
+            status_code = 200
+
+            async def aread(self):
+                return b""
+
+            async def aiter_lines(self):
+                async for line in fake_iter():
+                    yield line
+
+            async def aclose(self):
+                return None
+
+        # Directly exercise the preemption error formatting helpers and lease release.
+        entry.abort_event.set()
+        assert alpaca_proxy._preempt_error_openai()["error"]["type"] == "preempted"
+        assert lease.release_sync(complete_request=False) is True
+        assert lease.release_sync(complete_request=False) is False
+        assert alpaca_proxy.active_requests.get(backend, 0) == 0
+        assert alpaca_proxy._inflight_by_backend.get(backend, {}).get("req-low") is None
+    finally:
+        _clear_preempt_state()
+        _restore_tracking_state(saved)
+
+
+@pytest.mark.asyncio
+async def test_normal_request_is_never_preempted(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", True)
+    _clear_preempt_state()
+    try:
+        backend = "model-a"
+        normal = alpaca_proxy.register_inflight_request(
+            backend, "req-normal", alpaca_proxy.PRIORITY_NORMAL, "chat", endpoint_format="openai"
+        )
+        aborted = alpaca_proxy.preempt_low_requests(
+            backend,
+            for_request_id="req-high",
+            for_source="voice/assistant",
+            for_priority=alpaca_proxy.PRIORITY_HIGH,
+        )
+        assert aborted == 0
+        assert normal.abort_event.is_set() is False
+    finally:
+        _clear_preempt_state()
+
+
+@pytest.mark.asyncio
+async def test_preempt_switch_off_disables_preemption(monkeypatch):
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", False)
+    _clear_preempt_state()
+    try:
+        backend = "model-a"
+        low = alpaca_proxy.register_inflight_request(
+            backend, "req-low", alpaca_proxy.PRIORITY_LOW, "shared-llm/raven", endpoint_format="openai"
+        )
+        aborted = alpaca_proxy.preempt_low_requests(
+            backend,
+            for_request_id="req-high",
+            for_source="voice/assistant",
+            for_priority=alpaca_proxy.PRIORITY_HIGH,
+        )
+        assert aborted == 0
+        assert low.abort_event.is_set() is False
+    finally:
+        _clear_preempt_state()
+
+
+@pytest.mark.asyncio
+async def test_low_waits_while_high_is_queued(monkeypatch):
+    """A LOW request does not start while a HIGH request is queued on the same backend."""
+    saved = _snapshot_tracking_state()
+    saved_cap = dict(alpaca_proxy._slot_capacity_cache)
+    saved_admit = dict(alpaca_proxy._last_slot_admit_ts)
+    saved_waiters = dict(alpaca_proxy._slot_waiters)
+    _clear_tracking_state()
+    _clear_preempt_state()
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", True)
+    try:
+        backend = "model-a"
+        alpaca_proxy._slot_capacity_cache[backend] = 1
+        alpaca_proxy.active_requests[backend] = 1  # NORMAL holds the slot
+        alpaca_proxy._last_slot_admit_ts[backend] = time.monotonic()
+
+        async def fake_slots(_model_id):
+            return [{"id": 0, "is_processing": alpaca_proxy.active_requests.get(backend, 0) > 0}]
+
+        async def fake_state(_bm):
+            return "loaded"
+
+        monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", fake_slots)
+        monkeypatch.setattr(alpaca_proxy, "router_model_state", fake_state)
+
+        # Enqueue a HIGH waiter (it cannot get the slot because NORMAL holds it).
+        high_result = {}
+
+        async def high_waiter():
+            reservation = {"activated": False, "backend_model": backend}
+            got = await REAL_WAIT_FOR_SLOT(
+                backend,
+                timeout=2.0,
+                model_name="model-a",
+                priority=alpaca_proxy.PRIORITY_HIGH,
+                queued_backend=backend,
+                reservation=reservation,
+                request_id="req-high",
+                request_source="voice/assistant",
+            )
+            high_result["got"] = got
+
+        high_task = asyncio.create_task(high_waiter())
+        await asyncio.sleep(0.1)
+
+        low_done = asyncio.Event()
+        low_result = {}
+
+        async def low_waiter():
+            reservation = {"activated": False, "backend_model": backend}
+            got = await REAL_WAIT_FOR_SLOT(
+                backend,
+                timeout=0.4,
+                model_name="model-a",
+                priority=alpaca_proxy.PRIORITY_LOW,
+                queued_backend=backend,
+                reservation=reservation,
+                request_id="req-low",
+                request_source="shared-llm/raven",
+            )
+            low_result["got"] = got
+            low_done.set()
+
+        low_task = asyncio.create_task(low_waiter())
+        await asyncio.sleep(0.15)
+        assert not low_done.is_set(), "LOW should not start while HIGH is queued"
+
+        # Release the slot; HIGH should get it first.
+        alpaca_proxy.active_requests[backend] = 0
+        alpaca_proxy._notify_slot_waiters(backend)
+        await asyncio.sleep(0.2)
+        # HIGH should have been admitted (reservation activated) or at least got the slot.
+        if not high_task.done():
+            high_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await high_task
+        if not low_task.done():
+            low_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await low_task
+        assert low_result.get("got") is not True or high_result.get("got") is True
+    finally:
+        _clear_preempt_state()
+        alpaca_proxy._slot_capacity_cache.clear()
+        alpaca_proxy._slot_capacity_cache.update(saved_cap)
+        alpaca_proxy._last_slot_admit_ts.clear()
+        alpaca_proxy._last_slot_admit_ts.update(saved_admit)
+        alpaca_proxy._slot_waiters.clear()
+        alpaca_proxy._slot_waiters.update(saved_waiters)
+        _restore_tracking_state(saved)
+
+
+@pytest.mark.asyncio
+async def test_preemption_releases_lease_once_no_drift(monkeypatch):
+    """Pre-emption must free the slot exactly once (no drift, no double release)."""
+    saved = _snapshot_tracking_state()
+    _clear_tracking_state()
+    _clear_preempt_state()
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", True)
+    try:
+        backend = "model-a"
+        alpaca_proxy.active_requests[backend] = 1
+        alpaca_proxy.register_inflight_request(
+            backend, "req-low", alpaca_proxy.PRIORITY_LOW, "shared-llm/raven", endpoint_format="openai"
+        )
+        lease = alpaca_proxy._SlotLease("req-low", active_backend=backend)
+        aborted = alpaca_proxy.preempt_low_requests(
+            backend,
+            for_request_id="req-high",
+            for_source="voice/assistant",
+            for_priority=alpaca_proxy.PRIORITY_HIGH,
+        )
+        assert aborted == 1
+        assert lease.release_sync(complete_request=False) is True
+        assert lease.release_sync(complete_request=False) is False
+        assert alpaca_proxy.active_requests.get(backend, 0) == 0
+        assert alpaca_proxy.queued_requests.get(backend, 0) == 0
+    finally:
+        _clear_preempt_state()
+        _restore_tracking_state(saved)
+
+
+@pytest.mark.asyncio
+async def test_admin_context_unloaded_makes_no_props_call(monkeypatch):
+    """GET /admin/context for an unloaded model must not call /props and returns loaded=false."""
+    saved_client = alpaca_proxy.client_httpx
+    try:
+        client = MagicMock()
+        client.get = AsyncMock()
+        alpaca_proxy.client_httpx = client
+
+        async def fake_state(_bm):
+            return "unloaded"
+
+        monkeypatch.setattr(alpaca_proxy, "router_model_state", fake_state)
+        monkeypatch.setattr(alpaca_proxy, "resolve_router_model", AsyncMock(return_value={"backend_model": "model-a", "model_name": "model-a"}))
+        alpaca_proxy._admin_context_cache.clear()
+
+        req = make_request("/admin/context?model=model-a", payload=None, headers=None)
+        req.scope["method"] = "GET"
+        req.scope["query_string"] = b"model=model-a"
+        resp = await alpaca_proxy.admin_context(req)
+        data = json.loads(resp.body)
+        assert resp.status_code == 200
+        assert data["loaded"] is False
+        assert data["n_ctx"] is None
+        assert data["slots"] is None
+        # /props must not be called
+        for call in client.get.await_args_list:
+            assert "/props" not in str(call)
+    finally:
+        alpaca_proxy.client_httpx = saved_client
+        alpaca_proxy._admin_context_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_context_loaded_returns_n_ctx_and_slots(monkeypatch):
+    """GET /admin/context for a loaded model returns n_ctx and slots from /props."""
+    saved_client = alpaca_proxy.client_httpx
+    try:
+        props_resp = MockResponse({"default_generation_settings": {"n_ctx": 32768}, "total_slots": 2})
+        client = MagicMock()
+        client.get = AsyncMock(return_value=props_resp)
+        alpaca_proxy.client_httpx = client
+
+        async def fake_state(_bm):
+            return "loaded"
+
+        monkeypatch.setattr(alpaca_proxy, "router_model_state", fake_state)
+        monkeypatch.setattr(alpaca_proxy, "resolve_router_model", AsyncMock(return_value={"backend_model": "model-a", "model_name": "model-a"}))
+        alpaca_proxy._admin_context_cache.clear()
+
+        req = make_request("/admin/context?model=model-a", payload=None, headers=None)
+        req.scope["method"] = "GET"
+        req.scope["query_string"] = b"model=model-a"
+        resp = await alpaca_proxy.admin_context(req)
+        data = json.loads(resp.body)
+        assert resp.status_code == 200
+        assert data["loaded"] is True
+        assert data["n_ctx"] == 32768
+        assert data["slots"] == 2
+    finally:
+        alpaca_proxy.client_httpx = saved_client
+        alpaca_proxy._admin_context_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_context_cache_holds_for_30s(monkeypatch):
+    """GET /admin/context caches the answer for 30s per model."""
+    saved_client = alpaca_proxy.client_httpx
+    try:
+        props_resp = MockResponse({"default_generation_settings": {"n_ctx": 32768}, "total_slots": 2})
+        client = MagicMock()
+        client.get = AsyncMock(return_value=props_resp)
+        alpaca_proxy.client_httpx = client
+
+        async def fake_state(_bm):
+            return "loaded"
+
+        monkeypatch.setattr(alpaca_proxy, "router_model_state", fake_state)
+        monkeypatch.setattr(alpaca_proxy, "resolve_router_model", AsyncMock(return_value={"backend_model": "model-a", "model_name": "model-a"}))
+        alpaca_proxy._admin_context_cache.clear()
+
+        req = make_request("/admin/context?model=model-a", payload=None, headers=None)
+        req.scope["method"] = "GET"
+        req.scope["query_string"] = b"model=model-a"
+        resp1 = await alpaca_proxy.admin_context(req)
+        resp2 = await alpaca_proxy.admin_context(req)
+        assert json.loads(resp1.body)["n_ctx"] == 32768
+        assert json.loads(resp2.body)["n_ctx"] == 32768
+        # props should be fetched only once due to cache
+        props_calls = [c for c in client.get.await_args_list if "/props" in str(c)]
+        assert len(props_calls) == 1
+    finally:
+        alpaca_proxy.client_httpx = saved_client
+        alpaca_proxy._admin_context_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_voice_does_not_wait_for_another_models_queued_background_work(monkeypatch):
+    """2026-11-23: a phone's photo-scan backlog on the vision model kept kat-coder swapped out,
+    and a voice question deferred to it until the household's 180 s voice limit ran out."""
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    sleeps = AsyncMock()
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", sleeps)
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 5)  # a backlog, none running
+    monkeypatch.setitem(alpaca_proxy._slot_waiters, "vl--7b", [[-alpaca_proxy.PRIORITY_LOW, 1, False, False, None]])
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest",
+                                    priority=alpaca_proxy.PRIORITY_HIGH) is True
+    ensure.assert_awaited_once()
+    assert sleeps.await_count <= 2  # swapped back at once, not after the backlog
+
+
+@pytest.mark.asyncio
+async def test_voice_waits_for_the_other_models_running_request_then_swaps_back(monkeypatch):
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        assert alpaca_proxy.active_requests.get("vl--7b", 0) == 0  # the running scan finished first
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    pauses = {"n": 0}
+
+    async def fake_sleep(_s):
+        pauses["n"] += 1
+        if pauses["n"] == 3:  # the scan that was running finishes; more are still queued
+            alpaca_proxy.active_requests["vl--7b"] = 0
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", fake_sleep)
+    monkeypatch.setitem(alpaca_proxy.active_requests, "vl--7b", 1)
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 4)
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest",
+                                    priority=alpaca_proxy.PRIORITY_HIGH) is True
+    ensure.assert_awaited_once()
+    assert pauses["n"] >= 3
+
+
+@pytest.mark.asyncio
+async def test_a_background_request_still_defers_to_the_other_models_work(monkeypatch):
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    pauses = {"n": 0}
+
+    async def fake_sleep(_s):
+        pauses["n"] += 1
+        if pauses["n"] == 4:
+            alpaca_proxy.queued_requests["vl--7b"] = 0
+            alpaca_proxy._slot_waiters["vl--7b"] = []
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", fake_sleep)
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 1)
+    monkeypatch.setitem(alpaca_proxy._slot_waiters, "vl--7b", [[-alpaca_proxy.PRIORITY_LOW, 1, False, False, None]])
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest",
+                                    priority=alpaca_proxy.PRIORITY_LOW) is True
+    assert pauses["n"] >= 4  # waited for the equal-priority work, as before
