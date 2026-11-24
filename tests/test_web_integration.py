@@ -321,7 +321,7 @@ def test_frontier_all_button_and_static_handler(client):
     index = client.get("/")
     assert index.status_code == 200
     assert b'id="btn-run-frontier-all"' in index.data
-    assert b"Run Frontier All" in index.data
+    assert b"Frontier All" in index.data  # the button reads "Frontier All" (with a play icon) since the UI overhaul
     assert b'id="btn-run"' in index.data
 
     response = client.get("/static/js/dashboard.js")
