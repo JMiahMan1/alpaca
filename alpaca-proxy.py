@@ -9759,6 +9759,36 @@ def _other_model_work(backend_model: str, model_name: str | None) -> str | None:
     return None
 
 
+def _other_work_priority(other: str) -> int:
+    """The highest priority of the work ``_other_model_work`` found on another model.
+
+    A model that is only loading (named by its public name) has no request here to
+    read a priority from, so it counts as normal.
+    """
+    top = None
+    with _inflight_lock:
+        for entry in _inflight_by_backend.get(other, {}).values():
+            if not entry.is_prompt_keeper:
+                top = entry.priority if top is None else max(top, entry.priority)
+    for item in _slot_waiters.get(other, []):
+        # item: [-priority, seq, cancelled, is_prompt_keeper, event]
+        if not item[2] and not item[3]:
+            top = -item[0] if top is None else max(top, -item[0])
+    return PRIORITY_NORMAL if top is None else top
+
+
+def _other_model_running(other: str) -> bool:
+    """Whether another model is loading or has a request running right now (not just queued)."""
+    for public, info in list(model_loading.items()):
+        if other in (public, (info or {}).get("backend_model")):
+            return True
+    return active_requests.get(other, 0) > 0
+
+
+#: How long a request that outranks another model's work waits for that model's running
+#: request before swapping back anyway (its queued requests are not waited for).
+SWAP_BACK_HIGH_DEFER_S = float(os.getenv("PROXY_SWAP_BACK_HIGH_DEFER_S", "20"))
+
 #: How long a waiter defers reloading its swapped-out model to another model's work
 #: before reloading anyway (so two models can never wait on each other forever).
 SWAP_BACK_DEFER_S = float(os.getenv("PROXY_SWAP_BACK_DEFER_S", "300"))
@@ -9967,6 +9997,30 @@ async def wait_for_slot(
                     logger.warning(f"Model {current_backend} failed to load; not waiting out the slot timeout.")
                     return False
                 busy = _other_model_work(current_backend, model_name)
+                # Defer only to work at least as important as this request: a voice question
+                # (HIGH) waited behind a phone's photo-scan backlog on the vision model until
+                # the household's 180 s voice limit ran out (2026-11-23).
+                if busy and priority > _other_work_priority(busy):
+                    # Queue politely: let the other model finish the request it is running
+                    # (bounded), then swap back without also waiting out its whole queue.
+                    if _other_model_running(busy) and deferred_s < SWAP_BACK_HIGH_DEFER_S:
+                        if not defer_logged:
+                            logger.info(
+                                f"Model {current_backend} is {state}; this {priority_label(priority)} request "
+                                f"waits for {busy}'s running request (up to {SWAP_BACK_HIGH_DEFER_S:.0f}s), "
+                                "then swaps back ahead of its queue."
+                            )
+                            defer_logged = True
+                        pause = min(1.0, max_delay)
+                        await asyncio.sleep(pause)
+                        deferred_s += pause
+                        deadline += pause
+                        continue
+                    logger.info(
+                        f"Model {current_backend} is {state} while {busy} has lower-priority work; "
+                        f"this {priority_label(priority)} request swaps back now."
+                    )
+                    busy = None
                 if busy and deferred_s < SWAP_BACK_DEFER_S:
                     if not defer_logged:
                         logger.info(
