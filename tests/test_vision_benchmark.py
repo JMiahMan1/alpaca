@@ -51,7 +51,31 @@ def test_the_shipped_vision_category_is_what_the_generator_draws():
     sys.path.insert(0, str(REPO / "scripts"))
     import gen_vision_fixtures
 
-    assert gen_vision_fixtures.build() == VISION
+    # Compare what the images show, not their PNG bytes: Pillow's wheels compress with
+    # different zlib builds on macOS and Linux, so the same pixels can encode differently
+    # (CI on Linux failed this test while the generator's output was unchanged).
+    assert _comparable(gen_vision_fixtures.build()) == _comparable(VISION)
+
+
+def _comparable(tests):
+    """The tests with each attachment's PNG replaced by its decoded size, mode and pixels."""
+    import io
+
+    from PIL import Image
+
+    out = []
+    for t in tests:
+        t = dict(t)
+        attachments = []
+        for att in t.get("attachments", []):
+            att = dict(att)
+            with Image.open(io.BytesIO(base64.b64decode(att.pop("data_base64")))) as img:
+                rgba = img.convert("RGBA")
+                att["pixels"] = (rgba.size, rgba.tobytes())
+            attachments.append(att)
+        t["attachments"] = attachments
+        out.append(t)
+    return out
 
 
 def test_test_images_reads_only_image_attachments():
