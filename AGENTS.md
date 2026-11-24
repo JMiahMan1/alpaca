@@ -335,6 +335,24 @@ every config tried ("Settings Scan Results").
 - **The caller's side:** the system message must be the same for every question. SharedLLM sends the time, the
   speaker, the voice satellite's note and the retrieved context with the question, not in the system message.
 
+### Voice pre-empts background work (`PROXY_PREEMPT_LOW_FOR_HIGH`, on by default)
+- **Why:** on 2026-11-23 an opencode job on kat-coder (39K-token prompt, over 3 minutes of prefill) held one
+  slot while two voice questions came in. The free slot ran at about half speed because both slots share the
+  GPU, the second question queued 92 s, and the Echo gave up. Priority only ordered the queue; a LOW request
+  already running was never interrupted.
+- **What:** each admitted request is registered with its priority (`register_inflight_request`). When a HIGH or
+  CRITICAL request reaches the head of the queue or claims a slot, every LOW request in flight on that backend is
+  aborted (`preempt_low_requests`): the upstream stream is closed, so llama-server cancels the task. The LOW
+  client gets 503 + `Retry-After` (`PROXY_PREEMPT_RETRY_AFTER_S`, 30) and `{"error": {"type": "preempted"}}`, or
+  that error as the last chunk when it was already streaming. While a HIGH request is queued or running, new LOW
+  requests wait. NORMAL, HIGH and prompt-keeper requests are never aborted. The slot is released by the existing
+  lease, once.
+- **LOW** means a source in `_LOW_PRIORITY_SOURCES` (opencode, cline, shared-llm/raven, benchmark...) or
+  `X-Priority: low`. A client that sends no `x-request-source` is NORMAL, so local coding agents must send one
+  (opencode: `"headers": {"x-request-source": "opencode"}` on the provider).
+- `GET /admin/context?model=` reports a model's live `n_ctx`, `n_ctx_per_slot` and `slots` without loading it
+  (only asks `/props?model=` when `router_model_state` says loaded; 30 s cache). Raven sizes its context from it.
+
 ### llama.cpp Preset Keys (models.ini)
 - `llama-server --models-preset` **rejects keys that are not its own arguments and the
   container then crash-loops.** `web/app.py` holds `LLAMA_PRESET_KEYS`; `split_preset_settings()`
