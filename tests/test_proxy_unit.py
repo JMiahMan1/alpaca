@@ -4440,3 +4440,93 @@ async def test_admin_context_cache_holds_for_30s(monkeypatch):
     finally:
         alpaca_proxy.client_httpx = saved_client
         alpaca_proxy._admin_context_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_voice_does_not_wait_for_another_models_queued_background_work(monkeypatch):
+    """2026-11-23: a phone's photo-scan backlog on the vision model kept kat-coder swapped out,
+    and a voice question deferred to it until the household's 180 s voice limit ran out."""
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    sleeps = AsyncMock()
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", sleeps)
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 5)  # a backlog, none running
+    monkeypatch.setitem(alpaca_proxy._slot_waiters, "vl--7b", [[-alpaca_proxy.PRIORITY_LOW, 1, False, False, None]])
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest",
+                                    priority=alpaca_proxy.PRIORITY_HIGH) is True
+    ensure.assert_awaited_once()
+    assert sleeps.await_count <= 2  # swapped back at once, not after the backlog
+
+
+@pytest.mark.asyncio
+async def test_voice_waits_for_the_other_models_running_request_then_swaps_back(monkeypatch):
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        assert alpaca_proxy.active_requests.get("vl--7b", 0) == 0  # the running scan finished first
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    pauses = {"n": 0}
+
+    async def fake_sleep(_s):
+        pauses["n"] += 1
+        if pauses["n"] == 3:  # the scan that was running finishes; more are still queued
+            alpaca_proxy.active_requests["vl--7b"] = 0
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", fake_sleep)
+    monkeypatch.setitem(alpaca_proxy.active_requests, "vl--7b", 1)
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 4)
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest",
+                                    priority=alpaca_proxy.PRIORITY_HIGH) is True
+    ensure.assert_awaited_once()
+    assert pauses["n"] >= 3
+
+
+@pytest.mark.asyncio
+async def test_a_background_request_still_defers_to_the_other_models_work(monkeypatch):
+    loaded = {"v": False}
+
+    async def state(_backend):
+        return "loaded" if loaded["v"] else "unloaded"
+
+    async def reload(_name, options=None):
+        loaded["v"] = True
+        return {"backend_model": "kat--latest"}
+
+    pauses = {"n": 0}
+
+    async def fake_sleep(_s):
+        pauses["n"] += 1
+        if pauses["n"] == 4:
+            alpaca_proxy.queued_requests["vl--7b"] = 0
+            alpaca_proxy._slot_waiters["vl--7b"] = []
+
+    monkeypatch.setattr(alpaca_proxy, "router_model_state", state)
+    monkeypatch.setattr(alpaca_proxy.asyncio, "sleep", fake_sleep)
+    monkeypatch.setitem(alpaca_proxy.queued_requests, "vl--7b", 1)
+    monkeypatch.setitem(alpaca_proxy._slot_waiters, "vl--7b", [[-alpaca_proxy.PRIORITY_LOW, 1, False, False, None]])
+    ensure = AsyncMock(side_effect=reload)
+    monkeypatch.setattr(alpaca_proxy, "ensure_model", ensure)
+    monkeypatch.setattr(alpaca_proxy, "_fetch_model_slots", AsyncMock(return_value=[{"is_processing": False}]))
+    assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest",
+                                    priority=alpaca_proxy.PRIORITY_LOW) is True
+    assert pauses["n"] >= 4  # waited for the equal-priority work, as before
