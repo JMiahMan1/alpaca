@@ -265,7 +265,14 @@ async def test_high_priority_voice_jumps_ahead_of_low_priority_coding_queue(monk
 
     release_first.set()
     results = await asyncio.gather(t_first, t_low1, t_low2, t_voice)
-    assert all(r.status_code == 200 for r in results)
+    # The coding job already running is LOW, so the voice request pre-empts it (503 with
+    # Retry-After, a "preempted" error) instead of waiting behind it; the queued coding
+    # jobs then run after the voice job.
+    first, *rest = results
+    assert first.status_code == 503
+    assert first.headers.get("Retry-After") == str(alpaca_proxy.PROXY_PREEMPT_RETRY_AFTER_S)
+    assert json.loads(first.body)["error"]["type"] == "preempted"
+    assert all(r.status_code == 200 for r in rest)
     assert started_order == ["first-active", "voice-urgent", "low-1", "low-2"]
 
 

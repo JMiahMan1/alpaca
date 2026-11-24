@@ -446,6 +446,164 @@ _last_slot_admit_ts: dict[str, float] = {}
 # waiting for router_model_lock cannot deadlock the holder waiting for queued_requests == 0.
 _waiting_for_router_lock: dict[str, int] = {}
 
+# Pre-emption: when a HIGH/CRITICAL request needs a slot, abort in-flight LOW requests on
+# the same backend so voice/automation traffic is not stuck behind background work.
+PROXY_PREEMPT_LOW_FOR_HIGH = os.getenv("PROXY_PREEMPT_LOW_FOR_HIGH", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+PROXY_PREEMPT_RETRY_AFTER_S = max(1, int(os.getenv("PROXY_PREEMPT_RETRY_AFTER_S", "30")))
+
+
+class _InflightRequest:
+    """A slot-holding request that can be pre-empted by higher-priority traffic."""
+
+    __slots__ = (
+        "abort_event",
+        "aborted_for",
+        "backend_model",
+        "endpoint_format",
+        "is_prompt_keeper",
+        "priority",
+        "request_id",
+        "source",
+        "stream_started",
+        "upstream_response",
+    )
+
+    def __init__(
+        self,
+        request_id: str,
+        backend_model: str,
+        priority: int,
+        source: str,
+        *,
+        endpoint_format: str = "openai",
+        is_prompt_keeper: bool = False,
+    ) -> None:
+        self.request_id = request_id
+        self.backend_model = backend_model
+        self.priority = priority
+        self.source = source
+        self.abort_event = asyncio.Event()
+        self.aborted_for: dict[str, str] | None = None
+        self.endpoint_format = endpoint_format  # "openai" or "ollama"
+        self.stream_started = False
+        self.is_prompt_keeper = is_prompt_keeper
+        self.upstream_response: Any = None
+
+
+# backend_model -> request_id -> _InflightRequest
+_inflight_by_backend: dict[str, dict[str, _InflightRequest]] = {}
+_inflight_lock = threading.Lock()
+
+
+def _preempt_error_openai() -> dict[str, Any]:
+    return {
+        "error": {
+            "type": "preempted",
+            "message": "Interrupted for a voice request; retry later.",
+        }
+    }
+
+
+def _preempt_error_ollama() -> dict[str, Any]:
+    return {"error": {"type": "preempted", "message": "Interrupted for a voice request; retry later."}}
+
+
+def _preempt_retry_after_headers() -> dict[str, str]:
+    return {"Retry-After": str(PROXY_PREEMPT_RETRY_AFTER_S)}
+
+
+def register_inflight_request(
+    backend_model: str,
+    request_id: str,
+    priority: int,
+    source: str,
+    *,
+    endpoint_format: str = "openai",
+    is_prompt_keeper: bool = False,
+) -> _InflightRequest:
+    entry = _InflightRequest(
+        request_id,
+        backend_model,
+        priority,
+        source,
+        endpoint_format=endpoint_format,
+        is_prompt_keeper=is_prompt_keeper,
+    )
+    with _inflight_lock:
+        _inflight_by_backend.setdefault(backend_model, {})[request_id] = entry
+    return entry
+
+
+def unregister_inflight_request(backend_model: str | None, request_id: str | None) -> None:
+    if not backend_model or not request_id:
+        return
+    with _inflight_lock:
+        bucket = _inflight_by_backend.get(backend_model)
+        if not bucket:
+            return
+        bucket.pop(request_id, None)
+        if not bucket:
+            _inflight_by_backend.pop(backend_model, None)
+
+
+def _high_pressure_on_backend(backend_model: str) -> bool:
+    """True when a HIGH+ request is queued or in flight on the backend."""
+    with _inflight_lock:
+        for entry in _inflight_by_backend.get(backend_model, {}).values():
+            if not entry.is_prompt_keeper and entry.priority >= PRIORITY_HIGH:
+                return True
+    for item in _slot_waiters.get(backend_model, []):
+        # item: [-priority, seq, cancelled, is_prompt_keeper, event]
+        if not item[2] and not item[3] and -item[0] >= PRIORITY_HIGH:
+            return True
+    return False
+
+
+def preempt_low_requests(
+    backend_model: str,
+    *,
+    for_request_id: str,
+    for_source: str,
+    for_priority: int,
+) -> int:
+    """Abort in-flight LOW requests on backend_model to make room for a HIGH+ request.
+
+    Returns the number of requests aborted. Never aborts NORMAL/HIGH/CRITICAL or
+    prompt-keeper requests. Idempotent per target (abort_event is an Event).
+    """
+    if not PROXY_PREEMPT_LOW_FOR_HIGH:
+        return 0
+    if for_priority < PRIORITY_HIGH:
+        return 0
+    aborted = 0
+    with _inflight_lock:
+        targets = list(_inflight_by_backend.get(backend_model, {}).values())
+    for entry in targets:
+        if entry.is_prompt_keeper:
+            continue
+        if entry.priority > PRIORITY_LOW:
+            continue
+        if entry.request_id == for_request_id:
+            continue
+        if entry.abort_event.is_set():
+            continue
+        entry.aborted_for = {"request_id": for_request_id, "source": for_source, "priority": for_priority}
+        entry.abort_event.set()
+        resp = entry.upstream_response
+        if resp is not None:
+            with suppress(Exception):
+                asyncio.get_running_loop().create_task(resp.aclose())
+        aborted += 1
+        logger.info(
+            f"[preempt] aborted {entry.request_id} ({entry.source}, LOW) for {for_request_id} ({for_source}, HIGH)"
+        )
+    return aborted
+
 
 def priority_label(priority: int) -> str:
     """Human-readable tier name matching SharedLLM's PRIORITY_NAMES."""
@@ -645,9 +803,11 @@ def _release_queued_sync(backend: str | None) -> None:
         _notify_slot_waiters(backend)
 
 
-def _release_active_slot_sync(backend_model: str | None) -> None:
+def _release_active_slot_sync(backend_model: str | None, request_id: str | None = None) -> None:
     """Synchronously release an in-flight slot and wake the next queued waiter (immune to CancelledError)."""
     if backend_model:
+        if request_id:
+            unregister_inflight_request(backend_model, request_id)
         _track_active(backend_model, -1)
 
 
@@ -694,7 +854,7 @@ class _SlotLease:
             self.queued_backend = None
             released = True
         if self.active_backend:
-            _release_active_slot_sync(self.active_backend)
+            _release_active_slot_sync(self.active_backend, self.request_id)
             self.active_backend = None
             released = True
         if complete_request:
@@ -2880,6 +3040,7 @@ async def openai_chat_completions(request: Request):
     queued_backend = None
     admitted = False
     stream_handed_off = False
+    inflight_entry = None
     max_retries = 3
     try:
         queued_backend = await mark_request_queued(model_name)
@@ -2912,6 +3073,8 @@ async def openai_chat_completions(request: Request):
                             reservation=reservation,
                             is_prompt_keeper=is_keeper,
                             is_disconnected=request.is_disconnected,
+                            request_id=request_id,
+                            request_source=getattr(request.state, "request_source", "unknown"),
                         )
                         if not slot_ok:
                             _release_queued_sync(queued_backend)
@@ -2940,6 +3103,14 @@ async def openai_chat_completions(request: Request):
                             queued_backend = None
                         admitted = True
                         body["model"] = backend_model
+                        inflight_entry = register_inflight_request(
+                            backend_model,
+                            request_id,
+                            priority,
+                            getattr(request.state, "request_source", "unknown"),
+                            endpoint_format="openai",
+                            is_prompt_keeper=is_keeper,
+                        )
                     except HTTPException as e:
                         # Client errors (like 404 Not Found) should fail immediately
                         _release_queued_sync(queued_backend)
@@ -2960,9 +3131,20 @@ async def openai_chat_completions(request: Request):
                 if stream:
                     if await request.is_disconnected():
                         return Response(status_code=499)
+                    if inflight_entry and inflight_entry.abort_event.is_set():
+                        record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                        complete_active_request(request_id)
+                        _release_active_slot_sync(backend_model, request_id)
+                        admitted = False
+                        await _notify_active_lock_safe()
+                        return JSONResponse(
+                            status_code=503,
+                            content=_preempt_error_openai(),
+                            headers=_preempt_retry_after_headers(),
+                        )
                     _lease = _SlotLease(request_id, active_backend=backend_model if admitted else None)
 
-                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _lease=_lease):
+                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _lease=_lease, _inflight=inflight_entry):
                         stream_started = False
                         try:
                             for s_attempt in range(max_retries):
@@ -2970,6 +3152,13 @@ async def openai_chat_completions(request: Request):
                                     async with _cl.stream(
                                         "POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body
                                     ) as resp:
+                                        if _inflight is not None:
+                                            _inflight.upstream_response = resp
+                                            if _inflight.abort_event.is_set():
+                                                await resp.aclose()
+                                                if stream_started:
+                                                    yield f"data: {json.dumps(_preempt_error_openai())}\n\n"
+                                                return
                                         if resp.status_code != 200:
                                             err_body = await resp.aread()
                                             err_msg = err_body.decode(errors="ignore")
@@ -2990,7 +3179,13 @@ async def openai_chat_completions(request: Request):
                                             return
 
                                         stream_started = True
+                                        if _inflight is not None:
+                                            _inflight.stream_started = True
                                         async for line in resp.aiter_lines():
+                                            if _inflight is not None and _inflight.abort_event.is_set():
+                                                record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                                                yield f"data: {json.dumps(_preempt_error_openai())}\n\n"
+                                                return
                                             if line and line.startswith("data: "):
                                                 try:
                                                     payload_str = line[6:].strip()
@@ -3011,6 +3206,10 @@ async def openai_chat_completions(request: Request):
                                                 yield f"{line}\n\n"
                                         return
                                 except httpx.RequestError as exc:
+                                    if _inflight is not None and _inflight.abort_event.is_set():
+                                        record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                                        yield f"data: {json.dumps(_preempt_error_openai())}\n\n"
+                                        return
                                     if stream_started or s_attempt == max_retries - 1:
                                         record_active_request_error(request_id, f"Upstream connection lost: {exc}")
                                         yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
@@ -3048,7 +3247,48 @@ async def openai_chat_completions(request: Request):
                     )
                 else:
                     try:
-                        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
+                        if inflight_entry and inflight_entry.abort_event.is_set():
+                            record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                            complete_active_request(request_id)
+                            _release_active_slot_sync(backend_model, request_id)
+                            admitted = False
+                            await _notify_active_lock_safe()
+                            return JSONResponse(
+                                status_code=503,
+                                content=_preempt_error_openai(),
+                                headers=_preempt_retry_after_headers(),
+                            )
+                        post_task = asyncio.create_task(
+                            client_httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=body)
+                        )
+                        if inflight_entry is not None:
+                            abort_task = asyncio.create_task(inflight_entry.abort_event.wait())
+                            done, _pending = await asyncio.wait(
+                                {post_task, abort_task}, return_when=asyncio.FIRST_COMPLETED
+                            )
+                            if abort_task in done and not post_task.done():
+                                post_task.cancel()
+                                with suppress(asyncio.CancelledError, Exception):
+                                    await post_task
+                                abort_task.cancel()
+                                with suppress(asyncio.CancelledError, Exception):
+                                    await abort_task
+                                record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                                complete_active_request(request_id)
+                                _release_active_slot_sync(backend_model, request_id)
+                                admitted = False
+                                await _notify_active_lock_safe()
+                                return JSONResponse(
+                                    status_code=503,
+                                    content=_preempt_error_openai(),
+                                    headers=_preempt_retry_after_headers(),
+                                )
+                            abort_task.cancel()
+                            with suppress(asyncio.CancelledError, Exception):
+                                await abort_task
+                            resp = post_task.result()
+                        else:
+                            resp = await post_task
                         if resp.status_code != 200:
                             err_msg = resp.text
                             if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
@@ -3112,7 +3352,7 @@ async def openai_chat_completions(request: Request):
                         return JSONResponse(data)
                     finally:
                         if admitted and backend_model:
-                            _release_active_slot_sync(backend_model)
+                            _release_active_slot_sync(backend_model, request_id)
                             admitted = False
                             await _notify_active_lock_safe()
             except httpx.RequestError as exc:
@@ -3161,7 +3401,7 @@ async def openai_chat_completions(request: Request):
                 queued_backend = None
                 released = True
             if admitted and backend_model:
-                _release_active_slot_sync(backend_model)
+                _release_active_slot_sync(backend_model, request_id)
                 admitted = False
                 released = True
             if released:
@@ -3201,7 +3441,9 @@ async def openai_completions(request: Request):
     queued_backend = None
     admitted = False
     stream_handed_off = False
+    inflight_entry = None
     max_retries = 3
+    is_keeper = is_prompt_keeper_request(request)
     try:
         queued_backend = await mark_request_queued(model_name)
         for attempt in range(max_retries):
@@ -3219,7 +3461,10 @@ async def openai_completions(request: Request):
                             priority=priority,
                             queued_backend=queued_backend,
                             reservation=reservation,
+                            is_prompt_keeper=is_keeper,
                             is_disconnected=request.is_disconnected,
+                            request_id=request_id,
+                            request_source=getattr(request.state, "request_source", "unknown"),
                         )
                         if not slot_ok:
                             _release_queued_sync(queued_backend)
@@ -3248,6 +3493,14 @@ async def openai_completions(request: Request):
                             queued_backend = None
                         admitted = True
                         body["model"] = backend_model
+                        inflight_entry = register_inflight_request(
+                            backend_model,
+                            request_id,
+                            priority,
+                            getattr(request.state, "request_source", "unknown"),
+                            endpoint_format="openai",
+                            is_prompt_keeper=is_keeper,
+                        )
                     except HTTPException as e:
                         # Client errors (like 404 Not Found) should fail immediately
                         _release_queued_sync(queued_backend)
@@ -3268,14 +3521,32 @@ async def openai_completions(request: Request):
                 if stream:
                     if await request.is_disconnected():
                         return Response(status_code=499)
+                    if inflight_entry and inflight_entry.abort_event.is_set():
+                        record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                        complete_active_request(request_id)
+                        _release_active_slot_sync(backend_model, request_id)
+                        admitted = False
+                        await _notify_active_lock_safe()
+                        return JSONResponse(
+                            status_code=503,
+                            content=_preempt_error_openai(),
+                            headers=_preempt_retry_after_headers(),
+                        )
                     _lease = _SlotLease(request_id, active_backend=backend_model if admitted else None)
 
-                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _lease=_lease):
+                    async def stream_proxy(_bm=backend_model, _cl=client_httpx, _lease=_lease, _inflight=inflight_entry):
                         stream_started = False
                         try:
                             for s_attempt in range(max_retries):
                                 try:
                                     async with _cl.stream("POST", f"{LLAMA_SERVER_URL}/v1/completions", json=body) as resp:
+                                        if _inflight is not None:
+                                            _inflight.upstream_response = resp
+                                            if _inflight.abort_event.is_set():
+                                                await resp.aclose()
+                                                if stream_started:
+                                                    yield f"data: {json.dumps(_preempt_error_openai())}\n\n"
+                                                return
                                         if resp.status_code != 200:
                                             err_body = await resp.aread()
                                             err_msg = err_body.decode(errors="ignore")
@@ -3296,7 +3567,13 @@ async def openai_completions(request: Request):
                                             return
 
                                         stream_started = True
+                                        if _inflight is not None:
+                                            _inflight.stream_started = True
                                         async for line in resp.aiter_lines():
+                                            if _inflight is not None and _inflight.abort_event.is_set():
+                                                record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                                                yield f"data: {json.dumps(_preempt_error_openai())}\n\n"
+                                                return
                                             if line and line.startswith("data: "):
                                                 try:
                                                     payload_str = line[6:].strip()
@@ -3318,6 +3595,10 @@ async def openai_completions(request: Request):
                                                 yield f"{line}\n\n"
                                         return
                                 except httpx.RequestError as exc:
+                                    if _inflight is not None and _inflight.abort_event.is_set():
+                                        record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                                        yield f"data: {json.dumps(_preempt_error_openai())}\n\n"
+                                        return
                                     if stream_started or s_attempt == max_retries - 1:
                                         record_active_request_error(request_id, f"Upstream connection lost: {exc}")
                                         yield f"data: {json.dumps({'error': {'message': f'Upstream connection lost: {exc}', 'type': 'api_error', 'code': None}})}\n\n"
@@ -3353,7 +3634,48 @@ async def openai_completions(request: Request):
                     )
                 else:
                     try:
-                        resp = await client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
+                        if inflight_entry and inflight_entry.abort_event.is_set():
+                            record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                            complete_active_request(request_id)
+                            _release_active_slot_sync(backend_model, request_id)
+                            admitted = False
+                            await _notify_active_lock_safe()
+                            return JSONResponse(
+                                status_code=503,
+                                content=_preempt_error_openai(),
+                                headers=_preempt_retry_after_headers(),
+                            )
+                        post_task = asyncio.create_task(
+                            client_httpx.post(f"{LLAMA_SERVER_URL}/v1/completions", json=body)
+                        )
+                        if inflight_entry is not None:
+                            abort_task = asyncio.create_task(inflight_entry.abort_event.wait())
+                            done, _pending = await asyncio.wait(
+                                {post_task, abort_task}, return_when=asyncio.FIRST_COMPLETED
+                            )
+                            if abort_task in done and not post_task.done():
+                                post_task.cancel()
+                                with suppress(asyncio.CancelledError, Exception):
+                                    await post_task
+                                abort_task.cancel()
+                                with suppress(asyncio.CancelledError, Exception):
+                                    await abort_task
+                                record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                                complete_active_request(request_id)
+                                _release_active_slot_sync(backend_model, request_id)
+                                admitted = False
+                                await _notify_active_lock_safe()
+                                return JSONResponse(
+                                    status_code=503,
+                                    content=_preempt_error_openai(),
+                                    headers=_preempt_retry_after_headers(),
+                                )
+                            abort_task.cancel()
+                            with suppress(asyncio.CancelledError, Exception):
+                                await abort_task
+                            resp = post_task.result()
+                        else:
+                            resp = await post_task
                         if resp.status_code != 200:
                             err_msg = resp.text
                             if attempt < max_retries - 1 and resp.status_code in (502, 503, 504):
@@ -3402,7 +3724,7 @@ async def openai_completions(request: Request):
                         return JSONResponse(data)
                     finally:
                         if admitted and backend_model:
-                            _release_active_slot_sync(backend_model)
+                            _release_active_slot_sync(backend_model, request_id)
                             admitted = False
                             await _notify_active_lock_safe()
             except httpx.RequestError as exc:
@@ -3449,7 +3771,7 @@ async def openai_completions(request: Request):
                 queued_backend = None
                 released = True
             if admitted and backend_model:
-                _release_active_slot_sync(backend_model)
+                _release_active_slot_sync(backend_model, request_id)
                 admitted = False
                 released = True
             if released:
@@ -6030,6 +6352,107 @@ async def get_resubmit_data(request_id: str):
                 status_code=404,
                 content={"error": f"Request {request_id} not found in persistent storage"},
             )
+
+
+_admin_context_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_ADMIN_CONTEXT_CACHE_TTL_S = 30.0
+
+
+@app.get("/admin/context")
+async def admin_context(request: Request):
+    """Read-only context view for a model. Never autoloads the model."""
+    model = (request.query_params.get("model") or "").strip()
+    if not model:
+        return JSONResponse(status_code=400, content={"error": "model is required"})
+
+    backend_model = model
+    public_name = model
+    try:
+        resolved = await resolve_router_model(model, reload=False)
+        backend_model = resolved.get("backend_model") or model
+        public_name = resolved.get("model_name") or model
+    except Exception:
+        # Best-effort resolution; fall back to the provided id.
+        public_name = public_model_name(model)
+
+    cache_key = backend_model
+    now = time.monotonic()
+    cached = _admin_context_cache.get(cache_key)
+    if cached and (now - cached[0]) < _ADMIN_CONTEXT_CACHE_TTL_S:
+        return JSONResponse(cached[1])
+
+    state = await router_model_state(backend_model)
+    loaded = state == "loaded"
+    payload: dict[str, Any] = {
+        "model": public_name,
+        "backend_model": backend_model,
+        "loaded": loaded,
+        "n_ctx": None,
+        "n_ctx_per_slot": None,
+        "slots": None,
+    }
+    if not loaded:
+        _admin_context_cache[cache_key] = (now, payload)
+        return JSONResponse(payload)
+
+    props: dict[str, Any] = {}
+    try:
+        if client_httpx is not None:
+            resp = await client_httpx.get(
+                f"{LLAMA_SERVER_URL}/props",
+                params={"model": backend_model},
+                timeout=httpx.Timeout(3.0),
+            )
+            if resp.status_code == 200:
+                props = resp.json() or {}
+    except Exception as exc:
+        logger.debug(f"/admin/context props fetch failed for {backend_model}: {exc}")
+
+    n_ctx = props.get("n_ctx")
+    if n_ctx is None:
+        dgs = props.get("default_generation_settings") or {}
+        n_ctx = dgs.get("n_ctx")
+    slots = props.get("total_slots")
+    if slots is None:
+        slots = props.get("n_slots")
+    if slots is None:
+        slots = props.get("slots")
+    try:
+        n_ctx_val = int(n_ctx) if n_ctx is not None else None
+    except Exception:
+        n_ctx_val = None
+    try:
+        slots_val = int(slots) if slots is not None else None
+    except Exception:
+        slots_val = None
+
+    payload["n_ctx"] = n_ctx_val
+    payload["slots"] = slots_val
+
+    kv_unified = props.get("kv_unified")
+    if kv_unified is None:
+        kv_unified = props.get("cache_unified")
+    if kv_unified is None:
+        kv_unified = props.get("unified_kv")
+    if kv_unified is None:
+        # Some llama-server builds expose it under default_generation_settings or as a flag string.
+        dgs = props.get("default_generation_settings") or {}
+        kv_unified = dgs.get("kv_unified")
+
+    if n_ctx_val is not None and slots_val and slots_val > 0:
+        if kv_unified is True or str(kv_unified).lower() in ("1", "true", "yes", "on"):
+            payload["n_ctx_per_slot"] = n_ctx_val
+        elif kv_unified is False or str(kv_unified).lower() in ("0", "false", "no", "off"):
+            payload["n_ctx_per_slot"] = max(1, n_ctx_val // slots_val)
+        else:
+            payload["n_ctx_per_slot"] = n_ctx_val
+            payload["note"] = "kv_unified unknown; n_ctx_per_slot reported as n_ctx (no guess)"
+    elif n_ctx_val is not None:
+        payload["n_ctx_per_slot"] = n_ctx_val
+        payload["note"] = "slot count unknown; n_ctx_per_slot reported as n_ctx (no guess)"
+
+    _admin_context_cache[cache_key] = (time.monotonic(), payload)
+    return JSONResponse(payload)
 
 
 @app.get("/admin/runtime")
@@ -9355,6 +9778,8 @@ async def wait_for_slot(
     is_disconnected: Any = None,
     reconcile_interval: float = 3.0,
     reconcile_grace: float = 5.0,
+    request_id: str | None = None,
+    request_source: str = "unknown",
 ) -> bool:
     """Queue a request in priority-FIFO order until a slot on ``backend_model`` is free.
 
@@ -9448,6 +9873,13 @@ async def wait_for_slot(
             # the queue.
             cached_cap = _slot_capacity_cache.get(current_backend)
             in_flight = active_requests.get(current_backend, 0)
+            if priority >= PRIORITY_HIGH and not is_prompt_keeper:
+                preempt_low_requests(
+                    current_backend,
+                    for_request_id=request_id or "unknown",
+                    for_source=request_source,
+                    for_priority=priority,
+                )
             if cached_cap is not None and in_flight >= cached_cap:
                 now_loop = loop.time()
                 since_admit = time.monotonic() - _last_slot_admit_ts.get(current_backend, 0.0)
@@ -9507,15 +9939,29 @@ async def wait_for_slot(
                     in_flight = active_requests.get(current_backend, 0)
                     effective_free = min(server_free, max(0, server_total - in_flight))
                     if effective_free > 0:
-                        # ATOMIC reservation: no `await` between checking effective_free
-                        # and claiming active_requests, eliminating the TOCTOU stampede.
-                        if reservation is not None:
-                            if queued_backend:
-                                queued_requests[queued_backend] = max(0, queued_requests.get(queued_backend, 0) - 1)
-                            _track_active(current_backend, 1)
-                            reservation["activated"] = True
-                            reservation["backend_model"] = current_backend
-                        return True
+                        if (
+                            not is_prompt_keeper
+                            and priority <= PRIORITY_LOW
+                            and _high_pressure_on_backend(current_backend)
+                        ):
+                            effective_free = 0
+                        else:
+                            if priority >= PRIORITY_HIGH and not is_prompt_keeper:
+                                preempt_low_requests(
+                                    current_backend,
+                                    for_request_id=request_id or "unknown",
+                                    for_source=request_source,
+                                    for_priority=priority,
+                                )
+                            # ATOMIC reservation: no `await` between checking effective_free
+                            # and claiming active_requests, eliminating the TOCTOU stampede.
+                            if reservation is not None:
+                                if queued_backend:
+                                    queued_requests[queued_backend] = max(0, queued_requests.get(queued_backend, 0) - 1)
+                                _track_active(current_backend, 1)
+                                reservation["activated"] = True
+                                reservation["backend_model"] = current_backend
+                            return True
             elif state == "failed" or (state == "unloaded" and model_name):
                 if not model_name:
                     logger.warning(f"Model {current_backend} failed to load; not waiting out the slot timeout.")
@@ -9781,6 +10227,7 @@ async def chat(request: Request):
     resolved = None
     resolved_backend = None
     admitted = False
+    inflight_entry = None
     prefix_hash = None
     messages = body.get("messages", [])
 
@@ -9802,6 +10249,8 @@ async def chat(request: Request):
             reservation=reservation,
             is_prompt_keeper=is_keeper,
             is_disconnected=request.is_disconnected,
+            request_id=request_id,
+            request_source=getattr(request.state, "request_source", "unknown"),
         )
         if not slot_available:
             _release_queued_sync(_queued_backend)
@@ -9821,6 +10270,14 @@ async def chat(request: Request):
             await activate_queued_request(_queued_backend, resolved_backend)
             _queued_backend = None
         admitted = True
+        inflight_entry = register_inflight_request(
+            resolved_backend,
+            request_id,
+            priority,
+            getattr(request.state, "request_source", "unknown"),
+            endpoint_format="ollama",
+            is_prompt_keeper=is_keeper,
+        )
 
         # Restore slot cache AFTER acquiring an idle slot so we never clobber
         # another in-flight request's slot.
@@ -9836,7 +10293,7 @@ async def chat(request: Request):
             _queued_backend = None
             released = True
         if admitted and resolved_backend:
-            _release_active_slot_sync(resolved_backend)
+            _release_active_slot_sync(resolved_backend, request_id)
             admitted = False
             released = True
         complete_active_request(request_id, error=f"Model load/dispatch failed: {e}")
@@ -9886,9 +10343,19 @@ async def chat(request: Request):
                     async with client_httpx.stream(
                         "POST", f"{LLAMA_SERVER_URL}/v1/chat/completions", json=current_payload
                     ) as resp:
+                        if inflight_entry is not None:
+                            inflight_entry.upstream_response = resp
+                            if inflight_entry.abort_event.is_set():
+                                await resp.aclose()
+                                yield json.dumps(_preempt_error_ollama()) + "\n"
+                                return
                         resp.raise_for_status()
                         in_thinking = False
                         async for line in resp.aiter_lines():
+                            if inflight_entry is not None and inflight_entry.abort_event.is_set():
+                                record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                                yield json.dumps(_preempt_error_ollama()) + "\n"
+                                return
                             try:
                                 data = _parse_sse_json_line(line)
                                 if data is None:
@@ -9927,6 +10394,8 @@ async def chat(request: Request):
                                 chunk = ollama_chat_chunk(model_name, client_message, done, choice.get("finish_reason"))
                                 if done:
                                     apply_metrics(chunk, data, now_ns() - started_ns, load_duration)
+                                if inflight_entry is not None:
+                                    inflight_entry.stream_started = True
                                 yield json.dumps(chunk) + "\n"
                             except Exception as e:
                                 logger.exception(f"Error processing chat stream line: {e}")
@@ -9938,6 +10407,10 @@ async def chat(request: Request):
                     httpx.HTTPStatusError,
                     httpx.RequestError,
                 ) as e:
+                    if inflight_entry is not None and inflight_entry.abort_event.is_set():
+                        record_active_request_error(request_id, "Interrupted for a voice request; retry later.")
+                        yield json.dumps(_preempt_error_ollama()) + "\n"
+                        return
                     # Never restart llama-server on HTTP 4xx client errors (e.g. prompt > n_ctx).
                     if isinstance(e, httpx.HTTPStatusError) and 400 <= e.response.status_code < 500:
                         raise
@@ -10188,7 +10661,7 @@ async def chat(request: Request):
     finally:
         complete_active_request(request_id)
         if resolved_backend:
-            _release_active_slot_sync(resolved_backend)
+            _release_active_slot_sync(resolved_backend, request_id)
             logger.info(
                 f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
             )
@@ -10598,7 +11071,7 @@ async def generate(request: Request):
             queued_backend = None
             released = True
         if resolved_backend and admitted:
-            _release_active_slot_sync(resolved_backend)
+            _release_active_slot_sync(resolved_backend, request_id)
             logger.info(
                 f"In-flight request finished for {resolved_backend}. Active: {active_requests.get(resolved_backend, 0)}"
             )
