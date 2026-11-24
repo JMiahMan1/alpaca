@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import re
 import types
+from typing import ClassVar
 
 import pytest
 
@@ -16,7 +17,7 @@ STUCK_S = 400.0  # no screen in the game lasts this long
 
 
 class _Deferred:
-    queue: list = []
+    queue: ClassVar[list] = []
 
     def __init__(self, target=None, name=None, daemon=None, args=(), kwargs=None):
         self.f = lambda: target(*args, **(kwargs or {}))

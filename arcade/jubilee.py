@@ -736,7 +736,7 @@ def card_parts(text: str) -> dict[str, str]:
     if q:
         quote = q.group(1).strip()
         t = (t[: q.start()] + t[q.end():]).strip()
-    effect = t.strip(" --").strip()
+    effect = t.strip(" -").strip()
     # Only words in quotation marks are a quotation. A card's story line ("Your
     # figs and wine bring in coin") is its flavor, never set as Scripture.
     flavor = ""
