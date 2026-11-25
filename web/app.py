@@ -6018,7 +6018,6 @@ LLAMA_PRESET_KEYS = frozenset(
         "slot-save-path",
         "ctx-checkpoints",
         "checkpoint-min-step",
-        "defrag-thold",
         # Attention
         "flash-attn",
         # Speculative decoding

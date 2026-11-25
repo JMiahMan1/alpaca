@@ -25,12 +25,14 @@ services:
     # cache - but the cgroup cap still counts them. Keep the cap above the
     # weights so the cgroup never pins at memory.max: with a 12g cap the
     # pressure spiked and systemd-oomd SIGKILLed the container mid-load
-    # (exit 137, then the 503 queue_timeout). Same reasoning as sd-server's
-    # 24g cap on this 30 GB box.
-    mem_limit: 20g
+    # (exit 137, then the 503 queue_timeout). On the 64 GB box (2026-11-24) the cap
+    # is 40g: room for the weights, mlock'ed CPU experts and the host prompt cache.
+    mem_limit: 40g
     build:
       context: .
       dockerfile: Dockerfile.llama-server
+      args:
+        LLAMA_BASE_IMAGE: ${LLAMA_BASE_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda12-b12211}
     container_name: llama-server
     logging:
       driver: "local"
