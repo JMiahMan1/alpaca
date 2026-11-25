@@ -25,12 +25,12 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = REPO_ROOT / "docker-compose.yml"
 
-# Anything at or above this on a 30 GiB host is indistinguishable from no cap.
-#: On this 30 GiB box a declared cap at or above it is not a cap. Deliberately
-#: below the 30 GiB total so the "31G" mistake is caught, and above sd-server's
-#: real requirement (see the sd-server test) so the ceiling is not the thing
-#: that forces a too-tight cap.
-MEANINGFUL_CEILING_BYTES = 28 * 1024**3
+#: The box has 64 GB (62 GiB usable) since 2026-11-24; it had 30 GiB before. A
+#: declared cap at or above this ceiling is not a cap. Deliberately below the
+#: usable total so a "63G"-style mistake is caught, and above sd-server's real
+#: requirement (see the sd-server test) so the ceiling is not the thing that
+#: forces a too-tight cap.
+MEANINGFUL_CEILING_BYTES = 58 * 1024**3
 
 # Services whose steady-state footprint is a large fraction of the box, so a
 # missing cap is a real hazard rather than a theoretical one.
