@@ -399,7 +399,7 @@ every config tried ("Settings Scan Results").
 - **Checking a new llama.cpp build for flag changes:** fetch `common/arg.cpp` at both tags and
   diff the `"--flag"` sets; also check every `LLAMA_PRESET_KEYS` entry still exists upstream
   (that is how the dead `mmap`/`mlock` were found). `Dockerfile.llama-server` is **pinned to a
-  build** (`server-cuda12-b12211`): upgrade by bumping that tag, after checking the flag diff. The
+  build** (`server-cuda12-b12679`, from b12211 on 2026-11-24 for Inkling 2 Mini's `inkling2_loop` architecture; the only flag removed was `--defrag-thold`, also taken out of `LLAMA_PRESET_KEYS`): upgrade by bumping that tag, after checking the flag diff. The
   moving `server-cuda12` tag bit us: `docker compose up -d --build alpaca-proxy` also rebuilds its
   dependency llama-server, from whatever `server-cuda12` the local cache held (b12019), and the old
   preset parser rejected `moe-cache-cpu-share` and crash-looped. Rebuild one service with
