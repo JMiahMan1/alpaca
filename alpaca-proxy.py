@@ -8776,6 +8776,24 @@ def _write_ini_model_setting(backend_model, key, value):
         logger.warning(f"Failed to write {key}={value} to models.ini: {e}")
 
 
+def _read_ini_section_setting(backend_model, key, default=""):
+    """A setting from the model's own models.ini section only (no ``[*]`` fallback)."""
+    ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
+    if not os.path.exists(ini_path):
+        return default
+    try:
+        import configparser
+
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(ini_path)
+        section = _resolve_ini_section_name(config, backend_model)
+        if config.has_section(section) and key in config[section]:
+            return config[section][key]
+    except Exception as e:
+        logger.warning(f"Failed to read {key} from models.ini: {e}")
+    return default
+
+
 def _read_ini_model_setting(backend_model, key, default=""):
     """Read a setting for a model from models.ini, checking [model] then [*] defaults."""
     ini_path = os.path.join(ROUTER_MODELS_DIR, "models.ini")
@@ -9379,8 +9397,11 @@ async def _ensure_model_impl(
     if backend_model in SAFE_SETTINGS_MODELS:
         load_payload["flash_attn"] = False
         load_payload["n_ctx"] = 8192
+        # One slot: every extra slot is more compute and KV memory, so "safe" means one.
+        load_payload["n_parallel"] = 1
         logger.info(
-            f"Model {backend_model} is marked for safe settings. Disabling flash attention, capping n_ctx to 8192."
+            f"Model {backend_model} is marked for safe settings. Disabling flash attention, capping n_ctx to 8192, "
+            "one slot."
         )
 
     # Cap concurrent inference slots to 2 for large models to prevent multiple
@@ -9388,10 +9409,19 @@ async def _ensure_model_impl(
     # can use auto (typically 4) since their KV cache footprint is minimal.
     # MTP speculative decoding requires a single pipeline (n_parallel=1), so
     # never override that.
+    # A cap only ever lowers the slot count: a model's own `parallel` (Inkling 2 Mini sets 1) and safe
+    # settings' one slot win over it. It used to set 2 outright and so raised them.
     if load_payload.get("spec_type") != "draft-mtp" and is_model_over_9b(model_name, resolved.get("manifest")):
-        load_payload["n_parallel"] = 2
+        wanted = [2]
+        own = _read_ini_section_setting(backend_model, "parallel").strip()
+        if own.isdigit() and int(own) > 0:
+            wanted.append(int(own))
+        if isinstance(load_payload.get("n_parallel"), int) and load_payload["n_parallel"] > 0:
+            wanted.append(load_payload["n_parallel"])
+        load_payload["n_parallel"] = min(wanted)
         logger.info(
-            f"Model {backend_model} is >9B - capping n_parallel=2 to prevent concurrent prefill OOM while --kv-unified handles unified dynamic context."
+            f"Model {backend_model} is >9B - n_parallel={load_payload['n_parallel']} (at most 2, to prevent "
+            "concurrent prefill OOM while --kv-unified handles unified dynamic context)."
         )
 
     # Fold in prompt-cache reuse: --cache-reuse N makes llama-server reuse
@@ -9594,6 +9624,7 @@ async def _ensure_model_impl(
                             backend_model = resolved["backend_model"]
 
                             load_payload = {"model": backend_model}
+
                             if options:
                                 n_ctx = options.get("num_ctx") or options.get("n_ctx")
                                 if n_ctx:
@@ -9649,6 +9680,7 @@ async def _ensure_model_impl(
                 backend_model = resolved["backend_model"]
 
                 load_payload = {"model": backend_model}
+
                 if options:
                     n_ctx = options.get("num_ctx") or options.get("n_ctx")
                     if n_ctx:
@@ -9827,6 +9859,7 @@ async def _ensure_model_impl(
                         f"CPU settings (n_gpu_layers={safe_ngl})..."
                     )
                     load_payload = {"model": backend_model}
+                    load_payload["n_parallel"] = 1  # a safe or OOM-safe load uses one slot
                     if options:
                         n_ctx = options.get("num_ctx") or options.get("n_ctx")
                         if n_ctx:
@@ -9854,6 +9887,7 @@ async def _ensure_model_impl(
                         save_mtp_incompatible_models()
 
                         load_payload = {"model": backend_model}
+
                         if options:
                             n_ctx = options.get("num_ctx") or options.get("n_ctx")
                             if n_ctx:
@@ -9882,6 +9916,8 @@ async def _ensure_model_impl(
                         save_safe_settings_models()
 
                         load_payload = {"model": backend_model}
+
+                        load_payload["n_parallel"] = 1  # a safe or OOM-safe load uses one slot
                         if options:
                             n_ctx = options.get("num_ctx") or options.get("n_ctx")
                             if n_ctx:
@@ -9904,6 +9940,7 @@ async def _ensure_model_impl(
                             "Falling back to OOM-safe CPU settings (n_gpu_layers=0)..."
                         )
                         load_payload = {"model": backend_model}
+                        load_payload["n_parallel"] = 1  # a safe or OOM-safe load uses one slot
                         if options:
                             n_ctx = options.get("num_ctx") or options.get("n_ctx")
                             if n_ctx:
