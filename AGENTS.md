@@ -303,6 +303,7 @@ every config tried ("Settings Scan Results").
 | muse-glimmer-30b (dense) | 64K q8 · ngl 14 | 2.3 (was 32K q4 · ngl 24) | 5.2 GB | cut from the benchmark (too slow) |
 | qwen3.8-27b (dense, hybrid attention) | unchanged: 32K f16 · ngl 24 · MTP (scan failed under the old KV over-estimate) | - | - | cut from the benchmark (too slow) |
 | qwen2.5-vl-7b (vision) | unchanged | - | - | vision 7/8 |
+| inkling-2-mini (looped MoE, 2026-11-24) | IQ3 core / Q4 outer, 32K q8, looped layers on GPU, op-offload off, 1 slot | 28.8 (prefill 98) | 7.7 GB | 21/27 (mean 94.4) **thinking on** |
 
 - **The MoE layout that wins on this card:** every layer on the GPU, the experts of most layers in RAM
   (`n-cpu-moe`), and the spare VRAM as an expert cache. It took kat-coder from 13 to 32 tok/s.
@@ -335,6 +336,9 @@ every config tried ("Settings Scan Results").
   spot: about a third of kat-coder's, so a ~6.5K-token voice prompt would take about a minute cold.
   Out-of-tree patches (github.com/tmtsolutions23/inkling-8gb: per-split copies for shared weights,
   chunked attention bias) report ~260-320 tok/s prefill on 8 GB; not applied.
+- **Quick Benchmark (thinking on, 2026-11-24):** 21/27, mean 94.4 (kat-coder 22/27, mean 79, thinking off); every
+  keyed question right; misses were instruction_adherence (a wrong short answer, not truncation) and
+  frontier_api_ticket_contract (68). Every test finished well under its cap.
 - **It always reasons.** With thinking off it reasons in the visible answer and the benchmark's
   answer budget cuts it off (every failure hit exactly 2x its `num_predict`). Its profile sets
   `thinking: true`, like lfm2.5; with it on, llama.cpp splits the reasoning into the thinking field.
