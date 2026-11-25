@@ -771,10 +771,45 @@ async def test_ensure_model_uses_saved_safe_settings_immediately():
             "use_mmap": True,
             "flash_attn": False,
             "n_ctx": 8192,
+            "n_parallel": 1,
             "spec_type": "none",
             "spec_draft_n_max": 0,
         },
     )
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ("parallel = 1\n", 1),  # the model's own single slot (Inkling 2 Mini) is kept, not raised to 2
+        ("parallel = 4\n", 2),  # the cap still lowers
+        ("", 2),  # no setting of its own: the cap
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_large_model_slot_cap_only_lowers(tmp_path, monkeypatch, section, expected):
+    alpaca_proxy.ensure_model = REAL_ENSURE_MODEL
+    alpaca_proxy.MTP_INCOMPATIBLE_MODELS.clear()
+    alpaca_proxy.SAFE_SETTINGS_MODELS.clear()
+    (tmp_path / "models.ini").write_text("[*]\nparallel = 2\n\n[big-moe--q4]\nctx-size = 8192\n" + section)
+    monkeypatch.setattr(alpaca_proxy, "ROUTER_MODELS_DIR", str(tmp_path))
+    alpaca_proxy.resolve_router_model = AsyncMock(
+        return_value={
+            "model_name": "big-moe:q4",
+            "backend_model": "big-moe--q4",
+            "entry": {"id": "big-moe--q4", "status": {"value": "unloaded"}},
+            "manifest_path": "/tmp/manifest",
+            "manifest": make_manifest(digest="sha256:bigmoe"),
+            "router_models": [{"id": "big-moe--q4", "status": {"value": "unloaded"}}],
+        }
+    )
+    monkeypatch.setattr(alpaca_proxy, "is_model_over_9b", lambda *a, **k: True)
+    alpaca_proxy.post_router_model_action = AsyncMock()
+
+    await alpaca_proxy.ensure_model("big-moe:q4")
+
+    loads = [c.args[1] for c in alpaca_proxy.post_router_model_action.await_args_list if c.args[0] == "load"]
+    assert loads and loads[0]["n_parallel"] == expected
 
 
 @pytest.mark.asyncio
@@ -848,6 +883,7 @@ async def test_ensure_model_recovers_from_oom_by_restarting_server():
         "load",
         {
             "model": "sha256-deadbeef",
+            "n_parallel": 1,
             "n_gpu_layers": 0,
             "n_thread": 8,
             "n_batch": 256,
