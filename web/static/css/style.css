@@ -3599,6 +3599,15 @@ a.badge {
         min-height: 0 !important;
         max-height: none !important;
     }
+    /* The request monitor is a live list, not a stacked form: it keeps its
+       own height on a phone so each of its three lists scrolls instead of
+       pushing Completed Requests off the card. */
+    .requests-buffer-card {
+        max-height: 85vh !important;
+    }
+    .requests-scroll {
+        overscroll-behavior: contain;
+    }
     .progress-status-right {
         text-align: left;
     }
