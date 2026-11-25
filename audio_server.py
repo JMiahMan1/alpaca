@@ -33,7 +33,8 @@ Endpoints:
   DELETE /api/voices/<id>
   POST /api/voices/identify   -> {audio_b64, threshold?} -> who is speaking
   POST /api/voices/calibrate  -> {clips: [{voice_id, audio_b64}]} -> own vs impostor scores
-  POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?} -> wav b64
+  POST /api/music     -> {prompt, duration_s?, temperature?, guidance_scale?, seed?, top_k?, loop?} -> wav b64
+                         loop=true returns a seamless loop cut to whole bars (meta.bpm, meta.bars, meta.loop_s)
                          (one clip <= AUDIO_MAX_MUSIC_S, queued with songs, answered when done)
   POST /api/music/jobs -> {prompt, duration_s<=AUDIO_MAX_SONG_S, structure?} -> 202 {id, status, position}
   GET  /api/music/jobs/<id> -> status, position, progress {done,total,section}; audio_b64 when done
@@ -1206,6 +1207,14 @@ async def _run_music_job(job: dict) -> None:
         arr = await asyncio.to_thread(generate, req["prompt"], req["duration_s"], None)
         progress(1, 1, "done")
     sr = sr_holder.get("sr") or bundle["model"].config.audio_encoder.sampling_rate
+    loop_meta: dict = {}
+    if req.get("loop"):
+        import audio_loops
+
+        # Cut to whole bars (when there is a steady beat) and fold the tail into the head, once:
+        # the caller gets the loop, never a clip to loop again.
+        arr, info = await asyncio.to_thread(audio_loops.loop_to_bars, arr, sr)
+        loop_meta = {"loop": True, **info.to_dict()}
     wav = await asyncio.to_thread(_wav_bytes, arr, sr)
     _empty_cache()
     elapsed = time.perf_counter() - t0
@@ -1228,6 +1237,7 @@ async def _run_music_job(job: dict) -> None:
         "fell_back_to_cpu": fell_back,
         "elapsed_s": round(elapsed, 2),
         "rtf": round(elapsed / max(duration, 1e-6), 4),
+        **loop_meta,
     }
 
 
@@ -1287,6 +1297,10 @@ def _parse_music_request(data: dict, song: bool) -> dict:
         "top_k": int(data.get("top_k", 250)),
         "seed": data.get("seed"),
     }
+    if not song and "loop" in data:
+        if not isinstance(data["loop"], bool):
+            raise ValueError("loop must be true or false")
+        req["loop"] = data["loop"]
     if song:
         import music_song
 
