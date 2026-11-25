@@ -434,6 +434,14 @@ _slot_waiter_seq = itertools.count()
 _CURRENT_REQUEST_PRIORITY: contextvars.ContextVar[int] = contextvars.ContextVar(
     "_CURRENT_REQUEST_PRIORITY", default=PRIORITY_NORMAL
 )
+# Request source (x-request-source) and whether this task is a real inference call.
+# Set in resolve_request_priority(); read by the benchmark-exclusive gate in ensure_model.
+_CURRENT_REQUEST_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_CURRENT_REQUEST_SOURCE", default=""
+)
+_CURRENT_REQUEST_IS_INFERENCE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_CURRENT_REQUEST_IS_INFERENCE", default=False
+)
 # Per-backend min-heap of [-priority, seq, cancelled_flag, is_prompt_keeper, asyncio.Event].
 # Negating priority matches SharedLLM's ZSET score (-priority * 1e9 + ts): higher priority first, FIFO ties.
 _slot_waiters: dict[str, list[list[Any]]] = {}
@@ -455,6 +463,123 @@ PROXY_PREEMPT_LOW_FOR_HIGH = os.getenv("PROXY_PREEMPT_LOW_FOR_HIGH", "1").strip(
     "off",
 )
 PROXY_PREEMPT_RETRY_AFTER_S = max(1, int(os.getenv("PROXY_PREEMPT_RETRY_AFTER_S", "30")))
+
+# Benchmark-exclusive mode. A benchmark run owns the card for its duration: other
+# inference is either told the proxy is busy (voice, HIGH) or made to wait for the
+# run to finish (background, NORMAL/LOW) instead of contending for a slot or swapping
+# the benchmark's model out mid-run. CRITICAL (emergency) always passes through.
+PROXY_BENCHMARK_BUSY_WAIT_S = max(0, int(os.getenv("PROXY_BENCHMARK_BUSY_WAIT_S", "7200")))
+PROXY_BENCHMARK_BUSY_RETRY_AFTER_S = max(1, int(os.getenv("PROXY_BENCHMARK_BUSY_RETRY_AFTER_S", "120")))
+PROXY_BENCHMARK_STALE_S = max(60, int(os.getenv("PROXY_BENCHMARK_STALE_S", "1800")))
+PROXY_BENCHMARK_POLL_S = max(0.05, float(os.getenv("PROXY_BENCHMARK_POLL_S", "2.0")))
+
+_benchmark_state_lock = threading.Lock()
+_benchmark_state: dict[str, Any] = {
+    "active": False,
+    "model": None,
+    "run_id": None,
+    "eta_s": None,
+    "last_activity": 0.0,
+}
+
+
+class BenchmarkBusyError(Exception):
+    """A benchmark owns the card; the caller should retry later."""
+
+    def __init__(self, reason: str = "background") -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def get_benchmark_state() -> dict[str, Any]:
+    """Snapshot of benchmark-exclusive state, self-clearing if the run went stale."""
+    with _benchmark_state_lock:
+        state = dict(_benchmark_state)
+    if (
+        state.get("active")
+        and state.get("last_activity")
+        and time.time() - state["last_activity"] > PROXY_BENCHMARK_STALE_S
+    ):
+        with _benchmark_state_lock:
+            if (
+                _benchmark_state.get("active")
+                and time.time() - _benchmark_state.get("last_activity", 0.0) > PROXY_BENCHMARK_STALE_S
+            ):
+                _benchmark_state["active"] = False
+                _benchmark_state["model"] = None
+                _benchmark_state["run_id"] = None
+                _benchmark_state["eta_s"] = None
+                _benchmark_state["last_activity"] = 0.0
+        state["active"] = False
+        state["stale"] = True
+    return state
+
+
+def set_benchmark_state(
+    active: bool,
+    model: str | None = None,
+    run_id: str | None = None,
+    eta_s: int | None = None,
+) -> dict[str, Any]:
+    with _benchmark_state_lock:
+        _benchmark_state["active"] = bool(active)
+        if active:
+            if model is not None:
+                _benchmark_state["model"] = model
+            if run_id is not None:
+                _benchmark_state["run_id"] = run_id
+            if eta_s is not None:
+                _benchmark_state["eta_s"] = eta_s
+            _benchmark_state["last_activity"] = time.time()
+        else:
+            _benchmark_state["model"] = None
+            _benchmark_state["run_id"] = None
+            _benchmark_state["eta_s"] = None
+            _benchmark_state["last_activity"] = 0.0
+        return dict(_benchmark_state)
+
+
+def _benchmark_exclusive_active() -> bool:
+    return bool(get_benchmark_state().get("active"))
+
+
+def _is_benchmark_source(source: str | None) -> bool:
+    return "benchmark" in str(source or "").lower()
+
+
+def _touch_benchmark_activity() -> None:
+    with _benchmark_state_lock:
+        if _benchmark_state.get("active"):
+            _benchmark_state["last_activity"] = time.time()
+
+
+async def _wait_for_benchmark_end() -> None:
+    """Wait for the current benchmark to finish (bounded by PROXY_BENCHMARK_BUSY_WAIT_S)."""
+    deadline = time.monotonic() + PROXY_BENCHMARK_BUSY_WAIT_S if PROXY_BENCHMARK_BUSY_WAIT_S > 0 else None
+    while _benchmark_exclusive_active():
+        if deadline is not None and time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(PROXY_BENCHMARK_POLL_S)
+
+
+async def _benchmark_gate() -> None:
+    """Gate a non-benchmark inference request while a benchmark owns the card."""
+    if not _benchmark_exclusive_active():
+        return
+    if _is_benchmark_source(_CURRENT_REQUEST_SOURCE.get()):
+        return
+    priority = _CURRENT_REQUEST_PRIORITY.get()
+    if priority < PRIORITY_LOW:
+        # Prompt-keeper warmups (PRIORITY_KEEPER) yield to everything and never load a
+        # model; waiting here would only hang a best-effort background warmup.
+        return
+    if priority >= PRIORITY_CRITICAL:
+        return
+    if priority >= PRIORITY_HIGH:
+        raise BenchmarkBusyError("voice")
+    await _wait_for_benchmark_end()
+    if _benchmark_exclusive_active():
+        raise BenchmarkBusyError("background")
 
 
 class _InflightRequest:
@@ -586,6 +711,8 @@ def preempt_low_requests(
     for entry in targets:
         if entry.is_prompt_keeper:
             continue
+        if _benchmark_exclusive_active() and _is_benchmark_source(entry.source):
+            continue
         if entry.priority > PRIORITY_LOW:
             continue
         if entry.request_id == for_request_id:
@@ -620,6 +747,8 @@ def priority_label(priority: int) -> str:
 
 def resolve_request_priority(request: Request | None, body: dict | None = None) -> int:
     """Resolve scheduling priority (higher = more urgent, matching SharedLLM's messaging.py)."""
+    _CURRENT_REQUEST_IS_INFERENCE.set(True)
+    _CURRENT_REQUEST_SOURCE.set(str(getattr(getattr(request, "state", None), "request_source", "") or ""))
     resolved = PRIORITY_NORMAL
     if request is not None and is_prompt_keeper_request(request):
         resolved = PRIORITY_KEEPER
@@ -665,6 +794,10 @@ def resolve_request_priority(request: Request | None, body: dict | None = None) 
         resolved = PRIORITY_HIGH
     elif any(tok in source for tok in _LOW_PRIORITY_SOURCES):
         resolved = PRIORITY_LOW
+    if _is_benchmark_source(source):
+        _touch_benchmark_activity()
+        if _benchmark_exclusive_active():
+            resolved = max(resolved, PRIORITY_HIGH)
     _CURRENT_REQUEST_PRIORITY.set(resolved)
     return resolved
 
@@ -6710,7 +6843,57 @@ async def admin_runtime():
         "max_loaded_models": MAX_LOADED_MODELS,
         "default_keep_alive": DEFAULT_KEEP_ALIVE,
         "router_management_supported": router_management_supported,
+        "benchmark": get_benchmark_state(),
     }
+
+
+@app.post("/admin/benchmark/active")
+async def admin_set_benchmark_active(request: Request):
+    """Mark whether a benchmark run owns the card (protects it from slot contention)."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    active = bool(data.get("active"))
+    state = set_benchmark_state(
+        active,
+        model=data.get("model"),
+        run_id=data.get("run_id"),
+        eta_s=data.get("eta_s"),
+    )
+    logger.info(
+        f"[benchmark] exclusive mode active={active} model={state.get('model')} run_id={state.get('run_id')}"
+    )
+    return {"status": "ok", "benchmark": state}
+
+
+@app.get("/admin/benchmark/active")
+async def admin_get_benchmark_active():
+    return {"benchmark": get_benchmark_state()}
+
+
+@app.exception_handler(BenchmarkBusyError)
+async def _handle_benchmark_busy(request: Request, exc: BenchmarkBusyError) -> JSONResponse:
+    state = get_benchmark_state()
+    msg = "My brain is busy running a benchmark right now. Please try again in a moment."
+    benchmark = {"model": state.get("model"), "eta_s": state.get("eta_s")}
+    if request.url.path.startswith("/v1"):
+        content: dict[str, Any] = {
+            "error": {
+                "message": msg,
+                "type": "benchmark_busy",
+                "param": "model",
+                "code": "benchmark_busy",
+                "benchmark": benchmark,
+            }
+        }
+    else:
+        content = {"error": msg, "status": "benchmark_busy", "benchmark": benchmark}
+    return JSONResponse(
+        status_code=503,
+        content=content,
+        headers={"Retry-After": str(PROXY_BENCHMARK_BUSY_RETRY_AFTER_S)},
+    )
 
 
 async def get_active_child_port() -> int | None:
@@ -8983,6 +9166,9 @@ async def ensure_model(
 
     model_name = with_default_tag(model_name)
     begin_model_request(model_name)
+
+    if _CURRENT_REQUEST_IS_INFERENCE.get():
+        await _benchmark_gate()
 
     # Lock-free check for loaded/healthy or loading models to prevent lock starvation
     try:

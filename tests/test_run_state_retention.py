@@ -323,3 +323,25 @@ def test_the_three_status_pollers_are_all_visibility_gated():
     src = DASHBOARD_JS.read_text()
     for fn in ("pollProxyStatus", "pollRequestsStatus", "pollRunStatus", "loadErrorLog", "updateCurrentModel"):
         assert f"if (!document.hidden) {fn}()" in src, f"{fn} is not gated on document.hidden"
+
+
+def test_benchmark_start_tells_the_proxy_the_card_is_exclusive(client):
+    """Starting a run must mark the proxy benchmark-exclusive so it protects the card."""
+    from web.app import get_progress_callback
+
+    callback = get_progress_callback("general")
+    with patch("web.app.socketio.emit"), patch("web.app._proxy_benchmark_active") as signal:
+        callback(
+            "benchmark_start",
+            {"models": ["inkling"], "use_proxy": True, "total_tests": 2, "timestamp": "t"},
+        )
+    signal.assert_called_once_with(True, models=["inkling"])
+
+
+def test_finish_active_run_tells_the_proxy_the_card_is_free(client):
+    """Ending a run must release the proxy's benchmark-exclusive hold."""
+    from web.app import _finish_active_run
+
+    with patch("web.app._proxy_benchmark_active") as signal, active_run_lock:
+        _finish_active_run("completed")
+    signal.assert_called_once_with(False)

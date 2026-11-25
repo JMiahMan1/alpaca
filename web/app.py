@@ -455,6 +455,32 @@ benchmark_thread = None
 _RUN_SCRATCH_KEYS = ("results", "test_results")
 
 
+def _proxy_benchmark_active(active: bool, models=None, run_id=None) -> None:
+    """Tell the proxy a benchmark owns the card so it can protect the run.
+
+    Best-effort and fire-and-forget: a proxy that is down or an older build without
+    the endpoint must never break the benchmark itself.
+    """
+    payload: dict[str, Any] = {"active": bool(active)}
+    if models:
+        payload["model"] = models[0] if isinstance(models, (list, tuple)) and models else models
+    if run_id:
+        payload["run_id"] = run_id
+
+    def _post() -> None:
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                client.post(
+                    f"{PROXY_URL}/admin/benchmark/active",
+                    json=payload,
+                    headers=get_proxy_headers(),
+                )
+        except Exception as exc:  # never fail a benchmark on this
+            print(f"[benchmark] could not signal proxy exclusive mode: {exc}")
+
+    threading.Thread(target=_post, daemon=True).start()
+
+
 def _finish_active_run(status: str, saved_as: str | None = None) -> None:
     """Move ``active_run`` to a terminal state and release the run's scratch data.
 
@@ -470,6 +496,7 @@ def _finish_active_run(status: str, saved_as: str | None = None) -> None:
         active_run["saved_as"] = saved_as
     for key in _RUN_SCRATCH_KEYS:
         active_run[key] = []
+    _proxy_benchmark_active(False)
 
 
 # Callback for progress reporting from inside the benchmark threads
@@ -493,6 +520,7 @@ def get_progress_callback(run_type):
                 active_run["test_results"] = []
                 active_run["start_time"] = data["timestamp"]
                 active_run["saved_as"] = None
+                _proxy_benchmark_active(True, models=data.get("models"))
 
                 socketio.emit(
                     "benchmark_start",
