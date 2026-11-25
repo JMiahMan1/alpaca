@@ -22,6 +22,47 @@ document.addEventListener('DOMContentLoaded', () => {
         return /^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini|cline_pass|cline|claude|codex|deepseek|pi):/i.test(String(model || '').trim());
     }
 
+    // The provider a model id belongs to, and the /api/online/providers key that answers for
+    // it. A provider whose key has been removed is gone from this box, so its models must not
+    // keep sitting in the grid as "past" entries.
+    const ONLINE_PROVIDER_KEYS = {
+        openrouter: 'openrouter',
+        huggingface: 'huggingface',
+        hf: 'huggingface',
+        cloudflare: 'cloudflare',
+        opencode_zen: 'opencode_zen',
+        opencode: 'opencode_zen',
+        groq: 'groq',
+        orcarouter: 'orcarouter',
+        gemini: 'gemini',
+        cline_pass: 'cline_pass',
+        cline: 'cline',
+        claude: 'claude',
+        codex: 'codex',
+        deepseek: 'deepseek',
+        pi: 'pi',
+    };
+
+    function onlineProviderKey(model) {
+        const match = /^([a-z_]+):/i.exec(String(model || '').trim());
+        if (!match) return null;
+        const prefix = match[1].toLowerCase();
+        return ONLINE_PROVIDER_KEYS[prefix] || prefix;
+    }
+
+    // null until /api/online/providers has answered, so nothing is hidden on first paint.
+    let configuredProviders = null;
+
+    function providerStillAvailable(model) {
+        if (!configuredProviders) return true;
+        const key = onlineProviderKey(model);
+        if (!key) return true;
+        // An unknown key is kept on purpose: a provider the page does not know about yet must
+        // not vanish before its credentials are listed.
+        if (!(key in configuredProviders)) return true;
+        return Boolean(configuredProviders[key]);
+    }
+
     // Socket initialization
     const socket = io();
 
@@ -4014,19 +4055,25 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadModels() {
         try {
             logToTerminal("Fetching available models & benchmark tracking...");
-            const [modelsRes, trackingRes, onlineRes] = await Promise.allSettled([
+            const [modelsRes, trackingRes, onlineRes, providersRes] = await Promise.allSettled([
                 fetch('/api/models'),
                 fetch('/api/models/tracking'),
-                fetch('/api/models/online')
+                fetch('/api/models/online'),
+                fetch('/api/online/providers')
             ]);
 
             const modelsData = modelsRes.status === 'fulfilled' ? await modelsRes.value.json() : { models: [] };
             const trackingData = trackingRes.status === 'fulfilled' ? await trackingRes.value.json() : { all_tracked: {}, counts: {} };
             const onlineData = onlineRes.status === 'fulfilled' ? await onlineRes.value.json() : { models: [] };
+            if (providersRes.status === 'fulfilled') {
+                const providerData = await providersRes.value.json();
+                configuredProviders = providerData.configured || {};
+            }
 
             availableModels = modelsData.models || [];
             const trackedMap = trackingData.all_tracked || {};
-            const onlineModels = onlineData.models || [];
+            // A model whose provider no longer has credentials is not offered any more.
+            const onlineModels = (onlineData.models || []).filter(providerStillAvailable);
 
             modelCheckboxes.innerHTML = '';
             
@@ -4188,6 +4235,7 @@ document.addEventListener('DOMContentLoaded', () => {
             for (const [trackedId, tMeta] of Object.entries(trackedMap)) {
                 if (
                     isOnlineModelName(trackedId) &&
+                    providerStillAvailable(trackedId) &&
                     !activeOnlineIds.has(trackedId) &&
                     !tMeta.hidden_from_selection &&
                     tMeta.benchmark_count > 0

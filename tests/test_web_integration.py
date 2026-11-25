@@ -1413,6 +1413,33 @@ def test_api_online_providers_save_and_test(client):
         assert data["message"] == "Test successful"
 
 
+def test_clearing_a_provider_key_drops_its_models(client):
+    """A provider with no key must not leave its models in the selection grid."""
+    selected = [
+        {"id": "openrouter:deepseek/deepseek-v4.1-flash", "name": "deepseek-v4.1-flash"},
+        {"id": "groq:llama-3.3-70b", "name": "llama-3.3-70b"},
+    ]
+    saved = {}
+
+    with (
+        patch(
+            "online_providers.online_model_provider.save_credentials",
+            return_value={"success": True, "configured": {"openrouter": False, "groq": True}},
+        ),
+        patch("online_providers.online_model_provider.get_selected_models", return_value=selected),
+        patch(
+            "online_providers.online_model_provider.save_selected_models",
+            side_effect=lambda models: saved.setdefault("models", models),
+        ),
+    ):
+        res = client.post("/api/online/providers/save", json={"openrouter_api_key": ""})
+        assert res.status_code == 200
+        data = json.loads(res.data.decode("utf-8"))
+        assert data["dropped_models"] == ["openrouter:deepseek/deepseek-v4.1-flash"]
+
+    assert [m["id"] for m in saved["models"]] == ["groq:llama-3.3-70b"]
+
+
 def test_api_online_models_search_and_selected(client):
     """Test searching online models and persisting user selection."""
     mock_models = [

@@ -3920,7 +3920,7 @@ class LLMModelBenchmark:
                 gr = grade_code(
                     repaired_resp, lang, None, ui=is_ui,
                     framework=test.get("framework"),
-                    **({"test_id": test["id"]} if test.get("id") in CLI_FIXTURE_TEST_IDS else {}),
+                    test_id=test.get("id"),
                 )
                 original_result["repaired_code_ran"] = gr.get("ran")
                 original_result["repaired_code_score"] = gr.get("score")
@@ -5476,7 +5476,7 @@ class LLMModelBenchmark:
                             gr = grade_code(
                                 resp_text, lang, expected_out, ui=is_ui,
                                 framework=test.get("framework"),
-                                **({"test_id": test["id"]} if test.get("id") in CLI_FIXTURE_TEST_IDS else {}),
+                                test_id=test.get("id"),
                             )
                             test_result["code_ran"] = gr["ran"]
                             test_result["code_score"] = gr["score"]
@@ -5845,6 +5845,10 @@ class LLMModelBenchmark:
         # A ui test, but gated on content: all 18 verses, real drawn SVG, a
         # framed leaf and a working page flip. See manuscript_rubric.py.
         "creative_illuminated_manuscript_john1": "v1",
+        # Playability probe: the page must engage its AI mode and answer a
+        # human move, not just render a screenshot of a board whose selection
+        # highlight reacts to a click (see sandbox_exec).
+        "game_checkers_web": "v2",
     }
     OBJECTIVE_GRADER_VERSION: ClassVar[str] = "v2"
 

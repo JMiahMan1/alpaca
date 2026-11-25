@@ -3557,6 +3557,45 @@ def get_online_providers_credentials_api():
         return jsonify({"error": str(e)}), 500
 
 
+#: Which selected models depend on which .env key. Clearing a key leaves models
+#: nobody can call, so they are dropped from the selection with it (history stays).
+_ONLINE_KEY_PREFIXES = {
+    "OPENROUTER_API_KEY": {"openrouter"},
+    "HUGGING_FACE_TOKEN": {"huggingface", "hf"},
+    "CLOUDFLARE_API_TOKEN": {"cloudflare"},
+    "CLOUDFLARE_ACCOUNT_ID": {"cloudflare"},
+    "OPENCODE_ZEN_API_KEY": {"opencode_zen", "opencode"},
+    "OPENCODE_ZEN_BASE_URL": {"opencode_zen", "opencode"},
+    "GROQ_API_KEY": {"groq"},
+    "ORCAROUTER_API_KEY": {"orcarouter"},
+    "GEMINI_API_KEY": {"gemini"},
+    "CLINE_API_KEY": {"cline_pass"},
+}
+
+
+def _drop_unconfigured_online_models(prefixes):
+    """Forget the selected models of providers whose credentials just went away.
+
+    The model grid and the benchmark pickers read this list, so a model left in it
+    after its key was cleared is offered with nothing behind it. Results already
+    collected are kept: they live in the benchmark files, not here.
+    """
+    if not prefixes:
+        return []
+    try:
+        from online_providers import online_model_provider
+
+        models = online_model_provider.get_selected_models() or []
+        dropped = [m.get("id") for m in models if str(m.get("id", "")).split(":", 1)[0] in prefixes]
+        if dropped:
+            kept = [m for m in models if str(m.get("id", "")).split(":", 1)[0] not in prefixes]
+            online_model_provider.save_selected_models(kept)
+        return dropped
+    except Exception as e:
+        print(f"[online] could not drop models of a removed provider: {e}")
+        return []
+
+
 @app.route("/api/online/providers/save", methods=["POST"])
 def save_online_providers_credentials_api():
     """Save API credentials to .env and runtime."""
@@ -3589,6 +3628,12 @@ def save_online_providers_credentials_api():
             keys["CLINE_API_KEY"] = data["cline_api_key"].strip()
 
         result = online_model_provider.save_credentials(keys)
+        cleared = set()
+        for key, prefixes in _ONLINE_KEY_PREFIXES.items():
+            if key in keys and not keys[key]:
+                cleared |= prefixes
+        if cleared:
+            result["dropped_models"] = _drop_unconfigured_online_models(cleared)
         return jsonify(result)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

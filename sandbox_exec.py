@@ -1087,7 +1087,7 @@ def run_code_once(
 
         if ui:
             if lang in ("html", "htm", "web"):
-                return _run_web_ui(container, cleaned_code, timeout, result)
+                return _run_web_ui(container, cleaned_code, timeout, result, test_id=test_id)
             # Native compiled GUI: build AND run under Xvfb. The bare
             # toolchain command never opens a window (blank frame, false
             # fail), and single-file go/rust builds cannot resolve GUI
@@ -1135,7 +1135,7 @@ def run_code_once(
             return _run_ui(container, cleaned_code, ext, bin_, timeout, result, launch=launch, build=build)
 
         if lang in ("html", "htm", "web"):
-            return _run_web_ui(container, cleaned_code, timeout, result)
+            return _run_web_ui(container, cleaned_code, timeout, result, test_id=test_id)
 
         _put_file(container, f"/tmp/code.{ext}", cleaned_code.encode("utf-8"))
 
@@ -1407,7 +1407,9 @@ def _run_ui(
     return result
 
 
-def _run_web_ui(container, code: str, timeout: int, result: dict[str, Any]) -> dict[str, Any]:
+def _run_web_ui(
+    container, code: str, timeout: int, result: dict[str, Any], test_id: str | None = None
+) -> dict[str, Any]:
     """Render an HTML/JS game with headless Chromium and screenshot it.
 
     Unlike the Xvfb path (which needs a windowing toolkit and can only show a
@@ -1476,7 +1478,320 @@ def _run_web_ui(container, code: str, timeout: int, result: dict[str, Any]) -> d
     else:
         result["ui_rendered"] = False
         result["ran"] = result["exit_code"] == 0
+    if test_id == "game_checkers_web":
+        _checkers_playability_probe(container, code, timeout, result)
     return result
+
+
+_CHECKERS_PROBE_HTML = r"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>checkers probe</title></head>
+<body style="margin:0">
+<div id="__probe">PENDING</div>
+<iframe id="game" style="width:1024px;height:768px;border:0"></iframe>
+<script>
+(function () {
+  var facts = {playable: false, reason: "probe did not finish", ai_mode: false,
+               ai_control: null, board: false, canvases: 0, cells: 0, pieces: 0,
+               human_move: false, ai_moved: false, log: [], js_errors: []};
+  var iframe = document.getElementById("game");
+  var probe = document.getElementById("__probe");
+  var GAME_HTML = __GAME_HTML_JSON__;
+  var errors = [];
+  var done = false;
+  function log(m) { facts.log.push(String(m)); if (facts.log.length > 30) facts.log.shift(); }
+  function finish() {
+    if (done) return;
+    done = true;
+    facts.js_errors = errors.slice(0, 5);
+    var s = JSON.stringify(facts).replace(/[^\x00-\x7F]/g, "?");
+    try { probe.textContent = "RESULT:" + btoa(s); }
+    catch (e) { probe.textContent = "RESULT_ERR"; }
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function txt(doc) { return ((doc.body && doc.body.innerText) || "").replace(/\s+/g, " ").slice(0, 400); }
+  function sig(doc) {
+    var parts = [];
+    var sel = "[class*=select],[class*=valid],[class*=highlight],[class*=move],[class*=capture],[class*=active],[class*=turn],[class*=score],[class*=piece],[class*=token],[class*=checker],[class*=square],[class*=cell]";
+    var els = doc.querySelectorAll(sel);
+    for (var i = 0; i < els.length && i < 200; i++) parts.push(els[i].className || "");
+    var cs = doc.querySelectorAll("canvas");
+    for (var c = 0; c < cs.length; c++) {
+      try { parts.push(cs[c].toDataURL()); } catch (e) {}
+    }
+    parts.push(txt(doc));
+    return parts.join("|");
+  }
+  async function stableSig(doc) {
+    var a = sig(doc); await sleep(90); var b = sig(doc);
+    return (a === b) ? a : b;
+  }
+  function fire(win, el, type, x, y) {
+    try {
+      var Ctor = (type.indexOf("pointer") === 0 && win.PointerEvent) ? win.PointerEvent : win.MouseEvent;
+      el.dispatchEvent(new Ctor(type, {bubbles: true, cancelable: true, clientX: x, clientY: y, view: win, button: 0, detail: 1}));
+    } catch (e) {}
+  }
+  function clickAt(win, el, x, y) {
+    ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(function (type) {
+      fire(win, el, type, x, y);
+    });
+  }
+  function clickEl(win, el) {
+    try {
+      var tag = (el.tagName || "").toUpperCase();
+      // A real button already turns one .click() into one activation. Firing
+      // pointer/mouse events as well would activate it twice, which silently
+      // flipped a two-state mode toggle straight back to where it started.
+      if (tag === "BUTTON" || tag === "A" || tag === "INPUT") { el.click(); return; }
+      var r = el.getBoundingClientRect();
+      clickAt(win, el, r.left + r.width / 2, r.top + r.height / 2);
+      el.click();
+    } catch (e) {}
+  }
+  function findAiControl(doc) {
+    var sels = doc.querySelectorAll("select");
+    for (var i = 0; i < sels.length; i++) {
+      var opts = sels[i].options || [];
+      for (var j = 0; j < opts.length; j++) {
+        if (/ai|computer|pve|pvc|robot/i.test((opts[j].textContent || "") + " " + (opts[j].value || ""))) {
+          return {kind: "select", el: sels[i], value: opts[j].value, label: (opts[j].textContent || "").trim()};
+        }
+      }
+    }
+    var btns = doc.querySelectorAll("button,[role=button],a,input[type=button],input[type=submit]");
+    for (var k = 0; k < btns.length; k++) {
+      var t = (btns[k].textContent || btns[k].value || "").trim();
+      if (/vs\s*ai|human\s*vs\s*ai|human\s*vs\s*computer|computer|pve|pvc|robot|ai\s*opponent/i.test(t)) {
+        return {kind: "button", el: btns[k], label: t};
+      }
+    }
+    for (var m = 0; m < btns.length; m++) {
+      var t2 = (btns[m].textContent || "").trim();
+      if (/mode/i.test(t2)) return {kind: "toggle", el: btns[m], label: t2};
+    }
+    return null;
+  }
+  function boardPoints(doc) {
+    var pts = [];
+    var cs = doc.querySelectorAll("canvas");
+    for (var c = 0; c < cs.length; c++) {
+      var cv = cs[c], rect = cv.getBoundingClientRect();
+      if (rect.width < 120 || rect.height < 120) continue;
+      var img = null;
+      try { img = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height); } catch (e) {}
+      for (var gy = 0; gy < 8; gy++) {
+        for (var gx = 0; gx < 8; gx++) {
+          var col = null;
+          if (img) {
+            var px = Math.floor((gx + 0.5) * cv.width / 8), py = Math.floor((gy + 0.5) * cv.height / 8);
+            var idx = (py * cv.width + px) * 4;
+            col = [img.data[idx], img.data[idx + 1], img.data[idx + 2]];
+          }
+          pts.push({el: cv, x: rect.left + (gx + 0.5) * rect.width / 8,
+                    y: rect.top + (gy + 0.5) * rect.height / 8, r: gy, c: gx, color: col});
+        }
+      }
+    }
+    if (pts.length) return pts;
+    var cells = doc.querySelectorAll("[class*=cell],[class*=square],[class*=tile],[data-r],[data-row]");
+    if (cells.length >= 32) {
+      for (var i = 0; i < cells.length; i++) {
+        var b = cells[i].getBoundingClientRect();
+        pts.push({el: cells[i], x: b.left + b.width / 2, y: b.top + b.height / 2, r: Math.floor(i / 8), c: i % 8, color: null});
+      }
+    }
+    return pts;
+  }
+  function diagonals(pts, r, c) {
+    var want = [[r - 1, c - 1], [r - 1, c + 1], [r + 1, c - 1], [r + 1, c + 1]];
+    var out = [];
+    for (var i = 0; i < want.length; i++) {
+      for (var j = 0; j < pts.length; j++) {
+        if (pts[j].r === want[i][0] && pts[j].c === want[i][1]) { out.push(pts[j]); break; }
+      }
+    }
+    return out;
+  }
+  async function run(doc, win) {
+    var canvases = doc.querySelectorAll("canvas");
+    var cells = doc.querySelectorAll("[class*=cell],[class*=square],[class*=tile]");
+    var pieces = doc.querySelectorAll("[class*=piece],[class*=token],[class*=checker],[class*=disc],[class*=man]");
+    facts.canvases = canvases.length; facts.cells = cells.length; facts.pieces = pieces.length;
+    facts.board = (canvases.length > 0) || (cells.length >= 32);
+    if (!facts.board) { facts.reason = "no board (0 canvases, " + cells.length + " cells)"; return finish(); }
+
+    var ctl = findAiControl(doc);
+    if (ctl) {
+      facts.ai_control = ctl.kind + ":" + ctl.label;
+      if (ctl.kind === "select") {
+        try {
+          ctl.el.value = ctl.value;
+          ctl.el.dispatchEvent(new win.Event("change", {bubbles: true}));
+          ctl.el.dispatchEvent(new win.Event("input", {bubbles: true}));
+          facts.ai_mode = true;
+        } catch (e) { log("select failed: " + e); }
+      } else {
+        clickEl(win, ctl.el);
+        await sleep(300);
+        if (ctl.kind === "toggle") {
+          if (/ai|computer|pvc|pve/i.test(ctl.el.textContent || "")) facts.ai_mode = true;
+          else {
+            clickEl(win, ctl.el);
+            await sleep(300);
+            if (/ai|computer|pvc|pve/i.test(ctl.el.textContent || "")) facts.ai_mode = true;
+            facts.ai_control = ctl.kind + ":" + ctl.label + " -> " + (ctl.el.textContent || "").trim();
+          }
+        } else { facts.ai_mode = true; }
+      }
+      await sleep(300);
+    }
+    log("ai_mode=" + facts.ai_mode + " ctl=" + (facts.ai_control || "none"));
+
+    var base = await stableSig(doc);
+    var pts = boardPoints(doc);
+    if (!pts.length) { facts.reason = "no clickable board points"; return finish(); }
+    var counts = {}, colors = [];
+    pts.forEach(function (p) { if (p.color) { colors.push(p.color); var k = p.color.join(","); counts[k] = (counts[k] || 0) + 1; } });
+    var ranked = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+    var empty = ranked.length ? ranked[0].split(",").map(Number) : null;
+    function isPiece(p) {
+      if (!p.color || !empty) return true;
+      return Math.abs(p.color[0] - empty[0]) + Math.abs(p.color[1] - empty[1]) + Math.abs(p.color[2] - empty[2]) > 60;
+    }
+    var order = [];
+    [5, 0, 6, 1, 7, 2].forEach(function (r) {
+      for (var c = 0; c < 8; c++) {
+        for (var i = 0; i < pts.length; i++) {
+          if (pts[i].r === r && pts[i].c === c && isPiece(pts[i])) { order.push(pts[i]); break; }
+        }
+      }
+    });
+    if (!order.length) order = pts.slice(0, 16);
+    log("points=" + pts.length + " pieces=" + order.length);
+
+    var limit = Math.min(order.length, 14);
+    for (var oi = 0; oi < limit; oi++) {
+      var o = order[oi];
+      var dests = diagonals(pts, o.r, o.c);
+      for (var di = 0; di < dests.length; di++) {
+        var dst = dests[di];
+        clickAt(win, o.el, o.x, o.y);
+        await sleep(130);
+        var s1 = sig(doc);
+        clickAt(win, dst.el, dst.x, dst.y);
+        await sleep(320);
+        var s2 = sig(doc);
+        if (s2 === s1 || s2 === base) continue;
+        facts.human_move = true;
+        log("moved r" + o.r + "," + o.c + " -> " + dst.r + "," + dst.c);
+        for (var w = 0; w < 16; w++) {
+          await sleep(250);
+          var s3 = sig(doc);
+          if (s3 !== s2) {
+            facts.ai_moved = true; facts.playable = true;
+            facts.reason = "the AI answered a human move";
+            return finish();
+          }
+        }
+        facts.reason = "the human move went through but the AI never answered";
+        return finish();
+      }
+    }
+    facts.reason = facts.ai_mode
+      ? "no piece could be moved: the game offers no legal first move"
+      : "no piece could be moved and no AI mode control was found";
+    finish();
+  }
+  iframe.onload = function () {
+    try {
+      var doc = iframe.contentDocument || iframe.contentWindow.document;
+      var win = iframe.contentWindow;
+      win.addEventListener("error", function (e) {
+        errors.push((e.message || e.error || "error") + " @" + (e.lineno || 0));
+      });
+      setTimeout(function () { run(doc, win).catch(function (e) { facts.reason = "probe error: " + e; finish(); }); }, 700);
+    } catch (e) {
+      facts.reason = "iframe access failed: " + e;
+      finish();
+    }
+  };
+  iframe.srcdoc = GAME_HTML;
+  setTimeout(function () { if (!done) { facts.reason = facts.reason || "timeout"; finish(); } }, 45000);
+})();
+</script>
+</body></html>
+"""
+
+
+def _checkers_playability_probe(container, code: str, timeout: int, result: dict[str, Any]) -> None:
+    """Check that a generated checkers page can actually be played against the AI.
+
+    The static keyword check cannot tell a playable game from a screenshot of
+    one. This renders the page in a same-origin iframe, switches it into its AI
+    mode, plays one human move by clicking a piece and then a diagonal
+    destination, and requires the board to change a second time — the AI's
+    reply. It runs only for ``test_id == "game_checkers_web"`` and fails the run
+    (``ran=False``) when no legal first move can be made or the AI never answers,
+    with the probe's reason in the error.
+    """
+    if result.get("ran") is False:
+        return
+    try:
+        game_json = json.dumps(code).replace("</", "<\\/")
+    except Exception:  # pragma: no cover - defensive
+        return
+    page = _CHECKERS_PROBE_HTML.replace("__GAME_HTML_JSON__", game_json)
+    script = (
+        "#!/bin/bash\n"
+        "cd /tmp\n"
+        "timeout 75 chromium --headless --no-sandbox --disable-gpu "
+        "--disable-dev-shm-usage --virtual-time-budget=45000 "
+        "--dump-dom file:///tmp/checkers_probe.html "
+        ">/tmp/probe_dom.html 2>/tmp/probe_stderr.txt\n"
+    )
+    _put_file(container, "/tmp/checkers_probe.html", page.encode("utf-8"))
+    _put_file(container, "/tmp/render_probe.sh", script.encode("utf-8"))
+    holder: dict = {}
+
+    def _exec():
+        try:
+            ec, out = container.exec_run(
+                ["bash", "/tmp/render_probe.sh"],
+                stdout=True,
+                stderr=True,
+                tty=False,
+                demux=False,
+            )
+            holder["exit_code"] = ec
+            holder["output"] = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+        except Exception as e:  # pragma: no cover - runtime dependent
+            holder["error"] = str(e)
+
+    t = threading.Thread(target=_exec, daemon=True)
+    t.start()
+    t.join(timeout + 20)
+    dom = _read_file(container, "/tmp/probe_dom.html") or b""
+    dom = dom.decode("utf-8", "replace") if isinstance(dom, (bytes, bytearray)) else str(dom)
+    facts = None
+    match = re.search(r'id="__probe"[^>]*>(.*?)</div>', dom, re.S)
+    if match:
+        text = match.group(1).strip()
+        if text.startswith("RESULT:"):
+            try:
+                facts = json.loads(base64.b64decode(text[len("RESULT:") :]).decode("utf-8"))
+            except Exception:
+                facts = None
+    if not isinstance(facts, dict):
+        # The probe harness itself did not report (e.g. chromium unavailable):
+        # do not fail a game for our own tooling's silence.
+        result["playability"] = {"probe": "unavailable"}
+        return
+    result["playability"] = facts
+    if facts.get("playable") is not True:
+        reason = facts.get("reason") or "no interaction response"
+        prior = result.get("error") or ""
+        result["error"] = (prior + "; " if prior else "") + f"checkers: game is not playable: {reason}"
+        result["ran"] = False
 
 
 def _run_http_ui(
@@ -1580,7 +1895,10 @@ def grade_code(
         # Cold offline builds (cargo/go modules) and the LVGL link need minutes.
         timeout = max(timeout, 300)
     fixture_args = {"test_id": test_id} if test_id in CLI_FIXTURE_TEST_IDS else {}
-    run = run_code_once(code, lang, timeout, ui=ui, framework=framework, **fixture_args)
+    # The checkers playability probe needs the test id; forward it for UI runs
+    # without disturbing the CLI fixture/stdin mapping for other tests.
+    ui_args = {"test_id": test_id} if ui and test_id == "game_checkers_web" else {}
+    run = run_code_once(code, lang, timeout, ui=ui, framework=framework, **ui_args, **fixture_args)
     ran = run.get("ran")
     out = run.get("output", "")
     lint_passed = run.get("lint_passed")
