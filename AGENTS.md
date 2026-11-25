@@ -315,6 +315,43 @@ every config tried ("Settings Scan Results").
   identity settings API the SharedLLM UI uses, mirrored in its `.env`. Previous: assistant/coding
   qwen3-6-35b-a3b-ud-iq4-nl-mtp, librarian ornith-1-5-9b-q4-k-m, DEFAULT_MODEL ornith:9b-q4_K_M.
 
+### Inkling 2 Mini (looped MoE, `inkling2_loop`) - 2026-11-24
+- **Build:** needs llama.cpp with #32694, #32704 and #32855 (b12708 has all three; b12211 has none).
+  The server runs `localhost/llama.cpp:server-cuda12-b12708-sm89`, built by `scripts/build-llama-image.sh`
+  and selected with `LLAMA_BASE_IMAGE` in `.env`.
+- **File:** `inkling-2-mini:iq3core-q4outer`, made by `scripts/gguf_mix.py` from Unsloth's UD-IQ3_XXS
+  (base) with the outer layers' experts (`^blk\.([0-5]|1[89])\.ffn_.*_exps\.`) from UD-Q4_K_XL, then
+  `alpaca-puller.py import`. 13.0 GB.
+- **Layout that fits 8 GB and is correct:** every layer on the GPU, all twelve looped layers (6-17)
+  including their experts, the experts of layers 0-5 and 18-23 in RAM
+  (`override-tensor = blk\.([0-5]|1[89]|2[0-3])\.ffn_.*_exps\.=CPU`), `op-offload = false`,
+  `threads = 8`, `threads-batch = 16`, `ubatch-size = 64`, `batch-size = 64`, q8_0 KV, 32K context,
+  `load-mode = mlock`, `parallel = 1`. Peak VRAM 7.7 GB.
+- **Never put a looped layer's experts in RAM with op-offload on:** the looped layers share weights
+  across three passes, and stock op-offload stages a copy per pass (~590 MiB of VRAM per such layer,
+  which is what OOM'd the first load) and is reported to give NaN perplexity.
+- **Speed (one slot, nothing else on the card):** decode 28.8 tok/s at a short prompt, 27.3 at 5.4K
+  tokens; prefill 98 tok/s at 5.4K (52 before the layout and thread changes). Prefill is the weak
+  spot: about a third of kat-coder's, so a ~6.5K-token voice prompt would take about a minute cold.
+  Out-of-tree patches (github.com/tmtsolutions23/inkling-8gb: per-split copies for shared weights,
+  chunked attention bias) report ~260-320 tok/s prefill on 8 GB; not applied.
+- **It always reasons.** With thinking off it reasons in the visible answer and the benchmark's
+  answer budget cuts it off (every failure hit exactly 2x its `num_predict`). Its profile sets
+  `thinking: true`, like lfm2.5; with it on, llama.cpp splits the reasoning into the thinking field.
+- **Benchmarking it is never alone on this box:** Guardian's image checks (qwen2.5-vl) and voice
+  (kat-coder) keep arriving, and `max_loaded_models` is 1, so each one swaps Inkling out or waits up
+  to 300 s for it (16 vision load attempts and 6 voice requests during one run). With two slots the
+  second slot also took other work and halved decode (16 tok/s measured beside the benchmark). Read
+  scores and speeds from a run as "under household load", measure speed on one slot when idle, and
+  expect image checks to be delayed while a benchmark holds the card.
+
+### Single-file bind mounts go stale on `git pull`
+`alpaca-puller.py` and the other top-level files are bind-mounted into `alpaca-web` one file at a
+time. `git pull` replaces a file (new inode), and the container keeps the old one until it restarts:
+on 2026-11-24 the container still lacked `alpaca-puller.py import` after the pull that added it.
+After pulling, restart the bind-mounted services (`./scripts/restart-when-idle.sh`) before using a
+changed file in them; `web/` and `data/` are directory mounts and are not affected.
+
 ### Home model (`PROXY_HOME_MODEL`)
 - The card holds one model, so a vision job (Guardian's image check) or a benchmark swaps the
   household's chat model out and the next question waits out a reload (24 s on 2026-11-15). With
