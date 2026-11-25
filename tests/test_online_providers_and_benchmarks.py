@@ -1815,3 +1815,22 @@ async def test_agent_harness_test_connection_docker(monkeypatch):
     assert res["success"] is True
     assert run_mock.call_args[0][0] == ["docker", "image", "inspect", "alpaca-dsh:latest"]
     assert "alpaca-dsh:latest" in res["message"]
+
+
+def test_profile_overlay_json_booleans_switch_thinking_on(tmp_path, monkeypatch):
+    """A ``.profile.json`` holds ``"thinking": true`` as a JSON boolean; it must count, or a model that
+    always reasons runs on thinking-off budgets and is cut off (Inkling 2 Mini, 2026-11-24)."""
+    import llm_benchmark_suite as suite
+
+    ini = tmp_path / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.5\n\n[think-model--q4]\nctx-size = 8192\n")
+    (tmp_path / "think-model--q4.profile.json").write_text(json.dumps({"thinking": True, "cache-reuse": 256}))
+    (tmp_path / "plain-model--q4.profile.json").write_text(json.dumps({"thinking": False}))
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    assert suite._effective_thinking("think-model:q4") is True
+    assert suite._model_profile_get("think-model:q4", "cache-reuse") == "256"
+    test = {"num_predict": 500, "reasoning_estimate": 2048}
+    assert suite._test_num_predict(test, "think-model:q4") == 500 + 2 * 2048
+    assert suite._effective_thinking("plain-model:q4") is False
+    assert suite._test_num_predict(test, "plain-model:q4") == 500
