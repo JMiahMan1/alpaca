@@ -455,11 +455,14 @@ async def test_two_phase_token_generation_and_nudge_injection(tmp_path, monkeypa
         body = json.loads(request.content.decode())
         seen.append({"url": str(request.url), "json": body})
         assert body["stream"] is True
-        assert body["options"]["num_predict"] == expected_cap
+        # Thinking is on for this model, so the answer phase gets a larger cap than
+        # the one it just used up (the window here is wide enough for the doubling).
+        phase2_cap = 2 * expected_cap
         if request.url.path.endswith("/api/chat"):
             messages = body["messages"]
             if len(messages) == 1:
                 # Phase 1 - exhaust the cap to trigger the nudge retry.
+                assert body["options"]["num_predict"] == expected_cap
                 raw = _chat_ndjson(
                     [{"content": "Phase 1 chat output"}],
                     {"eval_count": expected_cap, "eval_duration": 400, "prompt_eval_duration": 100},
@@ -467,6 +470,7 @@ async def test_two_phase_token_generation_and_nudge_injection(tmp_path, monkeypa
                 return httpx.Response(200, content=raw)
             assert messages[-1]["role"] == "user"
             assert "halfway through your token budget" in messages[-1]["content"]
+            assert body["options"]["num_predict"] == phase2_cap
             raw = _chat_ndjson(
                 [{"content": "Phase 2 chat output"}],
                 {"eval_count": 2500, "eval_duration": 200, "prompt_eval_duration": 50},
@@ -474,12 +478,14 @@ async def test_two_phase_token_generation_and_nudge_injection(tmp_path, monkeypa
             return httpx.Response(200, content=raw)
         prompt = body["prompt"]
         if "halfway through your token budget" not in prompt:
+            assert body["options"]["num_predict"] == expected_cap
             raw = _generate_ndjson(
                 ["Phase 1 direct output"],
                 {"eval_count": expected_cap, "eval_duration": 400, "prompt_eval_duration": 100},
             )
             return httpx.Response(200, content=raw)
         assert "Phase 1 direct output" in prompt
+        assert body["options"]["num_predict"] == phase2_cap
         raw = _generate_ndjson(
             ["Phase 2 direct output"],
             {"eval_count": 1500, "eval_duration": 150, "prompt_eval_duration": 30},
@@ -500,6 +506,7 @@ async def test_two_phase_token_generation_and_nudge_injection(tmp_path, monkeypa
         assert "Phase 1 chat output" in res_proxy["response"]
         assert "Phase 2 chat output" in res_proxy["response"]
         assert res_proxy["tokens_generated"] == expected_cap + 2500
+        assert res_proxy["truncated"] is False
         assert len([c for c in seen if "/api/chat" in c["url"]]) == 2
 
         seen.clear()
@@ -511,6 +518,7 @@ async def test_two_phase_token_generation_and_nudge_injection(tmp_path, monkeypa
         assert "Phase 1 direct output" in res_direct["response"]
         assert "Phase 2 direct output" in res_direct["response"]
         assert res_direct["tokens_generated"] == expected_cap + 1500
+        assert res_direct["truncated"] is False
         assert len([c for c in seen if "/api/generate" in c["url"]]) == 2
 
 
@@ -1756,3 +1764,77 @@ def test_lvgl_esphome_functional_verifiers():
     )
     assert suite._verify_functional_response("esphome_climate_sensor", good_esphome) is True
     assert suite._verify_functional_response("esphome_climate_sensor", "hello world") is False
+
+
+def test_the_answer_phase_of_a_thinking_run_gets_more_room_than_it_needs():
+    """A run cut off at its cap must not be handed the same cap again.
+
+    Inkling 2 Mini reasons whether or not it is asked to, so a second phase of
+    the same size went the same way as the first: cut off at exactly twice its
+    num_predict, with no answer at all. The answer phase gets twice the first
+    cap, clamped into the live window so the larger phase cannot be truncated
+    either.
+    """
+    from llm_benchmark_suite import _phase2_num_predict
+
+    # Plenty of window: the answer phase is doubled.
+    assert _phase2_num_predict(4000, True, 131072, 1000) == 8000
+    # No thinking to pay for: the same cap as the first phase.
+    assert _phase2_num_predict(4000, False, 131072, 1000) == 4000
+    # A tight window clamps the doubling to what the prompt leaves.
+    assert _phase2_num_predict(4000, True, 8192, 7000) == 8192 - 7000 - 128
+    # And it never hands back a negative budget.
+    assert _phase2_num_predict(4000, True, 8192, 8192) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_run_still_cut_off_after_both_phases_says_so(tmp_path, monkeypatch):
+    """Both phases at their caps is reported as truncated rather than passed off as an answer."""
+    import httpx
+
+    benchmark = LLMModelBenchmark()
+    ini = tmp_path / "models.ini"
+    ini.write_text("[*]\ntemperature = 0.5\n[test-model]\nreasoning-budget = 2048\n")
+    monkeypatch.setenv("MODELS_INI_PATH", str(ini))
+
+    bench_test = {"id": "test", "prompt": "Hello"}
+    from llm_benchmark_suite import _test_num_predict
+
+    first_cap = _test_num_predict(bench_test, "test-model")
+    second_cap = 2 * first_cap
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/admin/runtime":
+            return httpx.Response(
+                200,
+                json={"loaded_models": [
+                    {"name": "test-model--latest", "backend_model": "test-model--latest",
+                     "running_settings": {"ctx-size": "131072"}}
+                ]},
+            )
+        body = json.loads(request.content.decode())
+        if len(body["messages"]) == 1:
+            raw = _chat_ndjson(
+                [{"content": "I am still thinking"}],
+                {"eval_count": first_cap, "eval_duration": 400, "prompt_eval_duration": 100},
+            )
+            return httpx.Response(200, content=raw)
+        assert body["options"]["num_predict"] == second_cap
+        raw = _chat_ndjson(
+            [{"content": "and still thinking"}],
+            {"eval_count": second_cap, "eval_duration": 400, "prompt_eval_duration": 100},
+        )
+        return httpx.Response(200, content=raw)
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs.pop("timeout", None)
+        return real_client(transport=httpx.MockTransport(handler))
+
+    with patch("httpx.AsyncClient", side_effect=client_factory):
+        res = await benchmark.test_model_proxy("test-model", bench_test)
+
+    assert res["success"] is True
+    assert res["truncated"] is True
+    assert res["tokens_generated"] == first_cap + second_cap

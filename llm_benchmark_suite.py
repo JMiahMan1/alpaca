@@ -882,6 +882,26 @@ def _test_num_predict(test: dict, model: str | None = None) -> int:
     return base + 2 * _test_reasoning_estimate(test)
 
 
+#: How much more room the answer phase gets when the first cap ran out with
+#: thinking on. A model that reasons whether or not it is asked to (Inkling 2
+#: Mini, lfm2.5) can spend a second cap of the same size reasoning again and
+#: still answer nothing: the observed failure was a run cut off at exactly
+#: twice its num_predict, with both phases used up on thinking.
+PHASE2_THINKING_HEADROOM = 2
+
+
+def _phase2_num_predict(num_predict: int, think_on: bool, ctx: int, prompt_tokens: int) -> int:
+    """The answer phase's cap, and whether the context window allows it.
+
+    The nudge exists to get an answer out of a run that used its whole budget,
+    so it must not be handed the same budget that already proved too small.
+    With thinking on it is doubled, then clamped into the live window like any
+    other request so a larger second phase cannot itself be truncated.
+    """
+    requested = num_predict * (PHASE2_THINKING_HEADROOM if think_on else 1)
+    return turn_budget(ctx, prompt_tokens, requested)
+
+
 # Quick Benchmark: a 27-test all-round group that runs in well under an hour per model,
 # for checking a settings change or a new model without the full ~300-test suite.
 # It is a selection of existing tests (the web layer expands it to test_ids), so
@@ -994,6 +1014,18 @@ class LLMModelBenchmark:
         """
         ctx = await resolve_context_window(model, self.PROXY_SERVER_URLS, self._ctx_cache, "general/benchmark")
         return turn_budget(ctx, estimate_prompt_tokens([{"role": "user", "content": prompt}]), requested)
+
+    async def _phase2_cap(self, model: str, prompt: str, answer: str, nudge: str, num_predict: int, think_on: bool) -> int:
+        """The cap for the answer phase, sized against the window the nudge leaves."""
+        ctx = await resolve_context_window(model, self.PROXY_SERVER_URLS, self._ctx_cache, "general/benchmark phase 2")
+        estimated = estimate_prompt_tokens(
+            [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": nudge},
+            ]
+        )
+        return _phase2_num_predict(num_predict, think_on, ctx, estimated)
 
     @staticmethod
     def _proxy_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -4249,23 +4281,33 @@ class LLMModelBenchmark:
                             "error": "Empty generation (eval_count=0, no content returned)",
                         }
 
-                    # If we exhausted the token cap, inject nudge and request remaining tokens
+                    # If we exhausted the token cap, inject nudge and ask for an answer. A
+                    # thinking model gets a larger second cap, so the phase that exists to
+                    # produce an answer is not spent reasoning again.
+                    truncated = False
                     if eval_count >= num_predict:
+                        # Until the answer phase says otherwise this run was cut off.
+                        truncated = True
                         try:
+                            nudge = (
+                                "[System: You are halfway through your token budget. "
+                                "Please come up with an answer quickly.]"
+                            )
+                            phase2_cap = max(
+                                1,
+                                await self._phase2_cap(model, test["prompt"], response_text, nudge, num_predict, think_on),
+                            )
                             payload2 = {
                                 "model": model,
                                 "messages": [
                                     user_message,
                                     {"role": "assistant", "content": response_text},
-                                    {
-                                        "role": "user",
-                                        "content": "[System: You are halfway through your token budget. Please come up with an answer quickly.]",
-                                    },
+                                    {"role": "user", "content": nudge},
                                 ],
                                 "stream": True,
                                 "think": think_on,
                                 "options": {
-                                    "num_predict": num_predict,
+                                    "num_predict": phase2_cap,
                                     "temperature": _model_temperature(model),
                                     **_model_sampling_options(model),
                                 },
@@ -4287,6 +4329,7 @@ class LLMModelBenchmark:
                                     eval_count += data2["eval_count"]
                                     eval_ns += data2["eval_duration"]
                                     prompt_ns += data2["prompt_eval_duration"]
+                                    truncated = eval_count >= num_predict + phase2_cap
                             elapsed += time.time() - start_t2
                         except Exception as e2:
                             print(f"Phase 2 proxy query error: {e2}")
@@ -4302,6 +4345,7 @@ class LLMModelBenchmark:
                         "think": think_on,
                         "reasoning_budget": reasoning_budget,
                         "num_predict": num_predict,
+                        "truncated": truncated,
                         "tokens_generated": eval_count,
                         "eval_duration": eval_ns,
                         "prompt_eval_duration": prompt_ns,
@@ -4951,20 +4995,30 @@ class LLMModelBenchmark:
                             "error": "Empty generation (eval_count=0, no content returned)",
                         }
 
-                    # If we exhausted the token cap, inject nudge and request remaining tokens
+                    # If we exhausted the token cap, inject nudge and ask for an answer. A
+                    # thinking model gets a larger second cap, so the phase that exists to
+                    # produce an answer is not spent reasoning again.
+                    truncated = False
                     if eval_count >= num_predict:
+                        # Until the answer phase says otherwise this run was cut off.
+                        truncated = True
                         try:
-                            new_prompt = (
-                                f"{test['prompt']}\n{response_text}\n"
-                                f"[System: You are halfway through your token budget. Please come up with an answer quickly.]"
+                            nudge = (
+                                "[System: You are halfway through your token budget. "
+                                "Please come up with an answer quickly.]"
                             )
+                            phase2_cap = max(
+                                1,
+                                await self._phase2_cap(model, test["prompt"], response_text, nudge, num_predict, think_on),
+                            )
+                            new_prompt = f"{test['prompt']}\n{response_text}\n{nudge}"
                             payload2 = {
                                 "model": model,
                                 "prompt": new_prompt,
                                 "stream": True,
                                 "think": think_on,
                                 "options": {
-                                    "num_predict": num_predict,
+                                    "num_predict": phase2_cap,
                                     "temperature": _model_temperature(model),
                                     **_model_sampling_options(model),
                                 },
@@ -4984,6 +5038,7 @@ class LLMModelBenchmark:
                                     eval_count += data2["eval_count"]
                                     eval_ns += data2["eval_duration"]
                                     prompt_ns += data2["prompt_eval_duration"]
+                                    truncated = eval_count >= num_predict + phase2_cap
                             elapsed += time.time() - start_t2
                         except Exception as e2:
                             print(f"Phase 2 direct query error: {e2}")
@@ -4999,6 +5054,7 @@ class LLMModelBenchmark:
                         "think": think_on,
                         "reasoning_budget": reasoning_budget,
                         "num_predict": num_predict,
+                        "truncated": truncated,
                         "tokens_generated": eval_count,
                         "eval_duration": eval_ns,
                         "prompt_eval_duration": prompt_ns,
