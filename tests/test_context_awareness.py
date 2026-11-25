@@ -1,5 +1,6 @@
 """Tests for context-window awareness shared by all benchmark suites."""
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -145,6 +146,45 @@ async def test_resolve_context_window_warms_once_then_polls_until_loaded():
     assert ctx == 8192
     assert state["chats"] == 1  # exactly one warm-up despite three empty scans
     assert state["scans"] >= 4
+
+
+@pytest.mark.asyncio
+async def test_two_callers_share_one_warm_up():
+    """Three parts of a run resolving the same model must not each send a warm-up."""
+    state = {"scans": 0, "chats": 0}
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/admin/runtime":
+            state["scans"] += 1
+            if state["scans"] < 3:
+                return httpx.Response(200, json={"loaded_models": []})
+            return httpx.Response(200, json=RUNTIME_BODY)
+        if request.url.path == "/api/chat":
+            state["chats"] += 1
+            raw = json.dumps({"message": {"role": "assistant", "content": "OK"}, "done": True}).encode() + b"\n"
+            return httpx.Response(200, content=raw)
+        return httpx.Response(404)
+
+    def factory(*a, **k):
+        k.pop("timeout", None)
+        return real_client(transport=httpx.MockTransport(handler))
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ca, "POLL_INTERVAL_S", 0.01)
+    try:
+        with patch("context_awareness.httpx.AsyncClient", side_effect=factory):
+            shared = {}
+            answers = await asyncio.gather(
+                resolve_context_window("test-model", ["http://mock-shared"], shared, "unit/test"),
+                resolve_context_window("test-model", ["http://mock-shared"], shared, "unit/test"),
+                resolve_context_window("test-model", ["http://mock-shared"], shared, "unit/test"),
+            )
+    finally:
+        monkeypatch.undo()
+    assert answers == [8192, 8192, 8192]
+    assert state["chats"] == 1, f"{state['chats']} warm-ups for one model"
+    assert shared == {"test-model": 8192}
 
 
 def test_estimate_and_turn_budget():

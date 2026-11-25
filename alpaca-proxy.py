@@ -442,8 +442,10 @@ _CURRENT_REQUEST_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
 _CURRENT_REQUEST_IS_INFERENCE: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "_CURRENT_REQUEST_IS_INFERENCE", default=False
 )
-# Per-backend min-heap of [-priority, seq, cancelled_flag, is_prompt_keeper, asyncio.Event].
+# Per-backend min-heap of [-priority, seq, cancelled_flag, is_prompt_keeper, asyncio.Event, meta].
 # Negating priority matches SharedLLM's ZSET score (-priority * 1e9 + ts): higher priority first, FIFO ties.
+# ``meta`` is the one place the Request Monitor learns who is waiting and for how long; the heap
+# itself only orders them.
 _slot_waiters: dict[str, list[list[Any]]] = {}
 # Last known total llama-server slot count per backend_model (from /slots).
 _slot_capacity_cache: dict[str, int] = {}
@@ -577,9 +579,13 @@ async def _benchmark_gate() -> None:
         return
     if priority >= PRIORITY_HIGH:
         raise BenchmarkBusyError("voice")
-    await _wait_for_benchmark_end()
-    if _benchmark_exclusive_active():
-        raise BenchmarkBusyError("background")
+    ticket = _watch_queued_request(reason="benchmark")
+    try:
+        await _wait_for_benchmark_end()
+        if _benchmark_exclusive_active():
+            raise BenchmarkBusyError("background")
+    finally:
+        _unwatch_queued_request(ticket)
 
 
 class _InflightRequest:
@@ -824,9 +830,21 @@ def _notify_slot_waiters(backend_model: str | None = None) -> None:
             heap[0][4].set()
 
 
-def _enqueue_slot_waiter(backend_model: str, priority: int, is_prompt_keeper: bool = False) -> list[Any]:
+def _enqueue_slot_waiter(
+    backend_model: str,
+    priority: int,
+    is_prompt_keeper: bool = False,
+    meta: dict[str, Any] | None = None,
+) -> list[Any]:
     """Insert a waiter into the per-model priority-FIFO min-heap and wake the head if changed."""
-    entry: list[Any] = [-priority, next(_slot_waiter_seq), False, is_prompt_keeper, asyncio.Event()]
+    entry: list[Any] = [
+        -priority,
+        next(_slot_waiter_seq),
+        False,
+        is_prompt_keeper,
+        asyncio.Event(),
+        meta or {},
+    ]
     heap = _slot_waiters.setdefault(backend_model, [])
     prev_head = _prune_slot_waiters(backend_model)
     prev_head_entry = prev_head[0] if prev_head else None
@@ -842,6 +860,75 @@ def _is_head_waiter(backend_model: str, entry: list[Any]) -> bool:
     """Return True if ``entry`` is currently the highest-priority live waiter for ``backend_model``."""
     heap = _prune_slot_waiters(backend_model)
     return bool(heap and heap[0] is entry)
+
+
+# Queue visibility. A request can wait in two places: for a running benchmark to end (before it
+# has a model at all) or for a free slot on a model. Neither reached ``active_request_details``,
+# so the Request Monitor showed an idle proxy while a queue built up behind a benchmark. Both
+# kinds are recorded here with what is known at that moment.
+_queue_watch: dict[int, dict[str, Any]] = {}
+_queue_watch_lock = threading.Lock()
+_queue_watch_seq = itertools.count(1)
+
+
+def _watch_queued_request(*, reason: str, backend: str | None = None) -> int:
+    """Record a request that has started waiting, and return the ticket to clear it with."""
+    ticket = next(_queue_watch_seq)
+    with _queue_watch_lock:
+        _queue_watch[ticket] = {
+            "reason": reason,
+            "backend": backend,
+            "model": None,
+            "source": _CURRENT_REQUEST_SOURCE.get() or "unknown",
+            "priority": _CURRENT_REQUEST_PRIORITY.get(),
+            "queued_at": time.time(),
+        }
+    return ticket
+
+
+def _unwatch_queued_request(ticket: int) -> None:
+    with _queue_watch_lock:
+        _queue_watch.pop(ticket, None)
+
+
+def _queued_row(meta: dict[str, Any], now: float, position: int | None) -> dict[str, Any]:
+    queued_at = float(meta.get("queued_at") or now)
+    return {
+        "request_id": str(meta.get("request_id") or f"queued-{int(queued_at * 1000)}"),
+        "model": meta.get("model") or meta.get("backend") or "",
+        "backend_model": meta.get("backend") or "",
+        "request_source": meta.get("source") or "unknown",
+        "priority": priority_label(int(meta.get("priority") or PRIORITY_NORMAL)),
+        "reason": meta.get("reason") or "slot",
+        "position": position,
+        "queued_at": queued_at,
+        "waiting_s": round(max(0.0, now - queued_at), 1),
+    }
+
+
+def queued_request_details() -> list[dict[str, Any]]:
+    """Everything waiting right now, in the order it will be served.
+
+    A benchmark waiter comes first (it is ahead of the model queue), then each backend's heap in
+    its own order, numbered so a person can see they are second in line rather than merely queued.
+    Prompt-keeper warmups and cancelled waiters are left out: neither is work anyone is waiting on.
+    """
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    with _queue_watch_lock:
+        waiting = [dict(meta) for meta in _queue_watch.values()]
+    for meta in sorted(waiting, key=lambda item: item.get("queued_at") or 0.0):
+        rows.append(_queued_row(meta, now, None))
+    for backend, heap in list(_slot_waiters.items()):
+        position = 0
+        for entry in list(heap):
+            if len(entry) < 6 or entry[2] or entry[3]:
+                continue
+            position += 1
+            meta = dict(entry[5] or {})
+            meta.setdefault("backend", backend)
+            rows.append(_queued_row(meta, now, position))
+    return rows
 
 
 def _queued_blocking_swap(other_id: str, caller_priority: int) -> int:
@@ -6507,6 +6594,7 @@ async def admin_requests():
     return {
         "active_requests": active,
         "completed_requests": completed,
+        "queued_requests": queued_request_details(),
         "server_context": {"host_ips": host_lan_ips(), "external_ip": host_external_ip()},
     }
 
@@ -10323,7 +10411,16 @@ async def wait_for_slot(
     own_queued = 1 if queued_backend else 0
     last_reconcile = loop.time()
     drift_strikes = 0
-    entry = _enqueue_slot_waiter(current_backend, priority, is_prompt_keeper)
+    queue_meta = {
+        "request_id": request_id or "",
+        "source": request_source,
+        "model": model_name or backend_model,
+        "backend": current_backend,
+        "priority": priority,
+        "queued_at": time.time(),
+        "reason": "slot",
+    }
+    entry = _enqueue_slot_waiter(current_backend, priority, is_prompt_keeper, meta=queue_meta)
 
     async def _client_gone() -> bool:
         if is_disconnected is None:
@@ -10516,7 +10613,12 @@ async def wait_for_slot(
                         entry[2] = True
                         _notify_slot_waiters(current_backend)
                         current_backend = new_backend
-                        entry = _enqueue_slot_waiter(current_backend, priority, is_prompt_keeper)
+                        entry = _enqueue_slot_waiter(
+                            current_backend,
+                            priority,
+                            is_prompt_keeper,
+                            meta={**queue_meta, "backend": current_backend},
+                        )
                 except Exception as exc:
                     logger.error(f"Reload {attempt}/{reloads} of {model_name} failed: {exc}")
                     await asyncio.sleep(min(5.0 * attempt, 15.0))

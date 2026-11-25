@@ -3242,6 +3242,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let allRequestsMap = {};
     let lastActiveList = [];
     let lastCompletedList = [];
+    let lastQueuedList = [];
     let requestsServerContext = null;
 
     function startRequestsPolling() {
@@ -3307,9 +3308,13 @@ document.addEventListener('DOMContentLoaded', () => {
             
             lastActiveList = data.active_requests || [];
             lastCompletedList = data.completed_requests || [];
+            lastQueuedList = data.queued_requests || [];
             requestsServerContext = data.server_context || null;
             
             const newRequestsMap = {};
+            lastQueuedList.forEach(r => {
+                newRequestsMap[r.request_id] = r;
+            });
             lastActiveList.forEach(r => {
                 newRequestsMap[r.request_id] = r;
             });
@@ -3318,8 +3323,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             allRequestsMap = newRequestsMap;
 
-            renderRequestsLists(lastActiveList, lastCompletedList);
-            
+            renderRequestsLists(lastActiveList, lastCompletedList, lastQueuedList);
+
             if (selectedRequestId && allRequestsMap[selectedRequestId]) {
                 updateInspectorDetails(allRequestsMap[selectedRequestId]);
             }
@@ -3363,14 +3368,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function renderRequestsLists(activeList, completedList) {
+    function renderRequestsLists(activeList, completedList, queuedList = lastQueuedList) {
         const activeContainer = document.getElementById('active-requests-list');
         const completedContainer = document.getElementById('completed-requests-list');
+        const queuedContainer = document.getElementById('queued-requests-list');
         
         if (!activeContainer || !completedContainer) return;
 
         const query = (document.getElementById('requests-search-input')?.value || '').toLowerCase();
         
+        let filteredQueued = queuedList || [];
         let filteredActive = activeList;
         let filteredCompleted = completedList;
         
@@ -3380,8 +3387,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 (req.prompt || '').toLowerCase().includes(query) ||
                 (req.request_source || '').toLowerCase().includes(query) ||
                 (req.prompt_keeper && ('warmup prompt-keeper'.includes(query)));
+            filteredQueued = filteredQueued.filter(matchesRequestQuery);
             filteredActive = activeList.filter(matchesRequestQuery);
             filteredCompleted = completedList.filter(matchesRequestQuery);
+        }
+
+        // Render Queued Requests: the work waiting behind a busy model or a running
+        // benchmark. These are not active yet, so they carry a position or the reason
+        // they are held instead of a running clock.
+        const queuedCountEl = document.getElementById('queued-requests-count');
+        if (queuedCountEl) queuedCountEl.textContent = String(filteredQueued.length);
+        if (queuedContainer) {
+            if (filteredQueued.length === 0) {
+                queuedContainer.innerHTML = `<div style="color:var(--text-muted);font-size:0.75rem;padding:0.5rem;text-align:center;background:#0f172a;border-radius:6px;">Nothing waiting</div>`;
+            } else {
+                queuedContainer.innerHTML = '';
+                filteredQueued.forEach(req => {
+                    queuedContainer.appendChild(createRequestRow(req, false, true));
+                });
+            }
         }
 
         // Render Active Requests
@@ -3408,7 +3432,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function createRequestRow(req, isActive) {
+    function createRequestRow(req, isActive, isQueued = false) {
         const div = document.createElement('div');
         div.className = `request-item-row ${selectedRequestId === req.request_id ? 'active' : ''}`;
         div.style.cssText = `
@@ -3464,6 +3488,19 @@ document.addEventListener('DOMContentLoaded', () => {
         typeBadge.style.padding = '0.1rem 0.3rem';
         typeBadge.textContent = req.type || 'unknown';
 
+        // A queued request is waiting, not running: say which queue it is in and
+        // where it sits, so a benchmark hold reads differently from a busy slot.
+        if (isQueued) {
+            typeBadge.className = 'badge badge-secondary';
+            typeBadge.textContent = req.reason === 'benchmark'
+                ? 'WAITING ON BENCHMARK'
+                : `QUEUED ${req.position ? '#' + req.position : ''}`.trim();
+            typeBadge.title = req.reason === 'benchmark'
+                ? 'Held while a benchmark run owns the model'
+                : 'Waiting for a free slot on this model';
+            div.style.borderLeft = '3px solid var(--color-secondary, #f59e0b)';
+        }
+
         if (req.online) {
             typeBadge.textContent = `ONLINE · ${req.type || 'online'}`;
             typeBadge.style.background = 'rgba(139, 92, 246, 0.25)';
@@ -3499,7 +3536,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const timeSpan = document.createElement('span');
         timeSpan.style.cssText = 'font-size: 0.65rem; color: var(--text-muted);';
         
-        if (isActive) {
+        if (isQueued) {
+            timeSpan.textContent = `Waiting: ${Math.max(0, Math.round(req.waiting_s || 0))}s`;
+        } else if (isActive) {
             const elapsed = Math.round(Date.now() / 1000 - req.started_at);
             timeSpan.textContent = `Running: ${elapsed}s`;
         } else {
@@ -3538,7 +3577,9 @@ document.addEventListener('DOMContentLoaded', () => {
         originSpan.textContent = `Origin: ${originLabel}`;
         
         const metricsSpan = document.createElement('span');
-        if (req.tps) {
+        if (isQueued) {
+            metricsSpan.textContent = req.priority ? `Priority: ${req.priority}` : '';
+        } else if (req.tps) {
             metricsSpan.textContent = `${req.tps} tps | ${req.ttft_seconds || 0}s ttft`;
         } else {
             metricsSpan.textContent = '';
@@ -3838,14 +3879,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!ev.target || ev.target.id !== 'requests-timezone-select') return;
             const sel = document.getElementById('requests-timezone-select');
             localStorage.setItem('alpaca_requests_timezone', sel ? sel.value : 'local');
-            renderRequestsLists(lastActiveList, lastCompletedList);
+            renderRequestsLists(lastActiveList, lastCompletedList, lastQueuedList);
             if (selectedRequestId && allRequestsMap[selectedRequestId]) {
                 updateInspectorDetails(allRequestsMap[selectedRequestId]);
             }
         });
 
         document.getElementById('requests-search-input')?.addEventListener('input', () => {
-            renderRequestsLists(lastActiveList, lastCompletedList);
+            renderRequestsLists(lastActiveList, lastCompletedList, lastQueuedList);
         });
 
         document.getElementById('btn-clear-requests')?.addEventListener('click', async () => {

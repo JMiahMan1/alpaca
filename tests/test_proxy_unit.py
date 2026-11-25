@@ -4952,3 +4952,94 @@ async def test_a_background_request_still_defers_to_the_other_models_work(monkey
     assert await REAL_WAIT_FOR_SLOT("kat--latest", timeout=5.0, model_name="kat:latest",
                                     priority=alpaca_proxy.PRIORITY_LOW) is True
     assert pauses["n"] >= 4  # waited for the equal-priority work, as before
+
+
+# ---------------------------------------------------------------------------
+# Request Monitor: work that is waiting, not yet running
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _empty_queue():
+    """Start and finish with an empty slot queue and no watched waiters."""
+    saved_waiters = dict(alpaca_proxy._slot_waiters)
+    alpaca_proxy._slot_waiters.clear()
+    try:
+        with alpaca_proxy._queue_watch_lock:
+            alpaca_proxy._queue_watch.clear()
+        yield
+    finally:
+        alpaca_proxy._slot_waiters.clear()
+        alpaca_proxy._slot_waiters.update(saved_waiters)
+        with alpaca_proxy._queue_watch_lock:
+            alpaca_proxy._queue_watch.clear()
+
+
+def _queue_meta(request_id: str, backend: str, priority: int) -> dict:
+    return {
+        "request_id": request_id,
+        "source": "voice/assistant",
+        "model": "kat:latest",
+        "backend": backend,
+        "priority": priority,
+        "queued_at": time.time(),
+        "reason": "slot",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_request_held_by_a_benchmark_is_listed_and_then_gone(_benchmark_context, _empty_queue, monkeypatch):
+    """Background work waiting on a benchmark shows as WAITING ON BENCHMARK with no position."""
+    monkeypatch.setattr(alpaca_proxy, "PROXY_BENCHMARK_POLL_S", 0.01)
+    monkeypatch.setattr(alpaca_proxy, "PROXY_BENCHMARK_BUSY_WAIT_S", 30.0)
+    alpaca_proxy._CURRENT_REQUEST_SOURCE.set("shared-llm/raven")
+    alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_NORMAL)
+    alpaca_proxy.set_benchmark_state(True, model="inkling")
+
+    gate = asyncio.create_task(alpaca_proxy._benchmark_gate())
+    try:
+        await asyncio.sleep(0.05)
+        rows = alpaca_proxy.queued_request_details()
+        assert len(rows) == 1
+        assert rows[0]["reason"] == "benchmark"
+        assert rows[0]["position"] is None
+        assert rows[0]["request_source"] == "shared-llm/raven"
+        assert rows[0]["waiting_s"] >= 0
+    finally:
+        alpaca_proxy.set_benchmark_state(False)
+    await asyncio.wait_for(gate, 2.0)
+    assert alpaca_proxy.queued_request_details() == []
+
+
+def test_slot_waiters_are_listed_in_the_order_they_will_be_served(_empty_queue):
+    """The monitor sees the queue as the heap will serve it, with positions and wait times."""
+    alpaca_proxy._enqueue_slot_waiter(
+        "kat--latest", alpaca_proxy.PRIORITY_LOW, meta=_queue_meta("req-low", "kat--latest", alpaca_proxy.PRIORITY_LOW)
+    )
+    alpaca_proxy._enqueue_slot_waiter(
+        "kat--latest",
+        alpaca_proxy.PRIORITY_HIGH,
+        meta=_queue_meta("req-high", "kat--latest", alpaca_proxy.PRIORITY_HIGH),
+    )
+
+    rows = alpaca_proxy.queued_request_details()
+    assert [row["request_id"] for row in rows] == ["req-high", "req-low"]
+    assert [row["position"] for row in rows] == [1, 2]
+    assert all(row["reason"] == "slot" and row["waiting_s"] >= 0 for row in rows)
+    assert rows[0]["priority"] == "HIGH"
+
+
+def test_cancelled_and_prompt_keeper_waiters_are_not_listed(_empty_queue):
+    """Only work someone is waiting on is shown: not cancelled entries, not keeper warmups."""
+    cancelled = alpaca_proxy._enqueue_slot_waiter(
+        "kat--latest", alpaca_proxy.PRIORITY_NORMAL, meta=_queue_meta("req-gone", "kat--latest", alpaca_proxy.PRIORITY_NORMAL)
+    )
+    cancelled[2] = True
+    alpaca_proxy._enqueue_slot_waiter(
+        "kat--latest",
+        alpaca_proxy.PRIORITY_KEEPER,
+        is_prompt_keeper=True,
+        meta=_queue_meta("req-keeper", "kat--latest", alpaca_proxy.PRIORITY_KEEPER),
+    )
+
+    assert alpaca_proxy.queued_request_details() == []

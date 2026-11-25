@@ -35,6 +35,9 @@ _CTX_TIMEOUT = 10.0
 RESOLVE_TIMEOUT_S = float(os.getenv("CONTEXT_RESOLVE_TIMEOUT_S", "") or 300)
 POLL_INTERVAL_S = 2.0
 
+# One resolution per (proxy, model) is in flight at a time; concurrent callers await it.
+_inflight_ctx: dict[tuple[tuple[str, ...], str], asyncio.Task[int]] = {}
+
 
 def _proxy_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
     headers = dict(extra or {})
@@ -124,6 +127,38 @@ async def resolve_context_window(
 ) -> int:
     """Resolve the live context window for `model` from the proxy runtime.
 
+    Concurrent callers for the same model share one resolution. Each call would
+    otherwise send its own warm-up - the cache is only written once the model is
+    loaded, so three callers that start together all see it empty - which loads
+    nothing extra but puts two or three identical "Reply with the single word
+    OK." requests in the Request Monitor and races the model load.
+    """
+    if cache is not None and model in cache:
+        return cache[model]
+
+    key = (tuple(proxy_urls), model)
+    task = _inflight_ctx.get(key)
+    if task is None or task.done():
+        task = asyncio.create_task(_resolve_context_window_once(model, proxy_urls, source_tag))
+        _inflight_ctx[key] = task
+        task.add_done_callback(lambda done, k=key: _forget_inflight_ctx(k, done))
+    ctx = await asyncio.shield(task)
+    if cache is not None:
+        cache[model] = ctx
+    return ctx
+
+
+def _forget_inflight_ctx(key: tuple[tuple[str, ...], str], task: asyncio.Task[int]) -> None:
+    """Drop a finished resolution, and mark its exception read so it is not reported unretrieved."""
+    if _inflight_ctx.get(key) is task:
+        _inflight_ctx.pop(key, None)
+    if not task.cancelled():
+        task.exception()
+
+
+async def _resolve_context_window_once(model: str, proxy_urls: list[str], source_tag: str) -> int:
+    """One resolution: scan the runtime, warm the model once if it is not loaded, then poll.
+
     The proxy exposes each loaded model's launch flags under /admin/runtime
     (`loaded_models[].running_settings["ctx-size"]`). If the model is not
     currently loaded (keep-alive expired or fresh boot), a warm-up request is
@@ -132,9 +167,6 @@ async def resolve_context_window(
     seconds to minutes). Failure raises RuntimeError loudly - budgets computed
     from a guessed window would reintroduce silent truncation.
     """
-    if cache is not None and model in cache:
-        return cache[model]
-
     candidates = (model, f"{model}--latest")
     deadline = time.monotonic() + RESOLVE_TIMEOUT_S
     warmed = False
@@ -160,8 +192,6 @@ async def resolve_context_window(
             f"valid ctx-size was reachable on {proxy_urls} within {RESOLVE_TIMEOUT_S:.0f}s of "
             "warm-up polling. Verify the alpaca-proxy is running and can load this model."
         )
-    if cache is not None:
-        cache[model] = ctx
     return ctx
 
 

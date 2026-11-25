@@ -6529,6 +6529,10 @@ def get_active_requests():
                 online = get_online_requests()
                 data.setdefault("active_requests", []).extend(online.get("active_requests", []))
                 data.setdefault("completed_requests", []).extend(online.get("completed_requests", []))
+                # The proxy also reports work still waiting for a slot or held by a
+                # benchmark; those never reach active_requests, so the monitor would
+                # otherwise show nothing while a queue is backed up.
+                data.setdefault("queued_requests", [])
                 # Merge proxy + online entries into a single time-ordered list so the
                 # dashboard's newest-first render does not put stale entries on top
                 # (online entries are appended after the proxy's, not interleaved).
