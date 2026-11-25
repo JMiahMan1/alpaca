@@ -141,7 +141,11 @@ async def resolve_context_window(
     if task is None or task.done():
         task = asyncio.create_task(_resolve_context_window_once(model, proxy_urls, source_tag))
         _inflight_ctx[key] = task
-        task.add_done_callback(lambda done, k=key: _forget_inflight_ctx(k, done))
+
+        def _forget(done: asyncio.Task[int]) -> None:
+            _forget_inflight_ctx(key, done)
+
+        task.add_done_callback(_forget)
     ctx = await asyncio.shield(task)
     if cache is not None:
         cache[model] = ctx
