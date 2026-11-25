@@ -136,6 +136,12 @@ their images and need `sudo docker compose up -d --build <service>` (`audio_loop
   from its in-memory copy, so the two erase each other's sections. During a scan use
   `alpaca-puller.py pull <hf ref> --name <n> --download-only` (blob + manifest only), then register
   with `sudo docker compose run --rm alpaca-indexer` once the scan is done.
+- **A GGUF made on this machine** (for example a mix of two quantizations built with
+  `scripts/gguf_mix.py`) is imported with `alpaca-puller.py import <path> --name <n>`, run inside the
+  container like any pull: it is hashed and MOVED into the blob store (write it under `/models/partials`
+  so the move costs no space), then gets the same manifest, router link, models.ini section and profile
+  as a pull. `gguf_mix.py` copies tensors byte for byte (no requantizing): every tensor from the base
+  unless its name matches a regex, then from that source.
 - **Delete models through the API, never by hand:** dashboard `POST /api/models/delete` → proxy
   `/admin/models/delete` (unloads it, removes the manifest, keeps blobs another manifest shares, drops
   its router link, profiles and models.ini section, reloads the router). If it cannot do the job, fix

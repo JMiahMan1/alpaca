@@ -471,3 +471,37 @@ def test_update_models_ini_never_writes_thinking_from_profile_json(monkeypatch, 
     assert cp["lfm2.5--q4"]["ctx-size"] == "65536"
     assert "thinking" not in cp["lfm2.5--q4"]
     assert "extra_args" not in cp["lfm2.5--q4"]
+
+
+def test_import_local_gguf_moves_the_file_into_the_store_and_writes_a_manifest(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = pathlib.Path(tmpdir)
+        monkeypatch.setattr(alpaca_puller, "MODELS_DIR", str(base))
+        monkeypatch.setattr(alpaca_puller, "ROUTER_MODELS_DIR", str(base / ".alpaca-router"))
+        registered = []
+        monkeypatch.setattr(alpaca_puller, "update_models_ini", lambda *a, **k: registered.append("ini"))
+        monkeypatch.setattr(alpaca_puller, "create_model_profile", lambda *a, **k: registered.append("profile"))
+        src = base / "partials" / "mix.gguf"
+        src.parent.mkdir(parents=True)
+        src.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 56)
+
+        assert alpaca_puller.import_local_gguf(str(src), "example-mix:latest") == 0
+
+        assert not src.exists()  # moved, not copied
+        manifest = json.loads(alpaca_puller.manifest_path_for_local_name("example-mix:latest").read_text())
+        model_layer = manifest["layers"][0]
+        assert model_layer["mediaType"] == "application/vnd.ollama.image.model"
+        blob = base / "blobs" / model_layer["digest"].replace(":", "-")
+        assert blob.read_bytes()[:4] == b"GGUF"
+        assert registered == ["ini", "profile"]
+
+
+def test_import_local_gguf_refuses_a_file_that_is_not_gguf(monkeypatch):
+    import pytest
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bad = pathlib.Path(tmpdir) / "x.gguf"
+        bad.write_bytes(b"nope")
+        with pytest.raises(RuntimeError, match="GGUF magic"):
+            alpaca_puller.import_local_gguf(str(bad), "x:latest")
+        assert bad.exists()

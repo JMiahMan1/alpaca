@@ -1182,6 +1182,56 @@ def download_to_partial_file(client, url, headers, label, partial_path):
     return partial_path
 
 
+def _manifest_and_register(local_name, manifest_path, digest, blob_path, config, register, repo, filename):
+    """Write the Ollama manifest for a GGUF blob already in the store, then (unless ``register`` is
+    false) the router link, the models.ini section and the profile. Shared by every GGUF import."""
+    config_digest, config_size = write_json_blob(config)
+    blob_size = blob_path.stat().st_size
+    template_digest, template_size = write_text_blob("{{ .Prompt }}")
+    params_digest, params_size = write_text_blob("{}")
+    manifest = {
+        "schemaVersion": 2,
+        "mediaType": MANIFEST_MEDIA_TYPE,
+        "config": {
+            "mediaType": CONFIG_MEDIA_TYPE,
+            "digest": config_digest,
+            "size": config_size,
+        },
+        "layers": [
+            {
+                "mediaType": MODEL_LAYER_MEDIA_TYPE,
+                "digest": digest,
+                "size": blob_size,
+            },
+            {
+                "mediaType": "application/vnd.ollama.image.template",
+                "digest": template_digest,
+                "size": template_size,
+            },
+            {
+                "mediaType": "application/vnd.ollama.image.params",
+                "digest": params_digest,
+                "size": params_size,
+            },
+        ],
+    }
+    write_manifest_atomic(manifest_path, manifest)
+    if not register:
+        # Blob + manifest only. The router link, models.ini section and
+        # profile come from a later reindex - inside the container, whose
+        # paths the links are relative to - so a running settings scan
+        # (which owns models.ini) is never raced.
+        print(f"\nDownloaded {normalize_model_name(local_name)} (not registered; run a reindex to register it)")
+        return 0
+    router_path = ensure_router_symlink(local_name, manifest)
+    update_models_ini()
+    create_model_profile(router_path, manifest=manifest, repo=repo, filename=filename)
+    print(f"Registered router model: {router_path.name}")
+    print(f"\nSuccessfully imported {normalize_model_name(local_name)}")
+    return 0
+
+
+
 def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resume=False, register=True):
     if insecure:
         raise RuntimeError("--insecure is only supported for Ollama registry pulls.")
@@ -1252,50 +1302,7 @@ def import_huggingface_gguf(model_name, local_name=None, insecure=False, no_resu
             "general.source_repo": repo,
             "general.source_file": filename,
         }
-        config_digest, config_size = write_json_blob(config)
-        blob_size = blob_path.stat().st_size
-        template_digest, template_size = write_text_blob("{{ .Prompt }}")
-        params_digest, params_size = write_text_blob("{}")
-        manifest = {
-            "schemaVersion": 2,
-            "mediaType": MANIFEST_MEDIA_TYPE,
-            "config": {
-                "mediaType": CONFIG_MEDIA_TYPE,
-                "digest": config_digest,
-                "size": config_size,
-            },
-            "layers": [
-                {
-                    "mediaType": MODEL_LAYER_MEDIA_TYPE,
-                    "digest": digest,
-                    "size": blob_size,
-                },
-                {
-                    "mediaType": "application/vnd.ollama.image.template",
-                    "digest": template_digest,
-                    "size": template_size,
-                },
-                {
-                    "mediaType": "application/vnd.ollama.image.params",
-                    "digest": params_digest,
-                    "size": params_size,
-                },
-            ],
-        }
-        write_manifest_atomic(manifest_path, manifest)
-        if not register:
-            # Blob + manifest only. The router link, models.ini section and
-            # profile come from a later reindex - inside the container, whose
-            # paths the links are relative to - so a running settings scan
-            # (which owns models.ini) is never raced.
-            print(f"\nDownloaded {normalize_model_name(local_name)} (not registered; run a reindex to register it)")
-            return 0
-        router_path = ensure_router_symlink(local_name, manifest)
-        update_models_ini()
-        create_model_profile(router_path, manifest=manifest, repo=repo, filename=filename)
-        print(f"Registered router model: {router_path.name}")
-        print(f"\nSuccessfully imported {normalize_model_name(local_name)}")
-        return 0
+        return _manifest_and_register(local_name, manifest_path, digest, blob_path, config, register, repo, filename)
     finally:
         client.close()
 
@@ -1494,6 +1501,46 @@ def pull_companion(model_name, no_resume=False, local_name=None):
         client.close()
 
 
+def import_local_gguf(path, local_name, register=True, keep_source=False):
+    """Import a GGUF file that is already on this machine into the store under ``local_name``.
+
+    The file is hashed and moved into the blob store (``keep_source`` copies it instead), so it
+    must be on the same filesystem as the models directory for a move to cost no extra space.
+    The manifest, router link, models.ini section and profile are written exactly as a pull's.
+    """
+    src = Path(path)
+    if not src.is_file() or src.suffix != ".gguf":
+        raise RuntimeError(f"{src} is not a .gguf file")
+    with open(src, "rb") as f:
+        if f.read(4) != b"GGUF":
+            raise RuntimeError(f"{src} does not start with the GGUF magic")
+    manifest_path = manifest_path_for_local_name(local_name)
+    print(f"Importing local GGUF: {src}")
+    print(f"Local Ollama model name: {normalize_model_name(local_name)}")
+    digest = hash_file(src)
+    blob_path = blob_path_for_digest(digest)
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    if blob_path.exists():
+        if blob_path.stat().st_size != src.stat().st_size:
+            raise RuntimeError(f"Blob digest collision with mismatched size at {blob_path}.")
+        if not keep_source:
+            src.unlink()
+    elif keep_source:
+        import shutil
+
+        shutil.copy2(src, blob_path)
+    else:
+        os.replace(src, blob_path)
+    config = {
+        "model_format": "gguf",
+        "model_family": "gguf",
+        "families": ["gguf"],
+        "general.source": "local",
+        "general.source_file": src.name,
+    }
+    return _manifest_and_register(local_name, manifest_path, digest, blob_path, config, register, "local", src.name)
+
+
 def pull_model(
     model_name, source="auto", local_name=None, insecure=False, no_resume=False, companion=False, register=True
 ):
@@ -1690,6 +1737,12 @@ def build_parser():
         help="Also delete the model's saved benchmark result files (general and SharedLLM per-model files).",
     )
 
+    import_parser = subparsers.add_parser("import", help="Import a GGUF file already on this machine.")
+    import_parser.add_argument("path", help="Path to the .gguf file (same filesystem as the models directory).")
+    import_parser.add_argument("--name", required=True, help="Local model name, for example inkling-2-mini:mix.")
+    import_parser.add_argument("--keep-source", action="store_true", help="Copy instead of moving the file.")
+    import_parser.add_argument("--download-only", action="store_true",
+                               help="Store blob + manifest only; register later with a reindex.")
     subparsers.add_parser(
         "reindex",
         help="Create or refresh llama-server router symlinks for all complete local models.",
@@ -1709,6 +1762,8 @@ def main(argv=None):
             companion=args.companion,
             register=not args.download_only,
         )
+    if args.command == "import":
+        return import_local_gguf(args.path, args.name, register=not args.download_only, keep_source=args.keep_source)
     if args.command == "reindex":
         return reindex_models()
     if args.command == "remove":
