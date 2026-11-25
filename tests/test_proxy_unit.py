@@ -4599,6 +4599,175 @@ async def test_preemption_releases_lease_once_no_drift(monkeypatch):
         _restore_tracking_state(saved)
 
 
+# ---------------------------------------------------------------------------
+# Benchmark-exclusive mode: the benchmark owns the card while it runs
+# ---------------------------------------------------------------------------
+
+
+def _reset_benchmark_state():
+    alpaca_proxy.set_benchmark_state(False)
+
+
+@pytest.fixture
+def _benchmark_context():
+    """Set the request contextvars and always clear benchmark state afterwards."""
+    source_token = alpaca_proxy._CURRENT_REQUEST_SOURCE.set("")
+    priority_token = alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_NORMAL)
+    _reset_benchmark_state()
+    try:
+        yield
+    finally:
+        alpaca_proxy._CURRENT_REQUEST_SOURCE.reset(source_token)
+        alpaca_proxy._CURRENT_REQUEST_PRIORITY.reset(priority_token)
+        _reset_benchmark_state()
+
+
+@pytest.mark.asyncio
+async def test_benchmark_gate_benchmark_source_passes(_benchmark_context):
+    """A benchmark-source request is never gated by its own run."""
+    alpaca_proxy._CURRENT_REQUEST_SOURCE.set("shared-llm/benchmark")
+    alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_HIGH)
+    alpaca_proxy.set_benchmark_state(True, model="inkling", run_id="r1")
+    await alpaca_proxy._benchmark_gate()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_benchmark_gate_voice_gets_busy(_benchmark_context):
+    """A HIGH voice request during a benchmark is told the brain is busy."""
+    alpaca_proxy._CURRENT_REQUEST_SOURCE.set("voice/assistant")
+    alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_HIGH)
+    alpaca_proxy.set_benchmark_state(True, model="inkling")
+    with pytest.raises(alpaca_proxy.BenchmarkBusyError) as err:
+        await alpaca_proxy._benchmark_gate()
+    assert err.value.reason == "voice"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_gate_critical_passes(_benchmark_context):
+    """Emergency CRITICAL traffic bypasses the benchmark gate."""
+    alpaca_proxy._CURRENT_REQUEST_SOURCE.set("emergency")
+    alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_CRITICAL)
+    alpaca_proxy.set_benchmark_state(True, model="inkling")
+    await alpaca_proxy._benchmark_gate()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_benchmark_gate_keeper_passes(_benchmark_context):
+    """Prompt-keeper warmups yield to everything and must never wait on a benchmark."""
+    alpaca_proxy._CURRENT_REQUEST_SOURCE.set("voice/assistant")
+    alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_KEEPER)
+    alpaca_proxy.set_benchmark_state(True, model="inkling")
+    await alpaca_proxy._benchmark_gate()  # must not raise or block
+
+
+@pytest.mark.asyncio
+async def test_benchmark_gate_background_waits_until_finish(_benchmark_context, monkeypatch):
+    """A background request waits for the benchmark to end, then proceeds."""
+    monkeypatch.setattr(alpaca_proxy, "PROXY_BENCHMARK_BUSY_WAIT_S", 5)
+    monkeypatch.setattr(alpaca_proxy, "PROXY_BENCHMARK_POLL_S", 0.02)
+    alpaca_proxy._CURRENT_REQUEST_SOURCE.set("shared-llm/raven")
+    alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_NORMAL)
+    alpaca_proxy.set_benchmark_state(True, model="inkling")
+    asyncio.get_event_loop().call_later(0.05, lambda: alpaca_proxy.set_benchmark_state(False))
+    await alpaca_proxy._benchmark_gate()  # waits, then returns once inactive
+
+
+@pytest.mark.asyncio
+async def test_benchmark_gate_background_times_out(_benchmark_context, monkeypatch):
+    """A background request that outlasts the wait is rejected as busy."""
+    monkeypatch.setattr(alpaca_proxy, "PROXY_BENCHMARK_BUSY_WAIT_S", 0.05)
+    monkeypatch.setattr(alpaca_proxy, "PROXY_BENCHMARK_POLL_S", 0.02)
+    alpaca_proxy._CURRENT_REQUEST_SOURCE.set("shared-llm/raven")
+    alpaca_proxy._CURRENT_REQUEST_PRIORITY.set(alpaca_proxy.PRIORITY_NORMAL)
+    alpaca_proxy.set_benchmark_state(True, model="inkling")
+    with pytest.raises(alpaca_proxy.BenchmarkBusyError) as err:
+        await alpaca_proxy._benchmark_gate()
+    assert err.value.reason == "background"
+
+
+@pytest.mark.asyncio
+async def test_preempt_never_aborts_benchmark_request(_benchmark_context, monkeypatch):
+    """Voice HIGH traffic must not abort a benchmark request mid-generation."""
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", True)
+    _clear_preempt_state()
+    try:
+        backend = "model-a"
+        bench = alpaca_proxy.register_inflight_request(
+            backend, "req-bench", alpaca_proxy.PRIORITY_LOW, "shared-llm/benchmark", endpoint_format="openai"
+        )
+        alpaca_proxy.set_benchmark_state(True, model="inkling")
+        aborted = alpaca_proxy.preempt_low_requests(
+            backend,
+            for_request_id="req-high",
+            for_source="voice/assistant",
+            for_priority=alpaca_proxy.PRIORITY_HIGH,
+        )
+        assert aborted == 0
+        assert bench.abort_event.is_set() is False
+    finally:
+        _clear_preempt_state()
+
+
+@pytest.mark.asyncio
+async def test_preempt_aborts_low_when_no_benchmark_active(_benchmark_context, monkeypatch):
+    """Control: without benchmark mode, LOW benchmark traffic is preemptable as usual."""
+    monkeypatch.setattr(alpaca_proxy, "PROXY_PREEMPT_LOW_FOR_HIGH", True)
+    _clear_preempt_state()
+    try:
+        backend = "model-a"
+        low = alpaca_proxy.register_inflight_request(
+            backend, "req-bench", alpaca_proxy.PRIORITY_LOW, "shared-llm/benchmark", endpoint_format="openai"
+        )
+        aborted = alpaca_proxy.preempt_low_requests(
+            backend,
+            for_request_id="req-high",
+            for_source="voice/assistant",
+            for_priority=alpaca_proxy.PRIORITY_HIGH,
+        )
+        assert aborted == 1
+        assert low.abort_event.is_set()
+    finally:
+        _clear_preempt_state()
+
+
+@pytest.mark.asyncio
+async def test_admin_benchmark_active_toggle(_benchmark_context):
+    """POST/GET /admin/benchmark/active flip the exclusive flag."""
+    req = make_request(
+        "/admin/benchmark/active",
+        payload={"active": True, "model": "inkling", "run_id": "run-1", "eta_s": 300},
+    )
+    started = await alpaca_proxy.admin_set_benchmark_active(req)
+    assert started["benchmark"]["active"] is True
+    assert started["benchmark"]["model"] == "inkling"
+    assert started["benchmark"]["run_id"] == "run-1"
+    assert started["benchmark"]["eta_s"] == 300
+
+    current = await alpaca_proxy.admin_get_benchmark_active()
+    assert current["benchmark"]["active"] is True
+
+    stop_req = make_request("/admin/benchmark/active", payload={"active": False})
+    stopped = await alpaca_proxy.admin_set_benchmark_active(stop_req)
+    assert stopped["benchmark"]["active"] is False
+    assert stopped["benchmark"]["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_benchmark_state_goes_stale(monkeypatch):
+    """A benchmark that stopped reporting is treated as ended so nothing stays stuck busy."""
+    _reset_benchmark_state()
+    try:
+        monkeypatch.setattr(alpaca_proxy, "PROXY_BENCHMARK_STALE_S", 0)
+        alpaca_proxy.set_benchmark_state(True, model="inkling")
+        with alpaca_proxy._benchmark_state_lock:
+            alpaca_proxy._benchmark_state["last_activity"] = time.time() - 10
+        state = alpaca_proxy.get_benchmark_state()
+        assert state["active"] is False
+        assert state["stale"] is True
+    finally:
+        _reset_benchmark_state()
+
+
 @pytest.mark.asyncio
 async def test_admin_context_unloaded_makes_no_props_call(monkeypatch):
     """GET /admin/context for an unloaded model must not call /props and returns loaded=false."""
