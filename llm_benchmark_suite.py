@@ -146,7 +146,13 @@ def _model_profile_raw(model: str) -> dict:
 
 
 def _model_profile_get(model: str, key: str) -> str | None:
+    """A profile value as text. ``.profile.json`` overlays may hold JSON booleans and numbers
+    (``"thinking": true``); dropping them silently ran Inkling 2 Mini with thinking off."""
     value = _model_profile_raw(model).get(key)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
     return value.strip() if isinstance(value, str) and value else None
 
 
