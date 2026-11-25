@@ -3577,8 +3577,9 @@ def _drop_unconfigured_online_models(prefixes):
     """Forget the selected models of providers whose credentials just went away.
 
     The model grid and the benchmark pickers read this list, so a model left in it
-    after its key was cleared is offered with nothing behind it. Results already
-    collected are kept: they live in the benchmark files, not here.
+    after its key was cleared is offered with nothing behind it. Its saved results go
+    too: a provider with no credentials cannot run the model again, and a row that
+    cannot be run is only a way to pick something that will fail.
     """
     if not prefixes:
         return []
@@ -3590,6 +3591,8 @@ def _drop_unconfigured_online_models(prefixes):
         if dropped:
             kept = [m for m in models if str(m.get("id", "")).split(":", 1)[0] not in prefixes]
             online_model_provider.save_selected_models(kept)
+            for model_id in dropped:
+                _purge_model_benchmarks(model_id)
         return dropped
     except Exception as e:
         print(f"[online] could not drop models of a removed provider: {e}")

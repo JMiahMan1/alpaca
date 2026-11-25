@@ -9651,16 +9651,14 @@ document.addEventListener('DOMContentLoaded', () => {
             showToast("Please select an online model to remove.", 'error');
             return;
         }
-        // Two questions cover all three combos: model only, benchmarks only, or both.
-        let removeBenchmarks = false;
-        if (hasBenchmarks) {
-            removeBenchmarks = confirm(`Delete saved benchmark results for "${displayName}"?\n\nOK = delete its benchmark history\nCancel = keep its benchmark history`);
-        }
-        const removeModelEntry = confirm(`Remove online model "${displayName}" from your benchmark selection?\n\nOnline models live with their provider - this only drops the entry from your selection list.\n\nOK = remove from selection\nCancel = keep in selection`);
-        if (!removeBenchmarks && !removeModelEntry) {
-            showToast("Nothing to remove - model and benchmarks kept.", 'info');
+        // One question, both jobs. Deleting only half of it is what left a dead model in
+        // the list: the selection entry went but the results stayed, so it came back as a
+        // "previously benchmarked" row, or the results stayed and nothing could run them.
+        if (!confirm(`Delete online model "${displayName}" and its benchmark results?\n\nThe model leaves your selection and its saved benchmark history is deleted. This cannot be undone.`)) {
             return;
         }
+        const removeModelEntry = true;
+        const removeBenchmarks = true;
 
         try {
             const res = await fetch('/api/online/models/remove', {
@@ -9672,13 +9670,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (res.ok && data.success) {
                 const parts = [];
-                if (removeModelEntry) parts.push(data.model_removed ? 'removed from selection' : 'was not in selection');
-                if (removeBenchmarks) parts.push('benchmark history deleted');
+                parts.push(data.model_removed ? 'removed from selection' : 'was not in selection');
+                parts.push('benchmark history deleted');
                 logToTerminal(`Online model "${displayName}": ${parts.join(' + ')}.`, 'success');
                 showToast(`"${displayName}": ${parts.join(' + ')}.`, 'success');
 
                 await loadModels();
-                if (removeBenchmarks && typeof loadHistory === 'function') {
+                if (typeof loadHistory === 'function') {
                     await loadHistory();
                 }
                 if (typeof loadRoutingMatrix === 'function') {

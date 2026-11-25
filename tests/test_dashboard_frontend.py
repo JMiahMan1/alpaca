@@ -50,6 +50,10 @@ SLICE_LEADERBOARD = _slice("    function modelColor(idx, alpha) {", "    functio
 SLICE_ARTIFACT_NAME = _slice("    function sanitizeArtifactName(name) {", "    async function saveArtifact(model, testId, content, type) {")
 SLICE_EXTRACT_CODE = _slice("    function extractCodeFromResponse(response) {", "    function sanitizeArtifactName(name) {")
 SLICE_FILTERED = _slice("    function getFilteredResults(results, type) {", "    function setFilterGroupState(type, group, state) {")
+SLICE_REMOVE_ONLINE = _slice(
+    "    async function removeOnlineModel(modelId, displayName, hasBenchmarks) {",
+    "    // TELEMETRY AND AUTO-TUNING INTEGRATION",
+)
 
 
 def run_js(code: str) -> str:
@@ -2549,3 +2553,40 @@ def test_a_reference_uploaded_before_the_capabilities_arrive_is_not_silently_dro
     assert "limit == null ? files" in src, (
         "the reference cap must distinguish 'not known yet' from a real limit of 0"
     )
+
+
+def test_removing_an_online_model_deletes_the_model_and_its_results():
+    """One question, and the model and its benchmark history both go."""
+    out = run_js(
+        SLICE_REMOVE_ONLINE
+        + """
+const asked = [];
+globalThis.confirm = (text) => { asked.push(text); return true; };
+const posts = [];
+globalThis.fetch = async (url, opts) => {
+    posts.push({ url, body: JSON.parse(opts.body) });
+    return { ok: true, json: async () => ({ success: true, model_removed: true,
+                                   benchmark_results_removed: { removed: true } }) };
+};
+globalThis.showToast = () => {};
+globalThis.logToTerminal = () => {};
+let reloaded = 0;
+globalThis.loadModels = async () => { reloaded += 1; };
+globalThis.loadHistory = async () => { reloaded += 1; };
+globalThis.loadRoutingMatrix = () => { reloaded += 1; };
+
+(async () => {
+    await removeOnlineModel('openrouter:deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', true);
+    assert.equal(asked.length, 1, 'one question, not two');
+    assert.match(asked[0], /benchmark results/);
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].url, '/api/online/models/remove');
+    assert.equal(posts[0].body.model, 'openrouter:deepseek/deepseek-v4.1-flash');
+    assert.equal(posts[0].body.remove_model, true);
+    assert.equal(posts[0].body.remove_benchmarks, true);
+    assert.ok(reloaded >= 2, 'the grid and the history are reloaded');
+    process.stdout.write('REMOVED_OK');
+})();
+"""
+    )
+    assert "REMOVED_OK" in out

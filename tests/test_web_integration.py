@@ -1420,6 +1420,7 @@ def test_clearing_a_provider_key_drops_its_models(client):
         {"id": "groq:llama-3.3-70b", "name": "llama-3.3-70b"},
     ]
     saved = {}
+    purged = []
 
     with (
         patch(
@@ -1431,6 +1432,7 @@ def test_clearing_a_provider_key_drops_its_models(client):
             "online_providers.online_model_provider.save_selected_models",
             side_effect=lambda models: saved.setdefault("models", models),
         ),
+        patch("web.app._purge_model_benchmarks", side_effect=lambda mid: purged.append(mid)),
     ):
         res = client.post("/api/online/providers/save", json={"openrouter_api_key": ""})
         assert res.status_code == 200
@@ -1438,6 +1440,8 @@ def test_clearing_a_provider_key_drops_its_models(client):
         assert data["dropped_models"] == ["openrouter:deepseek/deepseek-v4.1-flash"]
 
     assert [m["id"] for m in saved["models"]] == ["groq:llama-3.3-70b"]
+    # The results go with it: a provider with no key cannot run this model again.
+    assert purged == ["openrouter:deepseek/deepseek-v4.1-flash"]
 
 
 def test_api_online_models_search_and_selected(client):
