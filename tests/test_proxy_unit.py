@@ -883,6 +883,7 @@ async def test_ensure_model_recovers_from_oom_by_restarting_server():
         "load",
         {
             "model": "sha256-deadbeef",
+            "n_parallel": 1,
             "n_gpu_layers": 0,
             "n_thread": 8,
             "n_batch": 256,
