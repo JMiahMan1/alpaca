@@ -210,3 +210,62 @@ def test_a_full_queue_is_a_clear_503():
     audio._music_order.extend(f"x{i}" for i in range(audio.MAX_QUEUED_MUSIC_JOBS))
     resp = client.post("/api/music/jobs", json={"prompt": "x", "duration_s": 30})
     assert resp.status_code == 503 and "already waiting" in resp.json()["error"]
+
+
+def _pulse_clip(bpm=122.0, seconds=23.4, rate=16000):
+    x = np.zeros(int(seconds * rate), dtype=np.float32)
+    beat = 60.0 * rate / bpm
+    k = 0
+    while k * beat + 2000 < x.size:
+        i = round(k * beat + 2000)
+        n = min(x.size - i, int(0.08 * rate))
+        env = np.exp(-np.arange(n) / (0.015 * rate))
+        x[i : i + n] += (1.0 if k % 4 == 0 else 0.6) * env * np.sin(2 * np.pi * 90 * np.arange(n) / rate)
+        k += 1
+    return x
+
+
+def _run_clip(body, clip, rate=16000):
+    def fake_generate(bundle, prompt, seconds, context, knobs):
+        return clip, rate, int(seconds * 50)
+
+    async def go():
+        with patch.object(audio, "_music_bundle", AsyncMock(return_value=(_bundle(), "cuda"))), \
+                patch.object(audio, "_generate_clip", side_effect=fake_generate), \
+                patch.dict(sys.modules, {"torch": _torch()}):
+            job = audio._enqueue_music(audio._parse_music_request(body, song=False))
+            return await _wait_done(job["id"])
+
+    return _run(go())
+
+
+def test_a_looped_clip_comes_back_cut_to_whole_bars():
+    job = _run_clip({"prompt": "game show", "duration_s": 24, "loop": True}, _pulse_clip())
+    assert job["status"] == "done", job.get("error")
+    meta = job["meta"]
+    assert meta["loop"] is True and meta["bars"] >= 2 and abs(meta["bpm"] - 122) < 0.2
+    bar_s = 4 * 60 / 122
+    assert abs(meta["loop_s"] / bar_s - meta["bars"]) < 0.02
+    assert meta["duration_s"] == pytest.approx(meta["loop_s"], abs=0.01)
+
+
+def test_a_clip_without_loop_is_unchanged():
+    clip = _pulse_clip()
+    job = _run_clip({"prompt": "game show", "duration_s": 24}, clip)
+    meta = job["meta"]
+    assert "bars" not in meta and "loop" not in meta
+    assert meta["duration_s"] == pytest.approx(clip.size / 16000, abs=0.01)
+
+
+def test_a_looped_clip_without_a_beat_is_only_crossfaded():
+    clip = (0.3 * np.sin(2 * np.pi * 440 * np.arange(16000 * 10) / 16000)).astype(np.float32)
+    meta = _run_clip({"prompt": "drone", "duration_s": 10, "loop": True}, clip)["meta"]
+    assert meta["loop"] is True and meta["bars"] is None and meta["bpm"] is None
+    assert meta["loop_s"] == pytest.approx(10 - 0.5, abs=0.01)
+
+
+def test_loop_must_be_a_boolean():
+    client = TestClient(audio.app)
+    bad = client.post("/api/music", json={"prompt": "x", "loop": "yes"})
+    assert bad.status_code == 400 and "loop" in bad.json()["error"]
+    assert audio._music_order == []

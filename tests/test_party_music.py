@@ -8,6 +8,7 @@ import json
 import math
 import wave
 
+import numpy as np
 import pytest
 
 import arcade.app as arcade_app
@@ -36,14 +37,45 @@ def music_dir(tmp_path, monkeypatch):
     return tmp_path / "party_music"
 
 
-def test_a_bed_is_folded_into_a_seamless_loop():
-    rate = 1000
-    s = array.array("h", [i % 3000 for i in range(4000)])
-    looped = party_music.make_loop(s, rate, crossfade_s=1.0)
-    assert len(looped) == 3000  # the tail went into the head
-    # Played back to back, the end runs straight on into what the tail was.
-    assert looped[0] == s[3000]
-    assert abs(looped[-1] - s[2999]) <= 1 and abs(s[3000] - s[2999]) <= 2999
+def _pulse_wav(bpm=118.0, seconds=26.3, rate=32000, offset=0.21) -> bytes:
+    """A click track, accent on each bar, as MusicGen-shaped 16-bit mono WAV."""
+    n = int(seconds * rate)
+    x = np.zeros(n)
+    beat = 60.0 * rate / bpm
+    k = 0
+    while offset * rate + k * beat < n:
+        i = round(offset * rate + k * beat)
+        m = min(n - i, int(0.08 * rate))
+        env = np.exp(-np.arange(m) / (0.015 * rate))
+        x[i : i + m] += (0.9 if k % 4 == 0 else 0.55) * env * np.sin(2 * np.pi * 90 * np.arange(m) / rate)
+        k += 1
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(np.round(x * 32767).astype("<i2").tobytes())
+    return buf.getvalue()
+
+
+def _frames(wav_bytes: bytes) -> int:
+    with wave.open(io.BytesIO(wav_bytes)) as w:
+        return w.getnframes()
+
+
+def test_a_bed_with_a_beat_loops_on_whole_bars():
+    out = party_music.prepare_cue(_pulse_wav(bpm=118.0), loop=True)
+    beats = _frames(out) / (60.0 * party_music.OUT_RATE / 118.0)
+    assert abs(beats - round(beats)) < 0.03 and round(beats) % 4 == 0, beats
+    with wave.open(io.BytesIO(out)) as w:
+        peak = np.abs(np.frombuffer(w.readframes(w.getnframes()), "<i2")).max()
+    assert peak < 32767  # the equal-power fold is rounded off, never clipped
+
+
+def test_a_bed_with_no_beat_is_only_crossfaded():
+    out = party_music.prepare_cue(_tone_wav(), loop=True)
+    expected = int(6.0 * party_music.OUT_RATE) - int(party_music.OUT_RATE * party_music.LOOP_CROSSFADE_S)
+    assert abs(_frames(out) - expected) <= 2
 
 
 def test_prepare_cue_is_mono_at_the_served_rate():
@@ -67,6 +99,56 @@ def test_missing_cues_are_composed_from_the_audio_server(music_dir, monkeypatch)
     assert all(c["ready"] and c["url"].startswith(f"/api/party/music/{n}.wav") for n, c in man["cues"].items())
     # A second pass composes nothing: files are kept.
     assert party_music.generate_missing() == {}
+    # MusicGen's own output is kept, unlooped, beside each cue.
+    for name in party_music.CUES:
+        assert party_music.raw_path(name).read_bytes() == _tone_wav()
+
+
+def test_a_new_shape_reshapes_beds_from_the_raw_clip_without_the_audio_server(music_dir, monkeypatch):
+    monkeypatch.setattr(party_music, "_compose", lambda cue: _pulse_wav())
+    party_music.generate_missing()
+    lobby = party_music.cue_path("lobby").read_bytes()
+
+    def no_gpu(cue):
+        raise AssertionError("re-shaping must not compose again")
+
+    monkeypatch.setattr(party_music, "_compose", no_gpu)
+    monkeypatch.setattr(party_music, "SHAPE_VERSION", party_music.SHAPE_VERSION + 1)
+    assert not party_music.is_current("lobby") and party_music.is_current("theme")
+    out = party_music.generate_missing()
+    assert set(out) == {n for n, c in party_music.CUES.items() if c["loop"]}
+    assert all(v.startswith("re-shaped") for v in out.values())
+    # Looped once, from the raw clip: the same bytes as before, not a loop of the loop.
+    assert party_music.cue_path("lobby").read_bytes() == lobby
+    assert party_music.is_current("lobby") and party_music.manifest()["needs_regenerate"] == []
+
+
+def test_an_old_bed_without_a_raw_clip_waits_for_an_admin_regenerate(music_dir, monkeypatch):
+    music_dir.mkdir(parents=True)
+    old = party_music.CUES["lobby"]
+    legacy = {"prompt": old["prompt"], "duration_s": old["duration_s"], "seed": old["seed"], "loop": True}
+    (music_dir / "lobby.wav").write_bytes(_tone_wav())
+    (music_dir / "lobby.json").write_text(json.dumps(legacy))
+    composed = []
+    monkeypatch.setattr(party_music, "_compose", lambda cue: composed.append(cue["seed"]) or _pulse_wav())
+    party_music.generate_missing()
+    assert old["seed"] not in composed  # it is not taken to the GPU on its own...
+    assert party_music.manifest()["cues"]["lobby"]["ready"]  # ...it keeps playing...
+    assert party_music.manifest()["needs_regenerate"] == ["lobby"]  # ...and says it is waiting
+    composed.clear()
+    party_music.generate_missing(["lobby"])  # what POST /api/admin/party/music/regenerate runs
+    assert composed == [old["seed"]] and party_music.is_current("lobby")
+    assert party_music.raw_path("lobby").is_file() and party_music.manifest()["needs_regenerate"] == []
+
+
+def test_a_changed_prompt_still_recomposes_on_its_own(music_dir, monkeypatch):
+    monkeypatch.setattr(party_music, "_compose", lambda cue: _pulse_wav())
+    party_music.generate_missing()
+    monkeypatch.setitem(party_music.CUES, "vote", {**party_music.CUES["vote"], "seed": 9999})
+    seen = []
+    monkeypatch.setattr(party_music, "_compose", lambda cue: seen.append(cue["seed"]) or _pulse_wav())
+    out = party_music.generate_missing()
+    assert list(out) == ["vote"] and out["vote"].startswith("composed") and seen == [9999]
 
 
 def test_a_failing_audio_server_is_reported_not_fatal(music_dir, monkeypatch):

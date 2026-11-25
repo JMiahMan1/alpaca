@@ -5,11 +5,13 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-# Arcade is stdlib + Flask, plus segno (pure Python, no deps) for the TV stage's join QR code.
-RUN pip install --no-cache-dir flask segno
+# Arcade is stdlib + Flask, plus segno (pure Python, no deps) for the TV stage's join QR code
+# and numpy for audio_loops (cutting the party music beds to whole bars).
+RUN pip install --no-cache-dir flask segno numpy
 
 # Copy the standalone service
 COPY arcade/ /app/arcade/
+COPY audio_loops.py /app/arcade/audio_loops.py
 COPY three.min.js /app/
 
 EXPOSE 5001

@@ -29,8 +29,9 @@ The project's main Docker services, defined in `docker-compose.yml`:
 **Which files need a rebuild, not a restart:** `web/`, `llm_benchmark_suite.py`, `online_providers.py`,
 `analyzer.py`, `sandbox_exec.py`, `benchmark_tests.json`, `manuscript_rubric.py`, `alpaca-puller.py`
 and `data/` are bind-mounted, so a change needs only `./scripts/restart-when-idle.sh`.
-`alpaca-proxy.py`, `audio_server.py`, `tts_text.py` and `voice_clone.py` are COPYed into their
-images and need `sudo docker compose up -d --build <service>`.
+`alpaca-proxy.py`, `audio_server.py`, `tts_text.py`, `voice_clone.py` and `audio_loops.py` are COPYed into
+their images and need `sudo docker compose up -d --build <service>` (`audio_loops.py` goes into both
+`audio-server` and `alpaca-arcade`).
 
 ### Time zone
 - Containers default to UTC and the code writes naive local timestamps (`time.strftime`), so a UTC
@@ -78,6 +79,7 @@ images and need `sudo docker compose up -d --build <service>`.
 | `sandbox_exec.py` | The Docker sandbox: lint, execute, screenshot, serve, noVNC, CLI fixtures |
 | `settings_scan.py` | Resource-guided llama.cpp settings search with thermal guards |
 | `manuscript_rubric.py` | The John 1 illuminated-manuscript rubric (the scripture travels with the rules) |
+| `audio_loops.py` | Bar-exact seamless loops from a music clip (numpy only): beat estimate, whole-bar cut, equal-power fold, RMS level |
 | `imageops.py` | Deterministic band-fill + text draw - the only non-diffusion way to put real type on an image |
 | `analyzer.py` | Telemetry-driven llama.cpp tuning recommendations |
 | `telemetry_monitor.py` | Async daemon polling llama-server metrics, writes `data/telemetry/{model}.jsonl` |
@@ -853,6 +855,30 @@ other fails the build.
   capitals (headlines, "WE ASKED 100 PARENTS"), which misaki would otherwise spell letter by letter.
 - **A changed music recipe recomposes itself.** Each cue's file has a `.json` sidecar with the prompt, seed and length
   it was made from; `party_music.is_current()` treats a mismatch like a missing file.
+- **Beds loop on whole bars** (`audio_loops.loop_to_bars`, see below). MusicGen's own output is kept unlooped as
+  `<cue>.raw.wav` (+ `.raw.json`), so a new `SHAPE_VERSION` re-renders the beds from it on the CPU. A bed composed
+  before raw clips were kept has nothing to re-shape from: it keeps playing as it was and is listed in the manifest's
+  `needs_regenerate` until an admin runs `POST /api/admin/party/music/regenerate` (the GPU is never taken for a
+  shape change on its own; a changed prompt or seed still recomposes automatically).
+
+### Seamless loops on whole bars (`audio_loops.py`)
+- **A crossfade at an arbitrary length makes a click-free seam but the beat stumbles:** a 23.4 s clip at 122 bpm is
+  48.8 beats, so each repeat lands ~80 ms off the grid. `loop_to_bars` estimates the tempo (onset-envelope
+  autocorrelation for a coarse lag, then a vectorised grid search of period and phase over the whole clip), starts
+  on the first beat, and cuts to whole 4-beat bars plus the crossfade tail, so after the equal-power fold the loop is
+  exactly N bars.
+- **Only a real beat is cut to bars:** autocorrelation peak/mean >= 3.5 AND onset std / clip RMS >= 0.1 (noise and
+  tones scored 2.1-2.4 and 0.03, beat tracks 14-20 and 0.5, a MusicGen bed 5.0 and 0.18). Otherwise it only
+  crossfades. A half- or double-tempo read still cuts on whole beats.
+- **Loop exactly once:** store the clip unlooped and loop it when it is used. Looping at creation and again on load
+  folds the tail twice and the loop is no longer whole bars.
+- **Level by RMS, not peak** (`normalise_rms`), with a soft knee instead of clipping.
+- `POST /api/music` takes `loop: true` (clips only, default off): the response is the bar-aligned loop and
+  `meta` gains `loop`, `bpm`, `bars`, `loop_s` and `beat_confidence` (`bars`/`bpm` are null when there was no beat).
+  `meta.duration_s` is then the loop's length, shorter than `requested_duration_s` by design.
+- The podcast mixer's procedural bed needs none of this: it is synthesized to the episode's length (speech + 4 s),
+  so it is never repeated, and its pulse is on an exact grid. Its **sting** path (a MusicGen clip used as the bed)
+  is repeated by `loop_to_length` at an arbitrary length and can stumble the same way; not changed yet.
 - **Race rounds** (`arcade/party_race.py`, content in `arcade/party_race_content.py`): Quick Draw (5 clues, 4 choices),
   Lightning (8 true/false), Pair Up (match 5 pairs) and In Order (sort 5). Everyone answers at once; the first correct
   answer scores most (1000/750/600...), a wrong tap in Quick Draw or Lightning costs points, and boards score per right
@@ -1006,6 +1032,7 @@ and **`addopts = "-q -m 'not live'"`** - the `live` marker is deselected by defa
 | `test_voice_clone_pairing.py` | Base-voice pairing: the free band, the all-costly fallback, the F0 cache, pins |
 | `test_voice_clone_seed.py` | The pinned latent draw: repeat calls, a narration being one voice, the RNG not leaking, the `seed=None` opt-out |
 | `test_audio_server_speaker_id.py` | `POST /api/voices/identify` and `/calibrate` |
+| `test_audio_loops.py` | Bar-exact loops: pulse tracks at several tempos and odd lengths, noise/tones left alone, loop-once, the seam, a 1 s timing guard |
 | `test_podcast_mixer.py` + `test_podcast_routes.py` + `test_podcast_frontend.py` | Podcast Studio end to end |
 | `test_telemetry_monitor_unit.py` / `test_analyzer_unit.py` / `test_imageops_unit.py` | The daemons and the deterministic image editor |
 | `test_dashboard_frontend.py` / `test_podcast_frontend.py` | `dashboard.js` via the **node-slice** technique |

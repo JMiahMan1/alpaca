@@ -43,7 +43,7 @@ RUN pip install --no-cache-dir \
 # build; the voice files live in PIPER_VOICES_DIR (bind-mounted, see compose).
 RUN pip install --no-cache-dir piper-tts==1.8.0
 
-COPY audio_server.py music_song.py tts_text.py voice_clone.py /app/
+COPY audio_server.py audio_loops.py music_song.py tts_text.py voice_clone.py /app/
 COPY audio/ /app/audio/
 
 WORKDIR /app
