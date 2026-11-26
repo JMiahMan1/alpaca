@@ -4200,11 +4200,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (isBenchmarked) {
                     const score = meta.latest_score !== undefined && meta.latest_score !== null ? `${meta.latest_score}%` : 'Done';
                     badgesHtml += `<span class="badge-benchmarked-score" data-model="${escapeHtml(id)}" style="font-size:0.64rem; background:rgba(99,102,241,0.22); color:#a5b4fc; border:1px solid rgba(99,102,241,0.45); padding:1px 6px; border-radius:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Click to view latest test results for ${escapeHtml(readableName)} (${meta.benchmark_count}x runs | Last: ${escapeHtml(meta.last_benchmarked_at || 'Unknown')})">📊 ${score} ↗</span>`;
-                    badgesHtml += `<span class="badge-delete-benchmarks" data-model="${escapeHtml(id)}" style="font-size:0.64rem; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); padding:1px 5px; border-radius:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Delete all saved benchmark results for ${escapeHtml(readableName)} (model is kept)">🗑</span>`;
                 }
-                if (isOnline) {
-                    badgesHtml += `<span class="badge-remove-online" data-model="${escapeHtml(id)}" style="font-size:0.64rem; background:rgba(251,191,36,0.15); color:#fbbf24; border:1px solid rgba(251,191,36,0.4); padding:1px 5px; border-radius:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Remove ${escapeHtml(readableName)} from your online model selection (optionally also delete its benchmark results)">✖</span>`;
-                }
+                badgesHtml += `<span class="badge-manage-delete" data-model="${escapeHtml(id)}" role="button" tabindex="0" title="Delete ${escapeHtml(readableName)} and/or its benchmark data">🗑 Delete</span>`;
 
                 span.innerHTML = `<span class="model-checkbox-name" title="${escapeHtml(id)}">${escapeHtml(readableName)}</span><span class="model-checkbox-badges">${badgesHtml}</span>`;
 
@@ -4229,45 +4226,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 }
 
-                const deleteBadge = span.querySelector('.badge-delete-benchmarks');
-                if (deleteBadge) {
-                    deleteBadge.addEventListener('mouseenter', () => {
-                        deleteBadge.style.background = 'rgba(239,68,68,0.35)';
-                        deleteBadge.style.borderColor = '#fca5a5';
-                        deleteBadge.style.color = '#fecaca';
-                        deleteBadge.style.transform = 'scale(1.05)';
-                    });
-                    deleteBadge.addEventListener('mouseleave', () => {
-                        deleteBadge.style.background = 'rgba(239,68,68,0.15)';
-                        deleteBadge.style.borderColor = 'rgba(239,68,68,0.4)';
-                        deleteBadge.style.color = '#f87171';
-                        deleteBadge.style.transform = 'none';
-                    });
-                    deleteBadge.addEventListener('click', (e) => {
+                const manageDeleteBadge = span.querySelector('.badge-manage-delete');
+                if (manageDeleteBadge) {
+                    const triggerDeleteModal = (e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        deleteModelBenchmarks(id, displayName);
-                    });
-                }
-
-                const removeBadge = span.querySelector('.badge-remove-online');
-                if (removeBadge) {
-                    removeBadge.addEventListener('mouseenter', () => {
-                        removeBadge.style.background = 'rgba(251,191,36,0.35)';
-                        removeBadge.style.borderColor = '#fcd34d';
-                        removeBadge.style.color = '#fef3c7';
-                        removeBadge.style.transform = 'scale(1.05)';
-                    });
-                    removeBadge.addEventListener('mouseleave', () => {
-                        removeBadge.style.background = 'rgba(251,191,36,0.15)';
-                        removeBadge.style.borderColor = 'rgba(251,191,36,0.4)';
-                        removeBadge.style.color = '#fbbf24';
-                        removeBadge.style.transform = 'none';
-                    });
-                    removeBadge.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        removeOnlineModel(id, displayName, isBenchmarked);
+                        openDeleteModelModal({
+                            modelId: id,
+                            displayName: readableName,
+                            isOnline,
+                            hasBenchmarks: isBenchmarked,
+                            benchmarkCount: Number(meta.benchmark_count || 0),
+                        });
+                    };
+                    manageDeleteBadge.addEventListener('click', triggerDeleteModal);
+                    manageDeleteBadge.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') triggerDeleteModal(e);
                     });
                 }
 
@@ -9724,6 +9698,283 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Unified Delete Model / Benchmark Data Modal (supports all 3 actions for Local & Online models)
+    const deleteModelModal = document.getElementById('delete-model-modal');
+    const deleteModelModalClose = document.getElementById('delete-model-modal-close');
+    const deleteModalModelName = document.getElementById('delete-modal-model-name');
+    const deleteModalModelBadge = document.getElementById('delete-modal-model-badge');
+    const deleteModalBenchMeta = document.getElementById('delete-modal-bench-meta');
+    const deleteModalOptions = document.getElementById('delete-modal-options');
+    const btnDelOptBenchmarks = document.getElementById('btn-del-opt-benchmarks');
+    const deleteOptBenchmarksDesc = document.getElementById('delete-opt-benchmarks-desc');
+    const btnDelOptModelOnly = document.getElementById('btn-del-opt-model-only');
+    const deleteOptModelTitle = document.getElementById('delete-opt-model-title');
+    const deleteOptModelDesc = document.getElementById('delete-opt-model-desc');
+    const btnDelOptBoth = document.getElementById('btn-del-opt-both');
+    const deleteOptBothDesc = document.getElementById('delete-opt-both-desc');
+    const deleteModalConfirmStep = document.getElementById('delete-modal-confirm-step');
+    const deleteConfirmSummary = document.getElementById('delete-confirm-summary');
+    const btnDelConfirmBack = document.getElementById('btn-del-confirm-back');
+    const btnDelConfirmExec = document.getElementById('btn-del-confirm-exec');
+    const deleteModalStatus = document.getElementById('delete-modal-status');
+    const btnDelOptCancel = document.getElementById('btn-del-opt-cancel');
+
+    let deleteModalContext = null;
+    let deleteModalPendingMode = null;
+    let deleteModalBusy = false;
+
+    function closeDeleteModelModal() {
+        if (deleteModalBusy) return;
+        if (deleteModelModal) deleteModelModal.classList.remove('open');
+        deleteModalContext = null;
+        deleteModalPendingMode = null;
+    }
+
+    function showDeleteModalOptionsStep() {
+        deleteModalPendingMode = null;
+        if (deleteModalOptions) deleteModalOptions.style.display = 'flex';
+        if (deleteModalConfirmStep) deleteModalConfirmStep.style.display = 'none';
+        if (deleteModalStatus) deleteModalStatus.style.display = 'none';
+    }
+
+    function openDeleteModelModal({ modelId, displayName, isOnline = false, hasBenchmarks = false, benchmarkCount = 0 }) {
+        if (!modelId) {
+            showToast('Please select a model to delete.', 'error');
+            return;
+        }
+        const parsed = parseModelDisplay(modelId);
+        const label = displayName || parsed.shortName || modelId;
+
+        // Cross-check currently loaded benchmark results as well as tracker state
+        const normModel = (n) => String(n || '').trim().replace(/--/g, ':').replace(/:latest$/, '');
+        const targetNorm = normModel(modelId);
+        const inLoadedResults =
+            (Array.isArray(currentResults) && currentResults.some(r => normModel(r.model) === targetNorm)) ||
+            (Array.isArray(currentSharedResults) && currentSharedResults.some(r => normModel(r.model) === targetNorm));
+        const effectiveHasBench = Boolean(hasBenchmarks || inLoadedResults);
+
+        deleteModalContext = {
+            modelId,
+            displayName: label,
+            isOnline: Boolean(isOnline),
+            hasBenchmarks: effectiveHasBench,
+            benchmarkCount: Number(benchmarkCount || 0),
+        };
+        deleteModalPendingMode = null;
+        deleteModalBusy = false;
+
+        if (deleteModalModelName) deleteModalModelName.textContent = label;
+        if (deleteModalModelBadge) {
+            if (isOnline) {
+                deleteModalModelBadge.textContent = parsed.providerLabel ? `ONLINE · ${parsed.providerLabel}` : 'ONLINE MODEL';
+                deleteModalModelBadge.className = 'model-provider-pill';
+            } else {
+                deleteModalModelBadge.textContent = 'LOCAL MODEL';
+                deleteModalModelBadge.className = 'model-provider-pill local-pill';
+            }
+        }
+        if (deleteModalBenchMeta) {
+            if (effectiveHasBench) {
+                const countLabel = benchmarkCount > 0 ? `${benchmarkCount} saved benchmark run(s)` : 'Saved benchmark results present';
+                deleteModalBenchMeta.textContent = `${countLabel} · Choose what to delete below`;
+            } else {
+                deleteModalBenchMeta.textContent = 'No saved benchmark runs detected · Choose an action below';
+            }
+        }
+
+        if (btnDelOptBenchmarks) {
+            btnDelOptBenchmarks.disabled = !effectiveHasBench;
+        }
+        if (deleteOptBenchmarksDesc) {
+            if (!effectiveHasBench) {
+                deleteOptBenchmarksDesc.textContent = 'No saved benchmark data found for this model.';
+            } else if (isOnline) {
+                deleteOptBenchmarksDesc.textContent = 'Purges all saved benchmark results & charts. Keeps the online model in your target list.';
+            } else {
+                deleteOptBenchmarksDesc.textContent = 'Purges all saved benchmark results & charts. Keeps the local model files on disk.';
+            }
+        }
+
+        if (deleteOptModelTitle) {
+            deleteOptModelTitle.textContent = isOnline
+                ? 'Remove Online Model Only (Keep Benchmarks)'
+                : 'Delete Local Model Only (Keep Benchmarks)';
+        }
+        if (deleteOptModelDesc) {
+            deleteOptModelDesc.textContent = isOnline
+                ? 'Removes this model from your online selection list. Keeps its historical benchmark scores & leaderboard rows.'
+                : 'Permanently deletes local model files, unshared blobs, and router preset from disk. Keeps historical benchmark scores.';
+        }
+        if (deleteOptBothDesc) {
+            deleteOptBothDesc.textContent = isOnline
+                ? 'Removes this model from your online selection AND permanently deletes all saved benchmark results.'
+                : 'Permanently deletes local model files from disk AND purges all saved benchmark results & charts.';
+        }
+
+        showDeleteModalOptionsStep();
+        if (deleteModelModal) deleteModelModal.classList.add('open');
+    }
+
+    function promptDeleteModalConfirm(mode) {
+        if (!deleteModalContext || deleteModalBusy) return;
+        deleteModalPendingMode = mode;
+        const { displayName, isOnline } = deleteModalContext;
+        let summaryHtml = '';
+        let execLabel = 'Confirm Delete';
+        if (mode === 'benchmarks') {
+            summaryHtml = `<strong>Delete benchmark data only</strong> for <code>${escapeHtml(displayName)}</code>?<br>All saved benchmark results, charts, and leaderboard entries will be permanently removed. The ${isOnline ? 'online model selection' : 'local model on disk'} will be kept.`;
+            execLabel = 'Delete Benchmarks Only';
+        } else if (mode === 'model_only') {
+            summaryHtml = isOnline
+                ? `<strong>Remove online model only</strong> for <code>${escapeHtml(displayName)}</code>?<br>It will be removed from your Target Models list, while its historical benchmark results stay intact.`
+                : `<strong>Permanently delete local model</strong> <code>${escapeHtml(displayName)}</code> from disk?<br>Its manifest, unshared weights/blobs, and router preset will be deleted. Historical benchmark results will be kept.`;
+            execLabel = isOnline ? 'Remove Model Only' : 'Delete Local Model';
+        } else {
+            summaryHtml = isOnline
+                ? `<strong>Remove online model AND delete all benchmark data</strong> for <code>${escapeHtml(displayName)}</code>?<br>This removes it from your selection and permanently wipes its benchmark history.`
+                : `<strong>Permanently delete local model AND all benchmark data</strong> for <code>${escapeHtml(displayName)}</code>?<br>This deletes model files from disk and permanently wipes its benchmark history.`;
+            execLabel = 'Delete Both';
+        }
+        if (deleteConfirmSummary) deleteConfirmSummary.innerHTML = summaryHtml;
+        if (btnDelConfirmExec) btnDelConfirmExec.textContent = execLabel;
+        if (deleteModalOptions) deleteModalOptions.style.display = 'none';
+        if (deleteModalConfirmStep) deleteModalConfirmStep.style.display = 'flex';
+        if (deleteModalStatus) deleteModalStatus.style.display = 'none';
+    }
+
+    async function executeModelDeleteAction(mode) {
+        if (!deleteModalContext || deleteModalBusy) return;
+        const { modelId, displayName, isOnline } = deleteModalContext;
+        deleteModalBusy = true;
+
+        const setModalStatus = (html) => {
+            if (deleteModalStatus) {
+                deleteModalStatus.innerHTML = html;
+                deleteModalStatus.style.display = 'block';
+            }
+        };
+        if (btnDelConfirmExec) btnDelConfirmExec.disabled = true;
+        if (btnDelConfirmBack) btnDelConfirmBack.disabled = true;
+        if (btnDelOptCancel) btnDelOptCancel.disabled = true;
+
+        const actionLabel = mode === 'benchmarks'
+            ? 'Deleting benchmark data'
+            : mode === 'model_only'
+                ? (isOnline ? 'Removing online model' : 'Deleting local model from disk')
+                : (isOnline ? 'Removing online model & benchmark data' : 'Deleting local model & benchmark data');
+        setModalStatus(`<span style="color:var(--color-secondary);">⏳ ${escapeHtml(actionLabel)} for <strong>${escapeHtml(displayName)}</strong>...</span>`);
+        if (!isOnline && mode !== 'benchmarks' && modelSwitcherStatus) {
+            modelSwitcherStatus.innerHTML = `<span style="color:var(--color-secondary);">Deleting ${escapeHtml(displayName)}...</span>`;
+        }
+
+        try {
+            let res;
+            let data;
+            if (isOnline) {
+                res = await fetch('/api/online/models/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: modelId,
+                        remove_model: mode === 'model_only' || mode === 'both',
+                        remove_benchmarks: mode === 'benchmarks' || mode === 'both',
+                    }),
+                });
+                data = await res.json();
+            } else if (mode === 'benchmarks') {
+                res = await fetch(`/api/benchmarks/model/${encodeURIComponent(modelId)}`, {
+                    method: 'DELETE',
+                });
+                data = await res.json();
+            } else {
+                res = await fetch('/api/models/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: modelId,
+                        remove_benchmarks: mode === 'both',
+                    }),
+                });
+                data = await res.json();
+            }
+
+            const ok = res.ok && (!isOnline || data.success !== false);
+            if (ok) {
+                let msg = '';
+                if (mode === 'benchmarks') {
+                    const prunedCount = Number((data.benchmark_results_removed || data).snapshots_pruned || 0);
+                    msg = `Benchmark data deleted for "${displayName}" (${prunedCount} snapshot(s) updated); model kept.`;
+                } else if (mode === 'model_only') {
+                    msg = isOnline
+                        ? `Removed online model "${displayName}" from selection; benchmark history kept.`
+                        : `Deleted local model "${displayName}" from disk; benchmark history kept.`;
+                } else {
+                    msg = isOnline
+                        ? `Removed online model "${displayName}" and deleted its benchmark data.`
+                        : `Deleted local model "${displayName}" and all saved benchmark data.`;
+                }
+
+                if (!isOnline && mode !== 'benchmarks') {
+                    if (currentModelName === modelId) currentModelName = null;
+                    if (modelSwitcherStatus) {
+                        modelSwitcherStatus.innerHTML = `<span style="color:var(--color-success);">✅ ${escapeHtml(msg)}</span>`;
+                    }
+                }
+                logToTerminal(msg, 'success');
+                showToast(msg, 'success');
+
+                deleteModalBusy = false;
+                closeDeleteModelModal();
+
+                await loadModels();
+                if (mode === 'benchmarks' || mode === 'both') {
+                    if (typeof loadHistory === 'function') await loadHistory();
+                    if (typeof loadTestBrowser === 'function') loadTestBrowser();
+                }
+                if (typeof loadRoutingMatrix === 'function') loadRoutingMatrix();
+            } else {
+                const errText = (data && data.error) || 'Delete request failed';
+                setModalStatus(`<span style="color:var(--color-danger);">❌ ${escapeHtml(errText)}</span>`);
+                if (!isOnline && mode !== 'benchmarks' && modelSwitcherStatus) {
+                    modelSwitcherStatus.innerHTML = `<span style="color:var(--color-danger);">❌ ${escapeHtml(errText)}</span>`;
+                }
+                logToTerminal(`Delete failed for "${displayName}": ${errText}`, 'error');
+                showToast(`Delete failed: ${errText}`, 'error');
+            }
+        } catch (err) {
+            setModalStatus(`<span style="color:var(--color-danger);">❌ ${escapeHtml(err.message)}</span>`);
+            logToTerminal(`Delete error for "${displayName}": ${err.message}`, 'error');
+            showToast(`Delete error: ${err.message}`, 'error');
+        } finally {
+            deleteModalBusy = false;
+            if (btnDelConfirmExec) btnDelConfirmExec.disabled = false;
+            if (btnDelConfirmBack) btnDelConfirmBack.disabled = false;
+            if (btnDelOptCancel) btnDelOptCancel.disabled = false;
+        }
+    }
+
+    if (deleteModelModalClose) deleteModelModalClose.addEventListener('click', closeDeleteModelModal);
+    if (btnDelOptCancel) btnDelOptCancel.addEventListener('click', closeDeleteModelModal);
+    if (deleteModelModal) {
+        deleteModelModal.addEventListener('click', (e) => {
+            if (e.target === deleteModelModal) closeDeleteModelModal();
+        });
+    }
+    if (btnDelOptBenchmarks) btnDelOptBenchmarks.addEventListener('click', () => promptDeleteModalConfirm('benchmarks'));
+    if (btnDelOptModelOnly) btnDelOptModelOnly.addEventListener('click', () => promptDeleteModalConfirm('model_only'));
+    if (btnDelOptBoth) btnDelOptBoth.addEventListener('click', () => promptDeleteModalConfirm('both'));
+    if (btnDelConfirmBack) btnDelConfirmBack.addEventListener('click', showDeleteModalOptionsStep);
+    if (btnDelConfirmExec) {
+        btnDelConfirmExec.addEventListener('click', () => {
+            if (deleteModalPendingMode) executeModelDeleteAction(deleteModalPendingMode);
+        });
+    }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && deleteModelModal && deleteModelModal.classList.contains('open')) {
+            closeDeleteModelModal();
+        }
+    });
+
     /**
      * Bulk-remove all saved benchmark results for a model that is NOT being
      * deleted from disk. The model itself stays (manifest, blobs, router link);
@@ -10207,7 +10458,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnDeleteModel) {
         btnDeleteModel.addEventListener('click', () => {
             const selectedModel = modelSwitcherSelect?.value;
-            deleteModel(selectedModel);
+            if (!selectedModel) {
+                showToast("Please select a model to delete.", 'error');
+                return;
+            }
+            const normModel = (n) => String(n || '').trim().replace(/--/g, ':').replace(/:latest$/, '');
+            const targetNorm = normModel(selectedModel);
+            const sidebarTrackedBench = Array.from(document.querySelectorAll('#model-checkboxes .checkbox-item[data-status="benchmarked"] input[type="checkbox"]'))
+                .some(inp => normModel(inp.value) === targetNorm);
+            openDeleteModelModal({
+                modelId: selectedModel,
+                displayName: selectedModel,
+                isOnline: isOnlineModelName(selectedModel),
+                hasBenchmarks: sidebarTrackedBench,
+                benchmarkCount: 0,
+            });
         });
     }
 

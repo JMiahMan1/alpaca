@@ -3537,6 +3537,65 @@
         </div>
     </div>
 
+    <!-- Unified Delete Model / Benchmark Data Modal (Local & Online) -->
+    <div id="delete-model-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Delete model or benchmark data" style="z-index: 10050;">
+        <div class="modal-container modal-sm">
+            <div class="modal-header">
+                <div class="modal-title">🗑️ Delete Model / Data</div>
+                <button id="delete-model-modal-close" class="modal-close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body delete-modal-body">
+                <div class="delete-target-summary">
+                    <div class="delete-target-top">
+                        <span id="delete-modal-model-name" class="delete-target-name"></span>
+                        <span id="delete-modal-model-badge" class="model-provider-pill"></span>
+                    </div>
+                    <div id="delete-modal-bench-meta" class="delete-target-meta"></div>
+                </div>
+
+                <div id="delete-modal-options" class="delete-options-list">
+                    <button id="btn-del-opt-benchmarks" type="button" class="delete-option-card delete-opt-warn">
+                        <span class="delete-opt-icon">📊</span>
+                        <span class="delete-opt-text">
+                            <span class="delete-opt-title">Delete Benchmark Data Only</span>
+                            <span id="delete-opt-benchmarks-desc" class="delete-opt-desc">Remove saved benchmark results &amp; leaderboard rows. Keep the model.</span>
+                        </span>
+                    </button>
+
+                    <button id="btn-del-opt-model-only" type="button" class="delete-option-card delete-opt-amber">
+                        <span class="delete-opt-icon">📦</span>
+                        <span class="delete-opt-text">
+                            <span id="delete-opt-model-title" class="delete-opt-title">Delete Model Only (Keep Benchmarks)</span>
+                            <span id="delete-opt-model-desc" class="delete-opt-desc">Delete model files from disk and keep historical benchmark scores.</span>
+                        </span>
+                    </button>
+
+                    <button id="btn-del-opt-both" type="button" class="delete-option-card delete-opt-danger">
+                        <span class="delete-opt-icon">🔥</span>
+                        <span class="delete-opt-text">
+                            <span class="delete-opt-title">Delete Both Model &amp; Benchmark Data</span>
+                            <span id="delete-opt-both-desc" class="delete-opt-desc">Permanently delete the model AND purge all saved benchmark results.</span>
+                        </span>
+                    </button>
+                </div>
+
+                <div id="delete-modal-confirm-step" class="delete-confirm-step" style="display:none;">
+                    <div id="delete-confirm-summary" class="delete-confirm-summary"></div>
+                    <div class="delete-confirm-actions">
+                        <button id="btn-del-confirm-back" type="button" class="btn btn-slate btn-sm">← Back</button>
+                        <button id="btn-del-confirm-exec" type="button" class="btn btn-danger btn-sm">Confirm Delete</button>
+                    </div>
+                </div>
+
+                <div id="delete-modal-status" class="delete-modal-status" style="display:none;"></div>
+
+                <div class="modal-footer-row" style="margin-top:0.25rem; border-top:1px solid var(--border-color); padding-top:0.65rem; justify-content:flex-end;">
+                    <button id="btn-del-opt-cancel" type="button" class="btn btn-slate btn-sm">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Floating Scroll-to-Top Button (appears after scrolling > 480px) -->
     <button id="btn-scroll-top" class="btn-scroll-top" type="button" aria-label="Scroll back to top" title="Back to top">↑</button>
 

@@ -693,3 +693,61 @@ console.log(JSON.stringify(out));
     assert data["oc"]["providerLabel"] == "OpenCode"
     assert data["oc"]["shortName"] == "mimo-v2.6-flash-free"
     assert data["local"] == "kwaipilot-kat-coder-v2-5-dev-iq4-nl"
+
+
+def test_unified_delete_modal_supports_all_three_actions_for_local_and_online():
+    """Both local and online models expose 3 explicit delete options in the UI modal."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    js = DASHBOARD_JS.read_text(encoding="utf-8")
+    for elem_id in (
+        'id="delete-model-modal"',
+        'id="btn-del-opt-benchmarks"',
+        'id="btn-del-opt-model-only"',
+        'id="btn-del-opt-both"',
+        'id="btn-del-confirm-exec"',
+    ):
+        assert elem_id in html, f"missing {elem_id} in index.html"
+    assert "badge-manage-delete" in js
+    assert "openDeleteModelModal" in js
+    assert "executeModelDeleteAction" in js
+    # Online model deletion supports all 3 combinations via /api/online/models/remove
+    assert "remove_model: mode === 'model_only' || mode === 'both'" in js
+    assert "remove_benchmarks: mode === 'benchmarks' || mode === 'both'" in js
+    # Local model deletion supports benchmarks-only, model-only, and both
+    assert "remove_benchmarks: mode === 'both'" in js
+
+
+def test_local_delete_model_only_keeps_benchmarks_while_delete_both_purges_them(tmp_path):
+    """Backend /api/models/delete honors remove_benchmarks=False vs True cleanly."""
+    from unittest.mock import MagicMock, patch
+
+    from web import app as web_app
+
+    client = web_app.app.test_client()
+    ok_resp = MagicMock(status_code=200)
+    ok_resp.json.return_value = {"status": "deleted", "model": "ornith:latest"}
+
+    # 1. Model only (remove_benchmarks=False) must NOT call _purge_model_benchmarks
+    with (
+        patch("web.app._find_proxy_url", return_value="http://proxy:11434"),
+        patch("httpx.Client.post", return_value=ok_resp),
+        patch("web.app.model_tracker.delete_model") as mock_del_tracker,
+        patch("web.app._purge_model_benchmarks") as mock_purge,
+    ):
+        res = client.post("/api/models/delete", json={"model": "ornith:latest", "remove_benchmarks": False})
+    assert res.status_code == 200
+    mock_del_tracker.assert_called_once_with("ornith:latest")
+    mock_purge.assert_not_called()
+
+    # 2. Both (remove_benchmarks=True) MUST purge benchmarks too
+    with (
+        patch("web.app._find_proxy_url", return_value="http://proxy:11434"),
+        patch("httpx.Client.post", return_value=ok_resp),
+        patch("web.app.model_tracker.delete_model") as mock_del_tracker,
+        patch("web.app._purge_model_benchmarks", return_value={"removed": True, "snapshots_pruned": 1}) as mock_purge,
+    ):
+        res = client.post("/api/models/delete", json={"model": "ornith:latest", "remove_benchmarks": True})
+    assert res.status_code == 200
+    mock_del_tracker.assert_called_once_with("ornith:latest")
+    mock_purge.assert_called_once_with("ornith:latest")
+    assert res.get_json()["benchmark_results_removed"]["removed"] is True
