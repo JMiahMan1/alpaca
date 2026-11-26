@@ -1834,3 +1834,231 @@ def test_profile_overlay_json_booleans_switch_thinking_on(tmp_path, monkeypatch)
     assert suite._test_num_predict(test, "think-model:q4") == 500 + 2 * 2048
     assert suite._effective_thinking("plain-model:q4") is False
     assert suite._test_num_predict(test, "plain-model:q4") == 500
+
+
+def test_usable_chat_model_filter_excludes_non_chat_models():
+    """Audio/TTS/image/embedding/guard/LoRA/GGUF/deprecated entries must not pollute chat catalogs."""
+    blocked = [
+        "whisper-large-v3-turbo",
+        "canopylabs/orpheus-v1-english",
+        "meta-llama/llama-prompt-guard-2-86m",
+        "openai/gpt-oss-safeguard-20b",
+        "gemini-2.5-flash-preview-tts",
+        "gemini-3-pro-image-preview",
+        "nano-banana-pro-preview",
+        "lyria-3.5",
+        "gemini-3.5-transcribe",
+        "gemini-robotics-er-2-preview",
+        "deep-research-preview-04-2026",
+        "@cf/meta/llama-guard-3-8b",
+        "@cf/mistral/mistral-7b-instruct-v0.2-lora",
+        "prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+        "text-embedding-3-large",
+        "grok-imagine-video-1.5",
+    ]
+    for mid in blocked:
+        assert OnlineModelProvider._is_usable_chat_model(mid) is False, f"{mid} should be filtered"
+
+    allowed = [
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-120b",
+        "gemini-2.5-flash",
+        "gemma-4-26b-a4b-it",
+        "@cf/openai/gpt-oss-20b",
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        "cline-pass/deepseek-v4.1-flash",
+        "mimo-v2.6-flash-free",
+    ]
+    for mid in allowed:
+        assert OnlineModelProvider._is_usable_chat_model(mid) is True, f"{mid} should be allowed"
+
+    assert OnlineModelProvider._is_usable_chat_model("foo", status="deprecated") is False
+    assert OnlineModelProvider._is_usable_chat_model("foo", model_type="video") is False
+    assert OnlineModelProvider._is_usable_chat_model("foo", architecture={"output_modalities": ["image"]}) is False
+    assert OnlineModelProvider._is_usable_chat_model("foo", active=False) is False
+
+
+@pytest.mark.asyncio
+async def test_cline_pass_discovery_merges_live_subscription_models_and_drops_unusable():
+    """ClinePass merges active cline-pass/* subscription models first and drops broken :free/@preset entries."""
+    provider = OnlineModelProvider()
+    provider.cline_api_key = "test-key"
+
+    api_resp = MagicMock(status_code=200)
+    api_resp.json.return_value = {
+        "data": [
+            {"id": "inclusionai/ling-3.2-flash:free"},
+            {"id": "@preset/cline-new27-20261022-opus55"},
+            {"id": "anthropic/claude-sonnet-4-6"},
+        ]
+    }
+    models_dev_resp = MagicMock(status_code=200)
+    models_dev_resp.json.return_value = {
+        "cline-pass": {
+            "models": {
+                "cline-pass/deepseek-v4.1-flash": {
+                    "name": "DeepSeek V4.1 Flash",
+                    "reasoning": True,
+                    "limit": {"context": 1000000},
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                },
+                "cline-pass/mimo-v2.5": {
+                    "name": "MiMo V2.5",
+                    "status": "deprecated",
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                },
+            }
+        }
+    }
+
+    async def fake_get(self_client, url, **kwargs):
+        if "models.dev" in url:
+            return models_dev_resp
+        return api_resp
+
+    with patch("httpx.AsyncClient.get", new=fake_get):
+        all_models = await provider.fetch_live_models(provider="cline_pass", free_only=False)
+        free_models = await provider.fetch_live_models(provider="cline_pass", free_only=True)
+
+    ids = [m["id"] for m in all_models]
+    assert ids[0] == "cline_pass:cline-pass/deepseek-v4.1-flash"
+    assert all_models[0]["free"] is True
+    assert all_models[0]["context_length"] == 1000000
+    assert "cline_pass:anthropic/claude-sonnet-4-6" in ids
+    # Deprecated, broken :free, and @preset entries must be excluded
+    assert "cline_pass:cline-pass/mimo-v2.5" not in ids
+    assert "cline_pass:inclusionai/ling-3.2-flash:free" not in ids
+    assert "cline_pass:@preset/cline-new27-20261022-opus55" not in ids
+    # Free-only filter returns subscription-included models
+    assert [m["id"] for m in free_models] == ["cline_pass:cline-pass/deepseek-v4.1-flash"]
+
+
+@pytest.mark.asyncio
+async def test_huggingface_discovery_uses_live_router_models():
+    """Hugging Face discovery queries the live HF Router instead of unhosted raw Hub GGUFs."""
+    provider = OnlineModelProvider()
+    provider.huggingface_token = "hf_test"
+
+    router_resp = MagicMock(status_code=200)
+    router_resp.json.return_value = {
+        "data": [
+            {
+                "id": "Qwen/Qwen3.8-27B",
+                "architecture": {"output_modalities": ["text"]},
+                "providers": [{"provider": "cerebras", "status": "live", "context_length": 131072}],
+            },
+            {
+                "id": "offline/dead-model",
+                "architecture": {"output_modalities": ["text"]},
+                "providers": [{"provider": "deepinfra", "status": "staging"}],
+            },
+            {
+                "id": "someone/image-gen-only",
+                "architecture": {"output_modalities": ["image"]},
+                "providers": [{"provider": "fal-ai", "status": "live"}],
+            },
+        ]
+    }
+    seen_urls = []
+
+    async def fake_get(self_client, url, **kwargs):
+        seen_urls.append(url)
+        return router_resp
+
+    with patch("httpx.AsyncClient.get", new=fake_get):
+        models = await provider.fetch_live_models(provider="huggingface")
+
+    assert any("router.huggingface.co/v1/models" in u for u in seen_urls)
+    assert [m["id"] for m in models] == ["huggingface:Qwen/Qwen3.8-27B"]
+    assert models[0]["context_length"] == 131072
+
+
+@pytest.mark.asyncio
+async def test_cloudflare_handles_openai_choices_envelope_and_paid_flag():
+    """Newer Cloudflare models return result.choices[0].message and publish require_workers_paid."""
+    provider = OnlineModelProvider()
+    provider.cloudflare_account_id = "acc-1"
+    provider.cloudflare_api_token = "tok-1"
+
+    cf_list_resp = MagicMock(status_code=200)
+    cf_list_resp.json.return_value = {
+        "result": [
+            {
+                "name": "@cf/openai/gpt-oss-20b",
+                "properties": [
+                    {"property_id": "context_window", "value": "128000"},
+                    {"property_id": "reasoning", "value": "true"},
+                ],
+            },
+            {
+                "name": "@cf/zai-org/glm-5.3",
+                "properties": [
+                    {"property_id": "require_workers_paid", "value": "true"},
+                    {"property_id": "context_window", "value": "1048576"},
+                ],
+            },
+            {"name": "@cf/meta/llama-guard-3-8b", "properties": []},
+            {"name": "@cf/mistral/mistral-7b-instruct-v0.2-lora", "properties": []},
+        ]
+    }
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=cf_list_resp):
+        all_cf = await provider.fetch_live_models(provider="cloudflare", free_only=False)
+        free_cf = await provider.fetch_live_models(provider="cloudflare", free_only=True)
+
+    assert [m["id"] for m in all_cf] == ["cloudflare:@cf/openai/gpt-oss-20b", "cloudflare:@cf/zai-org/glm-5.3"]
+    assert all_cf[0]["free"] is True and all_cf[0]["reasoning"] is True
+    assert all_cf[1]["free"] is False and all_cf[1]["context_length"] == 1048576
+    assert [m["id"] for m in free_cf] == ["cloudflare:@cf/openai/gpt-oss-20b"]
+
+    # Inference with OpenAI-compatible result.choices envelope
+    cf_chat_resp = MagicMock(status_code=200)
+    cf_chat_resp.headers = {"content-type": "application/json"}
+    cf_chat_resp.text = '{"result":{"choices":[{"finish_reason":"stop","message":{"content":"OK","reasoning_content":"step"}}],"usage":{"completion_tokens":5}},"success":true}'
+    cf_chat_resp.json.return_value = {
+        "success": True,
+        "result": {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "OK", "reasoning_content": "step"},
+                }
+            ],
+            "usage": {"completion_tokens": 5},
+        },
+    }
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=cf_chat_resp):
+        res = await provider.query_online_model("cloudflare:@cf/openai/gpt-oss-20b", prompt="Reply OK")
+
+    assert res["success"] is True
+    assert res["response"] == "OK"
+    assert res["thinking"] == "step"
+    assert res["tokens_generated"] == 5
+
+
+@pytest.mark.asyncio
+async def test_opencode_zen_expired_key_falls_back_to_public_free_chat_models():
+    """An expired Zen key returns 401; discovery must still surface free chat models and drop video/embedding."""
+    provider = OnlineModelProvider()
+    provider.opencode_zen_base_url = "https://opencode.ai/zen/v1"
+    provider.opencode_zen_api_key = "sk-expired"
+
+    resp_401 = MagicMock(status_code=401)
+    resp_pub = MagicMock(status_code=200)
+    resp_pub.json.return_value = {
+        "data": [
+            {"id": "mimo-v2.6-flash-free", "type": "chat", "name": "MiMo Free"},
+            {"id": "claude-opus-5", "type": "chat", "name": "Claude Opus 5"},
+            {"id": "grok-imagine-video-1.5", "type": "video", "name": "Grok Video"},
+            {"id": "jev-1.13-free", "type": "decision", "name": "Jev Free"},
+        ]
+    }
+
+    async def fake_get(self_client, url, headers=None, **kwargs):
+        if headers and "Authorization" in headers:
+            return resp_401
+        return resp_pub
+
+    with patch("httpx.AsyncClient.get", new=fake_get):
+        models = await provider.fetch_live_models(provider="opencode_zen", free_only=False)
+
+    assert [m["id"] for m in models] == ["opencode:opencode/mimo-v2.6-flash-free"]

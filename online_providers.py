@@ -1062,6 +1062,26 @@ class OnlineModelProvider:
                     resp = await client.get(f"{base_url}/models", headers=headers)
                     if resp.status_code in (200, 201):
                         return {"success": True, "message": "Successfully reached endpoint!"}
+                    if resp.status_code in (401, 403) and api_key:
+                        pub_resp = await client.get(f"{base_url}/models")
+                        if pub_resp.status_code in (200, 201):
+                            pub_data = pub_resp.json()
+                            pub_list = pub_data.get("data") or pub_data.get("models") or []
+                            free_count = sum(
+                                1
+                                for m in pub_list
+                                if isinstance(m, dict)
+                                and ("-free" in str(m.get("id") or "").lower())
+                                and self._is_usable_chat_model(str(m.get("id") or ""), model_type=m.get("type"))
+                            )
+                            return {
+                                "success": False,
+                                "error": (
+                                    f"OpenCode Zen API key expired/rejected (HTTP {resp.status_code}). "
+                                    f"Update or clear the key in Settings ({free_count} free Zen chat models "
+                                    "are still available via OpenCode CLI)."
+                                ),
+                            }
                     return {"success": False, "error": self._format_http_error("Endpoint", resp.status_code, "")}
 
             elif provider == "groq":
@@ -1218,6 +1238,103 @@ class OnlineModelProvider:
             "error": (f"{label} CLI not found on PATH and {spec['docker_image_env']} is not set."),
         }
 
+    _NON_CHAT_MODEL_RE = re.compile(
+        r"(?:^|[/:_-])(?:"
+        r"whisper|orpheus|tts|transcribe|transcription|"
+        r"imagen|veo|lyria|nano-banana|gpt-image|imagine-image|imagine-video|stable-diffusion|flux|"
+        r"embed|embedding|bge|voyage|"
+        r"prompt-guard|llama-guard|safeguard|"
+        r"robotics|computer-use|deep-research|aqa|realtime|gpt-live|native-audio|audio-preview|decision"
+        r")(?:$|[/:_.-])"
+        r"|(?:[-_]image(?:$|[-_:.])|[-_]lora$|\.gguf$|[-_]gguf$)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_usable_chat_model(
+        cls,
+        model_id: str,
+        *,
+        architecture: dict[str, Any] | None = None,
+        modalities: dict[str, Any] | None = None,
+        model_type: str | None = None,
+        active: Any = True,
+        status: str | None = None,
+    ) -> bool:
+        """Return True only for active text/chat LLMs suitable for benchmark prompts."""
+        mid = str(model_id or "").strip()
+        if not mid:
+            return False
+        if active is False:
+            return False
+        if status and str(status).lower() in ("deprecated", "archived", "disabled", "retired"):
+            return False
+        if model_type and str(model_type).lower() not in ("chat", "text", "text-generation", "llm", "completion"):
+            return False
+        if isinstance(architecture, dict):
+            out_mods = architecture.get("output_modalities")
+            if isinstance(out_mods, list) and out_mods and "text" not in [str(x).lower() for x in out_mods]:
+                return False
+        if isinstance(modalities, dict):
+            out_mods = modalities.get("output")
+            if isinstance(out_mods, list) and out_mods and "text" not in [str(x).lower() for x in out_mods]:
+                return False
+        return not cls._NON_CHAT_MODEL_RE.search(mid)
+
+    async def _fetch_cline_pass_subscription_models(self) -> list[dict[str, Any]]:
+        """Fetch live ClinePass subscription models (cline-pass/*) from models.dev,
+        falling back to the local opencode CLI catalog if models.dev is unreachable.
+        """
+        sub_models: list[dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://models.dev/api.json")
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    cp_block = payload.get("cline-pass") if isinstance(payload, dict) else None
+                    cp_models = cp_block.get("models") if isinstance(cp_block, dict) else None
+                    if isinstance(cp_models, dict):
+                        for m_id, info in cp_models.items():
+                            if not isinstance(info, dict):
+                                continue
+                            if not self._is_usable_chat_model(
+                                m_id,
+                                modalities=info.get("modalities"),
+                                status=info.get("status"),
+                            ):
+                                continue
+                            slug = m_id if m_id.startswith("cline-pass/") else f"cline-pass/{m_id}"
+                            limit = info.get("limit") if isinstance(info.get("limit"), dict) else {}
+                            sub_models.append(
+                                {
+                                    "id": slug,
+                                    "name": info.get("name") or slug,
+                                    "label": info.get("name") or slug,
+                                    "context_length": int(limit.get("context") or 131072),
+                                    "reasoning": bool(info.get("reasoning")),
+                                }
+                            )
+        except Exception as e:
+            logger.debug(f"Could not fetch ClinePass catalog from models.dev: {e}")
+
+        if not sub_models and _opencode_cli_available():
+            try:
+                import subprocess
+
+                proc = subprocess.run(["opencode", "models"], capture_output=True, text=True, timeout=15)
+                if proc.returncode == 0:
+                    for raw_line in proc.stdout.splitlines():
+                        line = raw_line.strip()
+                        if not line.startswith("cline-pass/"):
+                            continue
+                        slug = line[len("cline-pass/") :] if line.startswith("cline-pass/cline-pass/") else line
+                        if self._is_usable_chat_model(slug):
+                            sub_models.append({"id": slug, "name": slug, "label": slug, "context_length": 131072})
+            except Exception as e:
+                logger.debug(f"Could not read ClinePass models from opencode CLI: {e}")
+
+        return sub_models
+
     async def fetch_live_models(
         self, provider: str = "all", query: str = "", free_only: bool = False
     ) -> list[dict[str, Any]]:
@@ -1257,6 +1374,8 @@ class OnlineModelProvider:
                         self._cached_live_models["openrouter"] = raw_models
                         for m in raw_models:
                             m_id = m.get("id", "")
+                            if not self._is_usable_chat_model(m_id, architecture=m.get("architecture")):
+                                continue
                             m_name = m.get("name", m_id)
                             desc = m.get("description", "")
                             ctx = m.get("context_length", 0)
@@ -1299,24 +1418,43 @@ class OnlineModelProvider:
             except Exception as e:
                 logger.warning(f"Error discovering OpenRouter models: {e}")
 
-        # 2. Hugging Face Live Discovery
+        # 2. Hugging Face Live Discovery (query Inference Providers router so every
+        # listed model actually has a live serverless chat provider instead of raw GGUFs)
         if "huggingface" in providers_to_query:
             try:
                 headers = {}
                 if self.huggingface_token:
                     headers["Authorization"] = f"Bearer {self.huggingface_token}"
-                url = "https://huggingface.co/api/models?pipeline_tag=text-generation&sort=trendingScore&limit=100"
-                if query_lower:
-                    url += f"&search={query_lower}"
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(url, headers=headers)
+                router_models_url = os.getenv("HUGGINGFACE_ROUTER_MODELS_URL", "https://router.huggingface.co/v1/models")
+                async with httpx.AsyncClient(timeout=12.0) as client:
+                    resp = await client.get(router_models_url, headers=headers)
                     if resp.status_code == 200:
-                        hf_models = resp.json()
+                        payload = resp.json()
+                        hf_models = payload.get("data", []) if isinstance(payload, dict) else payload
                         if isinstance(hf_models, list):
+                            self._cached_live_models["huggingface"] = hf_models
                             for m in hf_models:
-                                m_id = m.get("id", "")
-                                if not m_id:
+                                if not isinstance(m, dict):
                                     continue
+                                m_id = m.get("id", "")
+                                if not self._is_usable_chat_model(m_id, architecture=m.get("architecture")):
+                                    continue
+                                prov_entries = m.get("providers") or []
+                                live_provs = [
+                                    p for p in prov_entries if isinstance(p, dict) and p.get("status") == "live"
+                                ]
+                                if prov_entries and not live_provs:
+                                    continue
+                                if query_lower and query_lower not in m_id.lower():
+                                    continue
+                                ctx_vals = [
+                                    int(p.get("context_length") or 0)
+                                    for p in (live_provs or prov_entries)
+                                    if isinstance(p, dict)
+                                ]
+                                ctx_len = max(ctx_vals) if ctx_vals and max(ctx_vals) > 0 else 32768
+                                prov_names = [str(p.get("provider")) for p in live_provs[:3] if p.get("provider")]
+                                prov_summary = f" via {', '.join(prov_names)}" if prov_names else ""
                                 results.append(
                                     {
                                         "id": f"huggingface:{m_id}",
@@ -1324,16 +1462,17 @@ class OnlineModelProvider:
                                         "label": m_id.split("/")[-1],
                                         "provider": "huggingface",
                                         "free": True,
-                                        "free_tier": "Free (Serverless Inference)",
-                                        "pricing_label": "Free Serverless",
-                                        "context_length": 32768,
-                                        "description": f"Trending text generation model from Hugging Face ({m_id}).",
+                                        "free_tier": "HF Router Credits",
+                                        "pricing_label": "HF Inference Credits / PRO",
+                                        "context_length": ctx_len,
+                                        "description": f"Live Hugging Face Router chat model ({m_id}{prov_summary}).",
                                     }
                                 )
             except Exception as e:
                 logger.warning(f"Error discovering Hugging Face models: {e}")
 
-        # 3. OpenCode Zen Live Discovery (All models + free tiers)
+        # 3. OpenCode Zen Live Discovery (All models + free tiers; falls back to public
+        # unauthenticated free catalog if a stored paid API key has expired)
         if "opencode_zen" in providers_to_query:
             base_url = (self.opencode_zen_base_url or "").strip().rstrip("/")
             if not base_url:
@@ -1345,27 +1484,32 @@ class OnlineModelProvider:
                     if self.opencode_zen_api_key:
                         headers["Authorization"] = f"Bearer {self.opencode_zen_api_key}"
 
+                    key_rejected = False
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         resp = await client.get(f"{base_url}/models", headers=headers)
+                        if resp.status_code in (401, 403) and headers:
+                            key_rejected = True
+                            resp = await client.get(f"{base_url}/models")
                         if resp.status_code == 200:
                             data = resp.json()
                             raw_list = data.get("data") or data.get("models") or []
                             if isinstance(raw_list, list) and raw_list:
                                 for m in raw_list:
                                     m_id = m.get("id") or m.get("name") if isinstance(m, dict) else str(m)
-                                    if not m_id:
+                                    m_type = m.get("type") if isinstance(m, dict) else None
+                                    if not self._is_usable_chat_model(m_id, model_type=m_type):
                                         continue
                                     label = m.get("label") or m.get("name") or m_id if isinstance(m, dict) else m_id
                                     is_free = "-free" in m_id.lower() or ":free" in m_id.lower()
 
-                                    if free_only and not is_free:
+                                    if (free_only or key_rejected) and not is_free:
                                         continue
 
                                     # Free-tier Zen models reject raw HTTP (403 from
                                     # outside OpenCode), so advertise them under the
                                     # opencode: prefix which always shells out to the CLI.
                                     # The CLI needs the opencode/ namespace on -m.
-                                    zen_id = (f"opencode:opencode/{m_id}" if is_free else f"opencode_zen:{m_id}")
+                                    zen_id = f"opencode:opencode/{m_id}" if is_free else f"opencode_zen:{m_id}"
                                     if query_lower and (
                                         query_lower not in zen_id.lower() and query_lower not in label.lower()
                                     ):
@@ -1408,9 +1552,15 @@ class OnlineModelProvider:
                     )
                     if proc.returncode != 0:
                         raise RuntimeError((proc.stderr or proc.stdout or "opencode models failed").strip()[:300])
+                    oc_items: list[dict[str, Any]] = []
                     for line in proc.stdout.splitlines():
                         m_id = line.strip()
                         if not m_id or m_id.startswith("#"):
+                            continue
+                        # Skip gateways requiring separate gateway IDs and double-prefixed ClinePass slugs
+                        if m_id.startswith("cloudflare-ai-gateway/") or m_id.startswith("cline-pass/cline-pass/"):
+                            continue
+                        if not self._is_usable_chat_model(m_id):
                             continue
                         is_free = "-free" in m_id.lower() or ":free" in m_id.lower()
                         if free_only and not is_free:
@@ -1420,7 +1570,7 @@ class OnlineModelProvider:
                             query_lower not in oc_id.lower() and query_lower not in m_id.lower()
                         ):
                             continue
-                        results.append(
+                        oc_items.append(
                             {
                                 "id": oc_id,
                                 "name": m_id,
@@ -1437,6 +1587,8 @@ class OnlineModelProvider:
                                 ),
                             }
                         )
+                    oc_items.sort(key=lambda x: (not (x["free"] and x["name"].startswith("opencode/")), not x["free"], x["name"]))
+                    results.extend(oc_items)
             except Exception as e:
                 logger.warning(f"Error discovering OpenCode CLI models: {e}")
 
@@ -1474,10 +1626,24 @@ class OnlineModelProvider:
 
                 for m in cf_models:
                     m_name = m.get("name", "")
-                    if not m_name:
+                    if not self._is_usable_chat_model(m_name):
                         continue
                     if query_lower and query_lower not in m_name.lower():
                         continue
+                    props = {
+                        p.get("property_id"): p.get("value")
+                        for p in (m.get("properties") or [])
+                        if isinstance(p, dict)
+                    }
+                    requires_paid = str(props.get("require_workers_paid", "")).lower() == "true"
+                    is_free = not requires_paid
+                    if free_only and not is_free:
+                        continue
+                    try:
+                        ctx_len = int(props.get("context_window") or 128000)
+                    except (TypeError, ValueError):
+                        ctx_len = 128000
+                    is_reasoning = str(props.get("reasoning", "")).lower() == "true"
 
                     results.append(
                         {
@@ -1485,10 +1651,11 @@ class OnlineModelProvider:
                             "name": m_name,
                             "label": m_name.split("/")[-1],
                             "provider": "cloudflare",
-                            "free": True,  # Cloudflare provides 10k Neurons/day free across all models
-                            "free_tier": "10k Neurons/day Free",
-                            "pricing_label": "10k Neurons/day Free",
-                            "context_length": 128000,
+                            "free": is_free,
+                            "free_tier": "10k Neurons/day Free" if is_free else "Workers Paid Required",
+                            "pricing_label": "10k Neurons/day Free" if is_free else "Workers Paid Tier",
+                            "context_length": ctx_len,
+                            "reasoning": is_reasoning,
                             "description": m.get(
                                 "description", f"Cloudflare Workers AI model ({m_name}). 10k Neurons/day free tier."
                             ),
@@ -1511,7 +1678,7 @@ class OnlineModelProvider:
                         self._cached_live_models["groq"] = raw_models
                         for m in raw_models:
                             m_id = m.get("id", "") if isinstance(m, dict) else ""
-                            if not m_id:
+                            if not self._is_usable_chat_model(m_id, active=m.get("active", True)):
                                 continue
                             owned = m.get("owned_by", "") if isinstance(m, dict) else ""
                             if query_lower and query_lower not in m_id.lower():
@@ -1548,7 +1715,7 @@ class OnlineModelProvider:
                         self._cached_live_models["orcarouter"] = raw_models
                         for m in raw_models:
                             m_id = m.get("id", "") if isinstance(m, dict) else ""
-                            if not m_id:
+                            if not self._is_usable_chat_model(m_id):
                                 continue
                             owned = m.get("owned_by", "") if isinstance(m, dict) else ""
                             if query_lower and query_lower not in m_id.lower():
@@ -1586,7 +1753,7 @@ class OnlineModelProvider:
                         for m in raw_models:
                             m_name = m.get("name", "") if isinstance(m, dict) else ""
                             m_id = m_name.split("/")[-1] if m_name.startswith("models/") else m_name
-                            if not m_id:
+                            if not self._is_usable_chat_model(m_id):
                                 continue
                             display = m.get("displayName", m_id) if isinstance(m, dict) else m_id
                             methods = m.get("supportedGenerationMethods", []) if isinstance(m, dict) else []
@@ -1621,48 +1788,70 @@ class OnlineModelProvider:
             else:
                 try:
                     headers = {"Authorization": f"Bearer {self.cline_api_key}"}
+                    raw_models: list[dict[str, Any]] = []
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         resp = await client.get("https://api.cline.bot/api/v1/models", headers=headers)
                         if resp.status_code == 200:
                             data = resp.json()
-                            raw_models = data.get("data") or data.get("models") or []
-                            if isinstance(data, dict) and raw_models and isinstance(raw_models[0], str):
-                                raw_models = [{"id": m} for m in raw_models]
-                            self._cached_live_models["cline_pass"] = raw_models
-                            for m in raw_models:
-                                if not isinstance(m, dict):
-                                    continue
-                                m_id = m.get("id") or m.get("name") or ""
-                                if not m_id:
-                                    continue
-                                label = m.get("label") or m.get("name") or m_id
-                                is_subscription = m_id.startswith("cline-pass/")
-                                if free_only and not (m_id.endswith(":free") or "free" in m_id.lower()):
-                                    continue
-                                if query_lower and query_lower not in m_id.lower() and query_lower not in label.lower():
-                                    continue
-                                results.append(
-                                    {
-                                        "id": f"cline_pass:{m_id}",
-                                        "name": m_id,
-                                        "label": label,
-                                        "provider": "cline_pass",
-                                        "free": False,
-                                        "free_tier": "ClinePass subscription" if is_subscription else "Cline API",
-                                        "pricing_label": "ClinePass subscription"
-                                        if is_subscription
-                                        else "Cline API usage pricing",
-                                        "context_length": m.get("context_window") or m.get("context_length") or 131072,
-                                        "reasoning": bool(
-                                            m.get("reasoning")
-                                            or m.get("supports_reasoning")
-                                            or "reasoning" in (m.get("capabilities") or [])
-                                        ),
-                                        "description": f"Cline API model {m_id}."
-                                        if not is_subscription
-                                        else f"ClinePass subscription model {m_id}.",
-                                    }
-                                )
+                            api_models = data.get("data") or data.get("models") or []
+                            if isinstance(api_models, list) and api_models and isinstance(api_models[0], str):
+                                api_models = [{"id": m} for m in api_models]
+                            if isinstance(api_models, list):
+                                raw_models = [m for m in api_models if isinstance(m, dict)]
+
+                    # api.cline.bot/api/v1/models only returns pay-as-you-go Cline API models
+                    # and omits the cline-pass/* subscription bundle. Merge live subscription
+                    # models first so ClinePass subscribers get usable models right at the top.
+                    has_sub_in_api = any(str(m.get("id") or "").startswith("cline-pass/") for m in raw_models)
+                    sub_models = [] if has_sub_in_api else await self._fetch_cline_pass_subscription_models()
+
+                    seen_cp: set[str] = set()
+                    merged_cp: list[dict[str, Any]] = []
+                    for m in [*sub_models, *raw_models]:
+                        m_id = str(m.get("id") or m.get("name") or "").strip()
+                        if not m_id or m_id in seen_cp:
+                            continue
+                        is_subscription = m_id.startswith("cline-pass/")
+                        # Skip non-subscription :free slugs (Cline API rejects them with HTTP 404
+                        # "model not supported") and internal @preset/ experiment aliases.
+                        if not is_subscription and (m_id.endswith(":free") or m_id.startswith("@preset/")):
+                            continue
+                        if not self._is_usable_chat_model(m_id):
+                            continue
+                        seen_cp.add(m_id)
+                        merged_cp.append(m)
+
+                    self._cached_live_models["cline_pass"] = merged_cp
+                    for m in merged_cp:
+                        m_id = str(m.get("id") or m.get("name") or "").strip()
+                        label = m.get("label") or m.get("name") or m_id
+                        is_subscription = m_id.startswith("cline-pass/")
+                        if free_only and not is_subscription:
+                            continue
+                        if query_lower and query_lower not in m_id.lower() and query_lower not in str(label).lower():
+                            continue
+                        results.append(
+                            {
+                                "id": f"cline_pass:{m_id}",
+                                "name": m_id,
+                                "label": label,
+                                "provider": "cline_pass",
+                                "free": is_subscription,
+                                "free_tier": "ClinePass Subscription" if is_subscription else "Cline API Credits",
+                                "pricing_label": "Included in ClinePass"
+                                if is_subscription
+                                else "Cline API usage pricing",
+                                "context_length": m.get("context_window") or m.get("context_length") or 131072,
+                                "reasoning": bool(
+                                    m.get("reasoning")
+                                    or m.get("supports_reasoning")
+                                    or "reasoning" in (m.get("capabilities") or [])
+                                ),
+                                "description": f"ClinePass subscription model {m_id}."
+                                if is_subscription
+                                else f"Cline API pay-as-you-go model {m_id} (requires Cline Credits balance).",
+                            }
+                        )
                 except Exception as e:
                     logger.warning(f"Error discovering ClinePass models: {e}")
 
@@ -1991,7 +2180,7 @@ class OnlineModelProvider:
         tag_re = r"<think[^>]*>[\s\S]*?</think[^>]*>"
         inline_think = re.findall(tag_re, raw, flags=re.I)
         clean = re.sub(tag_re + r"\s*", "", raw, flags=re.I)
-        reasoning = msg.get("reasoning")  # OpenRouter reasoning field (separate from content)
+        reasoning = msg.get("reasoning") or msg.get("reasoning_content")
         thinking = reasoning or "\n".join(inline_think) or None
         finish = choice.get("finish_reason")
         if clean.strip():
@@ -2693,7 +2882,31 @@ class OnlineModelProvider:
                                 "error": f"Cloudflare Workers AI: {msg}",
                             }
                         result = data.get("result", {})
-                        content = result.get("response", "")
+                        if isinstance(result, dict) and result.get("choices"):
+                            tokens = (result.get("usage") or {}).get("completion_tokens", 0)
+                            content, thinking, finish, cerr = self._extract_online_content(
+                                result, "Cloudflare Workers AI"
+                            )
+                            if cerr:
+                                return {
+                                    "success": False,
+                                    "latency": latency,
+                                    "response": None,
+                                    "thinking": thinking,
+                                    "tokens_generated": 0,
+                                    "finish_reason": finish,
+                                    "error": cerr,
+                                }
+                            return {
+                                "success": True,
+                                "latency": latency,
+                                "response": content,
+                                "thinking": thinking,
+                                "finish_reason": finish,
+                                "tokens_generated": tokens or len(content.split()),
+                                "error": None,
+                            }
+                        content = result.get("response", "") if isinstance(result, dict) else ""
                         if not content:
                             return {
                                 "success": False,
@@ -2788,11 +3001,14 @@ class OnlineModelProvider:
                     except Exception:
                         err_msg = resp.text[:300]
                     # Zen's free tier only answers when the request comes from the
-                    # real OpenCode client (HTTP 403). Fall back to the CLI path so
-                    # free models still work instead of failing the whole benchmark.
-                    if resp.status_code == 403 and (
-                        "within opencode" in err_msg.lower() or "free tier" in err_msg.lower()
-                    ):
+                    # real OpenCode client (HTTP 403), or when a saved paid Zen key
+                    # has expired (HTTP 401) on a -free model. Fall back to the CLI
+                    # path so free models still work instead of failing the benchmark.
+                    is_free_zen = "-free" in model_name.lower() or ":free" in model_name.lower()
+                    if (
+                        resp.status_code == 403
+                        and ("within opencode" in err_msg.lower() or "free tier" in err_msg.lower())
+                    ) or (resp.status_code in (401, 403) and is_free_zen):
                         return await self._query_opencode_cli(
                             model_name,
                             prompt,

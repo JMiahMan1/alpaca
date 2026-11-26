@@ -12812,10 +12812,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 provBadge.style.background = 'rgba(163, 230, 53, 0.2)';
                 provBadge.style.color = '#bef264';
                 provBadge.textContent = 'OpenCode CLI';
-            } else {
+            } else if (m.provider === 'cline_pass') {
+                provBadge.style.background = 'rgba(236, 72, 153, 0.2)';
+                provBadge.style.color = '#f9a8d4';
+                provBadge.textContent = 'ClinePass';
+            } else if (m.provider === 'cline') {
+                provBadge.style.background = 'rgba(244, 114, 182, 0.2)';
+                provBadge.style.color = '#fbcfe8';
+                provBadge.textContent = 'Cline CLI';
+            } else if (m.provider === 'opencode_zen') {
                 provBadge.style.background = 'rgba(168, 85, 247, 0.2)';
                 provBadge.style.color = '#c084fc';
                 provBadge.textContent = 'OpenCode Zen';
+            } else {
+                provBadge.style.background = 'rgba(148, 163, 184, 0.2)';
+                provBadge.style.color = '#cbd5e1';
+                provBadge.textContent = m.provider || 'Online';
             }
 
             const freeBadge = document.createElement('span');
