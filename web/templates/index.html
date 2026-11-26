@@ -27,21 +27,28 @@
                         <h1>Alpaca Benchmarks v2</h1>
                         <p>Real-time multi-container LLM evaluation suite</p>
                     </div>
+                    <button id="mobile-view-title-btn" class="mobile-view-title-btn" type="button" aria-haspopup="dialog" aria-controls="mobile-views-sheet" title="Switch dashboard view">
+                        <span id="mobile-view-title-text">System Monitor</span>
+                        <span class="mobile-view-chevron" aria-hidden="true">▾</span>
+                    </button>
                 </div>
                 <div class="status-badge-container">
-                    <button id="mobile-controls-toggle" class="mobile-controls-toggle" type="button" aria-expanded="false" aria-controls="sidebar" title="Open pipeline and model controls">☰ Controls</button>
                     <button id="desktop-sidebar-toggle" class="desktop-sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar" title="Toggle pipeline controls sidebar">☰ Hide Controls</button>
-                    <div id="connection-status-badge" class="badge badge-danger">
+                    <div id="connection-status-badge" class="badge badge-danger" title="Socket connection status">
                         <span class="badge-dot"></span> Socket Offline
                     </div>
-                    <div id="runner-status-badge" class="badge badge-success">
+                    <div id="runner-status-badge" class="badge badge-success" title="Benchmark runner status">
                         <span class="badge-dot"></span> IDLE
                     </div>
+                    <button id="mobile-controls-toggle" class="mobile-controls-toggle" type="button" aria-expanded="false" aria-controls="sidebar" title="Open pipeline and model controls">⚙️ Controls</button>
                     <a id="header-logout-btn" href="/logout" class="badge badge-secondary" style="display:none;" title="Log out of session">
                         <span>🚪 Log out</span>
                     </a>
                 </div>
             </header>
+
+            <!-- Contextual Mobile Sub-Navigation (<=640px, shown for Bench & Studios groups) -->
+            <div id="mobile-subnav" class="mobile-subnav d-none" role="navigation" aria-label="Section views"></div>
 
             <!-- Main Navigation Tabs -->
             <div class="main-tabs" role="tablist" aria-label="Dashboard views">
@@ -67,11 +74,19 @@
             <!-- Left Sidebar Controls (Slide-over Drawer on <=1024px) -->
             <div id="sidebar" class="sidebar" aria-label="Pipeline and model controls">
                 <div id="sidebar-drawer-header" class="sidebar-drawer-header">
-                    <div class="sidebar-drawer-title">
-                        <span>⚙️</span>
-                        <span>Controls &amp; Models</span>
+                    <div class="sidebar-drawer-header-top">
+                        <div class="sidebar-drawer-title">
+                            <span>⚙️</span>
+                            <span>Controls &amp; Models</span>
+                        </div>
+                        <button id="btn-close-sidebar-drawer" class="sidebar-drawer-close" type="button" aria-label="Close controls drawer">&times;</button>
                     </div>
-                    <button id="btn-close-sidebar-drawer" class="sidebar-drawer-close" type="button" aria-label="Close controls drawer">&times;</button>
+                    <div class="sidebar-drawer-quickbar" aria-label="Quick control shortcuts">
+                        <button type="button" class="drawer-quick-chip" data-drawer-action="run">▶ Run</button>
+                        <button type="button" class="drawer-quick-chip" data-drawer-action="pull">🔍 Pull</button>
+                        <button type="button" class="drawer-quick-chip" data-drawer-action="online">🌐 Online</button>
+                        <button type="button" class="drawer-quick-chip" data-drawer-action="settings">🛠️ Settings</button>
+                    </div>
                 </div>
                 
                 <!-- Model Switcher Card -->
@@ -95,7 +110,7 @@
                                 <button id="btn-clear-vram" class="btn btn-warning btn-sm">Force Clear VRAM</button>
                             </div>
                              <div style="margin-top:0.5rem;">
-                                <button id="btn-open-search-modal" class="btn btn-success btn-sm">🔍 Find & Pull Models</button>
+                                <button id="btn-open-search-modal" class="btn btn-success btn-sm" style="width:100%;">🔍 Find &amp; Pull Models</button>
                              </div>
                         </div>
                         <div id="model-switcher-status" style="font-size:0.75rem; color:var(--text-muted); padding:0.5rem; background:#0f172a; border-radius:6px; min-height:2rem;">
@@ -1433,20 +1448,22 @@
                     </div>
 
                     <!-- Model Selector & Status Bar -->
-                    <div class="card" style="margin-bottom:1.25rem; background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
-                        <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;">
-                            <div style="display:flex; align-items:center; gap:0.75rem; flex:1; min-width:0; flex-wrap:wrap;">
-                                <span style="font-size:1rem;">🤖</span>
-                                <label class="control-label" style="font-size:0.8rem; font-weight:600; white-space:nowrap; margin-bottom:0; color:#e2e8f0;">Active Image Model:</label>
-                                <select id="sd-model-select" class="form-control" style="flex:1; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.75rem; border-radius:8px; font-size:0.82rem;">
+                    <div class="card sd-model-card" style="margin-bottom:1.25rem; background:#0f172a; border:1px solid rgba(255,255,255,0.08);">
+                        <div class="sd-model-bar">
+                            <div class="sd-model-picker">
+                                <div class="sd-model-label-row">
+                                    <span style="font-size:1rem;">🤖</span>
+                                    <label class="control-label" for="sd-model-select" style="font-size:0.8rem; font-weight:600; white-space:nowrap; margin-bottom:0; color:#e2e8f0;">Active Image Model:</label>
+                                </div>
+                                <select id="sd-model-select" class="form-control" style="flex:1 1 200px; min-width:0; background:#090d16; color:white; border:1px solid var(--border-color); padding:0.45rem 0.75rem; border-radius:8px; font-size:0.82rem;">
                                     <option value="">Loading models...</option>
                                 </select>
                             </div>
-                            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                            <div class="sd-model-actions">
                                 <button id="sd-load-btn" class="btn btn-primary btn-auto">⬇️ Load Model</button>
                                 <button id="sd-unload-btn" class="btn btn-secondary btn-slate btn-auto">⏏️ Unload</button>
                             </div>
-                            <div id="sd-status" style="font-size:0.78rem; font-weight:500; color:#38bdf8; background:rgba(56, 189, 248, 0.1); padding:0.35rem 0.75rem; border-radius:6px; border:1px solid rgba(56, 189, 248, 0.2); min-width:140px; text-align:center;">Idle.</div>
+                            <div id="sd-status" class="sd-status-pill" style="font-size:0.78rem; font-weight:500; color:#38bdf8; background:rgba(56, 189, 248, 0.1); padding:0.35rem 0.75rem; border-radius:6px; border:1px solid rgba(56, 189, 248, 0.2); min-width:140px; text-align:center;">Idle.</div>
                         </div>
                     </div>
 
@@ -1456,19 +1473,19 @@
                             <div class="sd-guide-step">
                                 <span class="sd-step-badge">1</span>
                                 <span style="font-size:0.8rem; font-weight:600; color:white;">Select Active Model</span>
-                                <span style="font-size:0.72rem; color:#94a3b8;">(Auto-loads if idle)</span>
+                                <span class="sd-guide-hint" style="font-size:0.72rem; color:#94a3b8;">(Auto-loads if idle)</span>
                             </div>
                             <div class="sd-guide-arrow" style="color:#475569; font-size:0.8rem;">➔</div>
                             <div class="sd-guide-step">
                                 <span class="sd-step-badge">2</span>
-                                <span style="font-size:0.8rem; font-weight:600; color:white;">Pick Mode & Tweak Parameters</span>
-                                <span style="font-size:0.72rem; color:#94a3b8;">(Flyer, Photo Edit, Canvas)</span>
+                                <span style="font-size:0.8rem; font-weight:600; color:white;">Pick Mode &amp; Tweak Parameters</span>
+                                <span class="sd-guide-hint" style="font-size:0.72rem; color:#94a3b8;">(Flyer, Photo Edit, Canvas)</span>
                             </div>
                             <div class="sd-guide-arrow" style="color:#475569; font-size:0.8rem;">➔</div>
                             <div class="sd-guide-step">
                                 <span class="sd-step-badge">3</span>
-                                <span style="font-size:0.8rem; font-weight:600; color:white;">Render & Export PNG</span>
-                                <span style="font-size:0.72rem; color:#94a3b8;">(High-res 1-click download)</span>
+                                <span style="font-size:0.8rem; font-weight:600; color:white;">Render &amp; Export PNG</span>
+                                <span class="sd-guide-hint" style="font-size:0.72rem; color:#94a3b8;">(High-res 1-click download)</span>
                             </div>
                         </div>
                     </div>
@@ -2457,9 +2474,9 @@
                             <div class="card-title" style="margin-bottom: 0.5rem; flex-shrink: 0;">Requests Buffer</div>
                             
                             <!-- Search, Timezone & Clear Controls -->
-                            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-shrink: 0; align-items: center; flex-wrap: wrap;">
-                                <input id="requests-search-input" type="text" placeholder="Search by model or prompt..." style="flex: 2; min-width: 150px; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.75rem;">
-                                <select id="requests-timezone-select" style="flex: 1; min-width: 130px; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.75rem; color-scheme: dark;">
+                            <div class="requests-toolbar">
+                                <input id="requests-search-input" type="text" placeholder="Search by model or prompt..." style="flex: 2; min-width: 150px; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.78rem;">
+                                <select id="requests-timezone-select" style="flex: 1; min-width: 130px; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.45rem 0.6rem; border-radius: 6px; font-size: 0.78rem; color-scheme: dark;">
                                 </select>
                                 <button id="btn-clear-requests" class="btn btn-danger btn-sm">🗑️ Clear</button>
                             </div>
@@ -2490,7 +2507,10 @@
 
                         <!-- Right pane: Inspector Details -->
                         <div class="card mobile-unbounded-card" style="display: flex; flex-direction: column; max-height: 700px; overflow-y: auto;">
-                            <div class="card-title" style="margin-bottom: 1rem; flex-shrink: 0;">Request Inspector</div>
+                            <div class="card-title" style="margin-bottom: 1rem; flex-shrink: 0;">
+                                <span>Request Inspector</span>
+                                <button id="btn-back-to-requests" class="btn btn-secondary btn-xs mobile-only-inline" type="button">↑ Requests List</button>
+                            </div>
                             
                             <div id="request-inspector-empty" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--text-muted); padding: 3rem 0;">
                                 <span style="font-size: 2.5rem; margin-bottom: 1rem;">🔍</span>
@@ -3519,7 +3539,7 @@
             <span class="mobile-dock-icon">⚡</span>
             <span class="mobile-dock-label">Monitor</span>
         </button>
-        <button type="button" class="mobile-dock-btn" data-dock-tab="general">
+        <button type="button" class="mobile-dock-btn" data-dock-tab="general" data-dock-group="general,shared,tests">
             <span class="mobile-dock-icon">🎯</span>
             <span class="mobile-dock-label">Bench</span>
         </button>
@@ -3558,7 +3578,11 @@
             <button type="button" class="mobile-sheet-item" data-sheet-tab="docs"><span>📖</span><span>API Docs</span></button>
         </div>
         <div class="mobile-sheet-footer">
-            <button type="button" id="mobile-sheet-open-controls" class="btn btn-primary btn-sm" style="width:100%;">⚙️ Open Pipeline &amp; Model Controls</button>
+            <div class="mobile-sheet-quick-actions">
+                <button type="button" id="mobile-sheet-open-controls" class="btn btn-primary btn-sm">⚙️ Controls</button>
+                <button type="button" id="mobile-sheet-open-pull" class="btn btn-success btn-sm">🔍 Pull Model</button>
+                <button type="button" id="mobile-sheet-open-settings" class="btn btn-secondary btn-sm">🛠️ Settings</button>
+            </div>
         </div>
     </div>
 
@@ -3570,8 +3594,8 @@
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
     <script>
     // Responsive layout controller:
-    // - Mobile & tablet (<=1024px): off-canvas slide-over controls drawer with backdrop, scroll lock & auto-close
-    // - Phone (<=640px): bottom navigation dock + All Views bottom sheet synced with .main-tabs
+    // - Mobile & tablet (<=1024px): off-canvas slide-over controls drawer with quick shortcuts, backdrop, scroll lock & auto-close
+    // - Phone (<=640px): slim single-row top bar with view switcher, contextual sub-nav for Bench/Studios, bottom dock & All Views sheet
     // - Desktop (>1024px): collapsible sticky sidebar persisted in localStorage
     (function() {
         const mobileBtn = document.getElementById('mobile-controls-toggle');
@@ -3582,10 +3606,16 @@
         const grid = document.querySelector('.dashboard-grid');
         const dock = document.getElementById('mobile-bottom-nav');
         const dockMoreBtn = document.getElementById('mobile-dock-more-btn');
+        const viewTitleBtn = document.getElementById('mobile-view-title-btn');
+        const viewTitleText = document.getElementById('mobile-view-title-text');
+        const subnav = document.getElementById('mobile-subnav');
         const sheet = document.getElementById('mobile-views-sheet');
         const sheetBackdrop = document.getElementById('mobile-views-sheet-backdrop');
         const closeSheetBtn = document.getElementById('btn-close-views-sheet');
         const sheetOpenControlsBtn = document.getElementById('mobile-sheet-open-controls');
+        const sheetOpenPullBtn = document.getElementById('mobile-sheet-open-pull');
+        const sheetOpenSettingsBtn = document.getElementById('mobile-sheet-open-settings');
+        const backToRequestsBtn = document.getElementById('btn-back-to-requests');
         if (!sidebar) return;
 
         const mq = window.matchMedia('(max-width: 1024px)');
@@ -3601,7 +3631,32 @@
             podcast: 'tab-btn-podcast',
             docs: 'tab-btn-docs'
         };
+        const TAB_TITLES = {
+            monitor: 'System Monitor',
+            general: 'General Benchmarks',
+            shared: 'SharedLLM',
+            tests: 'Test Browser',
+            profiles: 'Model Profiles',
+            requests: 'Request Monitor',
+            sd: 'Image Studio',
+            audio: 'Audio Studio',
+            podcast: 'Podcast Studio',
+            docs: 'API Docs'
+        };
+        const SUBNAV_GROUPS = {
+            bench: [
+                { tab: 'general', label: '🎯 General' },
+                { tab: 'shared', label: '⚙️ SharedLLM' },
+                { tab: 'tests', label: '🧪 Tests' }
+            ],
+            studios: [
+                { tab: 'sd', label: '🎨 Image' },
+                { tab: 'audio', label: '🎵 Audio' },
+                { tab: 'podcast', label: '🎙️ Podcast' }
+            ]
+        };
         let lastStudioTab = 'sd';
+        let lastBenchTab = 'general';
 
         function syncBodyLock() {
             const drawerOpen = sidebar.classList.contains('drawer-open');
@@ -3637,7 +3692,7 @@
             }
             if (mobileBtn) {
                 mobileBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-                mobileBtn.textContent = open ? '✕ Controls' : '☰ Controls';
+                mobileBtn.textContent = open ? '✕ Close' : '⚙️ Controls';
             }
             syncBodyLock();
         }
@@ -3651,10 +3706,46 @@
             try { localStorage.setItem('alpaca-desktop-sidebar-hidden', hidden ? '1' : '0'); } catch(e) {}
         }
 
+        function renderMobileSubnav(tabName) {
+            if (!subnav) return;
+            let items = null;
+            if (tabName === 'general' || tabName === 'shared' || tabName === 'tests') {
+                items = SUBNAV_GROUPS.bench;
+            } else if (tabName === 'sd' || tabName === 'audio' || tabName === 'podcast') {
+                items = SUBNAV_GROUPS.studios;
+            }
+            if (!items) {
+                subnav.classList.add('d-none');
+                subnav.innerHTML = '';
+                return;
+            }
+            subnav.classList.remove('d-none');
+            subnav.innerHTML = '';
+            items.forEach(item => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'mobile-subnav-btn' + (item.tab === tabName ? ' active' : '');
+                b.textContent = item.label;
+                b.setAttribute('data-subnav-tab', item.tab);
+                b.addEventListener('click', () => {
+                    activateTab(item.tab);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                });
+                subnav.appendChild(b);
+            });
+        }
+
         function syncDockActive(tabName) {
             if (tabName === 'sd' || tabName === 'audio' || tabName === 'podcast') {
                 lastStudioTab = tabName;
             }
+            if (tabName === 'general' || tabName === 'shared' || tabName === 'tests') {
+                lastBenchTab = tabName;
+            }
+            if (viewTitleText && TAB_TITLES[tabName]) {
+                viewTitleText.textContent = TAB_TITLES[tabName];
+            }
+            renderMobileSubnav(tabName);
             if (dock) {
                 const dockBtns = dock.querySelectorAll('.mobile-dock-btn[data-dock-tab]');
                 let matched = false;
@@ -3714,10 +3805,31 @@
         };
 
         syncLayout();
+        syncDockActive('monitor');
         if (mobileBtn) mobileBtn.addEventListener('click', () => setMobileDrawerOpen(!sidebar.classList.contains('drawer-open')));
         if (closeDrawerBtn) closeDrawerBtn.addEventListener('click', () => setMobileDrawerOpen(false));
         if (backdrop) backdrop.addEventListener('click', () => setMobileDrawerOpen(false));
         if (desktopBtn) desktopBtn.addEventListener('click', () => setDesktopHidden(!(grid && grid.classList.contains('sidebar-hidden'))));
+        if (viewTitleBtn) viewTitleBtn.addEventListener('click', () => setSheetOpen(!(sheet && sheet.classList.contains('open'))));
+
+        // Quick-jump chips inside the mobile/tablet Controls Drawer
+        sidebar.querySelectorAll('.drawer-quick-chip[data-drawer-action]').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const action = chip.getAttribute('data-drawer-action');
+                if (action === 'run') {
+                    const runBtn = document.getElementById('btn-run');
+                    if (runBtn && typeof runBtn.scrollIntoView === 'function') {
+                        runBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                } else if (action === 'pull') {
+                    document.getElementById('btn-open-search-modal')?.click();
+                } else if (action === 'online') {
+                    document.getElementById('btn-open-online-models')?.click();
+                } else if (action === 'settings') {
+                    document.getElementById('btn-open-api-keys')?.click();
+                }
+            });
+        });
 
         // Auto-close drawer on mobile/tablet when launching a benchmark run or opening a modal from inside sidebar
         sidebar.addEventListener('click', (e) => {
@@ -3733,7 +3845,10 @@
             dock.querySelectorAll('.mobile-dock-btn[data-dock-tab]').forEach(btn => {
                 btn.addEventListener('click', () => {
                     setSheetOpen(false);
-                    const target = btn.getAttribute('data-dock-group') ? lastStudioTab : btn.getAttribute('data-dock-tab');
+                    const group = btn.getAttribute('data-dock-group') || '';
+                    let target = btn.getAttribute('data-dock-tab');
+                    if (group.includes('sd')) target = lastStudioTab;
+                    else if (group.includes('general')) target = lastBenchTab;
                     activateTab(target);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                 });
@@ -3756,6 +3871,28 @@
             sheetOpenControlsBtn.addEventListener('click', () => {
                 setSheetOpen(false);
                 setMobileDrawerOpen(true);
+            });
+        }
+        if (sheetOpenPullBtn) {
+            sheetOpenPullBtn.addEventListener('click', () => {
+                setSheetOpen(false);
+                document.getElementById('btn-open-search-modal')?.click();
+            });
+        }
+        if (sheetOpenSettingsBtn) {
+            sheetOpenSettingsBtn.addEventListener('click', () => {
+                setSheetOpen(false);
+                document.getElementById('btn-open-api-keys')?.click();
+            });
+        }
+        if (backToRequestsBtn) {
+            backToRequestsBtn.addEventListener('click', () => {
+                const buf = document.querySelector('.requests-buffer-card');
+                if (buf && typeof buf.scrollIntoView === 'function') {
+                    buf.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
             });
         }
 

@@ -475,15 +475,20 @@ def test_responsive_shell_drawer_dock_and_safe_areas():
     # No hardcoded personal name in voice clone placeholder
     assert "Jeremiah" not in html
 
-    # Sticky topbar, off-canvas drawer chrome, mobile bottom dock, and All Views sheet
+    # Sticky topbar, slim mobile switcher, contextual subnav, off-canvas drawer chrome, bottom dock, and All Views sheet
     for marker in (
         'class="app-topbar"',
+        'id="mobile-view-title-btn"',
+        'id="mobile-subnav"',
         'id="sidebar-backdrop"',
         'id="sidebar-drawer-header"',
+        'class="sidebar-drawer-quickbar"',
         'id="btn-close-sidebar-drawer"',
         'id="mobile-bottom-nav"',
         'id="mobile-views-sheet"',
         'id="mobile-views-sheet-backdrop"',
+        'class="sd-model-bar"',
+        'id="btn-back-to-requests"',
     ):
         assert marker in html, f"missing responsive shell marker {marker}"
 

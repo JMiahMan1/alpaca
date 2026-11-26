@@ -846,19 +846,24 @@ header {
 
 /* Sidebar model filter buttons */
 .model-filter-tabs {
-    display: flex;
-    gap: 0.25rem;
-    margin-bottom: 0.4rem;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.3rem;
+    margin-bottom: 0.45rem;
 }
 
 .model-filter-btn {
-    flex: 1;
-    font-size: 0.68rem;
-    padding: 3px 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
+    white-space: nowrap;
+    font-size: 0.7rem;
+    padding: 0.35rem 0.3rem;
     background: #090d16;
     border: 1px solid var(--border-color);
     color: var(--text-muted);
-    border-radius: 5px;
+    border-radius: 6px;
     cursor: pointer;
     transition: var(--transition-fast);
 }
@@ -3442,11 +3447,56 @@ a.badge {
     gap: 0.35rem;
 }
 
-/* Mobile Bottom Navigation Dock & All Views Sheet (hidden above 640px) */
+/* Mobile Bottom Navigation Dock, View Switcher, Sub-Nav & All Views Sheet (hidden above 640px) */
 .mobile-bottom-nav,
 .mobile-views-sheet,
-.mobile-sheet-backdrop {
+.mobile-sheet-backdrop,
+.mobile-view-title-btn,
+.mobile-subnav,
+.mobile-only-inline {
     display: none;
+}
+
+/* Image Studio Model Selector Bar */
+.sd-model-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+}
+
+.sd-model-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex: 1 1 280px;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.sd-model-label-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-shrink: 0;
+}
+
+.sd-model-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Request Monitor Toolbar */
+.requests-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.85rem;
+    flex-shrink: 0;
+    align-items: center;
+    flex-wrap: wrap;
 }
 
 /* Sticky model column in wide leaderboards on tablet & phone */
@@ -3597,17 +3647,50 @@ a.badge {
     }
     .sidebar-drawer-header {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        flex-direction: column;
+        gap: 0.6rem;
         position: sticky;
         top: 0;
         z-index: 5;
         margin: 0 -0.9rem 0.25rem -0.9rem;
-        padding: calc(0.75rem + env(safe-area-inset-top, 0px)) 0.95rem 0.75rem 0.95rem;
-        background: rgba(13, 20, 36, 0.95);
+        padding: calc(0.7rem + env(safe-area-inset-top, 0px)) 0.95rem 0.7rem 0.95rem;
+        background: rgba(13, 20, 36, 0.96);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
         border-bottom: 1px solid var(--border-color);
+    }
+    .sidebar-drawer-header-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .sidebar-drawer-quickbar {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.35rem;
+    }
+    .drawer-quick-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.2rem;
+        min-height: 36px;
+        padding: 0.3rem 0.35rem;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(30, 41, 59, 0.75);
+        color: var(--text-main);
+        font-size: 0.72rem;
+        font-weight: 600;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: var(--transition-fast);
+    }
+    .drawer-quick-chip:hover,
+    .drawer-quick-chip:active {
+        background: rgba(139, 92, 246, 0.25);
+        border-color: rgba(139, 92, 246, 0.5);
     }
     .sidebar-drawer-title {
         display: flex;
@@ -3685,66 +3768,244 @@ a.badge {
     .sd-guide-arrow {
         display: none;
     }
+    .mobile-only-inline {
+        display: inline-flex;
+    }
 }
 
 @media (max-width: 640px) {
     .app-container {
-        padding: 0 0.75rem 0.75rem 0.75rem;
-        padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
-        gap: 0.85rem;
+        padding: 0 0.7rem 0.7rem 0.7rem;
+        padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+        gap: 0.75rem;
     }
+    /* Slim Single-Row Mobile App Bar (~52px instead of 149px) */
     .app-topbar {
-        margin: 0 -0.75rem;
-        padding: calc(0.5rem + env(safe-area-inset-top, 0px)) 0.75rem 0 0.75rem;
-        gap: 0.45rem;
+        margin: 0 -0.7rem;
+        padding: calc(0.35rem + env(safe-area-inset-top, 0px)) 0.7rem 0.45rem 0.7rem;
+        gap: 0.4rem;
+        background: rgba(11, 15, 25, 0.94);
     }
     header {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 0.55rem;
-        padding: 0.65rem 0.8rem;
-        border-radius: 12px;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.45rem;
+        padding: 0.2rem 0;
+        background: transparent;
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
     }
     .brand-section {
-        gap: 0.6rem;
+        gap: 0.45rem;
+        min-width: 0;
+        flex: 1 1 auto;
     }
     .brand-logo {
-        width: 32px;
-        height: 32px;
-        font-size: 1.05rem;
+        width: 30px;
+        height: 30px;
+        font-size: 1rem;
         border-radius: 8px;
         flex-shrink: 0;
     }
-    .brand-title h1 {
-        font-size: 1.05rem;
-        line-height: 1.2;
-    }
-    .brand-title p {
+    .brand-title {
         display: none;
     }
+    .mobile-view-title-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        min-width: 0;
+        max-width: 100%;
+        padding: 0.32rem 0.5rem;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(30, 41, 59, 0.6);
+        color: #f8fafc;
+        font-size: 0.9rem;
+        font-weight: 700;
+        cursor: pointer;
+        min-height: 36px;
+    }
+    #mobile-view-title-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .mobile-view-chevron {
+        font-size: 0.72rem;
+        color: var(--text-muted);
+        flex-shrink: 0;
+    }
     .status-badge-container {
-        width: 100%;
-        flex-wrap: wrap;
-        justify-content: flex-start;
-        gap: 0.4rem;
+        width: auto;
+        flex-wrap: nowrap;
+        justify-content: flex-end;
+        flex-shrink: 0;
+        gap: 0.35rem;
+    }
+    /* Compact live socket dot on phones (full label preserved in DOM + title) */
+    #connection-status-badge {
+        font-size: 0;
+        gap: 0;
+        padding: 0.45rem;
+        min-width: 30px;
+        min-height: 30px;
+        justify-content: center;
+    }
+    #connection-status-badge .badge-dot {
+        width: 9px;
+        height: 9px;
+    }
+    #runner-status-badge {
+        font-size: 0.62rem;
+        padding: 0.28rem 0.48rem;
+        white-space: nowrap;
     }
     .badge {
         font-size: 0.64rem;
-        padding: 0.26rem 0.55rem;
+        padding: 0.25rem 0.5rem;
     }
     .mobile-controls-toggle {
         font-size: 0.72rem;
-        padding: 0.3rem 0.68rem;
+        padding: 0.35rem 0.62rem;
+        min-height: 36px;
+    }
+    /* Replace redundant 10-tab strip on phones with sleek 1-tap contextual sub-nav */
+    .main-tabs {
+        display: none;
+    }
+    .mobile-subnav {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.3rem;
+        padding: 0.2rem;
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid var(--border-color);
+    }
+    .mobile-subnav-btn {
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        color: var(--text-muted);
+        font-size: 0.74rem;
+        font-weight: 600;
+        padding: 0.42rem 0.35rem;
+        min-height: 36px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+        transition: var(--transition-fast);
+    }
+    .mobile-subnav-btn.active {
+        background: rgba(139, 92, 246, 0.24);
+        color: #fff;
+        box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.45);
     }
     .doc-detail-pane,
     #request-inspector-details,
     .tab-view > .card {
-        scroll-margin-top: 9.5rem;
+        scroll-margin-top: 6.5rem;
     }
-    .nav-tab {
+    /* Compact System Monitor status banners so hardware gauges sit above the fold */
+    #proxy-status-card,
+    #sd-status-card {
+        padding: 0.72rem 0.85rem;
+        margin-bottom: 0.75rem !important;
+    }
+    #proxy-status-card h3,
+    #sd-status-card h3 {
+        font-size: 0.94rem !important;
+    }
+    #proxy-status-card p,
+    #sd-status-card p {
+        font-size: 0.7rem !important;
+        line-height: 1.35;
+    }
+    /* Compact Benchmarks Compare Models chip list so Leaderboard stays close */
+    #model-filter-models-general,
+    #model-filter-models-shared {
+        max-height: 136px;
+        overflow-y: auto;
+        padding-right: 0.2rem;
+        overscroll-behavior: contain;
+    }
+    /* Image Studio clean stacked model bar & compact workflow strip */
+    .sd-model-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.6rem;
+    }
+    .sd-model-picker {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.35rem;
+        flex: 1 1 auto;
+    }
+    .sd-model-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.5rem;
+    }
+    .sd-model-actions .btn {
+        width: 100%;
+    }
+    .sd-status-pill {
+        width: 100%;
+        min-width: 0 !important;
+    }
+    .sd-guide-card {
+        padding: 0.6rem 0.8rem !important;
+        margin-bottom: 0.85rem !important;
+    }
+    .sd-guide-steps {
+        gap: 0.35rem;
+    }
+    .sd-guide-hint {
+        display: none;
+    }
+    /* Request Monitor clean 2-row toolbar & compact intro card */
+    #view-requests > .card:first-child {
+        padding: 0.7rem 0.85rem;
+        margin-bottom: 0.85rem !important;
+    }
+    #view-requests > .card:first-child h3 {
+        font-size: 0.95rem !important;
+    }
+    .requests-toolbar #requests-search-input {
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
+    }
+    .requests-toolbar #requests-timezone-select {
+        flex: 1 1 0 !important;
+        min-width: 0 !important;
+    }
+    .requests-toolbar #btn-clear-requests {
+        flex: 0 0 auto;
+    }
+    /* Test Browser compact ratings board so test cards appear right away */
+    #test-ratings-board {
+        max-height: 210px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+    .test-kind-filters {
+        -webkit-mask-image: linear-gradient(to right, black 90%, transparent 100%);
+        mask-image: linear-gradient(to right, black 90%, transparent 100%);
+    }
+    /* Mobile Sheet quick actions footer */
+    .mobile-sheet-quick-actions {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.45rem;
+    }
+    .mobile-sheet-quick-actions .btn {
+        width: 100%;
+        padding: 0.45rem 0.4rem;
         font-size: 0.74rem;
-        padding: 0.4rem 0.72rem;
-        min-height: 36px;
     }
     /* Mobile Bottom Navigation Dock */
     .mobile-bottom-nav {
@@ -4102,14 +4363,22 @@ a.badge {
 @media (max-width: 480px) {
     .app-container {
         padding: 0 0.6rem 0.6rem 0.6rem;
-        padding-bottom: calc(5.1rem + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(4.9rem + env(safe-area-inset-bottom, 0px));
     }
     .app-topbar {
         margin: 0 -0.6rem;
-        padding: calc(0.45rem + env(safe-area-inset-top, 0px)) 0.6rem 0 0.6rem;
+        padding: calc(0.32rem + env(safe-area-inset-top, 0px)) 0.6rem 0.4rem 0.6rem;
     }
     header {
-        padding: 0.55rem 0.7rem;
+        padding: 0.15rem 0;
+    }
+    .mobile-view-title-btn {
+        font-size: 0.84rem;
+        padding: 0.28rem 0.42rem;
+    }
+    .mobile-controls-toggle {
+        font-size: 0.7rem;
+        padding: 0.3rem 0.55rem;
     }
     .sd-strength-preset-row {
         grid-template-columns: repeat(2, minmax(0, 1fr));
