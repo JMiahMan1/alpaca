@@ -1145,7 +1145,15 @@ class OnlineModelProvider:
                     resp = await client.get("https://api.cline.bot/api/v1/models", headers=headers)
                     if resp.status_code == 200:
                         data = resp.json()
-                        count = len(data.get("data", []) or data.get("models", []))
+                        api_models = data.get("data", []) or data.get("models", [])
+                        cp_models = [
+                            m
+                            for m in api_models
+                            if isinstance(m, dict) and str(m.get("id") or m.get("name") or "").startswith("cline-pass/")
+                        ]
+                        if not cp_models:
+                            cp_models = await self._fetch_cline_pass_subscription_models()
+                        count = len(cp_models)
                         return {"success": True, "message": f"Connected to ClinePass! {count} models available."}
                     return {
                         "success": False,
@@ -1788,7 +1796,7 @@ class OnlineModelProvider:
             else:
                 try:
                     headers = {"Authorization": f"Bearer {self.cline_api_key}"}
-                    raw_models: list[dict[str, Any]] = []
+                    api_sub_models: list[dict[str, Any]] = []
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         resp = await client.get("https://api.cline.bot/api/v1/models", headers=headers)
                         if resp.status_code == 200:
@@ -1797,37 +1805,32 @@ class OnlineModelProvider:
                             if isinstance(api_models, list) and api_models and isinstance(api_models[0], str):
                                 api_models = [{"id": m} for m in api_models]
                             if isinstance(api_models, list):
-                                raw_models = [m for m in api_models if isinstance(m, dict)]
+                                api_sub_models = [
+                                    m
+                                    for m in api_models
+                                    if isinstance(m, dict)
+                                    and str(m.get("id") or m.get("name") or "").startswith("cline-pass/")
+                                ]
 
-                    # api.cline.bot/api/v1/models only returns pay-as-you-go Cline API models
-                    # and omits the cline-pass/* subscription bundle. Merge live subscription
-                    # models first so ClinePass subscribers get usable models right at the top.
-                    has_sub_in_api = any(str(m.get("id") or "").startswith("cline-pass/") for m in raw_models)
-                    sub_models = [] if has_sub_in_api else await self._fetch_cline_pass_subscription_models()
+                    # ClinePass only exposes cline-pass/* subscription models; Cline pay-as-you-go
+                    # API models live under a separate billing pool and return HTTP 402 without credits.
+                    sub_models = api_sub_models or await self._fetch_cline_pass_subscription_models()
 
                     seen_cp: set[str] = set()
-                    merged_cp: list[dict[str, Any]] = []
-                    for m in [*sub_models, *raw_models]:
+                    cline_pass_only: list[dict[str, Any]] = []
+                    for m in sub_models:
                         m_id = str(m.get("id") or m.get("name") or "").strip()
-                        if not m_id or m_id in seen_cp:
-                            continue
-                        is_subscription = m_id.startswith("cline-pass/")
-                        # Skip non-subscription :free slugs (Cline API rejects them with HTTP 404
-                        # "model not supported") and internal @preset/ experiment aliases.
-                        if not is_subscription and (m_id.endswith(":free") or m_id.startswith("@preset/")):
+                        if not m_id or not m_id.startswith("cline-pass/") or m_id in seen_cp:
                             continue
                         if not self._is_usable_chat_model(m_id):
                             continue
                         seen_cp.add(m_id)
-                        merged_cp.append(m)
+                        cline_pass_only.append(m)
 
-                    self._cached_live_models["cline_pass"] = merged_cp
-                    for m in merged_cp:
+                    self._cached_live_models["cline_pass"] = cline_pass_only
+                    for m in cline_pass_only:
                         m_id = str(m.get("id") or m.get("name") or "").strip()
                         label = m.get("label") or m.get("name") or m_id
-                        is_subscription = m_id.startswith("cline-pass/")
-                        if free_only and not is_subscription:
-                            continue
                         if query_lower and query_lower not in m_id.lower() and query_lower not in str(label).lower():
                             continue
                         results.append(
@@ -1836,20 +1839,16 @@ class OnlineModelProvider:
                                 "name": m_id,
                                 "label": label,
                                 "provider": "cline_pass",
-                                "free": is_subscription,
-                                "free_tier": "ClinePass Subscription" if is_subscription else "Cline API Credits",
-                                "pricing_label": "Included in ClinePass"
-                                if is_subscription
-                                else "Cline API usage pricing",
+                                "free": True,
+                                "free_tier": "ClinePass Subscription",
+                                "pricing_label": "Included in ClinePass",
                                 "context_length": m.get("context_window") or m.get("context_length") or 131072,
                                 "reasoning": bool(
                                     m.get("reasoning")
                                     or m.get("supports_reasoning")
                                     or "reasoning" in (m.get("capabilities") or [])
                                 ),
-                                "description": f"ClinePass subscription model {m_id}."
-                                if is_subscription
-                                else f"Cline API pay-as-you-go model {m_id} (requires Cline Credits balance).",
+                                "description": f"ClinePass subscription model {m_id}.",
                             }
                         )
                 except Exception as e:
@@ -1864,14 +1863,23 @@ class OnlineModelProvider:
                 if raw_models is None and self.cline_api_key:
                     try:
                         headers = {"Authorization": f"Bearer {self.cline_api_key}"}
+                        api_sub_models = []
                         async with httpx.AsyncClient(timeout=10.0) as client:
                             resp = await client.get("https://api.cline.bot/api/v1/models", headers=headers)
                             if resp.status_code == 200:
                                 data = resp.json()
-                                raw_models = data.get("data") or data.get("models") or []
-                                if isinstance(raw_models, list) and raw_models and isinstance(raw_models[0], str):
-                                    raw_models = [{"id": m} for m in raw_models]
-                                self._cached_live_models["cline_pass"] = raw_models
+                                api_models = data.get("data") or data.get("models") or []
+                                if isinstance(api_models, list) and api_models and isinstance(api_models[0], str):
+                                    api_models = [{"id": m} for m in api_models]
+                                if isinstance(api_models, list):
+                                    api_sub_models = [
+                                        m
+                                        for m in api_models
+                                        if isinstance(m, dict)
+                                        and str(m.get("id") or m.get("name") or "").startswith("cline-pass/")
+                                    ]
+                        raw_models = api_sub_models or await self._fetch_cline_pass_subscription_models()
+                        self._cached_live_models["cline_pass"] = raw_models
                     except Exception as e:
                         logger.warning(f"Error discovering Cline harness models: {e}")
 

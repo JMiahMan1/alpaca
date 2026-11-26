@@ -1921,11 +1921,11 @@ async def test_cline_pass_discovery_merges_live_subscription_models_and_drops_un
         free_models = await provider.fetch_live_models(provider="cline_pass", free_only=True)
 
     ids = [m["id"] for m in all_models]
-    assert ids[0] == "cline_pass:cline-pass/deepseek-v4.1-flash"
+    assert ids == ["cline_pass:cline-pass/deepseek-v4.1-flash"]
     assert all_models[0]["free"] is True
     assert all_models[0]["context_length"] == 1000000
-    assert "cline_pass:anthropic/claude-sonnet-4-6" in ids
-    # Deprecated, broken :free, and @preset entries must be excluded
+    # Pay-as-you-go Cline API, deprecated, broken :free, and @preset entries must all be excluded
+    assert "cline_pass:anthropic/claude-sonnet-4-6" not in ids
     assert "cline_pass:cline-pass/mimo-v2.5" not in ids
     assert "cline_pass:inclusionai/ling-3.2-flash:free" not in ids
     assert "cline_pass:@preset/cline-new27-20261022-opus55" not in ids
