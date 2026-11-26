@@ -4073,10 +4073,13 @@ a.badge {
         scroll-margin-top: 6.5rem;
     }
     /* Compact System Monitor status banners so hardware gauges sit above the fold */
+    .service-status-copy {
+        flex: 0 0 auto;
+    }
     #proxy-status-card,
     #sd-status-card {
         padding: 0.72rem 0.85rem;
-        margin-bottom: 0.75rem !important;
+        margin-bottom: 0 !important;
     }
     #proxy-status-card h3,
     #sd-status-card h3 {
