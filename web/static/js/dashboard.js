@@ -221,19 +221,60 @@ document.addEventListener('DOMContentLoaded', () => {
     let filterInitialized = { general: false, shared: false };
     let filterCheckboxInputs = { general: {}, shared: {} };          // model id -> <input> element
 
-    // Utility function to truncate long model names
-    function truncateModelName(name) {
+    // Parse a model id into readable display components (preserving full online model names
+    // instead of burning characters on the provider prefix like "openrouter:").
+    const MODEL_PROVIDER_LABELS = {
+        openrouter: 'OpenRouter',
+        opencode_zen: 'Zen',
+        opencode: 'OpenCode',
+        huggingface: 'HF',
+        hf: 'HF',
+        cloudflare: 'Cloudflare',
+        groq: 'Groq',
+        orcarouter: 'OrcaRouter',
+        gemini: 'Gemini',
+        cline_pass: 'ClinePass',
+        cline: 'Cline',
+        claude: 'Claude',
+        codex: 'Codex',
+        deepseek: 'DeepSeek',
+        pi: 'Pi',
+    };
+
+    function parseModelDisplay(name) {
+        if (!name) return { provider: '', providerLabel: '', shortName: '', fullName: '' };
+        let cleanName = String(name).trim().replace(/\.gguf$/i, '');
+        cleanName = cleanName.replace(/--/g, ':').replace(/:latest$/, '');
+
+        const match = cleanName.match(/^(openrouter|huggingface|hf|cloudflare|opencode_zen|opencode|groq|orcarouter|gemini|cline_pass|cline|claude|codex|deepseek|pi):(.*)$/i);
+        if (match) {
+            const provider = match[1].toLowerCase();
+            let shortName = match[2].trim();
+            // Deduplicate redundant "<provider>/<model>" prefix (e.g. "opencode:opencode/mimo-...")
+            if (shortName.toLowerCase().startsWith(provider + '/')) {
+                shortName = shortName.slice(provider.length + 1);
+            }
+            return {
+                provider,
+                providerLabel: MODEL_PROVIDER_LABELS[provider] || provider,
+                shortName: shortName || cleanName,
+                fullName: cleanName,
+            };
+        }
+        return { provider: '', providerLabel: '', shortName: cleanName, fullName: cleanName };
+    }
+
+    // Utility function to format/truncate very long model names while keeping the actual
+    // model name legible (strips redundant online provider prefixes rather than chopping
+    // out the middle of the model name).
+    function truncateModelName(name, maxLen = 48) {
         if (!name) return '';
-        // Router ids use "--" as separator (e.g. family--quant); humanize to the
-        // public "family:quant" form so the model family stays visible, and drop
-        // the redundant Ollama ":latest" default tag (version is in the name).
-        let cleanName = name.replace(/\.gguf$/i, '');
-        cleanName = cleanName.replace(/--/g, ':');
-        cleanName = cleanName.replace(/:latest$/, '');
-
-        if (cleanName.length <= 25) return cleanName;
-
-        return cleanName.substring(0, 12) + '...' + cleanName.substring(cleanName.length - 10);
+        const parsed = parseModelDisplay(name);
+        const display = parsed.shortName || parsed.fullName;
+        if (display.length <= maxLen) return display;
+        const head = Math.max(16, Math.floor((maxLen - 1) * 0.62));
+        const tail = Math.max(10, maxLen - head - 1);
+        return display.substring(0, head) + '…' + display.substring(display.length - tail);
     }
 
     // Tab Navigation Logic
@@ -4139,30 +4180,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 input.value = id;
                 input.checked = false;
 
+                const parsed = parseModelDisplay(id);
+                const readableName = isOnline
+                    ? (parsed.shortName || displayName || id)
+                    : (displayName || parsed.shortName);
+
                 const span = document.createElement('span');
-                span.className = 'checkbox-label';
-                span.style.display = 'flex';
-                span.style.alignItems = 'center';
-                span.style.justifyContent = 'space-between';
-                span.style.width = '100%';
-                span.style.gap = '0.5rem';
+                span.className = 'checkbox-label model-checkbox-body';
 
                 let badgesHtml = '';
+                if (isOnline && parsed.providerLabel) {
+                    badgesHtml += `<span class="model-provider-pill">${escapeHtml(parsed.providerLabel)}</span>`;
+                }
                 if (isFree) {
-                    badgesHtml += '<span style="font-size:0.62rem; background:rgba(34,197,94,0.15); color:#22c55e; padding:1px 4px; border-radius:3px; margin-left:4px; font-weight:700;">FREE</span>';
+                    badgesHtml += '<span style="font-size:0.62rem; background:rgba(34,197,94,0.15); color:#22c55e; padding:1px 5px; border-radius:4px; font-weight:700;">FREE</span>';
                 }
                 if (isNew) {
-                    badgesHtml += '<span style="font-size:0.62rem; background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); padding:1px 4px; border-radius:3px; margin-left:4px; font-weight:700;" title="Newly added model awaiting benchmark">🆕 NEW</span>';
+                    badgesHtml += '<span style="font-size:0.62rem; background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); padding:1px 5px; border-radius:4px; font-weight:700;" title="Newly added model awaiting benchmark">🆕 NEW</span>';
                 } else if (isBenchmarked) {
                     const score = meta.latest_score !== undefined && meta.latest_score !== null ? `${meta.latest_score}%` : 'Done';
-                    badgesHtml += `<span class="badge-benchmarked-score" data-model="${id}" style="font-size:0.62rem; background:rgba(99,102,241,0.22); color:#a5b4fc; border:1px solid rgba(99,102,241,0.45); padding:1px 6px; border-radius:4px; margin-left:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Click to view latest test results for ${displayName} (${meta.benchmark_count}x runs | Last: ${meta.last_benchmarked_at || 'Unknown'})">📊 ${score} ↗</span>`;
-                    badgesHtml += `<span class="badge-delete-benchmarks" data-model="${id}" style="font-size:0.62rem; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); padding:1px 4px; border-radius:4px; margin-left:2px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Delete all saved benchmark results for ${displayName} (model is kept)">🗑</span>`;
+                    badgesHtml += `<span class="badge-benchmarked-score" data-model="${escapeHtml(id)}" style="font-size:0.64rem; background:rgba(99,102,241,0.22); color:#a5b4fc; border:1px solid rgba(99,102,241,0.45); padding:1px 6px; border-radius:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Click to view latest test results for ${escapeHtml(readableName)} (${meta.benchmark_count}x runs | Last: ${escapeHtml(meta.last_benchmarked_at || 'Unknown')})">📊 ${score} ↗</span>`;
+                    badgesHtml += `<span class="badge-delete-benchmarks" data-model="${escapeHtml(id)}" style="font-size:0.64rem; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); padding:1px 5px; border-radius:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Delete all saved benchmark results for ${escapeHtml(readableName)} (model is kept)">🗑</span>`;
                 }
                 if (isOnline) {
-                    badgesHtml += `<span class="badge-remove-online" data-model="${id}" style="font-size:0.62rem; background:rgba(251,191,36,0.15); color:#fbbf24; border:1px solid rgba(251,191,36,0.4); padding:1px 4px; border-radius:4px; margin-left:2px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Remove ${displayName} from your online model selection (optionally also delete its benchmark results)">✖</span>`;
+                    badgesHtml += `<span class="badge-remove-online" data-model="${escapeHtml(id)}" style="font-size:0.64rem; background:rgba(251,191,36,0.15); color:#fbbf24; border:1px solid rgba(251,191,36,0.4); padding:1px 5px; border-radius:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s ease-in-out;" title="Remove ${escapeHtml(readableName)} from your online model selection (optionally also delete its benchmark results)">✖</span>`;
                 }
 
-                span.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span><span style="display:flex; gap:2px; flex-shrink:0;">${badgesHtml}</span>`;
+                span.innerHTML = `<span class="model-checkbox-name" title="${escapeHtml(id)}">${escapeHtml(readableName)}</span><span class="model-checkbox-badges">${badgesHtml}</span>`;
 
                 const badgeEl = span.querySelector('.badge-benchmarked-score');
                 if (badgeEl) {
@@ -6640,7 +6684,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 result.models.forEach(model => {
                     const badge = document.createElement('span');
                     badge.className = 'model-mini-badge';
-                    badge.textContent = model;
+                    const parsedBadge = parseModelDisplay(model);
+                    badge.textContent = parsedBadge.shortName || model;
+                    badge.title = model;
                     badges.appendChild(badge);
                 });
                 
@@ -7084,13 +7130,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const isOnline = isOnlineModelName(model);
+        const parsed = parseModelDisplay(model);
         const span = document.createElement('span');
-        span.textContent = truncateModelName(model);
+        span.textContent = parsed.shortName || model;
+        span.title = model;
+        span.style.overflowWrap = 'anywhere';
         if (isOnline) span.style.color = '#c4b5fd';
 
         const badge = document.createElement('span');
-        badge.textContent = isOnline ? 'ONLINE' : 'LOCAL';
-        badge.style.cssText = `font-size:0.55rem;font-weight:700;padding:1px 4px;border-radius:3px;${
+        badge.textContent = isOnline ? (parsed.providerLabel || 'ONLINE').toUpperCase() : 'LOCAL';
+        badge.style.cssText = `font-size:0.58rem;font-weight:700;padding:1px 5px;border-radius:4px;flex-shrink:0;${
             isOnline ? 'background:rgba(139,92,246,0.2);color:#c4b5fd;' : 'background:rgba(6,182,212,0.15);color:#67e8f9;'
         }`;
 
@@ -7663,10 +7712,15 @@ document.addEventListener('DOMContentLoaded', () => {
                    <td class="metric-cell ${tokensCls}">${tokensTxt}</td>
                    <td class="metric-cell">${testsTxt}</td>`;
 
+            const parsedModel = parseModelDisplay(r.model);
+            const providerPill = parsedModel.providerLabel
+                ? `<span class="model-provider-pill">${escapeHtml(parsedModel.providerLabel)}</span>`
+                : '';
+
             return `<tr class="lb-row ${checked ? 'selected' : ''}" data-model="${r.model.replace(/"/g, '&quot;')}" data-score="${score}">
                 <td class="lb-check-col"><input type="checkbox" class="lb-check" data-model="${r.model.replace(/"/g, '&quot;')}" ${checked}></td>
                 ${rankBadge(idx)}
-                <td class="model-cell" title="${r.model.replace(/"/g, '&quot;')}">${truncateModelName(r.model)}</td>
+                <td class="model-cell" title="${escapeHtml(r.model)}"><span class="model-cell-name">${escapeHtml(parsedModel.shortName || r.model)}</span>${providerPill}</td>
                 <td class="score-cell ${scoreClass(score)}">${scoreTxt}</td>
                 ${cells}
             </tr>`;
@@ -12443,6 +12497,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const info = document.createElement('div');
             info.style.flex = '1';
+            info.style.minWidth = '0';
             info.style.display = 'flex';
             info.style.flexDirection = 'column';
             info.style.gap = '0.25rem';
@@ -12456,6 +12511,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const title = document.createElement('strong');
             title.style.color = 'white';
             title.style.fontSize = '0.84rem';
+            title.style.overflowWrap = 'anywhere';
             title.textContent = m.label || m.name;
 
             const provBadge = document.createElement('span');
@@ -12530,6 +12586,8 @@ document.addEventListener('DOMContentLoaded', () => {
             modelIdText.style.fontFamily = 'monospace';
             modelIdText.style.fontSize = '0.72rem';
             modelIdText.style.color = '#94a3b8';
+            modelIdText.style.overflowWrap = 'anywhere';
+            modelIdText.style.wordBreak = 'break-word';
             modelIdText.textContent = m.id;
 
             const desc = document.createElement('div');

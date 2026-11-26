@@ -466,12 +466,12 @@ header {
 }
 
 .model-list-container {
-    max-height: 200px;
+    max-height: 260px;
     overflow-y: auto;
     border: 1px solid var(--border-color);
-    border-radius: 8px;
-    background: rgba(15, 23, 42, 0.4);
-    padding: 0.5rem;
+    border-radius: 10px;
+    background: rgba(8, 13, 24, 0.65);
+    padding: 0.35rem;
 }
 
 .checkbox-item {
@@ -506,16 +506,67 @@ header {
 }
 
 .model-list-container .checkbox-item {
-    align-items: center;
+    align-items: flex-start;
+    padding: 0.48rem 0.5rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.07);
+}
+
+.model-list-container .checkbox-item:last-child {
+    border-bottom: none;
 }
 
 .model-list-container .checkbox-item input[type="checkbox"] {
-    margin-top: 0;
+    margin-top: 0.2rem;
 }
 
 .model-list-container .checkbox-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+.model-checkbox-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+    width: 100%;
+    min-width: 0;
+}
+
+.model-checkbox-name {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-main);
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.model-checkbox-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+@media (max-width: 1024px) {
+    #model-checkboxes.model-list-container {
+        max-height: 360px;
+    }
+}
+
+.model-provider-pill {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(139, 92, 246, 0.16);
+    color: #c4b5fd;
+    border: 1px solid rgba(139, 92, 246, 0.3);
     white-space: nowrap;
 }
 
@@ -1313,6 +1364,9 @@ header {
     padding: 0.1rem 0.35rem;
     border-radius: 4px;
     border: 1px solid rgba(255, 255, 255, 0.04);
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 /* Results Tables Section */
@@ -2095,10 +2149,15 @@ a.badge {
 
 .leaderboard-table .model-cell {
     font-weight: 500;
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    max-width: 340px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.3;
+}
+
+.leaderboard-table .model-cell .model-cell-name {
+    margin-right: 0.4rem;
 }
 
 .leaderboard-table .score-cell {
@@ -2176,8 +2235,11 @@ a.badge {
 #model-filter-models-shared .checkbox-item {
     background: rgba(15, 23, 42, 0.72);
     border: 1px solid rgba(148, 163, 184, 0.14);
-    border-radius: 9999px !important;
-    padding: 0.22rem 0.6rem !important;
+    border-radius: 12px !important;
+    padding: 0.24rem 0.6rem !important;
+    max-width: 100%;
+    min-width: 0;
+    line-height: 1.25;
     transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
@@ -2190,8 +2252,6 @@ a.badge {
 #model-filter-models-general .checkbox-item:hover,
 #model-filter-models-shared .checkbox-item:hover {
     border-color: rgba(139, 92, 246, 0.55);
-}
-    transition: background 0.12s ease;
 }
 
 .leaderboard-table tbody tr.lb-row:hover {
@@ -2750,9 +2810,10 @@ a.badge {
 .ratings-board-cat-entry .top-rated-label {
     flex: 1;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.25;
 }
 
 .ratings-board-overall {
@@ -3729,10 +3790,11 @@ a.badge {
     .leaderboard-table td:nth-child(3) {
         position: sticky;
         left: 0;
-        max-width: 210px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        max-width: 220px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        line-height: 1.25;
         background: #10182b;
         z-index: 2;
         box-shadow: 4px 0 12px rgba(0, 0, 0, 0.45);

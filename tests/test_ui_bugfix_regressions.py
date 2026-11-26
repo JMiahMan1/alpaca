@@ -659,3 +659,37 @@ def test_delete_model_forwards_proxy_auth_headers(client, monkeypatch):
     headers = post.call_args.kwargs.get("headers") or {}
     assert headers.get("Authorization") == "Bearer test-secret-key"
     assert headers.get("X-API-Key") == "test-secret-key"
+
+
+@pytest.mark.needs_node
+def test_online_model_names_are_not_mangled_by_truncation():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for dashboard rendering tests")
+    source = DASHBOARD_JS.read_text(encoding="utf-8")
+    start = source.index("const MODEL_PROVIDER_LABELS = {")
+    end = source.index("// Tab Navigation Logic", start)
+    slice_ = source[start:end]
+    script = (
+        slice_
+        + """
+const out = {
+  or: parseModelDisplay('openrouter:nvidia/nemotron-3.5-lightning:free'),
+  orTrunc: truncateModelName('openrouter:nvidia/nemotron-3.5-lightning:free'),
+  zen: parseModelDisplay('opencode_zen:mimo-v2.6-flash-free'),
+  oc: parseModelDisplay('opencode:opencode/mimo-v2.6-flash-free'),
+  local: truncateModelName('kwaipilot-kat-coder-v2-5-dev-iq4-nl--latest'),
+};
+console.log(JSON.stringify(out));
+"""
+    )
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+    data = json.loads(result.stdout)
+    assert data["or"]["providerLabel"] == "OpenRouter"
+    assert data["or"]["shortName"] == "nvidia/nemotron-3.5-lightning:free"
+    assert data["orTrunc"] == "nvidia/nemotron-3.5-lightning:free"
+    assert data["zen"]["providerLabel"] == "Zen"
+    assert data["zen"]["shortName"] == "mimo-v2.6-flash-free"
+    assert data["oc"]["providerLabel"] == "OpenCode"
+    assert data["oc"]["shortName"] == "mimo-v2.6-flash-free"
+    assert data["local"] == "kwaipilot-kat-coder-v2-5-dev-iq4-nl"
