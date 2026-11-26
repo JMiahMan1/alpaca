@@ -1251,6 +1251,54 @@ def test_infer_lang_python_with_embedded_sql_is_not_sql():
     assert benchmark._infer_lang(py_prog) == "python"
 
 
+def test_infer_lang_shell_answers_without_a_shebang_run_as_bash():
+    """A linux_admin answer is often a bare shell command. Without a shebang it
+    used to score as 'python' and fail on its first flag
+    ("SyntaxError: invalid decimal literal" on `-size +100M`)."""
+    benchmark = LLMModelBenchmark()
+    assert benchmark._infer_lang("find /var -type f -size +100M -printf '%s %p\\n' | sort -rn") == "bash"
+    assert benchmark._infer_lang("dd if=/dev/zero of=/tmp/x.bin bs=1M count=150") == "bash"
+    assert benchmark._infer_lang("df -h | sort -k5 -rn | head -5") == "bash"
+    # Python that merely mentions a shell word stays Python.
+    assert benchmark._infer_lang("import subprocess\nprint(subprocess.run(['df', '-h']))") == "python"
+    # Structured formats (GitHub Actions YAML, HTML) containing shell words keep their outer language.
+    gh_yaml = "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: apt-get update && curl -s https://example.com\n"
+    assert benchmark._infer_lang(gh_yaml) == "yaml"
+    html_doc = "<!DOCTYPE html><html><body><pre>curl -s https://example.com</pre></body></html>"
+    assert benchmark._infer_lang(html_doc) == "web"
+
+
+def test_a_sql_fence_holding_python_runs_as_python():
+    """Models sometimes answer a SQL prompt with Python and still tag it ```sql.
+    Piping that into the sqlite3 CLI fails on `import`, so the tag yields to
+    sniffing when the body is obviously Python."""
+    benchmark = LLMModelBenchmark()
+    resp = (
+        "```sql\nimport sqlite3\nconn = sqlite3.connect(':memory:')\n"
+        "cur = conn.cursor()\ncur.execute('CREATE INDEX idx ON orders(customer_id)')\n```"
+    )
+    assert benchmark._fence_lang(resp) == ""
+    assert (benchmark._fence_lang(resp) or benchmark._infer_lang(resp)) == "python"
+    # Real SQL keeps its tag (including SQL DECLARE CURSOR).
+    plain = "```sql\nCREATE INDEX idx_orders_customer ON orders(customer_id);\n```"
+    assert benchmark._fence_lang(plain) == "sql"
+    sql_cursor = "```sql\nDECLARE c CURSOR FOR SELECT id FROM orders;\n```"
+    assert benchmark._fence_lang(sql_cursor) == "sql"
+    # Truncated code fences (cut off before closing ```) still honor their language tag.
+    truncated_py = "```python\ndef solve():\n    return 42\n"
+    assert benchmark._fence_lang(truncated_py) == "python"
+
+
+def test_typescript_lint_and_build_declare_node_globals():
+    """The sandbox image has tsc but no @types/node, so an idiomatic
+    `import fs = require('fs')` failed the syntax gate with an empty message.
+    Both the lint gate and the build must compile a Node shim alongside it."""
+    import sandbox_exec
+
+    assert "declare var require" in sandbox_exec._TS_NODE_SHIM
+    assert "declare module 'fs'" in sandbox_exec._TS_NODE_SHIM
+
+
 @pytest.mark.asyncio
 async def test_db_join_orders_grades_python_sqlite_solution(tmp_path):
     """End-to-end regression for the database category: a correct Python

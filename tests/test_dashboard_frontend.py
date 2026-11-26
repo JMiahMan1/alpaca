@@ -2590,3 +2590,27 @@ globalThis.loadRoutingMatrix = () => { reloaded += 1; };
 """
     )
     assert "REMOVED_OK" in out
+
+
+def test_provider_availability_filter_handles_model_objects_and_strings():
+    """/api/models/online returns model objects ({id: ...}), not bare strings."""
+    slice_provider = _slice(
+        "    const ONLINE_PROVIDER_KEYS = {",
+        "    // Socket initialization",
+    )
+    out = run_js(
+        slice_provider
+        + """
+configuredProviders = { openrouter: false, groq: true };
+const models = [
+    { id: 'openrouter:deepseek/deepseek-v4.1-flash', name: 'DeepSeek' },
+    { id: 'groq:llama-3.3-70b', name: 'Llama' },
+];
+const kept = models.filter(providerStillAvailable);
+assert.deepEqual(kept.map(m => m.id), ['groq:llama-3.3-70b']);
+assert.equal(providerStillAvailable('openrouter:deepseek/deepseek-v4.1-flash'), false);
+assert.equal(providerStillAvailable('groq:llama-3.3-70b'), true);
+process.stdout.write('FILTER_OK');
+"""
+    )
+    assert "FILTER_OK" in out

@@ -33,6 +33,29 @@ from typing import Any, cast
 
 SANDBOX_IMAGE = "alpaca-sandbox:latest"
 
+# TypeScript: the image has tsc + node but no @types/node, so every idiomatic
+# Node program (`import fs = require('fs')`) failed the syntax gate with
+# "Cannot find module 'fs'" and an EMPTY message (tsc's output was discarded by
+# `>/dev/null 2>&1`). This shim declares the Node globals and modules as any, so
+# a real type error still fails while a missing type package no longer does.
+_TS_NODE_SHIM = """\
+declare var require: any;
+declare var module: any;
+declare var process: any;
+declare var __dirname: string;
+declare var __filename: string;
+declare var global: any;
+declare var Buffer: any;
+declare module 'fs';
+declare module 'path';
+declare module 'os';
+declare module 'readline';
+declare module 'crypto';
+declare module 'http';
+declare module 'url';
+declare module 'child_process';
+"""
+
 # Sample input piped to CLI programs that read stdin. Interactive games
 # (guess_game, text_adventure, game_checkers_cli, etc.) call input()/readline
 # and would otherwise crash with EOFError because exec_run attaches no stdin.
@@ -511,10 +534,15 @@ def _lint_code(container, code: str, lang: str) -> tuple[bool | None, str]:
     elif lang in ("pascal", "pas"):
         fname, check = "/tmp/lint.pas", ["bash", "-c", "fpc -S2 -o/tmp/lint_pas /tmp/lint.pas >/dev/null 2>&1"]
     elif lang in ("typescript", "ts"):
-        fname, check = (
-            "/tmp/lint.ts",
-            ["bash", "-c", "tsc --target ES2020 --module commonjs --noEmit /tmp/lint.ts >/dev/null 2>&1"],
-        )
+        fname = "/tmp/lint.ts"
+        _put_file(container, "/tmp/ts_shim.d.ts", _TS_NODE_SHIM.encode("utf-8"))
+        check = [
+            "bash",
+            "-c",
+            "tsc --target ES2020 --module commonjs --noEmit --skipLibCheck "
+            "/tmp/lint.ts /tmp/ts_shim.d.ts >/tmp/tsc_lint.log 2>&1 "
+            "|| { cat /tmp/tsc_lint.log; exit 1; }",
+        ]
     elif lang in ("yaml", "yml"):
         fname, check = (
             "/tmp/lint.yaml",
@@ -1032,7 +1060,8 @@ def run_code_once(
         cmd = [
             "bash",
             "-c",
-            "cd /tmp && tsc --target ES2020 --module commonjs code.ts >/tmp/tsc_build.log 2>&1 && node /tmp/code.js",
+            "cd /tmp && tsc --target ES2020 --module commonjs --skipLibCheck "
+            "code.ts ts_shim.d.ts >/tmp/tsc_build.log 2>&1 && node /tmp/code.js",
         ]
     elif lang in ("yaml", "yml"):
         ext, bin_ = "yaml", "python3"
@@ -1138,6 +1167,10 @@ def run_code_once(
             return _run_web_ui(container, cleaned_code, timeout, result, test_id=test_id)
 
         _put_file(container, f"/tmp/code.{ext}", cleaned_code.encode("utf-8"))
+        if lang in ("typescript", "ts"):
+            # The lint gate writes this too; write it again so a build never
+            # depends on the lint step having run.
+            _put_file(container, "/tmp/ts_shim.d.ts", _TS_NODE_SHIM.encode("utf-8"))
 
         # Pipe sample input to CLI programs that read stdin (interactive
         # games call input()/readline; without this they crash with EOFError
@@ -1545,7 +1578,6 @@ _CHECKERS_PROBE_HTML = r"""<!DOCTYPE html>
       if (tag === "BUTTON" || tag === "A" || tag === "INPUT") { el.click(); return; }
       var r = el.getBoundingClientRect();
       clickAt(win, el, r.left + r.width / 2, r.top + r.height / 2);
-      el.click();
     } catch (e) {}
   }
   function findAiControl(doc) {
@@ -1670,6 +1702,7 @@ _CHECKERS_PROBE_HTML = r"""<!DOCTYPE html>
     log("points=" + pts.length + " pieces=" + order.length);
 
     var limit = Math.min(order.length, 14);
+    var sawHumanMove = false;
     for (var oi = 0; oi < limit; oi++) {
       var o = order[oi];
       var dests = diagonals(pts, o.r, o.c);
@@ -1682,9 +1715,10 @@ _CHECKERS_PROBE_HTML = r"""<!DOCTYPE html>
         await sleep(320);
         var s2 = sig(doc);
         if (s2 === s1 || s2 === base) continue;
+        sawHumanMove = true;
         facts.human_move = true;
         log("moved r" + o.r + "," + o.c + " -> " + dst.r + "," + dst.c);
-        for (var w = 0; w < 16; w++) {
+        for (var w = 0; w < 10; w++) {
           await sleep(250);
           var s3 = sig(doc);
           if (s3 !== s2) {
@@ -1693,9 +1727,12 @@ _CHECKERS_PROBE_HTML = r"""<!DOCTYPE html>
             return finish();
           }
         }
-        facts.reason = "the human move went through but the AI never answered";
-        return finish();
+        base = s2;
       }
+    }
+    if (sawHumanMove) {
+      facts.reason = "the human move went through but the AI never answered";
+      return finish();
     }
     facts.reason = facts.ai_mode
       ? "no piece could be moved: the game offers no legal first move"
@@ -1769,9 +1806,9 @@ def _checkers_playability_probe(container, code: str, timeout: int, result: dict
 
     t = threading.Thread(target=_exec, daemon=True)
     t.start()
-    t.join(timeout + 20)
-    dom = _read_file(container, "/tmp/probe_dom.html") or b""
-    dom = dom.decode("utf-8", "replace") if isinstance(dom, (bytes, bytearray)) else str(dom)
+    t.join(max(timeout + 20, 80))
+    raw_dom = _read_file(container, "/tmp/probe_dom.html") or b""
+    dom = raw_dom.decode("utf-8", "replace") if isinstance(raw_dom, (bytes, bytearray)) else str(raw_dom)
     facts = None
     match = re.search(r'id="__probe"[^>]*>(.*?)</div>', dom, re.S)
     if match:

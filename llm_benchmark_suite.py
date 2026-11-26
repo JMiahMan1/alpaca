@@ -43,7 +43,7 @@ from online_providers import (
 
 # One-shot code execution for grading coding benchmarks (runs Python/Node in the
 # locked-down alpaca-sandbox container and returns ran/output/exit_code).
-from sandbox_exec import CLI_FIXTURE_TEST_IDS, extract_clean_code, grade_code
+from sandbox_exec import extract_clean_code, grade_code
 
 # Proactive delay between requests when benchmarking online providers. Free-tier
 # endpoints (e.g. OpenRouter) rate-limit aggressively and answer throttled requests
@@ -4329,7 +4329,7 @@ class LLMModelBenchmark:
                                     eval_count += data2["eval_count"]
                                     eval_ns += data2["eval_duration"]
                                     prompt_ns += data2["prompt_eval_duration"]
-                                    truncated = eval_count >= num_predict + phase2_cap
+                                    truncated = data2["eval_count"] >= phase2_cap
                             elapsed += time.time() - start_t2
                         except Exception as e2:
                             print(f"Phase 2 proxy query error: {e2}")
@@ -5038,7 +5038,7 @@ class LLMModelBenchmark:
                                     eval_count += data2["eval_count"]
                                     eval_ns += data2["eval_duration"]
                                     prompt_ns += data2["prompt_eval_duration"]
-                                    truncated = eval_count >= num_predict + phase2_cap
+                                    truncated = data2["eval_count"] >= phase2_cap
                             elapsed += time.time() - start_t2
                         except Exception as e2:
                             print(f"Phase 2 direct query error: {e2}")
@@ -5959,6 +5959,19 @@ class LLMModelBenchmark:
             return "rpm"
         if "on:" in low and "jobs:" in low and ("steps:" in low or "runs-on" in low):
             return "yaml"
+        # Shell answers frequently carry no shebang (a linux_admin one-liner
+        # like `find /var -type f -size +100M` or `dd if=/dev/zero of=...`).
+        # Checked after structured formats (HTML/YAML/RPM/Terraform) so embedded
+        # shell commands inside them keep their outer language, while bare shell
+        # one-liners don't fall through to Python and fail on `-size +100M`.
+        _shell_words = (
+            "find /", "dd if=", "grep -", "chmod ", "chown ", "systemctl ", "journalctl ",
+            "df -", "du -s", "ps aux", "awk '", "sed -", "xargs ", "tar -", "ls -l", "ls -a",
+            "mkdir -p", "curl -", "apt-get ", "nvidia-smi",
+        )
+        _py_js_words = ("def ", "import ", "print(", "console.log", "function ")
+        if not any(w in low for w in _py_js_words) and any(w in low for w in _shell_words):
+            return "bash"
         py = low.count("def ") + low.count("import ") + low.count("print(") + low.count("self.")
         js = (
             low.count("console.log")
@@ -6012,9 +6025,19 @@ class LLMModelBenchmark:
         Models that answer SQL prompts with a Python sqlite3 program tag it
         ```` ```python ```` - honoring the tag executes their code correctly,
         while content sniffing sees embedded SQL keywords and picks "sql".
+
+        The reverse happens too: a model answers a SQL prompt with a Python
+        program and still tags it ```` ```sql ````. Piping that into the sqlite3
+        CLI fails on its first line ("Parse error: near \"import\""), so a
+        python-looking body under a sql tag falls through to sniffing.
         """
-        for match in re.finditer(r"```([A-Za-z0-9+#-]+)[ \t]*\r?\n", resp or ""):
-            return self._FENCE_LANG_MAP.get(match.group(1).lower(), "")
+        for match in re.finditer(r"```([A-Za-z0-9+#-]+)[ \t]*\r?\n([\s\S]*?)(?:```|\Z)", resp or ""):
+            lang = self._FENCE_LANG_MAP.get(match.group(1).lower(), "")
+            if lang == "sql" and any(
+                x in (match.group(2) or "").lower() for x in ("import ", "def ", "print(", "sqlite3", ".cursor(")
+            ):
+                return ""
+            return lang
         return ""
 
     # Languages we can actually execute in the sandbox. Others are graded by

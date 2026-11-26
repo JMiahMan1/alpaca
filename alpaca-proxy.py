@@ -765,41 +765,38 @@ def resolve_request_priority(request: Request | None, body: dict | None = None) 
         raw = request.headers.get("x-priority") or request.headers.get("x-alpaca-priority")
     if raw is None and isinstance(body, dict):
         raw = body.get("priority")
+    explicit_resolved = False
     if raw is not None:
         val = str(raw).strip().lower()
         if val in ("critical", "emergency", "sos"):
             resolved = PRIORITY_CRITICAL
-            _CURRENT_REQUEST_PRIORITY.set(resolved)
-            return resolved
-        if val in ("high", "urgent", "voice", "interactive"):
+            explicit_resolved = True
+        elif val in ("high", "urgent", "voice", "interactive"):
             resolved = PRIORITY_HIGH
-            _CURRENT_REQUEST_PRIORITY.set(resolved)
-            return resolved
-        if val in ("normal", "default", "medium"):
+            explicit_resolved = True
+        elif val in ("normal", "default", "medium"):
             resolved = PRIORITY_NORMAL
-            _CURRENT_REQUEST_PRIORITY.set(resolved)
-            return resolved
-        if val in ("low", "background", "batch", "bulk", "raven", "trainer"):
+            explicit_resolved = True
+        elif val in ("low", "background", "batch", "bulk", "raven", "trainer"):
             resolved = PRIORITY_LOW
-            _CURRENT_REQUEST_PRIORITY.set(resolved)
-            return resolved
-        if val in ("keeper", "warmup"):
+            explicit_resolved = True
+        elif val in ("keeper", "warmup"):
             resolved = PRIORITY_KEEPER
-            _CURRENT_REQUEST_PRIORITY.set(resolved)
-            return resolved
-        try:
-            resolved = max(PRIORITY_KEEPER, min(PRIORITY_CRITICAL, int(val)))
-            _CURRENT_REQUEST_PRIORITY.set(resolved)
-            return resolved
-        except ValueError:
-            pass
+            explicit_resolved = True
+        else:
+            try:
+                resolved = max(PRIORITY_KEEPER, min(PRIORITY_CRITICAL, int(val)))
+                explicit_resolved = True
+            except ValueError:
+                pass
     source = str(getattr(getattr(request, "state", None), "request_source", "") or "").lower()
-    if any(tok in source for tok in _CRITICAL_PRIORITY_SOURCES):
-        resolved = PRIORITY_CRITICAL
-    elif any(tok in source for tok in _HIGH_PRIORITY_SOURCES):
-        resolved = PRIORITY_HIGH
-    elif any(tok in source for tok in _LOW_PRIORITY_SOURCES):
-        resolved = PRIORITY_LOW
+    if not explicit_resolved:
+        if any(tok in source for tok in _CRITICAL_PRIORITY_SOURCES):
+            resolved = PRIORITY_CRITICAL
+        elif any(tok in source for tok in _HIGH_PRIORITY_SOURCES):
+            resolved = PRIORITY_HIGH
+        elif any(tok in source for tok in _LOW_PRIORITY_SOURCES):
+            resolved = PRIORITY_LOW
     if _is_benchmark_source(source):
         _touch_benchmark_activity()
         if _benchmark_exclusive_active():
@@ -876,6 +873,7 @@ def _watch_queued_request(*, reason: str, backend: str | None = None) -> int:
     ticket = next(_queue_watch_seq)
     with _queue_watch_lock:
         _queue_watch[ticket] = {
+            "request_id": f"queued-w-{ticket}",
             "reason": reason,
             "backend": backend,
             "model": None,
@@ -893,12 +891,14 @@ def _unwatch_queued_request(ticket: int) -> None:
 
 def _queued_row(meta: dict[str, Any], now: float, position: int | None) -> dict[str, Any]:
     queued_at = float(meta.get("queued_at") or now)
+    raw_prio = meta.get("priority")
+    prio_val = PRIORITY_NORMAL if raw_prio is None else int(raw_prio)
     return {
         "request_id": str(meta.get("request_id") or f"queued-{int(queued_at * 1000)}"),
         "model": meta.get("model") or meta.get("backend") or "",
         "backend_model": meta.get("backend") or "",
         "request_source": meta.get("source") or "unknown",
-        "priority": priority_label(int(meta.get("priority") or PRIORITY_NORMAL)),
+        "priority": priority_label(prio_val),
         "reason": meta.get("reason") or "slot",
         "position": position,
         "queued_at": queued_at,
@@ -921,7 +921,7 @@ def queued_request_details() -> list[dict[str, Any]]:
         rows.append(_queued_row(meta, now, None))
     for backend, heap in list(_slot_waiters.items()):
         position = 0
-        for entry in list(heap):
+        for entry in sorted(list(heap), key=lambda item: (item[0], item[1])):
             if len(entry) < 6 or entry[2] or entry[3]:
                 continue
             position += 1

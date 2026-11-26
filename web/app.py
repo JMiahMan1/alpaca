@@ -455,28 +455,41 @@ benchmark_thread = None
 _RUN_SCRATCH_KEYS = ("results", "test_results")
 
 
+_benchmark_signal_lock = threading.Lock()
+_benchmark_signal_seq = 0
+
+
 def _proxy_benchmark_active(active: bool, models=None, run_id=None) -> None:
     """Tell the proxy a benchmark owns the card so it can protect the run.
 
     Best-effort and fire-and-forget: a proxy that is down or an older build without
-    the endpoint must never break the benchmark itself.
+    the endpoint must never break the benchmark itself. Serialised with a sequence
+    number so an earlier ``active=True`` post can never overtake a later ``active=False``.
     """
+    global _benchmark_signal_seq
     payload: dict[str, Any] = {"active": bool(active)}
     if models:
         payload["model"] = models[0] if isinstance(models, (list, tuple)) and models else models
     if run_id:
         payload["run_id"] = run_id
 
+    with _benchmark_signal_lock:
+        _benchmark_signal_seq += 1
+        my_seq = _benchmark_signal_seq
+
     def _post() -> None:
-        try:
-            with httpx.Client(timeout=3.0) as client:
-                client.post(
-                    f"{PROXY_URL}/admin/benchmark/active",
-                    json=payload,
-                    headers=get_proxy_headers(),
-                )
-        except Exception as exc:  # never fail a benchmark on this
-            print(f"[benchmark] could not signal proxy exclusive mode: {exc}")
+        with _benchmark_signal_lock:
+            if my_seq < _benchmark_signal_seq:
+                return
+            try:
+                with httpx.Client(timeout=3.0) as client:
+                    client.post(
+                        f"{PROXY_URL}/admin/benchmark/active",
+                        json=payload,
+                        headers=get_proxy_headers(),
+                    )
+            except Exception as exc:  # never fail a benchmark on this
+                print(f"[benchmark] could not signal proxy exclusive mode: {exc}")
 
     threading.Thread(target=_post, daemon=True).start()
 

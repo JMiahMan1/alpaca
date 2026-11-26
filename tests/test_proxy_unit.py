@@ -5021,12 +5021,31 @@ def test_slot_waiters_are_listed_in_the_order_they_will_be_served(_empty_queue):
         alpaca_proxy.PRIORITY_HIGH,
         meta=_queue_meta("req-high", "kat--latest", alpaca_proxy.PRIORITY_HIGH),
     )
+    alpaca_proxy._enqueue_slot_waiter(
+        "kat--latest",
+        alpaca_proxy.PRIORITY_NORMAL,
+        meta=_queue_meta("req-normal", "kat--latest", alpaca_proxy.PRIORITY_NORMAL),
+    )
 
     rows = alpaca_proxy.queued_request_details()
-    assert [row["request_id"] for row in rows] == ["req-high", "req-low"]
-    assert [row["position"] for row in rows] == [1, 2]
+    assert [row["request_id"] for row in rows] == ["req-high", "req-normal", "req-low"]
+    assert [row["position"] for row in rows] == [1, 2, 3]
+    assert [row["priority"] for row in rows] == ["HIGH", "NORMAL", "LOW"]
     assert all(row["reason"] == "slot" and row["waiting_s"] >= 0 for row in rows)
-    assert rows[0]["priority"] == "HIGH"
+
+
+def test_benchmark_source_with_explicit_low_priority_still_promotes_and_touches(_benchmark_context):
+    """An explicit X-Priority: low header on a benchmark request must not skip exclusive promotion."""
+    alpaca_proxy.set_benchmark_state(True, model="inkling")
+    with alpaca_proxy._benchmark_state_lock:
+        alpaca_proxy._benchmark_state["last_activity"] = 1.0
+    req = make_request(
+        "/api/chat",
+        headers={"x-priority": "low", "x-request-source": "shared-llm/benchmark"},
+    )
+    req.state.request_source = "shared-llm/benchmark"
+    assert alpaca_proxy.resolve_request_priority(req) == alpaca_proxy.PRIORITY_HIGH
+    assert alpaca_proxy.get_benchmark_state()["last_activity"] > 1.0
 
 
 def test_cancelled_and_prompt_keeper_waiters_are_not_listed(_empty_queue):

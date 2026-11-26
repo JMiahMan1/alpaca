@@ -44,7 +44,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     function onlineProviderKey(model) {
-        const match = /^([a-z_]+):/i.exec(String(model || '').trim());
+        const raw = (model && typeof model === 'object') ? (model.id || model.model || '') : model;
+        const match = /^([a-z_]+):/i.exec(String(raw || '').trim());
         if (!match) return null;
         const prefix = match[1].toLowerCase();
         return ONLINE_PROVIDER_KEYS[prefix] || prefix;
@@ -4065,9 +4066,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const modelsData = modelsRes.status === 'fulfilled' ? await modelsRes.value.json() : { models: [] };
             const trackingData = trackingRes.status === 'fulfilled' ? await trackingRes.value.json() : { all_tracked: {}, counts: {} };
             const onlineData = onlineRes.status === 'fulfilled' ? await onlineRes.value.json() : { models: [] };
-            if (providersRes.status === 'fulfilled') {
-                const providerData = await providersRes.value.json();
-                configuredProviders = providerData.configured || {};
+            if (providersRes.status === 'fulfilled' && providersRes.value.ok) {
+                try {
+                    const providerData = await providersRes.value.json();
+                    configuredProviders = providerData.configured || {};
+                } catch (_err) {
+                    // Leave configuredProviders unchanged if the response is not JSON.
+                }
             }
 
             availableModels = modelsData.models || [];
