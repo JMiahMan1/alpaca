@@ -1298,14 +1298,16 @@ class LLMModelBenchmark:
 
         # Gather all plausible alias strings and sanitized variants
         clean_model = model.strip()
+        base_no_latest = clean_model.removesuffix(":latest").removesuffix("--latest")
         variants = {
             clean_model,
+            base_no_latest,
+            f"{base_no_latest}:latest",
+            f"{base_no_latest}--latest",
             clean_model.replace("--", ":"),
             clean_model.replace(":", "--"),
             clean_model.replace("--", "_"),
             clean_model.replace(":", "_"),
-            clean_model.removesuffix(":latest"),
-            clean_model + ":latest" if not clean_model.endswith(":latest") else clean_model,
             clean_model.removesuffix(".gguf"),
             clean_model.split("/")[-1],
         }

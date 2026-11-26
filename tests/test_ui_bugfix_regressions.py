@@ -517,3 +517,145 @@ def test_responsive_shell_drawer_dock_and_safe_areas():
         for m in re.finditer(r"repeat\(auto-(?:fit|fill),\s*minmax\((?!min\(100%,)[^)]+\)\)", css + "\n" + html)
     ]
     assert bad_minmax == [], f"unclamped auto-grid minmax found: {bad_minmax}"
+
+
+# --- Model & benchmark deletion regressions -----------------------------------
+
+
+def test_purge_model_benchmarks_prunes_int_models_tested_snapshots_and_multistep(tmp_path, monkeypatch):
+    """Multi-model snapshots store `models_tested` as an int count, not a list.
+
+    Previously `_purge_model_benchmarks` iterated `doc.get("models_tested", [])`,
+    raising TypeError on every multi-model snapshot and silently swallowing it,
+    so deleted models and benchmark history immediately came right back.
+    """
+    import web.app as webapp
+
+    gen_dir = tmp_path / "llm_benchmarks"
+    gen_models = gen_dir / "models"
+    shared_dir = tmp_path / "shared_llm_benchmarks"
+    shared_models = shared_dir / "models"
+    ms_dir = tmp_path / "multistep_benchmarks"
+    ms_models = ms_dir / "models"
+    for d in (gen_models, shared_models, ms_models):
+        d.mkdir(parents=True)
+
+    monkeypatch.setattr(webapp.benchmark, "RESULTS_DIR", gen_dir)
+    monkeypatch.setattr(webapp.benchmark, "MODELS_DIR", gen_models)
+    monkeypatch.setattr(webapp.benchmark, "ARTIFACTS_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(webapp.shared_llm_benchmark, "RESULTS_DIR", shared_dir)
+    monkeypatch.setattr(webapp.shared_llm_benchmark, "MODELS_DIR", shared_models)
+    monkeypatch.setattr(webapp.multistep_benchmark, "RESULTS_DIR", ms_dir)
+    monkeypatch.setattr(webapp.multistep_benchmark, "MODELS_DIR", ms_models)
+    monkeypatch.setattr(webapp.model_tracker, "data_dir", tmp_path)
+    monkeypatch.setattr(webapp.model_tracker, "tracking_file", tmp_path / "model_tracking.json")
+    monkeypatch.setattr(webapp.model_tracker, "general_benchmarks_dir", gen_dir)
+    monkeypatch.setattr(webapp.model_tracker, "shared_benchmarks_dir", shared_dir)
+
+    # Multi-model general snapshot with int models_tested (the real production schema)
+    snap = gen_dir / "benchmarks_20261125_170534_all_proxy.json"
+    snap.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-11-25T17:05:34",
+                "models_tested": 2,
+                "results": [
+                    {"model": "ornith-1-5-35b-q4-k-m", "tests": []},
+                    {"model": "keep-model:latest", "tests": []},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Single-model snapshot (should be unlinked completely)
+    single_snap = gen_dir / "benchmarks_20261125_180000_all_proxy.json"
+    single_snap.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-11-25T18:00:00",
+                "models_tested": 1,
+                "results": [{"model": "ornith-1-5-35b-q4-k-m--latest", "tests": []}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Latest aggregate + per-model files across general and multistep
+    latest = gen_dir / "all_benchmarks_latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "models_tested": 2,
+                "results": [
+                    {"model": "ornith-1-5-35b-q4-k-m", "tests": []},
+                    {"model": "keep-model:latest", "tests": []},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (gen_models / "general_ornith-1-5-35b-q4-k-m.json").write_text(
+        json.dumps({"model": "ornith-1-5-35b-q4-k-m", "results": [{"model": "ornith-1-5-35b-q4-k-m"}]}),
+        encoding="utf-8",
+    )
+    ms_snap = ms_dir / "multistep_benchmarks_20261125_170000_proxy.json"
+    ms_snap.write_text(
+        json.dumps({"models_tested": 1, "results": [{"model": "ornith-1-5-35b-q4-k-m"}]}),
+        encoding="utf-8",
+    )
+    ms_pm = ms_models / "multistep_ornith-1-5-35b-q4-k-m.json"
+    ms_pm.write_text(json.dumps({"model": "ornith-1-5-35b-q4-k-m", "results": []}), encoding="utf-8")
+
+    res = webapp._purge_model_benchmarks("ornith-1-5-35b-q4-k-m")
+    assert res["removed"] is True
+    assert res["general"] is True
+    assert res["multistep"] is True
+    assert res["snapshots_pruned"] == 3
+
+    # Multi-model snapshot was pruned and models_tested decremented to 1
+    pruned_doc = json.loads(snap.read_text(encoding="utf-8"))
+    assert pruned_doc["models_tested"] == 1
+    assert [r["model"] for r in pruned_doc["results"]] == ["keep-model:latest"]
+    # Single-model snapshots and per-model files were deleted
+    assert not single_snap.exists()
+    assert not ms_snap.exists()
+    assert not ms_pm.exists()
+    assert not (gen_models / "general_ornith-1-5-35b-q4-k-m.json").exists()
+    # Latest aggregate updated cleanly
+    latest_doc = json.loads(latest.read_text(encoding="utf-8"))
+    assert latest_doc["models_tested"] == 1
+    assert [r["model"] for r in latest_doc["results"]] == ["keep-model:latest"]
+    # Rescanning historical benchmarks must NOT resurrect the deleted model
+    hist = webapp.model_tracker.scan_historical_benchmarks()
+    assert "ornith-1-5-35b-q4-k-m" not in hist
+    assert "ornith-1-5-35b-q4-k-m--latest" not in hist
+
+
+def test_router_text_models_filters_deleted_models_not_on_disk(tmp_path, monkeypatch):
+    """If llama-server caches a preset after deletion, drop it once absent from ROUTER_MODELS_DIR."""
+    import web.app as webapp
+
+    (tmp_path / "keep-model--latest.gguf").write_text("", encoding="utf-8")
+    (tmp_path / "models.ini").write_text("[*]\n[keep-model--latest]\nmodel = /router-models/keep-model--latest.gguf\n", encoding="utf-8")
+    monkeypatch.setenv("ROUTER_MODELS_DIR", str(tmp_path))
+
+    fake = _fake_response(
+        200,
+        {"data": [{"id": "keep-model--latest"}, {"id": "deleted-model--latest"}]},
+    )
+    with patch("httpx.Client.get", return_value=fake):
+        models = webapp._get_router_text_models()
+    assert models == ["keep-model:latest"]
+
+
+def test_delete_model_forwards_proxy_auth_headers(client, monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "test-secret-key")
+    with (
+        patch("web.app._find_proxy_url", return_value="http://proxy:11434"),
+        patch("httpx.Client.post", return_value=_fake_response(200, {"status": "deleted"})) as post,
+        patch("web.app.model_tracker.delete_model"),
+    ):
+        res = client.post("/api/models/delete", json={"model": "foo:latest"})
+    assert res.status_code == 200
+    headers = post.call_args.kwargs.get("headers") or {}
+    assert headers.get("Authorization") == "Bearer test-secret-key"
+    assert headers.get("X-API-Key") == "test-secret-key"

@@ -128,14 +128,16 @@ class ModelTracker:
             data = self._load_tracking_data()
             models = data.get("models", {})
             clean_id = model_id.strip()
+            base_no_latest = clean_id.removesuffix(":latest").removesuffix("--latest")
             variants = {
                 clean_id,
+                base_no_latest,
+                f"{base_no_latest}:latest",
+                f"{base_no_latest}--latest",
                 clean_id.replace("--", ":"),
                 clean_id.replace(":", "--"),
                 clean_id.replace("--", "_"),
                 clean_id.replace(":", "_"),
-                clean_id.removesuffix(":latest"),
-                clean_id + ":latest" if not clean_id.endswith(":latest") else clean_id,
                 clean_id.removesuffix(".gguf"),
                 clean_id.split("/")[-1],
             }

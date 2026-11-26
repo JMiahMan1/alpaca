@@ -4437,6 +4437,15 @@ a.badge {
         min-width: 36px;
         min-height: 36px;
     }
+    .badge-benchmarked-score,
+    .badge-delete-benchmarks,
+    .badge-remove-online {
+        min-height: 28px;
+        min-width: 28px;
+        padding: 3px 7px !important;
+        font-size: 0.72rem !important;
+        justify-content: center;
+    }
     .quick-select span {
         padding: 0.35rem 0.6rem;
     }

@@ -6513,6 +6513,21 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (results.length === 0) {
                 historyList.innerHTML = `<div style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding:1rem;">No past runs found</div>`;
+                currentResults = [];
+                currentSharedResults = [];
+                TREND_DATA.general = [];
+                TREND_DATA.shared = [];
+                updateOverviewMetrics({ results: [] });
+                renderChartsFromData([]);
+                renderDetailsSection([]);
+                updateSharedOverviewMetrics({ results: [] });
+                renderSharedChartsFromData([]);
+                renderSharedDetailsSection([]);
+                const snapBarEmpty = document.getElementById('snapshot-mode-bar');
+                if (snapBarEmpty) snapBarEmpty.classList.add('d-none');
+                renderTrendChart('general');
+                renderTrendChart('shared');
+                populateDiffSelects([]);
                 return;
             }
 
@@ -6572,18 +6587,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (_) { /* skip unreadable files */ }
             }));
 
+            currentResults = generalResults;
+            updateOverviewMetrics({ results: generalResults });
+            renderChartsFromData(generalResults);
+            renderDetailsSection(generalResults);
             if (generalResults.length > 0) {
-                currentResults = generalResults;
-                updateOverviewMetrics({ results: generalResults });
-                renderChartsFromData(generalResults);
-                renderDetailsSection(generalResults);
                 logToTerminal(`Restored ${generalResults.length} general benchmark model(s) from history`, 'success');
             }
+
+            currentSharedResults = sharedResults;
+            updateSharedOverviewMetrics({ ...(latestSharedData || {}), results: sharedResults });
+            renderSharedChartsFromData(sharedResults);
+            renderSharedDetailsSection(sharedResults);
             if (sharedResults.length > 0) {
-                currentSharedResults = sharedResults;
-                if (latestSharedData) updateSharedOverviewMetrics({ ...latestSharedData, results: sharedResults });
-                renderSharedChartsFromData(sharedResults);
-                renderSharedDetailsSection(sharedResults);
                 logToTerminal(`Restored ${sharedResults.length} SharedLLM benchmark model(s) from history`, 'success');
             }
 
@@ -6648,13 +6664,18 @@ document.addEventListener('DOMContentLoaded', () => {
                         const deleteRes = await fetch(`/api/results/${result.filename}`, { method: 'DELETE' });
                         if (deleteRes.ok) {
                             logToTerminal(`Deleted result file ${result.filename}`, 'success');
-                            loadHistory();
+                            showToast(`Deleted result file ${result.filename}`, 'success');
+                            await loadHistory();
+                            await loadModels();
+                            if (typeof loadTestBrowser === 'function') loadTestBrowser();
                         } else {
                             const errData = await deleteRes.json();
                             logToTerminal(errData.error || "Failed to delete result file", "error");
+                            showToast(errData.error || "Failed to delete result file", "error");
                         }
                     } catch (err) {
                         logToTerminal(`Error deleting result file: ${err.message}`, "error");
+                        showToast(`Error deleting result file: ${err.message}`, "error");
                     }
                 });
                 item.appendChild(deleteBtn);
@@ -6699,6 +6720,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     showToast(data.message || 'All benchmark data cleared.', 'success');
                     await loadHistory();
                     await loadModels();
+                    if (typeof loadTestBrowser === 'function') loadTestBrowser();
                     if (typeof loadRoutingMatrix === 'function') await loadRoutingMatrix();
                 } else {
                     logToTerminal(`Failed to clear benchmarks: ${data.error || 'Unknown error'}`, 'error');
@@ -7080,14 +7102,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function ensureFilterModels(results, type) {
         const container = document.getElementById(`model-filter-models-${type}`);
-        if (!container || !results || results.length === 0) return;
+        if (!container) return;
         const all = filterAllModels[type];
         const sel = filterSelection[type];
-        const known = new Set(all);
+        const present = new Set((results || []).map(r => r.model).filter(Boolean));
         let changed = false;
 
-        results.forEach(r => {
-            if (!known.has(r.model)) {
+        // Prune models whose benchmark data was deleted so stale chips don't linger
+        for (let i = all.length - 1; i >= 0; i--) {
+            const m = all[i];
+            if (!present.has(m)) {
+                all.splice(i, 1);
+                sel.delete(m);
+                const input = filterCheckboxInputs[type]?.[m];
+                if (input && input.parentElement) input.parentElement.remove();
+                if (filterCheckboxInputs[type]) delete filterCheckboxInputs[type][m];
+                changed = true;
+            }
+        }
+
+        if (present.size === 0) {
+            filterInitialized[type] = false;
+            if (!container.querySelector('.model-filter-placeholder')) {
+                container.innerHTML = '<span class="model-filter-placeholder card-sub">No benchmark results loaded.</span>';
+            }
+            updateFilterGroupState(type);
+            return;
+        }
+
+        const known = new Set(all);
+        (results || []).forEach(r => {
+            if (r && r.model && !known.has(r.model)) {
                 known.add(r.model);
                 all.push(r.model);
                 sel.add(r.model);
@@ -9558,9 +9603,14 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const normModel = (n) => String(n || '').trim().replace(/--/g, ':').replace(/:latest$/, '');
+        const targetNorm = normModel(modelName);
+        const sidebarTrackedBench = Array.from(document.querySelectorAll('#model-checkboxes .checkbox-item[data-status="benchmarked"] input[type="checkbox"]'))
+            .some(inp => normModel(inp.value) === targetNorm);
         const hasBenchmarks =
-            (Array.isArray(currentResults) && currentResults.some(r => r.model === modelName)) ||
-            (Array.isArray(currentSharedResults) && currentSharedResults.some(r => r.model === modelName));
+            sidebarTrackedBench ||
+            (Array.isArray(currentResults) && currentResults.some(r => normModel(r.model) === targetNorm)) ||
+            (Array.isArray(currentSharedResults) && currentSharedResults.some(r => normModel(r.model) === targetNorm));
         let removeBenchmarks = false;
         if (hasBenchmarks) {
             removeBenchmarks = confirm(`Model "${modelName}" has saved benchmark results.\n\nOK = also delete its benchmark results\nCancel = delete the model but keep its benchmark history`);
@@ -9595,6 +9645,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (removeBenchmarks) {
                     if (typeof loadHistory === 'function') {
                         await loadHistory();
+                    }
+                    if (typeof loadTestBrowser === 'function') {
+                        loadTestBrowser();
                     }
                 }
                 
@@ -9640,11 +9693,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await res.json();
 
             if (res.ok) {
-                logToTerminal(`Benchmark history cleared for "${displayName}" (${data.removed || 0} file(s) removed).`, 'success');
+                const prunedCount = Number(data.snapshots_pruned || 0);
+                logToTerminal(`Benchmark history cleared for "${displayName}" (${prunedCount} snapshot(s) updated).`, 'success');
                 showToast(`Benchmark history cleared for "${displayName}"`, 'success');
                 await loadModels();
                 if (typeof loadHistory === 'function') {
                     await loadHistory();
+                }
+                if (typeof loadTestBrowser === 'function') {
+                    loadTestBrowser();
                 }
                 if (typeof loadRoutingMatrix === 'function') {
                     await loadRoutingMatrix();
@@ -9691,6 +9748,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 await loadModels();
                 if (typeof loadHistory === 'function') {
                     await loadHistory();
+                }
+                if (typeof loadTestBrowser === 'function') {
+                    loadTestBrowser();
                 }
                 if (typeof loadRoutingMatrix === 'function') {
                     loadRoutingMatrix();

@@ -3399,19 +3399,41 @@ def _router_id_to_public(model_id: str) -> str:
 def _get_router_text_models() -> list[str]:
     """Return all text/VL model IDs from llama-server router (includes standalone GGUFs without Ollama manifests)."""
     try:
+        import configparser
+
         import httpx
+
+        router_dir = Path(os.environ.get("ROUTER_MODELS_DIR", "/router-models"))
+        ini_sections: set[str] | None = None
+        if router_dir.is_dir():
+            ini_path = router_dir / "models.ini"
+            if ini_path.exists():
+                try:
+                    cfg = configparser.ConfigParser()
+                    cfg.read(ini_path)
+                    ini_sections = set(cfg.sections())
+                except Exception:
+                    ini_sections = None
 
         with httpx.Client(timeout=3.0) as client:
             resp = client.get(f"{LLAMA_SERVER_URL}/models")
             if resp.status_code == 200:
-                # Filter out image-generation models (SD/flux/image-edit)
+                # Filter out image-generation models (SD/flux/image-edit) and stale
+                # entries whose GGUF symlink and models.ini section were already deleted.
                 sd_keywords = ["image-edit", "qwen-image", "qwen_image", "sd", "flux", "diffusion"]
                 models = resp.json().get("data", [])
-                return [
-                    _router_id_to_public(m["id"])
-                    for m in models
-                    if not any(kw in m["id"].lower() for kw in sd_keywords)
-                ]
+                out = []
+                for m in models:
+                    mid = m["id"]
+                    if any(kw in mid.lower() for kw in sd_keywords):
+                        continue
+                    if router_dir.is_dir():
+                        gguf_exists = (router_dir / f"{mid}.gguf").exists() or (router_dir / f"{mid}.gguf").is_symlink()
+                        in_ini = ini_sections is not None and mid in ini_sections
+                        if not gguf_exists and not in_ini:
+                            continue
+                    out.append(_router_id_to_public(mid))
+                return out
     except Exception:
         pass
     return []
@@ -3977,10 +3999,11 @@ def remove_online_model_api():
                     500,
                 )
             selection_count = len(remaining)
-            if model_removed and not remove_benchmarks:
+            if not remove_benchmarks:
                 # History is kept but the entry must stay out of the run list:
                 # without this, pastOnlineModels resurrects the row from
-                # tracking and the removal looks like a no-op.
+                # tracking and the removal looks like a no-op (even if the model
+                # was only a previously-benchmarked row and not in selection).
                 with contextlib.suppress(Exception):
                     model_tracker.set_hidden(model, True)
 
@@ -5535,65 +5558,106 @@ def _purge_model_benchmarks(model: str) -> dict[str, Any]:
     """Completely purge all benchmark history, per-model files, artifacts, snapshots, and tracker entries for a model."""
     clean_model = (model or "").strip()
     if not clean_model:
-        return {"removed": False, "general": False, "shared": False, "snapshots_pruned": 0}
+        return {"removed": False, "general": False, "shared": False, "multistep": False, "snapshots_pruned": 0}
 
+    base_no_latest = clean_model.removesuffix(":latest").removesuffix("--latest")
     variants = {
         clean_model,
+        base_no_latest,
+        f"{base_no_latest}:latest",
+        f"{base_no_latest}--latest",
         clean_model.replace("--", ":"),
         clean_model.replace(":", "--"),
         clean_model.replace("--", "_"),
         clean_model.replace(":", "_"),
-        clean_model.removesuffix(":latest"),
-        clean_model + ":latest" if not clean_model.endswith(":latest") else clean_model,
+        base_no_latest.replace("--", ":"),
+        base_no_latest.replace(":", "--"),
         clean_model.removesuffix(".gguf"),
         clean_model.split("/")[-1],
     }
+    variants.discard("")
+    sanitized_variants = {benchmark._sanitize_model_filename(v) for v in variants if v}
 
-    # 1. Delete per-model files and artifacts from both suites
+    def _matches_model(candidate: Any) -> bool:
+        if not candidate or not isinstance(candidate, str):
+            return False
+        c = candidate.strip()
+        return c in variants or benchmark._sanitize_model_filename(c) in sanitized_variants
+
+    # 1. Delete per-model files and artifacts from general, SharedLLM, and MultiStep suites
     gen_removed = benchmark.delete_model_results(clean_model)
     shared_removed = shared_llm_benchmark.delete_model_results(clean_model)
+    multistep_removed = False
+    if multistep_benchmark.MODELS_DIR.exists():
+        for pm_path in list(multistep_benchmark.MODELS_DIR.glob("multistep_*.json")):
+            try:
+                with open(pm_path, encoding="utf-8") as f:
+                    pm_doc = json.load(f)
+                pm_model = pm_doc.get("model") or ""
+                if _matches_model(pm_model) or any(
+                    _matches_model(r.get("model")) for r in pm_doc.get("results", []) if isinstance(r, dict)
+                ):
+                    pm_path.unlink()
+                    multistep_removed = True
+            except Exception as exc:
+                app.logger.warning("Failed to inspect/remove multistep per-model file %s: %s", pm_path, exc)
 
     # 2. Prune from latest aggregate snapshots
     for latest_path in [
         benchmark.RESULTS_DIR / "all_benchmarks_latest.json",
         shared_llm_benchmark.RESULTS_DIR / "all_shared_benchmarks_latest.json",
+        multistep_benchmark.RESULTS_DIR / "all_multistep_benchmarks_latest.json",
     ]:
         if latest_path.exists():
             try:
-                with open(latest_path) as f:
+                with open(latest_path, encoding="utf-8") as f:
                     doc = json.load(f)
                 orig_len = len(doc.get("results", []))
-                doc["results"] = [m for m in doc.get("results", []) if m.get("model") not in variants]
+                doc["results"] = [
+                    m for m in doc.get("results", []) if not (isinstance(m, dict) and _matches_model(m.get("model")))
+                ]
                 if len(doc["results"]) != orig_len:
-                    with open(latest_path, "w") as f:
+                    if isinstance(doc.get("models_tested"), list):
+                        doc["models_tested"] = [m for m in doc["models_tested"] if not _matches_model(m)]
+                    elif "models_tested" in doc:
+                        doc["models_tested"] = len(doc["results"])
+                    with open(latest_path, "w", encoding="utf-8") as f:
                         json.dump(doc, f, indent=2, default=str)
-            except Exception:
-                pass
+            except Exception as exc:
+                app.logger.warning("Failed to prune latest aggregate %s: %s", latest_path, exc)
 
-    # 3. Prune from all run snapshot files
+    # 3. Prune from all run snapshot files across all suites
     snapshots_pruned = 0
-    for res_dir in [benchmark.RESULTS_DIR, shared_llm_benchmark.RESULTS_DIR]:
+    for res_dir in [benchmark.RESULTS_DIR, shared_llm_benchmark.RESULTS_DIR, multistep_benchmark.RESULTS_DIR]:
         if res_dir.exists():
             for snap_path in list(res_dir.glob("*.json")):
                 if snap_path.name.startswith("all_"):
                     continue
                 try:
-                    with open(snap_path) as f:
+                    with open(snap_path, encoding="utf-8") as f:
                         doc = json.load(f)
-                    orig_len = len(doc.get("results", []))
+                    if not isinstance(doc, dict) or not isinstance(doc.get("results"), list):
+                        continue
+                    orig_len = len(doc["results"])
                     if orig_len == 0:
                         continue
-                    doc["results"] = [r for r in doc.get("results", []) if r.get("model") not in variants]
+                    doc["results"] = [
+                        r for r in doc["results"] if not (isinstance(r, dict) and _matches_model(r.get("model")))
+                    ]
                     if len(doc["results"]) == 0:
                         snap_path.unlink()
                         snapshots_pruned += 1
                     elif len(doc["results"]) != orig_len:
-                        doc["models_tested"] = [m for m in doc.get("models_tested", []) if m not in variants]
-                        with open(snap_path, "w") as f:
+                        # Snapshot files store `models_tested` as an int count (or occasionally a list of names).
+                        if isinstance(doc.get("models_tested"), list):
+                            doc["models_tested"] = [m for m in doc["models_tested"] if not _matches_model(m)]
+                        elif "models_tested" in doc:
+                            doc["models_tested"] = len(doc["results"])
+                        with open(snap_path, "w", encoding="utf-8") as f:
                             json.dump(doc, f, indent=2, default=str)
                         snapshots_pruned += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    app.logger.warning("Failed to prune benchmark snapshot %s: %s", snap_path, exc)
 
     # 4. Remove from model tracker
     with contextlib.suppress(Exception):
@@ -5605,9 +5669,10 @@ def _purge_model_benchmarks(model: str) -> dict[str, Any]:
         model_tracker.scan_historical_benchmarks()
 
     return {
-        "removed": bool(gen_removed or shared_removed or snapshots_pruned > 0),
+        "removed": bool(gen_removed or shared_removed or multistep_removed or snapshots_pruned > 0),
         "general": gen_removed,
         "shared": shared_removed,
+        "multistep": multistep_removed,
         "snapshots_pruned": snapshots_pruned,
     }
 
@@ -5680,7 +5745,23 @@ def clear_all_benchmarks():
                 except Exception:
                     pass
 
-        # 3. Reset Model Tracker
+        # 3. Clean MultiStep benchmark results & models
+        if multistep_benchmark.RESULTS_DIR.exists():
+            for f in multistep_benchmark.RESULTS_DIR.glob("*.json"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+        if multistep_benchmark.MODELS_DIR.exists():
+            for f in multistep_benchmark.MODELS_DIR.glob("*.json"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+
+        # 4. Reset Model Tracker
         with contextlib.suppress(Exception):
             model_tracker.clear_all()
 
@@ -7514,7 +7595,11 @@ def delete_model():
 
     try:
         with httpx.Client(timeout=30.0) as client:
-            resp = client.post(f"{proxy_url}/admin/models/delete", json={"model": model})
+            resp = client.post(
+                f"{proxy_url}/admin/models/delete",
+                json={"model": model},
+                headers=get_proxy_headers(),
+            )
             if resp.status_code == 200:
                 response_data = dict(resp.json())
                 # The model is gone from disk, so its tracker entry is stale.
