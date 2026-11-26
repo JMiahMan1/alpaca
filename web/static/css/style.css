@@ -3943,7 +3943,11 @@ a.badge {
         flex-direction: column;
         align-items: stretch;
         gap: 0.35rem;
-        flex: 1 1 auto;
+        flex: 0 0 auto;
+    }
+    .sd-model-picker select {
+        flex: 0 0 auto !important;
+        width: 100%;
     }
     .sd-model-actions {
         display: grid;
