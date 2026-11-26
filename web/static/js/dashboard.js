@@ -322,9 +322,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const activeBtn = document.querySelector('.main-tabs .nav-tab.active');
         if (activeBtn) {
             activeBtn.setAttribute('aria-selected', 'true');
-            if (typeof activeBtn.scrollIntoView === 'function' && window.matchMedia && window.matchMedia('(max-width: 1024px)').matches) {
-                activeBtn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+            const tabsBar = activeBtn.parentElement;
+            if (typeof activeBtn.scrollIntoView === 'function' && tabsBar && tabsBar.scrollWidth > tabsBar.clientWidth) {
+                activeBtn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
             }
+        }
+        if (window.alpacaResponsive && typeof window.alpacaResponsive.syncDockActive === 'function') {
+            window.alpacaResponsive.syncDockActive(tabName);
         }
         document.dispatchEvent(new CustomEvent('tabChanged', { detail: tabName }));
     }
@@ -6378,6 +6382,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!document.body) return;
             const anyOpen = !!document.querySelector('.modal-overlay.open, #sandbox-terminal-overlay.open');
             document.body.classList.toggle('modal-open', anyOpen);
+            if (anyOpen && window.alpacaResponsive) {
+                if (typeof window.alpacaResponsive.closeDrawer === 'function') window.alpacaResponsive.closeDrawer();
+                if (typeof window.alpacaResponsive.closeViewsSheet === 'function') window.alpacaResponsive.closeViewsSheet();
+            }
         };
         if (typeof MutationObserver !== 'undefined' && document.body) {
             const mo = new MutationObserver(syncModalScrollLock);

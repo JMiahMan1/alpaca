@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Alpaca LLM Benchmark Suite</title>
     <!-- Inline SVG favicon (avoids /favicon.ico 404) -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Ctext x='16' y='23' font-size='20' font-weight='bold' text-anchor='middle' fill='%2338bdf8' font-family='system-ui,sans-serif'%3EA%3C/text%3E%3C/svg%3E">
@@ -17,51 +17,62 @@
 </head>
 <body>
     <div class="app-container">
-        <!-- Dashboard Header -->
-        <header>
-            <div class="brand-section">
-                <div class="brand-logo">🦙</div>
-                <div class="brand-title">
-                    <h1>Alpaca Benchmarks v2</h1>
-                    <p>Real-time multi-container LLM evaluation suite</p>
+        <!-- Sticky Top Chrome: Header + Main Navigation -->
+        <div class="app-topbar">
+            <!-- Dashboard Header -->
+            <header>
+                <div class="brand-section">
+                    <div class="brand-logo">🦙</div>
+                    <div class="brand-title">
+                        <h1>Alpaca Benchmarks v2</h1>
+                        <p>Real-time multi-container LLM evaluation suite</p>
+                    </div>
                 </div>
-            </div>
-            <div class="status-badge-container">
-                <button id="desktop-sidebar-toggle" class="desktop-sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar" title="Toggle pipeline controls sidebar">☰ Hide Controls</button>
-                <div id="connection-status-badge" class="badge badge-danger">
-                    <span class="badge-dot"></span> Socket Offline
+                <div class="status-badge-container">
+                    <button id="mobile-controls-toggle" class="mobile-controls-toggle" type="button" aria-expanded="false" aria-controls="sidebar" title="Open pipeline and model controls">☰ Controls</button>
+                    <button id="desktop-sidebar-toggle" class="desktop-sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar" title="Toggle pipeline controls sidebar">☰ Hide Controls</button>
+                    <div id="connection-status-badge" class="badge badge-danger">
+                        <span class="badge-dot"></span> Socket Offline
+                    </div>
+                    <div id="runner-status-badge" class="badge badge-success">
+                        <span class="badge-dot"></span> IDLE
+                    </div>
+                    <a id="header-logout-btn" href="/logout" class="badge badge-secondary" style="display:none;" title="Log out of session">
+                        <span>🚪 Log out</span>
+                    </a>
                 </div>
-                <div id="runner-status-badge" class="badge badge-success">
-                    <span class="badge-dot"></span> IDLE
-                </div>
-                <a id="header-logout-btn" href="/logout" class="badge badge-secondary" style="display:none;" title="Log out of session">
-                    <span>🚪 Log out</span>
-                </a>
-            </div>
-        </header>
+            </header>
 
-        <!-- Mobile & tablet controls toggle (visible <=1024px via CSS) -->
-        <button id="mobile-controls-toggle" class="mobile-controls-toggle" type="button" aria-expanded="true" aria-controls="sidebar">☰ Hide Controls</button>
-
-        <!-- Main Navigation Tabs -->
-        <div class="main-tabs" role="tablist" aria-label="Dashboard views">
-            <button id="tab-btn-monitor" class="nav-tab active" role="tab" aria-selected="true">⚡ System Monitor</button>
-            <button id="tab-btn-general" class="nav-tab" role="tab" aria-selected="false">🎯 General Benchmarks</button>
-            <button id="tab-btn-shared" class="nav-tab" role="tab" aria-selected="false">⚙️ SharedLLM Benchmarks</button>
-            <button id="tab-btn-tests" class="nav-tab" role="tab" aria-selected="false">🧪 Test Browser</button>
-            <button id="tab-btn-profiles" class="nav-tab" role="tab" aria-selected="false">🔧 Model Profiles</button>
-            <button id="tab-btn-requests" class="nav-tab" role="tab" aria-selected="false">🔍 Request Monitor</button>
-            <button id="tab-btn-sd" class="nav-tab" role="tab" aria-selected="false">🎨 Image Studio</button>
-            <button id="tab-btn-audio" class="nav-tab" role="tab" aria-selected="false">🎵 Audio Studio</button>
-            <button id="tab-btn-podcast" class="nav-tab" role="tab" aria-selected="false">🎙️ Podcast Studio</button>
-            <button id="tab-btn-docs" class="nav-tab" role="tab" aria-selected="false">📖 API Docs</button>
+            <!-- Main Navigation Tabs -->
+            <div class="main-tabs" role="tablist" aria-label="Dashboard views">
+                <button id="tab-btn-monitor" class="nav-tab active" role="tab" aria-selected="true" data-tab="monitor">⚡ System Monitor</button>
+                <button id="tab-btn-general" class="nav-tab" role="tab" aria-selected="false" data-tab="general">🎯 General Benchmarks</button>
+                <button id="tab-btn-shared" class="nav-tab" role="tab" aria-selected="false" data-tab="shared">⚙️ SharedLLM Benchmarks</button>
+                <button id="tab-btn-tests" class="nav-tab" role="tab" aria-selected="false" data-tab="tests">🧪 Test Browser</button>
+                <button id="tab-btn-profiles" class="nav-tab" role="tab" aria-selected="false" data-tab="profiles">🔧 Model Profiles</button>
+                <button id="tab-btn-requests" class="nav-tab" role="tab" aria-selected="false" data-tab="requests">🔍 Request Monitor</button>
+                <button id="tab-btn-sd" class="nav-tab" role="tab" aria-selected="false" data-tab="sd">🎨 Image Studio</button>
+                <button id="tab-btn-audio" class="nav-tab" role="tab" aria-selected="false" data-tab="audio">🎵 Audio Studio</button>
+                <button id="tab-btn-podcast" class="nav-tab" role="tab" aria-selected="false" data-tab="podcast">🎙️ Podcast Studio</button>
+                <button id="tab-btn-docs" class="nav-tab" role="tab" aria-selected="false" data-tab="docs">📖 API Docs</button>
+            </div>
         </div>
+
+        <!-- Off-canvas Drawer Backdrop (<=1024px) -->
+        <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
 
         <!-- Main Dashboard Grid -->
         <div class="dashboard-grid">
             
-            <!-- Left Sidebar Controls -->
-            <div id="sidebar" class="sidebar">
+            <!-- Left Sidebar Controls (Slide-over Drawer on <=1024px) -->
+            <div id="sidebar" class="sidebar" aria-label="Pipeline and model controls">
+                <div id="sidebar-drawer-header" class="sidebar-drawer-header">
+                    <div class="sidebar-drawer-title">
+                        <span>⚙️</span>
+                        <span>Controls &amp; Models</span>
+                    </div>
+                    <button id="btn-close-sidebar-drawer" class="sidebar-drawer-close" type="button" aria-label="Close controls drawer">&times;</button>
+                </div>
                 
                 <!-- Model Switcher Card -->
                 <div class="card" style="border-left: 4px solid var(--color-primary);">
@@ -418,10 +429,10 @@
 
                     <!-- Resource Analysis Card -->
                     <div class="card" id="resource-analysis-card" style="display: flex; flex-direction: column; min-height: 220px; margin-top: 1rem;">
-                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
                             <span>&#x26A1; Resource Usage Analysis &amp; Tuning Suggestions</span>
-                            <div style="display: flex; gap: 0.5rem; align-items: center;">
-                                <select id="analysis-strategy-select" style="background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.65rem; cursor: pointer;">
+                            <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                                <select id="analysis-strategy-select" style="background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 0.25rem 0.5rem; border-radius: 6px; font-size: 0.72rem; cursor: pointer;">
                                     <option value="performance">Performance First</option>
                                     <option value="safe">Safe First</option>
                                 </select>
@@ -459,10 +470,10 @@
 
                     <!-- Model Error Log -->
                     <div class="card" id="error-log-card" style="margin-top: 1.5rem;">
-                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
                             <span>&#x26A0;&#xFE0F; Model Error Log</span>
-                            <div style="display:flex;gap:0.5rem;align-items:center;">
-                                <select id="error-log-filter-type" style="background:#0f172a;color:white;border:1px solid var(--border-color);padding:0.2rem 0.4rem;border-radius:4px;font-size:0.65rem;cursor:pointer;">
+                            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                                <select id="error-log-filter-type" style="background:#0f172a;color:white;border:1px solid var(--border-color);padding:0.25rem 0.5rem;border-radius:6px;font-size:0.72rem;cursor:pointer;">
                                     <option value="">All Types</option>
                                     <option value="context_overflow">Context Overflow</option>
                                     <option value="oom">OOM</option>
@@ -967,7 +978,7 @@
                         <!-- Profile cards overview grid - populated by JS -->
                         <div class="card" style="margin-bottom: 1.5rem;">
                             <div class="card-title">📋 Saved Profiles <span style="font-size:0.7rem;color:var(--text-muted);font-weight:400;">- click any card to load it in the editor</span></div>
-                            <div id="profile-cards-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+                            <div id="profile-cards-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap:0.75rem; margin-top:0.75rem;">
                                 <div style="color:var(--text-muted);font-size:0.8rem;">Loading profiles...</div>
                             </div>
                         </div>
@@ -1441,20 +1452,20 @@
 
                     <!-- Interactive Step-by-Step Workflow Guide -->
                     <div class="sd-guide-card" style="margin-bottom:1.25rem; padding:0.85rem 1.25rem;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
-                            <div style="display:flex; align-items:center; gap:0.6rem;">
+                        <div class="sd-guide-steps">
+                            <div class="sd-guide-step">
                                 <span class="sd-step-badge">1</span>
                                 <span style="font-size:0.8rem; font-weight:600; color:white;">Select Active Model</span>
                                 <span style="font-size:0.72rem; color:#94a3b8;">(Auto-loads if idle)</span>
                             </div>
-                            <div style="color:#475569; font-size:0.8rem;">➔</div>
-                            <div style="display:flex; align-items:center; gap:0.6rem;">
+                            <div class="sd-guide-arrow" style="color:#475569; font-size:0.8rem;">➔</div>
+                            <div class="sd-guide-step">
                                 <span class="sd-step-badge">2</span>
                                 <span style="font-size:0.8rem; font-weight:600; color:white;">Pick Mode & Tweak Parameters</span>
                                 <span style="font-size:0.72rem; color:#94a3b8;">(Flyer, Photo Edit, Canvas)</span>
                             </div>
-                            <div style="color:#475569; font-size:0.8rem;">➔</div>
-                            <div style="display:flex; align-items:center; gap:0.6rem;">
+                            <div class="sd-guide-arrow" style="color:#475569; font-size:0.8rem;">➔</div>
+                            <div class="sd-guide-step">
                                 <span class="sd-step-badge">3</span>
                                 <span style="font-size:0.8rem; font-weight:600; color:white;">Render & Export PNG</span>
                                 <span style="font-size:0.72rem; color:#94a3b8;">(High-res 1-click download)</span>
@@ -1760,7 +1771,7 @@
 
                                         <div id="sd-recipe-preview" style="font-size:0.7rem; color:#c084fc; background:rgba(192,132,252,0.07); border:1px solid rgba(192,132,252,0.18); border-radius:8px; padding:0.5rem 0.6rem; line-height:1.45; display:none;"></div>
 
-                                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:0.65rem; align-items:end;">
+                                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap:0.65rem; align-items:end;">
                                             <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.72rem; color:#e2e8f0; font-weight:600;">
                                                 Describe it (optional)
                                                 <textarea id="sd-recipe-prompt" rows="2" placeholder="e.g. the navy blazer from the photo" style="width:100%; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem; border-radius:6px; font-size:0.78rem; resize:vertical;"></textarea>
@@ -1825,12 +1836,12 @@
                                         </div>
                                         <input type="range" id="sd-edit-strength" value="0.45" step="0.05" min="0.10" max="0.95" style="width:100%; margin-bottom:0.5rem; accent-color:#38bdf8;">
                                         
-                                        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:0.35rem; margin-bottom:0.35rem;">
+                                        <div class="sd-strength-preset-row" style="margin-bottom:0.35rem;">
                                             <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.20">Face-Safe 0.20</button>
                                             <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.30">Retouch 0.30</button>
                                             <button type="button" class="btn btn-secondary sd-strength-preset active" data-strength="0.45">Balanced 0.45</button>
                                         </div>
-                                        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:0.35rem;">
+                                        <div class="sd-strength-preset-row">
                                             <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.55">Outfit 0.55</button>
                                             <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.65">Scene 0.65</button>
                                             <button type="button" class="btn btn-secondary sd-strength-preset" data-strength="0.80">Heavy 0.80</button>
@@ -1889,7 +1900,7 @@
                                             <input type="text" id="sd-canvas-text1" value="SUMMER MUSIC FESTIVAL" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
                                         </div>
 
-                                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem;">
+                                        <div class="form-grid-2" style="gap:0.5rem;">
                                             <div>
                                                 <label class="control-label" style="font-size:0.7rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Font Family</label>
                                                 <select id="sd-canvas-font1" class="form-control" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.35rem; border-radius:6px; font-size:0.75rem;">
@@ -1915,7 +1926,7 @@
                                             <input type="text" id="sd-canvas-text3" value="GET TICKETS NOW" style="width:100%; background:#1e293b; color:white; border:1px solid var(--border-color); padding:0.4rem; border-radius:6px; font-size:0.78rem;">
                                         </div>
 
-                                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem;">
+                                        <div class="form-grid-2" style="gap:0.5rem;">
                                             <div>
                                                 <label class="control-label" style="font-size:0.7rem; font-weight:600; color:#e2e8f0; display:block; margin-bottom:0.2rem;">Badge Pill Color</label>
                                                 <input type="color" id="sd-canvas-badge-bg" value="#3b82f6" style="width:100%; height:32px; border-radius:6px; border:none; background:none; cursor:pointer;">
@@ -2310,10 +2321,10 @@
                             <div id="vc-secure-warning" style="display:none; font-size:0.72rem; padding:0.5rem 0.7rem; border-radius:8px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.35); color:#fbbf24; max-width:420px;"></div>
                         </div>
 
-                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:0.75rem; margin-top:0.8rem;">
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap:0.75rem; margin-top:0.8rem;">
                             <div>
                                 <label style="font-size:0.72rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">Voice name</label>
-                                <input id="vc-name" type="text" maxlength="60" placeholder="e.g. Jeremiah (narration)" style="width:100%; box-sizing:border-box; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.45rem;">
+                                <input id="vc-name" type="text" maxlength="60" placeholder="e.g. Alex (narration)" style="width:100%; box-sizing:border-box; background:#090d16; border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#e2e8f0; padding:0.45rem;">
                                 <label style="display:flex; gap:0.45rem; align-items:flex-start; margin-top:0.55rem; font-size:0.74rem; color:#cbd5e1; cursor:pointer;">
                                     <input id="vc-consent" type="checkbox" style="margin-top:0.15rem;">
                                     <span>This is my own voice, or the speaker has given permission to create a voice from it.</span>
@@ -2491,7 +2502,7 @@
                                     <button id="btn-copy-request-details" class="btn btn-secondary btn-xs btn-ghost" title="Copy the full request details to the clipboard">📋 Copy Details</button>
                                 </div>
                                 <div style="background:#0f172a; padding:0.75rem; border-radius:8px; border:1px solid var(--border-color); font-size:0.75rem;">
-                                    <div class="grid-2" style="grid-template-columns: 1fr 1fr; gap:0.75rem; display: grid;">
+                                    <div class="grid-2 request-meta-grid" style="grid-template-columns: 1fr 1fr; gap:0.75rem; display: grid;">
                                         <div><strong>Request ID:</strong> <span id="inspect-id" style="font-family:monospace;">-</span></div>
                                         <div><strong>Type:</strong> <span id="inspect-type" class="badge badge-secondary" style="font-size:0.65rem;">-</span></div>
                                         <div><strong>Model:</strong> <span id="inspect-model" style="color:white;">-</span></div>
@@ -3047,7 +3058,7 @@
     </div>
 
     <!-- Restart Status Overlay -->
-    <div id="restart-overlay" class="modal-overlay" style="z-index: 10000; background: rgba(15, 23, 42, 0.95);">
+    <div id="restart-overlay" class="modal-overlay modal-centered" style="z-index: 10000; background: rgba(15, 23, 42, 0.95);">
         <div class="modal-container" style="max-width: 400px; text-align: center; padding: 2rem;">
             <div style="margin-bottom: 1.5rem;">
                 <div class="loader" style="width: 40px; height: 40px; border-width: 4px; border-top-color: var(--color-danger); margin: 0 auto 1rem auto; display: block;"></div>
@@ -3066,12 +3077,12 @@
 
     <!-- Search & Pull Models Overlay -->
     <div id="search-pull-overlay" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Find and pull models" style="z-index: 9999;">
-        <div class="modal-container" style="max-width: 820px; width: 90%;">
+        <div class="modal-container modal-lg">
             <div class="modal-header">
                 <div class="modal-title">🔍 Find &amp; Pull Models</div>
                 <button id="search-pull-close" class="modal-close">&times;</button>
             </div>
-            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.75rem; max-height: 80vh; overflow-y: auto;">
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.75rem;">
                 <!-- Search bar row -->
                 <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
                     <input type="text" id="model-search-query" placeholder="Search models (e.g. qwen, llama, flux, sdxl)..." style="flex:1; min-width:180px; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.5rem 0.75rem; border-radius:6px; font-size:0.85rem;">
@@ -3140,19 +3151,19 @@
 
     <!-- API Keys & Provider Settings Overlay -->
     <div id="api-keys-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Settings and providers" style="z-index: 9999;">
-        <div class="modal-container" style="max-width: 650px; width: 90%;">
+        <div class="modal-container modal-md">
             <div class="modal-header">
                 <div class="modal-title">⚙️ Settings &amp; Providers</div>
                 <button id="api-keys-close" class="modal-close">&times;</button>
             </div>
-            <div class="modal-body" style="display:flex; flex-direction:column; gap:1.25rem; max-height: 80vh; overflow-y: auto;">
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:1.25rem;">
                 <p style="font-size:0.8rem; color:var(--text-muted); margin:0;">
                     Configure API keys for remote cloud model providers and manage authentication tokens for your local <strong>Alpaca Proxy</strong>. Keys are saved securely to your <code style="color:var(--color-primary); background:#0f172a; padding:0.1rem 0.3rem; border-radius:4px;">.env</code> configuration and loaded immediately.
                 </p>
 
                 <!-- Alpaca Proxy Access Control Section -->
                 <div style="background:#090d16; border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.65rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>🛡️</span> Alpaca Proxy Access Token
                         </strong>
@@ -3167,7 +3178,7 @@
                         <button id="btn-copy-alpaca-token" class="btn btn-secondary btn-sm btn-slate" title="Copy to clipboard">📋 Copy</button>
                         <button id="btn-clear-alpaca-token" class="btn btn-secondary btn-sm btn-slate" style="color:#f87171;" title="Clear token and make proxy public">🔓 Clear</button>
                     </div>
-                    <div id="alpaca-token-snippet" style="background:#020617; border:1px solid #1e293b; border-radius:6px; padding:0.5rem 0.75rem; font-family:monospace; font-size:0.7rem; color:#94a3b8; line-height:1.4;">
+                    <div id="alpaca-token-snippet" style="background:#020617; border:1px solid #1e293b; border-radius:6px; padding:0.5rem 0.75rem; font-family:monospace; font-size:0.7rem; color:#94a3b8; line-height:1.4; overflow-x:auto; overflow-wrap:anywhere;">
                         <span style="color:#64748b;"># OpenAI client usage example:</span><br>
                         <span style="color:#38bdf8;">from</span> openai <span style="color:#38bdf8;">import</span> OpenAI<br>
                         client = OpenAI(base_url=<span style="color:#a78bfa;">"http://localhost:11434/v1"</span>, api_key=<span id="snippet-api-key-val" style="color:#4ade80;">"YOUR_TOKEN_HERE"</span>)
@@ -3176,7 +3187,7 @@
 
                 <!-- Local LLM Server Section (UI-owned reasoning settings, no defaults) -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>🧠</span> Local LLM Server
                         </strong>
@@ -3204,7 +3215,7 @@
                 </div>
 
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>🕹</span> Arcade
                         </strong>
@@ -3222,16 +3233,16 @@
                     </div>
                     <div id="arcade-current" style="font-size:0.72rem; color:var(--text-muted);"></div>
                     <div id="arcade-games-list" style="display:flex; flex-direction:column; gap:0.4rem;"></div>
-                    <div style="display:flex; gap:0.5rem; align-items:center; margin-top:0.4rem;">
+                    <div class="provider-input-row" style="margin-top:0.4rem;">
                         <strong style="color:white; font-size:0.78rem;">Add from benchmark</strong>
-                        <input id="arcade-candidate-search" placeholder="Search games or models…" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem 0.6rem; border-radius:6px; font-size:0.75rem;">
+                        <input id="arcade-candidate-search" placeholder="Search games or models…" style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem 0.6rem; border-radius:6px; font-size:0.75rem;">
                     </div>
                     <div id="arcade-candidates-list" style="display:flex; flex-direction:column; gap:0.35rem; max-height:260px; overflow:auto;"></div>
                 </div>
 
                 <!-- OpenRouter Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>⚡</span> OpenRouter
                         </strong>
@@ -3240,8 +3251,8 @@
                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
                         Access to hundreds of models (Gemini 2.0, DeepSeek R1, Llama 3.3, Claude, GPT-4o). Free tier models available.
                     </p>
-                    <div style="display:flex; gap:0.5rem; align-items:center;">
-                        <input type="password" id="input-openrouter-key" placeholder="sk-or-v1-..." style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                    <div class="provider-input-row">
+                        <input type="password" id="input-openrouter-key" placeholder="sk-or-v1-..." style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                         <button id="btn-test-openrouter" class="btn btn-secondary btn-sm btn-slate">Test</button>
                     </div>
                     <div id="test-result-openrouter" style="font-size:0.72rem; display:none;"></div>
@@ -3249,7 +3260,7 @@
 
                 <!-- Hugging Face Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>🤗</span> Hugging Face Serverless
                         </strong>
@@ -3258,8 +3269,8 @@
                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
                         Serverless Inference endpoints for open-weight models (Llama, Qwen, Mistral).
                     </p>
-                    <div style="display:flex; gap:0.5rem; align-items:center;">
-                        <input type="password" id="input-huggingface-token" placeholder="hf_..." style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                    <div class="provider-input-row">
+                        <input type="password" id="input-huggingface-token" placeholder="hf_..." style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                         <button id="btn-test-huggingface" class="btn btn-secondary btn-sm btn-slate">Test</button>
                     </div>
                     <div id="test-result-huggingface" style="font-size:0.72rem; display:none;"></div>
@@ -3267,7 +3278,7 @@
 
                 <!-- Cloudflare Workers AI Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>☁️</span> Cloudflare Workers AI
                         </strong>
@@ -3277,9 +3288,9 @@
                         Serverless edge inference on Cloudflare global network.
                     </p>
                     <div style="display:flex; flex-direction:column; gap:0.4rem;">
-                        <input type="password" id="input-cloudflare-token" placeholder="API Token" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
-                        <div style="display:flex; gap:0.5rem; align-items:center;">
-                            <input type="text" id="input-cloudflare-account" placeholder="Account ID (32 hex characters)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <input type="password" id="input-cloudflare-token" placeholder="API Token" style="width:100%; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <div class="provider-input-row">
+                            <input type="text" id="input-cloudflare-account" placeholder="Account ID (32 hex characters)" style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                             <button id="btn-test-cloudflare" class="btn btn-secondary btn-sm btn-slate">Test</button>
                         </div>
                     </div>
@@ -3288,7 +3299,7 @@
 
                 <!-- OpenCode Zen / Custom OpenAI Gateway Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>⚙️</span> OpenCode Zen / Custom OpenAI Endpoint
                         </strong>
@@ -3298,9 +3309,9 @@
                         Custom OpenAI-compatible LLM gateway or local endpoint.
                     </p>
                     <div style="display:flex; flex-direction:column; gap:0.4rem;">
-                        <input type="text" id="input-opencode-base-url" placeholder="Base URL (e.g. https://opencode.ai/zen/v1)" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
-                        <div style="display:flex; gap:0.5rem; align-items:center;">
-                            <input type="password" id="input-opencode-key" placeholder="API Key (optional if local)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <input type="text" id="input-opencode-base-url" placeholder="Base URL (e.g. https://opencode.ai/zen/v1)" style="width:100%; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                        <div class="provider-input-row">
+                            <input type="password" id="input-opencode-key" placeholder="API Key (optional if local)" style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                             <button id="btn-test-opencode" class="btn btn-secondary btn-sm btn-slate">Test</button>
                         </div>
                     </div>
@@ -3309,7 +3320,7 @@
 
                 <!-- Groq Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>⚡</span> Groq
                         </strong>
@@ -3318,8 +3329,8 @@
                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
                         Ultra-fast inference on open models via Groq's free tier (no credit card required).
                     </p>
-                    <div style="display:flex; gap:0.5rem; align-items:center;">
-                        <input type="password" id="input-groq-key" placeholder="API Key (gsk_...)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                    <div class="provider-input-row">
+                        <input type="password" id="input-groq-key" placeholder="API Key (gsk_...)" style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                         <button id="btn-test-groq" class="btn btn-secondary btn-sm btn-slate">Test</button>
                     </div>
                     <div id="test-result-groq" style="font-size:0.72rem; display:none;"></div>
@@ -3327,7 +3338,7 @@
 
                 <!-- Gemini Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>✨</span> Google Gemini (AI Studio)
                         </strong>
@@ -3336,8 +3347,8 @@
                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
                         Google's Gemini models via the free Google AI Studio tier (rate-limited, no credit card required).
                     </p>
-                    <div style="display:flex; gap:0.5rem; align-items:center;">
-                        <input type="password" id="input-gemini-key" placeholder="API Key (AQ...)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                    <div class="provider-input-row">
+                        <input type="password" id="input-gemini-key" placeholder="API Key (AQ...)" style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                         <button id="btn-test-gemini" class="btn btn-secondary btn-sm btn-slate">Test</button>
                     </div>
                     <div id="test-result-gemini" style="font-size:0.72rem; display:none;"></div>
@@ -3345,7 +3356,7 @@
 
                 <!-- OrcaRouter Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>🐋</span> OrcaRouter
                         </strong>
@@ -3354,8 +3365,8 @@
                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
                         Multi-provider gateway (OpenAI-compatible) at provider cost, no per-token markup. 200+ models via one key.
                     </p>
-                    <div style="display:flex; gap:0.5rem; align-items:center;">
-                        <input type="password" id="input-orcarouter-key" placeholder="API Key (sk-orca-...)" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                    <div class="provider-input-row">
+                        <input type="password" id="input-orcarouter-key" placeholder="API Key (sk-orca-...)" style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                         <button id="btn-test-orcarouter" class="btn btn-secondary btn-sm btn-slate">Test</button>
                     </div>
                     <div id="test-result-orcarouter" style="font-size:0.72rem; display:none;"></div>
@@ -3363,7 +3374,7 @@
 
                 <!-- ClinePass Section -->
                 <div style="background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:1rem; display:flex; flex-direction:column; gap:0.6rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="kv-row">
                         <strong style="color:white; font-size:0.88rem; display:flex; align-items:center; gap:0.4rem;">
                             <span>🧭</span> ClinePass
                         </strong>
@@ -3372,8 +3383,8 @@
                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0;">
                         Cline's OpenAI-compatible subscription API (<code style="font-size:0.72rem;">cline-pass/...</code> models) as a chat provider, separate from the Cline agent harness below.
                     </p>
-                    <div style="display:flex; gap:0.5rem; align-items:center;">
-                        <input type="password" id="input-cline-key" placeholder="Cline API Key" style="flex:1; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
+                    <div class="provider-input-row">
+                        <input type="password" id="input-cline-key" placeholder="Cline API Key" style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.45rem 0.65rem; border-radius:6px; font-size:0.8rem; font-family:monospace;">
                         <button id="btn-test-cline" class="btn btn-secondary btn-sm btn-slate">Test</button>
                     </div>
                     <div id="test-result-cline" style="font-size:0.72rem; display:none;"></div>
@@ -3425,12 +3436,12 @@
 
     <!-- Live Online Models Explorer Overlay -->
     <div id="online-models-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Live online models explorer" style="z-index: 9999;">
-        <div class="modal-container" style="max-width: 900px; width: 92%;">
+        <div class="modal-container modal-lg">
             <div class="modal-header">
                 <div class="modal-title">🌐 Live Online Models Explorer</div>
                 <button id="online-models-close" class="modal-close">&times;</button>
             </div>
-            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.85rem; max-height: 82vh; overflow-y: auto;">
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.85rem;">
                 <p style="font-size:0.8rem; color:var(--text-muted); margin:0;">
                     Discover and pull the latest 2026 models from OpenRouter, Hugging Face, and Cloudflare in real-time. Check models to include them in your benchmark target list.
                 </p>
@@ -3458,7 +3469,7 @@
                         </select>
                     </div>
 
-                    <input type="text" id="online-models-search-input" placeholder="Filter models (e.g. gemini, llama-3.3, deepseek, qwen-2.5)..." style="flex:1; min-width:180px; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem 0.65rem; border-radius:6px; font-size:0.8rem;">
+                    <input type="text" id="online-models-search-input" placeholder="Filter models (e.g. gemini, llama-3.3, deepseek, qwen-2.5)..." style="flex:1 1 180px; min-width:0; background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.4rem 0.65rem; border-radius:6px; font-size:0.8rem;">
 
                     <label style="display:flex; align-items:center; gap:0.35rem; font-size:0.75rem; color:#86efac; cursor:pointer; margin:0; user-select:none;">
                         <input type="checkbox" id="online-free-only-toggle" style="accent-color:#10b981;"> Free Only
@@ -3470,12 +3481,12 @@
                 </div>
 
                 <!-- Selection Status Bar -->
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:0 0.25rem;">
+                <div class="kv-row" style="padding:0 0.25rem;">
                     <div style="font-size:0.75rem; color:var(--text-muted);">
                         <span id="online-results-count" style="font-weight:600; color:white;">0</span> models available | 
                         <span id="online-selected-count" style="font-weight:600; color:var(--color-primary);">0</span> selected for benchmarking
                     </div>
-                    <div style="display:flex; gap:0.5rem;">
+                    <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                         <button id="btn-select-all-online" class="btn btn-secondary btn-xs btn-slate">Select All Shown</button>
                         <button id="btn-clear-online-selection" class="btn btn-secondary btn-xs btn-slate">Clear Selection</button>
                     </div>
@@ -3502,6 +3513,55 @@
         </div>
     </div>
 
+    <!-- Mobile Bottom Navigation Dock (visible <=640px via CSS) -->
+    <nav id="mobile-bottom-nav" class="mobile-bottom-nav" aria-label="Mobile quick navigation">
+        <button type="button" class="mobile-dock-btn active" data-dock-tab="monitor" aria-current="page">
+            <span class="mobile-dock-icon">⚡</span>
+            <span class="mobile-dock-label">Monitor</span>
+        </button>
+        <button type="button" class="mobile-dock-btn" data-dock-tab="general">
+            <span class="mobile-dock-icon">🎯</span>
+            <span class="mobile-dock-label">Bench</span>
+        </button>
+        <button type="button" class="mobile-dock-btn" data-dock-tab="requests">
+            <span class="mobile-dock-icon">🔍</span>
+            <span class="mobile-dock-label">Requests</span>
+        </button>
+        <button type="button" class="mobile-dock-btn" data-dock-tab="sd" data-dock-group="sd,audio,podcast">
+            <span class="mobile-dock-icon">🎨</span>
+            <span class="mobile-dock-label">Studios</span>
+        </button>
+        <button type="button" id="mobile-dock-more-btn" class="mobile-dock-btn" aria-expanded="false" aria-controls="mobile-views-sheet">
+            <span class="mobile-dock-icon">☰</span>
+            <span class="mobile-dock-label">All Views</span>
+        </button>
+    </nav>
+
+    <!-- Mobile All Views Sheet (<=640px) -->
+    <div id="mobile-views-sheet-backdrop" class="mobile-sheet-backdrop" aria-hidden="true"></div>
+    <div id="mobile-views-sheet" class="mobile-views-sheet" role="dialog" aria-modal="true" aria-label="Switch dashboard view" aria-hidden="true">
+        <div class="mobile-sheet-handle" aria-hidden="true"></div>
+        <div class="mobile-sheet-header">
+            <span class="mobile-sheet-title">Switch View</span>
+            <button id="btn-close-views-sheet" class="sidebar-drawer-close" type="button" aria-label="Close view switcher">&times;</button>
+        </div>
+        <div class="mobile-sheet-grid">
+            <button type="button" class="mobile-sheet-item active" data-sheet-tab="monitor"><span>⚡</span><span>System Monitor</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="general"><span>🎯</span><span>General Benchmarks</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="shared"><span>⚙️</span><span>SharedLLM</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="tests"><span>🧪</span><span>Test Browser</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="profiles"><span>🔧</span><span>Model Profiles</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="requests"><span>🔍</span><span>Request Monitor</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="sd"><span>🎨</span><span>Image Studio</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="audio"><span>🎵</span><span>Audio Studio</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="podcast"><span>🎙️</span><span>Podcast Studio</span></button>
+            <button type="button" class="mobile-sheet-item" data-sheet-tab="docs"><span>📖</span><span>API Docs</span></button>
+        </div>
+        <div class="mobile-sheet-footer">
+            <button type="button" id="mobile-sheet-open-controls" class="btn btn-primary btn-sm" style="width:100%;">⚙️ Open Pipeline &amp; Model Controls</button>
+        </div>
+    </div>
+
     <!-- Socket.IO library (CDN) -->
     <!-- Vendored for the same reason as chart.js. Must stay 4.7.5 to match the
          flask-socketio server the page talks to. -->
@@ -3509,23 +3569,79 @@
     <!-- Frontend logic script -->
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
     <script>
-    // Responsive collapsible pipeline controls: mobile/tablet (<=1024px) & desktop (>1024px)
+    // Responsive layout controller:
+    // - Mobile & tablet (<=1024px): off-canvas slide-over controls drawer with backdrop, scroll lock & auto-close
+    // - Phone (<=640px): bottom navigation dock + All Views bottom sheet synced with .main-tabs
+    // - Desktop (>1024px): collapsible sticky sidebar persisted in localStorage
     (function() {
         const mobileBtn = document.getElementById('mobile-controls-toggle');
         const desktopBtn = document.getElementById('desktop-sidebar-toggle');
+        const closeDrawerBtn = document.getElementById('btn-close-sidebar-drawer');
+        const backdrop = document.getElementById('sidebar-backdrop');
         const sidebar = document.getElementById('sidebar');
         const grid = document.querySelector('.dashboard-grid');
+        const dock = document.getElementById('mobile-bottom-nav');
+        const dockMoreBtn = document.getElementById('mobile-dock-more-btn');
+        const sheet = document.getElementById('mobile-views-sheet');
+        const sheetBackdrop = document.getElementById('mobile-views-sheet-backdrop');
+        const closeSheetBtn = document.getElementById('btn-close-views-sheet');
+        const sheetOpenControlsBtn = document.getElementById('mobile-sheet-open-controls');
         if (!sidebar) return;
 
         const mq = window.matchMedia('(max-width: 1024px)');
-        function setMobileCollapsed(collapsed) {
-            sidebar.classList.toggle('collapsed', collapsed);
-            if (mobileBtn) {
-                mobileBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-                mobileBtn.textContent = collapsed ? '☰ Show Controls' : '☰ Hide Controls';
-            }
-            try { localStorage.setItem('alpaca-mobile-controls-collapsed', collapsed ? '1' : '0'); } catch(e) {}
+        const TAB_BTN_MAP = {
+            monitor: 'tab-btn-monitor',
+            general: 'tab-btn-general',
+            shared: 'tab-btn-shared',
+            tests: 'tab-btn-tests',
+            profiles: 'tab-btn-profiles',
+            requests: 'tab-btn-requests',
+            sd: 'tab-btn-sd',
+            audio: 'tab-btn-audio',
+            podcast: 'tab-btn-podcast',
+            docs: 'tab-btn-docs'
+        };
+        let lastStudioTab = 'sd';
+
+        function syncBodyLock() {
+            const drawerOpen = sidebar.classList.contains('drawer-open');
+            const sheetOpen = !!(sheet && sheet.classList.contains('open'));
+            document.body.classList.toggle('drawer-open', drawerOpen);
+            document.body.classList.toggle('sheet-open', sheetOpen);
         }
+
+        function setSheetOpen(open) {
+            if (!sheet) return;
+            if (open && sidebar.classList.contains('drawer-open')) {
+                setMobileDrawerOpen(false);
+            }
+            sheet.classList.toggle('open', open);
+            sheet.setAttribute('aria-hidden', open ? 'false' : 'true');
+            if (sheetBackdrop) {
+                sheetBackdrop.classList.toggle('open', open);
+                sheetBackdrop.setAttribute('aria-hidden', open ? 'false' : 'true');
+            }
+            if (dockMoreBtn) dockMoreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            syncBodyLock();
+        }
+
+        function setMobileDrawerOpen(open) {
+            if (open && sheet && sheet.classList.contains('open')) {
+                setSheetOpen(false);
+            }
+            sidebar.classList.toggle('drawer-open', open);
+            sidebar.classList.toggle('collapsed', !open);
+            if (backdrop) {
+                backdrop.classList.toggle('open', open);
+                backdrop.setAttribute('aria-hidden', open ? 'false' : 'true');
+            }
+            if (mobileBtn) {
+                mobileBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+                mobileBtn.textContent = open ? '✕ Controls' : '☰ Controls';
+            }
+            syncBodyLock();
+        }
+
         function setDesktopHidden(hidden) {
             if (grid) grid.classList.toggle('sidebar-hidden', hidden);
             if (desktopBtn) {
@@ -3534,24 +3650,131 @@
             }
             try { localStorage.setItem('alpaca-desktop-sidebar-hidden', hidden ? '1' : '0'); } catch(e) {}
         }
+
+        function syncDockActive(tabName) {
+            if (tabName === 'sd' || tabName === 'audio' || tabName === 'podcast') {
+                lastStudioTab = tabName;
+            }
+            if (dock) {
+                const dockBtns = dock.querySelectorAll('.mobile-dock-btn[data-dock-tab]');
+                let matched = false;
+                dockBtns.forEach(btn => {
+                    const group = (btn.getAttribute('data-dock-group') || btn.getAttribute('data-dock-tab') || '').split(',');
+                    const isMatch = group.includes(tabName);
+                    btn.classList.toggle('active', isMatch);
+                    if (isMatch) {
+                        btn.setAttribute('aria-current', 'page');
+                        matched = true;
+                    } else {
+                        btn.removeAttribute('aria-current');
+                    }
+                });
+                if (dockMoreBtn) {
+                    dockMoreBtn.classList.toggle('active', !matched);
+                }
+            }
+            if (sheet) {
+                sheet.querySelectorAll('.mobile-sheet-item[data-sheet-tab]').forEach(btn => {
+                    btn.classList.toggle('active', btn.getAttribute('data-sheet-tab') === tabName);
+                });
+            }
+        }
+
+        function activateTab(tabName) {
+            const btnId = TAB_BTN_MAP[tabName];
+            const btn = btnId ? document.getElementById(btnId) : null;
+            if (btn) btn.click();
+            syncDockActive(tabName);
+        }
+
         function syncLayout() {
-            let savedMob = null;
             let savedDesk = null;
-            try {
-                savedMob = localStorage.getItem('alpaca-mobile-controls-collapsed');
-                savedDesk = localStorage.getItem('alpaca-desktop-sidebar-hidden');
-            } catch(e) {}
+            try { savedDesk = localStorage.getItem('alpaca-desktop-sidebar-hidden'); } catch(e) {}
             if (mq.matches) {
                 if (grid) grid.classList.remove('sidebar-hidden');
-                setMobileCollapsed(savedMob === null ? true : savedMob === '1');
+                setMobileDrawerOpen(false);
             } else {
-                sidebar.classList.remove('collapsed');
+                sidebar.classList.remove('collapsed', 'drawer-open');
+                if (backdrop) {
+                    backdrop.classList.remove('open');
+                    backdrop.setAttribute('aria-hidden', 'true');
+                }
+                setSheetOpen(false);
+                syncBodyLock();
                 setDesktopHidden(savedDesk === '1');
             }
         }
+
+        // Expose helpers so dashboard.js can close drawer when opening modals or pressing Escape
+        window.alpacaResponsive = {
+            closeDrawer: () => setMobileDrawerOpen(false),
+            openDrawer: () => setMobileDrawerOpen(true),
+            closeViewsSheet: () => setSheetOpen(false),
+            syncDockActive: syncDockActive
+        };
+
         syncLayout();
-        if (mobileBtn) mobileBtn.addEventListener('click', () => setMobileCollapsed(!sidebar.classList.contains('collapsed')));
+        if (mobileBtn) mobileBtn.addEventListener('click', () => setMobileDrawerOpen(!sidebar.classList.contains('drawer-open')));
+        if (closeDrawerBtn) closeDrawerBtn.addEventListener('click', () => setMobileDrawerOpen(false));
+        if (backdrop) backdrop.addEventListener('click', () => setMobileDrawerOpen(false));
         if (desktopBtn) desktopBtn.addEventListener('click', () => setDesktopHidden(!(grid && grid.classList.contains('sidebar-hidden'))));
+
+        // Auto-close drawer on mobile/tablet when launching a benchmark run or opening a modal from inside sidebar
+        sidebar.addEventListener('click', (e) => {
+            if (!mq.matches || !sidebar.classList.contains('drawer-open')) return;
+            const trigger = e.target && e.target.closest
+                ? e.target.closest('#btn-open-search-modal, #btn-open-api-keys, #btn-open-online-models, #btn-run, #btn-run-quick, #btn-run-outdated, #btn-run-frontier-all, #btn-run-vision, #btn-run-shared, #btn-run-multistep')
+                : null;
+            if (trigger) setMobileDrawerOpen(false);
+        });
+
+        // Mobile bottom navigation dock handlers
+        if (dock) {
+            dock.querySelectorAll('.mobile-dock-btn[data-dock-tab]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    setSheetOpen(false);
+                    const target = btn.getAttribute('data-dock-group') ? lastStudioTab : btn.getAttribute('data-dock-tab');
+                    activateTab(target);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                });
+            });
+        }
+        if (dockMoreBtn) dockMoreBtn.addEventListener('click', () => setSheetOpen(!(sheet && sheet.classList.contains('open'))));
+        if (closeSheetBtn) closeSheetBtn.addEventListener('click', () => setSheetOpen(false));
+        if (sheetBackdrop) sheetBackdrop.addEventListener('click', () => setSheetOpen(false));
+        if (sheet) {
+            sheet.querySelectorAll('.mobile-sheet-item[data-sheet-tab]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const tab = btn.getAttribute('data-sheet-tab');
+                    setSheetOpen(false);
+                    activateTab(tab);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                });
+            });
+        }
+        if (sheetOpenControlsBtn) {
+            sheetOpenControlsBtn.addEventListener('click', () => {
+                setSheetOpen(false);
+                setMobileDrawerOpen(true);
+            });
+        }
+
+        document.addEventListener('tabChanged', (e) => {
+            if (e && e.detail) syncDockActive(e.detail);
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            if (document.body.classList.contains('modal-open')) return;
+            if (sheet && sheet.classList.contains('open')) {
+                setSheetOpen(false);
+                return;
+            }
+            if (mq.matches && sidebar.classList.contains('drawer-open')) {
+                setMobileDrawerOpen(false);
+            }
+        });
+
         if (mq.addEventListener) mq.addEventListener('change', syncLayout);
         else window.addEventListener('resize', syncLayout);
     })();

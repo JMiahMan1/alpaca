@@ -462,3 +462,53 @@ def test_request_monitor_tags_prompt_keeper_warmups():
     assert "warmupBadge.textContent = 'WARMUP'" in js
     assert "prompt-keeper (" in js
     assert "inspect-warmup-note" in js
+
+
+def test_responsive_shell_drawer_dock_and_safe_areas():
+    """Responsive UI rebuild invariants across phone, tablet, and desktop."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    css = (REPO / "web" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+
+    # Safe-area viewport support for notched mobile devices
+    assert "viewport-fit=cover" in html
+
+    # No hardcoded personal name in voice clone placeholder
+    assert "Jeremiah" not in html
+
+    # Sticky topbar, off-canvas drawer chrome, mobile bottom dock, and All Views sheet
+    for marker in (
+        'class="app-topbar"',
+        'id="sidebar-backdrop"',
+        'id="sidebar-drawer-header"',
+        'id="btn-close-sidebar-drawer"',
+        'id="mobile-bottom-nav"',
+        'id="mobile-views-sheet"',
+        'id="mobile-views-sheet-backdrop"',
+    ):
+        assert marker in html, f"missing responsive shell marker {marker}"
+
+    # All Views sheet covers every top-level tab in .main-tabs
+    main_tabs = set(re.findall(r'class="nav-tab[^"]*"[^>]*data-tab="([^"]+)"', html))
+    sheet_tabs = set(re.findall(r'data-sheet-tab="([^"]+)"', html))
+    assert main_tabs and main_tabs == sheet_tabs
+
+    # Responsive modals use CSS size classes instead of inline width/max-height traps
+    for modal_id in ("search-pull-overlay", "api-keys-modal", "online-models-modal"):
+        idx = html.index(f'id="{modal_id}"')
+        snippet = html[idx : idx + 600]
+        assert "width: 90%" not in snippet
+        assert "width: 92%" not in snippet
+        assert "max-height: 80vh" not in snippet
+        assert "max-height: 82vh" not in snippet
+
+    # Off-canvas drawer, bottom-sheet modals, and capped sticky leaderboard column in CSS
+    assert ".sidebar.drawer-open" in css
+    assert ".mobile-bottom-nav" in css
+    assert ".modal-overlay:not(.modal-centered)" in css
+    assert "max-width: 145px" in css
+    # Every auto-fit/auto-fill grid minmax() clamps to min(100%, ...) to prevent phone overflow
+    bad_minmax = [
+        m.group(0)
+        for m in re.finditer(r"repeat\(auto-(?:fit|fill),\s*minmax\((?!min\(100%,)[^)]+\)\)", css + "\n" + html)
+    ]
+    assert bad_minmax == [], f"unclamped auto-grid minmax found: {bad_minmax}"
