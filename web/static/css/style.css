@@ -182,8 +182,21 @@ body {
 /* Offset programmatic scrollIntoView below sticky topbar */
 .doc-detail-pane,
 #request-inspector-details,
+#profile-edit-form,
+.requests-buffer-card,
 .tab-view > .card {
     scroll-margin-top: 7.5rem;
+}
+
+/* Eliminate 300ms double-tap delay across all touch controls */
+button,
+a,
+select,
+input,
+label,
+[role="button"],
+[role="tab"] {
+    touch-action: manipulation;
 }
 
 /* Flush Integrated Header inside Command Bar */
@@ -3581,24 +3594,67 @@ a.badge {
 }
 
 .sd-guide-steps {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: center;
-    flex-wrap: wrap;
     gap: 0.75rem;
 }
 
 .sd-guide-step {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.55rem;
     min-width: 0;
+}
+
+.sd-guide-arrow {
+    display: none;
 }
 
 .sd-strength-preset-row {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.35rem;
+}
+
+/* Floating Scroll-to-Top Button */
+.btn-scroll-top {
+    position: fixed;
+    right: 1.25rem;
+    bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+    z-index: 940;
+    width: 42px;
+    height: 42px;
+    border-radius: 9999px;
+    border: 1px solid rgba(139, 92, 246, 0.42);
+    background: rgba(11, 16, 29, 0.88);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    color: #e2e8f0;
+    font-size: 1.05rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(12px);
+    pointer-events: none;
+    transition: opacity var(--transition-fast), transform var(--transition-fast), visibility var(--transition-fast), background var(--transition-fast);
+}
+
+.btn-scroll-top.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.btn-scroll-top:hover {
+    background: rgba(139, 92, 246, 0.28);
+    color: #ffffff;
 }
 
 /* Mobile Bottom Navigation Dock, View Switcher, Sub-Nav & All Views Sheet (hidden above 640px) */
@@ -3643,7 +3699,7 @@ a.badge {
     flex-wrap: wrap;
 }
 
-/* Request Monitor Toolbar */
+/* Request Monitor Toolbar — clean 2-row layout so search & timezone never clip */
 .requests-toolbar {
     display: flex;
     gap: 0.5rem;
@@ -3651,6 +3707,20 @@ a.badge {
     flex-shrink: 0;
     align-items: center;
     flex-wrap: wrap;
+}
+
+.requests-toolbar #requests-search-input {
+    flex: 1 1 100% !important;
+    min-width: 0 !important;
+}
+
+.requests-toolbar #requests-timezone-select {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+}
+
+.requests-toolbar #btn-clear-requests {
+    flex: 0 0 auto;
 }
 
 /* Sticky model column in wide leaderboards on tablet & phone */
@@ -3923,12 +3993,8 @@ a.badge {
         grid-column: 1 / -1;
     }
     .sd-guide-steps {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.55rem;
-    }
-    .sd-guide-arrow {
-        display: none;
+        grid-template-columns: 1fr;
+        gap: 0.45rem;
     }
     .mobile-only-inline {
         display: inline-flex;
@@ -4164,6 +4230,32 @@ a.badge {
     .test-kind-filters {
         -webkit-mask-image: linear-gradient(to right, black 90%, transparent 100%);
         mask-image: linear-gradient(to right, black 90%, transparent 100%);
+    }
+    /* Float toast notifications cleanly above the mobile bottom dock */
+    #alpaca-toast-stack {
+        bottom: calc(4.85rem + env(safe-area-inset-bottom, 0px));
+        left: 0.7rem;
+        right: 0.7rem;
+        align-items: stretch;
+        max-width: none;
+    }
+    /* Position floating scroll-to-top button neatly above mobile dock */
+    .btn-scroll-top {
+        right: 0.85rem;
+        bottom: calc(4.9rem + env(safe-area-inset-bottom, 0px));
+        width: 40px;
+        height: 40px;
+    }
+    /* Audio & Podcast Studio mobile sliders and inputs span cleanly */
+    #view-audio input[type="range"],
+    #view-podcast input[type="range"] {
+        width: 100% !important;
+        min-height: 28px;
+    }
+    #podcast-sting,
+    #podcast-topic {
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
     }
     /* Mobile Sheet quick actions footer */
     .mobile-sheet-quick-actions {

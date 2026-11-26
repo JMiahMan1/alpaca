@@ -2688,6 +2688,7 @@
 
                         <!-- Right pane: Documentation Details -->
                         <div class="card mobile-unbounded-card" style="min-height: 550px; display: flex; flex-direction: column; overflow-y: auto; max-height: 75vh; padding: 1.5rem;">
+                            <button id="btn-back-to-docs-menu" class="btn btn-secondary btn-xs mobile-only-inline" type="button" style="align-self: flex-start; margin-bottom: 0.75rem;">↑ Endpoints Menu</button>
                             
                             <!-- API: POST /api/chat -->
                             <div id="doc-api-chat" class="doc-detail-pane">
@@ -3536,6 +3537,9 @@
         </div>
     </div>
 
+    <!-- Floating Scroll-to-Top Button (appears after scrolling > 480px) -->
+    <button id="btn-scroll-top" class="btn-scroll-top" type="button" aria-label="Scroll back to top" title="Back to top">↑</button>
+
     <!-- Mobile Bottom Navigation Dock (visible <=640px via CSS) -->
     <nav id="mobile-bottom-nav" class="mobile-bottom-nav" aria-label="Mobile quick navigation">
         <button type="button" class="mobile-dock-btn active" data-dock-tab="monitor" aria-current="page">
@@ -3619,6 +3623,8 @@
         const sheetOpenPullBtn = document.getElementById('mobile-sheet-open-pull');
         const sheetOpenSettingsBtn = document.getElementById('mobile-sheet-open-settings');
         const backToRequestsBtn = document.getElementById('btn-back-to-requests');
+        const backToDocsMenuBtn = document.getElementById('btn-back-to-docs-menu');
+        const scrollTopBtn = document.getElementById('btn-scroll-top');
         if (!sidebar) return;
 
         const mq = window.matchMedia('(max-width: 1024px)');
@@ -3898,6 +3904,90 @@
                 }
             });
         }
+        if (backToDocsMenuBtn) {
+            backToDocsMenuBtn.addEventListener('click', () => {
+                const menu = document.querySelector('#view-docs .master-detail-grid > .card:first-child');
+                if (menu && typeof menu.scrollIntoView === 'function') {
+                    menu.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+            });
+        }
+
+        // Scroll-to-top floating button
+        if (scrollTopBtn) {
+            const syncScrollTop = () => {
+                scrollTopBtn.classList.toggle('visible', window.scrollY > 480);
+            };
+            window.addEventListener('scroll', syncScrollTop, { passive: true });
+            syncScrollTop();
+            scrollTopBtn.addEventListener('click', () => {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            });
+        }
+
+        // Touch swipe-to-close on mobile/tablet drawer (swipe left) and All Views sheet (swipe down)
+        let drawerTouchX = null;
+        let drawerTouchY = null;
+        sidebar.addEventListener('touchstart', (e) => {
+            if (!mq.matches || !sidebar.classList.contains('drawer-open') || !e.touches || !e.touches[0]) return;
+            drawerTouchX = e.touches[0].clientX;
+            drawerTouchY = e.touches[0].clientY;
+        }, { passive: true });
+        sidebar.addEventListener('touchend', (e) => {
+            if (drawerTouchX === null || !e.changedTouches || !e.changedTouches[0]) return;
+            const dx = e.changedTouches[0].clientX - drawerTouchX;
+            const dy = Math.abs(e.changedTouches[0].clientY - drawerTouchY);
+            drawerTouchX = null;
+            drawerTouchY = null;
+            if (dx < -65 && dy < 70) setMobileDrawerOpen(false);
+        }, { passive: true });
+
+        if (sheet) {
+            let sheetTouchY = null;
+            sheet.addEventListener('touchstart', (e) => {
+                if (!sheet.classList.contains('open') || sheet.scrollTop > 4 || !e.touches || !e.touches[0]) return;
+                sheetTouchY = e.touches[0].clientY;
+            }, { passive: true });
+            sheet.addEventListener('touchend', (e) => {
+                if (sheetTouchY === null || !e.changedTouches || !e.changedTouches[0]) return;
+                const dy = e.changedTouches[0].clientY - sheetTouchY;
+                sheetTouchY = null;
+                if (dy > 65) setSheetOpen(false);
+            }, { passive: true });
+        }
+
+        // Keyboard tablist navigation (ArrowLeft/ArrowRight/Home/End) + Alt+1..9,0 quick view jump
+        const mainTabsBar = document.querySelector('.main-tabs');
+        const orderedTabs = Object.keys(TAB_BTN_MAP);
+        if (mainTabsBar) {
+            mainTabsBar.addEventListener('keydown', (e) => {
+                const tabs = Array.from(mainTabsBar.querySelectorAll('.nav-tab'));
+                const idx = tabs.indexOf(document.activeElement);
+                if (idx === -1) return;
+                let next = -1;
+                if (e.key === 'ArrowRight') next = (idx + 1) % tabs.length;
+                else if (e.key === 'ArrowLeft') next = (idx - 1 + tabs.length) % tabs.length;
+                else if (e.key === 'Home') next = 0;
+                else if (e.key === 'End') next = tabs.length - 1;
+                if (next !== -1) {
+                    e.preventDefault();
+                    tabs[next].focus();
+                    tabs[next].click();
+                }
+            });
+        }
+        document.addEventListener('keydown', (e) => {
+            if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+            const tag = (e.target && e.target.tagName) ? e.target.tagName.toUpperCase() : '';
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+            const digit = e.key === '0' ? 9 : (/^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1);
+            if (digit >= 0 && digit < orderedTabs.length) {
+                e.preventDefault();
+                activateTab(orderedTabs[digit]);
+            }
+        });
 
         document.addEventListener('tabChanged', (e) => {
             if (e && e.detail) syncDockActive(e.detail);
