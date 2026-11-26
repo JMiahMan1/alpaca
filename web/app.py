@@ -4341,7 +4341,7 @@ def expand_benchmark_groups(
     others = {g for g in groups if g != QUICK_BENCHMARK_GROUP}
     ids = {tid for tid in QUICK_BENCHMARK_IDS if tid in id_to_cat}
     ids |= {tid for tid, cat in id_to_cat.items() if cat in others}
-    if test_ids is not None:
+    if test_ids:
         ids &= set(test_ids)
     return sorted({id_to_cat[t] for t in ids}), sorted(ids)
 
@@ -4363,10 +4363,19 @@ def start_benchmark():
     tiers = data.get("tiers", None)
     outdated_only = bool(data.get("outdated_only", False))
 
+    # Empty lists mean "no filter on this axis" (e.g. user clicked None on Target
+    # Tests and selected specific Benchmark Groups). Never let [] wipe out groups
+    # during intersection and silently trigger the full suite.
+    if isinstance(test_ids, list) and len(test_ids) == 0:
+        test_ids = None
+    if isinstance(groups, list) and len(groups) == 0:
+        groups = None
+
     if not models:
         return jsonify({"error": "No models specified"}), 400
 
     requested_groups = groups
+    had_explicit_filter = bool(groups or test_ids)
     if outdated_only:
         test_ids = _outdated_test_ids(models)
     groups, test_ids = expand_benchmark_groups(groups, test_ids)
@@ -4377,6 +4386,12 @@ def start_benchmark():
                 "message": "All benchmark definitions are up to date for the selected models - nothing to redo.",
             }
         ), 200
+    if had_explicit_filter and not groups and not test_ids:
+        return jsonify(
+            {
+                "error": "No benchmarks matched the combination of selected groups and target tests.",
+            }
+        ), 400
 
     with active_run_lock:
         cancel_event = threading.Event()

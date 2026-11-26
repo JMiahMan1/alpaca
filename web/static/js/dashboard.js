@@ -8401,7 +8401,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 models: selected,
                 use_proxy: (benchmarkMode === 'proxy')
             };
-            if (!isShared) {
+            if (!isShared && !isMultistep) {
                 if (options.outdatedOnly) {
                     payload.outdated_only = true;
                 }
@@ -8412,8 +8412,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 // Resume is on by default: when "run all" is intended (every test
                 // checkbox checked) we omit test_ids so the backend skips already
-                // completed tests. Only send test_ids when a subset is selected,
-                // which forces those specific tests to (re)run and overwrite.
+                // completed tests. Only send test_ids when a non-empty subset is
+                // selected; an empty test selection (e.g. after clicking "None" to
+                // run by Benchmark Groups alone) must NOT send test_ids: [].
                 const resumeChk = document.getElementById('chk-resume');
                 payload.resume = resumeChk ? resumeChk.checked : true;
                 // Advanced tier (long-running / complex tests) is opt-in so the
@@ -8422,7 +8423,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 payload.tiers = (advChk && advChk.checked) ? ['standard', 'advanced'] : ['standard'];
                 if (!options.outdatedOnly) {
                     const totalTests = testCheckboxes.querySelectorAll('input[type="checkbox"]').length || 0;
-                    if (selectedTests.length < totalTests) {
+                    if (selectedTests.length > 0 && selectedTests.length < totalTests) {
                         payload.test_ids = selectedTests;
                     }
                 }

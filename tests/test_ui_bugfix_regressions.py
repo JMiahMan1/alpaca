@@ -762,3 +762,36 @@ def test_online_models_modal_checkbox_does_not_double_toggle_and_links_from_sett
     assert "Browse & Select Models" in js
     assert ".online-models-results {" in css
     assert "min-height: 280px;" in css
+
+
+def test_selecting_groups_with_empty_test_ids_does_not_run_full_suite():
+    """Clicking None on Target Tests + picking quick_benchmark/groups must NOT wipe out groups and run all 240 tests."""
+    from web import app as web_app
+
+    groups, test_ids = web_app.expand_benchmark_groups(
+        ["quick_benchmark", "biblical"],
+        [],
+    )
+    assert groups and "biblical" in groups
+    assert test_ids and len(test_ids) > 0
+    assert "instruction" not in groups or any(
+        tid in web_app.QUICK_BENCHMARK_IDS for tid in test_ids
+    )
+
+    # Also verify frontend never sends empty test_ids: [] and handles multistep branch
+    js = DASHBOARD_JS.read_text(encoding="utf-8")
+    assert "if (selectedTests.length > 0 && selectedTests.length < totalTests)" in js
+    assert "if (!isShared && !isMultistep)" in js
+
+    # Disjoint group + test_ids must return 400 instead of silently running the full suite
+    client = web_app.app.test_client()
+    res = client.post(
+        "/api/run",
+        json={
+            "models": ["test-model"],
+            "groups": ["quick_benchmark", "biblical"],
+            "test_ids": ["nonexistent_test_id_xyz"],
+        },
+    )
+    assert res.status_code == 400
+    assert "No benchmarks matched" in res.get_json().get("error", "")
