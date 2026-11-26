@@ -283,30 +283,33 @@
                 <!-- VIEW 1: SYSTEM MONITOR VIEW -->
                 <div id="view-monitor" class="tab-view">
                     
-                    <!-- Server Offline/Online Banner -->
-                    <div id="proxy-status-card" class="card" style="border-left: 4px solid var(--color-danger); margin-bottom: 1.5rem;">
-                        <div class="flex-space">
-                            <div>
-                                <h3 id="proxy-connection-title" style="color: white; font-size: 1.1rem; margin-bottom:0.25rem;">Server Monitor Offline</h3>
-                                <p id="proxy-connection-subtitle" style="font-size: 0.75rem; color: var(--text-muted);">Attempting connection to Alpaca Proxy...</p>
-                            </div>
-                            <div class="banner-actions">
-                                <a href="/api/logs/download" id="btn-download-logs" class="btn btn-secondary btn-sm" style="display: none;">📥 Download Logs</a>
-                                <div id="proxy-uptime-badge" class="badge badge-danger">Offline</div>
+                    <!-- Live Service Status Strip (2-up on desktop/tablet, compact stack on mobile) -->
+                    <div class="service-status-strip">
+                        <!-- Server Offline/Online Banner -->
+                        <div id="proxy-status-card" class="card service-status-card" style="border-left: 3px solid var(--color-danger);">
+                            <div class="flex-space">
+                                <div class="service-status-copy">
+                                    <h3 id="proxy-connection-title" style="color: white; font-size: 1rem; margin-bottom:0.2rem;">Server Monitor Offline</h3>
+                                    <p id="proxy-connection-subtitle" style="font-size: 0.74rem; color: var(--text-muted);">Attempting connection to Alpaca Proxy...</p>
+                                </div>
+                                <div class="banner-actions">
+                                    <a href="/api/logs/download" id="btn-download-logs" class="btn btn-secondary btn-sm" style="display: none;">📥 Logs</a>
+                                    <div id="proxy-uptime-badge" class="badge badge-danger">Offline</div>
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <!-- Stable Diffusion Server Banner -->
-                    <div id="sd-status-card" class="card" style="border-left: 4px solid var(--color-danger); margin-bottom: 1.5rem;">
-                        <div class="flex-space">
-                            <div>
-                                <h3 id="sd-connection-title" style="color: white; font-size: 1.1rem; margin-bottom:0.25rem;">Stable Diffusion Backend Offline</h3>
-                                <p id="sd-connection-subtitle" style="font-size: 0.75rem; color: var(--text-muted);">Attempting connection to Stable Diffusion Proxy...</p>
-                            </div>
-                            <div class="banner-actions">
-                                <div id="sd-active-model-badge" class="badge badge-secondary" style="font-size:0.75rem;">Model: None</div>
-                                <div id="sd-status-badge" class="badge badge-danger">Offline</div>
+                        <!-- Stable Diffusion Server Banner -->
+                        <div id="sd-status-card" class="card service-status-card" style="border-left: 3px solid var(--color-danger);">
+                            <div class="flex-space">
+                                <div class="service-status-copy">
+                                    <h3 id="sd-connection-title" style="color: white; font-size: 1rem; margin-bottom:0.2rem;">Stable Diffusion Backend Offline</h3>
+                                    <p id="sd-connection-subtitle" style="font-size: 0.74rem; color: var(--text-muted);">Attempting connection to Stable Diffusion Proxy...</p>
+                                </div>
+                                <div class="banner-actions">
+                                    <div id="sd-active-model-badge" class="badge badge-secondary" style="font-size:0.7rem;">Model: None</div>
+                                    <div id="sd-status-badge" class="badge badge-danger">Offline</div>
+                                </div>
                             </div>
                         </div>
                     </div>
