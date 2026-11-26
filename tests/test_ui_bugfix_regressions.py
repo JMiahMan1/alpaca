@@ -751,3 +751,14 @@ def test_local_delete_model_only_keeps_benchmarks_while_delete_both_purges_them(
     mock_del_tracker.assert_called_once_with("ornith:latest")
     mock_purge.assert_called_once_with("ornith:latest")
     assert res.get_json()["benchmark_results_removed"]["removed"] is True
+
+
+def test_online_models_modal_checkbox_does_not_double_toggle_and_links_from_settings():
+    """Checkbox clicks must stopPropagation so tapping a model selects it instead of toggling twice."""
+    js = DASHBOARD_JS.read_text(encoding="utf-8")
+    css = (DASHBOARD_JS.parent.parent / "css" / "style.css").read_text(encoding="utf-8")
+    assert "chk.addEventListener('click', (e) => {" in js
+    assert "function openOnlineModelsForProvider(" in js
+    assert "Browse & Select Models" in js
+    assert ".online-models-results {" in css
+    assert "min-height: 280px;" in css

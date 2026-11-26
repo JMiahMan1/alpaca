@@ -12528,7 +12528,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (data.success) {
                 resultElem.style.color = '#4ade80';
-                resultElem.innerHTML = `✅ ${data.message || 'Connection successful!'}`;
+                resultElem.innerHTML = `<span>✅ ${escapeHtml(data.message || 'Connection successful!')}</span>`;
+                if (provider && provider !== 'alpaca') {
+                    const browseBtn = document.createElement('button');
+                    browseBtn.type = 'button';
+                    browseBtn.className = 'btn btn-primary btn-xs';
+                    browseBtn.style.marginLeft = '0.5rem';
+                    browseBtn.style.marginTop = '0.35rem';
+                    browseBtn.textContent = '🌐 Browse & Select Models →';
+                    browseBtn.addEventListener('click', () => openOnlineModelsForProvider(provider));
+                    resultElem.appendChild(browseBtn);
+                }
                 if (badgeElem) {
                     badgeElem.className = 'badge badge-success';
                     badgeElem.textContent = 'Active';
@@ -12756,7 +12766,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const chk = document.createElement('input');
             chk.type = 'checkbox';
             chk.checked = isChecked;
-            chk.style.marginTop = '0.25rem';
+            chk.style.width = '18px';
+            chk.style.height = '18px';
+            chk.style.flexShrink = '0';
+            chk.style.marginTop = '0.15rem';
             chk.style.accentColor = 'var(--color-primary)';
             chk.style.cursor = 'pointer';
 
@@ -12893,6 +12906,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateOnlineSelectionCounter();
             }
 
+            // Prevent checkbox click from bubbling to card.click and double-toggling back off
+            chk.addEventListener('click', (e) => {
+                e.stopPropagation();
+            });
             chk.addEventListener('change', (e) => {
                 e.stopPropagation();
                 if (chk.checked) {
@@ -12910,12 +12927,19 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    async function openOnlineModelsForProvider(providerName = 'all') {
+        closeApiKeysModal();
+        if (onlineProviderFilter && providerName) {
+            const hasOption = Array.from(onlineProviderFilter.options || []).some(o => o.value === providerName);
+            onlineProviderFilter.value = hasOption ? providerName : 'all';
+        }
+        if (onlineModelsModal) onlineModelsModal.classList.add('open');
+        await loadSelectedOnlineModels();
+        await fetchLiveOnlineModels();
+    }
+
     if (btnOpenOnlineModels) {
-        btnOpenOnlineModels.addEventListener('click', async () => {
-            if (onlineModelsModal) onlineModelsModal.classList.add('open');
-            await loadSelectedOnlineModels();
-            await fetchLiveOnlineModels();
-        });
+        btnOpenOnlineModels.addEventListener('click', () => openOnlineModelsForProvider(onlineProviderFilter?.value || 'all'));
     }
 
     function closeOnlineModelsModal() {

@@ -759,6 +759,34 @@ header {
     color: var(--text-main);
 }
 
+.online-models-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    flex: 1 1 280px;
+    min-height: 240px;
+    max-height: 440px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 0.25rem;
+}
+
+@media (max-width: 640px) {
+    .online-modal-intro,
+    .online-modal-footer-hint {
+        display: none !important;
+    }
+    .online-modal-toolbar {
+        padding: 0.5rem 0.6rem !important;
+        gap: 0.4rem !important;
+    }
+    .online-models-results {
+        min-height: 280px;
+        max-height: 52dvh;
+    }
+}
+
 .toggle-group {
     display: flex;
     background: rgba(15, 23, 42, 0.5);

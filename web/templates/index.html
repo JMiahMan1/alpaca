@@ -3465,13 +3465,13 @@
                 <div class="modal-title">🌐 Live Online Models Explorer</div>
                 <button id="online-models-close" class="modal-close">&times;</button>
             </div>
-            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.85rem;">
-                <p style="font-size:0.8rem; color:var(--text-muted); margin:0;">
-                    Discover and pull the latest 2026 models from OpenRouter, Hugging Face, and Cloudflare in real-time. Check models to include them in your benchmark target list.
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.75rem;">
+                <p class="online-modal-intro" style="font-size:0.8rem; color:var(--text-muted); margin:0;">
+                    Discover live chat models from OpenRouter, ClinePass, Hugging Face Router, Cloudflare, Gemini, Groq, and OpenCode. Check models to add them to your benchmark target list.
                 </p>
 
                 <!-- Search & Filters Toolbar -->
-                <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:0.65rem 0.85rem;">
+                <div class="online-modal-toolbar" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; background:#090d16; border:1px solid var(--border-color); border-radius:8px; padding:0.65rem 0.85rem;">
                     <div style="display:flex; align-items:center; gap:0.4rem;">
                         <span style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap;">Provider:</span>
                         <select id="online-provider-filter" style="background:#0f172a; color:white; border:1px solid var(--border-color); padding:0.35rem 0.5rem; border-radius:6px; font-size:0.8rem;">
@@ -3517,15 +3517,15 @@
                 </div>
 
                 <!-- Results List Container -->
-                <div id="online-models-results-container" style="display:flex; flex-direction:column; gap:0.5rem; max-height: 380px; overflow-y:auto; padding-right:0.25rem;">
+                <div id="online-models-results-container" class="online-models-results">
                     <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:2.5rem;">
                         Loading models catalog...
                     </div>
                 </div>
 
                 <!-- Bottom Footer Actions -->
-                <div class="modal-footer-row" style="margin-top:0.5rem; border-top:1px solid var(--border-color); padding-top:0.75rem;">
-                    <div style="font-size:0.72rem; color:var(--text-muted);">
+                <div class="modal-footer-row" style="margin-top:0.25rem; border-top:1px solid var(--border-color); padding-top:0.65rem;">
+                    <div class="online-modal-footer-hint" style="font-size:0.72rem; color:var(--text-muted);">
                         Selected models will appear directly in your Target Models sidebar.
                     </div>
                     <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
